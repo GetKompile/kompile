@@ -1,0 +1,430 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+:host {
+  display: block;
+  background: var(--bg-body);
+  color: var(--text-primary);
+  min-height: 100%;
+}
+
+.system-info-container {
+  padding: 24px;
+  max-width: 900px;
+  margin: 0 auto;
+  color: var(--text-primary);
+}
+
+/* Header */
+.info-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.header-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.header-icon {
+  font-size: 40px;
+  width: 40px;
+  height: 40px;
+  color: var(--color-primary);
+}
+
+.info-header h2 {
+  margin: 0;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.subtitle {
+  margin: 4px 0 0 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.last-refreshed {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+}
+
+/* Loading */
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 60px 20px;
+  color: var(--text-secondary);
+}
+
+/* Error */
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 20px;
+  color: var(--accent-red);
+  background: rgba(244, 67, 54, 0.1);
+  border-radius: 8px;
+}
+
+.error-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+}
+
+/* Info Cards Layout */
+.info-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Card Base */
+.info-card {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color);
+  border-radius: 10px !important;
+}
+
+::ng-deep .system-info-container .mat-mdc-card {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+}
+
+::ng-deep .system-info-container .mat-mdc-card-header {
+  padding-bottom: 8px;
+}
+
+::ng-deep .system-info-container .mat-mdc-card-title {
+  color: var(--text-primary) !important;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+::ng-deep .system-info-container .mat-mdc-card-subtitle {
+  color: var(--text-secondary) !important;
+  font-size: 0.85rem;
+}
+
+.card-icon {
+  color: var(--color-primary);
+  background: rgba(74, 144, 217, 0.12) !important;
+  border-radius: 50%;
+  padding: 4px;
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Version Table */
+.version-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.version-table tr {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.version-table tr:last-child {
+  border-bottom: none;
+}
+
+.version-table td {
+  padding: 9px 4px;
+  vertical-align: middle;
+}
+
+.field-label {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  width: 40%;
+  white-space: nowrap;
+}
+
+.field-value {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-family: var(--font-family-monospace);
+  word-break: break-all;
+}
+
+/* Installed Tools Grid */
+.tools-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.tool-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: default;
+  transition: opacity 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.tool-chip.installed {
+  background: rgba(76, 175, 80, 0.15);
+  border-color: rgba(76, 175, 80, 0.35);
+  color: var(--accent-green);
+}
+
+.tool-chip.missing {
+  background: rgba(244, 67, 54, 0.1);
+  border-color: rgba(244, 67, 54, 0.25);
+  color: var(--accent-red);
+}
+
+.tool-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.tool-chip.installed .tool-icon {
+  color: var(--accent-green);
+}
+
+.tool-chip.missing .tool-icon {
+  color: var(--accent-red);
+}
+
+.tool-name {
+  line-height: 1;
+}
+
+/* Memory Section */
+.memory-section {
+  margin-bottom: 16px;
+}
+
+.memory-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.memory-label {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.memory-values {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  font-family: var(--font-family-monospace);
+}
+
+.memory-free {
+  color: var(--text-tertiary);
+}
+
+.memory-bar {
+  height: 10px !important;
+  border-radius: 5px;
+  background: var(--bg-card-secondary) !important;
+}
+
+::ng-deep .system-info-container .mat-mdc-progress-bar .mdc-linear-progress__bar-inner {
+  border-color: var(--color-primary);
+}
+
+::ng-deep .system-info-container .memory-bar.warn-bar .mdc-linear-progress__bar-inner {
+  border-color: var(--accent-amber);
+}
+
+::ng-deep .system-info-container .memory-bar.critical-bar .mdc-linear-progress__bar-inner {
+  border-color: var(--accent-red);
+}
+
+::ng-deep .system-info-container .mat-mdc-progress-bar .mdc-linear-progress__track {
+  background: var(--bg-card-secondary);
+}
+
+.memory-percent {
+  text-align: right;
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+
+/* Section Divider */
+.section-divider {
+  margin: 16px 0 !important;
+  border-color: var(--border-color) !important;
+}
+
+/* Runtime Stats */
+.runtime-stats {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--bg-card-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  min-width: 160px;
+  flex: 1;
+}
+
+.stat-icon {
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.stat-details {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-value {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-family-monospace);
+}
+
+/* Home Directory */
+.home-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: var(--bg-card-secondary);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.dir-status-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.dir-status-icon.exists {
+  color: var(--accent-green);
+}
+
+.dir-status-icon.missing {
+  color: var(--accent-red);
+}
+
+.dir-path {
+  font-family: var(--font-family-monospace);
+  font-size: 0.88rem;
+  color: var(--text-link);
+  background: var(--bg-card-secondary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex: 1;
+  word-break: break-all;
+}
+
+.dir-status-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.dir-status-label.exists {
+  color: var(--accent-green);
+  background: rgba(76, 175, 80, 0.12);
+}
+
+.dir-status-label.missing {
+  color: var(--accent-red);
+  background: rgba(244, 67, 54, 0.1);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .system-info-container {
+    padding: 16px;
+  }
+
+  .info-header {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .memory-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .runtime-stats {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .stat-item {
+    min-width: unset;
+  }
+
+  .tools-grid {
+    gap: 8px;
+  }
+}

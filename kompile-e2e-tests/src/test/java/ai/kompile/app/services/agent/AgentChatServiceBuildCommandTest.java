@@ -73,7 +73,8 @@ class AgentChatServiceBuildCommandTest {
                 null, // toolDiscoveryService
                 serverPortService,
                 folderService,
-                null  // apiAgentChatExecutor
+                null, // apiAgentChatExecutor
+                null  // queryProcessor
         );
         buildCommandMethod = AgentChatService.class.getDeclaredMethod(
                 "buildCommand", AgentProvider.class, AgentChatRequest.class, String.class);

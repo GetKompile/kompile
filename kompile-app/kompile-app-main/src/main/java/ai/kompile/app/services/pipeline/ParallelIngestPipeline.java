@@ -331,6 +331,10 @@ public class ParallelIngestPipeline implements AutoCloseable {
     // Callback for progress updates
     private Consumer<PipelineProgress> progressCallback;
 
+    // Callback fired after each batch of chunks is written to the keyword index.
+    // Used by DocumentIngestService to register passages in cross-index tracking.
+    private Consumer<List<RetrievedDoc>> onChunkIndexedCallback;
+
     // Control flags
     private volatile boolean cancelled = false;
     private volatile boolean chunkingComplete = false;
@@ -613,6 +617,10 @@ public class ParallelIngestPipeline implements AutoCloseable {
         return skipEmbedding;
     }
 
+    public void setOnChunkIndexedCallback(Consumer<List<RetrievedDoc>> callback) {
+        this.onChunkIndexedCallback = callback;
+    }
+
     public void setProgressCallback(Consumer<PipelineProgress> callback) {
         this.progressCallback = callback;
 
@@ -871,6 +879,15 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     if (!accumulatedBatch.isEmpty()) {
                         try {
                             indexerService.indexToKeywordIndexOnly(accumulatedBatch, true);
+
+                            if (onChunkIndexedCallback != null) {
+                                try {
+                                    onChunkIndexedCallback.accept(new ArrayList<>(accumulatedBatch));
+                                } catch (Exception cbEx) {
+                                    logger.warn("Cross-index callback failed: {}", cbEx.getMessage());
+                                }
+                            }
+
                             for (RetrievedDoc doc : accumulatedBatch) {
                                 processedIds.add(doc.getId());
                                 chunksIndexed.incrementAndGet();
@@ -898,6 +915,15 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                     // Index directly to keyword store only
                                     indexerService.indexToKeywordIndexOnly(accumulatedBatch, true);
 
+                                    // Notify cross-index tracking
+                                    if (onChunkIndexedCallback != null) {
+                                        try {
+                                            onChunkIndexedCallback.accept(new ArrayList<>(accumulatedBatch));
+                                        } catch (Exception cbEx) {
+                                            logger.warn("Cross-index callback failed: {}", cbEx.getMessage());
+                                        }
+                                    }
+
                                     for (RetrievedDoc doc : accumulatedBatch) {
                                         processedIds.add(doc.getId());
                                         chunksIndexed.incrementAndGet();
@@ -916,6 +942,16 @@ public class ParallelIngestPipeline implements AutoCloseable {
                         if (!accumulatedBatch.isEmpty()) {
                             try {
                                 indexerService.indexToKeywordIndexOnly(accumulatedBatch, true);
+
+                                // Notify cross-index tracking
+                                if (onChunkIndexedCallback != null) {
+                                    try {
+                                        onChunkIndexedCallback.accept(new ArrayList<>(accumulatedBatch));
+                                    } catch (Exception cbEx) {
+                                        logger.warn("Cross-index callback failed: {}", cbEx.getMessage());
+                                    }
+                                }
+
                                 for (RetrievedDoc doc : accumulatedBatch) {
                                     processedIds.add(doc.getId());
                                     chunksIndexed.incrementAndGet();
@@ -1894,6 +1930,15 @@ public class ParallelIngestPipeline implements AutoCloseable {
             // Index to Lucene (keyword store) only
             indexerService.indexToKeywordIndexOnly(batch, true);
 
+            // Notify cross-index tracking callback
+            if (onChunkIndexedCallback != null) {
+                try {
+                    onChunkIndexedCallback.accept(batch);
+                } catch (Exception cbEx) {
+                    logger.warn("Cross-index tracking callback failed for batch {}: {}", batchNum, cbEx.getMessage());
+                }
+            }
+
             // Update counters
             int indexed = chunksIndexed.addAndGet(batchSize);
             workerProcessed.addAndGet(batchSize);
@@ -1913,16 +1958,6 @@ public class ParallelIngestPipeline implements AutoCloseable {
             logger.error("Indexing worker {}: batch {} failed: {}", workerId, batchNum, e.getMessage(), e);
             lastError = "Lucene indexing failed: " + e.getMessage();
         }
-    }
-
-    /**
-     * Process a batch of chunks through the embedding model.
-     *
-     * @deprecated Use processBatchEmbeddingOptimized instead
-     */
-    @Deprecated
-    private void processBatchEmbedding(List<RetrievedDoc> batch, int workerId, AtomicInteger workerProcessed) {
-        processBatchEmbeddingOptimized(batch, workerId, workerProcessed);
     }
 
     /**
@@ -2026,7 +2061,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             List<RetrievedDoc> actualBatch = toEmbed;
 
             for (RetrievedDoc chunk : actualBatch) {
-                String content = chunk.getContent();
+                String content = chunk.getText();
                 int len = content != null ? content.length() : 0;
                 totalChars += len;
                 if (len > maxChars)
@@ -2508,16 +2543,6 @@ public class ParallelIngestPipeline implements AutoCloseable {
     }
 
     /**
-     * Generate embeddings for a batch of chunks using the legacy method.
-     * 
-     * @deprecated Use generateEmbeddingsOptimized instead
-     */
-    @Deprecated
-    private List<float[]> generateEmbeddings(List<RetrievedDoc> chunks) {
-        return generateEmbeddingsOptimized(chunks);
-    }
-
-    /**
      * Optimized embedding generation that uses the new embedBatch interface.
      *
      * <h2>Key Optimizations</h2>
@@ -2542,7 +2567,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             // Extract texts from chunks
             List<String> texts = new ArrayList<>(chunks.size());
             for (RetrievedDoc chunk : chunks) {
-                String content = chunk.getContent();
+                String content = chunk.getText();
                 texts.add(content != null ? content : "");
             }
 
@@ -3092,7 +3117,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
     private Document convertToSpringDocument(RetrievedDoc doc) {
         return new Document(
                 doc.getId(),
-                doc.getContent(),
+                doc.getText(),
                 doc.getMetadata() != null ? new HashMap<>(doc.getMetadata()) : new HashMap<>());
     }
 

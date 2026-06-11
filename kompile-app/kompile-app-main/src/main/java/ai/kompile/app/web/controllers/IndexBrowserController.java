@@ -417,7 +417,7 @@ public class IndexBrowserController {
                     .map(doc -> {
                         Map<String, Object> result = new HashMap<>();
                         result.put("id", doc.getId());
-                        result.put("content", doc.getContent());
+                        result.put("content", doc.getText());
                         result.put("score", doc.getScore());
                         result.put("metadata", doc.getMetadata());
 
@@ -447,7 +447,7 @@ public class IndexBrowserController {
                         }
 
                         // Create a preview of the content
-                        String content = doc.getContent();
+                        String content = doc.getText();
                         if (content != null && content.length() > 200) {
                             result.put("preview", content.substring(0, 200) + "...");
                         } else {

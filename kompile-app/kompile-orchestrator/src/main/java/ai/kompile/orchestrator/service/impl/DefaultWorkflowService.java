@@ -22,8 +22,10 @@ import ai.kompile.orchestrator.config.OrchestratorProperties;
 import ai.kompile.orchestrator.model.event.WorkflowEvent;
 import ai.kompile.orchestrator.model.llm.LlmSession;
 import ai.kompile.orchestrator.model.llm.LlmSessionRequest;
+import ai.kompile.orchestrator.model.task.TaskDefinition;
 import ai.kompile.orchestrator.model.task.TaskExecutionOptions;
 import ai.kompile.orchestrator.model.task.TaskInstance;
+import ai.kompile.orchestrator.model.task.TaskType;
 import ai.kompile.orchestrator.model.workflow.*;
 import ai.kompile.orchestrator.repository.WorkflowRepository;
 import ai.kompile.orchestrator.repository.WorkflowStepRepository;
@@ -388,6 +390,12 @@ public class DefaultWorkflowService implements WorkflowService {
                 case EXECUTE_COMMAND:
                     executeShellCommand(workflow, step, action);
                     break;
+                case EXECUTE_CODE:
+                    executeCodeAction(workflow, step, action);
+                    break;
+                case HTTP_REQUEST:
+                    executeHttpRequest(workflow, step, action);
+                    break;
                 case RUN_TASK:
                     executeTask(workflow, step, action);
                     break;
@@ -457,6 +465,61 @@ public class DefaultWorkflowService implements WorkflowService {
                 : llmService.startSession(request);
 
         step.setLlmSessionId(session.getId());
+        stepRepository.save(step);
+    }
+
+    private void executeCodeAction(Workflow workflow, WorkflowStep step, ActionProposal action) {
+        // Create an ad-hoc CODE task definition from the action
+        TaskDefinition codeDef = TaskDefinition.builder()
+                .taskId("workflow-code-" + UUID.randomUUID().toString())
+                .name("Workflow Code Execution")
+                .taskType(TaskType.CODE)
+                .command(action.getCommand())
+                .build();
+
+        TaskExecutionOptions options = TaskExecutionOptions.builder()
+                .async(true)
+                .streamOutput(true)
+                .workingDirectory(workflow.getWorkingDirectory())
+                .build();
+
+        TaskInstance task = taskService.executeTask(
+                codeDef,
+                action.getVariables() != null ? action.getVariables() : Collections.emptyMap(),
+                workflow.getOrchestratorInstanceId(),
+                options);
+
+        step.setTaskInstanceId(task.getId());
+        stepRepository.save(step);
+    }
+
+    private void executeHttpRequest(Workflow workflow, WorkflowStep step, ActionProposal action) {
+        // Create an ad-hoc HTTP task definition from the action
+        TaskDefinition httpDef = TaskDefinition.builder()
+                .taskId("workflow-http-" + UUID.randomUUID().toString())
+                .name("Workflow HTTP Request")
+                .taskType(TaskType.HTTP)
+                .httpUrl(action.getCommand()) // URL stored in command field
+                .httpMethod("GET") // Default; override via variables if needed
+                .build();
+
+        // Check if variables contain HTTP-specific overrides
+        Map<String, String> variables = action.getVariables() != null
+                ? new HashMap<>(action.getVariables()) : new HashMap<>();
+
+        TaskExecutionOptions options = TaskExecutionOptions.builder()
+                .async(true)
+                .streamOutput(true)
+                .workingDirectory(workflow.getWorkingDirectory())
+                .build();
+
+        TaskInstance task = taskService.executeTask(
+                httpDef,
+                variables,
+                workflow.getOrchestratorInstanceId(),
+                options);
+
+        step.setTaskInstanceId(task.getId());
         stepRepository.save(step);
     }
 

@@ -17,9 +17,11 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.core.graphrag.GraphConstructor;
-import ai.kompile.staging.staging.StagingModelInfo;
-import ai.kompile.staging.staging.StagingService;
-import ai.kompile.staging.staging.StagingStatus;
+import ai.kompile.orchestrator.api.LlmIntegrationService;
+import ai.kompile.orchestrator.api.LlmProvider;
+import ai.kompile.core.staging.StagingModelInfo;
+import ai.kompile.core.staging.StagingServiceApi;
+import ai.kompile.core.staging.StagingStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,7 +44,10 @@ public class GraphExtractionModelController {
     private static final Logger log = LoggerFactory.getLogger(GraphExtractionModelController.class);
 
     @Autowired(required = false)
-    private StagingService stagingService;
+    private StagingServiceApi stagingService;
+
+    @Autowired(required = false)
+    private LlmIntegrationService llmIntegrationService;
 
     @Autowired(required = false)
     private List<GraphConstructor> graphConstructors;
@@ -55,11 +60,16 @@ public class GraphExtractionModelController {
     public ResponseEntity<List<Map<String, Object>>> listExtractionModels() {
         List<Map<String, Object>> models = new ArrayList<>();
 
-        // Add built-in providers
+        // Add default provider
         models.add(buildProviderEntry("default", "Default LLM", "Uses the configured default LLM provider", true));
-        models.add(buildProviderEntry("openai", "OpenAI", "GPT-4o, GPT-4, etc.", false));
-        models.add(buildProviderEntry("anthropic", "Anthropic", "Claude models", false));
-        models.add(buildProviderEntry("ollama", "Ollama (Local)", "Local models via Ollama", false));
+
+        // Add dynamically discovered providers
+        if (llmIntegrationService != null) {
+            for (LlmProvider provider : llmIntegrationService.getAllProviders()) {
+                models.add(buildProviderEntry(provider.getId(), provider.getDisplayName(),
+                        provider.getDisplayName() + " models", false));
+            }
+        }
 
         // Add staged models if staging service is available
         if (stagingService != null) {

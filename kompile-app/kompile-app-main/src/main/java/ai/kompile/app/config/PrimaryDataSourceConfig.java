@@ -57,7 +57,12 @@ import java.util.Properties;
         "ai.kompile.knowledgegraph.builder.repository",
         "ai.kompile.knowledgegraph.embedding.repository",
         "ai.kompile.oauth.repository",
-        "ai.kompile.orchestrator.repository"
+        "ai.kompile.orchestrator.repository",
+        "ai.kompile.enrichment.repository",
+        "ai.kompile.app.diagram.repository",
+        "ai.kompile.app.sync.repository",
+        "ai.kompile.staging.repository",
+        "ai.kompile.testmilestone.repository"
     },
     entityManagerFactoryRef = "entityManagerFactory",
     transactionManagerRef = "transactionManager"
@@ -74,7 +79,13 @@ import java.util.Properties;
     "ai.kompile.knowledgegraph.builder.domain",
     "ai.kompile.knowledgegraph.embedding.domain",
     "ai.kompile.oauth.domain",
-    "ai.kompile.orchestrator.model"
+    "ai.kompile.orchestrator.model",
+    "ai.kompile.enrichment.domain",
+    "ai.kompile.app.diagram.domain",
+    "ai.kompile.app.sync.domain",
+    "ai.kompile.staging.domain",
+    "ai.kompile.testmilestone.domain",
+    "ai.kompile.codeindexer.domain"
 })
 public class PrimaryDataSourceConfig {
 
@@ -114,7 +125,13 @@ public class PrimaryDataSourceConfig {
         "ai.kompile.knowledgegraph.builder.domain",
         "ai.kompile.knowledgegraph.embedding.domain",
         "ai.kompile.oauth.domain",
-        "ai.kompile.orchestrator.model"
+        "ai.kompile.orchestrator.model",
+        "ai.kompile.enrichment.domain",
+        "ai.kompile.app.diagram.domain",
+        "ai.kompile.app.sync.domain",
+        "ai.kompile.staging.domain",
+        "ai.kompile.testmilestone.domain",
+        "ai.kompile.codeindexer.domain"
     };
 
     @Bean

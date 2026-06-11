@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["angular:styles/component:css;483f38f3aa5eeda3015fa1597a488b3b93f8ab328e56ef82ed985bc7a8faf73e;/home/agibsonccc/Documents/GitHub/kompile/kompile-app/kompile-app-main/src/main/frontend/src/app/components/compute-graph/compute-graph-artifacts.component.ts"],
+  "sourcesContent": ["\n    .artifacts-container { padding: 16px; max-width: 960px; }\n    .search-row { display: flex; gap: 12px; align-items: flex-start; }\n    .search-field { flex: 1; }\n    .empty-state { text-align: center; padding: 32px; color: #999; }\n    .empty-state mat-icon { font-size: 48px; width: 48px; height: 48px; }\n    .artifacts-table { width: 100%; }\n    .data-preview {\n      max-width: 300px; max-height: 100px; overflow: auto; font-size: 11px;\n      font-family: var(--font-family-monospace, monospace);\n      background: #1e1e1e; color: #d4d4d4; padding: 4px 8px; border-radius: 3px;\n      white-space: pre-wrap;\n    }\n    .no-data { color: #666; }\n  "],
+  "mappings": ";AACI,CAAC;AAAsB,WAAS;AAAM,aAAW;AAAO;AACxD,CAAC;AAAa,WAAS;AAAM,OAAK;AAAM,eAAa;AAAY;AACjE,CAAC;AAAe,QAAM;AAAG;AACzB,CAAC;AAAc,cAAY;AAAQ,WAAS;AAAM,SAAO;AAAM;AAC/D,CADC,YACY;AAAW,aAAW;AAAM,SAAO;AAAM,UAAQ;AAAM;AACpE,CAAC;AAAkB,SAAO;AAAM;AAChC,CAAC;AACC,aAAW;AAAO,cAAY;AAAO,YAAU;AAAM,aAAW;AAChE,eAAa,IAAI,uBAAuB,EAAE;AAC1C,cAAY;AAAS,SAAO;AAAS,WAAS,IAAI;AAAK,iBAAe;AACtE,eAAa;AACf;AACA,CAAC;AAAU,SAAO;AAAM;",
+  "names": []
+}

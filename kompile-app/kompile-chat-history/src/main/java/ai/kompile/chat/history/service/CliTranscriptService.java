@@ -159,17 +159,34 @@ public class CliTranscriptService {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     public ChatSession importTranscript(String sessionId, String source) {
+        return importTranscript(sessionId, source, null);
+    }
+
+    public ChatSession importTranscript(String sessionId, String source, Long originalTimestampMillis) {
         CliTranscriptDetail detail = readTranscript(sessionId, source);
         if (detail == null || detail.turns().isEmpty()) {
             throw new IllegalArgumentException("No messages found in transcript: " + sessionId);
         }
 
         String importId = "imported-" + source + "-" + sanitizeId(sessionId);
-        if (chatHistoryService.getSession(importId).isPresent()) {
-            throw new IllegalStateException("Transcript already imported: " + sessionId);
+        Optional<ChatSession> existing = chatHistoryService.getSession(importId);
+        if (existing.isPresent()) {
+            log.debug("Transcript already imported, skipping: {}", importId);
+            return existing.get();
         }
 
-        ChatSession session = chatHistoryService.createSessionWithId(importId, detail.title(), source);
+        ChatSession session;
+        try {
+            session = chatHistoryService.createSessionWithId(importId, detail.title(), source, originalTimestampMillis);
+        } catch (Exception e) {
+            // Handle race condition: another thread may have inserted between our check and save
+            Optional<ChatSession> raceWinner = chatHistoryService.getSession(importId);
+            if (raceWinner.isPresent()) {
+                log.debug("Transcript imported by concurrent thread, skipping: {}", importId);
+                return raceWinner.get();
+            }
+            throw e;
+        }
 
         for (ParsedTurn turn : detail.turns()) {
             ChatMessage.MessageRole role = "user".equals(turn.role())
@@ -203,7 +220,8 @@ public class CliTranscriptService {
         for (CliSessionSummary session : newSessions) {
             if (imported >= batchSize) break;
             try {
-                importTranscript(session.sessionId(), session.source());
+                long originalTs = session.lastModified() > 0 ? session.lastModified() : System.currentTimeMillis();
+                importTranscript(session.sessionId(), session.source(), originalTs);
                 imported++;
             } catch (Exception e) {
                 log.debug("Skipping session {} from {}: {}", session.sessionId(), source, e.getMessage());

@@ -77,7 +77,8 @@ class PassthroughSessionManagerTest {
                 null, // toolDiscoveryService
                 serverPortService,
                 folderService,
-                null  // apiAgentChatExecutor
+                null, // apiAgentChatExecutor
+                null  // queryProcessor
         );
 
         sessionManager = new PassthroughSessionManager(

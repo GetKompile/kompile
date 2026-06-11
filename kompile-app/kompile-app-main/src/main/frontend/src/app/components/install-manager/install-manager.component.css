@@ -1,0 +1,352 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+:host {
+  display: block;
+  background: var(--bg-body);
+  color: var(--text-primary);
+  min-height: 100%;
+}
+
+.install-manager-container {
+  padding: 24px;
+  max-width: 960px;
+  margin: 0 auto;
+  color: var(--text-primary);
+}
+
+/* =========================================================================
+   Header
+   ========================================================================= */
+
+.im-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.header-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.header-icon {
+  font-size: 40px;
+  width: 40px;
+  height: 40px;
+  color: var(--color-primary);
+}
+
+.im-header h2 {
+  margin: 0;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.subtitle {
+  margin: 4px 0 0 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.home-path {
+  font-family: var(--font-family-monospace, 'Roboto Mono', 'Courier New', monospace);
+  font-size: 0.88em;
+  background: var(--color-primary-light, rgba(74, 144, 217, 0.12));
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text-link);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.last-refreshed {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+}
+
+/* =========================================================================
+   Loading / Error / Empty states
+   ========================================================================= */
+
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 60px 20px;
+  color: var(--text-secondary);
+}
+
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 20px;
+  color: var(--accent-red);
+  background: rgba(244, 67, 54, 0.08);
+  border: 1px solid rgba(244, 67, 54, 0.2);
+  border-radius: 10px;
+}
+
+.error-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: var(--text-tertiary);
+}
+
+.empty-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+}
+
+/* =========================================================================
+   Tools Card
+   ========================================================================= */
+
+.tools-card {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color);
+  border-radius: 10px !important;
+}
+
+::ng-deep .install-manager-container .mat-mdc-card {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+}
+
+/* =========================================================================
+   Tool Row
+   ========================================================================= */
+
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 8px;
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.tool-row:last-child {
+  border-bottom: none;
+}
+
+/* Tool icon */
+.tool-icon-wrap {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--color-primary-light, rgba(74, 144, 217, 0.12));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-icon {
+  color: var(--color-primary);
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+}
+
+/* Tool info block */
+.tool-info {
+  flex: 1;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tool-name {
+  font-weight: 600;
+  font-size: 0.97rem;
+  color: var(--text-primary);
+}
+
+.tool-desc {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.tool-path {
+  font-family: var(--font-family-monospace, 'Roboto Mono', 'Courier New', monospace);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  background: var(--bg-card-secondary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-version {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-family-monospace, 'Roboto Mono', 'Courier New', monospace);
+}
+
+/* Status chip */
+.tool-status {
+  flex-shrink: 0;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.status-chip.chip-installed {
+  background: rgba(76, 175, 80, 0.15);
+  border: 1px solid rgba(76, 175, 80, 0.35);
+  color: var(--accent-green);
+}
+
+.status-chip.chip-missing {
+  background: rgba(244, 67, 54, 0.1);
+  border: 1px solid rgba(244, 67, 54, 0.25);
+  color: var(--accent-red);
+}
+
+.chip-icon {
+  font-size: 15px;
+  width: 15px;
+  height: 15px;
+  line-height: 15px;
+}
+
+.chip-installed .chip-icon {
+  color: var(--accent-green);
+}
+
+.chip-missing .chip-icon {
+  color: var(--accent-red);
+}
+
+/* Action buttons */
+.tool-action {
+  flex-shrink: 0;
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem !important;
+  min-width: 110px;
+}
+
+.action-btn mat-icon {
+  font-size: 17px;
+  width: 17px;
+  height: 17px;
+  line-height: 17px;
+}
+
+.btn-spinner {
+  display: inline-block;
+}
+
+.install-btn {
+  background: var(--color-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+.install-btn:hover:not([disabled]) {
+  background: var(--color-primary) !important;
+  opacity: 0.9;
+}
+
+.uninstall-btn {
+  border-color: rgba(239, 83, 80, 0.5) !important;
+  color: var(--accent-red) !important;
+}
+
+.uninstall-btn:hover:not([disabled]) {
+  background: rgba(244, 67, 54, 0.08) !important;
+}
+
+/* =========================================================================
+   Snackbar theming (global panel classes)
+   ========================================================================= */
+
+::ng-deep .snack-success .mdc-snackbar__surface {
+  background: var(--accent-green) !important;
+  color: var(--text-primary) !important;
+}
+
+::ng-deep .snack-error .mdc-snackbar__surface {
+  background: var(--accent-red) !important;
+  color: var(--text-primary) !important;
+}
+
+/* =========================================================================
+   Responsive
+   ========================================================================= */
+
+@media (max-width: 640px) {
+  .install-manager-container {
+    padding: 16px;
+  }
+
+  .im-header {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .tool-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .tool-status,
+  .tool-action {
+    align-self: flex-start;
+  }
+}

@@ -70,6 +70,13 @@
       <span class="tab-icon">📝</span>
       <span class="tab-label">Prompt Templates</span>
     </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'clientConnections'"
+      (click)="activeSubTab = 'clientConnections'; loadConnections()">
+      <span class="tab-icon">🔗</span>
+      <span class="tab-label">Client Connections</span>
+    </button>
   </div>
 
   <div class="sub-tab-content">
@@ -93,6 +100,100 @@
     </div>
     <div *ngIf="activeSubTab === 'promptTemplates'">
       <app-prompt-template-manager></app-prompt-template-manager>
+    </div>
+
+    <!-- Client Connections Panel -->
+    <div *ngIf="activeSubTab === 'clientConnections'" class="client-connections">
+      <div class="cc-header">
+        <h3>MCP Client Connections</h3>
+        <div class="cc-actions">
+          <button mat-icon-button (click)="loadConnections()" matTooltip="Refresh"><mat-icon>refresh</mat-icon></button>
+          <button mat-raised-button color="primary" (click)="showConnectForm = !showConnectForm">
+            <mat-icon>add</mat-icon> Connect
+          </button>
+        </div>
+      </div>
+
+      <div *ngIf="clientError" class="cc-error"><mat-icon>error</mat-icon> {{ clientError }}</div>
+      <div *ngIf="clientMessage" class="cc-success"><mat-icon>check_circle</mat-icon> {{ clientMessage }}</div>
+
+      <!-- Connect Form -->
+      <div class="cc-connect-form" *ngIf="showConnectForm">
+        <div class="cc-form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Server Name</mat-label>
+            <input matInput [(ngModel)]="connectName" [ngModelOptions]="{standalone: true}" placeholder="my-server">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>SSE URL</mat-label>
+            <input matInput [(ngModel)]="connectSseUrl" [ngModelOptions]="{standalone: true}" placeholder="http://localhost:3000/sse">
+          </mat-form-field>
+          <button mat-raised-button color="primary" (click)="connectServer()" [disabled]="!connectName || !connectSseUrl">
+            Connect
+          </button>
+          <button mat-button (click)="showConnectForm = false">Cancel</button>
+        </div>
+      </div>
+
+      <div *ngIf="connectionsLoading" class="cc-loading"><mat-spinner diameter="30"></mat-spinner></div>
+
+      <!-- Connections List -->
+      <div *ngIf="!connectionsLoading && connections.length === 0 && !clientError" class="cc-empty">
+        <mat-icon>link_off</mat-icon> No MCP client connections
+      </div>
+
+      <div class="cc-list" *ngIf="connections.length > 0">
+        <div class="cc-card" *ngFor="let conn of connections"
+             [class.selected]="selectedServer === conn.name"
+             (click)="selectServer(conn.name)">
+          <div class="cc-card-info">
+            <mat-icon>link</mat-icon>
+            <div class="cc-card-details">
+              <span class="cc-name">{{ conn.name }}</span>
+              <span class="cc-url">{{ conn.sseUrl }}</span>
+            </div>
+          </div>
+          <button mat-icon-button color="warn" matTooltip="Disconnect"
+                  (click)="disconnectServer(conn.name); $event.stopPropagation()">
+            <mat-icon>link_off</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <!-- Server Detail Panel -->
+      <div class="cc-detail" *ngIf="selectedServer">
+        <h4>{{ selectedServer }}</h4>
+        <div *ngIf="serverDetailLoading" class="cc-loading"><mat-spinner diameter="24"></mat-spinner></div>
+
+        <div class="cc-detail-section" *ngIf="serverTools.length > 0">
+          <h5><mat-icon>build</mat-icon> Tools ({{ serverTools.length }})</h5>
+          <div class="cc-item" *ngFor="let tool of serverTools">
+            <span class="cc-item-name">{{ tool.name }}</span>
+            <span class="cc-item-desc">{{ tool.description }}</span>
+          </div>
+        </div>
+
+        <div class="cc-detail-section" *ngIf="serverResources.length > 0">
+          <h5><mat-icon>folder</mat-icon> Resources ({{ serverResources.length }})</h5>
+          <div class="cc-item" *ngFor="let res of serverResources">
+            <span class="cc-item-name">{{ res.name }}</span>
+            <span class="cc-item-desc">{{ res.uri }} ({{ res.mimeType }})</span>
+          </div>
+        </div>
+
+        <div class="cc-detail-section" *ngIf="serverPrompts.length > 0">
+          <h5><mat-icon>chat</mat-icon> Prompts ({{ serverPrompts.length }})</h5>
+          <div class="cc-item" *ngFor="let prompt of serverPrompts">
+            <span class="cc-item-name">{{ prompt.name }}</span>
+            <span class="cc-item-desc">{{ prompt.description }}</span>
+          </div>
+        </div>
+
+        <div *ngIf="!serverDetailLoading && serverTools.length === 0 && serverResources.length === 0 && serverPrompts.length === 0"
+             class="cc-empty">
+          No tools, resources, or prompts found on this server
+        </div>
+      </div>
     </div>
   </div>
 </div>

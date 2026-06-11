@@ -126,7 +126,6 @@ export class OpTimingComponent implements OnInit, OnDestroy {
         // Update subprocess op timing from shared state
         if (state.subprocessStats) {
           this.subprocessOpTiming = state.subprocessStats;
-          console.log('=== Op Timing Component: received subprocess stats from shared state ===', state.subprocessStats);
         }
         // Also update main JVM stats if we have them
         if (state.stats && state.stats.length > 0) {
@@ -202,19 +201,12 @@ export class OpTimingComponent implements OnInit, OnDestroy {
   }
 
   flushStats(): void {
-    console.log('=== FLUSH STATS METHOD CALLED === topN:', this.topN);
     this.loading = true;
 
     this.opTimingService.flushAndGetStats(this.topN)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (response: FlushResponse) => {
-          console.log('=== FLUSH RESPONSE ===', response);
-          console.log('subprocess data:', response.subprocess);
-          console.log('subprocess available:', response.subprocess?.available);
-          console.log('subprocess success:', response.subprocess?.success);
-          console.log('subprocess hotspots count:', response.subprocess?.hotspots?.length);
-
           this.hotspots = response.hotspots || [];
           this.totalExecutions = response.totalExecutions;
           this.numOps = response.numOps;
@@ -222,7 +214,6 @@ export class OpTimingComponent implements OnInit, OnDestroy {
 
           // Store subprocess op timing data (this is where actual inference ops run!)
           this.subprocessOpTiming = response.subprocess || null;
-          console.log('subprocessOpTiming set to:', this.subprocessOpTiming);
 
           this.loading = false;
 

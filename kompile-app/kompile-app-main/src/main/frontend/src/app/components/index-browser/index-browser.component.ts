@@ -145,6 +145,11 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   pageSize = 10;
   currentPage = 0;
 
+  // Vector population subprocess status
+  vpSubprocesses: any[] = [];
+  vpServiceStatus: any = null;
+  vpSubprocessLoading = false;
+
   // Embedding model status polling
   private embeddingModelPollingSub: Subscription | null = null;
   private embeddingModelPollIntervalSlow = 3000; // Poll every 3 seconds when waiting for model
@@ -212,6 +217,9 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   // Cross-index status
   crossIndexPendingCount = 0;
 
+  // Scheduler notification banner
+  schedulerNotifications: any[] = [];
+
   // Helper functions for templates
   formatFileSize = formatFileSize;
   getSourceViewModeIcon = getSourceViewModeIcon;
@@ -251,6 +259,13 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
 
     // Subscribe to WebSocket model status updates for real-time UI updates
     this.subscribeToModelStatusUpdates();
+
+    // Subscribe to scheduler events for real-time resource notifications
+    this.websocketService.subscribeToSchedulerEvents()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(event => {
+        this.handleSchedulerEvent(event);
+      });
 
     // Subscribe to active sheet changes
     this.factSheetService.activeSheet$.subscribe(sheet => {
@@ -1201,8 +1216,9 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     this.stopStatusPolling();
     this.stopEmbeddingModelPolling();
     this.unsubscribeFromVectorProgress();
-    // Unsubscribe from WebSocket model status
+    // Unsubscribe from WebSocket model status and scheduler events
     this.websocketService.unsubscribeFromModelStatus();
+    this.websocketService.unsubscribeFromSchedulerEvents();
     this.destroy$.next();
     this.destroy$.complete();
     if (this.documentRefreshSub) {
@@ -1864,6 +1880,29 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
+   * Handle scheduler events (resource notifications, schedule triggers, etc.)
+   */
+  handleSchedulerEvent(event: any): void {
+    if (!event) return;
+    // Show notification banner for blocked/skipped/failed/completed events
+    if (event.eventType === 'JOB_BLOCKED' || event.eventType === 'JOB_SKIPPED_AHEAD' ||
+        event.eventType === 'JOB_FAILED' || event.eventType === 'JOB_COMPLETED') {
+      this.schedulerNotifications.push(event);
+    }
+    // Refresh status when a scheduler event arrives that may affect the index
+    if (event.eventType === 'JOB_COMPLETED' || event.eventType === 'JOB_FAILED') {
+      this.loadStatus();
+    }
+  }
+
+  /**
+   * Dismiss a scheduler notification by index.
+   */
+  dismissSchedulerNotification(index: number): void {
+    this.schedulerNotifications.splice(index, 1);
+  }
+
+  /**
    * Run deduplication (either dry run or actual removal)
    */
   runDeduplication(): void {
@@ -1906,5 +1945,31 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
           this.cdr.detectChanges();
         }
       });
+  }
+
+  loadVpSubprocessStatus(): void {
+    this.vpSubprocessLoading = true;
+    this.indexBrowserService.getVectorPopulationServiceStatus().subscribe({
+      next: s => {
+        this.vpServiceStatus = s;
+        this.vpSubprocessLoading = false;
+        this.cdr.detectChanges();
+      },
+      error: () => this.vpSubprocessLoading = false
+    });
+    this.indexBrowserService.getVectorPopulationSubprocessList().subscribe({
+      next: r => {
+        this.vpSubprocesses = r.subprocesses || [];
+        this.cdr.detectChanges();
+      },
+      error: () => {}
+    });
+  }
+
+  cancelVpSubprocess(taskId: string): void {
+    this.indexBrowserService.cancelVectorPopulationSubprocess(taskId).subscribe({
+      next: () => this.loadVpSubprocessStatus(),
+      error: () => {}
+    });
   }
 }

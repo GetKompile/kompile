@@ -22,6 +22,9 @@ import ai.kompile.cli.main.chat.agent.*;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.SetupWizard;
+import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
+import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
+import ai.kompile.cli.main.chat.harness.PerformanceHarness;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -32,6 +35,7 @@ import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.tools.*;
+import ai.kompile.cli.main.chat.tui.StatusBar;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -44,20 +48,24 @@ import org.jline.terminal.TerminalBuilder;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.impl.LineReaderImpl;
 
+import ai.kompile.cli.main.chat.config.ModelContextWindows;
+
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOError;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
 
 /**
  * Interactive REPL for chatting with LLMs.
@@ -119,6 +127,25 @@ public class ChatRepl {
 
     // Animated generating spinner handle (active during LLM processing)
     private volatile TerminalRenderer.SpinnerHandle generatingSpinner;
+
+    // Persistent below-bar status line showing processes, subagents, queue
+    private final StatusBar statusBar;
+
+    // Pending file/image attachments for the next message
+    private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
+
+    /** A file or image queued for the next chat message. */
+    public record PendingAttachment(Path path, String mimeType, boolean isImage) {}
+
+    private static final Set<String> IMAGE_MIME_TYPES = Set.of(
+            "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/svg+xml");
+
+    private static final Set<String> TEXT_EXTENSIONS = Set.of(
+            "txt", "md", "java", "py", "js", "ts", "json", "xml", "yaml", "yml",
+            "toml", "ini", "cfg", "conf", "sh", "bash", "zsh", "fish", "ps1",
+            "c", "cpp", "h", "hpp", "cs", "go", "rs", "rb", "kt", "scala",
+            "html", "css", "scss", "less", "sql", "graphql", "proto",
+            "dockerfile", "makefile", "cmake", "gradle", "properties", "csv", "log");
 
     /**
      * Server mode constructor.
@@ -227,6 +254,9 @@ public class ChatRepl {
         // Initialize background task manager
         this.backgroundTaskManager = new BackgroundTaskManager();
 
+        // Initialize below-bar status line
+        this.statusBar = new StatusBar(backgroundTaskManager, processManager, messageQueue, renderer);
+
         // Initialize session metrics
         this.sessionMetrics = new ChatSessionMetrics(sessionId);
         if (localMode && chatConfig != null) {
@@ -239,8 +269,40 @@ public class ChatRepl {
         // Wire metrics into agentic loop
         this.agenticLoop.setSessionMetrics(sessionMetrics);
 
+        // Wire performance harness for multi-signal agent evaluation (local mode only)
+        if (localMode && directClient != null) {
+            PerformanceHarness harness = new PerformanceHarness(
+                    directClient, chatConfig, objectMapper, renderer, sessionMetrics, processManager);
+            this.agenticLoop.setPerformanceHarness(harness);
+        }
+
         // Wire cancel signal into agentic loop
         this.agenticLoop.setCancelSignal(cancelSignal);
+
+        // Auto-load inline enforcer from project config if present
+        loadInlineEnforcer(workDir);
+    }
+
+    private void loadInlineEnforcer(Path workDir) {
+        EnforcerConfig enforcerConfig = EnforcerConfig.load(workDir);
+        if (enforcerConfig == null || !enforcerConfig.isKeywordMode()) {
+            return;
+        }
+        try {
+            String rulesText = enforcerConfig.buildRulesText(workDir);
+            if (rulesText == null || rulesText.isBlank()) return;
+
+            ai.kompile.cli.main.chat.enforcer.EnforcerPolicy policy =
+                    new ai.kompile.cli.main.chat.enforcer.EnforcerPolicy(rulesText, enforcerConfig.getMaxCorrections(), false);
+            ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator evaluator =
+                    ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, enforcerConfig);
+
+            if (evaluator.isAvailable()) {
+                agenticLoop.setInlineEnforcer(evaluator, policy, enforcerConfig.getMaxCorrections());
+            }
+        } catch (Exception e) {
+            // Silently skip — don't break chat startup
+        }
     }
 
     public void run() throws Exception {
@@ -264,19 +326,29 @@ public class ChatRepl {
             cachedTools = List.of();
         }
 
-        Terminal terminal = TerminalBuilder.builder()
-                .system(true)
-                .build();
+        Terminal terminal = ChatCompleter.buildSystemTerminal();
 
         Path historyFile = new File(KompileHome.homeDirectory(), "chat_input_history").toPath();
 
         LineReader reader = LineReaderBuilder.builder()
                 .terminal(terminal)
-                .completer(new ChatCompleter(() -> cachedTools, () -> skillRegistry.names()))
+                .completer(new ChatCompleter(
+                        () -> cachedTools,
+                        () -> skillRegistry.names(),
+                        () -> agentRegistry.getPrimaryAgents().stream()
+                                .map(AgentConfig::getName)
+                                .collect(Collectors.toCollection(LinkedHashSet::new)),
+                        () -> roleManager.getAllRoles().stream()
+                                .map(RoleConfig::getName)
+                                .collect(Collectors.toCollection(LinkedHashSet::new))
+                ))
                 .variable(LineReader.HISTORY_FILE, historyFile)
                 .build();
 
         reader.getHistory().load();
+
+        // Auto-trigger slash command completion as the user types
+        ChatCompleter.enableAutoTrigger(reader);
 
         // Bind Ctrl+B to background current task
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
@@ -349,6 +421,7 @@ public class ChatRepl {
             public boolean apply() {
                 boolean newState = !agenticLoop.isPlanningMode();
                 agenticLoop.setPlanningMode(newState);
+                statusBar.setPlanningMode(newState);
                 System.out.println();
                 if (newState) {
                     System.out.println(renderer.green("  ✓ Planning mode ON"));
@@ -418,6 +491,7 @@ public class ChatRepl {
                 AgentConfig nextAgent = primaries.get(nextIdx);
                 localAgentName = nextAgent.getName();
                 agenticLoop.setAgentConfig(nextAgent);
+                statusBar.setActiveAgent(localAgentName);
 
                 System.out.println();
                 System.out.println(renderer.cyan("  ⇄ Agent: " + nextAgent.getDisplayName())
@@ -466,18 +540,60 @@ public class ChatRepl {
                 .collect(Collectors.joining(", ")));
         agentInfo.append(")");
         System.out.println(renderer.dim(agentInfo.toString()));
+
+        // Show enforcer status if auto-loaded
+        if (agenticLoop.isInlineEnforcerEnabled()) {
+            System.out.println(renderer.green("  Enforcer: " + agenticLoop.describeInlineEnforcer()
+                    + " — /enforcer off to disable"));
+        }
         System.out.println();
+
+        // Start the persistent below-bar status line
+        statusBar.setActiveAgent(localMode ? localAgentName : agentName);
+        statusBar.setPlanningMode(agenticLoop.isPlanningMode());
+        statusBar.start(terminal);
+
+        // Wire change listeners so the status bar redraws on state changes
+        Runnable statusRedraw = statusBar::requestRedraw;
+        backgroundTaskManager.addChangeListener(statusRedraw);
+        processManager.addChangeListener(statusRedraw);
+
+        // Wire subagent lifecycle tracking into the status bar
+        ai.kompile.cli.main.chat.agent.SubagentRunner runner = toolRegistry.getSubagentRunner();
+        if (runner != null) {
+            runner.setLifecycleListener(new ai.kompile.cli.main.chat.agent.SubagentRunner.LifecycleListener() {
+                @Override
+                public void onSubagentStart(String id, String type, String description) {
+                    statusBar.registerSubagent(id, type, description);
+                }
+                @Override
+                public void onSubagentEnd(String id) {
+                    statusBar.unregisterSubagent(id);
+                }
+            });
+        }
+
+        // Pass terminal ref to ChatCompleter for bottom border rendering
+        ChatCompleter.setTerminalRef(reader, terminal);
 
         try {
             while (true) {
                 String line;
                 try {
                     // Show queue indicator in prompt if there are queued messages
-                    String prompt = buildPrompt();
+                    int termWidth = terminal.getWidth() > 0 ? terminal.getWidth() : 80;
+                    printTopBorder(termWidth);
+                    ChatCompleter.schedulePostRestore();
+                    String prompt = buildPrompt(termWidth);
                     line = reader.readLine(prompt);
                 } catch (UserInterruptException e) {
                     continue;
                 } catch (EndOfFileException e) {
+                    break;
+                } catch (IOError e) {
+                    // JLine wraps stty/terminal errors in IOError during
+                    // shutdown or when the terminal is interrupted. Exit
+                    // cleanly instead of crashing.
                     break;
                 }
 
@@ -506,16 +622,21 @@ public class ChatRepl {
             Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
             sessionMetrics.saveToFile(metricsFile, objectMapper);
 
+            // Stop the below-bar status line (resets scroll regions)
+            statusBar.stop();
+
             // Clean up background process manager to prevent shutdown hook leak
             processManager.close();
 
-            // Properly clean up JLine terminal state
+            // Properly clean up JLine terminal state.
+            // Catch Exception AND IOError — JLine wraps stty failures in
+            // IOError (extends Error) when the thread is interrupted during
+            // shutdown, especially in GraalVM native images.
             try {
-                // Clear screen before closing terminal to ensure clean exit
                 terminal.writer().print("\033[2J");
                 terminal.writer().flush();
                 terminal.close();
-            } catch (Exception e) {
+            } catch (Exception | IOError e) {
                 // Ignore cleanup errors - terminal may already be in bad state
             }
         }
@@ -812,6 +933,27 @@ public class ChatRepl {
                 clearCompletedBackgroundTasks();
                 return true;
 
+            // Process management & status bar commands
+            case "/processes":
+                showProcessPanel();
+                return true;
+
+            case "/process-kill":
+                killProcess(rest.trim());
+                return true;
+
+            case "/process-output":
+                showProcessOutput(rest.trim());
+                return true;
+
+            case "/process-status":
+                showProcessStatus(rest.trim());
+                return true;
+
+            case "/statusbar":
+                toggleStatusBar();
+                return true;
+
             case "/auto-dequeue":
                 toggleAutoDequeue();
                 return true;
@@ -854,6 +996,36 @@ public class ChatRepl {
 
             case "/model":
                 handleModelCommand(rest.trim());
+                return true;
+
+            case "/enforce":
+            case "/enforcer":
+                handleEnforcerCommand(rest.trim());
+                return true;
+
+            case "/forward":
+                forwardCommandToAgent(rest.trim());
+                return true;
+
+            // Multimodal attachment commands
+            case "/image":
+                handleAttachImage(rest.trim());
+                return true;
+
+            case "/file":
+                handleAttachFile(rest.trim());
+                return true;
+
+            case "/attach":
+                if (rest.isBlank()) {
+                    showPendingAttachments();
+                } else {
+                    handleAttachFile(rest.trim());
+                }
+                return true;
+
+            case "/attachments":
+                showPendingAttachments();
                 return true;
 
             default:
@@ -914,6 +1086,12 @@ public class ChatRepl {
             if (memoryContext != null) {
                 enrichedMessage = "<memory_context>\n" + memoryContext + "</memory_context>\n\n" + message;
             }
+        }
+
+        // Load pending attachments and pass to agentic loop
+        List<DirectLlmClient.AttachmentInput> attachments = loadAttachments();
+        if (attachments != null) {
+            agenticLoop.setPendingAttachments(attachments);
         }
 
         System.out.println();
@@ -1253,6 +1431,7 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
             body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
+            body.append("  ").append(renderer.cyan("/enforcer")).append(" [cmd]       Enforcer config (init/show/rules/run/delete)\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
             body.append("  ").append(renderer.cyan("/queue <text>")).append("       Add a message to the queue\n");
@@ -1273,7 +1452,18 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/jobs")).append("               List background tasks\n");
             body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
             body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
+            body.append("  ").append(renderer.cyan("/processes")).append("          Show processes & subagents panel\n");
+            body.append("  ").append(renderer.cyan("/process-kill <id>")).append("  Kill a running process\n");
+            body.append("  ").append(renderer.cyan("/process-output <id>")).append("View process output\n");
+            body.append("  ").append(renderer.cyan("/process-status <id>")).append("Show process or watcher status\n");
+            body.append("  ").append(renderer.cyan("/statusbar")).append("          Toggle status bar on/off\n");
             body.append("  ").append(renderer.cyan("/auto-dequeue")).append("       Toggle auto-send queued messages\n");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Attachments"))).append("\n");
+            body.append("  ").append(renderer.cyan("/image <path>")).append("       Attach an image (PNG, JPEG, GIF, WebP)\n");
+            body.append("  ").append(renderer.cyan("/file <path>")).append("        Attach a file (image or text)\n");
+            body.append("  ").append(renderer.cyan("/attach [path]")).append("      Attach a file or show pending attachments\n");
+            body.append("  ").append(renderer.cyan("/attachments")).append("        List pending attachments\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Skills"))).append("\n");
             body.append("  ").append(renderer.cyan("/skills")).append("             List all available skills\n");
@@ -1324,6 +1514,7 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
             body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
+            body.append("  ").append(renderer.cyan("/enforcer")).append(" [cmd]         Enforcer config (init/show/rules/run/delete)\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("RAG & Server Agents"))).append("\n");
             body.append("  ").append(renderer.cyan("/rag")).append(" on|off         Toggle RAG retrieval\n");
@@ -1365,6 +1556,10 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/jobs")).append("               List background tasks\n");
             body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
             body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
+            body.append("  ").append(renderer.cyan("/processes")).append("          Show processes & subagents panel\n");
+            body.append("  ").append(renderer.cyan("/process-kill <id>")).append("  Kill a running process\n");
+            body.append("  ").append(renderer.cyan("/process-status <id>")).append("Show process or watcher status\n");
+            body.append("  ").append(renderer.cyan("/statusbar")).append("          Toggle status bar on/off\n");
             body.append("  ").append(renderer.cyan("/auto-dequeue")).append("       Toggle auto-send queued messages\n");
         }
 
@@ -1385,6 +1580,195 @@ public class ChatRepl {
             }
         } else {
             System.out.println("Setup cancelled.");
+        }
+    }
+
+    private void handleEnforcerCommand(String args) {
+        Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        String subCmd = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase();
+
+        switch (subCmd) {
+            case "init", "setup" -> {
+                EnforcerConfig config = EnforcerSetupWizard.run(wd);
+                if (config != null) {
+                    System.out.println(renderer.green("Enforcer configured. Run 'kompile enforcer' to start."));
+                } else {
+                    System.out.println("Enforcer setup cancelled.");
+                }
+            }
+            case "show", "status" -> {
+                // Show live status first
+                if (agenticLoop.isInlineEnforcerEnabled()) {
+                    System.out.println(renderer.green("  [ACTIVE] " + agenticLoop.describeInlineEnforcer()));
+                } else if (agenticLoop.describeInlineEnforcer() != null) {
+                    System.out.println(renderer.yellow("  [DISABLED] " + agenticLoop.describeInlineEnforcer() + " — /enforcer on to enable"));
+                } else {
+                    System.out.println(renderer.dim("  [OFF] No inline enforcer loaded"));
+                }
+                EnforcerConfig config = EnforcerConfig.load(wd);
+                if (config == null) {
+                    System.out.println(renderer.dim("  No enforcer config for this project."));
+                    System.out.println(renderer.dim("  Run /enforcer init to configure."));
+                    return;
+                }
+                System.out.println();
+                System.out.println(renderer.bold("  Enforcer Config"));
+                System.out.println("  ──────────────────────────");
+                System.out.println("  Agent:         " + renderer.cyan(config.getAgent()));
+                System.out.println("  Mode:          " + (config.isKeywordMode() ? "keyword (no LLM)" : "LLM judge"));
+                System.out.println("  Max retries:   " + config.getMaxCorrections());
+                System.out.println("  Diff archive:  " + (config.isArchiveDiffs() ? "enabled" : "disabled"));
+                System.out.println("  Auto-rollback: " + (config.isAutoRollbackOnViolation() ? "yes" : "no"));
+                if (config.getRuleFile() != null) {
+                    System.out.println("  Rule file:     " + config.getRuleFile());
+                }
+                if (config.getInlineRules() != null && !config.getInlineRules().isBlank()) {
+                    int lines = config.getInlineRules().split("\n").length;
+                    System.out.println("  Inline rules:  " + lines + " lines");
+                }
+                if (!config.getBannedTools().isEmpty()) {
+                    System.out.println("  Banned tools:  " + String.join(", ", config.getBannedTools()));
+                }
+                if (!config.getBannedCommands().isEmpty()) {
+                    System.out.println("  Banned cmds:   " + String.join(", ", config.getBannedCommands()));
+                }
+                if (!config.getBannedKeywords().isEmpty()) {
+                    System.out.println("  Banned words:  " + String.join(", ", config.getBannedKeywords()));
+                }
+                if (!config.getDiffPatternRules().isEmpty()) {
+                    System.out.println("  Diff patterns: " + config.getDiffPatternRules().size() + " rules");
+                }
+                if (config.getDiffPatternsFile() != null) {
+                    System.out.println("  Patterns file: " + config.getDiffPatternsFile());
+                }
+                if (config.getJudgeProvider() != null) {
+                    System.out.println("  Judge:         " + config.getJudgeProvider()
+                            + (config.getJudgeModel() != null ? "/" + config.getJudgeModel() : ""));
+                }
+                System.out.println("  Config path:   " + EnforcerConfig.resolveConfigPath(wd));
+                System.out.println();
+                System.out.println(renderer.dim("  /enforcer init   — reconfigure"));
+                System.out.println(renderer.dim("  /enforcer delete — remove config"));
+                System.out.println(renderer.dim("  /enforcer run    — launch enforcer session"));
+                System.out.println();
+            }
+            case "delete", "remove" -> {
+                try {
+                    if (EnforcerConfig.delete(wd)) {
+                        System.out.println(renderer.green("Enforcer config deleted."));
+                    } else {
+                        System.out.println(renderer.dim("No enforcer config found."));
+                    }
+                } catch (Exception e) {
+                    System.out.println(renderer.red("Failed: " + e.getMessage()));
+                }
+            }
+            case "run", "start", "launch" -> {
+                EnforcerConfig config = EnforcerConfig.load(wd);
+                if (config == null) {
+                    System.out.println(renderer.dim("No enforcer config. Run /enforcer init first."));
+                    return;
+                }
+                System.out.println(renderer.dim("Launching enforcer mode..."));
+                System.out.println(renderer.dim("Use 'kompile enforcer' for the full interactive session."));
+                System.out.println();
+                // Build the command line for the user
+                StringBuilder cmd = new StringBuilder("kompile enforcer");
+                if (config.isKeywordMode()) cmd.append(" --keyword-mode");
+                if (!config.isArchiveDiffs()) cmd.append(" --archive-diffs=false");
+                if (config.getMaxCorrections() != 2) cmd.append(" --max-corrections=").append(config.getMaxCorrections());
+                if (config.getRuleFile() != null) cmd.append(" --rule-file=").append(config.getRuleFile());
+                if (config.getDiffPatternsFile() != null) cmd.append(" --diff-patterns=").append(config.getDiffPatternsFile());
+                if (!"claude".equals(config.getAgent())) cmd.append(" --agent=").append(config.getAgent());
+                System.out.println("  " + renderer.cyan(cmd.toString()));
+                System.out.println();
+                System.out.println(renderer.dim("  Or just run 'kompile enforcer' — it auto-loads the project config."));
+            }
+            case "rules" -> {
+                EnforcerConfig config = EnforcerConfig.load(wd);
+                if (config == null) {
+                    System.out.println(renderer.dim("No enforcer config. Run /enforcer init first."));
+                    return;
+                }
+                try {
+                    String rules = config.buildRulesText(wd);
+                    if (rules.isBlank()) {
+                        System.out.println(renderer.dim("No rules configured."));
+                    } else {
+                        System.out.println();
+                        System.out.println(renderer.bold("  Active Enforcer Rules"));
+                        System.out.println("  ──────────────────────────");
+                        for (String line : rules.split("\n")) {
+                            System.out.println("  " + line);
+                        }
+                        System.out.println();
+                    }
+                } catch (Exception e) {
+                    System.out.println(renderer.red("Error loading rules: " + e.getMessage()));
+                }
+            }
+            case "on", "enable" -> {
+                if (agenticLoop.describeInlineEnforcer() != null) {
+                    agenticLoop.setInlineEnforcerEnabled(true);
+                    System.out.println(renderer.green("  Enforcer enabled: " + agenticLoop.describeInlineEnforcer()));
+                } else {
+                    // Try to load from config
+                    loadInlineEnforcer(wd);
+                    if (agenticLoop.isInlineEnforcerEnabled()) {
+                        System.out.println(renderer.green("  Enforcer loaded and enabled: " + agenticLoop.describeInlineEnforcer()));
+                    } else {
+                        System.out.println(renderer.dim("No enforcer config for this project. Run /enforcer init first."));
+                    }
+                }
+            }
+            case "off", "disable" -> {
+                agenticLoop.setInlineEnforcerEnabled(false);
+                System.out.println(renderer.yellow("  Enforcer disabled."));
+            }
+            case "reload" -> {
+                loadInlineEnforcer(wd);
+                if (agenticLoop.isInlineEnforcerEnabled()) {
+                    System.out.println(renderer.green("  Enforcer reloaded: " + agenticLoop.describeInlineEnforcer()));
+                } else {
+                    System.out.println(renderer.dim("No keyword-mode enforcer config found."));
+                }
+            }
+            default -> {
+                System.out.println("Usage: /enforcer [on|off|init|show|rules|reload|delete]");
+                System.out.println();
+                System.out.println(renderer.dim("  on      — enable inline enforcer for this session"));
+                System.out.println(renderer.dim("  off     — disable inline enforcer"));
+                System.out.println(renderer.dim("  reload  — reload config from disk"));
+                System.out.println(renderer.dim("  init    — interactive setup wizard"));
+                System.out.println(renderer.dim("  show    — view current config (default)"));
+                System.out.println(renderer.dim("  rules   — show resolved enforcer rules"));
+                System.out.println(renderer.dim("  run     — show launch command"));
+                System.out.println(renderer.dim("  delete  — remove project config"));
+            }
+        }
+    }
+
+    private void forwardCommandToAgent(String args) {
+        if (args.isBlank()) {
+            System.out.println("Usage: /forward <command> [args]");
+            System.out.println(renderer.dim("  Forwards a slash command to the underlying agent CLI."));
+            return;
+        }
+        String slashCmd = args.startsWith("/") ? args : "/" + args;
+        String agentBinary = AgentCommandForwarder.resolveAgentBinary(agentName);
+        if (agentBinary == null) {
+            System.out.println(renderer.yellow("Agent '" + agentName + "' not found on PATH."));
+            System.out.println(renderer.dim("Supported agents: " + String.join(", ",
+                    ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder())));
+            return;
+        }
+        AgentCommandForwarder forwarder = new AgentCommandForwarder();
+        AgentCommandForwarder.AgentCommand agentCmd = forwarder.mapSlashCommand(slashCmd, agentBinary, agentName);
+        if (agentCmd != null) {
+            System.out.println(renderer.dim("  → " + agentCmd.label()));
+            forwarder.executeWithRealtimeOutput(agentCmd);
+        } else {
+            System.out.println(renderer.dim("  Command not supported for agent: " + agentName));
         }
     }
 
@@ -1643,6 +2027,168 @@ public class ChatRepl {
         chatHistory.logSystem("Switched model to: " + newModel);
         System.out.println(renderer.green("  Switched model to: ") + renderer.cyan(newModel));
         System.out.println(renderer.dim("  Note: the new model will be used for subsequent messages."));
+    }
+
+    // ========================================================================
+    // Multimodal attachment handling (/image, /file, /attach)
+    // ========================================================================
+
+    private void handleAttachImage(String pathStr) {
+        if (pathStr.isBlank()) {
+            System.out.println("Usage: /image <path>");
+            System.out.println("Attach an image to the next message.");
+            System.out.println("Supported: PNG, JPEG, GIF, WebP");
+            return;
+        }
+
+        // Check model supports vision
+        if (localMode && chatConfig != null) {
+            String model = chatConfig.getModel();
+            if (!ModelContextWindows.supportsVision(model)) {
+                System.out.println(renderer.yellow("  ⚠ Model '" + model + "' may not support image inputs."));
+                System.out.println(renderer.dim("    Attaching anyway — the API will reject if unsupported."));
+            }
+        }
+
+        Path filePath = resolveAttachmentPath(pathStr);
+        if (filePath == null) return;
+
+        String mime = detectImageMimeType(filePath);
+        if (mime == null) {
+            System.out.println(renderer.yellow("  ⚠ Could not detect image type for: " + filePath.getFileName()));
+            System.out.println(renderer.dim("    Supported formats: PNG, JPEG, GIF, WebP"));
+            return;
+        }
+
+        pendingAttachments.add(new PendingAttachment(filePath, mime, true));
+        System.out.println(renderer.green("  ✓ Image attached: ") + renderer.cyan(filePath.getFileName().toString()));
+        System.out.println(renderer.dim("    Type: " + mime + ", Size: " + formatFileSize(filePath)));
+        System.out.println(renderer.dim("    Will be included with your next message."));
+    }
+
+    private void handleAttachFile(String pathStr) {
+        if (pathStr.isBlank()) {
+            System.out.println("Usage: /file <path>");
+            System.out.println("Attach a file to the next message.");
+            System.out.println("Images are sent as vision inputs; text files are inlined.");
+            return;
+        }
+
+        Path filePath = resolveAttachmentPath(pathStr);
+        if (filePath == null) return;
+
+        String mime = detectImageMimeType(filePath);
+        boolean isImage = (mime != null);
+
+        if (!isImage) {
+            // Determine mime for text files
+            String ext = getFileExtension(filePath).toLowerCase();
+            if (TEXT_EXTENSIONS.contains(ext)) {
+                mime = "text/plain";
+            } else {
+                mime = "application/octet-stream";
+            }
+        }
+
+        pendingAttachments.add(new PendingAttachment(filePath, mime, isImage));
+        String typeLabel = isImage ? "Image" : "File";
+        System.out.println(renderer.green("  ✓ " + typeLabel + " attached: ") + renderer.cyan(filePath.getFileName().toString()));
+        System.out.println(renderer.dim("    Type: " + mime + ", Size: " + formatFileSize(filePath)));
+        System.out.println(renderer.dim("    Will be included with your next message."));
+    }
+
+    private void showPendingAttachments() {
+        if (pendingAttachments.isEmpty()) {
+            System.out.println(renderer.dim("  No pending attachments."));
+            System.out.println(renderer.dim("  Use /image <path> or /file <path> to attach files."));
+            return;
+        }
+
+        System.out.println(renderer.bold("  Pending Attachments:"));
+        for (int i = 0; i < pendingAttachments.size(); i++) {
+            PendingAttachment att = pendingAttachments.get(i);
+            String icon = att.isImage() ? "🖼" : "📄";
+            System.out.printf("  %d. %s %s (%s)%n", i + 1, icon,
+                    renderer.cyan(att.path().getFileName().toString()), att.mimeType());
+        }
+        System.out.println(renderer.dim("  These will be sent with your next message."));
+        System.out.println(renderer.dim("  Send a message or use /attachments to review."));
+    }
+
+    /**
+     * Load pending attachments into DirectLlmClient.AttachmentInput format,
+     * reading file contents (base64 for images, text for text files).
+     */
+    private List<DirectLlmClient.AttachmentInput> loadAttachments() {
+        if (pendingAttachments.isEmpty()) return null;
+
+        List<DirectLlmClient.AttachmentInput> loaded = new ArrayList<>();
+        for (PendingAttachment att : pendingAttachments) {
+            try {
+                if (att.isImage()) {
+                    byte[] bytes = Files.readAllBytes(att.path());
+                    String base64 = Base64.getEncoder().encodeToString(bytes);
+                    loaded.add(new DirectLlmClient.AttachmentInput(
+                            att.path().toString(), att.mimeType(), true, base64, null));
+                } else {
+                    String text = Files.readString(att.path());
+                    loaded.add(new DirectLlmClient.AttachmentInput(
+                            att.path().toString(), att.mimeType(), false, null, text));
+                }
+            } catch (Exception e) {
+                System.err.println("Warning: Could not read attachment " + att.path().getFileName() + ": " + e.getMessage());
+            }
+        }
+
+        // Clear pending after loading
+        pendingAttachments.clear();
+        return loaded.isEmpty() ? null : loaded;
+    }
+
+    private Path resolveAttachmentPath(String pathStr) {
+        Path filePath = Paths.get(pathStr);
+        if (!filePath.isAbsolute()) {
+            filePath = Paths.get(System.getProperty("user.dir")).resolve(filePath);
+        }
+        if (!Files.exists(filePath)) {
+            System.out.println(renderer.yellow("  ⚠ File not found: " + pathStr));
+            return null;
+        }
+        if (!Files.isRegularFile(filePath)) {
+            System.out.println(renderer.yellow("  ⚠ Not a file: " + pathStr));
+            return null;
+        }
+        return filePath;
+    }
+
+    private static String detectImageMimeType(Path path) {
+        String ext = getFileExtension(path).toLowerCase();
+        return switch (ext) {
+            case "png" -> "image/png";
+            case "jpg", "jpeg" -> "image/jpeg";
+            case "gif" -> "image/gif";
+            case "webp" -> "image/webp";
+            case "bmp" -> "image/bmp";
+            case "svg" -> "image/svg+xml";
+            default -> null;
+        };
+    }
+
+    private static String getFileExtension(Path path) {
+        String name = path.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 ? name.substring(dot + 1) : "";
+    }
+
+    private static String formatFileSize(Path path) {
+        try {
+            long size = Files.size(path);
+            if (size < 1024) return size + " B";
+            if (size < 1024 * 1024) return String.format("%.1f KB", size / 1024.0);
+            return String.format("%.1f MB", size / (1024.0 * 1024.0));
+        } catch (Exception e) {
+            return "unknown";
+        }
     }
 
     private void switchLocalAgent(String name) {
@@ -1918,9 +2464,17 @@ public class ChatRepl {
             if (chatConfig != null) {
                 statusMap.put("Provider", chatConfig.getProvider());
                 statusMap.put("Model", chatConfig.getModel());
+                String model = chatConfig.getModel();
+                boolean vision = ModelContextWindows.supportsVision(model);
+                int ctx = ModelContextWindows.getContextWindow(model);
+                statusMap.put("Vision", vision ? renderer.green("supported") : renderer.dim("not supported"));
+                statusMap.put("Context window", String.format("%,d tokens", ctx));
             }
             statusMap.put("Session", sessionId);
             statusMap.put("Local agent", renderer.cyan(localAgentName));
+            if (!pendingAttachments.isEmpty()) {
+                statusMap.put("Attachments", renderer.yellow(pendingAttachments.size() + " pending"));
+            }
             statusMap.put("Transcript", chatHistory.getTranscriptFile().toString());
             statusMap.put("Working dir", System.getProperty("user.dir"));
             statusMap.put("Local tools", toolRegistry.ids().size() + " available");
@@ -2455,9 +3009,24 @@ public class ChatRepl {
     }
 
     /**
+     * Prints the top border line above the input area.
+     */
+    private void printTopBorder(int termWidth) {
+        int borderWidth = Math.max(20, Math.min(termWidth, 200));
+        System.out.println(renderer.dim("─".repeat(borderWidth)));
+    }
+
+    /**
      * Builds the prompt string with queue indicator and notifications.
      */
     private String buildPrompt() {
+        return buildPrompt(80);
+    }
+
+    /**
+     * Builds the prompt string sized to the given terminal width.
+     */
+    private String buildPrompt(int termWidth) {
         // Check for completed backgrounded task notifications
         List<BackgroundTaskManager.BackgroundTask> notifications = backgroundTaskManager.drainNotifications();
         if (!notifications.isEmpty()) {
@@ -2476,7 +3045,8 @@ public class ChatRepl {
             System.out.println();
         }
 
-        StringBuilder prompt = new StringBuilder("kompile");
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("kompile");
 
         // Show queue count
         if (!messageQueue.isEmpty()) {
@@ -2803,7 +3373,111 @@ public class ChatRepl {
         backgroundTaskManager.clearCompletedTasks();
         System.out.println(renderer.green("Cleared completed tasks"));
     }
-    
+
+    // ========================================================================
+    // Process Management (below-bar detail views)
+    // ========================================================================
+
+    /**
+     * Shows the detailed process management panel.
+     */
+    private void showProcessPanel() {
+        String body = statusBar.renderProcessPanel();
+        System.out.println(ascii.panel("Processes & Subagents", body, AsciiRenderer.ROUNDED, "cyan"));
+        System.out.println();
+        System.out.println(renderer.dim("  /process-kill <id>     Kill a running process"));
+        System.out.println(renderer.dim("  /process-output <id>   View process output (last 30 lines)"));
+        System.out.println(renderer.dim("  /process-status <id>   Show process or watcher status"));
+        System.out.println(renderer.dim("  /jobs                  View LLM background tasks & queue"));
+        System.out.println(renderer.dim("  /statusbar             Toggle the status bar on/off"));
+        System.out.println();
+    }
+
+    /**
+     * Kill a running process by ID.
+     */
+    private void killProcess(String id) {
+        if (id.isBlank()) {
+            System.out.println("Usage: /process-kill <id>");
+            return;
+        }
+        if (processManager.kill(id)) {
+            System.out.println(renderer.green("Killed process [") + id + renderer.green("]"));
+        } else {
+            System.out.println(renderer.red("Process not found or not running: ") + id);
+        }
+    }
+
+    /**
+     * Show the output of a process.
+     */
+    private void showProcessOutput(String id) {
+        if (id.isBlank()) {
+            System.out.println("Usage: /process-output <id>");
+            return;
+        }
+        String output = processManager.readOutput(id, 30);
+        System.out.println(ascii.panel("Output: " + id, output, AsciiRenderer.ROUNDED, "cyan"));
+        System.out.println();
+    }
+
+    /**
+     * Show detailed status for a process or logical watcher.
+     */
+    private void showProcessStatus(String id) {
+        if (id.isBlank()) {
+            System.out.println("Usage: /process-status <id>");
+            return;
+        }
+        BackgroundProcessManager.ProcessEntry entry = processManager.get(id);
+        if (entry == null) {
+            System.out.println(renderer.red("Process not found: ") + id);
+            return;
+        }
+
+        StringBuilder body = new StringBuilder();
+        body.append("Kind:        ").append(entry.getKind().label()).append("\n");
+        body.append("State:       ").append(entry.getState()).append("\n");
+        body.append("PID:         ").append(entry.getPid() > 0 ? String.valueOf(entry.getPid()) : "-").append("\n");
+        body.append("Command:     ").append(entry.getCommand()).append("\n");
+        body.append("Description: ").append(entry.getDescription()).append("\n");
+        body.append("Started:     ").append(entry.getStartTime()).append("\n");
+        if (entry.getEndTime() != null) {
+            body.append("Ended:       ").append(entry.getEndTime()).append("\n");
+        }
+        body.append("Duration:    ").append(ProcessManagementTool.formatDuration(entry.getDuration())).append("\n");
+        if (entry.getExitCode() != null) {
+            body.append("Exit Code:   ").append(entry.getExitCode()).append("\n");
+        }
+        if (!entry.getMetadata().isEmpty()) {
+            body.append("\nMetadata:\n");
+            entry.getMetadata().forEach((key, value) ->
+                    body.append("  ").append(key).append(": ").append(value).append("\n"));
+        }
+        System.out.println(ascii.panel("Process Status: " + id, body.toString(), AsciiRenderer.ROUNDED, "cyan"));
+        System.out.println();
+    }
+
+    /**
+     * Toggle the persistent status bar on/off.
+     */
+    private void toggleStatusBar() {
+        boolean newState = !statusBar.isEnabled();
+        statusBar.setEnabled(newState);
+        if (newState) {
+            System.out.println(renderer.green("  ✓ Status bar enabled"));
+        } else {
+            System.out.println(renderer.yellow("  ○ Status bar disabled"));
+        }
+    }
+
+    /**
+     * Expose the status bar for subagent tracking from external callers.
+     */
+    public StatusBar getStatusBar() {
+        return statusBar;
+    }
+
     /**
      * Toggles auto-dequeue on/off.
      */

@@ -99,15 +99,15 @@ public class Neo4jGraphRagService implements GraphRagService {
             queryVector = embeddingModel.embed(refinedQuery);
         } catch (NullPointerException e) {
             log.warn("Native pointer error during query embedding generation: {}", e.getMessage());
-            return new GraphRagResult("Error generating query embedding. Please try again.", "");
+            return GraphRagResult.builder().answer("Error generating query embedding. Please try again.").formattedContext("").build();
         } catch (RuntimeException e) {
             log.warn("Runtime error during query embedding generation: {}", e.getMessage());
-            return new GraphRagResult("Error generating query embedding. Please try again.", "");
+            return GraphRagResult.builder().answer("Error generating query embedding. Please try again.").formattedContext("").build();
         }
 
         if (queryVector == null || queryVector.isEmpty() || queryVector.length() == 0) {
             log.warn("Empty query embedding generated for query: {}", refinedQuery);
-            return new GraphRagResult("Error generating query embedding. Please try again.", "");
+            return GraphRagResult.builder().answer("Error generating query embedding. Please try again.").formattedContext("").build();
         }
 
         // 5. Retrieve context from the graph using vector search
@@ -115,7 +115,7 @@ public class Neo4jGraphRagService implements GraphRagService {
 
         if (context.isEmpty()) {
             log.warn("No context found for query: {}", refinedQuery);
-            return new GraphRagResult("Could not find any relevant information in the graph to answer the query.", "");
+            return GraphRagResult.builder().answer("Could not find any relevant information in the graph to answer the query.").formattedContext("").build();
         }
 
         // 6. Generate a synthesized answer using the LLM
@@ -125,7 +125,7 @@ public class Neo4jGraphRagService implements GraphRagService {
         // 7. Update chat memory with the current exchange
         chatMemory.add(conversationId, List.of(new UserMessage(query.getQuery()), new AssistantMessage(finalAnswer)));
 
-        return new GraphRagResult(finalAnswer, context);
+        return GraphRagResult.builder().answer(finalAnswer).formattedContext(context).build();
     }
 
     /**

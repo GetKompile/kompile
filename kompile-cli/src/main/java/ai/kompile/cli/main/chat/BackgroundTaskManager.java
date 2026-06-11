@@ -155,9 +155,36 @@ public class BackgroundTaskManager {
     // Optional listeners invoked on terminal status
     private final List<CompletionListener> completionListeners = new CopyOnWriteArrayList<>();
 
+    // General state-change listeners (fired on any task state transition)
+    private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
+
     public BackgroundTaskManager() {
         this.tasks = new ConcurrentHashMap<>();
         this.taskOrder = new CopyOnWriteArrayList<>();
+    }
+
+    /**
+     * Register a listener invoked on any task state change (start, background, complete, fail).
+     * Useful for status bar redraws.
+     */
+    public void addChangeListener(Runnable listener) {
+        if (listener != null) {
+            changeListeners.add(listener);
+        }
+    }
+
+    public void removeChangeListener(Runnable listener) {
+        changeListeners.remove(listener);
+    }
+
+    private void fireChange() {
+        for (Runnable l : changeListeners) {
+            try {
+                l.run();
+            } catch (RuntimeException e) {
+                // Swallow — a buggy listener must not break the REPL.
+            }
+        }
     }
 
     /**
@@ -192,6 +219,7 @@ public class BackgroundTaskManager {
         taskOrder.add(task.getId());
         currentTask = task;
         backgroundRequested = false;
+        fireChange();
         return task;
     }
 
@@ -206,6 +234,7 @@ public class BackgroundTaskManager {
         backgroundRequested = true;
         if (currentTask != null) {
             currentTask.setStatus(BackgroundTask.BackgroundTaskStatus.BACKGROUNDED);
+            fireChange();
         }
     }
 
@@ -231,6 +260,7 @@ public class BackgroundTaskManager {
             BackgroundTask finished = currentTask;
             currentTask = null;
             fireCompletion(finished);
+            fireChange();
         }
     }
 
@@ -250,6 +280,7 @@ public class BackgroundTaskManager {
             BackgroundTask finished = currentTask;
             currentTask = null;
             fireCompletion(finished);
+            fireChange();
         }
     }
 

@@ -25,7 +25,7 @@ import { MainPanelNavigationService } from './services/main-panel-navigation.ser
 import { FactSheet, CreateFactSheetRequest, IngestProgressUpdate, IngestStatus } from './models/api-models';
 
 // Define a type for the possible tab values
-export type ActiveTabType = 'unifiedChat' | 'sources' | 'tools' | 'developer' | 'openclaw';
+export type ActiveTabType = 'unifiedChat' | 'project' | 'sources' | 'tools' | 'developer' | 'kclaw';
 
 @Component({
   standalone: false,
@@ -206,7 +206,7 @@ export class AppComponent implements OnInit, OnDestroy {
    * Safely casts the tab name to the ActiveTabType.
    */
   handleBannerNavigation(tabName: string): void {
-    const validTabs: ActiveTabType[] = ['unifiedChat', 'sources', 'tools', 'developer', 'openclaw'];
+    const validTabs: ActiveTabType[] = ['unifiedChat', 'project', 'sources', 'tools', 'developer', 'kclaw'];
     if (validTabs.includes(tabName as ActiveTabType)) {
       this.activeTab = tabName as ActiveTabType;
     }

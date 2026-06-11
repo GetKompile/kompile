@@ -20,6 +20,8 @@ import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.regex.Pattern;
@@ -36,6 +38,8 @@ import java.util.regex.Pattern;
  * 6. Enforce min/max chunk size constraints
  */
 public class SemanticChunker implements TextChunker {
+
+    private static final Logger log = LoggerFactory.getLogger(SemanticChunker.class);
 
     private static final Pattern SENTENCE_PATTERN = Pattern.compile(
             "(?<=[.!?])\\s+(?=[A-Z])|(?<=\\n)\\s*(?=\\S)");
@@ -97,7 +101,8 @@ public class SemanticChunker implements TextChunker {
 
     private List<float[]> embedSentences(List<String> sentences) {
         List<float[]> embeddings = new ArrayList<>(sentences.size());
-        for (String sentence : sentences) {
+        for (int i = 0; i < sentences.size(); i++) {
+            String sentence = sentences.get(i);
             try {
                 INDArray embedding = embeddingModel.embed(sentence);
                 if (embedding != null && !embedding.isEmpty()) {
@@ -106,6 +111,7 @@ public class SemanticChunker implements TextChunker {
                     embeddings.add(null);
                 }
             } catch (Exception e) {
+                log.warn("Failed to generate embedding for chunk {}: {}", i, e.getMessage());
                 embeddings.add(null);
             }
         }

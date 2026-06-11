@@ -16,20 +16,23 @@
 
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Interactive first-run setup wizard for configuring the chat LLM provider.
- * Walks the user through selecting a provider, entering API key, and choosing a model.
+ * Interactive setup wizard for kompile chat.
+ * Presents session mode selection (Standard / Passthrough / Resume) FIRST,
+ * then only asks for provider/API key details if Standard mode is chosen.
+ * Passthrough mode delegates to CLI agents (claude, codex, gemini, etc.)
+ * which handle their own authentication — no API key collection needed.
  * Uses numbered input for selection - bulletproof across all terminal types.
  */
 public class SetupWizard {
@@ -56,11 +59,10 @@ public class SetupWizard {
             System.out.println(BOLD + CYAN + "  │       Kompile Chat Setup             │" + RESET);
             System.out.println(BOLD + CYAN + "  ╰──────────────────────────────────────╯" + RESET);
             System.out.println();
-            System.out.println("  No LLM configuration found. Let's set one up.");
             System.out.println("  " + DIM + "(Config will be saved to ~/.kompile/chat-config.json)" + RESET);
             System.out.println();
 
-            // Step 1: Select chat mode
+            // Step 1: Select chat mode — ALWAYS first
             String chatMode = selectChatMode(reader);
             if (chatMode == null) return null;
 
@@ -86,9 +88,19 @@ public class SetupWizard {
                 }
             }
 
-            // Step 2: If passthrough mode, select agent
+            // Step 2: If passthrough mode, select style then agent
             String passthroughAgent = null;
+            boolean passthroughManaged = true;
             if ("passthrough".equals(chatMode)) {
+                // Ask managed vs direct first
+                List<String> styles = List.of(
+                    "Kompile managed — kompile REPL with tools, memory, skills (recommended)",
+                    "Direct — agent owns the terminal (raw native experience, no kompile features)"
+                );
+                int styleIdx = selectNumbered(reader, "Select Passthrough Style:", styles);
+                if (styleIdx < 0) return null;
+                passthroughManaged = (styleIdx == 0);
+
                 System.out.println();
                 passthroughAgent = selectPassthroughAgent(reader);
                 if (passthroughAgent == null) return null;
@@ -123,6 +135,7 @@ public class SetupWizard {
             if (passthroughAgent != null) {
                 config.setPassthroughAgent(passthroughAgent);
             }
+            config.setPassthroughManaged(passthroughManaged);
 
             try {
                 config.save();
@@ -230,18 +243,10 @@ public class SetupWizard {
     // ── Passthrough agent selection ─────────────────────────────────────────
 
     /**
-     * Check if an agent binary exists on PATH.
+     * Check if an agent binary exists on PATH — delegates to SubprocessAgentRunner.
      */
     private static boolean agentExists(String name) {
-        String path = System.getenv("PATH");
-        if (path == null) return false;
-        for (String dir : path.split(File.pathSeparator)) {
-            if (new File(dir, name).canExecute()) return true;
-            for (String ext : new String[]{".exe", ".cmd", ".bat"}) {
-                if (new File(dir, name + ext).canExecute()) return true;
-            }
-        }
-        return false;
+        return SubprocessAgentRunner.resolveAgentBinary(name) != null;
     }
 
     private static String selectPassthroughAgent(LineReader reader) {
@@ -249,9 +254,9 @@ public class SetupWizard {
         List<String> availableAgents = new ArrayList<>();
         List<String> agentKeys = new ArrayList<>();
 
-        for (String key : ChatConfig.PASSTHROUGH_AGENT_ORDER) {
+        for (String key : ChatConfig.getPassthroughAgentOrder()) {
             if (agentExists(key)) {
-                String desc = ChatConfig.PASSTHROUGH_AGENTS.get(key);
+                String desc = ChatConfig.getPassthroughAgents().get(key);
                 availableAgents.add(desc);
                 agentKeys.add(key);
             }

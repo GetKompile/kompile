@@ -18,11 +18,14 @@ package ai.kompile.staging.training;
 
 import ai.kompile.staging.subprocess.TrainingSubprocessLauncher;
 import ai.kompile.staging.web.dto.*;
+import ai.kompile.core.staging.TrainingJobStatus;
+import ai.kompile.core.staging.TrainingJobStartedEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -41,7 +44,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * with a simulation fallback for environments where training classes are not on the classpath.
  */
 @Service
-public class TrainingService {
+public class TrainingService implements ai.kompile.core.staging.TrainingServiceApi {
     private static final Logger log = LoggerFactory.getLogger(TrainingService.class);
 
     @Value("${kompile.staging.models-dir:#{systemProperties['user.home'] + '/.kompile/models'}}")
@@ -61,15 +64,18 @@ public class TrainingService {
     private final ObjectMapper objectMapper;
     private final PeftService peftService;
     private final TrainingSubprocessLauncher subprocessLauncher;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Value("${kompile.training.subprocess.enabled:false}")
     private boolean subprocessEnabled;
 
     public TrainingService(ObjectMapper objectMapper, PeftService peftService,
-                           @Autowired(required = false) TrainingSubprocessLauncher subprocessLauncher) {
+                           @Autowired(required = false) TrainingSubprocessLauncher subprocessLauncher,
+                           @Autowired(required = false) ApplicationEventPublisher eventPublisher) {
         this.objectMapper = objectMapper;
         this.peftService = peftService;
         this.subprocessLauncher = subprocessLauncher;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -83,7 +89,13 @@ public class TrainingService {
         if (subprocessEnabled && subprocessLauncher != null) {
             try {
                 log.info("Delegating training to subprocess launcher for model: {}", request.getModelId());
-                return subprocessLauncher.launchTraining(request);
+                TrainingJobStatus status = subprocessLauncher.launchTraining(request);
+                // Publish event so the scheduler bridge can track this job
+                if (eventPublisher != null && status != null) {
+                    eventPublisher.publishEvent(new TrainingJobStartedEvent(
+                            this, status.getJobId(), request.getModelId(), true));
+                }
+                return status;
             } catch (IOException e) {
                 log.error("Failed to launch training subprocess, falling back to in-process", e);
                 // Fall through to in-process training
@@ -116,6 +128,12 @@ public class TrainingService {
 
         // Persist job config
         persistJobConfig(jobId, request);
+
+        // Publish event so the scheduler bridge can track this job
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new TrainingJobStartedEvent(
+                    this, jobId, request.getModelId(), false));
+        }
 
         trainingExecutor.submit(() -> {
             Thread currentThread = Thread.currentThread();

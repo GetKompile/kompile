@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-package ai.kompile.anserini.config; // New package for this module's config
+package ai.kompile.anserini.config;
 
-import ai.kompile.cli.main.util.PlatformDetector;
+import ai.kompile.cli.common.util.PlatformDetector;
 import org.eclipse.deeplearning4j.tokenizers.bindings.TokenizersNative;
 import io.anserini.collection.JsonCollection;
 import io.anserini.index.generator.DefaultLuceneDocumentGenerator;
@@ -25,15 +25,9 @@ import org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl;
 import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.stereotype.Component;
 
 @Data
-@Component // Makes it a bean, discoverable by the main app if this module is on classpath
-@ConfigurationProperties(prefix = "anserini")
-@ImportRuntimeHints(AnseriniConfig.AnseriniReflectionHints.class)
 public class AnseriniConfig {
     /**
      * Path where the final Anserini/Lucene index will be built and stored.

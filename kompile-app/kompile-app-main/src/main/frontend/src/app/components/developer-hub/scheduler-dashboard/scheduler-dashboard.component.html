@@ -1,0 +1,684 @@
+<div class="scheduler-dashboard">
+  <!-- Header -->
+  <div class="dashboard-header">
+    <h3>Job Scheduler</h3>
+    <div class="header-actions">
+      <button class="btn btn-sm" [class.btn-active]="autoRefresh" (click)="toggleAutoRefresh()">
+        {{ autoRefresh ? 'Auto-refresh ON' : 'Auto-refresh OFF' }}
+      </button>
+      <button class="btn btn-sm" (click)="loadDashboard()">Refresh</button>
+    </div>
+  </div>
+
+  <!-- Error Banner -->
+  <div class="error-banner" *ngIf="error">{{ error }}</div>
+
+  <!-- Status Bar -->
+  <div class="status-bar" *ngIf="status">
+    <div class="status-chip" [class.enabled]="status.enabled" [class.disabled]="!status.enabled">
+      {{ status.enabled ? 'Enabled' : 'Disabled' }}
+    </div>
+    <div class="status-chip" [class.enabled]="status.running" [class.disabled]="!status.running"
+         [title]="status.running ? 'Dispatch loop is alive' : 'Dispatch loop is NOT running'">
+      {{ status.running ? 'Running' : 'Stopped' }}
+    </div>
+    <div class="status-stat">
+      <span class="stat-label">Queue</span>
+      <span class="stat-value">{{ status.queueDepth }}/{{ status.queueCapacity }}</span>
+      <span class="stat-breakdown" *ngIf="hasEntries(status.queuedByType)">
+        <span *ngFor="let entry of objectEntries(status.queuedByType)" class="type-count">
+          {{ schedulerService.formatJobType(entry[0]) }}: {{ entry[1] }}
+        </span>
+      </span>
+    </div>
+    <div class="status-stat">
+      <span class="stat-label">Running</span>
+      <span class="stat-value">{{ status.runningCount }}</span>
+      <span class="stat-breakdown" *ngIf="hasEntries(status.runningByType)">
+        <span *ngFor="let entry of objectEntries(status.runningByType)" class="type-count">
+          {{ schedulerService.formatJobType(entry[0]) }}: {{ entry[1] }}
+        </span>
+      </span>
+    </div>
+    <div class="status-stat">
+      <span class="stat-label">Submitted</span>
+      <span class="stat-value">{{ status.totalSubmitted }}</span>
+    </div>
+    <div class="status-stat">
+      <span class="stat-label">Completed</span>
+      <span class="stat-value completed">{{ status.totalCompleted }}</span>
+    </div>
+    <div class="status-stat">
+      <span class="stat-label">Failed</span>
+      <span class="stat-value failed">{{ status.totalFailed }}</span>
+    </div>
+    <div class="status-stat">
+      <span class="stat-label">Cancelled</span>
+      <span class="stat-value cancelled">{{ status.totalCancelled }}</span>
+    </div>
+    <div class="status-stat">
+      <span class="stat-label">Algorithm</span>
+      <span class="stat-value">{{ status.algorithm }}</span>
+    </div>
+    <div class="status-stat" *ngIf="status.phaseAwareYield">
+      <span class="stat-label">Phase-Aware Yield</span>
+      <span class="stat-value">ON</span>
+    </div>
+    <div class="status-stat" *ngIf="status.externalSchedulerEnabled">
+      <span class="stat-label">External</span>
+      <span class="stat-value">{{ status.externalSchedulerMode || 'none' }}
+        <span *ngIf="status.externalSchedulerAvailable" class="completed">(active)</span>
+        <span *ngIf="!status.externalSchedulerAvailable" class="failed">(unavailable)</span>
+      </span>
+    </div>
+    <div class="status-stat" *ngIf="status.externallyDelegatedCount">
+      <span class="stat-label">Delegated</span>
+      <span class="stat-value">{{ status.externallyDelegatedCount }}</span>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tab-bar">
+    <button class="tab" [class.active]="activeTab === 'overview'" (click)="activeTab = 'overview'">Overview</button>
+    <button class="tab" [class.active]="activeTab === 'queue'" (click)="activeTab = 'queue'">
+      Queue <span class="badge" *ngIf="queuedJobs.length">{{ queuedJobs.length }}</span>
+    </button>
+    <button class="tab" [class.active]="activeTab === 'running'" (click)="activeTab = 'running'">
+      Running <span class="badge running" *ngIf="runningJobs.length">{{ runningJobs.length }}</span>
+    </button>
+    <button class="tab" [class.active]="activeTab === 'history'" (click)="activeTab = 'history'; clearHistoryDetail()">History</button>
+    <button class="tab" [class.active]="activeTab === 'events'" (click)="activeTab = 'events'">
+      Event Log <span class="badge" *ngIf="eventLog.length">{{ eventLog.length }}</span>
+    </button>
+    <button class="tab" [class.active]="activeTab === 'logs'" (click)="activeTab = 'logs'">
+      Subprocess Logs
+    </button>
+    <button class="tab" [class.active]="activeTab === 'config'" (click)="activeTab = 'config'">Config</button>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading-indicator" *ngIf="loading && !dashboard">Loading scheduler data...</div>
+
+  <!-- OVERVIEW TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'overview' && dashboard">
+    <!-- Running Jobs Summary -->
+    <div class="section" *ngIf="runningJobs.length > 0">
+      <h4>Running Jobs</h4>
+      <div class="job-cards">
+        <div class="job-card running" *ngFor="let job of runningJobs; trackBy: trackByJobId">
+          <div class="job-card-header">
+            <span class="job-type-badge">{{ schedulerService.formatJobType(job.jobType) }}</span>
+            <span class="job-state" [ngClass]="schedulerService.getStateClass(job.state)">{{ job.currentPhase || job.state }}</span>
+          </div>
+          <div class="job-card-body">
+            <div class="job-desc">{{ job.description || job.jobId }}</div>
+            <div class="job-meta">
+              <span *ngIf="job.gpuHeld" class="gpu-badge">GPU {{ job.peakGpuMemoryMb ? job.peakGpuMemoryMb + 'MB' : '' }}</span>
+              <span *ngIf="job.externallyDelegated" class="gpu-badge">External</span>
+              <span *ngIf="job.externalRef" class="external-ref" title="External reference">{{ job.externalRef }}</span>
+              <span *ngIf="job.profileName" class="profile-badge">{{ job.profileName }}</span>
+              <span class="priority-badge">P{{ job.priority }}</span>
+              <span class="duration" *ngIf="job.durationMs">Elapsed {{ schedulerService.formatDuration(job.durationMs) }}</span>
+              <span class="duration" *ngIf="job.startedAt && !job.durationMs">Started {{ job.startedAt | date:'HH:mm:ss' }}</span>
+            </div>
+            <!-- Job metadata -->
+            <div class="job-metadata" *ngIf="hasEntries(job.metadata)">
+              <span *ngFor="let entry of objectEntries(job.metadata)" class="metadata-tag" [title]="jsonStringify(entry[1])">
+                {{ entry[0] }}: {{ jsonStringify(entry[1]) | slice:0:30 }}
+              </span>
+            </div>
+          </div>
+          <div class="job-card-actions">
+            <button class="btn btn-xs" (click)="viewJobLogs(job)">Logs</button>
+            <button class="btn btn-xs btn-danger" (click)="cancelJob(job.jobId, job.externallyDelegated)">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Queued Jobs Summary -->
+    <div class="section" *ngIf="queuedJobs.length > 0">
+      <h4>Queued Jobs ({{ queuedJobs.length }})</h4>
+      <div class="job-cards">
+        <div class="job-card queued" *ngFor="let job of queuedJobs; trackBy: trackByJobId; let i = index">
+          <div class="job-card-header">
+            <span class="queue-position">#{{ i + 1 }}</span>
+            <span class="job-type-badge">{{ schedulerService.formatJobType(job.jobType) }}</span>
+            <span class="job-state" [ngClass]="schedulerService.getStateClass(job.state)">{{ job.state }}</span>
+          </div>
+          <div class="job-card-body">
+            <div class="job-desc">{{ job.description || job.jobId }}</div>
+            <div class="job-meta">
+              <span *ngIf="job.requiresGpu" class="gpu-badge">Needs GPU {{ job.peakGpuMemoryMb ? job.peakGpuMemoryMb + 'MB' : '' }}</span>
+              <span *ngIf="job.externallyDelegated" class="gpu-badge">External</span>
+              <span *ngIf="job.externalRef" class="external-ref" title="External reference">{{ job.externalRef }}</span>
+              <span *ngIf="job.profileName" class="profile-badge">{{ job.profileName }}</span>
+              <span class="priority-badge">P{{ job.priority }}</span>
+              <span class="duration" *ngIf="job.waitMs">Waiting {{ schedulerService.formatDuration(job.waitMs) }}</span>
+              <span class="blocked-reason" *ngIf="job.blockedReason">{{ job.blockedReason }}</span>
+            </div>
+            <!-- Job metadata -->
+            <div class="job-metadata" *ngIf="hasEntries(job.metadata)">
+              <span *ngFor="let entry of objectEntries(job.metadata)" class="metadata-tag" [title]="jsonStringify(entry[1])">
+                {{ entry[0] }}: {{ jsonStringify(entry[1]) | slice:0:30 }}
+              </span>
+            </div>
+          </div>
+          <div class="job-card-actions">
+            <button class="btn btn-xs" (click)="promoteJob(job.jobId)">Promote</button>
+            <button class="btn btn-xs btn-danger" (click)="cancelJob(job.jobId, job.externallyDelegated)">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div class="empty-state" *ngIf="runningJobs.length === 0 && queuedJobs.length === 0">
+      <p>No jobs currently queued or running.</p>
+    </div>
+
+    <!-- History Stats -->
+    <div class="section" *ngIf="dashboard.stats && dashboard.stats['totalEntries'] > 0">
+      <h4>History Stats ({{ dashboard.stats['totalEntries'] }} jobs)</h4>
+      <div class="stats-grid">
+        <div class="stats-card" *ngIf="hasEntries(dashboard.stats['countByState'])">
+          <h5>By State</h5>
+          <div class="stats-row" *ngFor="let entry of objectEntries(dashboard.stats['countByState'])">
+            <span class="job-state" [ngClass]="schedulerService.getStateClass(entry[0])">{{ entry[0] }}</span>
+            <span class="stats-count">{{ entry[1] }}</span>
+          </div>
+        </div>
+        <div class="stats-card" *ngIf="hasEntries(dashboard.stats['countByType'])">
+          <h5>By Type</h5>
+          <div class="stats-row" *ngFor="let entry of objectEntries(dashboard.stats['countByType'])">
+            <span class="job-type-badge">{{ schedulerService.formatJobType(entry[0]) }}</span>
+            <span class="stats-count">{{ entry[1] }}</span>
+          </div>
+        </div>
+        <div class="stats-card" *ngIf="hasEntries(dashboard.stats['avgDurationMsByType'])">
+          <h5>Avg Duration</h5>
+          <div class="stats-row" *ngFor="let entry of objectEntries(dashboard.stats['avgDurationMsByType'])">
+            <span class="job-type-badge">{{ schedulerService.formatJobType(entry[0]) }}</span>
+            <span class="stats-count">{{ schedulerService.formatDuration(entry[1]) }}</span>
+          </div>
+        </div>
+        <div class="stats-card" *ngIf="hasEntries(dashboard.stats['avgWaitMsByType'])">
+          <h5>Avg Wait</h5>
+          <div class="stats-row" *ngFor="let entry of objectEntries(dashboard.stats['avgWaitMsByType'])">
+            <span class="job-type-badge">{{ schedulerService.formatJobType(entry[0]) }}</span>
+            <span class="stats-count">{{ schedulerService.formatDuration(entry[1]) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GPU Lifecycle Events -->
+    <div class="section" *ngIf="gpuEvents.length > 0">
+      <h4>GPU Lifecycle</h4>
+      <div class="event-feed">
+        <div class="event-item" *ngFor="let event of gpuEvents.slice(0, 10)"
+             [ngClass]="{'event-warning': event.eventType === 'SERVICE_EVICTED',
+                         'event-success': event.eventType === 'SERVICE_RESTORED' || event.eventType === 'GPU_ACQUIRED',
+                         'event-info': event.eventType === 'GPU_RELEASED',
+                         'event-error': event.eventType === 'STALE_JOB_DETECTED'}">
+          <span class="event-time">{{ event.timestamp | date:'HH:mm:ss' }}</span>
+          <span class="event-type-chip">{{ event.eventType }}</span>
+          <span class="event-job-type" *ngIf="event.serviceType">{{ schedulerService.formatJobType(event.serviceType) }}</span>
+          <span class="event-desc" *ngIf="event.eventType === 'SERVICE_EVICTED'">Evicted by {{ event.requester }}</span>
+          <span class="event-desc" *ngIf="event.eventType === 'GPU_ACQUIRED'">{{ event.jobId | slice:0:12 }} acquired {{ event.budgetMb }}MB</span>
+          <span class="event-desc" *ngIf="event.eventType === 'GPU_RELEASED'">{{ event.jobId | slice:0:12 }} released (held {{ schedulerService.formatDuration(event.heldForMs || 0) }})</span>
+          <span class="event-desc" *ngIf="event.eventType === 'SERVICE_RESTORED'">Service restored</span>
+          <span class="event-desc" *ngIf="event.eventType === 'STALE_JOB_DETECTED'">{{ event.jobId | slice:0:12 }} stale (held {{ schedulerService.formatDuration(event.heldForMs || 0) }})</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Subprocess Memory (live heartbeats) -->
+    <div class="section" *ngIf="subprocessHeartbeats.size > 0">
+      <h4>Subprocess Memory</h4>
+      <div class="heartbeat-grid">
+        <div class="heartbeat-card" *ngFor="let entry of subprocessHeartbeats | keyvalue">
+          <div class="heartbeat-header">
+            <span class="job-type-badge">{{ schedulerService.formatJobType(entry.value.serviceType) }}</span>
+            <span class="monospace">{{ entry.key | slice:0:12 }}</span>
+          </div>
+          <div class="heartbeat-bars">
+            <div class="mem-bar-row">
+              <span class="mem-label">Heap</span>
+              <div class="mem-bar-track">
+                <div class="mem-bar-fill" [style.width.%]="entry.value.heapUsagePercent"
+                     [class.mem-warn]="entry.value.heapUsagePercent > 80"
+                     [class.mem-crit]="entry.value.heapUsagePercent > 95"></div>
+              </div>
+              <span class="mem-value">{{ formatBytes(entry.value.heapUsedBytes) }}/{{ formatBytes(entry.value.heapMaxBytes) }}</span>
+            </div>
+            <div class="mem-bar-row" *ngIf="entry.value.offHeapMaxBytes > 0">
+              <span class="mem-label">Off-Heap</span>
+              <div class="mem-bar-track">
+                <div class="mem-bar-fill" [style.width.%]="entry.value.offHeapUsagePercent"
+                     [class.mem-warn]="entry.value.offHeapUsagePercent > 80"
+                     [class.mem-crit]="entry.value.offHeapUsagePercent > 95"></div>
+              </div>
+              <span class="mem-value">{{ formatBytes(entry.value.offHeapUsedBytes) }}/{{ formatBytes(entry.value.offHeapMaxBytes) }}</span>
+            </div>
+            <div class="mem-bar-row" *ngIf="entry.value.gpuMaxBytes > 0">
+              <span class="mem-label">GPU</span>
+              <div class="mem-bar-track">
+                <div class="mem-bar-fill gpu-fill" [style.width.%]="entry.value.gpuUsagePercent"
+                     [class.mem-warn]="entry.value.gpuUsagePercent > 80"
+                     [class.mem-crit]="entry.value.gpuUsagePercent > 95"></div>
+              </div>
+              <span class="mem-value">{{ formatBytes(entry.value.gpuUsedBytes) }}/{{ formatBytes(entry.value.gpuMaxBytes) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase Transitions (live) -->
+    <div class="section" *ngIf="phaseTransitions.length > 0">
+      <h4>Phase Transitions</h4>
+      <div class="event-feed">
+        <div class="event-item event-phase" *ngFor="let pt of phaseTransitions.slice(0, 10)">
+          <span class="event-time">{{ pt.timestamp | date:'HH:mm:ss' }}</span>
+          <span class="job-type-badge">{{ schedulerService.formatJobType(pt.serviceType) }}</span>
+          <span class="monospace">{{ pt.taskId | slice:0:12 }}</span>
+          <span class="event-desc">{{ pt.fromPhase }} → {{ pt.toPhase }}</span>
+          <span class="duration" *ngIf="pt.phaseDurationMs">{{ schedulerService.formatDuration(pt.phaseDurationMs) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Events -->
+    <div class="section" *ngIf="eventLog.length > 0">
+      <h4>Recent Events</h4>
+      <div class="event-feed">
+        <div class="event-item" *ngFor="let event of eventLog.slice(0, 10); trackBy: trackByEventTs"
+             [ngClass]="schedulerService.getEventClass(event.eventType)">
+          <span class="event-time">{{ event.timestamp | date:'HH:mm:ss' }}</span>
+          <span class="event-type-chip">{{ schedulerService.formatEventType(event.eventType) }}</span>
+          <span class="event-desc">{{ schedulerService.buildEventDescription(event) }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- QUEUE TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'queue' && dashboard">
+    <table class="data-table" *ngIf="queuedJobs.length > 0">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Job ID</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Priority</th>
+          <th>GPU</th>
+          <th>State</th>
+          <th>Blocked Reason</th>
+          <th>Wait</th>
+          <th>Queued At</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let job of queuedJobs; trackBy: trackByJobId; let i = index">
+          <td>{{ i + 1 }}</td>
+          <td class="monospace">{{ job.jobId | slice:0:12 }}</td>
+          <td><span class="job-type-badge">{{ schedulerService.formatJobType(job.jobType) }}</span></td>
+          <td>{{ job.description || '-' }}</td>
+          <td><span class="priority-badge">{{ job.priority }}</span></td>
+          <td><span *ngIf="job.requiresGpu" class="gpu-badge">GPU {{ job.peakGpuMemoryMb }}MB</span><span *ngIf="!job.requiresGpu">-</span></td>
+          <td><span class="job-state" [ngClass]="schedulerService.getStateClass(job.state)">{{ job.state }}</span></td>
+          <td class="blocked-reason-cell">{{ job.blockedReason || '-' }}</td>
+          <td>{{ job.waitMs ? schedulerService.formatDuration(job.waitMs) : '-' }}</td>
+          <td>{{ job.queuedAt | date:'HH:mm:ss' }}</td>
+          <td>
+            <button class="btn btn-xs" (click)="promoteJob(job.jobId)">Promote</button>
+            <button class="btn btn-xs btn-danger" (click)="cancelJob(job.jobId, job.externallyDelegated)">Cancel</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="empty-state" *ngIf="queuedJobs.length === 0">No jobs in queue.</div>
+  </div>
+
+  <!-- RUNNING TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'running' && dashboard">
+    <table class="data-table" *ngIf="runningJobs.length > 0">
+      <thead>
+        <tr>
+          <th>Job ID</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Phase</th>
+          <th>Priority</th>
+          <th>Profile</th>
+          <th>GPU Held</th>
+          <th>External</th>
+          <th>Elapsed</th>
+          <th>Started At</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let job of runningJobs; trackBy: trackByJobId">
+          <td class="monospace">{{ job.jobId | slice:0:12 }}</td>
+          <td><span class="job-type-badge">{{ schedulerService.formatJobType(job.jobType) }}</span></td>
+          <td>{{ job.description || '-' }}</td>
+          <td><span class="job-state" [ngClass]="schedulerService.getStateClass(job.currentPhase || job.state)">{{ job.currentPhase || job.state }}</span></td>
+          <td><span class="priority-badge">{{ job.priority }}</span></td>
+          <td>{{ job.profileName || '-' }}</td>
+          <td><span *ngIf="job.gpuHeld" class="gpu-badge">Yes ({{ job.peakGpuMemoryMb }}MB)</span><span *ngIf="!job.gpuHeld">No</span></td>
+          <td><span *ngIf="job.externallyDelegated" class="external-ref">{{ job.externalRef || 'Yes' }}</span><span *ngIf="!job.externallyDelegated">-</span></td>
+          <td>{{ job.durationMs ? schedulerService.formatDuration(job.durationMs) : '-' }}</td>
+          <td>{{ job.startedAt | date:'HH:mm:ss' }}</td>
+          <td>
+            <button class="btn btn-xs" (click)="viewJobLogs(job)">Logs</button>
+            <button class="btn btn-xs btn-danger" (click)="cancelJob(job.jobId, job.externallyDelegated)">Cancel</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="empty-state" *ngIf="runningJobs.length === 0">No jobs currently running.</div>
+  </div>
+
+  <!-- HISTORY TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'history' && dashboard">
+    <!-- History Detail -->
+    <div *ngIf="selectedHistoryEntry" class="history-detail">
+      <button class="btn btn-sm" (click)="clearHistoryDetail()">&larr; Back to list</button>
+      <h4>{{ selectedHistoryEntry.description || selectedHistoryEntry.jobId }}</h4>
+
+      <div class="detail-grid">
+        <div class="detail-card">
+          <h5>Job Info</h5>
+          <div class="detail-row"><span>ID:</span><span class="monospace">{{ selectedHistoryEntry.jobId }}</span></div>
+          <div class="detail-row"><span>Type:</span><span>{{ schedulerService.formatJobType(selectedHistoryEntry.jobType) }}</span></div>
+          <div class="detail-row"><span>State:</span><span [ngClass]="schedulerService.getStateClass(selectedHistoryEntry.state)">{{ selectedHistoryEntry.state }}</span></div>
+          <div class="detail-row"><span>Priority:</span><span>{{ selectedHistoryEntry.priority }}</span></div>
+          <div class="detail-row"><span>GPU Required:</span><span>{{ selectedHistoryEntry.requiresGpu ? 'Yes (' + selectedHistoryEntry.peakGpuMemoryMb + ' MB)' : 'No' }}</span></div>
+        </div>
+
+        <div class="detail-card">
+          <h5>Timing</h5>
+          <div class="detail-row"><span>Queued:</span><span>{{ selectedHistoryEntry.queuedAt | date:'medium' }}</span></div>
+          <div class="detail-row"><span>Started:</span><span>{{ selectedHistoryEntry.startedAt ? (selectedHistoryEntry.startedAt | date:'medium') : 'N/A' }}</span></div>
+          <div class="detail-row"><span>Completed:</span><span>{{ selectedHistoryEntry.completedAt | date:'medium' }}</span></div>
+          <div class="detail-row"><span>Wait Time:</span><span>{{ schedulerService.formatDuration(selectedHistoryEntry.waitMs) }}</span></div>
+          <div class="detail-row"><span>Duration:</span><span>{{ schedulerService.formatDuration(selectedHistoryEntry.durationMs) }}</span></div>
+        </div>
+
+        <div class="detail-card" *ngIf="selectedHistoryEntry.error">
+          <h5>Error</h5>
+          <div class="error-text">{{ selectedHistoryEntry.error }}</div>
+        </div>
+
+        <div class="detail-card" *ngIf="selectedHistoryEntry.cancelReason">
+          <h5>Cancellation Reason</h5>
+          <div class="cancel-reason-text">{{ selectedHistoryEntry.cancelReason }}</div>
+        </div>
+
+        <div class="detail-card" *ngIf="selectedHistoryEntry.blockedReason">
+          <h5>Last Blocked Reason</h5>
+          <div class="blocked-reason-text">{{ selectedHistoryEntry.blockedReason }}</div>
+        </div>
+
+        <div class="detail-card" *ngIf="selectedHistoryEntry.phases && selectedHistoryEntry.phases.length > 0">
+          <h5>Phase History</h5>
+          <table class="data-table compact">
+            <thead><tr><th>Phase</th><th>Timestamp</th><th>GPU</th></tr></thead>
+            <tbody>
+              <tr *ngFor="let phase of selectedHistoryEntry.phases">
+                <td>{{ phase.phaseName }}</td>
+                <td>{{ phase.timestamp | date:'HH:mm:ss.SSS' }}</td>
+                <td>{{ phase.requiresGpu ? 'Yes' : 'No' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- History List -->
+    <div *ngIf="!selectedHistoryEntry">
+      <div class="filter-bar">
+        <select [(ngModel)]="historyTypeFilter" (ngModelChange)="onHistoryFilterChange()">
+          <option value="">All Types</option>
+          <option *ngFor="let t of getJobTypeOptions()" [value]="t">{{ schedulerService.formatJobType(t) }}</option>
+        </select>
+        <select [(ngModel)]="historyStateFilter" (ngModelChange)="onHistoryFilterChange()">
+          <option value="">All States</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="FAILED">Failed</option>
+          <option value="CANCELLED">Cancelled</option>
+        </select>
+        <select [(ngModel)]="historyLimit" (ngModelChange)="onHistoryFilterChange()">
+          <option [ngValue]="20">Last 20</option>
+          <option [ngValue]="50">Last 50</option>
+          <option [ngValue]="100">Last 100</option>
+          <option [ngValue]="200">Last 200</option>
+        </select>
+      </div>
+
+      <table class="data-table" *ngIf="historyEntries.length > 0">
+        <thead>
+          <tr>
+            <th>State</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Priority</th>
+            <th>GPU</th>
+            <th>Wait</th>
+            <th>Duration</th>
+            <th>Reason</th>
+            <th>Completed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let entry of historyEntries; trackBy: trackByHistoryId"
+              (click)="showHistoryDetail(entry)" class="clickable-row">
+            <td><span class="job-state" [ngClass]="schedulerService.getStateClass(entry.state)">{{ entry.state }}</span></td>
+            <td><span class="job-type-badge">{{ schedulerService.formatJobType(entry.jobType) }}</span></td>
+            <td>{{ (entry.description || entry.jobId) | slice:0:30 }}</td>
+            <td>{{ entry.priority }}</td>
+            <td>{{ entry.requiresGpu ? entry.peakGpuMemoryMb + 'MB' : '-' }}</td>
+            <td>{{ schedulerService.formatDuration(entry.waitMs) }}</td>
+            <td>{{ schedulerService.formatDuration(entry.durationMs) }}</td>
+            <td class="reason-cell">
+              <span *ngIf="entry.error" class="reason-error" title="{{ entry.error }}">{{ entry.error | slice:0:40 }}</span>
+              <span *ngIf="entry.cancelReason" class="reason-cancel" title="{{ entry.cancelReason }}">{{ entry.cancelReason | slice:0:40 }}</span>
+              <span *ngIf="entry.blockedReason" class="reason-blocked" title="{{ entry.blockedReason }}">{{ entry.blockedReason | slice:0:40 }}</span>
+              <span *ngIf="!entry.error && !entry.cancelReason && !entry.blockedReason">-</span>
+            </td>
+            <td>{{ entry.completedAt | date:'HH:mm:ss' }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="empty-state" *ngIf="historyEntries.length === 0">No history entries found.</div>
+    </div>
+  </div>
+
+  <!-- EVENTS TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'events'">
+    <div class="events-header">
+      <span>Live event feed ({{ eventLog.length }} shown{{ totalEventCount > eventLog.length ? ' of ' + totalEventCount + ' total' : '' }})</span>
+      <button class="btn btn-sm" (click)="clearEventLog()">Clear</button>
+    </div>
+    <div class="event-feed full" *ngIf="eventLog.length > 0">
+      <div class="event-item" *ngFor="let event of eventLog; trackBy: trackByEventTs"
+           [ngClass]="schedulerService.getEventClass(event.eventType)">
+        <span class="event-time">{{ event.timestamp | date:'HH:mm:ss.SSS' }}</span>
+        <span class="event-type-chip">{{ schedulerService.formatEventType(event.eventType) }}</span>
+        <span class="event-job-type" *ngIf="event.jobType">{{ schedulerService.formatJobType(event.jobType) }}</span>
+        <span class="event-desc">{{ schedulerService.buildEventDescription(event) }}</span>
+        <span class="event-counts">Q:{{ event.queueDepth }} R:{{ event.runningCount }}</span>
+      </div>
+    </div>
+    <div class="empty-state" *ngIf="eventLog.length === 0">
+      <p>No events captured yet. Events will appear here in real-time as the scheduler operates.</p>
+    </div>
+  </div>
+
+  <!-- SUBPROCESS LOGS TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'logs'">
+    <!-- Job selector -->
+    <div class="logs-header">
+      <div class="logs-job-selector">
+        <label>Select job:</label>
+        <select (change)="viewJobLogsByJobId($any($event.target).value)">
+          <option value="" disabled [selected]="!selectedLogJob">-- Choose a running or queued job --</option>
+          <option *ngFor="let job of allActiveJobs; trackBy: trackByJobId" [value]="job.jobId"
+                  [selected]="selectedLogJob?.jobId === job.jobId">
+            [{{ schedulerService.formatJobType(job.jobType) }}] {{ (job.description || job.jobId) | slice:0:40 }} ({{ job.state }})
+          </option>
+        </select>
+        <span class="logs-source-badge" *ngIf="selectedLogJob">
+          Source: {{ selectedLogSource }}
+        </span>
+      </div>
+      <!-- Embedding global stream (no job selection needed) -->
+      <div class="logs-global-actions">
+        <button class="btn btn-sm" [class.btn-active]="selectedLogSource === 'embedding' && !selectedLogJob"
+                (click)="selectedLogJob = null; selectedLogSource = 'embedding'; selectedLogTaskId = ''">
+          Embedding Stream
+        </button>
+      </div>
+    </div>
+
+    <!-- Log viewer -->
+    <div *ngIf="selectedLogJob || selectedLogSource === 'embedding'" class="logs-viewer">
+      <div class="logs-viewer-header" *ngIf="selectedLogJob">
+        <span class="job-type-badge">{{ schedulerService.formatJobType(selectedLogJob.jobType) }}</span>
+        <span class="job-desc">{{ selectedLogJob.description || selectedLogJob.jobId }}</span>
+        <span class="job-state" [ngClass]="schedulerService.getStateClass(selectedLogJob.state)">{{ selectedLogJob.currentPhase || selectedLogJob.state }}</span>
+        <button class="btn btn-xs" (click)="clearLogSelection()">Clear</button>
+      </div>
+      <app-subprocess-logs
+        [taskId]="selectedLogTaskId"
+        [logSource]="selectedLogSource"
+        height="500px"
+        [maxLogs]="1000">
+      </app-subprocess-logs>
+    </div>
+
+    <div class="empty-state" *ngIf="!selectedLogJob && selectedLogSource !== 'embedding'">
+      <p *ngIf="allActiveJobs.length > 0">Select a running or queued job above to view its subprocess logs.</p>
+      <p *ngIf="allActiveJobs.length === 0">No active jobs. Subprocess logs will appear here when jobs are running.</p>
+    </div>
+  </div>
+
+  <!-- CONFIG TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'config' && dashboard">
+    <div class="section" *ngIf="editableConfig">
+      <div class="config-header">
+        <h4>Scheduler Configuration</h4>
+        <div class="config-actions">
+          <button class="btn btn-sm" (click)="saveConfig()" [disabled]="configSaving">{{ configSaving ? 'Saving...' : 'Save' }}</button>
+          <button class="btn btn-sm btn-danger" (click)="resetConfig()">Reset to Defaults</button>
+        </div>
+      </div>
+      <div class="config-message success" *ngIf="configMessage">{{ configMessage }}</div>
+
+      <div class="config-grid">
+        <div class="config-field">
+          <label>Enabled</label>
+          <input type="checkbox" [(ngModel)]="editableConfig.enabled">
+        </div>
+        <div class="config-field">
+          <label>Scheduling Algorithm</label>
+          <select [(ngModel)]="editableConfig.schedulingAlgorithm">
+            <option value="PRIORITY">PRIORITY</option>
+            <option value="FIFO">FIFO</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label>Queue Capacity</label>
+          <input type="number" [(ngModel)]="editableConfig.globalQueueDepth" min="1" max="500">
+        </div>
+        <div class="config-field">
+          <label>Dispatch Interval (ms)</label>
+          <input type="number" [(ngModel)]="editableConfig.dispatchIntervalMs" min="50" max="10000">
+        </div>
+        <div class="config-field">
+          <label>Queue Timeout (ms)</label>
+          <input type="number" [(ngModel)]="editableConfig.queueTimeoutMs" min="0">
+        </div>
+        <div class="config-field">
+          <label>Phase-Aware Yield</label>
+          <input type="checkbox" [(ngModel)]="editableConfig.phaseAwareYieldEnabled">
+        </div>
+        <div class="config-field">
+          <label>Batch Window (ms)</label>
+          <input type="number" [(ngModel)]="editableConfig.batchWindowMs" min="0" max="30000">
+        </div>
+        <div class="config-field">
+          <label>History Retention (days)</label>
+          <input type="number" [(ngModel)]="editableConfig.historyRetentionDays" min="1" max="365">
+        </div>
+      </div>
+
+      <!-- Max Concurrent by Type -->
+      <div class="config-subsection" *ngIf="editableConfig.maxConcurrentByType">
+        <h5>Max Concurrent by Type</h5>
+        <div class="config-grid">
+          <div class="config-field" *ngFor="let entry of objectEntries(editableConfig.maxConcurrentByType)">
+            <label>{{ schedulerService.formatJobType(entry[0]) }}</label>
+            <input type="number" [ngModel]="entry[1]" (ngModelChange)="editableConfig.maxConcurrentByType[entry[0]] = $event" min="1" max="20">
+          </div>
+        </div>
+      </div>
+
+      <!-- Raw JSON fallback -->
+      <details class="config-raw">
+        <summary>Raw JSON</summary>
+        <pre class="config-json">{{ editableConfig | json }}</pre>
+      </details>
+    </div>
+    <div class="section" *ngIf="dashboard.profiles">
+      <h4>Resource Profiles</h4>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Service Type</th>
+            <th>GPU Required</th>
+            <th>Peak GPU (MB)</th>
+            <th>Heap Est. (MB)</th>
+            <th>Concurrent</th>
+            <th>Conflicts With</th>
+            <th>Batchable With</th>
+          </tr>
+        </thead>
+        <tbody>
+          <ng-container *ngFor="let entry of dashboard.profiles | keyvalue">
+            <tr>
+              <td><strong>{{ entry.value.displayName || schedulerService.formatJobType(entry.key) }}</strong></td>
+              <td>{{ entry.value.requiresGpu ? 'Yes' : 'No' }}</td>
+              <td>{{ entry.value.peakGpuMemoryBytes ? (entry.value.peakGpuMemoryBytes / 1048576 | number:'1.0-0') : '-' }}</td>
+              <td>{{ entry.value.estimatedHeapBytes ? (entry.value.estimatedHeapBytes / 1048576 | number:'1.0-0') : '-' }}</td>
+              <td>{{ entry.value.concurrentAllowed ? 'Yes (max ' + entry.value.maxConcurrent + ')' : 'No' }}</td>
+              <td>{{ entry.value.conflictsWith?.length ? entry.value.conflictsWith.join(', ') : '-' }}</td>
+              <td>{{ entry.value.batchableWith?.length ? entry.value.batchableWith.join(', ') : '-' }}</td>
+            </tr>
+            <tr *ngIf="entry.value.phaseProfiles?.length" class="phase-detail-row">
+              <td colspan="7">
+                <table class="data-table compact phase-table">
+                  <thead><tr><th>Phase</th><th>GPU</th><th>GPU Memory (MB)</th><th>Est. Duration (s)</th><th>Can Yield GPU</th></tr></thead>
+                  <tbody>
+                    <tr *ngFor="let phase of entry.value.phaseProfiles">
+                      <td>{{ phase.phaseName }}</td>
+                      <td>{{ phase.requiresGpu ? 'Yes' : 'No' }}</td>
+                      <td>{{ phase.gpuMemoryBytes ? (phase.gpuMemoryBytes / 1048576 | number:'1.0-0') : '-' }}</td>
+                      <td>{{ phase.estimatedDurationSeconds || '-' }}</td>
+                      <td>{{ phase.canYieldGpu ? 'Yes' : 'No' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          </ng-container>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>

@@ -140,6 +140,10 @@ public class VlmTestSubprocessMain {
                 ocrService.initializeVlmOnly();
                 long modelLoadTime = System.currentTimeMillis() - modelLoadStart;
 
+                // Trim GPU memory pools after VLM model loading to release
+                // reserved-but-unused memory from DSP plan compilation and model weight loading.
+                trimGpuMemoryPools("post-vlm-model-init");
+
                 reporter.reportProgress("INIT", 20, "Ready", "VLM pipeline ready");
 
                 // Check watchdog after model loading (heavy memory operation)
@@ -368,6 +372,22 @@ public class VlmTestSubprocessMain {
         }
 
         System.exit(exitCode);
+    }
+
+    /**
+     * Trim CUDA memory pools on all devices to release reserved-but-unused GPU memory.
+     */
+    private static void trimGpuMemoryPools(String reason) {
+        try {
+            var nativeOps = Nd4j.getNativeOps();
+            int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+            for (int d = 0; d < numDevices; d++) {
+                nativeOps.trimMemoryPool(d);
+            }
+            logger.info("Trimmed GPU memory pools on {} device(s) (reason: {})", numDevices, reason);
+        } catch (Exception e) {
+            logger.debug("Could not trim GPU memory pools (CPU backend?): {}", e.getMessage());
+        }
     }
 
     /**

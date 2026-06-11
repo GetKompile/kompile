@@ -609,10 +609,10 @@ export class ProcessingSettingsComponent implements OnInit, OnDestroy {
    * Debug: Verify subprocess config state from backend.
    */
   debugSubprocessConfig(): void {
-    console.log('=== DEBUG: Calling /api/subprocess-config/debug ===');
+    console.debug('=== DEBUG: Calling /api/subprocess-config/debug ===');
     this.subprocessConfigService.debug().subscribe({
       next: (result) => {
-        console.log('=== DEBUG RESULT ===', result);
+        console.debug('=== DEBUG RESULT ===', result);
         const msg = `DEBUG: inMemoryEnabled=${result.inMemoryEnabled}, config.enabled=${result.configuration?.enabled}, launcherAvailable=${result.launcherAvailable}`;
         this.showSnackbar(msg, false, 10000);
         // Also update local state to match backend

@@ -15,6 +15,8 @@
  */
 package ai.kompile.orchestrator.model;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -33,6 +35,8 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 public class OrchestratorInstance {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     @Id
     @Column(name = "instance_id", nullable = false, unique = true)
@@ -122,12 +126,34 @@ public class OrchestratorInstance {
 
     /**
      * Update context with new values.
+     * Serializes the updated context to contextJson for persistence.
      */
     public void updateContext(Map<String, Object> updates) {
         if (context == null) {
             context = new HashMap<>();
         }
         context.putAll(updates);
+        // Serialize to contextJson for JPA persistence
+        try {
+            this.contextJson = OBJECT_MAPPER.writeValueAsString(context);
+        } catch (Exception e) {
+            // Best effort — serialization failure shouldn't block context update
+        }
+    }
+
+    /**
+     * Load context from contextJson if the transient map is empty.
+     */
+    @PostLoad
+    protected void onLoad() {
+        if (contextJson != null && !contextJson.isEmpty() && (context == null || context.isEmpty())) {
+            try {
+                context = OBJECT_MAPPER.readValue(contextJson,
+                        new TypeReference<Map<String, Object>>() {});
+            } catch (Exception e) {
+                context = new HashMap<>();
+            }
+        }
     }
 
     /**

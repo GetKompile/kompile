@@ -16,6 +16,9 @@
         <span class="material-icons">delete_sweep</span>
       </button>
     </div>
+    <span class="last-refreshed" *ngIf="lastRefreshed">
+      Updated: {{ lastRefreshed | date:'HH:mm:ss' }}
+    </span>
   </div>
 
   <!-- Error Message -->

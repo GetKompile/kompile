@@ -66,17 +66,28 @@ header h1 {
  */
 /* mat-tab-nav-bar styles are handled by Angular Material theme */
 
-/* 
- * Main Content Area 
+/*
+ * Content area with explorer sidebar
+ */
+.content-with-explorer {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/*
+ * Main Content Area
  * Centralized container with responsive padding
  */
 main {
   flex-grow: 1;
-  width: 100%;
+  min-width: 0;
   max-width: 1400px;
   margin: 0 auto;
   padding: var(--spacing-6) var(--spacing-4);
   animation: fadeIn 0.4s ease-out;
+  overflow-y: auto;
 }
 
 /* Content Fade In Animation */

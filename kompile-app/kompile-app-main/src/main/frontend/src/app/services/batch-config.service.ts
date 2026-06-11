@@ -107,6 +107,28 @@ export class BatchConfigService {
     return this.http.post<BatchSizeConfigResponse>(`${this.baseUrl}/global/reset`, {});
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIMEOUT CONFIGURATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  getTimeouts(): Observable<any> {
+    return this.http.get<any>(`${this.baseUrl}/timeouts`);
+  }
+
+  updateTimeouts(timeouts: {
+    modelLoadTimeoutSeconds?: number;
+    requestTimeoutMs?: number;
+    heartbeatTimeoutMs?: number;
+    embedTimeoutSeconds?: number;
+    embedBatchTimeoutSeconds?: number;
+  }): Observable<any> {
+    return this.http.put<any>(`${this.baseUrl}/timeouts`, timeouts);
+  }
+
+  resetTimeouts(): Observable<any> {
+    return this.http.post<any>(`${this.baseUrl}/timeouts/reset`, {});
+  }
+
   /**
    * Creates a default test request for benchmarking.
    */

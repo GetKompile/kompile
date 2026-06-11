@@ -1,0 +1,381 @@
+<!--
+  Copyright 2025 Kompile Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<div class="app-builder-container">
+
+  <!-- Header -->
+  <div class="builder-header">
+    <div class="header-title">
+      <mat-icon class="header-icon">build_circle</mat-icon>
+      <div>
+        <h2>Application Builder</h2>
+        <p class="subtitle">Wizard-style configuration for <code>kompile build app</code></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stepper -->
+  <mat-stepper #stepper orientation="horizontal" [linear]="false" class="builder-stepper">
+
+    <!-- ─────────────────────────────────────────────────────────────────────── -->
+    <!-- STEP 1: Select Preset                                                   -->
+    <!-- ─────────────────────────────────────────────────────────────────────── -->
+    <mat-step label="Select Preset" [completed]="true">
+      <div class="step-content">
+
+        <h3 class="step-title">
+          <mat-icon>tune</mat-icon>
+          Choose a starting configuration
+        </h3>
+        <p class="step-description">
+          Presets are curated module bundles for common RAG deployment scenarios.
+          You can customise the selected modules in the next step.
+        </p>
+
+        <!-- Preset cards -->
+        <div class="preset-grid" *ngIf="presets.length > 0; else loadingPresets">
+          <div
+            *ngFor="let preset of presets"
+            class="preset-card"
+            [class.selected]="selectedPreset === preset.name"
+            (click)="onPresetChange(preset.name)">
+
+            <div class="preset-card-header">
+              <mat-icon class="preset-icon">
+                {{ preset.name === 'hosted-llm-rag' ? 'cloud' :
+                   preset.name === 'samediff-rag'   ? 'memory' :
+                   preset.name === 'pgvector-rag'   ? 'storage' :
+                   preset.name === 'graph-rag'      ? 'hub' :
+                                                      'widgets' }}
+              </mat-icon>
+              <span class="preset-name">{{ preset.label || preset.name }}</span>
+              <mat-icon *ngIf="selectedPreset === preset.name" class="selected-check">check_circle</mat-icon>
+            </div>
+
+            <p class="preset-description">{{ preset.description }}</p>
+
+            <!-- Module chips for this preset -->
+            <div class="preset-chips" *ngIf="preset.modules && preset.modules.length">
+              <mat-chip-set>
+                <mat-chip *ngFor="let mod of preset.modules" class="module-chip">{{ mod }}</mat-chip>
+              </mat-chip-set>
+            </div>
+          </div>
+        </div>
+
+        <ng-template #loadingPresets>
+          <div class="loading-state">
+            <mat-spinner diameter="40"></mat-spinner>
+            <span>Loading presets…</span>
+          </div>
+        </ng-template>
+
+        <div class="step-actions">
+          <button mat-raised-button color="primary" matStepperNext>
+            Next: Customise Modules
+            <mat-icon>arrow_forward</mat-icon>
+          </button>
+        </div>
+      </div>
+    </mat-step>
+
+    <!-- ─────────────────────────────────────────────────────────────────────── -->
+    <!-- STEP 2: Customize Modules                                               -->
+    <!-- ─────────────────────────────────────────────────────────────────────── -->
+    <mat-step label="Customize Modules" [completed]="selectedModules.size > 0">
+      <div class="step-content">
+
+        <h3 class="step-title">
+          <mat-icon>extension</mat-icon>
+          Select modules to include
+        </h3>
+        <p class="step-description">
+          Expand a category to see individual modules.
+          The current preset (<strong>{{ selectedPreset }}</strong>) has pre-selected
+          <strong>{{ selectedModules.size }}</strong> modules.
+        </p>
+
+        <div class="modules-grid" *ngIf="moduleCatalog; else loadingCatalog">
+          <mat-accordion multi>
+            <mat-expansion-panel
+              *ngFor="let category of categories"
+              class="category-panel">
+
+              <mat-expansion-panel-header>
+                <mat-panel-title class="panel-title">
+                  <mat-icon class="category-icon">
+                    {{ category === 'CORE'         ? 'dns'            :
+                       category === 'LLM'          ? 'smart_toy'      :
+                       category === 'EMBEDDING'    ? 'scatter_plot'   :
+                       category === 'VECTORSTORE'  ? 'table_chart'    :
+                       category === 'LOADER'       ? 'upload_file'    :
+                       category === 'CHUNKER'      ? 'content_cut'    :
+                       category === 'TOOL'         ? 'build'          :
+                       category === 'ENTERPRISE'   ? 'business'       :
+                       category === 'ADVANCED'     ? 'settings'       :
+                                                     'account_tree' }}
+                  </mat-icon>
+                  {{ category }}
+                </mat-panel-title>
+                <mat-panel-description class="panel-description">
+                  <span class="count-badge">{{ getModuleCountByCategory(category) }} selected</span>
+                </mat-panel-description>
+              </mat-expansion-panel-header>
+
+              <div class="module-list" *ngIf="getModulesByCategory(category).length > 0; else noModules">
+                <div
+                  *ngFor="let mod of getModulesByCategory(category)"
+                  class="module-row"
+                  [class.selected-row]="isModuleSelected(mod.id)">
+
+                  <mat-checkbox
+                    [checked]="isModuleSelected(mod.id)"
+                    (change)="toggleModule(mod.id)"
+                    color="primary"
+                    class="module-checkbox">
+                  </mat-checkbox>
+
+                  <div class="module-info">
+                    <span class="module-id">{{ mod.id }}</span>
+                    <span class="module-desc">{{ mod.description }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <ng-template #noModules>
+                <p class="no-modules-msg">No modules in this category.</p>
+              </ng-template>
+
+            </mat-expansion-panel>
+          </mat-accordion>
+        </div>
+
+        <ng-template #loadingCatalog>
+          <div class="loading-state">
+            <mat-spinner diameter="40"></mat-spinner>
+            <span>Loading module catalog…</span>
+          </div>
+        </ng-template>
+
+        <div class="step-actions">
+          <button mat-button matStepperPrevious>
+            <mat-icon>arrow_back</mat-icon>
+            Back
+          </button>
+          <button mat-raised-button color="primary" matStepperNext>
+            Next: Build Options
+            <mat-icon>arrow_forward</mat-icon>
+          </button>
+        </div>
+      </div>
+    </mat-step>
+
+    <!-- ─────────────────────────────────────────────────────────────────────── -->
+    <!-- STEP 3: Build Options                                                   -->
+    <!-- ─────────────────────────────────────────────────────────────────────── -->
+    <mat-step label="Build Options">
+      <div class="step-content">
+
+        <h3 class="step-title">
+          <mat-icon>rocket_launch</mat-icon>
+          Configure and launch the build
+        </h3>
+        <p class="step-description">
+          These settings correspond to flags passed to <code>kompile build app</code>.
+        </p>
+
+        <div class="build-options-grid">
+
+          <!-- App Identity -->
+          <mat-card class="options-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>label</mat-icon>
+              <mat-card-title>Identity</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>App Name (instance ID)</mat-label>
+                <input
+                  matInput
+                  [(ngModel)]="configName"
+                  placeholder="my-rag-app"
+                  required>
+                <mat-hint>Used as the directory name and artifact ID</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>App Title</mat-label>
+                <input
+                  matInput
+                  [(ngModel)]="appTitle"
+                  placeholder="Kompile RAG Console">
+                <mat-hint>Displayed in the web UI header</mat-hint>
+              </mat-form-field>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Platform -->
+          <mat-card class="options-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>memory</mat-icon>
+              <mat-card-title>Platform</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Backend</mat-label>
+                <mat-select [(ngModel)]="backend">
+                  <mat-option value="nd4j-cuda-12.9">CUDA 12.9 (GPU)</mat-option>
+                  <mat-option value="nd4j-native">Native CPU</mat-option>
+                </mat-select>
+                <mat-hint>ND4J compute backend</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>JavaCPP Platform</mat-label>
+                <mat-select [(ngModel)]="javacppPlatform">
+                  <mat-option value="linux-x86_64">Linux x86_64</mat-option>
+                  <mat-option value="macosx-arm64">macOS ARM64 (Apple Silicon)</mat-option>
+                  <mat-option value="windows-x86_64">Windows x86_64</mat-option>
+                </mat-select>
+                <mat-hint>Target native library platform</mat-hint>
+              </mat-form-field>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Build Flags -->
+          <mat-card class="options-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>flag</mat-icon>
+              <mat-card-title>Build Flags</mat-card-title>
+            </mat-card-header>
+            <mat-card-content class="toggles-content">
+              <div class="toggle-row">
+                <mat-slide-toggle [(ngModel)]="buildNative" color="primary">
+                  Build GraalVM Native Image
+                </mat-slide-toggle>
+                <span class="toggle-hint">Produces a self-contained native executable (~18 GB RAM required)</span>
+              </div>
+              <mat-divider></mat-divider>
+              <div class="toggle-row">
+                <mat-slide-toggle [(ngModel)]="skipTests" color="primary">
+                  Skip Tests
+                </mat-slide-toggle>
+                <span class="toggle-hint">Faster builds — disable to run the full test suite</span>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Summary -->
+          <mat-card class="options-card summary-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>summarize</mat-icon>
+              <mat-card-title>Build Summary</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="summary-row">
+                <span class="summary-label">Preset</span>
+                <span class="summary-value">{{ selectedPreset }}</span>
+              </div>
+              <div class="summary-row">
+                <span class="summary-label">Modules</span>
+                <span class="summary-value">{{ selectedModules.size }} selected</span>
+              </div>
+              <div class="summary-row">
+                <span class="summary-label">Backend</span>
+                <span class="summary-value">{{ backend }}</span>
+              </div>
+              <div class="summary-row">
+                <span class="summary-label">Platform</span>
+                <span class="summary-value">{{ javacppPlatform }}</span>
+              </div>
+              <div class="summary-row">
+                <span class="summary-label">Native Image</span>
+                <span class="summary-value">{{ buildNative ? 'Yes' : 'No' }}</span>
+              </div>
+              <div class="summary-row">
+                <span class="summary-label">Skip Tests</span>
+                <span class="summary-value">{{ skipTests ? 'Yes' : 'No' }}</span>
+              </div>
+              <mat-divider></mat-divider>
+              <div class="selected-modules-chips">
+                <mat-chip-set>
+                  <mat-chip *ngFor="let mod of getSelectedModuleList()" class="summary-chip">{{ mod }}</mat-chip>
+                </mat-chip-set>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+        </div>
+
+        <!-- Build Action -->
+        <div class="build-action-row">
+          <button mat-button matStepperPrevious>
+            <mat-icon>arrow_back</mat-icon>
+            Back
+          </button>
+          <button
+            mat-raised-button
+            color="accent"
+            class="build-btn"
+            [disabled]="!configName.trim() || building"
+            (click)="startBuild()">
+            <mat-spinner *ngIf="building" diameter="20" class="btn-spinner"></mat-spinner>
+            <mat-icon *ngIf="!building">rocket_launch</mat-icon>
+            {{ building ? 'Building…' : 'Build Application' }}
+          </button>
+          <span *ngIf="!configName.trim()" class="build-hint">App Name is required to build</span>
+        </div>
+
+        <!-- Build Result -->
+        <mat-card *ngIf="buildResult" class="result-card" [class.result-error]="buildResult.error">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>
+              {{ buildResult.error ? 'error' : 'check_circle' }}
+            </mat-icon>
+            <mat-card-title>{{ buildResult.error ? 'Build Failed' : 'Build Submitted' }}</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <ng-container *ngIf="buildResult.error">
+              <p class="result-error-msg">{{ buildResult.error }}</p>
+            </ng-container>
+            <ng-container *ngIf="!buildResult.error">
+              <div class="result-details">
+                <div *ngIf="buildResult.jobId" class="result-row">
+                  <span class="result-label">Job ID</span>
+                  <span class="result-value">{{ buildResult.jobId }}</span>
+                </div>
+                <div *ngIf="buildResult.status" class="result-row">
+                  <span class="result-label">Status</span>
+                  <span class="result-value">{{ buildResult.status }}</span>
+                </div>
+                <div *ngIf="buildResult.outputPath" class="result-row">
+                  <span class="result-label">Output Path</span>
+                  <span class="result-value result-path">{{ buildResult.outputPath }}</span>
+                </div>
+                <div *ngIf="buildResult.message" class="result-row">
+                  <span class="result-label">Message</span>
+                  <span class="result-value">{{ buildResult.message }}</span>
+                </div>
+              </div>
+            </ng-container>
+          </mat-card-content>
+        </mat-card>
+
+      </div>
+    </mat-step>
+
+  </mat-stepper>
+</div>

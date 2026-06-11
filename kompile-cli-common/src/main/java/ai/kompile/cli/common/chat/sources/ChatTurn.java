@@ -16,12 +16,17 @@
 
 package ai.kompile.cli.common.chat.sources;
 
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import java.time.Instant;
 
-public record ChatTurn(String role, String content, Instant timestamp) {
+public record ChatTurn(String role, String content, Instant timestamp, ArrayNode rawContentBlocks) {
 
     public ChatTurn(String role, String content) {
-        this(role, content, null);
+        this(role, content, null, null);
+    }
+
+    public ChatTurn(String role, String content, Instant timestamp) {
+        this(role, content, timestamp, null);
     }
 
     public boolean isUser() {

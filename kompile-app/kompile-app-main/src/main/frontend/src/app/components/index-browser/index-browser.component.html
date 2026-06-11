@@ -15,6 +15,31 @@
   -->
 
 <div class="index-browser-container">
+  <!-- Scheduler notification banner -->
+  <div *ngIf="schedulerNotifications.length > 0" style="margin-bottom: 12px;">
+    <div *ngFor="let notif of schedulerNotifications; let i = index"
+         style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 4px; border-radius: 6px; font-size: 13px;"
+         [style.border-left]="notif.eventType === 'JOB_BLOCKED' ? '4px solid #f59e0b' :
+                              notif.eventType === 'JOB_SKIPPED_AHEAD' ? '4px solid #3b82f6' :
+                              notif.eventType === 'JOB_FAILED' ? '4px solid #ef4444' : '4px solid #10b981'"
+         [style.background]="notif.eventType === 'JOB_BLOCKED' ? '#fffbeb' :
+                             notif.eventType === 'JOB_SKIPPED_AHEAD' ? '#eff6ff' :
+                             notif.eventType === 'JOB_FAILED' ? '#fef2f2' : '#ecfdf5'">
+      <mat-icon style="font-size: 18px; width: 18px; height: 18px;"
+                [style.color]="notif.eventType === 'JOB_BLOCKED' ? '#f59e0b' :
+                               notif.eventType === 'JOB_SKIPPED_AHEAD' ? '#3b82f6' :
+                               notif.eventType === 'JOB_FAILED' ? '#ef4444' : '#10b981'">
+        {{ notif.eventType === 'JOB_BLOCKED' ? 'pause_circle' :
+           notif.eventType === 'JOB_SKIPPED_AHEAD' ? 'fast_forward' :
+           notif.eventType === 'JOB_FAILED' ? 'error' : 'play_circle' }}
+      </mat-icon>
+      <span style="flex: 1;">{{ notif.message }}</span>
+      <span style="font-size: 11px; color: #6b7280; white-space: nowrap;">Q:{{ notif.queueDepth }} R:{{ notif.runningCount }}</span>
+      <button mat-icon-button (click)="dismissSchedulerNotification(i)" style="width: 24px; height: 24px;">
+        <mat-icon style="font-size: 16px; width: 16px; height: 16px;">close</mat-icon>
+      </button>
+    </div>
+  </div>
   <div class="header-bar">
     <h1>Index Browser & Search</h1>
     <div class="header-actions">
@@ -535,6 +560,44 @@
             <mat-icon>content_copy</mat-icon>
             Deduplicate
           </button>
+
+          <!-- Subprocess Status button -->
+          <button mat-stroked-button
+                  (click)="loadVpSubprocessStatus()"
+                  matTooltip="Show subprocess vector population status"
+                  class="subprocess-status-btn">
+            <mat-icon>terminal</mat-icon>
+            Subprocess Status
+          </button>
+        </div>
+
+        <!-- Subprocess Status Panel -->
+        <div class="vp-subprocess-panel" *ngIf="vpServiceStatus || vpSubprocesses.length > 0">
+          <div class="vp-sp-header">
+            <span><mat-icon>terminal</mat-icon> Vector Population Subprocesses</span>
+            <button mat-icon-button (click)="loadVpSubprocessStatus()" matTooltip="Refresh">
+              <mat-icon>refresh</mat-icon>
+            </button>
+          </div>
+          <div class="vp-sp-stats" *ngIf="vpServiceStatus">
+            <span>Active: {{ vpServiceStatus.activeSubprocessCount || 0 }}</span>
+            <span>Tracked: {{ vpServiceStatus.totalTrackedTasks || 0 }}</span>
+            <span>Launcher: {{ vpServiceStatus.subprocessLauncherAvailable ? 'Available' : 'Unavailable' }}</span>
+          </div>
+          <div class="vp-sp-list" *ngIf="vpSubprocesses.length > 0">
+            <div class="vp-sp-item" *ngFor="let sp of vpSubprocesses">
+              <div class="vp-sp-info">
+                <span class="vp-sp-task">{{ sp.taskId }}</span>
+                <span class="vp-sp-meta">{{ sp.status }} &middot; PID: {{ sp.pid || '-' }}</span>
+              </div>
+              <button mat-icon-button color="warn" matTooltip="Cancel" (click)="cancelVpSubprocess(sp.taskId)">
+                <mat-icon>cancel</mat-icon>
+              </button>
+            </div>
+          </div>
+          <div *ngIf="vpSubprocesses.length === 0 && !vpSubprocessLoading" class="vp-sp-empty">
+            No active subprocesses
+          </div>
         </div>
 
         <p class="mode-description">

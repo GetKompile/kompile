@@ -27,6 +27,7 @@ import ai.kompile.orchestrator.service.registry.TaskExecutorRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.util.*;
 import java.util.concurrent.Semaphore;
@@ -177,12 +178,24 @@ public class DefaultTaskExecutionService implements TaskExecutionService {
     private TaskInstance executeAsync(TaskExecutor executor, TaskInstance instance,
                                       TaskDefinition definition, Map<String, String> variables,
                                       TaskExecutionOptions options) {
-        // For async, we start the task and return immediately
+        // Run the executor synchronously inside our own async thread.
+        // This avoids double-threading (service thread + executor thread) which
+        // causes JPA save/read issues across thread boundaries.
+        TaskExecutionOptions syncOptions = TaskExecutionOptions.builder()
+                .async(false)
+                .streamOutput(options.isStreamOutput())
+                .captureStderr(options.isCaptureStderr())
+                .timeout(options.getTimeout())
+                .workingDirectory(options.getWorkingDirectory())
+                .environment(options.getEnvironment())
+                .llmProviderId(options.getLlmProviderId())
+                .build();
+
         Thread asyncThread = new Thread(() -> {
             try {
                 concurrencySemaphore.acquire();
                 try {
-                    executor.execute(instance, options);
+                    executor.execute(instance, syncOptions);
                 } finally {
                     concurrencySemaphore.release();
                 }
@@ -238,12 +251,23 @@ public class DefaultTaskExecutionService implements TaskExecutionService {
             log.warn("No executor found to cancel task: {}", taskInstanceId);
         }
 
-        // Update status if still running
-        instance = instanceRepository.findById(taskInstanceId).orElse(instance);
-        if (instance.isRunning()) {
-            instance.markCancelled();
-            instanceRepository.save(instance);
-            eventPublisher.publishEvent(TaskEvent.cancelled(this, instance));
+        // Give the executor thread a moment to process cancellation and save
+        try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+        // Update status if still running — retry on optimistic lock conflict
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                instance = instanceRepository.findById(taskInstanceId).orElse(instance);
+                if (instance.isRunning()) {
+                    instance.markCancelled();
+                    instanceRepository.save(instance);
+                    eventPublisher.publishEvent(TaskEvent.cancelled(this, instance));
+                }
+                break;
+            } catch (ObjectOptimisticLockingFailureException e) {
+                log.debug("Optimistic lock conflict on cancel, retrying (attempt {})", attempt + 1);
+                try { Thread.sleep(100); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            }
         }
     }
 

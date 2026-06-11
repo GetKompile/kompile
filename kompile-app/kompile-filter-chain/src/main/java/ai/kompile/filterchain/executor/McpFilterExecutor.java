@@ -38,10 +38,6 @@ public class McpFilterExecutor implements FilterExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(McpFilterExecutor.class);
 
-    // MCP client would be injected here when MCP integration is available
-    // @Autowired(required = false)
-    // private McpClientRegistry mcpClientRegistry;
-
     @Override
     public FilterResult execute(FilterConfig config, FilterContext context, FilterPhase phase) {
         RemoteFilterConfig remoteConfig = config.getRemoteConfig();
@@ -69,15 +65,9 @@ public class McpFilterExecutor implements FilterExecutor {
             Map<String, Object> toolArgs = buildToolArgs(config, context, phase);
 
             // TODO: Integrate with MCP client when available
-            // McpClient client = mcpClientRegistry.getClient(mcpServerId);
-            // if (client == null) {
-            //     return FilterResult.terminateFatalError("MCP server not found: " + mcpServerId);
-            // }
-            // ToolResult result = client.invokeTool(toolName, toolArgs);
-            // return parseToolResult(result, context);
 
             // For now, return a placeholder that indicates MCP is not yet fully integrated
-            log.warn("MCP filter execution not yet implemented - filter '{}' will pass through", config.getId());
+            log.warn("McpFilterExecutor is not yet implemented - filter '{}' will pass through without MCP execution", config.getId());
             context.addTrace(FilterTraceEntry.warning(config.getId(),
                     "MCP filter execution not yet fully implemented"));
 
@@ -128,13 +118,4 @@ public class McpFilterExecutor implements FilterExecutor {
         return args;
     }
 
-    /**
-     * Parse MCP tool result into filter result.
-     * This will be implemented when MCP integration is complete.
-     */
-    // private FilterResult parseToolResult(ToolResult result, FilterContext context) {
-    //     // Parse the tool result and convert to FilterResult
-    //     // Handle action, mutations, traces, etc.
-    //     return FilterResult.continueWith(context);
-    // }
 }

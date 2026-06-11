@@ -1,0 +1,337 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.cli-injection {
+  padding: 20px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.section-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+/* Status Summary */
+.status-summary {
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+}
+
+.summary-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.summary-text code {
+  font-size: 0.8rem;
+  padding: 2px 6px;
+  background: #fff;
+  border-radius: 4px;
+  border: 1px solid #c7d2fe;
+}
+
+/* Agent Grid */
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.agent-card {
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  background: var(--bg-surface, #fff);
+  transition: all 0.15s;
+}
+
+.agent-card:hover {
+  border-color: #c7d2fe;
+}
+
+.agent-card.injected {
+  border-color: #bbf7d0;
+}
+
+.agent-card.expanded {
+  border-color: #4f46e5;
+}
+
+.agent-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  cursor: pointer;
+}
+
+.agent-icon {
+  font-size: 28px;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.agent-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.agent-desc {
+  font-size: 0.8rem;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.status-injected {
+  color: #16a34a;
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+}
+
+.status-config-exists {
+  color: #ea580c;
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+}
+
+.status-not-configured {
+  color: #d1d5db;
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+}
+
+.expand-arrow {
+  color: var(--text-tertiary, #9ca3af);
+}
+
+/* Agent Detail */
+.agent-detail {
+  padding: 0 16px 14px;
+}
+
+.agent-detail mat-divider {
+  margin-bottom: 12px;
+}
+
+.detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.detail-label {
+  font-weight: 500;
+  color: var(--text-secondary, #6b7280);
+  min-width: 100px;
+}
+
+.detail-item code {
+  font-size: 0.8rem;
+  padding: 2px 6px;
+  background: var(--bg-card-secondary, #f9fafb);
+  border-radius: 4px;
+}
+
+.config-preview {
+  margin-top: 12px;
+}
+
+.config-preview h5 {
+  margin: 0 0 6px 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.config-preview pre {
+  margin: 0;
+  padding: 10px;
+  background: var(--bg-card-secondary, #f9fafb);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color, #e5e7eb);
+}
+
+.config-preview .hint {
+  font-size: 0.85rem;
+  color: var(--text-tertiary, #9ca3af);
+  margin: 0;
+}
+
+/* CLI Section */
+.cli-section {
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  padding-top: 20px;
+}
+
+.cli-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.command-box {
+  background: #1e1e2e;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+
+.command-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.command-header span {
+  font-size: 0.8rem;
+  color: #a0a0b8;
+}
+
+.command-header button {
+  color: #a0a0b8;
+}
+
+.command-text {
+  font-size: 0.9rem;
+  color: #cdd6f4;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* Profiles */
+.profiles-section,
+.schema-section {
+  margin-bottom: 20px;
+}
+
+.profiles-section h5,
+.schema-section h5 {
+  margin: 0 0 10px 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.profile-select {
+  width: 200px;
+  margin-bottom: 12px;
+}
+
+.profile-select ::ng-deep .mat-mdc-form-field-subscript-wrapper {
+  display: none;
+}
+
+.profile-cards,
+.schema-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.profile-card,
+.schema-card {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.profile-card:hover,
+.schema-card:hover {
+  border-color: #c7d2fe;
+}
+
+.profile-card.active {
+  border-color: #4f46e5;
+  background: #eef2ff;
+}
+
+.profile-name,
+.schema-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.profile-desc,
+.schema-desc {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #6b7280);
+  line-height: 1.3;
+}
+
+.profile-count {
+  font-size: 0.75rem;
+  color: #4f46e5;
+  font-weight: 600;
+  margin-top: 6px;
+}

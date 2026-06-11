@@ -41,6 +41,7 @@ public class Init implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
+        boolean defaultInstallDir = installDir == null || installDir.isBlank();
         Path target = resolveInstallDir();
 
         if (Files.exists(target)) {
@@ -53,16 +54,18 @@ public class Init implements Callable<Integer> {
             }
         }
 
-        // Create the canonical layout that the running kompile app expects to
-        // find under kompile.data.dir. AppIndexConfigService writes its config
-        // file to <installDir>/config/app-index-config.json on first run; the
-        // other directories are created by the app as needed but pre-creating
-        // them lets users drop fact sheets, archives, etc. in place.
-        createDir(target);
-        createDir(target.resolve("config"));
-        createDir(target.resolve("fact-sheets"));
-        createDir(target.resolve("archives"));
-        createDir(target.resolve("anserini/indexes"));
+        if (defaultInstallDir) {
+            GlobalBootstrap.ensureHomeDirectory();
+            GlobalBootstrap.ensureConfigs();
+        } else {
+            // Create the canonical layout that the running kompile app expects
+            // to find under a custom kompile.data.dir.
+            createDir(target);
+            createDir(target.resolve("config"));
+            createDir(target.resolve("fact-sheets"));
+            createDir(target.resolve("archives"));
+            createDir(target.resolve("anserini/indexes"));
+        }
 
         System.out.println("Initialized kompile install directory at: " + target);
         System.out.println();

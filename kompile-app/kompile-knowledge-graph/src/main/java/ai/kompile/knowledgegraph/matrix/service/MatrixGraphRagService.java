@@ -116,10 +116,10 @@ public class MatrixGraphRagService implements GraphRagService {
 
         if (graphOpt.isEmpty()) {
             log.warn("No graph found for ID: {}. Returning empty result.", graphId);
-            return new GraphRagResult(
-                    "I don't have any knowledge graph data to answer your question.",
-                    ""
-            );
+            return GraphRagResult.builder()
+                    .answer("I don't have any knowledge graph data to answer your question.")
+                    .formattedContext("")
+                    .build();
         }
 
         AdjacencyMatrixGraph matrixGraph = graphOpt.get();
@@ -141,16 +141,19 @@ public class MatrixGraphRagService implements GraphRagService {
         }
 
         if (context.isEmpty()) {
-            return new GraphRagResult(
-                    "I couldn't find relevant information in the knowledge graph to answer your question.",
-                    ""
-            );
+            return GraphRagResult.builder()
+                    .answer("I couldn't find relevant information in the knowledge graph to answer your question.")
+                    .formattedContext("")
+                    .build();
         }
 
         // Synthesize answer using LLM
         String answer = synthesizeAnswer(resolvedQuery, context);
 
-        return new GraphRagResult(answer, context);
+        return GraphRagResult.builder()
+                .answer(answer)
+                .formattedContext(context)
+                .build();
     }
 
     /**
@@ -451,6 +454,9 @@ public class MatrixGraphRagService implements GraphRagService {
         String context = contextBuilder.toString();
         String answer = synthesizeAnswer(query.getQuery(), context);
 
-        return new GraphRagResult(answer, context);
+        return GraphRagResult.builder()
+                .answer(answer)
+                .formattedContext(context)
+                .build();
     }
 }

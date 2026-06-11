@@ -326,10 +326,23 @@ public class Nd4jEnvironmentConfigService {
                     .tritonCacheEnabled(true)
                     .tritonVerbose(false)
                     .tritonAlwaysCompile(false)
-                    .tritonNumWarps(8)
-                    .tritonNumStages(3)
+                    .tritonNumWarps(4)
+                    .tritonNumStages(1)
                     .tritonNumCTAs(1)
                     .tritonEnableFpFusion(true)
+                    // Performance optimizations matching BenchmarkConfig.optimal()
+                    .tritonSectionFusion(true)
+                    .tritonGraphCapture(true)
+                    .tritonCompileAll(true)
+                    .cublasTf32(true)
+                    .tritonConsolidatedArgTable(true)
+                    .tritonArgDirtyTracking(true)
+                    .tritonMergedCaptureThroughViews(true)
+                    .dspBatchedGemm(true)
+                    .dspFreezeMergeSegments(true)
+                    .tritonTf32(true)
+                    .optimizerEnabled(true)
+                    .optimizerFp16(true)
                     .build();
 
             default -> throw new IllegalArgumentException(
@@ -585,6 +598,39 @@ public class Nd4jEnvironmentConfigService {
                     log.debug("Could not set op timing via framework API: {}", e.getMessage());
                 }
             }
+            // System properties for new performance optimization fields (read by DSP/Triton at plan creation time)
+            if (config.tritonSectionFusion() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.TRITON_SECTION_FUSION,
+                        config.tritonSectionFusion().toString());
+            }
+            if (config.tritonGraphCapture() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.TRITON_GRAPH_CAPTURE,
+                        config.tritonGraphCapture().toString());
+            }
+            if (config.tritonCompileAll() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.TRITON_COMPILE_ALL,
+                        config.tritonCompileAll().toString());
+            }
+            if (config.cublasTf32() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.CUBLAS_TF32,
+                        config.cublasTf32().toString());
+            }
+            if (config.tritonConsolidatedArgTable() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.TRITON_CONSOLIDATED_ARG_TABLE,
+                        config.tritonConsolidatedArgTable().toString());
+            }
+            if (config.tritonArgDirtyTracking() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.TRITON_ARG_DIRTY_TRACKING,
+                        config.tritonArgDirtyTracking().toString());
+            }
+            if (config.dspBatchedGemm() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.DSP_BATCHED_GEMM,
+                        config.dspBatchedGemm().toString());
+            }
+            if (config.dspFreezeMergeSegments() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.DSP_FREEZE_MERGE_SEGMENTS,
+                        config.dspFreezeMergeSegments().toString());
+            }
             log.info("Applied SameDiff framework/DSP settings: optimizer={}, fp16={}, diagnostics={}",
                     config.optimizerEnabled(), config.optimizerFp16(), config.dspDiagnostics());
 
@@ -672,7 +718,18 @@ public class Nd4jEnvironmentConfigService {
                 }
                 log.info("Applied CUDA-specific configuration settings");
 
-                // === TRITON COMPILER CONFIGURATION (GPU only) ===
+                // === OPTIMAL LLM BASELINE (GPU only) ===
+                // Apply the full optimal LLM configuration from DL4J Environment.
+                // This is the single source of truth — resets ALL Triton/DSP flags,
+                // then applies BenchmarkConfig.optimal() settings (tritonIncludeTypes,
+                // sectionFusion, graphCapture, compileAll, cuBLAS TF32, consolidated
+                // arg table, dirty tracking, numWarps=4, numStages=1, captureMinExec=1,
+                // batchedGemm, segment fusion flags).
+                // Individual config fields below act as overrides on top of this baseline.
+                env.applyOptimalLLMConfig();
+                log.info("Applied optimal LLM baseline configuration via Environment.applyOptimalLLMConfig()");
+
+                // === TRITON COMPILER CONFIGURATION (GPU only, overrides on top of optimal) ===
                 if (config.tritonBuildThreads() != null) {
                     env.setTritonBuildThreads(config.tritonBuildThreads());
                 }
@@ -707,6 +764,38 @@ public class Nd4jEnvironmentConfigService {
                     env.setTritonOverrideArch(config.tritonOverrideArch());
                 }
                 log.info("Applied Triton compiler configuration settings");
+
+                // === TRITON PERFORMANCE OPTIMIZATIONS (from BenchmarkConfig.optimal()) ===
+                if (config.tritonSectionFusion() != null) {
+                    env.setTritonSectionFusion(config.tritonSectionFusion());
+                }
+                if (config.tritonGraphCapture() != null) {
+                    env.setTritonGraphCapture(config.tritonGraphCapture());
+                }
+                if (config.tritonCompileAll() != null) {
+                    env.setTritonCompileAll(config.tritonCompileAll());
+                }
+                if (config.cublasTf32() != null) {
+                    env.setCublasTf32Enabled(config.cublasTf32());
+                }
+                if (config.tritonConsolidatedArgTable() != null) {
+                    env.setTritonConsolidatedArgTable(config.tritonConsolidatedArgTable());
+                }
+                if (config.tritonArgDirtyTracking() != null) {
+                    env.setTritonArgDirtyTracking(config.tritonArgDirtyTracking());
+                }
+                if (config.tritonMergedCaptureThroughViews() != null) {
+                    env.setTritonMergedCaptureThroughViews(config.tritonMergedCaptureThroughViews());
+                }
+                if (config.dspBatchedGemm() != null) {
+                    env.setDspBatchedGemm(config.dspBatchedGemm());
+                }
+                if (config.dspFreezeMergeSegments() != null) {
+                    env.setDspFreezeMergeSegments(config.dspFreezeMergeSegments());
+                }
+                log.info("Applied Triton/DSP performance optimizations: sectionFusion={}, graphCapture={}, compileAll={}, cublasTf32={}, batchedGemm={}, freezeMerge={}",
+                        config.tritonSectionFusion(), config.tritonGraphCapture(), config.tritonCompileAll(),
+                        config.cublasTf32(), config.dspBatchedGemm(), config.dspFreezeMergeSegments());
             }
 
             log.info("ND4J environment configuration applied successfully");
@@ -933,7 +1022,20 @@ public class Nd4jEnvironmentConfigService {
             triton.put("cacheDir", actual.tritonCacheDir());
             triton.put("dumpDir", actual.tritonDumpDir());
             triton.put("overrideArch", actual.tritonOverrideArch());
+            triton.put("sectionFusion", actual.tritonSectionFusion());
+            triton.put("graphCapture", actual.tritonGraphCapture());
+            triton.put("compileAll", actual.tritonCompileAll());
+            triton.put("consolidatedArgTable", actual.tritonConsolidatedArgTable());
+            triton.put("argDirtyTracking", actual.tritonArgDirtyTracking());
+            triton.put("mergedCaptureThroughViews", actual.tritonMergedCaptureThroughViews());
             summary.put("triton", triton);
+
+            // DSP/cuBLAS performance optimizations
+            Map<String, Object> dspPerf = new HashMap<>();
+            dspPerf.put("cublasTf32", actual.cublasTf32());
+            dspPerf.put("batchedGemm", actual.dspBatchedGemm());
+            dspPerf.put("freezeMergeSegments", actual.dspFreezeMergeSegments());
+            summary.put("dspPerformance", dspPerf);
         }
 
         // Config file path
@@ -959,10 +1061,20 @@ public class Nd4jEnvironmentConfigService {
                     .dspNoAttnOverride(false) // attention override enabled
                     .dspNoDirect(false)       // direct mode enabled
                     .tritonSkipKernels(false) // Triton kernels enabled
-                    .tritonTf32(false)        // TF32 disabled for max precision
+                    .tritonTf32(true)         // TF32 enabled for performance
                     .cublasDisableWorkspace(false) // workspace capture enabled
                     .dspDiagnostics(null)     // no diagnostics
                     .opTiming(false)          // op timing disabled
+                    // Performance optimizations
+                    .tritonSectionFusion(true)
+                    .tritonGraphCapture(true)
+                    .tritonCompileAll(true)
+                    .cublasTf32(true)
+                    .tritonConsolidatedArgTable(true)
+                    .tritonArgDirtyTracking(true)
+                    .tritonMergedCaptureThroughViews(true)
+                    .dspBatchedGemm(true)
+                    .dspFreezeMergeSegments(true)
                     .build();
 
             case "debug" -> Nd4jEnvironmentConfig.builder()
@@ -991,6 +1103,16 @@ public class Nd4jEnvironmentConfigService {
                     .cublasDisableWorkspace(false)
                     .dspDiagnostics(null)
                     .opTiming(false)
+                    // All performance optimizations disabled
+                    .tritonSectionFusion(false)
+                    .tritonGraphCapture(false)
+                    .tritonCompileAll(false)
+                    .cublasTf32(false)
+                    .tritonConsolidatedArgTable(false)
+                    .tritonArgDirtyTracking(false)
+                    .tritonMergedCaptureThroughViews(false)
+                    .dspBatchedGemm(false)
+                    .dspFreezeMergeSegments(false)
                     .build();
 
             case "balanced" -> Nd4jEnvironmentConfig.builder()
@@ -1005,6 +1127,16 @@ public class Nd4jEnvironmentConfigService {
                     .cublasDisableWorkspace(false)
                     .dspDiagnostics(null)
                     .opTiming(false)
+                    // Performance optimizations (same as performance preset)
+                    .tritonSectionFusion(true)
+                    .tritonGraphCapture(true)
+                    .tritonCompileAll(true)
+                    .cublasTf32(true)
+                    .tritonConsolidatedArgTable(true)
+                    .tritonArgDirtyTracking(true)
+                    .tritonMergedCaptureThroughViews(true)
+                    .dspBatchedGemm(true)
+                    .dspFreezeMergeSegments(true)
                     .build();
 
             default -> throw new IllegalArgumentException(

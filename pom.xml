@@ -30,6 +30,7 @@
     <!-- Base modules first -->
     <module>kompile-cli-plugin-api</module>
     <module>kompile-cli-common</module>
+    <module>kompile-project-store</module>
     <module>tokenizers-rust</module>
 
     <!-- Model importers (dependencies) -->
@@ -70,6 +71,7 @@
     <slf4j.version>2.0.9</slf4j.version>
     <logback.version>1.4.14</logback.version>
     <junit.jupiter.version>5.10.1</junit.jupiter.version>
+    <mockito.version>5.11.0</mockito.version>
     <graalvm.sdk.version>24.0.1</graalvm.sdk.version>
     <native-maven-plugin.version>0.10.1</native-maven-plugin.version>
     <graalvm-buildtools.version>${native-maven-plugin.version}</graalvm-buildtools.version>
@@ -135,6 +137,11 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-cli-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-project-store</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -317,6 +324,24 @@
         <version>${junit.jupiter.version}</version>
         <scope>test</scope>
       </dependency>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter</artifactId>
+        <version>${junit.jupiter.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-core</artifactId>
+        <version>${mockito.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-junit-jupiter</artifactId>
+        <version>${mockito.version}</version>
+        <scope>test</scope>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 
@@ -421,7 +446,6 @@
               <buildArg>-H:IncludeResources=org/nd4j/linalg/factory/.*</buildArg>
               <buildArg>-H:IncludeResources=org/nd4j/config/.*</buildArg>
               <buildArg>-H:IncludeResources=${native.include.pattern}</buildArg>
-              <arg>--parallelism=8</arg>
               <arg>-H:LargeArrayThreshold=8192</arg>
               <arg>--enable-preview</arg>
 

@@ -1,0 +1,204 @@
+<h2 mat-dialog-title>
+  {{ isEditMode ? 'Edit' : 'New' }} Sync Connection
+</h2>
+
+<mat-dialog-content>
+  <mat-tab-group [(selectedIndex)]="selectedTabIndex" (selectedIndexChange)="onTabChange($event)"
+                 [class.locked]="isEditMode">
+    <!-- Notion Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>cloud</mat-icon>
+        <span class="tab-label">Notion</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <p class="provider-desc">
+          Sync notes with a Notion database or page tree. Requires Notion OAuth connection
+          via External Source Authentication.
+        </p>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Notion Database / Parent Page ID</mat-label>
+          <input matInput [(ngModel)]="externalScope"
+                 placeholder="e.g. abc12345-6789-..."
+                 [disabled]="provider !== 'NOTION'">
+          <mat-hint>The Notion database ID or parent page ID to sync with</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-tab>
+
+    <!-- Obsidian Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>folder</mat-icon>
+        <span class="tab-label">Obsidian</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <p class="provider-desc">
+          Sync notes with an Obsidian vault. Local vault paths use filesystem permissions. REST API mode uses a stored bearer token from the Obsidian Local REST API plugin.
+        </p>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Vault Path / Folder</mat-label>
+          <input matInput [(ngModel)]="externalScope"
+                 placeholder="e.g. /home/user/Documents/MyVault or subfolder"
+                 [disabled]="provider !== 'OBSIDIAN'">
+          <mat-hint>Absolute path to the vault or a subfolder within it</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Local REST API URL (optional)</mat-label>
+          <input matInput [(ngModel)]="obsidianApiUrl"
+                 placeholder="https://127.0.0.1:27124"
+                 [disabled]="provider !== 'OBSIDIAN'">
+          <mat-hint>Leave empty for local file access; set if using Obsidian Local REST API plugin</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>API Token (optional)</mat-label>
+          <input matInput [(ngModel)]="obsidianToken" type="password"
+                 placeholder="Bearer token from Local REST API plugin"
+                 [disabled]="provider !== 'OBSIDIAN'">
+          <mat-hint>{{ authSecretConfigured && obsidianApiUrl.trim() ? 'Token already configured. Enter a new token only to replace it.' : 'Required if using the Local REST API plugin' }}</mat-hint>
+        </mat-form-field>
+
+        <div class="auth-help">
+          <mat-icon>lock</mat-icon>
+          <span>{{ obsidianApiUrl.trim() ? 'Auth mode: Obsidian REST token. Use Test Auth after saving.' : 'Auth mode: none. Kompile reads and writes the local vault path directly.' }}</span>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Local Folder Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>folder_open</mat-icon>
+        <span class="tab-label">Local Folder</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <p class="provider-desc">
+          Store and browse FactSheet notes as Markdown files in a local folder.
+        </p>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Markdown Folder Path</mat-label>
+          <input matInput [(ngModel)]="externalScope"
+                 placeholder="/home/user/Documents/kompile-notes"
+                 [disabled]="provider !== 'LOCAL_FOLDER'">
+          <mat-hint>Absolute folder path. Kompile creates it if it does not exist.</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-tab>
+
+    <!-- Git Repository Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>hub</mat-icon>
+        <span class="tab-label">Git Repo</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <p class="provider-desc">
+          Store Markdown notes in a local git working tree with optional remote pull and push.
+        </p>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Local Working Tree Path</mat-label>
+          <input matInput [(ngModel)]="externalScope"
+                 placeholder="/home/user/Documents/kompile-notes-repo"
+                 [disabled]="provider !== 'GIT_REPOSITORY'">
+          <mat-hint>Kompile initializes or clones into this folder.</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Remote Repository URL (optional)</mat-label>
+          <input matInput [(ngModel)]="repositoryUrl"
+                 placeholder="git@github.com:org/knowledge.git"
+                 [disabled]="provider !== 'GIT_REPOSITORY'">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Git Auth Mode</mat-label>
+          <mat-select [(ngModel)]="authMode" [disabled]="!gitRemoteAuthEnabled()">
+            <mat-option value="SYSTEM_GIT">System Git credentials</mat-option>
+            <mat-option value="HTTPS_TOKEN">HTTPS username/token</mat-option>
+          </mat-select>
+          <mat-hint>{{ gitRemoteAuthEnabled() ? 'Choose how Kompile authenticates pull and push.' : 'Remote auth is disabled until a remote URL is set and remote sync is enabled.' }}</mat-hint>
+        </mat-form-field>
+
+        <div class="auth-help" *ngIf="gitRemoteAuthEnabled() && authMode === 'SYSTEM_GIT'">
+          <mat-icon>terminal</mat-icon>
+          <span>Uses the server account running Kompile: SSH agent, deploy keys, git credential helper, or already-configured git credentials.</span>
+        </div>
+
+        <div class="git-token-fields" *ngIf="gitRemoteAuthEnabled() && authMode === 'HTTPS_TOKEN'">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Git Username</mat-label>
+            <input matInput [(ngModel)]="gitUsername"
+                   placeholder="x-access-token"
+                   [disabled]="provider !== 'GIT_REPOSITORY'">
+            <mat-hint>For GitHub PATs, x-access-token is usually correct.</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Git Token</mat-label>
+            <input matInput [(ngModel)]="gitToken" type="password"
+                   placeholder="Personal access token or app token"
+                   [disabled]="provider !== 'GIT_REPOSITORY'">
+            <mat-hint>{{ authSecretConfigured ? 'Token already configured. Enter a new token only to replace it.' : 'Stored encrypted and used only for git pull/push.' }}</mat-hint>
+          </mat-form-field>
+        </div>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Branch</mat-label>
+          <input matInput [(ngModel)]="gitBranch"
+                 placeholder="main"
+                 [disabled]="provider !== 'GIT_REPOSITORY'">
+        </mat-form-field>
+
+        <div class="git-options">
+          <mat-checkbox [(ngModel)]="autoCommit" [disabled]="provider !== 'GIT_REPOSITORY'">
+            Auto-commit changes
+          </mat-checkbox>
+          <mat-checkbox [(ngModel)]="remoteSyncEnabled" [disabled]="provider !== 'GIT_REPOSITORY' || !repositoryUrl.trim()">
+            Pull and push remote
+          </mat-checkbox>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+
+  <!-- Common Settings -->
+  <div class="common-settings">
+    <h4>Sync Settings</h4>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Direction</mat-label>
+      <mat-select [(ngModel)]="direction">
+        <mat-option value="BIDIRECTIONAL">Bidirectional</mat-option>
+        <mat-option value="KOMPILE_TO_EXTERNAL">Push only (Kompile -> External)</mat-option>
+        <mat-option value="EXTERNAL_TO_KOMPILE">Pull only (External -> Kompile)</mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Poll Schedule (cron, optional)</mat-label>
+      <input matInput [(ngModel)]="pollCron"
+             placeholder="e.g. 0 */15 * * * *"
+             matTooltip="Spring cron expression for automatic polling">
+      <mat-hint>Leave empty for manual sync only. Example: 0 */15 * * * * (every 15 min)</mat-hint>
+    </mat-form-field>
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="cancel()">Cancel</button>
+  <button mat-raised-button color="primary" (click)="save()"
+          [disabled]="isSaving || !externalScope.trim()">
+    <mat-spinner *ngIf="isSaving" diameter="18"></mat-spinner>
+    <span *ngIf="!isSaving">{{ isEditMode ? 'Update' : 'Create' }}</span>
+  </button>
+</mat-dialog-actions>

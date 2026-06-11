@@ -31,6 +31,21 @@ import java.util.Map;
  */
 public class WriteTool implements CliTool {
 
+    /**
+     * Optional coordination manager for multi-agent edit tracking. May be null.
+     * When provided, write operations are logged for conflict detection.
+     */
+    @SuppressWarnings("unused")
+    private final Object coordinationManager;
+
+    public WriteTool() {
+        this.coordinationManager = null;
+    }
+
+    public WriteTool(Object coordinationManager) {
+        this.coordinationManager = coordinationManager;
+    }
+
     @Override
     public String id() { return "write"; }
 

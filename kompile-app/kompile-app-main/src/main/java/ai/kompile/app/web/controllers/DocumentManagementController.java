@@ -24,6 +24,7 @@ import ai.kompile.app.ingest.domain.IngestEvent;
 import ai.kompile.app.ingest.repository.IndexingJobHistoryRepository;
 import ai.kompile.app.services.DocumentIngestService;
 import ai.kompile.app.services.IngestProgressTracker;
+import ai.kompile.app.services.SourceMarkdownConversionService;
 import ai.kompile.app.services.VectorStorePopulationService;
 import ai.kompile.app.services.YouTubeTranscriptService;
 import ai.kompile.app.web.dto.AsyncUploadResponse;
@@ -79,6 +80,7 @@ public class DocumentManagementController {
     private final VectorStorePopulationService vectorStorePopulationService;
     private final YouTubeTranscriptService youTubeTranscriptService;
     private final SourceDocumentStorageService sourceDocumentStorageService;
+    private final SourceMarkdownConversionService sourceMarkdownConversionService;
     private final FactSheetService factSheetService;
     private final IndexingJobHistoryRepository jobHistoryRepository;
 
@@ -95,6 +97,7 @@ public class DocumentManagementController {
             @Autowired(required = false) VectorStorePopulationService vectorStorePopulationService,
             @Autowired(required = false) YouTubeTranscriptService youTubeTranscriptService,
             @Autowired(required = false) SourceDocumentStorageService sourceDocumentStorageService,
+            @Autowired(required = false) SourceMarkdownConversionService sourceMarkdownConversionService,
             @Autowired(required = false) FactSheetService factSheetService,
             @Autowired(required = false) IndexingJobHistoryRepository jobHistoryRepository) {
         this.sourceProperties = appDocumentSourceProperties;
@@ -108,6 +111,9 @@ public class DocumentManagementController {
         this.progressTracker = progressTracker;
         this.vectorStorePopulationService = vectorStorePopulationService;
         this.sourceDocumentStorageService = sourceDocumentStorageService != null ? sourceDocumentStorageService : new SourceDocumentStorageService();
+        this.sourceMarkdownConversionService = sourceMarkdownConversionService != null
+                ? sourceMarkdownConversionService
+                : new SourceMarkdownConversionService(this.sourceDocumentStorageService, appDocumentSourceProperties);
         this.factSheetService = factSheetService;
 
         // Log which dependencies are not available
@@ -174,7 +180,7 @@ public class DocumentManagementController {
         }
     }
 
-    public record AddUrlRequest(String url, String fileName, String loader, String chunkerName) {
+    public record AddUrlRequest(String url, String fileName, String loader, String chunkerName, boolean convertToMarkdown) {
     }
 
     public record LoaderInfo(String name, String className) {
@@ -1169,7 +1175,7 @@ public class DocumentManagementController {
                     .findFirst()
                     .orElse(null);
             if (selectedLoader == null) {
-                throw new Exception("Specified loader '" + loaderName + "' not found. Available loaders: " +
+                throw new IllegalArgumentException("Specified loader '" + loaderName + "' not found. Available loaders: " +
                         documentLoaders.stream().map(DocumentLoader::getName).collect(Collectors.joining(", ")));
             }
         } else {
@@ -1183,7 +1189,7 @@ public class DocumentManagementController {
             selectedLoader = documentLoaders.stream()
                     .filter(loader -> loader.supports(tempDescriptor))
                     .findFirst()
-                    .orElseThrow(() -> new Exception("No suitable loader found for file: " + filePath +
+                    .orElseThrow(() -> new IllegalArgumentException("No suitable loader found for file: " + filePath +
                             ". Available loaders: "
                             + documentLoaders.stream().map(DocumentLoader::getName).collect(Collectors.joining(", "))));
         }
@@ -2104,6 +2110,8 @@ public class DocumentManagementController {
             try {
                 List<IndexingJobHistory> activeDbJobs = jobHistoryRepository.findActiveJobs();
                 for (IndexingJobHistory job : activeDbJobs) {
+                    // Skip crawl tasks — they are tracked via the unified crawl dashboard
+                    if (job.getTaskId() != null && job.getTaskId().startsWith("crawl-")) continue;
                     IngestProgressUpdate update = convertJobHistoryToProgressUpdate(job);
                     allTasks.put(job.getTaskId(), update);
                 }
@@ -2262,6 +2270,7 @@ public class DocumentManagementController {
             case CONVERTING -> IngestProgressUpdate.IngestPhase.CONVERTING;
             case CHUNKING -> IngestProgressUpdate.IngestPhase.CHUNKING;
             case EXTRACTION -> IngestProgressUpdate.IngestPhase.EXTRACTION;
+            case GRAPH_EXTRACTION -> IngestProgressUpdate.IngestPhase.GRAPH_EXTRACTION;
             case INDEXING_AND_EMBEDDING -> IngestProgressUpdate.IngestPhase.INDEXING_AND_EMBEDDING;
             case EMBEDDING -> IngestProgressUpdate.IngestPhase.EMBEDDING;
             case INDEXING -> IngestProgressUpdate.IngestPhase.INDEXING;
@@ -2336,6 +2345,17 @@ public class DocumentManagementController {
                     StandardOpenOption.TRUNCATE_EXISTING);
             logger.info("Content from URL {} saved successfully to: {}", urlString, destinationFile);
 
+            SourceMarkdownConversionService.ConversionResult markdownConversion = null;
+            if (request.convertToMarkdown()) {
+                markdownConversion = sourceMarkdownConversionService.convertPath(destinationFile, finalOutputFileName, urlString);
+                destinationFile = Paths.get(markdownConversion.filePath()).toAbsolutePath().normalize();
+                finalOutputFileName = markdownConversion.fileName();
+                if (chunkerName == null || chunkerName.isBlank()) {
+                    chunkerName = "custom_markdown";
+                }
+                logger.info("Converted URL content to markdown before indexing: {}", destinationFile);
+            }
+
             Map<String, Object> response = new HashMap<>();
             response.put("message",
                     "Content from URL '" + urlString + "' saved successfully as '" + finalOutputFileName + "'.");
@@ -2343,6 +2363,14 @@ public class DocumentManagementController {
             response.put("filePath", destinationFile.toString());
             response.put("selectedLoader", loaderName != null ? loaderName : "Auto-detect");
             response.put("selectedChunkerName", chunkerName != null ? chunkerName : "None");
+            response.put("convertedToMarkdown", markdownConversion != null);
+            if (markdownConversion != null) {
+                response.put("markdownFileName", markdownConversion.fileName());
+                response.put("markdownFilePath", markdownConversion.filePath());
+                response.put("markdownChecksum", markdownConversion.checksum());
+                response.put("message", "Content from URL '" + urlString + "' saved and converted to markdown as '"
+                        + markdownConversion.fileName() + "'.");
+            }
 
             // Process the downloaded content immediately
             try {
@@ -2851,12 +2879,31 @@ public class DocumentManagementController {
                 return ResponseEntity.ok(
                         Map.of("uploaded_files_location", uploadsPath.toString(), "files", Collections.emptyList()));
             }
-            List<Map<String, String>> fileDetails;
+            List<Map<String, Object>> fileDetails;
             try (Stream<Path> walk = Files.list(uploadsPath)) {
                 fileDetails = walk.filter(Files::isRegularFile)
-                        .map(path -> Map.of(
-                                "fileName", path.getFileName().toString(),
-                                "filePath", path.toString()))
+                        .map(path -> {
+                            Map<String, Object> info = new LinkedHashMap<>();
+                            info.put("fileName", path.getFileName().toString());
+                            info.put("filePath", path.toString());
+                            try {
+                                info.put("sizeBytes", Files.size(path));
+                            } catch (IOException e) {
+                                info.put("sizeBytes", -1L);
+                            }
+                            try {
+                                String mimeType = Files.probeContentType(path);
+                                info.put("mimeType", mimeType != null ? mimeType : "application/octet-stream");
+                            } catch (IOException e) {
+                                info.put("mimeType", "application/octet-stream");
+                            }
+                            try {
+                                info.put("lastModifiedMs", Files.getLastModifiedTime(path).toMillis());
+                            } catch (IOException e) {
+                                info.put("lastModifiedMs", 0L);
+                            }
+                            return info;
+                        })
                         .collect(Collectors.toList());
             }
             return ResponseEntity.ok(Map.of("uploaded_files_location", uploadsPath.toString(), "files", fileDetails));

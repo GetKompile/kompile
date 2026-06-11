@@ -66,6 +66,11 @@ public interface FactRepository extends JpaRepository<Fact, Long> {
     boolean existsByFactSheetIdAndFileName(Long factSheetId, String fileName);
 
     /**
+     * Check if a fact with the given source URL exists in a sheet.
+     */
+    boolean existsByFactSheetIdAndSourceUrl(Long factSheetId, String sourceUrl);
+
+    /**
      * Find facts by source type within a sheet.
      */
     List<Fact> findByFactSheetIdAndSourceType(Long factSheetId, Fact.SourceType sourceType);

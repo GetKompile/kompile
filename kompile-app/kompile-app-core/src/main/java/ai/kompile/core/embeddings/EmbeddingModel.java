@@ -246,6 +246,25 @@ public interface EmbeddingModel extends AutoCloseable {
     }
 
     /**
+     * Returns whether this model uses a single DSP plan for all batch sizes.
+     * When true, the model has a fixed pre-compiled execution plan.
+     *
+     * @return true if using a single DSP plan, false otherwise
+     */
+    default boolean isSingleDspPlan() {
+        return false;
+    }
+
+    /**
+     * Returns the DSP plan batch size if a single DSP plan is active.
+     *
+     * @return the fixed batch size for the DSP plan, or 0 if not applicable
+     */
+    default int getDspPlanBatchSize() {
+        return 0;
+    }
+
+    /**
      * Gets the dimensionality of the embeddings produced by this model.
      * This is an alias for dimensions() for compatibility.
      * @return The dimension of the vectors.

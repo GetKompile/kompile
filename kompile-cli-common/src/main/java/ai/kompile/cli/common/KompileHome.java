@@ -65,6 +65,15 @@ public final class KompileHome {
     }
 
     /**
+     * Returns the managed tool binary directory ({@code ~/.kompile/bin}).
+     * Contains tool binaries installed by kompile (e.g., git-xet).
+     * This directory is added to PATH when launching subprocesses.
+     */
+    public static File binDirectory() {
+        return new File(homeDirectory(), "bin");
+    }
+
+    /**
      * Returns the models cache directory ({@code ~/.kompile/models}).
      */
     public static File modelsDirectory() {
@@ -83,5 +92,40 @@ public final class KompileHome {
      */
     public static File configDirectory() {
         return new File(homeDirectory(), "config");
+    }
+
+    /**
+     * Returns the sessions directory ({@code ~/.kompile/sessions}).
+     */
+    public static File sessionsDirectory() {
+        return new File(homeDirectory(), "sessions");
+    }
+
+    /**
+     * Returns the data directory ({@code ~/.kompile/data}).
+     */
+    public static File dataDir() {
+        return new File(homeDirectory(), "data");
+    }
+
+    /**
+     * Returns the runtime directory ({@code ~/.kompile/run}).
+     */
+    public static File runtimeDirectory() {
+        return new File(homeDirectory(), "run");
+    }
+
+    /**
+     * Returns the daemon Unix socket file ({@code ~/.kompile/run/kompile.sock}).
+     */
+    public static File daemonSocketFile() {
+        return new File(runtimeDirectory(), "kompile.sock");
+    }
+
+    /**
+     * Returns the daemon lock file ({@code ~/.kompile/run/kompile.lock}).
+     */
+    public static File daemonLockFile() {
+        return new File(runtimeDirectory(), "kompile.lock");
     }
 }

@@ -304,7 +304,7 @@ public class TaskDefinition {
     /**
      * Resolve a template string with variable substitution.
      */
-    private String resolveTemplate(String template, Map<String, String> variables) {
+    String resolveTemplate(String template, Map<String, String> variables) {
         if (template == null) {
             return null;
         }

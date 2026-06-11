@@ -1,0 +1,269 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="archive-manager-container">
+
+  <!-- Export Section -->
+  <div class="section-card">
+    <div class="section-header">
+      <mat-icon class="section-icon">upload</mat-icon>
+      <div>
+        <h3>Export Configuration</h3>
+        <p>Create an archive of all Kompile and chat provider configurations</p>
+      </div>
+    </div>
+
+    <div class="export-form">
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Description (optional)</mat-label>
+        <input matInput [(ngModel)]="exportDescription"
+               placeholder="e.g., Production setup, Pre-upgrade snapshot">
+        <mat-hint>Embedded in the archive for identification</mat-hint>
+      </mat-form-field>
+
+      <div class="export-actions">
+        <button mat-raised-button color="primary"
+                (click)="exportAndSave()"
+                [disabled]="isExporting">
+          <mat-icon>save</mat-icon>
+          Save to Server
+        </button>
+        <button mat-stroked-button
+                (click)="exportAndDownload()"
+                [disabled]="isExporting">
+          <mat-icon>download</mat-icon>
+          Download
+        </button>
+      </div>
+      <mat-progress-bar *ngIf="isExporting" mode="indeterminate" class="progress"></mat-progress-bar>
+    </div>
+  </div>
+
+  <mat-divider></mat-divider>
+
+  <!-- Import Section -->
+  <div class="section-card">
+    <div class="section-header">
+      <mat-icon class="section-icon">download</mat-icon>
+      <div>
+        <h3>Import Configuration</h3>
+        <p>Restore configurations from an archive file</p>
+      </div>
+    </div>
+
+    <!-- Import Mode Selection -->
+    <div class="mode-selection">
+      <label class="mode-label">Import Mode:</label>
+      <mat-radio-group [(ngModel)]="importMode" class="mode-options">
+        <mat-radio-button value="append">
+          <div class="mode-option">
+            <strong>Append</strong>
+            <span class="mode-desc">Merge with existing configs. New keys are added, existing keys not in the archive are preserved.</span>
+          </div>
+        </mat-radio-button>
+        <mat-radio-button value="override">
+          <div class="mode-option">
+            <strong>Override</strong>
+            <span class="mode-desc">Replace existing configs. Archived files completely overwrite their counterparts.</span>
+          </div>
+        </mat-radio-button>
+      </mat-radio-group>
+    </div>
+
+    <!-- File Upload -->
+    <div class="upload-area" *ngIf="!selectedFile">
+      <input type="file" accept=".zip" (change)="onFileSelected($event)" #fileInput hidden>
+      <button mat-stroked-button (click)="fileInput.click()" class="upload-btn">
+        <mat-icon>folder_open</mat-icon>
+        Select Archive File (.zip)
+      </button>
+    </div>
+
+    <!-- File Preview -->
+    <div class="preview-card" *ngIf="selectedFile">
+      <div class="preview-header">
+        <mat-icon>description</mat-icon>
+        <span class="file-name">{{ selectedFile.name }}</span>
+        <span class="file-size">({{ formatSize(selectedFile.size) }})</span>
+        <button mat-icon-button (click)="clearImportSelection()" matTooltip="Clear selection">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+
+      <div *ngIf="previewManifest" class="manifest-preview">
+        <div class="manifest-meta">
+          <span><strong>Created:</strong> {{ formatDate(previewManifest.createdAt) }}</span>
+          <span><strong>Host:</strong> {{ previewManifest.hostname }}</span>
+          <span *ngIf="previewManifest.description"><strong>Note:</strong> {{ previewManifest.description }}</span>
+        </div>
+
+        <div class="manifest-contents">
+          <div *ngIf="previewManifest.kompileConfigs.length > 0" class="content-group">
+            <span class="group-label">Kompile Configs ({{ previewManifest.kompileConfigs.length }})</span>
+            <mat-chip-set>
+              <mat-chip *ngFor="let c of previewManifest.kompileConfigs">{{ c }}</mat-chip>
+            </mat-chip-set>
+          </div>
+
+          <div *ngFor="let provider of getProviderNames(previewManifest)" class="content-group">
+            <span class="group-label">
+              <mat-icon class="inline-icon">{{ getProviderIcon(provider) }}</mat-icon>
+              {{ provider | titlecase }}
+            </span>
+            <mat-chip-set>
+              <mat-chip *ngFor="let f of previewManifest.chatProviderConfigs[provider]">{{ f }}</mat-chip>
+            </mat-chip-set>
+          </div>
+
+          <div *ngIf="previewManifest.systemPrompts.length > 0" class="content-group">
+            <span class="group-label">System Prompts ({{ previewManifest.systemPrompts.length }})</span>
+            <mat-chip-set>
+              <mat-chip *ngFor="let p of previewManifest.systemPrompts">{{ p }}</mat-chip>
+            </mat-chip-set>
+          </div>
+        </div>
+      </div>
+
+      <div class="import-actions">
+        <button mat-raised-button color="accent"
+                (click)="importFile()"
+                [disabled]="isImporting || !previewManifest">
+          <mat-icon>publish</mat-icon>
+          Import ({{ importMode }})
+        </button>
+      </div>
+      <mat-progress-bar *ngIf="isImporting" mode="indeterminate" class="progress"></mat-progress-bar>
+    </div>
+
+    <!-- Import Result -->
+    <div *ngIf="lastImportResult" class="import-result">
+      <div class="result-header">
+        <mat-icon color="primary">check_circle</mat-icon>
+        <span>{{ lastImportResult.message }} ({{ lastImportResult.mode }} mode)</span>
+      </div>
+      <div class="result-details">
+        <div *ngIf="lastImportResult.created.length > 0" class="result-group">
+          <span class="result-label created">Created ({{ lastImportResult.created.length }})</span>
+          <div class="result-files">
+            <span *ngFor="let f of lastImportResult.created" class="result-file">+ {{ f }}</span>
+          </div>
+        </div>
+        <div *ngIf="lastImportResult.overwritten.length > 0" class="result-group">
+          <span class="result-label overwritten">Overwritten ({{ lastImportResult.overwritten.length }})</span>
+          <div class="result-files">
+            <span *ngFor="let f of lastImportResult.overwritten" class="result-file">~ {{ f }}</span>
+          </div>
+        </div>
+        <div *ngIf="lastImportResult.merged.length > 0" class="result-group">
+          <span class="result-label merged">Merged ({{ lastImportResult.merged.length }})</span>
+          <div class="result-files">
+            <span *ngFor="let f of lastImportResult.merged" class="result-file">* {{ f }}</span>
+          </div>
+        </div>
+        <div *ngIf="lastImportResult.skipped.length > 0" class="result-group">
+          <span class="result-label skipped">Skipped ({{ lastImportResult.skipped.length }})</span>
+          <div class="result-files">
+            <span *ngFor="let f of lastImportResult.skipped" class="result-file">- {{ f }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <mat-divider></mat-divider>
+
+  <!-- Saved Archives Section -->
+  <div class="section-card">
+    <div class="section-header">
+      <mat-icon class="section-icon">inventory_2</mat-icon>
+      <div>
+        <h3>Saved Archives</h3>
+        <p>Configuration archives stored on the server</p>
+      </div>
+    </div>
+
+    <div *ngIf="isLoading" class="loading-indicator">
+      <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+    </div>
+
+    <div *ngIf="!isLoading && archives.length === 0" class="empty-state">
+      <mat-icon>archive</mat-icon>
+      <p>No saved archives. Use "Save to Server" above to create one.</p>
+    </div>
+
+    <mat-accordion *ngIf="!isLoading && archives.length > 0">
+      <mat-expansion-panel *ngFor="let archive of archives">
+        <mat-expansion-panel-header>
+          <mat-panel-title>
+            <mat-icon class="archive-icon">folder_zip</mat-icon>
+            {{ archive.fileName }}
+          </mat-panel-title>
+          <mat-panel-description>
+            {{ formatSize(archive.sizeBytes) }} &middot; {{ formatDate(archive.lastModified) }}
+            <span *ngIf="archive.manifest?.description"> &middot; {{ archive.manifest!.description }}</span>
+          </mat-panel-description>
+        </mat-expansion-panel-header>
+
+        <div class="archive-detail" *ngIf="archive.manifest">
+          <div class="manifest-meta">
+            <span><strong>Created:</strong> {{ formatDate(archive.manifest.createdAt) }}</span>
+            <span><strong>Host:</strong> {{ archive.manifest.hostname }}</span>
+            <span><strong>Files:</strong> {{ getTotalFileCount(archive.manifest) }}</span>
+          </div>
+
+          <div class="manifest-contents" *ngIf="archive.manifest.kompileConfigs.length > 0">
+            <span class="group-label">Kompile Configs</span>
+            <mat-chip-set>
+              <mat-chip *ngFor="let c of archive.manifest.kompileConfigs">{{ c }}</mat-chip>
+            </mat-chip-set>
+          </div>
+
+          <div *ngFor="let provider of getProviderNames(archive.manifest)" class="manifest-contents">
+            <span class="group-label">
+              <mat-icon class="inline-icon">{{ getProviderIcon(provider) }}</mat-icon>
+              {{ provider | titlecase }}
+            </span>
+            <mat-chip-set>
+              <mat-chip *ngFor="let f of archive.manifest.chatProviderConfigs[provider]">{{ f }}</mat-chip>
+            </mat-chip-set>
+          </div>
+
+          <div class="manifest-contents" *ngIf="archive.manifest.systemPrompts.length > 0">
+            <span class="group-label">System Prompts</span>
+            <mat-chip-set>
+              <mat-chip *ngFor="let p of archive.manifest.systemPrompts">{{ p }}</mat-chip>
+            </mat-chip-set>
+          </div>
+        </div>
+
+        <div class="archive-actions">
+          <button mat-stroked-button (click)="importSaved(archive)" [disabled]="isImporting">
+            <mat-icon>publish</mat-icon>
+            Import ({{ importMode }})
+          </button>
+          <button mat-stroked-button (click)="downloadArchive(archive)">
+            <mat-icon>download</mat-icon>
+            Download
+          </button>
+          <button mat-stroked-button color="warn" (click)="deleteArchive(archive)">
+            <mat-icon>delete</mat-icon>
+            Delete
+          </button>
+        </div>
+      </mat-expansion-panel>
+    </mat-accordion>
+  </div>
+</div>

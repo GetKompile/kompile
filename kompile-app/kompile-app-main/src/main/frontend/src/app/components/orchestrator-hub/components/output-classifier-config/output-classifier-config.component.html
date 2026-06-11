@@ -305,6 +305,56 @@
         </form>
       </div>
 
+      <!-- Classify Output Test -->
+      <div *ngIf="selectedClassifier && !editingClassifier && !editingRule" class="classify-test-section">
+        <h4>Test Classification</h4>
+        <p class="classify-test-hint">Paste sample output to test how this classifier categorizes it.</p>
+        <textarea [(ngModel)]="classifyTestInput" [ngModelOptions]="{standalone: true}"
+                  placeholder="Paste command output to classify..."
+                  rows="4" class="classify-test-textarea"></textarea>
+        <div class="classify-test-actions">
+          <button mat-raised-button color="primary"
+                  [disabled]="!classifyTestInput.trim() || classifyTesting"
+                  (click)="classifyOutput()">
+            {{ classifyTesting ? 'Classifying...' : 'Classify' }}
+          </button>
+        </div>
+        <div *ngIf="classifyTestResult" class="classify-test-result">
+          <div class="classify-result-header">
+            <span class="classify-result-label">Classification Result</span>
+            <span *ngIf="classifyTestResult.matches?.length" class="classify-matched">{{ classifyTestResult.matches.length }} match(es)</span>
+            <span *ngIf="!classifyTestResult.matches?.length" class="classify-unmatched">No Match</span>
+          </div>
+          <div *ngIf="classifyTestResult.summary" class="classify-result-row">
+            <span class="classify-key">Summary:</span>
+            <span>{{ classifyTestResult.summary }}</span>
+          </div>
+          <div *ngIf="classifyTestResult.hasErrors" class="classify-result-row">
+            <span class="classify-key">Errors:</span>
+            <span class="severity-error">Yes</span>
+          </div>
+          <div *ngIf="classifyTestResult.hasWarnings" class="classify-result-row">
+            <span class="classify-key">Warnings:</span>
+            <span class="severity-warning">Yes</span>
+          </div>
+          <div *ngIf="classifyTestResult.mostSevere" class="classify-result-row">
+            <span class="classify-key">Most Severe:</span>
+            <span [class]="getSeverityClass(classifyTestResult.mostSevere.severity)">
+              {{ classifyTestResult.mostSevere.classificationType }} ({{ classifyTestResult.mostSevere.severity }})
+              &rarr; {{ classifyTestResult.mostSevere.action }}
+            </span>
+          </div>
+          <div *ngIf="classifyTestResult.matches?.length" class="classify-result-row classify-result-matches">
+            <span class="classify-key">Matched Rules:</span>
+            <div class="classify-rules-list">
+              <span *ngFor="let match of classifyTestResult.matches" class="classify-rule-chip">
+                {{ match.ruleName }} ({{ match.classificationType }})
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Empty State -->
       <div class="empty-content" *ngIf="!selectedClassifier && !editingClassifier && !loading">
         <mat-icon>rule</mat-icon>

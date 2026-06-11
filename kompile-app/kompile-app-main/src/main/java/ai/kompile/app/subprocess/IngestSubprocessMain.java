@@ -218,6 +218,11 @@ public class IngestSubprocessMain {
                 // Log full feature set
                 logSubprocessFeatures(context, runner, subprocessArgs, reporter);
 
+                // Trim GPU memory pools after Spring context init (model loading).
+                // The embedding model is initialized during context refresh — trim to release
+                // reserved-but-unused pool memory before the pipeline starts processing.
+                trimGpuMemoryPools("post-spring-context-model-init");
+
                 // Execute the pipeline
                 logger.info("Starting ingest pipeline for file: {}", subprocessArgs.filePath());
                 IngestPipelineRunner.PipelineResult result = runner.execute(subprocessArgs, reporter, httpCallback);
@@ -1048,6 +1053,22 @@ public class IngestSubprocessMain {
 
         // Also report via subprocess protocol for main app visibility
         reporter.reportLog("INFO", "Subprocess feature set initialized - see subprocess logs for details");
+    }
+
+    /**
+     * Trim CUDA memory pools on all devices to release reserved-but-unused GPU memory.
+     */
+    private static void trimGpuMemoryPools(String reason) {
+        try {
+            var nativeOps = Nd4j.getNativeOps();
+            int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+            for (int d = 0; d < numDevices; d++) {
+                nativeOps.trimMemoryPool(d);
+            }
+            logger.info("Trimmed GPU memory pools on {} device(s) (reason: {})", numDevices, reason);
+        } catch (Exception e) {
+            logger.debug("Could not trim GPU memory pools (CPU backend?): {}", e.getMessage());
+        }
     }
 
     /**

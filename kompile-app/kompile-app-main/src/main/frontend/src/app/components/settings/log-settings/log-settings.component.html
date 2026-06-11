@@ -62,7 +62,8 @@
         <mat-icon mat-card-avatar>storage</mat-icon>
         <mat-card-title>Log Storage Status</mat-card-title>
         <mat-card-subtitle>
-          {{ status.enabled ? 'Active' : 'Disabled' }} -
+          {{ status.enabled ? 'Active' : 'Disabled' }}
+          <span *ngIf="!status.enabled && status.reason"> ({{ status.reason }})</span> -
           {{ formatCount(status.totalLogEntries) }} entries stored
         </mat-card-subtitle>
       </mat-card-header>

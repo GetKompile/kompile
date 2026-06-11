@@ -60,4 +60,9 @@ public class Entity {
      * Confidence score for the entity extraction (0.0 to 1.0).
      */
     private Double confidence;
+
+    /**
+     * Alternative names or aliases for this entity used in entity resolution.
+     */
+    private List<String> aliases;
 }

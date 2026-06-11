@@ -1,0 +1,179 @@
+<div class="notes-panel">
+  <!-- Header -->
+  <div class="notes-header">
+    <div class="header-left">
+      <h3>Notes</h3>
+      <span class="note-count" *ngIf="notes.length">{{ filteredNotes.length }} of {{ notes.length }}</span>
+    </div>
+    <div class="header-actions">
+      <mat-form-field appearance="outline" class="search-field">
+        <mat-icon matPrefix>search</mat-icon>
+        <input matInput placeholder="Search notes..." [(ngModel)]="searchQuery"
+               (ngModelChange)="onSearchChange($event)">
+      </mat-form-field>
+      <button mat-icon-button [matMenuTriggerFor]="filterMenu" matTooltip="Filter by type">
+        <mat-icon>filter_list</mat-icon>
+      </button>
+      <mat-menu #filterMenu="matMenu">
+        <button mat-menu-item (click)="onFilterChange('ALL')">
+          <mat-icon *ngIf="filterType === 'ALL'">check</mat-icon>
+          <span>All Notes</span>
+        </button>
+        <button mat-menu-item (click)="onFilterChange('HUMAN')">
+          <mat-icon *ngIf="filterType === 'HUMAN'">check</mat-icon>
+          <span>Human Notes</span>
+        </button>
+        <button mat-menu-item (click)="onFilterChange('AI')">
+          <mat-icon *ngIf="filterType === 'AI'">check</mat-icon>
+          <span>AI Notes</span>
+        </button>
+      </mat-menu>
+      <button mat-raised-button color="primary" (click)="startCreate()" [disabled]="!factSheetId">
+        <mat-icon>add</mat-icon> New Note
+      </button>
+    </div>
+  </div>
+
+  <div *ngIf="!factSheetId" class="empty-state">
+    <mat-icon>note</mat-icon>
+    <p>Select a Fact Sheet to view notes</p>
+  </div>
+
+  <div *ngIf="factSheetId" class="notes-content">
+    <!-- Loading -->
+    <div *ngIf="isLoading" class="loading-container">
+      <mat-spinner diameter="32"></mat-spinner>
+    </div>
+
+    <div class="notes-layout" *ngIf="!isLoading">
+      <!-- Note List (left side) -->
+      <div class="notes-list">
+        <div *ngIf="filteredNotes.length === 0 && !isCreating" class="empty-list">
+          <mat-icon>note_add</mat-icon>
+          <p>No notes yet. Create one to get started.</p>
+        </div>
+
+        <div *ngFor="let note of filteredNotes"
+             class="note-item"
+             [class.selected]="selectedNote?.id === note.id"
+             (click)="selectNote(note)">
+          <div class="note-item-header">
+            <span class="note-title">{{ note.title || 'Untitled' }}</span>
+            <div class="note-item-badges">
+              <mat-icon *ngIf="getSyncIcon(note)" class="sync-badge"
+                        [matTooltip]="'Synced with ' + note.syncProvider">
+                {{ getSyncIcon(note) }}
+              </mat-icon>
+              <span class="note-type-badge" [class.ai]="note.noteType === 'AI'">
+                {{ note.noteType }}
+              </span>
+            </div>
+          </div>
+          <div class="note-item-preview">
+            {{ note.content | slice:0:120 }}{{ note.content.length > 120 ? '...' : '' }}
+          </div>
+          <div class="note-item-footer">
+            <span class="note-date">{{ formatDate(note.updatedAt) }}</span>
+            <div class="note-tags" *ngIf="note.tags">
+              <span *ngFor="let tag of getTagList(note.tags) | slice:0:3" class="tag-chip">{{ tag }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Note Detail (right side) -->
+      <div class="note-detail" *ngIf="selectedNote || isCreating">
+        <!-- Create Form -->
+        <div *ngIf="isCreating" class="note-editor">
+          <div class="editor-header">
+            <h4>New Note</h4>
+            <div class="editor-actions">
+              <button mat-button (click)="cancelCreate()">Cancel</button>
+              <button mat-raised-button color="primary" (click)="createNote()"
+                      [disabled]="!newContent.trim() || isSaving">
+                <mat-spinner *ngIf="isSaving" diameter="18"></mat-spinner>
+                <span *ngIf="!isSaving">Create</span>
+              </button>
+            </div>
+          </div>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Title</mat-label>
+            <input matInput [(ngModel)]="newTitle" placeholder="Note title (optional)">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Type</mat-label>
+            <mat-select [(ngModel)]="newNoteType">
+              <mat-option value="HUMAN">Human</mat-option>
+              <mat-option value="AI">AI</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Tags</mat-label>
+            <input matInput [(ngModel)]="newTags" placeholder="Comma-separated tags">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width content-field">
+            <mat-label>Content</mat-label>
+            <textarea matInput [(ngModel)]="newContent" rows="12"
+                      placeholder="Write your note content here..."></textarea>
+          </mat-form-field>
+        </div>
+
+        <!-- Edit Form -->
+        <div *ngIf="selectedNote && !isCreating" class="note-editor">
+          <div class="editor-header">
+            <div class="editor-title-row">
+              <button mat-icon-button (click)="deselectNote()" matTooltip="Back to list">
+                <mat-icon>arrow_back</mat-icon>
+              </button>
+              <h4>{{ selectedNote.title || 'Untitled' }}</h4>
+            </div>
+            <div class="editor-actions">
+              <button mat-icon-button color="warn" (click)="deleteNote(selectedNote)"
+                      matTooltip="Delete note">
+                <mat-icon>delete</mat-icon>
+              </button>
+              <button mat-raised-button color="primary" (click)="saveNote()"
+                      [disabled]="isSaving">
+                <mat-spinner *ngIf="isSaving" diameter="18"></mat-spinner>
+                <span *ngIf="!isSaving">Save</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="note-meta">
+            <span class="note-type-badge" [class.ai]="selectedNote.noteType === 'AI'">
+              {{ selectedNote.noteType }}
+            </span>
+            <span *ngIf="selectedNote.syncProvider" class="sync-info">
+              <mat-icon class="small-icon">{{ getSyncIcon(selectedNote) }}</mat-icon>
+              Synced with {{ selectedNote.syncProvider }}
+            </span>
+            <span class="meta-date">Created: {{ formatDate(selectedNote.createdAt) }}</span>
+            <span class="meta-date">Updated: {{ formatDate(selectedNote.updatedAt) }}</span>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Title</mat-label>
+            <input matInput [(ngModel)]="editTitle">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Tags</mat-label>
+            <input matInput [(ngModel)]="editTags" placeholder="Comma-separated tags">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width content-field">
+            <mat-label>Content</mat-label>
+            <textarea matInput [(ngModel)]="editContent" rows="16"></textarea>
+          </mat-form-field>
+        </div>
+      </div>
+
+      <!-- Empty detail state -->
+      <div class="note-detail empty-detail" *ngIf="!selectedNote && !isCreating">
+        <mat-icon class="large-icon">edit_note</mat-icon>
+        <p>Select a note to view or edit</p>
+      </div>
+    </div>
+  </div>
+</div>

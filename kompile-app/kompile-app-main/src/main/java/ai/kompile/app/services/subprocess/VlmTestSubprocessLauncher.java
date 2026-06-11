@@ -23,6 +23,7 @@ import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.subprocess.SubprocessMessage;
+import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.app.subprocess.VlmTestSubprocessArgs;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
@@ -82,6 +83,12 @@ public class VlmTestSubprocessLauncher {
 
     @Autowired(required = false)
     private ModelLifecycleManager modelLifecycleManager;
+
+    @Autowired(required = false)
+    private SubprocessRegistry subprocessRegistry;
+
+    @Autowired(required = false)
+    private ai.kompile.app.services.SubprocessHeartbeatBroadcaster heartbeatBroadcaster;
 
     private final Map<String, VlmTestHandle> activeTests = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> logSequenceCounters = new ConcurrentHashMap<>();
@@ -164,7 +171,7 @@ public class VlmTestSubprocessLauncher {
         boolean gpuAcquired = false;
         try {
             // === GPU LIFECYCLE: Acquire GPU resources, evicting lower-priority services ===
-            if (modelLifecycleManager != null) {
+            if (modelLifecycleManager != null && !modelLifecycleManager.hasJobGpuHold(taskId)) {
                 logger.info("[vlm-test-{}] Acquiring GPU resources via ModelLifecycleManager (will evict embedding if needed)", taskId);
                 sendWebSocketUpdate(taskId, "RUNNING", 0, "GPU_ACQUIRE", "Acquiring GPU resources...", null);
                 try {
@@ -178,6 +185,10 @@ public class VlmTestSubprocessLauncher {
                     future.complete(new VlmTestResult(taskId, filePath, "FAILED"));
                     return;
                 }
+            } else if (modelLifecycleManager != null) {
+                // GPU already held by scheduler — don't acquire again, but don't release in finally either
+                logger.info("[vlm-test-{}] GPU already held by scheduler, skipping launcher acquire", taskId);
+                gpuAcquired = false;
             } else {
                 logger.warn("[vlm-test-{}] ModelLifecycleManager not available — launching VLM without GPU coordination", taskId);
             }
@@ -394,6 +405,11 @@ public class VlmTestSubprocessLauncher {
             VlmTestHandle handle = new VlmTestHandle(taskId, process, future, filePath, logFile, logWriter);
             activeTests.put(taskId, handle);
 
+            // Register with subprocess registry for lifecycle tracking
+            if (subprocessRegistry != null) {
+                subprocessRegistry.register("vlm-test-" + taskId, process, "vlm-test");
+            }
+
             // --- Phase-2 log aggregation: central JSON-lines store ---
             try {
                 SubprocessLogWriter slw = new SubprocessLogWriter("vlm-test", taskId);
@@ -485,6 +501,11 @@ public class VlmTestSubprocessLauncher {
             }
             activeTests.remove(taskId);
             logSequenceCounters.remove(taskId);
+
+            // Deregister from subprocess registry
+            if (subprocessRegistry != null) {
+                subprocessRegistry.deregister("vlm-test-" + taskId);
+            }
 
             // === GPU LIFECYCLE: Release GPU resources and restore evicted services ===
             if (gpuAcquired && modelLifecycleManager != null) {
@@ -608,8 +629,12 @@ public class VlmTestSubprocessLauncher {
                 sendWebSocketUpdate(handle.taskId, "FAILED", 0, "ERROR",
                         failed.errorMessage(), null);
 
-            } else if (message instanceof SubprocessMessage.Heartbeat) {
+            } else if (message instanceof SubprocessMessage.Heartbeat heartbeat) {
                 handle.lastHeartbeat = System.currentTimeMillis();
+                // Broadcast heartbeat memory data to WebSocket
+                if (heartbeatBroadcaster != null) {
+                    heartbeatBroadcaster.broadcastHeartbeat(handle.taskId, "vlm", heartbeat);
+                }
             }
         } catch (Exception e) {
             logger.warn("Failed to parse VLM test subprocess message: {}", json, e);

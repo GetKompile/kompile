@@ -18,7 +18,7 @@ package ai.kompile.app.services.subprocess;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
-import ai.kompile.cli.main.util.NativeImageInfo;
+import ai.kompile.cli.common.util.NativeImageInfo;
 import ai.kompile.app.ingest.domain.IngestEvent;
 import ai.kompile.app.ingest.service.IngestEventService;
 import ai.kompile.app.services.IngestProgressTracker;
@@ -126,6 +126,15 @@ public class VectorPopulationSubprocessLauncher {
 
     @Autowired(required = false)
     private ModelLifecycleManager modelLifecycleManager;
+
+    @Autowired(required = false)
+    private ai.kompile.app.subprocess.SubprocessRegistry subprocessRegistry;
+
+    @Autowired(required = false)
+    private ai.kompile.app.services.scheduler.ResourceAwareJobScheduler resourceScheduler;
+
+    @Autowired(required = false)
+    private ai.kompile.app.services.SubprocessHeartbeatBroadcaster heartbeatBroadcaster;
 
     // Scheduler for restart delays
     private final ScheduledExecutorService restartScheduler = Executors.newSingleThreadScheduledExecutor(
@@ -392,7 +401,7 @@ public class VectorPopulationSubprocessLauncher {
             propagateNd4jEnvironment(processBuilder.environment(), threadOverrides);
 
             // === GPU LIFECYCLE: Acquire GPU resources for this vector population job ===
-            if (modelLifecycleManager != null) {
+            if (modelLifecycleManager != null && !modelLifecycleManager.hasJobGpuHold(taskId)) {
                 try {
                     modelLifecycleManager.acquireGpuForVectorPopulation(taskId);
                     logger.info("[vecpop-{}] GPU resources acquired for vector population job", taskId);
@@ -400,10 +409,17 @@ public class VectorPopulationSubprocessLauncher {
                     logger.warn("[vecpop-{}] Could not acquire GPU for vector population (may use CPU fallback): {}",
                             taskId, e.getMessage());
                 }
+            } else if (modelLifecycleManager != null) {
+                logger.info("[vecpop-{}] GPU already held by scheduler, skipping launcher acquire", taskId);
             }
 
             Process process = processBuilder.start();
             logger.info("Started vector population subprocess with PID: {}", process.pid());
+
+            // Register with centralized subprocess registry for orphan protection
+            if (subprocessRegistry != null) {
+                subprocessRegistry.register("vector-pop-" + taskId, process, "vector-population");
+            }
 
             // Record subprocess start for timing
             if (opTimingService != null) {
@@ -1005,6 +1021,18 @@ public class VectorPopulationSubprocessLauncher {
                         "Starting " + transition.toPhase().toLowerCase(),
                         "Phase transition: " + transition.fromPhase() + " -> " + transition.toPhase(),
                         null);
+                // Broadcast phase transition with duration to WebSocket
+                if (heartbeatBroadcaster != null) {
+                    heartbeatBroadcaster.broadcastPhaseTransition(handle.getTaskId(), "vectorPopulation",
+                            transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
+                }
+                // Forward phase transition to scheduler for GPU yield/reacquire
+                if (resourceScheduler != null) {
+                    var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.VECTOR_POPULATION;
+                    boolean requiresGpu = profile.phaseRequiresGpu(transition.toPhase());
+                    long gpuMem = profile.gpuMemoryForPhase(transition.toPhase());
+                    resourceScheduler.reportPhaseTransition(handle.getTaskId(), transition.toPhase(), requiresGpu, gpuMem);
+                }
             } else if (message instanceof SubprocessMessage.Heartbeat heartbeat) {
                 // Record startup complete on first heartbeat (indicates subprocess is up and running)
                 if (opTimingService != null && !handle.isStartupComplete()) {
@@ -1017,6 +1045,10 @@ public class VectorPopulationSubprocessLauncher {
                         String.format("%.1f", heartbeat.memoryUsagePercent()),
                         String.format("%.1f", heartbeat.offHeapUsagePercent()),
                         String.format("%.1f", heartbeat.gpuUsagePercent()));
+                // Broadcast heartbeat memory data to WebSocket
+                if (heartbeatBroadcaster != null) {
+                    heartbeatBroadcaster.broadcastHeartbeat(handle.getTaskId(), "vectorPopulation", heartbeat);
+                }
             } else if (message instanceof SubprocessMessage.Log log) {
                 // Forward structured subprocess logs to UI (in addition to raw stderr/stdout
                 // forwarding)
@@ -2038,6 +2070,11 @@ public class VectorPopulationSubprocessLauncher {
     private void cleanup(VectorPopulationHandle handle) {
         activeProcesses.remove(handle.getTaskId());
         warnedTaskIds.remove(handle.getTaskId());
+
+        // Deregister from centralized subprocess registry
+        if (subprocessRegistry != null) {
+            subprocessRegistry.deregister("vector-pop-" + handle.getTaskId());
+        }
 
         // === GPU LIFECYCLE: Release GPU resources for this vector population job ===
         if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {

@@ -1,0 +1,100 @@
+<!-- Collapsed rail -->
+<div class="explorer-rail" *ngIf="!expanded" (click)="toggle()" matTooltip="Expand project explorer">
+  <mat-icon class="rail-icon">account_tree</mat-icon>
+  <div class="rail-active-dot" *ngIf="activeFactSheet"
+       [style.background]="activeFactSheet.color || '#1976d2'">
+  </div>
+</div>
+
+<!-- Expanded sidebar -->
+<div class="explorer-panel" *ngIf="expanded" [@.disabled]="false">
+
+  <!-- Header -->
+  <div class="panel-header">
+    <div class="header-title">
+      <mat-icon class="header-icon">account_tree</mat-icon>
+      <span>Explorer</span>
+    </div>
+    <button mat-icon-button class="collapse-btn" (click)="toggle()" matTooltip="Collapse">
+      <mat-icon>chevron_left</mat-icon>
+    </button>
+  </div>
+
+  <!-- Project section -->
+  <div class="section">
+    <div class="section-header" (click)="goToProject()">
+      <mat-icon class="section-icon">folder_open</mat-icon>
+      <span class="section-title">{{ projectName }}</span>
+      <mat-icon class="nav-arrow">arrow_forward</mat-icon>
+    </div>
+    <div class="project-stats" *ngIf="projectStatus">
+      <span class="stat" *ngIf="projectStatus.markdownCount > 0">
+        <mat-icon class="stat-icon">description</mat-icon> {{ projectStatus.markdownCount }}
+      </span>
+      <span class="stat" *ngIf="projectStatus.sourceDocumentCount > 0">
+        <mat-icon class="stat-icon">insert_drive_file</mat-icon> {{ projectStatus.sourceDocumentCount }}
+      </span>
+      <span class="stat" *ngIf="projectStatus.codingProjectCount > 0">
+        <mat-icon class="stat-icon">code</mat-icon> {{ projectStatus.codingProjectCount }}
+      </span>
+      <span class="stat" *ngIf="projectStatus.chatSessionCount > 0">
+        <mat-icon class="stat-icon">chat</mat-icon> {{ projectStatus.chatSessionCount }}
+      </span>
+    </div>
+  </div>
+
+  <mat-divider></mat-divider>
+
+  <!-- Fact Sheets section -->
+  <div class="section">
+    <div class="section-header" (click)="goToFactSheets()">
+      <mat-icon class="section-icon">library_books</mat-icon>
+      <span class="section-title">Fact Sheets</span>
+      <span class="sheet-count">{{ factSheets.length }}</span>
+      <mat-icon class="nav-arrow">arrow_forward</mat-icon>
+    </div>
+
+    <div class="sheet-list">
+      <div class="sheet-item"
+           *ngFor="let sheet of factSheets"
+           [class.active]="sheet.id === activeFactSheet?.id"
+           (click)="selectSheet(sheet)">
+        <div class="sheet-color-bar" [style.background]="sheet.color || '#1976d2'"></div>
+        <mat-icon class="sheet-icon" [style.color]="sheet.color || '#1976d2'">{{ sheet.icon || 'folder' }}</mat-icon>
+        <div class="sheet-info">
+          <span class="sheet-name">{{ sheet.name }}</span>
+          <span class="sheet-meta">{{ sheet.factCount }} facts</span>
+        </div>
+        <mat-icon class="active-check" *ngIf="sheet.id === activeFactSheet?.id">check_circle</mat-icon>
+      </div>
+    </div>
+
+    <button class="add-sheet-btn" (click)="openCreateDialog()">
+      <mat-icon>add</mat-icon>
+      <span>New Fact Sheet</span>
+    </button>
+  </div>
+
+  <!-- Inline create dialog -->
+  <div class="create-form" *ngIf="showCreateDialog">
+    <mat-divider></mat-divider>
+    <div class="create-form-content">
+      <div class="create-form-title">New Fact Sheet</div>
+      <mat-form-field appearance="outline" class="create-field">
+        <mat-label>Name</mat-label>
+        <input matInput [(ngModel)]="newSheetName" [ngModelOptions]="{standalone: true}"
+               placeholder="My Fact Sheet" (keyup.enter)="createSheet()">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="create-field">
+        <mat-label>Description</mat-label>
+        <input matInput [(ngModel)]="newSheetDescription" [ngModelOptions]="{standalone: true}"
+               placeholder="Optional">
+      </mat-form-field>
+      <div class="create-actions">
+        <button mat-button class="cancel-btn" (click)="cancelCreate()">Cancel</button>
+        <button mat-raised-button color="primary" class="create-btn"
+                (click)="createSheet()" [disabled]="!newSheetName.trim()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>

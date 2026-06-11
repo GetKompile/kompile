@@ -44,6 +44,11 @@ public class AppIndexConfig {
     }
 
     /**
+     * Display title for the application.
+     */
+    private String appTitle;
+
+    /**
      * The type of vector store to use.
      * Default: ANSERINI (embedded)
      */
@@ -162,16 +167,19 @@ public class AppIndexConfig {
     private String chromaCollectionName;
 
     /**
-     * Creates a default configuration scoped to the given kompile data dir. Index
-     * paths land under {@code <dataDir>/anserini/indexes/} so isolated instances
-     * (set via {@code kompile.data.dir}) don't leak into user-global state.
+     * Creates a default configuration scoped to the given kompile data dir.
+     * When {@code kompile.data.dir} is a project root (set by {@code project open}),
+     * indices land under {@code <projectRoot>/data/indices/} — inside the project tree
+     * so they can be committed via git-xet or LFS. When {@code dataDir} is the global
+     * {@code ~/.kompile} default, indices go to {@code ~/.kompile/data/indices/}.
      */
     public static AppIndexConfig defaults(String dataDir) {
         String effectiveDataDir = (dataDir == null || dataDir.isBlank())
                 ? System.getProperty("user.home") + "/.kompile"
                 : dataDir;
-        String baseDir = effectiveDataDir + "/anserini/indexes";
+        String baseDir = effectiveDataDir + "/data/indices";
         return AppIndexConfig.builder()
+                .appTitle("Kompile")
                 // Default to Anserini (embedded)
                 .vectorStoreType(VectorStoreType.ANSERINI)
                 .vectorStorePath(baseDir + "/vector_index")
@@ -208,6 +216,7 @@ public class AppIndexConfig {
             return this;
         }
         return AppIndexConfig.builder()
+                .appTitle(other.appTitle != null ? other.appTitle : this.appTitle)
                 // Core settings
                 .vectorStoreType(other.vectorStoreType != null ? other.vectorStoreType : this.vectorStoreType)
                 .vectorStorePath(other.vectorStorePath != null ? other.vectorStorePath : this.vectorStorePath)

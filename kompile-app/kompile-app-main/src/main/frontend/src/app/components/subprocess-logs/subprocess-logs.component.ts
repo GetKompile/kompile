@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, Input, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectorRef, inject, ChangeDetectionStrategy, NgZone } from '@angular/core';
+import { Component, Input, OnInit, OnDestroy, OnChanges, SimpleChanges, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectorRef, inject, ChangeDetectionStrategy, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpClientModule } from '@angular/common/http';
@@ -30,7 +30,7 @@ import { IndexBrowserService } from '../../services/index-browser.service';
 import { IngestLogEntry } from '../../models/api-models';
 import { backendUrl } from '../../services/base.service';
 
-export type LogSourceType = 'ingest' | 'vector-population' | 'embedding' | 'vlm-test';
+export type LogSourceType = 'ingest' | 'vector-population' | 'embedding' | 'vlm-test' | 'training' | 'serving';
 
 @Component({
   selector: 'app-subprocess-logs',
@@ -49,7 +49,7 @@ export type LogSourceType = 'ingest' | 'vector-population' | 'embedding' | 'vlm-
   styleUrls: ['./subprocess-logs.component.css'],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class SubprocessLogsComponent implements OnInit, OnDestroy, AfterViewChecked, AfterViewInit {
+export class SubprocessLogsComponent implements OnInit, OnDestroy, OnChanges, AfterViewChecked, AfterViewInit {
   @Input() taskId: string = '';
   @Input() maxLogs: number = 500;
   @Input() height: string = '300px';
@@ -112,6 +112,23 @@ export class SubprocessLogsComponent implements OnInit, OnDestroy, AfterViewChec
       this.subscribeToLogs();
     } else if (this.taskId) {
       this.subscribeToLogs();
+    }
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    const taskIdChanged = changes['taskId'] && !changes['taskId'].firstChange;
+    const logSourceChanged = changes['logSource'] && !changes['logSource'].firstChange;
+
+    if (taskIdChanged || logSourceChanged) {
+      this.clearLogs();
+      if (this.logSource === 'embedding') {
+        this.loadStoredEmbeddingLogs();
+        this.subscribeToLogs();
+      } else if (this.taskId) {
+        this.subscribeToLogs();
+      } else {
+        this.unsubscribe();
+      }
     }
   }
 
@@ -284,17 +301,17 @@ export class SubprocessLogsComponent implements OnInit, OnDestroy, AfterViewChec
           }
         });
     } else {
-      // Default to ingest logs
+      // Ingest, training, serving, and other subprocess types all use
+      // the same INGEST_MSG: wire protocol and /topic/ingest/{taskId}/logs topic
       if (!this.taskId) return;
       this.logSubscription = this.webSocketService.subscribeToTaskLogs(this.taskId)
         .subscribe({
           next: (logEntry) => {
             this.lastWebSocketLogTime = Date.now();
-            // Buffer the log entry for batch processing
             this.logBuffer$.next(logEntry);
           },
           error: (err) => {
-            console.error('Error receiving ingest logs:', err);
+            console.error(`Error receiving ${this.logSource} logs:`, err);
           }
         });
     }
@@ -713,6 +730,7 @@ export class SubprocessLogsComponent implements OnInit, OnDestroy, AfterViewChec
       } else if (this.logSource === 'vlm-test') {
         this.webSocketService.unsubscribeFromVlmTestLogs(this.taskId);
       } else {
+        // Ingest, training, serving all use the same ingest log topic
         this.webSocketService.unsubscribeFromTaskLogs(this.taskId);
       }
     }

@@ -33,6 +33,10 @@ export class TrainingDashboardComponent implements OnInit, OnDestroy {
   eventSources: Map<string, EventSource> = new Map();
   private refreshInterval: any;
 
+  // Per-job SSE data
+  jobLogs: Map<string, any[]> = new Map();
+  jobMetrics: Map<string, any[]> = new Map();
+
   displayedColumns = ['status', 'jobId', 'modelId', 'progress', 'loss', 'epoch', 'elapsed', 'actions'];
 
   constructor(
@@ -80,7 +84,57 @@ export class TrainingDashboardComponent implements OnInit, OnDestroy {
       const es = this.eventSources.get(jobId);
       if (es) { es.close(); this.eventSources.delete(jobId); }
     } else {
+      // Close any previously expanded job's stream
+      if (this.expandedJobId) {
+        const old = this.eventSources.get(this.expandedJobId);
+        if (old) { old.close(); this.eventSources.delete(this.expandedJobId); }
+      }
       this.expandedJobId = jobId;
+
+      // Initialize per-job buffers
+      if (!this.jobLogs.has(jobId)) this.jobLogs.set(jobId, []);
+      if (!this.jobMetrics.has(jobId)) this.jobMetrics.set(jobId, []);
+
+      // Open SSE stream for live log/metrics/status updates
+      const es = this.trainingService.connectToJobStream(jobId);
+      this.eventSources.set(jobId, es);
+
+      es.addEventListener('log', (event: MessageEvent) => {
+        try {
+          const entry = JSON.parse(event.data);
+          const logs = this.jobLogs.get(jobId) || [];
+          logs.push(entry);
+          // Keep last 200 log entries
+          if (logs.length > 200) logs.splice(0, logs.length - 200);
+          this.jobLogs.set(jobId, logs);
+        } catch (e) { /* ignore parse errors */ }
+      });
+
+      es.addEventListener('metrics', (event: MessageEvent) => {
+        try {
+          const snapshot = JSON.parse(event.data);
+          const metrics = this.jobMetrics.get(jobId) || [];
+          metrics.push(snapshot);
+          if (metrics.length > 100) metrics.splice(0, metrics.length - 100);
+          this.jobMetrics.set(jobId, metrics);
+        } catch (e) { /* ignore parse errors */ }
+      });
+
+      es.addEventListener('status', (event: MessageEvent) => {
+        try {
+          const status = JSON.parse(event.data);
+          // Update the job in the list with latest status
+          const idx = this.jobs.findIndex(j => j.jobId === jobId);
+          if (idx >= 0) {
+            this.jobs[idx] = { ...this.jobs[idx], ...status };
+          }
+        } catch (e) { /* ignore parse errors */ }
+      });
+
+      es.onerror = () => {
+        es.close();
+        this.eventSources.delete(jobId);
+      };
     }
   }
 

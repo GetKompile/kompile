@@ -26,6 +26,15 @@ import ai.kompile.cli.main.chat.tools.ToolContext;
 public interface SubagentRunner {
 
     /**
+     * Listener notified when subagents start and stop.
+     * Used by the status bar to track active subagents.
+     */
+    interface LifecycleListener {
+        void onSubagentStart(String id, String type, String description);
+        void onSubagentEnd(String id);
+    }
+
+    /**
      * Run a subagent with the given configuration and prompt.
      * The subagent executes autonomously and returns its final text result.
      *
@@ -36,4 +45,11 @@ public interface SubagentRunner {
      * @throws Exception if the subagent fails
      */
     String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception;
+
+    /**
+     * Set a lifecycle listener for subagent start/end events.
+     */
+    default void setLifecycleListener(LifecycleListener listener) {
+        // Default no-op for implementations that don't support it
+    }
 }

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.harness.TaskOutcome;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
@@ -90,6 +91,20 @@ public class ChatSessionMetrics {
     private final AtomicInteger messagesAutoDequeued = new AtomicInteger(0);
     private final AtomicInteger tasksBackgrounded = new AtomicInteger(0);
 
+    // Performance harness tracking
+    private final AtomicInteger escapeCount = new AtomicInteger(0);
+    private final Map<String, AtomicInteger> escapesByType = new ConcurrentHashMap<>();
+    private final AtomicInteger judgeCallCount = new AtomicInteger(0);
+    private final AtomicInteger modelSwapCount = new AtomicInteger(0);
+    private final AtomicInteger subagentsSpawned = new AtomicInteger(0);
+    private final AtomicLong thinkingTokens = new AtomicLong(0);
+    private final Map<String, List<Double>> qualityScoresByModel = new ConcurrentHashMap<>();
+
+    // Session outcome tracking
+    private volatile TaskOutcome sessionOutcome;
+    private volatile String outcomeReason;
+    private volatile String taskPrompt;
+
     // Per-turn log for detailed analysis
     private final List<TurnMetric> turnLog = Collections.synchronizedList(new ArrayList<>());
 
@@ -118,6 +133,16 @@ public class ChatSessionMetrics {
     }
     public String getActiveRole() { return activeRole; }
     public List<RoleChangeEvent> getRoleChanges() { return Collections.unmodifiableList(roleChanges); }
+
+    public void setSessionOutcome(TaskOutcome outcome, String reason) {
+        this.sessionOutcome = outcome;
+        this.outcomeReason = reason;
+    }
+    public TaskOutcome getSessionOutcome() { return sessionOutcome; }
+    public String getOutcomeReason() { return outcomeReason; }
+
+    public void setTaskPrompt(String taskPrompt) { this.taskPrompt = taskPrompt; }
+    public String getTaskPrompt() { return taskPrompt; }
 
     // ========================================================================
     // Turn tracking
@@ -238,6 +263,98 @@ public class ChatSessionMetrics {
     public Map<String, AtomicInteger> getToolCallCounts() { return toolCallCounts; }
 
     // ========================================================================
+    // Performance harness tracking
+    // ========================================================================
+
+    /**
+     * Record an escape event of the given type. Null or blank types are ignored.
+     */
+    public void recordEscape(String type) {
+        escapeCount.incrementAndGet();
+        if (type != null && !type.isBlank()) {
+            escapesByType.computeIfAbsent(type, k -> new AtomicInteger(0)).incrementAndGet();
+        }
+    }
+
+    /** Increment the judge-call counter. */
+    public void recordJudgeCall() {
+        judgeCallCount.incrementAndGet();
+    }
+
+    /** Increment the model-swap counter. */
+    public void recordModelSwap() {
+        modelSwapCount.incrementAndGet();
+    }
+
+    /**
+     * Record a quality score for the given model. Negative values are ignored.
+     */
+    public void recordQualityScore(String model, double score) {
+        if (score < 0 || model == null) return;
+        qualityScoresByModel.computeIfAbsent(model, k -> Collections.synchronizedList(new ArrayList<>()))
+                .add(score);
+    }
+
+    /** Increment the subagents-spawned counter. */
+    public void recordSubagentSpawned() {
+        subagentsSpawned.incrementAndGet();
+    }
+
+    /**
+     * Accumulate thinking tokens. Non-positive values are ignored.
+     */
+    public void recordThinkingTokens(long tokens) {
+        if (tokens > 0) {
+            thinkingTokens.addAndGet(tokens);
+        }
+    }
+
+    public int getEscapeCount() { return escapeCount.get(); }
+
+    /** Returns a live, unmodifiable view of escape counts keyed by type. */
+    public Map<String, AtomicInteger> getEscapesByType() {
+        return Collections.unmodifiableMap(escapesByType);
+    }
+
+    public int getJudgeCallCount() { return judgeCallCount.get(); }
+
+    public int getModelSwapCount() { return modelSwapCount.get(); }
+
+    public int getSubagentsSpawned() { return subagentsSpawned.get(); }
+
+    public long getThinkingTokens() { return thinkingTokens.get(); }
+
+    /**
+     * Returns a snapshot map of all quality scores recorded per model.
+     */
+    public Map<String, List<Double>> getQualityScoresByModel() {
+        Map<String, List<Double>> snapshot = new LinkedHashMap<>();
+        qualityScoresByModel.forEach((model, scores) -> {
+            synchronized (scores) {
+                snapshot.put(model, new ArrayList<>(scores));
+            }
+        });
+        return Collections.unmodifiableMap(snapshot);
+    }
+
+    /**
+     * Returns the average quality score per model, computed from all recorded scores.
+     * Models with no scores are excluded.
+     */
+    public Map<String, Double> getAvgScoreByModel() {
+        Map<String, Double> result = new LinkedHashMap<>();
+        qualityScoresByModel.forEach((model, scores) -> {
+            synchronized (scores) {
+                if (!scores.isEmpty()) {
+                    double avg = scores.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+                    result.put(model, avg);
+                }
+            }
+        });
+        return Collections.unmodifiableMap(result);
+    }
+
+    // ========================================================================
     // Formatted output
     // ========================================================================
 
@@ -350,6 +467,39 @@ public class ChatSessionMetrics {
             queue.put("tasksBackgrounded", tasksBackgrounded.get());
             root.set("queue", queue);
         }
+
+        // Outcome
+        if (sessionOutcome != null) {
+            ObjectNode outcome = mapper.createObjectNode();
+            outcome.put("outcome", sessionOutcome.name());
+            if (outcomeReason != null) outcome.put("reason", outcomeReason);
+            if (taskPrompt != null) outcome.put("taskPrompt", taskPrompt);
+            root.set("outcome", outcome);
+        }
+
+        // Escapes
+        if (escapeCount.get() > 0) {
+            ObjectNode escapes = mapper.createObjectNode();
+            escapes.put("totalEscapes", escapeCount.get());
+            ObjectNode byType = mapper.createObjectNode();
+            escapesByType.forEach((k, v) -> byType.put(k, v.get()));
+            escapes.set("byType", byType);
+            root.set("escapes", escapes);
+        }
+
+        // Quality scores
+        if (!qualityScoresByModel.isEmpty()) {
+            ObjectNode scores = mapper.createObjectNode();
+            getAvgScoreByModel().forEach(scores::put);
+            root.set("qualityScores", scores);
+        }
+
+        // Harness fields in agentic section
+        ObjectNode agenticNode = (ObjectNode) root.get("agentic");
+        if (judgeCallCount.get() > 0) agenticNode.put("judgeCalls", judgeCallCount.get());
+        if (modelSwapCount.get() > 0) agenticNode.put("modelSwaps", modelSwapCount.get());
+        if (thinkingTokens.get() > 0) agenticNode.put("thinkingTokens", thinkingTokens.get());
+        if (subagentsSpawned.get() > 0) agenticNode.put("subagentsSpawned", subagentsSpawned.get());
 
         return root;
     }

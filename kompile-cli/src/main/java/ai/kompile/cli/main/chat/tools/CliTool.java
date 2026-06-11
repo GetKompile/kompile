@@ -46,4 +46,13 @@ public interface CliTool {
      * @throws ToolExecutionException if the tool fails
      */
     ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException;
+
+    /**
+     * MCP tool annotations that hint to clients about this tool's behavior.
+     * Defaults to {@link McpToolAnnotations#WRITE} — tools that modify local state
+     * but are not destructive. Override in subclasses for more precise hints.
+     */
+    default McpToolAnnotations mcpAnnotations() {
+        return McpToolAnnotations.WRITE;
+    }
 }

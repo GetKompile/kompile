@@ -31,7 +31,7 @@ import java.util.stream.Collectors;
  * Service for managing prompt templates.
  * Provides CRUD operations, rendering, and template discovery.
  */
-@Service
+@Service("appPromptTemplateService")
 public class PromptTemplateService {
 
     private static final Logger logger = LoggerFactory.getLogger(PromptTemplateService.class);

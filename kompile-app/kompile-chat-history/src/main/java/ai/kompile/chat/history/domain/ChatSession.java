@@ -81,11 +81,34 @@ public class ChatSession {
     private String metadata;
 
     /**
+     * Cached message count to avoid lazy-loading the messages collection just for counts.
+     * Updated by ChatHistoryService whenever messages are added.
+     */
+    @Column(nullable = false)
+    @Builder.Default
+    private int messageCount = 0;
+
+    /**
+     * Original timestamp from the CLI source (epoch millis).
+     * Null for sessions created in the web UI.
+     * Used to preserve the actual conversation time for imported sessions.
+     */
+    @Column
+    private Long originalTimestamp;
+
+    /**
      * Source of the conversation: "app", "kompile", "claude-code", "opencode", "codex", "qwen".
      * Null or "app" means created in the web UI.
      */
     @Column
     private String source;
+
+    /**
+     * The code project this session is associated with (matches CodeProject.projectId).
+     * Set when a CLI session is launched from a project directory.
+     */
+    @Column
+    private String codeProjectId;
 
     /**
      * Optional folder this session is associated with.

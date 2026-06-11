@@ -349,6 +349,17 @@ public abstract class IndexerService {
     public abstract void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam)
             throws IOException;
 
+    /**
+     * Deletes documents from the keyword index only.
+     *
+     * @param documentIds The IDs of the documents to delete
+     * @return true if deletion was successful
+     */
+    public boolean deleteFromKeywordIndex(List<String> documentIds) {
+        // Default: delegates to deleteDocuments with null collection
+        return deleteDocuments(documentIds, null);
+    }
+
     public abstract boolean deleteDocuments(List<String> documentIds, String collectionNameParam);
 
     public abstract boolean deleteAll(String collectionNameParam);

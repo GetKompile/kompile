@@ -16,20 +16,26 @@
 
 package ai.kompile.cli.main.config;
 
-// All functional subcommands (Python-specific, DL4J/SameDiff specific like UpdaterGenerator, etc.)
-// are now expected to be loaded dynamically via CliCommandRegistrar implementations
-// found in their respective modules.
-
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
 @Command(name = "config",
         subcommands = {
-                // Only universally applicable subcommands like HelpCommand remain static.
-                CommandLine.HelpCommand.class
+                CommandLine.HelpCommand.class,
+                ConfigExportCommand.class,
+                ConfigImportCommand.class,
+                ConfigListArchivesCommand.class,
+                AppConfigCommand.class,
+                ToolGatewayConfigCommand.class
         },
         mixinStandardHelpOptions = true,
-        description = "Configuration related commands for Kompile. Specific generators (Python, DL4J, etc.) are loaded dynamically.")
+        description = "Configuration management for Kompile.%n%n" +
+                "Subcommands:%n" +
+                "  export         Export project configuration to archive%n" +
+                "  import         Import configuration from archive%n" +
+                "  archives       List available config archives%n" +
+                "  app            Application-level configuration%n" +
+                "  tool-gateway   Configure tool gateway rules%n")
 public class ConfigMain implements Runnable {
 
     @CommandLine.Spec

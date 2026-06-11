@@ -151,12 +151,29 @@ public class ResumeCommand implements Callable<Integer> {
     }
 
     /**
-     * List all conversations.
+     * List all conversations to stdout with optional --filter-agent / --filter-source.
      */
     private int listConversations() {
         try {
-            ResumeTool tool = new ResumeTool();
-            tool.runInteractiveBrowser();
+            java.util.List<ChatHistory.ConversationSummary> conversations = ChatHistory.listConversations();
+            if (conversations.isEmpty()) {
+                System.out.println("No saved conversations found.");
+                return 0;
+            }
+
+            System.out.println("Saved conversations:");
+            System.out.println();
+            for (ChatHistory.ConversationSummary c : conversations) {
+                if (filterAgent != null && !filterAgent.isBlank()
+                        && !filterAgent.equalsIgnoreCase(c.agent())) {
+                    continue;
+                }
+                System.out.printf("  %-24s  %-20s  agent=%-8s  %s%n",
+                        c.sessionId(), c.started(), c.agent(),
+                        c.title().isEmpty() ? "(empty)" : c.title());
+            }
+            System.out.println();
+            System.out.println("Resume with: kompile resume --session-id <session-id>");
             return 0;
         } catch (Exception e) {
             System.err.println("Error listing conversations: " + e.getMessage());
@@ -387,14 +404,26 @@ public class ResumeCommand implements Callable<Integer> {
                 pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
                 pb.inheritIO();
                 Process process = pb.start();
-                exitCode = process.waitFor();
+                try {
+                    exitCode = process.waitFor();
+                } catch (InterruptedException ie) {
+                    process.destroy();
+                    try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                    if (process.isAlive()) process.destroyForcibly();
+                    exitCode = 130;
+                    Thread.interrupted();
+                }
             } finally {
                 // Restore original settings to prevent pollution
                 ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
             }
 
             System.out.println();
-            System.out.println("✓ Agent session completed (exit code: " + exitCode + ")");
+            if (exitCode == 130) {
+                System.out.println("Agent interrupted.");
+            } else {
+                System.out.println("✓ Agent session completed (exit code: " + exitCode + ")");
+            }
             return exitCode;
         } catch (Exception e) {
             System.err.println("Error resuming conversation: " + e.getMessage());
@@ -447,13 +476,25 @@ public class ResumeCommand implements Callable<Integer> {
                 pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
                 pb.inheritIO();
                 Process process = pb.start();
-                exitCode = process.waitFor();
+                try {
+                    exitCode = process.waitFor();
+                } catch (InterruptedException ie) {
+                    process.destroy();
+                    try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                    if (process.isAlive()) process.destroyForcibly();
+                    exitCode = 130;
+                    Thread.interrupted();
+                }
             } finally {
                 ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
             }
 
             System.out.println();
-            System.out.println("Agent session completed (exit code: " + exitCode + ")");
+            if (exitCode == 130) {
+                System.out.println("Agent interrupted.");
+            } else {
+                System.out.println("Agent session completed (exit code: " + exitCode + ")");
+            }
             return exitCode;
         } catch (Exception e) {
             System.err.println("Error resuming OpenCode session: " + e.getMessage());
@@ -494,16 +535,9 @@ public class ResumeCommand implements Callable<Integer> {
             }
         }
 
-        // Add permission bypass flags — same as PassthroughCommand.buildCommand()
-        if (name.contains("claude")) {
-            cmd.add("--dangerously-skip-permissions");
-        } else if (name.contains("codex")) {
-            cmd.add("--dangerously-bypass-approvals-and-sandbox");
-        } else if (name.contains("qwen")) {
-            cmd.add("--yolo");
-        } else if (name.contains("gemini")) {
-            cmd.add("--yolo");
-        }
+        // Add permission bypass flags via centralized overrides
+        ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
+                cmd, agent, true, exportResult.getWorkingDirectory());
 
         // On resume, inject a system prompt directive to verify MCP tools are
         // connected before proceeding. Claude Code has a race condition where

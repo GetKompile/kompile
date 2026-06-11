@@ -615,6 +615,58 @@
               </div>
             </div>
           </mat-expansion-panel>
+
+          <!-- Entities -->
+          <mat-expansion-panel *ngIf="graphRagResponse.entities?.length">
+            <mat-expansion-panel-header>
+              <mat-panel-title><mat-icon>hub</mat-icon> Entities ({{ graphRagResponse.entities!.length }})</mat-panel-title>
+            </mat-expansion-panel-header>
+            <div class="graph-entities">
+              <div class="graph-entity" *ngFor="let entity of graphRagResponse.entities">
+                <span class="entity-name">{{ entity.name }}</span>
+                <span class="entity-type" *ngIf="entity.type">{{ entity.type }}</span>
+              </div>
+            </div>
+          </mat-expansion-panel>
+
+          <!-- Relationships -->
+          <mat-expansion-panel *ngIf="graphRagResponse.relationships?.length">
+            <mat-expansion-panel-header>
+              <mat-panel-title><mat-icon>device_hub</mat-icon> Relationships ({{ graphRagResponse.relationships!.length }})</mat-panel-title>
+            </mat-expansion-panel-header>
+            <div class="graph-relationships">
+              <div class="graph-rel" *ngFor="let rel of graphRagResponse.relationships">
+                <span class="rel-source">{{ rel.source }}</span>
+                <span class="rel-arrow">—[{{ rel.type }}]→</span>
+                <span class="rel-target">{{ rel.target }}</span>
+              </div>
+            </div>
+          </mat-expansion-panel>
+
+          <!-- Communities -->
+          <mat-expansion-panel *ngIf="graphRagResponse.communities?.length">
+            <mat-expansion-panel-header>
+              <mat-panel-title><mat-icon>groups</mat-icon> Communities ({{ graphRagResponse.communities!.length }})</mat-panel-title>
+            </mat-expansion-panel-header>
+            <div class="graph-communities">
+              <div class="graph-community" *ngFor="let c of graphRagResponse.communities">
+                <p class="community-summary" *ngIf="c.summary">{{ c.summary }}</p>
+                <div class="community-members" *ngIf="c.members?.length">
+                  <span class="member-chip" *ngFor="let m of c.members">{{ m }}</span>
+                </div>
+              </div>
+            </div>
+          </mat-expansion-panel>
+
+          <!-- Source Chunks -->
+          <mat-expansion-panel *ngIf="graphRagResponse.sourceChunks?.length">
+            <mat-expansion-panel-header>
+              <mat-panel-title><mat-icon>source</mat-icon> Source Chunks ({{ graphRagResponse.sourceChunks!.length }})</mat-panel-title>
+            </mat-expansion-panel-header>
+            <div class="source-chunks">
+              <pre *ngFor="let chunk of graphRagResponse.sourceChunks" class="source-chunk">{{ chunk }}</pre>
+            </div>
+          </mat-expansion-panel>
         </div>
       </div>
     </mat-card-content>

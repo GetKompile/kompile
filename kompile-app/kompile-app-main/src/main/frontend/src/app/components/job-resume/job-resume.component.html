@@ -1,0 +1,218 @@
+<div class="job-resume-container">
+  <!-- Header -->
+  <div class="section-header">
+    <h3>
+      <span class="material-icons">replay</span>
+      Resumable Jobs
+    </h3>
+    <div class="header-actions">
+      <button class="btn btn-secondary small" (click)="loadAll()" [disabled]="loading">
+        <span class="material-icons">refresh</span>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Success Banners for recently resumed jobs -->
+  <div class="success-banner" *ngFor="let resumed of recentlyResumed">
+    <span class="material-icons">check_circle</span>
+    <div class="success-content">
+      <strong>{{ resumed.type === 'ingest' ? 'Ingest' : 'Crawl' }} job resumed successfully</strong>
+      <span class="success-detail">
+        New task: <code>{{ resumed.newTaskId | slice:0:24 }}{{ resumed.newTaskId.length > 24 ? '...' : '' }}</code>
+        — check Job History or Active Processing for progress
+      </span>
+    </div>
+    <button class="btn btn-icon small" (click)="dismissResumeNotice(resumed.originalId)">
+      <span class="material-icons">close</span>
+    </button>
+  </div>
+
+  <!-- Error Banner -->
+  <div class="error-banner" *ngIf="error">
+    <span class="material-icons">error</span>
+    {{ error }}
+    <button class="btn btn-icon small" (click)="error = null">
+      <span class="material-icons">close</span>
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading-indicator" *ngIf="loading && !hasAnyJobs">
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+    <p>Loading resumable jobs...</p>
+  </div>
+
+  <!-- Empty State -->
+  <div class="empty-state" *ngIf="!loading && !hasAnyJobs">
+    <span class="material-icons empty-icon">check_circle</span>
+    <p>No resumable jobs found.</p>
+    <p class="hint">Jobs that fail or are interrupted with checkpoint data will appear here.</p>
+  </div>
+
+  <!-- Resumable Ingest Jobs -->
+  <div class="job-section" *ngIf="resumableIngestJobs.length > 0">
+    <h4>
+      <span class="material-icons">description</span>
+      Ingest Jobs
+      <span class="badge">{{ resumableIngestJobs.length }}</span>
+    </h4>
+
+    <div class="jobs-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>File</th>
+            <th>Progress</th>
+            <th>Phase</th>
+            <th>Stopped</th>
+            <th>Loader / Chunker</th>
+            <th>Model</th>
+            <th>Error</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let job of resumableIngestJobs">
+            <td>
+              <span class="status-chip" [ngClass]="getStatusClass(job.status)">
+                <span class="material-icons status-icon">{{ getStatusIcon(job.status) }}</span>
+                {{ job.status }}
+              </span>
+            </td>
+            <td class="file-cell" [title]="job.fileName">
+              {{ job.fileName | slice:0:40 }}{{ (job.fileName?.length || 0) > 40 ? '...' : '' }}
+            </td>
+            <td>
+              <div class="progress-cell">
+                <mat-progress-bar
+                  mode="determinate"
+                  [value]="getProgressPercent(job)"
+                  class="progress-bar-small">
+                </mat-progress-bar>
+                <span class="progress-text">
+                  {{ job.chunksIndexed || 0 }}/{{ job.totalChunks || 0 }} indexed
+                  <span *ngIf="job.chunksEmbedded" class="embedded-count">({{ job.chunksEmbedded }} embedded)</span>
+                  ({{ getProgressPercent(job) }}%)
+                </span>
+              </div>
+            </td>
+            <td>{{ job.resumeFromPhase || '-' }}</td>
+            <td>{{ formatTimestamp(job.stoppedAt) }}</td>
+            <td class="loader-cell">
+              <span *ngIf="job.loaderUsed">{{ job.loaderUsed }}</span>
+              <span *ngIf="job.loaderUsed && job.chunkerUsed"> / </span>
+              <span *ngIf="job.chunkerUsed">{{ job.chunkerUsed }}</span>
+              <span *ngIf="!job.loaderUsed && !job.chunkerUsed">-</span>
+            </td>
+            <td>{{ job.embeddingModelUsed || '-' }}</td>
+            <td class="error-cell" [title]="job.errorMessage || ''">
+              {{ job.errorMessage ? (job.errorMessage | slice:0:30) + '...' : '-' }}
+            </td>
+            <td>
+              <div class="action-buttons">
+                <button class="btn btn-primary small resume-btn"
+                        (click)="resumeIngestJob(job.taskId)"
+                        [disabled]="resumingTaskId === job.taskId"
+                        title="Resume from checkpoint">
+                  <span class="material-icons" *ngIf="resumingTaskId !== job.taskId">play_arrow</span>
+                  <mat-spinner *ngIf="resumingTaskId === job.taskId" diameter="16"></mat-spinner>
+                  Resume
+                </button>
+                <button class="btn btn-secondary small"
+                        (click)="viewCheckpoint(job.taskId)"
+                        title="View checkpoint details">
+                  <span class="material-icons">info</span>
+                </button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Resumable Crawl Jobs -->
+  <div class="job-section" *ngIf="resumableCrawlJobs.length > 0">
+    <h4>
+      <span class="material-icons">language</span>
+      Crawl Jobs
+      <span class="badge">{{ resumableCrawlJobs.length }}</span>
+    </h4>
+
+    <div class="jobs-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Seed</th>
+            <th>Crawler</th>
+            <th>Progress</th>
+            <th>Last Checkpoint</th>
+            <th>Error</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let job of resumableCrawlJobs">
+            <td>
+              <span class="status-chip" [ngClass]="getStatusClass(job.status)">
+                <span class="material-icons status-icon">{{ getStatusIcon(job.status) }}</span>
+                {{ job.status }}
+              </span>
+            </td>
+            <td class="file-cell" [title]="job.seed">
+              {{ job.seed | slice:0:50 }}{{ (job.seed?.length || 0) > 50 ? '...' : '' }}
+            </td>
+            <td>{{ job.crawlerId || 'auto' }}</td>
+            <td>
+              <span class="progress-text">
+                {{ job.documentsProcessed || 0 }}/{{ job.documentsDiscovered || 0 }} docs
+                <span *ngIf="job.documentsFailed" class="failed-count">({{ job.documentsFailed }} failed)</span>
+              </span>
+            </td>
+            <td>{{ formatTimestamp(job.lastCheckpointAt) }}</td>
+            <td class="error-cell" [title]="job.errorMessage || ''">
+              {{ job.errorMessage ? (job.errorMessage | slice:0:30) + '...' : '-' }}
+            </td>
+            <td>
+              <button class="btn btn-primary small resume-btn"
+                      (click)="resumeCrawlJob(job.crawlJobId)"
+                      [disabled]="resumingTaskId === job.crawlJobId"
+                      title="Resume from checkpoint">
+                <span class="material-icons" *ngIf="resumingTaskId !== job.crawlJobId">play_arrow</span>
+                <mat-spinner *ngIf="resumingTaskId === job.crawlJobId" diameter="16"></mat-spinner>
+                Resume
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Checkpoint Detail Panel -->
+  <div class="checkpoint-detail" *ngIf="checkpointDetail">
+    <div class="section-header">
+      <h4>
+        <span class="material-icons">saved_search</span>
+        Checkpoint: {{ checkpointDetail.taskId }}
+      </h4>
+      <button class="btn btn-icon small" (click)="checkpointDetail = null">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="checkpoint-grid">
+      <div class="ck-row"><span class="ck-label">Total Chunks</span><span>{{ checkpointDetail.totalChunks || '-' }}</span></div>
+      <div class="ck-row"><span class="ck-label">Chunks Embedded</span><span>{{ checkpointDetail.chunksEmbedded || '-' }}</span></div>
+      <div class="ck-row"><span class="ck-label">Chunks Indexed</span><span>{{ checkpointDetail.chunksIndexed || '-' }}</span></div>
+      <div class="ck-row"><span class="ck-label">Current Phase</span><span>{{ checkpointDetail.currentPhase || '-' }}</span></div>
+      <div class="ck-row"><span class="ck-label">Next Chunk to Embed</span><span>{{ checkpointDetail.nextChunkToEmbed ?? '-' }}</span></div>
+      <div class="ck-row"><span class="ck-label">Resume From Phase</span><span>{{ checkpointDetail.resumeFromPhase || '-' }}</span></div>
+      <div class="ck-row"><span class="ck-label">Checkpoint Exists</span><span>{{ checkpointDetail.checkpointExists ? 'Yes' : 'No' }}</span></div>
+      <div class="ck-row"><span class="ck-label">Needs Resume</span><span>{{ checkpointDetail.needsResume ? 'Yes' : 'No' }}</span></div>
+      <div class="ck-row"><span class="ck-label">Is Resumable</span><span>{{ checkpointDetail.isResumable ? 'Yes' : 'No' }}</span></div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,467 @@
+<div class="project-enforcer-manager">
+  <div class="manager-header">
+    <h2>Project Judge &amp; Enforcer</h2>
+    <div class="header-actions">
+      <button mat-raised-button (click)="loadProjects()">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+    </div>
+  </div>
+
+  <div class="error-banner" *ngIf="errorMessage">
+    <mat-icon>error</mat-icon>
+    <span>{{ errorMessage }}</span>
+    <button mat-icon-button (click)="errorMessage = ''">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <mat-tab-group>
+    <!-- Projects Tab -->
+    <mat-tab label="Projects">
+      <div class="tab-body">
+        <!-- Empty state -->
+        <div class="empty-state" *ngIf="codingProjects.length === 0 && !loading">
+          <mat-icon>folder_off</mat-icon>
+          <p>No coding projects registered</p>
+          <p class="hint">Register a code folder with
+            <code>kompile project code-add --path &lt;repo&gt;</code></p>
+        </div>
+
+        <!-- Loading -->
+        <mat-progress-bar mode="indeterminate" *ngIf="loading"></mat-progress-bar>
+
+        <!-- Project cards -->
+        <div class="project-cards" *ngIf="codingProjects.length > 0">
+          <mat-card *ngFor="let project of codingProjects"
+                    class="project-card"
+                    [class.selected]="selectedProject?.id === project.id"
+                    (click)="selectProject(project)">
+            <mat-card-content>
+              <div class="card-header">
+                <div>
+                  <h3>{{ project.name || project.id }}</h3>
+                  <div class="project-path" [matTooltip]="project.rootPath">{{ project.rootPath }}</div>
+                </div>
+                <mat-icon [style.color]="getConfigStatusColor(project)">
+                  {{ getConfigStatusIcon(project) }}
+                </mat-icon>
+              </div>
+              <div class="card-meta">
+                <mat-chip-set>
+                  <mat-chip *ngIf="project.autoIndex" color="primary" highlighted>auto-index</mat-chip>
+                  <mat-chip>{{ getConfigLabel(project) }}</mat-chip>
+                  <mat-chip *ngFor="let tag of (project.tags || []).slice(0, 3)">{{ tag }}</mat-chip>
+                </mat-chip-set>
+              </div>
+              <div class="card-actions">
+                <button mat-icon-button matTooltip="Configure judge" (click)="selectProject(project); $event.stopPropagation()">
+                  <mat-icon>settings</mat-icon>
+                </button>
+                <button mat-icon-button matTooltip="Start enforcer session"
+                        color="primary"
+                        (click)="startSessionForProject(project); $event.stopPropagation()">
+                  <mat-icon>play_arrow</mat-icon>
+                </button>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <!-- Config editor for selected project -->
+        <div class="config-detail" *ngIf="selectedProject && editConfig">
+          <div class="config-header">
+            <button mat-icon-button (click)="selectedProject = null; editConfig = null">
+              <mat-icon>arrow_back</mat-icon>
+            </button>
+            <h3>Judge Config: {{ selectedProject.name || selectedProject.id }}</h3>
+            <mat-chip class="config-source-chip"
+                      [color]="configSource === 'code-project' ? 'primary' : (configSource === 'project' ? 'accent' : 'warn')"
+                      highlighted>
+              {{ configSource === 'code-project' ? 'Per-project' : (configSource === 'project' ? 'Inherited' : 'New') }}
+            </mat-chip>
+          </div>
+
+          <!-- Agent & Mode -->
+          <div class="config-section">
+            <h4>Agent &amp; Evaluation</h4>
+            <div class="config-grid">
+              <mat-form-field appearance="outline">
+                <mat-label>Agent</mat-label>
+                <mat-select [(ngModel)]="editConfig.agent">
+                  <mat-option value="claude">Claude</mat-option>
+                  <mat-option value="codex">Codex</mat-option>
+                  <mat-option value="gemini">Gemini</mat-option>
+                  <mat-option value="qwen">Qwen</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Max Corrections</mat-label>
+                <input matInput type="number" [(ngModel)]="editConfig.maxCorrections" min="0" max="10">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Primary Language</mat-label>
+                <mat-select [(ngModel)]="editConfig.primaryLanguage">
+                  <mat-option value="java">Java</mat-option>
+                  <mat-option value="typescript">TypeScript</mat-option>
+                  <mat-option value="python">Python</mat-option>
+                  <mat-option value="go">Go</mat-option>
+                  <mat-option value="rust">Rust</mat-option>
+                  <mat-option value="kotlin">Kotlin</mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+            <div class="config-grid" style="margin-top: 8px;">
+              <mat-slide-toggle [(ngModel)]="editConfig.keywordMode" color="primary">
+                Keyword Mode (no LLM judge)
+              </mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="editConfig.archiveDiffs" color="primary">
+                Archive Diffs
+              </mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="editConfig.autoRollbackOnViolation" color="primary">
+                Auto-Rollback on Violation
+              </mat-slide-toggle>
+            </div>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Judge Backend -->
+          <div class="config-section" style="margin-top: 16px;">
+            <h4>Judge Backend</h4>
+            <div class="config-grid">
+              <mat-form-field appearance="outline">
+                <mat-label>Judge Mode</mat-label>
+                <mat-select [(ngModel)]="editConfig.judgeMode">
+                  <mat-option [value]="null">auto</mat-option>
+                  <mat-option value="remote">remote</mat-option>
+                  <mat-option value="local">local</mat-option>
+                  <mat-option value="cli">cli</mat-option>
+                  <mat-option value="auto-server">auto-server</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Judge Provider</mat-label>
+                <mat-select [(ngModel)]="editConfig.judgeProvider">
+                  <mat-option [value]="null">auto</mat-option>
+                  <mat-option value="anthropic">Anthropic</mat-option>
+                  <mat-option value="openai">OpenAI</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Judge Model</mat-label>
+                <input matInput [(ngModel)]="editConfig.judgeModel" placeholder="auto">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Judge Base URL</mat-label>
+                <input matInput [(ngModel)]="editConfig.judgeBaseUrl" placeholder="(default)">
+              </mat-form-field>
+            </div>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Semantic Matching -->
+          <div class="config-section" style="margin-top: 16px;">
+            <h4>Semantic Matching</h4>
+            <div class="config-grid">
+              <mat-form-field appearance="outline">
+                <mat-label>Semantic Mode</mat-label>
+                <mat-select [(ngModel)]="editConfig.semanticMode">
+                  <mat-option value="none">none</mat-option>
+                  <mat-option value="wordnet">wordnet</mat-option>
+                  <mat-option value="embedding">embedding</mat-option>
+                  <mat-option value="both">both</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Similarity Threshold</mat-label>
+                <input matInput type="number" [(ngModel)]="editConfig.semanticThreshold"
+                       min="0" max="1" step="0.01">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Embedding URL</mat-label>
+                <input matInput [(ngModel)]="editConfig.embeddingUrl" placeholder="(optional)">
+              </mat-form-field>
+            </div>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Rules -->
+          <div class="config-section" style="margin-top: 16px;">
+            <h4>Inline Rules</h4>
+            <mat-form-field appearance="outline" class="rules-field">
+              <mat-label>Rules</mat-label>
+              <textarea matInput [(ngModel)]="editConfig.inlineRules" rows="4"
+                        placeholder="Enter enforcer rules..."></textarea>
+            </mat-form-field>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Banned Keywords -->
+          <div class="config-section keyword-section" style="margin-top: 16px;">
+            <h4>Banned Keywords</h4>
+            <div class="keyword-list">
+              <mat-chip-set>
+                <mat-chip *ngFor="let kw of editConfig.bannedKeywords || []"
+                          (removed)="removeKeyword(kw)" removable>
+                  {{ kw }}
+                  <mat-icon matChipRemove>cancel</mat-icon>
+                </mat-chip>
+              </mat-chip-set>
+            </div>
+            <div class="keyword-add">
+              <mat-form-field appearance="outline">
+                <mat-label>Add keyword</mat-label>
+                <input matInput [(ngModel)]="newKeyword" (keyup.enter)="addKeyword()"
+                       placeholder="Type and press Enter">
+              </mat-form-field>
+              <button mat-icon-button color="primary" (click)="addKeyword()" [disabled]="!newKeyword">
+                <mat-icon>add_circle</mat-icon>
+              </button>
+            </div>
+          </div>
+
+          <!-- Banned Tools -->
+          <div class="config-section keyword-section">
+            <h4>Banned Tools</h4>
+            <div class="keyword-list">
+              <mat-chip-set>
+                <mat-chip *ngFor="let tool of editConfig.bannedTools || []"
+                          (removed)="removeTool(tool)" removable>
+                  {{ tool }}
+                  <mat-icon matChipRemove>cancel</mat-icon>
+                </mat-chip>
+              </mat-chip-set>
+            </div>
+            <div class="keyword-add">
+              <mat-form-field appearance="outline">
+                <mat-label>Add tool ban</mat-label>
+                <input matInput [(ngModel)]="newTool" (keyup.enter)="addTool()"
+                       placeholder="Tool name">
+              </mat-form-field>
+              <button mat-icon-button color="primary" (click)="addTool()" [disabled]="!newTool">
+                <mat-icon>add_circle</mat-icon>
+              </button>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="config-actions">
+            <button mat-button color="warn" (click)="deleteConfig()"
+                    *ngIf="configSource === 'code-project'">
+              Delete Per-Project Config
+            </button>
+            <button mat-button (click)="selectedProject = null; editConfig = null">Cancel</button>
+            <button mat-raised-button color="primary" (click)="saveConfig()">
+              Save Config
+            </button>
+          </div>
+        </div>
+
+        <!-- Start session dialog -->
+        <div class="session-form" *ngIf="showSessionForm && sessionProject">
+          <h4>Start Enforcer Session: {{ sessionProject.name || sessionProject.id }}</h4>
+          <div class="session-form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Agent</mat-label>
+              <mat-select [(ngModel)]="sessionAgent">
+                <mat-option value="claude">Claude</mat-option>
+                <mat-option value="codex">Codex</mat-option>
+                <mat-option value="gemini">Gemini</mat-option>
+                <mat-option value="qwen">Qwen</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Corrections</mat-label>
+              <input matInput type="number" [(ngModel)]="sessionMaxCorrections" min="0" max="10">
+            </mat-form-field>
+          </div>
+          <mat-form-field appearance="outline" class="rules-field">
+            <mat-label>Rules</mat-label>
+            <textarea matInput [(ngModel)]="sessionRules" rows="3"
+                      placeholder="Enter rules (loaded from config if available)..."></textarea>
+          </mat-form-field>
+          <div class="session-form-actions">
+            <button mat-button (click)="showSessionForm = false">Cancel</button>
+            <button mat-raised-button color="primary"
+                    (click)="createSession()"
+                    [disabled]="!sessionRules">
+              Start Session
+            </button>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Metrics Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">assessment</mat-icon>
+        Metrics
+      </ng-template>
+      <ng-template matTabContent>
+        <div class="tab-body">
+          <div class="metrics-header">
+            <h3>Violations, Interruptions &amp; Scores</h3>
+            <button mat-raised-button (click)="loadAllMetrics()">
+              <mat-icon>refresh</mat-icon> Refresh
+            </button>
+          </div>
+
+          <mat-progress-bar mode="indeterminate" *ngIf="metricsLoading"></mat-progress-bar>
+
+          <!-- Metrics empty state -->
+          <div class="empty-state" *ngIf="metricsData.length === 0 && !metricsLoading">
+            <mat-icon>bar_chart</mat-icon>
+            <p>No metrics recorded yet</p>
+            <p class="hint">Start enforcer sessions on your coding projects to collect data</p>
+          </div>
+
+          <!-- Metrics summary table -->
+          <div class="metrics-table-container" *ngIf="metricsData.length > 0 && !selectedMetricsDetail">
+            <table mat-table [dataSource]="metricsData" class="metrics-table">
+
+              <ng-container matColumnDef="codingProjectId">
+                <th mat-header-cell *matHeaderCellDef>Folder</th>
+                <td mat-cell *matCellDef="let row">{{ row.codingProjectId }}</td>
+              </ng-container>
+
+              <ng-container matColumnDef="agentName">
+                <th mat-header-cell *matHeaderCellDef>Agent</th>
+                <td mat-cell *matCellDef="let row">{{ row.agentName }}</td>
+              </ng-container>
+
+              <ng-container matColumnDef="totalSessions">
+                <th mat-header-cell *matHeaderCellDef>Sessions</th>
+                <td mat-cell *matCellDef="let row">{{ row.totalSessions }}</td>
+              </ng-container>
+
+              <ng-container matColumnDef="totalViolations">
+                <th mat-header-cell *matHeaderCellDef>Violations</th>
+                <td mat-cell *matCellDef="let row">
+                  <span [class.violation-count]="row.totalViolations > 0">{{ row.totalViolations }}</span>
+                </td>
+              </ng-container>
+
+              <ng-container matColumnDef="totalInterruptions">
+                <th mat-header-cell *matHeaderCellDef>Interruptions</th>
+                <td mat-cell *matCellDef="let row">{{ row.totalInterruptions }}</td>
+              </ng-container>
+
+              <ng-container matColumnDef="avgScore">
+                <th mat-header-cell *matHeaderCellDef>Avg Score</th>
+                <td mat-cell *matCellDef="let row">
+                  <span [style.color]="getScoreColor(row.avgScore)">{{ formatScore(row.avgScore) }}</span>
+                </td>
+              </ng-container>
+
+              <ng-container matColumnDef="lastScore">
+                <th mat-header-cell *matHeaderCellDef>Last Score</th>
+                <td mat-cell *matCellDef="let row">
+                  <span [style.color]="getScoreColor(row.lastScore)">{{ formatScore(row.lastScore) }}</span>
+                </td>
+              </ng-container>
+
+              <ng-container matColumnDef="actions">
+                <th mat-header-cell *matHeaderCellDef></th>
+                <td mat-cell *matCellDef="let row">
+                  <button mat-icon-button matTooltip="View history" (click)="viewAgentDetail(row)">
+                    <mat-icon>visibility</mat-icon>
+                  </button>
+                </td>
+              </ng-container>
+
+              <tr mat-header-row *matHeaderRowDef="['codingProjectId','agentName','totalSessions','totalViolations','totalInterruptions','avgScore','lastScore','actions']"></tr>
+              <tr mat-row *matRowDef="let row; columns: ['codingProjectId','agentName','totalSessions','totalViolations','totalInterruptions','avgScore','lastScore','actions']"
+                  (click)="viewAgentDetail(row)" class="clickable-row"></tr>
+            </table>
+          </div>
+
+          <!-- Metrics detail view -->
+          <div class="metrics-detail" *ngIf="selectedMetricsDetail">
+            <div class="detail-header">
+              <button mat-icon-button (click)="closeMetricsDetail()">
+                <mat-icon>arrow_back</mat-icon>
+              </button>
+              <h3>{{ selectedMetricsDetail.codingProjectId }} / {{ selectedMetricsDetail.agentName }}</h3>
+            </div>
+
+            <div class="detail-stats">
+              <div class="stat-card">
+                <div class="stat-value">{{ selectedMetricsDetail.totalSessions }}</div>
+                <div class="stat-label">Sessions</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value violation-count" *ngIf="selectedMetricsDetail.totalViolations > 0">
+                  {{ selectedMetricsDetail.totalViolations }}
+                </div>
+                <div class="stat-value" *ngIf="selectedMetricsDetail.totalViolations === 0">0</div>
+                <div class="stat-label">Violations</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value">{{ selectedMetricsDetail.totalInterruptions }}</div>
+                <div class="stat-label">Interruptions</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value" [style.color]="getScoreColor(selectedMetricsDetail.avgScore)">
+                  {{ formatScore(selectedMetricsDetail.avgScore) }}
+                </div>
+                <div class="stat-label">Avg Score</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-value" [style.color]="getScoreColor(selectedMetricsDetail.lastScore)">
+                  {{ formatScore(selectedMetricsDetail.lastScore) }}
+                </div>
+                <div class="stat-label">Last Score</div>
+              </div>
+            </div>
+
+            <h4>Event History</h4>
+            <div class="history-list" *ngIf="selectedMetricsDetail.history && selectedMetricsDetail.history.length > 0">
+              <div class="history-item" *ngFor="let event of selectedMetricsDetail.history!.slice().reverse()"
+                   [class.history-violation]="event.type === 'violation'"
+                   [class.history-interruption]="event.type === 'interruption'"
+                   [class.history-session]="event.type === 'session_start' || event.type === 'session_end'">
+                <div class="history-icon">
+                  <mat-icon *ngIf="event.type === 'violation'" color="warn">gavel</mat-icon>
+                  <mat-icon *ngIf="event.type === 'interruption'" style="color: #ff9800">pan_tool</mat-icon>
+                  <mat-icon *ngIf="event.type === 'session_start'" style="color: #4caf50">play_arrow</mat-icon>
+                  <mat-icon *ngIf="event.type === 'session_end'" style="color: #9e9e9e">stop</mat-icon>
+                </div>
+                <div class="history-content">
+                  <div class="history-top">
+                    <span class="history-type">{{ event.type }}</span>
+                    <span class="history-event-type" *ngIf="event.eventType">({{ event.eventType }})</span>
+                    <span class="history-score" [style.color]="getScoreColor(event.score)">
+                      {{ formatScore(event.score) }}
+                    </span>
+                    <span class="history-time">{{ event.timestamp | date:'short' }}</span>
+                  </div>
+                  <div class="history-reason" *ngIf="event.reason">{{ event.reason }}</div>
+                  <div class="history-violations" *ngIf="event.violations?.length">
+                    <mat-chip-set>
+                      <mat-chip *ngFor="let v of event.violations" color="warn" highlighted>{{ v }}</mat-chip>
+                    </mat-chip-set>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="empty-state" *ngIf="!selectedMetricsDetail.history || selectedMetricsDetail.history.length === 0">
+              <p>No events recorded yet</p>
+            </div>
+          </div>
+        </div>
+      </ng-template>
+    </mat-tab>
+  </mat-tab-group>
+</div>

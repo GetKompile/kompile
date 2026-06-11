@@ -607,12 +607,16 @@
 
                     <mat-form-field appearance="outline">
                       <mat-label>Model</mat-label>
-                      <mat-select [(ngModel)]="graphBuildingConfig.modelName" [ngModelOptions]="{standalone: true}"
+                      <mat-select *ngIf="availableLlmModels.length > 0" [(ngModel)]="graphBuildingConfig.modelName" [ngModelOptions]="{standalone: true}"
                                   [disabled]="!graphBuildingConfig.enabled">
                         <mat-option *ngFor="let model of availableLlmModels" [value]="model">
                           {{ model }}
                         </mat-option>
                       </mat-select>
+                      <input *ngIf="availableLlmModels.length === 0" matInput type="text"
+                             [(ngModel)]="graphBuildingConfig.modelName" [ngModelOptions]="{standalone: true}"
+                             placeholder="Enter model name"
+                             [disabled]="!graphBuildingConfig.enabled">
                       <mat-hint>LLM model to use for extraction</mat-hint>
                     </mat-form-field>
 

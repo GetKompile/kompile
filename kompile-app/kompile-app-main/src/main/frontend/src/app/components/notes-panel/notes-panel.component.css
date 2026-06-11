@@ -1,0 +1,274 @@
+.notes-panel {
+  padding: 16px;
+}
+
+.notes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-left h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.note-count {
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.search-field {
+  width: 220px;
+}
+
+.search-field .mat-mdc-form-field-subscript-wrapper {
+  display: none;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 16px;
+  color: var(--text-secondary);
+}
+
+.empty-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 12px;
+}
+
+.loading-container {
+  display: flex;
+  justify-content: center;
+  padding: 32px;
+}
+
+.notes-layout {
+  display: flex;
+  gap: 16px;
+  min-height: 500px;
+}
+
+.notes-list {
+  width: 340px;
+  min-width: 280px;
+  max-height: 600px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-color);
+  padding-right: 16px;
+}
+
+.empty-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px;
+  color: var(--text-secondary);
+}
+
+.empty-list mat-icon {
+  font-size: 36px;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 8px;
+}
+
+.note-item {
+  padding: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  border: 1px solid transparent;
+  transition: background-color 0.15s;
+}
+
+.note-item:hover {
+  background-color: var(--bg-card-secondary);
+}
+
+.note-item.selected {
+  background-color: var(--bg-selected);
+  border-color: #2196f3;
+}
+
+.note-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+
+.note-title {
+  font-weight: 500;
+  font-size: 14px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-item-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.sync-badge {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--text-link);
+}
+
+.note-type-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background-color: var(--border-color);
+  color: #555;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+.note-type-badge.ai {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+}
+
+.note-item-preview {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+  margin-bottom: 6px;
+  max-height: 40px;
+  overflow: hidden;
+}
+
+.note-item-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.note-date {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.note-tags {
+  display: flex;
+  gap: 4px;
+}
+
+.tag-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background-color: var(--bg-card-secondary);
+  color: var(--text-tertiary);
+}
+
+.note-detail {
+  flex: 1;
+  min-width: 0;
+}
+
+.empty-detail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.large-icon {
+  font-size: 64px;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 12px;
+}
+
+.note-editor {
+  padding: 0 8px;
+}
+
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.editor-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.editor-header h4 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.note-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.sync-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-link);
+}
+
+.small-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.meta-date {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.full-width {
+  width: 100%;
+}
+
+.content-field textarea {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}

@@ -161,6 +161,18 @@ export class DocumentService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
+  testRetrievedDoc(fileName: string): Observable<any> {
+    const params = new HttpParams().set('fileName', fileName);
+    return this.http.post<any>(`${this.backendUrl}/documents/debug/test-retrieved-doc`, null, { params })
+      .pipe(catchError(this.handleError));
+  }
+
+  compareDocTypes(fileName: string): Observable<any> {
+    const params = new HttpParams().set('fileName', fileName);
+    return this.http.post<any>(`${this.backendUrl}/documents/debug/compare-doc-types`, null, { params })
+      .pipe(catchError(this.handleError));
+  }
+
   /**
    * Upload a file asynchronously. Returns immediately with a task ID.
    * Subscribe to WebSocket topic for real-time progress updates.
@@ -324,13 +336,15 @@ export class DocumentService extends BaseService {
     loaderName?: string;
     chunkerName?: string;
     rebuildIndex?: boolean;
+    convertToMarkdown?: boolean;
   }): Observable<FileUploadResponse> {
     const request: AddUrlRequest = {
       url: url,
       fileName: options.fileName,
       loaderName: options.loaderName,
       chunkerName: options.chunkerName,
-      rebuildIndex: options.rebuildIndex
+      rebuildIndex: options.rebuildIndex,
+      convertToMarkdown: options.convertToMarkdown
     };
     return this.addUrl(request);
   }
@@ -425,5 +439,18 @@ export class DocumentService extends BaseService {
       chunkerName: options.chunkerName,
       rebuildIndex: options.rebuildIndex
     }).pipe(catchError(this.handleError));
+  }
+
+  getProcessingStatus(): Observable<any> {
+    return this.http.get<any>(`${this.backendUrl}/documents/processing-status`)
+      .pipe(catchError(this.handleError));
+  }
+
+  processUploadedFile(fileName: string, loaderName?: string, chunkerName?: string): Observable<any> {
+    let params = new HttpParams().set('fileName', fileName);
+    if (loaderName) params = params.set('loader', loaderName);
+    if (chunkerName) params = params.set('chunkerName', chunkerName);
+    return this.http.post<any>(`${this.backendUrl}/documents/process-uploaded-file`, null, { params })
+      .pipe(catchError(this.handleError));
   }
 }

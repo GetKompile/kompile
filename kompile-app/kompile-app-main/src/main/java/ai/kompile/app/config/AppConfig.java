@@ -43,7 +43,7 @@ import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 
 @Configuration(proxyBeanMethods = false)
-@EnableAsync
+@EnableAsync(proxyTargetClass = true)
 @ImportRuntimeHints({AppConfig.VarConfigRegister.class})
 public class AppConfig {
 

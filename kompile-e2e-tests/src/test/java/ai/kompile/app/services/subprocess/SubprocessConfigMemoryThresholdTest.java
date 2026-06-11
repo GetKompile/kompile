@@ -86,7 +86,8 @@ class SubprocessConfigMemoryThresholdTest {
                 null, null, null, null,
                 null, null, null, null, null, null, null,
                 offHeapThreshold, offHeapCritical, offHeapKill,
-                gpuThreshold, gpuCritical, gpuKill);
+                gpuThreshold, gpuCritical, gpuKill,
+                null); // gpuSoftLimitPercent
     }
 
     @Nested @DisplayName("Default memory threshold values")

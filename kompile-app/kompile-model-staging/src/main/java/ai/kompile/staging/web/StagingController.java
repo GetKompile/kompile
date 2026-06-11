@@ -21,17 +21,22 @@ import ai.kompile.staging.catalog.CatalogModel;
 import ai.kompile.staging.catalog.CatalogService;
 import ai.kompile.staging.catalog.ModelCatalog;
 import ai.kompile.staging.config.ModelSourceConfiguration;
+import ai.kompile.staging.config.StagingSettings;
+import ai.kompile.staging.config.StagingSettingsService;
 import ai.kompile.staging.download.DownloadRequest;
 import ai.kompile.staging.export.ExportService;
 import ai.kompile.staging.export.ImportService;
 import ai.kompile.modelmanager.registry.*;
-import ai.kompile.staging.staging.StagingModelInfo;
+import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.staging.staging.StagingService;
 import ai.kompile.staging.web.dto.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,6 +71,13 @@ public class StagingController {
     private final CatalogService catalogService;
     private final ArchiveModelManager archiveModelManager;
     private final ModelSourceConfiguration modelSourceConfig;
+    private final StagingSettingsService stagingSettingsService;
+
+    @Value("${kompile.staging.project-dir:}")
+    private String projectDir;
+
+    @Value("${kompile.staging.settings-dir:${kompile.home:${user.home}/.kompile}}")
+    private String settingsDir;
 
     @Autowired
     public StagingController(RegistryService registryService,
@@ -74,7 +86,8 @@ public class StagingController {
                             ImportService importService,
                             CatalogService catalogService,
                             ArchiveModelManager archiveModelManager,
-                            ModelSourceConfiguration modelSourceConfig) {
+                            ModelSourceConfiguration modelSourceConfig,
+                            StagingSettingsService stagingSettingsService) {
         this.registryService = registryService;
         this.stagingService = stagingService;
         this.exportService = exportService;
@@ -82,6 +95,41 @@ public class StagingController {
         this.catalogService = catalogService;
         this.archiveModelManager = archiveModelManager;
         this.modelSourceConfig = modelSourceConfig;
+        this.stagingSettingsService = stagingSettingsService;
+    }
+
+    // ==================== Context & Settings Endpoints ====================
+
+    /**
+     * Get the staging server's current context — project dir, model dir, settings dir,
+     * and whether this instance is project-scoped.
+     */
+    @GetMapping("/context")
+    public Map<String, Object> getContext() {
+        Map<String, Object> context = new LinkedHashMap<>();
+        boolean scoped = projectDir != null && !projectDir.isBlank();
+        context.put("projectDir", scoped ? projectDir : null);
+        context.put("modelDir", registryService.getModelDir().toAbsolutePath().toString());
+        context.put("settingsDir", settingsDir);
+        context.put("projectScoped", scoped);
+        return context;
+    }
+
+    /**
+     * Get the current staging settings.
+     */
+    @GetMapping("/settings")
+    public StagingSettings getSettings() {
+        return stagingSettingsService.getSettings();
+    }
+
+    /**
+     * Update staging settings (callback URL, auto-reload, optimizer flags, etc.).
+     * Settings are persisted to the settings file (project-local or global).
+     */
+    @PutMapping("/settings")
+    public StagingSettings updateSettings(@RequestBody StagingSettings settings) {
+        return stagingSettingsService.updateSettings(settings);
     }
 
     // ==================== Registry Endpoints ====================
@@ -393,13 +441,16 @@ public class StagingController {
                 .map(catalogModel -> {
                     ModelType modelType = resolveModelType(catalogModel);
 
-                    DownloadRequest downloadRequest = DownloadRequest.builder()
+                    DownloadRequest.DownloadRequestBuilder dlBuilder = DownloadRequest.builder()
                             .source(catalogModel.getSource())
                             .repository(catalogModel.getRepo())
                             .modelId(catalogModel.getId())
                             .modelType(modelType)
-                            .format(catalogModel.getFormat())
-                            .build();
+                            .format(catalogModel.getFormat());
+                    if (catalogModel.getFiles() != null && !catalogModel.getFiles().isEmpty()) {
+                        dlBuilder.files(new java.util.HashMap<>(catalogModel.getFiles()));
+                    }
+                    DownloadRequest downloadRequest = dlBuilder.build();
 
                     // Start async staging
                     CompletableFuture<StagingModelInfo> future = stagingService.stageModelAsync(downloadRequest);
@@ -407,7 +458,7 @@ public class StagingController {
                     // If auto-promote is requested, add completion handler
                     if (autoPromote) {
                         future.thenAccept(info -> {
-                            if (info.getStatus() == ai.kompile.staging.staging.StagingStatus.READY) {
+                            if (info.getStatus() == ai.kompile.core.staging.StagingStatus.READY) {
                                 stagingService.promoteModel(modelId, null);
                             }
                         });
@@ -545,6 +596,16 @@ public class StagingController {
     }
 
     /**
+     * Subscribe to real-time staging progress stream for a model (SSE).
+     * Pushes status events as the model progresses through download, conversion, validation.
+     */
+    @GetMapping(value = "/models/{modelId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamStagingProgress(@PathVariable String modelId) {
+        log.info("SSE subscription for staging progress: {}", modelId);
+        return stagingService.subscribeToStagingStream(modelId);
+    }
+
+    /**
      * Cancel staging of a model (via /models endpoint).
      */
     @DeleteMapping("/models/{modelId}")
@@ -564,7 +625,7 @@ public class StagingController {
      */
     @PostMapping("/stage")
     public ResponseEntity<StagingModelInfo> stageModel(@RequestBody StageModelRequest request) {
-        DownloadRequest downloadRequest = DownloadRequest.builder()
+        DownloadRequest.DownloadRequestBuilder builder = DownloadRequest.builder()
                 .source(request.getSource())
                 .repository(request.getRepository())
                 .modelId(request.getModelId())
@@ -572,8 +633,11 @@ public class StagingController {
                 .format(request.getFormat())
                 .revision(request.getRevision())
                 .authToken(request.getAuthToken())
-                .tokenizerUrl(request.getTokenizerUrl())
-                .build();
+                .tokenizerUrl(request.getTokenizerUrl());
+        if (request.getFiles() != null && !request.getFiles().isEmpty()) {
+            builder.files(new java.util.HashMap<>(request.getFiles()));
+        }
+        DownloadRequest downloadRequest = builder.build();
 
         // Start async staging
         CompletableFuture<StagingModelInfo> future = stagingService.stageModelAsync(downloadRequest);
@@ -760,19 +824,22 @@ public class StagingController {
                 .map(catalogModel -> {
                     ModelType modelType = resolveModelType(catalogModel);
 
-                    DownloadRequest downloadRequest = DownloadRequest.builder()
+                    DownloadRequest.DownloadRequestBuilder dlBuilder = DownloadRequest.builder()
                             .source(catalogModel.getSource())
                             .repository(catalogModel.getRepo())
                             .modelId(catalogModel.getId())
                             .modelType(modelType)
-                            .format(catalogModel.getFormat())
-                            .build();
+                            .format(catalogModel.getFormat());
+                    if (catalogModel.getFiles() != null && !catalogModel.getFiles().isEmpty()) {
+                        dlBuilder.files(new java.util.HashMap<>(catalogModel.getFiles()));
+                    }
+                    DownloadRequest downloadRequest = dlBuilder.build();
 
                     CompletableFuture<StagingModelInfo> future = stagingService.stageModelAsync(downloadRequest);
 
                     if (request.isAutoPromote()) {
                         future.thenAccept(info -> {
-                            if (info.getStatus() == ai.kompile.staging.staging.StagingStatus.READY) {
+                            if (info.getStatus() == ai.kompile.core.staging.StagingStatus.READY) {
                                 stagingService.promoteModel(modelId, null);
                             }
                         });

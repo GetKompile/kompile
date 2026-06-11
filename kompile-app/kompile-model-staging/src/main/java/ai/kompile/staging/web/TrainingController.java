@@ -19,7 +19,7 @@ package ai.kompile.staging.web;
 import ai.kompile.staging.training.PeftService;
 import ai.kompile.staging.training.TrainingService;
 import ai.kompile.staging.web.dto.TrainingConfigRequest;
-import ai.kompile.staging.web.dto.TrainingJobStatus;
+import ai.kompile.core.staging.TrainingJobStatus;
 import ai.kompile.staging.web.dto.TrainingLogEntry;
 import ai.kompile.staging.web.dto.TrainingMetricsSnapshot;
 import org.slf4j.Logger;

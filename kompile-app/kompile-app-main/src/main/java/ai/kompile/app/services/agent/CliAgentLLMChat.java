@@ -18,6 +18,8 @@ package ai.kompile.app.services.agent;
 
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.llm.chat.LLMChat;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClientResponse;
@@ -41,15 +43,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import reactor.core.publisher.Flux;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import jakarta.annotation.PreDestroy;
+
+import java.io.*;
 import java.net.URL;
 import java.nio.charset.Charset;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -70,12 +74,36 @@ public class CliAgentLLMChat implements LLMChat {
 
     private static final Logger log = LoggerFactory.getLogger(CliAgentLLMChat.class);
     private static final int DEFAULT_TIMEOUT_SECONDS = 120;
+    private static final int DEFAULT_POOL_SIZE = 8;
+    private static final int MAX_POOL_SIZE = 32;
 
     private final AgentRegistryService agentRegistryService;
+    private final AgentSubprocessExecutor subprocessExecutor;
+    private final ClaudeStreamParser streamParser;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private volatile AgentProvider cachedAgent;
 
-    public CliAgentLLMChat(AgentRegistryService agentRegistryService) {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PROCESS POOL — pre-spawns CLI agent processes to eliminate startup latency.
+    // Each pooled process is alive and waiting for stdin input.
+    // ═══════════════════════════════════════════════════════════════════════════
+    private final LinkedBlockingQueue<Process> processPool = new LinkedBlockingQueue<>();
+    private final ExecutorService poolReplenisher = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "cli-agent-pool-replenisher");
+        t.setDaemon(true);
+        return t;
+    });
+    private volatile List<String> poolCommand;
+    private volatile Map<String, String> poolEnvironment;
+    private volatile int targetPoolSize = DEFAULT_POOL_SIZE;
+    private final AtomicBoolean poolInitialized = new AtomicBoolean(false);
+
+    public CliAgentLLMChat(AgentRegistryService agentRegistryService,
+                           AgentSubprocessExecutor subprocessExecutor,
+                           ClaudeStreamParser streamParser) {
         this.agentRegistryService = agentRegistryService;
+        this.subprocessExecutor = subprocessExecutor;
+        this.streamParser = streamParser;
 
         // Log initialization
         if (agentRegistryService.hasAvailableAgents()) {
@@ -97,12 +125,40 @@ public class CliAgentLLMChat implements LLMChat {
 
     /**
      * Get the currently active agent.
+     * Respects the configured command in ~/.kompile/config/cli-llm-config.json,
+     * falling back to the registry default if no config or agent not found.
      */
     private AgentProvider getActiveAgent() {
         if (cachedAgent == null || !cachedAgent.isAvailable()) {
-            cachedAgent = agentRegistryService.getDefaultAgent().orElse(null);
+            cachedAgent = resolveConfiguredAgent();
         }
         return cachedAgent;
+    }
+
+    private AgentProvider resolveConfiguredAgent() {
+        // Try to read the configured command from cli-llm-config.json
+        try {
+            Path configPath = Path.of(
+                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            if (Files.exists(configPath)) {
+                JsonNode root = objectMapper.readTree(configPath.toFile());
+                if (root.has("command") && !root.get("command").isNull()) {
+                    String configuredCommand = root.get("command").asText().trim();
+                    if (!configuredCommand.isEmpty()) {
+                        // Look up agent by command name (e.g. "opencode" -> "opencode-cli")
+                        AgentProvider agent = agentRegistryService.getAgentByCommand(configuredCommand);
+                        if (agent != null && agent.isAvailable()) {
+                            log.debug("Using configured CLI agent from cli-llm-config.json: {}", agent.getName());
+                            return agent;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not read cli-llm-config.json: {}", e.getMessage());
+        }
+        // Fall back to registry default
+        return agentRegistryService.getDefaultAgent().orElse(null);
     }
 
     @Override
@@ -127,86 +183,135 @@ public class CliAgentLLMChat implements LLMChat {
         return new CliAgentBuilder(this);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // POOL LIFECYCLE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Lazily initialize the process pool on first use.
+     * Pre-spawns {@code targetPoolSize} processes that are alive and waiting for stdin.
+     */
+    private void ensurePoolInitialized() {
+        if (poolInitialized.compareAndSet(false, true)) {
+            AgentProvider agent = getActiveAgent();
+            if (agent == null) {
+                poolInitialized.set(false);
+                return;
+            }
+            targetPoolSize = readPoolSizeFromConfig();
+            poolCommand = subprocessExecutor.buildInteractiveCommand(agent, true, false);
+            poolEnvironment = agent.safeEnvironment();
+            log.info("Initializing CLI agent process pool: size={}, command={}", targetPoolSize, poolCommand);
+            poolReplenisher.submit(() -> {
+                int spawned = 0;
+                for (int i = 0; i < targetPoolSize; i++) {
+                    Process p = spawnPoolProcess();
+                    if (p != null) {
+                        processPool.offer(p);
+                        spawned++;
+                    }
+                }
+                log.info("Process pool pre-warmed with {}/{} processes", spawned, targetPoolSize);
+            });
+        }
+    }
+
+    private Process spawnPoolProcess() {
+        List<String> cmd = poolCommand;
+        Map<String, String> env = poolEnvironment;
+        if (cmd == null) return null;
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectErrorStream(true);
+            if (env != null) {
+                pb.environment().putAll(env);
+            }
+            Process process = pb.start();
+            log.debug("Spawned pool process PID {}", process.pid());
+            return process;
+        } catch (Exception e) {
+            log.warn("Failed to spawn pool process: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private void replenishPool() {
+        int deficit = targetPoolSize - processPool.size();
+        if (deficit <= 0) return;
+        int spawned = 0;
+        for (int i = 0; i < deficit; i++) {
+            Process p = spawnPoolProcess();
+            if (p != null) {
+                processPool.offer(p);
+                spawned++;
+            }
+        }
+        if (spawned > 0) {
+            log.debug("Replenished pool with {} processes (total: {})", spawned, processPool.size());
+        }
+    }
+
+    /**
+     * Take a live process from the pool, discarding any dead ones.
+     * Returns null if pool is empty.
+     */
+    private Process takeFromPool() {
+        Process process;
+        while ((process = processPool.poll()) != null) {
+            if (process.isAlive()) {
+                return process;
+            }
+            log.debug("Discarding dead pool process PID {}", process.pid());
+        }
+        return null;
+    }
+
+    private int readPoolSizeFromConfig() {
+        try {
+            Path configPath = Path.of(
+                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            if (Files.exists(configPath)) {
+                JsonNode root = objectMapper.readTree(configPath.toFile());
+                if (root.has("processPoolSize")) {
+                    return Math.max(1, Math.min(MAX_POOL_SIZE, root.get("processPoolSize").asInt(DEFAULT_POOL_SIZE)));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not read pool size from config: {}", e.getMessage());
+        }
+        return DEFAULT_POOL_SIZE;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        log.info("Shutting down CLI agent process pool ({} processes)", processPool.size());
+        poolReplenisher.shutdownNow();
+        Process p;
+        while ((p = processPool.poll()) != null) {
+            try {
+                if (p.isAlive()) {
+                    p.destroyForcibly();
+                }
+            } catch (Exception ignored) { }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AGENT EXECUTION
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
      * Execute the CLI agent with the given prompt.
+     * Takes a pre-spawned process from the pool when available, falling back to
+     * a fresh spawn on pool miss. The pool is replenished asynchronously after each use.
      */
     String executeAgent(String userMessage, String systemMessage) {
         AgentProvider agent = getActiveAgent();
         if (agent == null) {
             log.warn("No CLI agent available for execution");
-            return "Error: No CLI agent available. Please install Claude Code, Codex, or Gemini CLI.";
+            return "Error: No CLI agent available. Please install a CLI agent (claude, opencode, codex, gemini, etc).";
         }
 
-        try {
-            List<String> command = buildCommand(agent, userMessage, systemMessage);
-            log.debug("Executing CLI agent '{}': {}", agent.getName(), String.join(" ", command));
-
-            ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    // Parse stream-json format if using Claude
-                    if (agent.getName().equals("claude-cli")) {
-                        String parsed = parseClaudeStreamJson(line);
-                        if (parsed != null) {
-                            output.append(parsed);
-                        }
-                    } else {
-                        output.append(line).append("\n");
-                    }
-                }
-            }
-
-            boolean completed = process.waitFor(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            if (!completed) {
-                process.destroyForcibly();
-                log.warn("CLI agent '{}' timed out after {} seconds", agent.getName(), DEFAULT_TIMEOUT_SECONDS);
-                return "Error: CLI agent timed out after " + DEFAULT_TIMEOUT_SECONDS + " seconds.";
-            }
-
-            int exitCode = process.exitValue();
-            if (exitCode != 0) {
-                log.warn("CLI agent '{}' exited with code {}", agent.getName(), exitCode);
-            }
-
-            String result = output.toString().trim();
-            log.debug("CLI agent '{}' response length: {} chars", agent.getName(), result.length());
-            return result;
-
-        } catch (Exception e) {
-            log.error("Error executing CLI agent '{}': {}", agent.getName(), e.getMessage(), e);
-            return "Error executing CLI agent: " + e.getMessage();
-        }
-    }
-
-    /**
-     * Build the command for the CLI agent.
-     */
-    private List<String> buildCommand(AgentProvider agent, String userMessage, String systemMessage) {
-        List<String> command = new ArrayList<>();
-        command.add(agent.getCommand());
-
-        // Add skip permissions flag if configured
-        if (agent.isSkipPermissions() && agent.getSkipPermissionsFlag() != null) {
-            command.add(agent.getSkipPermissionsFlag());
-        }
-
-        // Add configured args
-        if (agent.getArgs() != null) {
-            command.addAll(agent.getArgs());
-        }
-
-        // Add print flag for non-interactive mode (Claude specific)
-        if (agent.getName().equals("claude-cli")) {
-            command.add("--print");
-        }
-
-        // Build the full prompt with system message if provided
         String fullPrompt;
         if (systemMessage != null && !systemMessage.isEmpty()) {
             fullPrompt = "[System: " + systemMessage + "]\n\n" + userMessage;
@@ -214,61 +319,100 @@ public class CliAgentLLMChat implements LLMChat {
             fullPrompt = userMessage;
         }
 
-        // Add the prompt as the final argument
-        command.add(fullPrompt);
+        boolean useStreamJson = streamParser.supportsStreamJson(agent.getName());
 
-        return command;
-    }
-
-    /**
-     * Parse Claude's stream-json format to extract text content.
-     */
-    private String parseClaudeStreamJson(String line) {
-        if (line == null || line.isEmpty()) {
-            return null;
-        }
+        // Ensure pool is initialized, then try to take a pre-spawned process
+        ensurePoolInitialized();
 
         try {
-            // Simple parsing - look for content in assistant messages
-            if (line.contains("\"type\":\"assistant\"") || line.contains("\"type\":\"text\"")) {
-                // Extract content field
-                int contentStart = line.indexOf("\"content\":\"");
-                if (contentStart >= 0) {
-                    contentStart += 11; // length of "content":"
-                    int contentEnd = line.indexOf("\"", contentStart);
-                    if (contentEnd > contentStart) {
-                        String content = line.substring(contentStart, contentEnd);
-                        // Unescape common JSON escapes
-                        content = content.replace("\\n", "\n")
-                                .replace("\\t", "\t")
-                                .replace("\\\"", "\"")
-                                .replace("\\\\", "\\");
-                        return content;
+            Process process = takeFromPool();
+            if (process != null) {
+                log.info("CLI agent '{}' pool hit — reusing PID {}", agent.getName(), process.pid());
+            } else {
+                // Pool miss — spawn fresh
+                List<String> command = subprocessExecutor.buildInteractiveCommand(agent, true, false);
+                ProcessBuilder pb = new ProcessBuilder(command);
+                pb.redirectErrorStream(true);
+                pb.environment().putAll(agent.safeEnvironment());
+                process = pb.start();
+                log.info("CLI agent '{}' pool miss — spawned fresh PID {}", agent.getName(), process.pid());
+            }
+
+            // Replenish pool asynchronously
+            poolReplenisher.submit(this::replenishPool);
+
+            // Write prompt to stdin, then close stdin so the agent knows input is complete
+            try (BufferedWriter writer = new BufferedWriter(
+                    new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8))) {
+                writer.write(fullPrompt);
+                writer.newLine();
+                writer.flush();
+            }
+            log.info("CLI agent '{}': wrote {} chars to stdin", agent.getName(), fullPrompt.length());
+
+            // Stream stdout directly — read every line as it arrives
+            StringBuilder textOutput = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String rawLine;
+                while ((rawLine = reader.readLine()) != null) {
+                    // Strip TUI escape sequences that leak from agent subprocesses
+                    String line = ClaudeStreamParser.stripAnsi(rawLine);
+                    if (line.isBlank()) continue;
+
+                    if (line.trim().startsWith("{")) {
+                        try {
+                            JsonNode json = objectMapper.readTree(line);
+                            String type = json.has("type") ? json.get("type").asText() : null;
+
+                            // Claude stream-json: extract text from "assistant" events
+                            if ("result".equals(type)) {
+                                log.info("CLI agent '{}': stream result event received", agent.getName());
+                                break;
+                            } else if ("assistant".equals(type)) {
+                                JsonNode message = json.has("message") ? json.get("message") : json;
+                                if (message.has("content") && message.get("content").isArray()) {
+                                    for (JsonNode block : message.get("content")) {
+                                        if ("text".equals(block.path("type").asText("text"))
+                                                && block.has("text")) {
+                                            textOutput.append(block.get("text").asText());
+                                        }
+                                    }
+                                }
+                            }
+                            // opencode json: extract text from "text" events
+                            else if ("text".equals(type)) {
+                                JsonNode part = json.has("part") ? json.get("part") : null;
+                                if (part != null && part.has("text")) {
+                                    textOutput.append(part.get("text").asText());
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Not valid JSON — treat as plain text
+                            textOutput.append(line).append('\n');
+                        }
+                    } else {
+                        textOutput.append(line).append('\n');
                     }
                 }
             }
 
-            // Also check for result/message format
-            if (line.contains("\"result\"") && line.contains("\"message\"")) {
-                int messageStart = line.indexOf("\"message\":\"");
-                if (messageStart >= 0) {
-                    messageStart += 11;
-                    int messageEnd = line.lastIndexOf("\"");
-                    if (messageEnd > messageStart) {
-                        return line.substring(messageStart, messageEnd)
-                                .replace("\\n", "\n")
-                                .replace("\\t", "\t")
-                                .replace("\\\"", "\"")
-                                .replace("\\\\", "\\");
-                    }
-                }
+            // Wait for process exit with timeout
+            boolean exited = process.waitFor(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!exited) {
+                log.warn("CLI agent '{}' timed out after {}s, destroying", agent.getName(), DEFAULT_TIMEOUT_SECONDS);
+                process.destroyForcibly();
             }
+
+            String content = textOutput.toString().trim();
+            log.info("CLI agent '{}' response: {} chars (exit={})", agent.getName(), content.length(),
+                    exited ? process.exitValue() : "timeout");
+            return content;
 
         } catch (Exception e) {
-            log.trace("Failed to parse stream-json line: {}", line);
+            log.error("Error executing CLI agent '{}': {}", agent.getName(), e.getMessage(), e);
+            return "Error executing CLI agent: " + e.getMessage();
         }
-
-        return null;
     }
 
     // ========================================

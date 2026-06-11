@@ -1,23 +1,15 @@
 server:
   port: 8090
 
-spring:
-  application:
-    name: kompile-model-staging
-
-  # File upload configuration - ML models can be several GB
-  servlet:
-    multipart:
-      enabled: true
-      max-file-size: 10GB
-      max-request-size: 10GB
-      file-size-threshold: 10MB
-
-# Model staging configuration
 kompile:
   staging:
+    ui:
+      enabled: true
     model-dir: ${user.home}/.kompile/models
     staging-dir: ${user.home}/.kompile/models/.staging
+    settings-dir: ${user.home}/.kompile
+    project-dir: ""
+    callback-url: ""
 
   # Archive configuration
   archive:
@@ -46,6 +38,18 @@ kompile:
       timeout: 300000      # 5 minutes
       connection-timeout: 10000
       read-timeout: 30000
+
+spring:
+  application:
+    name: kompile-model-staging
+
+  # File upload configuration - ML models can be several GB
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 10GB
+      max-request-size: 10GB
+      file-size-threshold: 10MB
 
 management:
   endpoints:

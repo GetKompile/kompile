@@ -19,12 +19,15 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.app.config.ContextualRagConfig;
 import ai.kompile.app.services.ContextualChunkEnricher;
 import ai.kompile.app.services.ContextualRagConfigService;
+import ai.kompile.orchestrator.api.LlmIntegrationService;
+import ai.kompile.orchestrator.api.LlmProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,13 +55,16 @@ public class ContextualRagConfigController {
 
     private final ContextualRagConfigService configService;
     private final ContextualChunkEnricher enricher;
+    private final LlmIntegrationService llmIntegrationService;
 
     @Autowired
     public ContextualRagConfigController(
             ContextualRagConfigService configService,
-            @Autowired(required = false) ContextualChunkEnricher enricher) {
+            @Autowired(required = false) ContextualChunkEnricher enricher,
+            @Autowired(required = false) LlmIntegrationService llmIntegrationService) {
         this.configService = configService;
         this.enricher = enricher;
+        this.llmIntegrationService = llmIntegrationService;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -293,31 +299,25 @@ public class ContextualRagConfigController {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Gets available LLM providers and their recommended models.
+     * Gets available LLM providers and their models.
+     * Dynamically discovered from registered LlmProvider instances.
      */
     @GetMapping("/providers")
     public ResponseEntity<List<ProviderInfo>> getProviders() {
-        List<ProviderInfo> providers = List.of(
-                new ProviderInfo("openai", "OpenAI", List.of(
-                        new ModelInfo("gpt-4o-mini", "GPT-4o Mini", "Fast and cost-effective, recommended for most use cases"),
-                        new ModelInfo("gpt-4o", "GPT-4o", "Higher quality, better for complex documents"),
-                        new ModelInfo("gpt-4-turbo", "GPT-4 Turbo", "Large context window")
-                )),
-                new ProviderInfo("anthropic", "Anthropic", List.of(
-                        new ModelInfo("claude-3-haiku-20240307", "Claude 3 Haiku", "Fast and efficient"),
-                        new ModelInfo("claude-3-sonnet-20240229", "Claude 3 Sonnet", "Balanced performance"),
-                        new ModelInfo("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet", "High quality")
-                )),
-                new ProviderInfo("gemini", "Google Gemini", List.of(
-                        new ModelInfo("gemini-1.5-flash", "Gemini 1.5 Flash", "Fast and cost-effective"),
-                        new ModelInfo("gemini-1.5-pro", "Gemini 1.5 Pro", "Higher quality")
-                )),
-                new ProviderInfo("ollama", "Ollama (Local)", List.of(
-                        new ModelInfo("llama3.2", "Llama 3.2", "Open source, runs locally"),
-                        new ModelInfo("mistral", "Mistral", "Fast local model"),
-                        new ModelInfo("qwen2.5", "Qwen 2.5", "Good multilingual support")
-                ))
-        );
+        List<ProviderInfo> providers = new ArrayList<>();
+
+        // Always include the "default" option
+        providers.add(new ProviderInfo("default", "Default (Active LLM)", List.of()));
+
+        if (llmIntegrationService != null) {
+            for (LlmProvider provider : llmIntegrationService.getAllProviders()) {
+                List<ModelInfo> models = provider.getAvailableModels().stream()
+                        .map(m -> new ModelInfo(m.id(), m.displayName(),
+                                m.description() != null ? m.description() : ""))
+                        .toList();
+                providers.add(new ProviderInfo(provider.getId(), provider.getDisplayName(), models));
+            }
+        }
 
         return ResponseEntity.ok(providers);
     }

@@ -275,8 +275,8 @@ public class RagTestController {
 
                 if (docs != null && !docs.isEmpty()) {
                     List<Map<String, Object>> hits = docs.stream()
-                            .filter(d -> d != null && d.getContent() != null)
-                            .filter(d -> !d.getContent().startsWith("Error:"))
+                            .filter(d -> d != null && d.getText() != null)
+                            .filter(d -> !d.getText().startsWith("Error:"))
                             .map(this::formatRetrievedDoc)
                             .collect(Collectors.toList());
                     keywordResult.put("hits", hits);
@@ -358,8 +358,8 @@ public class RagTestController {
                 List<RetrievedDoc> keywordDocs = keywordRetriever.retrieveWithDetails(query, maxResults);
                 if (keywordDocs != null) {
                     for (RetrievedDoc doc : keywordDocs) {
-                        if (doc != null && doc.getContent() != null && !doc.getContent().startsWith("Error:")) {
-                            String key = doc.getId() != null ? doc.getId() : String.valueOf(doc.getContent().hashCode());
+                        if (doc != null && doc.getText() != null && !doc.getText().startsWith("Error:")) {
+                            String key = doc.getId() != null ? doc.getId() : String.valueOf(doc.getText().hashCode());
                             Map<String, Object> existing = mergedDocs.get(key);
                             if (existing == null) {
                                 Map<String, Object> formatted = formatRetrievedDoc(doc);
@@ -747,7 +747,7 @@ public class RagTestController {
         formatted.put("id", doc.getId());
         formatted.put("score", doc.getScore());
 
-        String content = doc.getContent();
+        String content = doc.getText();
         if (content != null) {
             formatted.put("contentLength", content.length());
             formatted.put("preview", content.length() > 300 ? content.substring(0, 300) + "..." : content);

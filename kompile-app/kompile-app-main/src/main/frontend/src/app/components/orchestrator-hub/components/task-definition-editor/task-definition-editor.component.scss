@@ -366,3 +366,25 @@ mat-form-field {
     }
   }
 }
+
+.task-type-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 6px;
+  color: #92400e;
+  font-size: 0.85rem;
+  margin-bottom: 12px;
+
+  mat-icon {
+    color: #d97706;
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+}

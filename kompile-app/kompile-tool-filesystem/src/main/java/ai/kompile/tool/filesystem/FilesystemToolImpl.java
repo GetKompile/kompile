@@ -19,7 +19,8 @@ package ai.kompile.tool.filesystem; // New package
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.core.mcp.optimization.ResultReferenceCache;
-import ai.kompile.tool.filesystem.config.FilesystemToolProperties; // Import from this module's config
+import ai.kompile.tool.filesystem.config.FilesystemToolConfigService;
+import ai.kompile.tool.filesystem.config.FilesystemToolProperties;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -45,7 +46,7 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
 
     private static final Logger logger = LoggerFactory.getLogger(FilesystemToolImpl.class);
     private static final long MAX_FILE_BYTES = 10L * 1024 * 1024;
-    private final FilesystemToolProperties properties;
+    private final FilesystemToolConfigService configService;
     private final McpOptimizationConfigProvider optimizationProvider;
     private final ResultReferenceCache resultCache;
     private Map<String, Path> resolvedRoots;
@@ -58,10 +59,10 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
     public record CreateDirectoryInput(String rootAlias, String directoryPath) {}
     public record UndoTokenInput(String undoToken) {}
 
-    public FilesystemToolImpl(FilesystemToolProperties properties,
+    public FilesystemToolImpl(FilesystemToolConfigService configService,
                               @Autowired(required = false) McpOptimizationConfigProvider optimizationProvider,
                               @Autowired(required = false) ResultReferenceCache resultCache) {
-        this.properties = properties;
+        this.configService = configService;
         this.optimizationProvider = optimizationProvider != null
                 ? optimizationProvider
                 : McpOptimizationConfigProvider.ofDefaults();
@@ -72,14 +73,15 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
     @PostConstruct
     public void init() {
         logger.info("Initializing FilesystemToolImpl...");
-        if (this.properties.getRoots() == null || this.properties.getRoots().isEmpty()) {
+        Map<String, FilesystemToolProperties.RootConfig> roots = configService.getRoots();
+        if (roots == null || roots.isEmpty()) {
             logger.warn("No filesystem roots configured for FilesystemToolImpl. Tool will be non-functional.");
             this.resolvedRoots = Collections.emptyMap(); // Initialize to empty map
             return;
         }
-        this.resolvedRoots = this.properties.getRoots().entrySet().stream()
+        this.resolvedRoots = roots.entrySet().stream()
                 .collect(Collectors.toMap(
-                        Map.Entry::getKey, // The key from application.properties (e.g., "default")
+                        Map.Entry::getKey, // The key from config (e.g., "default")
                         entry -> {
                             FilesystemToolProperties.RootConfig rootConfig = entry.getValue();
                             Path rootPath = Paths.get(rootConfig.getPath()).toAbsolutePath().normalize();
@@ -92,7 +94,7 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
                                     logger.info("Created shared directory for FilesystemToolImpl: {}", rootPath);
                                     // Add a sample file if the alias is 'default' or specific known alias
                                     // This sample file creation is more for demo purposes.
-                                    if ("default".equals(rootConfig.getAlias()) || this.properties.getRoots().size() == 1) {
+                                    if ("default".equals(rootConfig.getAlias()) || roots.size() == 1) {
                                         Path sampleFile = rootPath.resolve("sample-shared.txt");
                                         if (!Files.exists(sampleFile)) {
                                             Files.writeString(sampleFile, "This is a sample file in the shared MCP root: " + rootConfig.getAlias());
@@ -114,13 +116,13 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
         if (this.resolvedRoots == null || this.resolvedRoots.isEmpty()) {
             throw new IOException("Filesystem roots not configured or initialized for FilesystemToolImpl.");
         }
-        // The rootAlias in the input (e.g., "default") should match the key used in application.properties
-        // or the 'alias' field in RootConfig if you prefer to match against that.
-        // Current logic uses the key of the map (e.g., "default" from mcp.filesystem.roots.default.path)
+        // The rootAlias in the input (e.g., "default") should match the key in the config roots map,
+        // or the 'alias' field in RootConfig.
         Path actualRootPath = resolvedRoots.get(rootAlias);
         if (actualRootPath == null) {
             // For better usability, check if the provided alias matches any configured alias values
-            String matchedKey = this.properties.getRoots().entrySet().stream()
+            Map<String, FilesystemToolProperties.RootConfig> roots = configService.getRoots();
+            String matchedKey = roots.entrySet().stream()
                     .filter(entry -> rootAlias.equals(entry.getValue().getAlias()))
                     .map(Map.Entry::getKey)
                     .findFirst()
@@ -131,7 +133,7 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
 
             if (actualRootPath == null) {
                 throw new IllegalArgumentException("Invalid rootAlias: '" + rootAlias + "'. Available configured root aliases: " +
-                        this.properties.getRoots().values().stream().map(FilesystemToolProperties.RootConfig::getAlias).collect(Collectors.toSet()));
+                        roots.values().stream().map(FilesystemToolProperties.RootConfig::getAlias).collect(Collectors.toSet()));
             }
         }
 

@@ -29,7 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api/scheduler")
+@RequestMapping("/api/model-scheduler")
 public class ModelSchedulerController {
 
     private static final Logger log = LoggerFactory.getLogger(ModelSchedulerController.class);

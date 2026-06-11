@@ -209,6 +209,31 @@ public interface GraphNodeRepository extends JpaRepository<GraphNode, Long> {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
+     * Find nodes by a set of external IDs and node type, scoped to a fact sheet
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.externalId IN :externalIds AND n.nodeType = :nodeType AND n.factSheetId = :factSheetId")
+    List<GraphNode> findByExternalIdInAndNodeTypeAndFactSheetId(
+        @Param("externalIds") java.util.Set<String> externalIds,
+        @Param("nodeType") NodeLevel nodeType,
+        @Param("factSheetId") Long factSheetId
+    );
+
+    /**
+     * Find nodes by a set of external IDs and node type (no fact sheet scope)
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.externalId IN :externalIds AND n.nodeType = :nodeType")
+    List<GraphNode> findByExternalIdInAndNodeType(
+        @Param("externalIds") java.util.Set<String> externalIds,
+        @Param("nodeType") NodeLevel nodeType
+    );
+
+    /**
+     * Find nodes by a list of node UUIDs
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.nodeId IN :nodeIds")
+    List<GraphNode> findByNodeIdIn(@Param("nodeIds") java.util.List<String> nodeIds);
+
+    /**
      * Find nodes with KG embeddings in a fact sheet
      */
     @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId AND n.kgEmbedding IS NOT NULL")

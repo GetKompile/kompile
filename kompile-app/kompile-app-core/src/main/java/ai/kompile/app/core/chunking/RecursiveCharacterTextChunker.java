@@ -50,7 +50,7 @@ import java.util.regex.Pattern;
  * </ul>
  * </p>
  */
-@Component("recursiveCharacterTextChunker")
+@Component("coreRecursiveCharacterTextChunker")
 public class RecursiveCharacterTextChunker implements TextChunker {
 
     // Separator hierarchy - ordered by preference (most semantic to least)

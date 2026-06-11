@@ -249,4 +249,33 @@ public class AgentChatRequest {
             this.content = content;
         }
     }
+
+    /**
+     * File or image attachment for multimodal chat requests.
+     *
+     * @param filename     original file name (e.g., "photo.png")
+     * @param mimeType     MIME type (e.g., "image/png", "text/plain")
+     * @param base64Data   base-64-encoded binary content, or {@code null} for text files
+     * @param textContent  plain-text file content, or {@code null} for binary files
+     * @param isImage      {@code true} if the attachment should be treated as an image
+     */
+    public record MessageAttachment(
+            String filename,
+            String mimeType,
+            String base64Data,
+            String textContent,
+            boolean isImage
+    ) {}
+
+    // ── attachments ──────────────────────────────────────────────────────────
+
+    private List<MessageAttachment> attachments;
+
+    public List<MessageAttachment> getAttachments() {
+        return attachments;
+    }
+
+    public void setAttachments(List<MessageAttachment> attachments) {
+        this.attachments = attachments;
+    }
 }

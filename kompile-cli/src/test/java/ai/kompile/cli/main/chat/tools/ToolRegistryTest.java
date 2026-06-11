@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.junit.jupiter.api.BeforeEach;
@@ -115,5 +116,28 @@ class ToolRegistryTest {
         assertThrows(UnsupportedOperationException.class, () -> {
             registry.all().clear();
         });
+    }
+
+    @Test
+    void sidePanelToolExposesVersionedManagerSnapshot() {
+        SidePanelManager manager = new SidePanelManager();
+        SidePanelTool tool = new SidePanelTool(manager);
+        registry.register(tool);
+
+        assertSame(manager, tool.getSidePanelManager());
+        assertSame(tool, registry.get("side_panel"));
+
+        long initialVersion = manager.snapshot().version();
+        manager.show("Plan", "line one\nline two");
+        SidePanelManager.Snapshot shown = manager.snapshot();
+        assertTrue(shown.visible());
+        assertEquals("Plan", shown.title());
+        assertEquals("line one\nline two", shown.content());
+        assertTrue(shown.version() > initialVersion);
+
+        manager.hide();
+        SidePanelManager.Snapshot hidden = manager.snapshot();
+        assertFalse(hidden.visible());
+        assertTrue(hidden.version() > shown.version());
     }
 }

@@ -1,0 +1,83 @@
+<div class="warmup-cache">
+  <div class="section-header">
+    <h3><mat-icon>whatshot</mat-icon> Model Warmup &amp; Weight Cache</h3>
+    <button mat-icon-button (click)="loadAll()" matTooltip="Refresh"><mat-icon>refresh</mat-icon></button>
+  </div>
+
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="message" class="success-bar"><mat-icon>check_circle</mat-icon> {{ message }}</div>
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+
+  <ng-container *ngIf="!loading">
+    <!-- Warmup Status -->
+    <div class="panel">
+      <h4><mat-icon>thermostat</mat-icon> Warmup Status</h4>
+      <div class="kv-grid" *ngIf="warmupStatus">
+        <div class="kv-row" *ngFor="let key of getKeys(warmupStatus)">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(warmupStatus[key]) }}</span>
+        </div>
+      </div>
+      <div class="actions">
+        <button mat-raised-button color="primary" (click)="triggerWarmup()">
+          <mat-icon>play_arrow</mat-icon> Trigger All
+        </button>
+        <button mat-stroked-button (click)="triggerWarmup('INGEST')">Ingest</button>
+        <button mat-stroked-button (click)="triggerWarmup('EMBEDDING')">Embedding</button>
+        <button mat-stroked-button (click)="triggerWarmup('VLM')">VLM</button>
+      </div>
+    </div>
+
+    <!-- Warmup Config -->
+    <div class="panel" *ngIf="warmupConfig">
+      <h4><mat-icon>settings</mat-icon> Warmup Configuration</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getKeys(warmupConfig)">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(warmupConfig[key]) }}</span>
+        </div>
+      </div>
+      <div class="actions">
+        <button mat-stroked-button (click)="resetWarmupConfig()">Reset to Defaults</button>
+      </div>
+    </div>
+
+    <!-- Weight Cache Status -->
+    <div class="panel">
+      <h4><mat-icon>layers</mat-icon> Weight Cache Status</h4>
+      <div class="kv-grid" *ngIf="cacheStatus">
+        <div class="kv-row" *ngFor="let key of getKeys(cacheStatus)">
+          <ng-container *ngIf="key !== 'models' && key !== 'cachedModels'">
+            <span class="kv-key">{{ key }}</span>
+            <span class="kv-value">{{ formatValue(cacheStatus[key]) }}</span>
+          </ng-container>
+        </div>
+      </div>
+
+      <!-- Cached Models -->
+      <div class="model-list" *ngIf="getModelIds().length > 0">
+        <h5>Cached Models</h5>
+        <div class="model-row" *ngFor="let modelId of getModelIds()">
+          <span class="model-id">{{ modelId }}</span>
+          <button mat-stroked-button color="primary" (click)="promoteModel(modelId)" matTooltip="Promote to GPU">
+            <mat-icon>arrow_upward</mat-icon>
+          </button>
+          <button mat-stroked-button (click)="demoteModel(modelId)" matTooltip="Demote to CPU/Disk">
+            <mat-icon>arrow_downward</mat-icon>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cache Config -->
+    <div class="panel" *ngIf="cacheConfig">
+      <h4><mat-icon>tune</mat-icon> Weight Cache Configuration</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getKeys(cacheConfig)">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(cacheConfig[key]) }}</span>
+        </div>
+      </div>
+    </div>
+  </ng-container>
+</div>

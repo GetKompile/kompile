@@ -1,0 +1,152 @@
+<div class="experiments">
+  <div class="section-header">
+    <h3><mat-icon>science</mat-icon> Experiments</h3>
+    <button mat-icon-button (click)="loadAll()" matTooltip="Refresh"><mat-icon>refresh</mat-icon></button>
+  </div>
+
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="message" class="success-bar"><mat-icon>check_circle</mat-icon> {{ message }}</div>
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar">
+    <button mat-button [class.active]="activeTab === 'experiments'" (click)="activeTab = 'experiments'">
+      <mat-icon>science</mat-icon> Experiments ({{ experiments.length }})
+    </button>
+    <button mat-button [class.active]="activeTab === 'datasets'" (click)="activeTab = 'datasets'">
+      <mat-icon>dataset</mat-icon> Eval Datasets ({{ datasets.length }})
+    </button>
+  </div>
+
+  <!-- Experiments Tab -->
+  <ng-container *ngIf="activeTab === 'experiments'">
+    <div class="toolbar">
+      <button mat-stroked-button (click)="showCreateForm = !showCreateForm">
+        <mat-icon>add</mat-icon> New Experiment
+      </button>
+    </div>
+
+    <!-- Create Form -->
+    <div class="create-form" *ngIf="showCreateForm">
+      <mat-form-field appearance="outline"><mat-label>Name</mat-label>
+        <input matInput [(ngModel)]="newName"></mat-form-field>
+      <mat-form-field appearance="outline"><mat-label>Description</mat-label>
+        <input matInput [(ngModel)]="newDescription"></mat-form-field>
+      <mat-form-field appearance="outline"><mat-label>Suite ID</mat-label>
+        <input matInput [(ngModel)]="newSuiteId"></mat-form-field>
+      <mat-form-field appearance="outline"><mat-label>Dataset ID</mat-label>
+        <input matInput [(ngModel)]="newDatasetId"></mat-form-field>
+      <div class="form-actions">
+        <button mat-raised-button color="primary" [disabled]="!newName" (click)="createExperiment()">Create</button>
+        <button mat-button (click)="showCreateForm = false">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Experiment List -->
+    <div class="card-list">
+      <div class="exp-card" *ngFor="let exp of experiments" (click)="selectExperiment(exp)"
+           [class.selected]="selectedExperiment?.id === exp.id">
+        <div class="exp-header">
+          <span class="exp-name">{{ exp.name }}</span>
+          <span class="exp-status">{{ exp.status }}</span>
+          <button mat-icon-button (click)="deleteExperiment(exp.id); $event.stopPropagation()" matTooltip="Delete" color="warn">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </div>
+        <p class="exp-desc" *ngIf="exp.description">{{ exp.description }}</p>
+        <div class="exp-meta">
+          <span *ngIf="exp.suiteId">Suite: {{ exp.suiteId }}</span>
+          <span>Created: {{ exp.createdAt }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Selected Experiment Detail -->
+    <div class="detail-panel" *ngIf="selectedExperiment">
+      <div class="detail-header">
+        <h4>{{ selectedExperiment.name }} — Runs</h4>
+        <div class="detail-actions">
+          <button mat-stroked-button (click)="showAddRun = !showAddRun"><mat-icon>add</mat-icon> Add Run</button>
+          <button mat-stroked-button (click)="compare()"><mat-icon>compare_arrows</mat-icon> Compare</button>
+        </div>
+      </div>
+
+      <!-- Add Run Form -->
+      <div class="create-form" *ngIf="showAddRun">
+        <mat-form-field appearance="outline"><mat-label>Model ID</mat-label>
+          <input matInput [(ngModel)]="runModelId"></mat-form-field>
+        <mat-form-field appearance="outline"><mat-label>Variant</mat-label>
+          <input matInput [(ngModel)]="runModelVariant"></mat-form-field>
+        <mat-form-field appearance="outline"><mat-label>Type</mat-label>
+          <input matInput [(ngModel)]="runModelType"></mat-form-field>
+        <div class="form-actions">
+          <button mat-raised-button color="primary" [disabled]="!runModelId" (click)="addRun()">Add</button>
+          <button mat-button (click)="showAddRun = false">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Runs List -->
+      <div class="run-list">
+        <div class="run-row" *ngFor="let run of selectedExperiment.runs">
+          <span class="run-model">{{ run.modelId }}</span>
+          <span class="run-variant" *ngIf="run.modelVariant">{{ run.modelVariant }}</span>
+          <span class="run-status" [ngClass]="getRunStatusClass(run.status)">{{ run.status }}</span>
+          <span class="run-rate" *ngIf="run.passRate != null">{{ (run.passRate * 100).toFixed(1) }}% pass</span>
+          <span class="run-score" *ngIf="run.averageScore != null">Score: {{ run.averageScore.toFixed(3) }}</span>
+          <span class="run-counts" *ngIf="run.totalCount">{{ run.passedCount }}/{{ run.totalCount }}</span>
+          <span class="run-time" *ngIf="run.executionTimeMs">{{ (run.executionTimeMs / 1000).toFixed(1) }}s</span>
+          <button mat-icon-button (click)="executeRun(run)" matTooltip="Execute" [disabled]="run.status === 'RUNNING'">
+            <mat-icon>play_arrow</mat-icon>
+          </button>
+        </div>
+        <div *ngIf="!selectedExperiment.runs?.length" class="empty">No runs yet. Add a model run to begin.</div>
+      </div>
+
+      <!-- Comparison Data -->
+      <div class="comparison" *ngIf="comparisonData">
+        <h5>Comparison</h5>
+        <div class="kv-grid">
+          <div class="kv-row" *ngFor="let key of comparisonData | keyvalue">
+            <span class="kv-key">{{ key.key }}</span>
+            <span class="kv-value">{{ key.value | json }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </ng-container>
+
+  <!-- Datasets Tab -->
+  <ng-container *ngIf="activeTab === 'datasets'">
+    <div class="toolbar">
+      <button mat-stroked-button (click)="showDatasetUpload = !showDatasetUpload">
+        <mat-icon>upload_file</mat-icon> Upload Dataset
+      </button>
+    </div>
+
+    <div class="create-form" *ngIf="showDatasetUpload">
+      <mat-form-field appearance="outline"><mat-label>Name</mat-label>
+        <input matInput [(ngModel)]="datasetName"></mat-form-field>
+      <mat-form-field appearance="outline"><mat-label>Description</mat-label>
+        <input matInput [(ngModel)]="datasetDescription"></mat-form-field>
+      <input type="file" (change)="onFileSelect($event)">
+      <div class="form-actions">
+        <button mat-raised-button color="primary" [disabled]="!datasetName || !datasetFile" (click)="uploadDataset()">Upload</button>
+        <button mat-button (click)="showDatasetUpload = false">Cancel</button>
+      </div>
+    </div>
+
+    <div class="card-list">
+      <div class="ds-card" *ngFor="let ds of datasets">
+        <div class="ds-header">
+          <span class="ds-name">{{ ds.name }}</span>
+          <span class="ds-format">{{ ds.format }}</span>
+          <span class="ds-count">{{ ds.sampleCount }} samples</span>
+          <button mat-icon-button (click)="deleteDataset(ds.id)" color="warn" matTooltip="Delete">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </div>
+        <p class="ds-desc" *ngIf="ds.description">{{ ds.description }}</p>
+      </div>
+    </div>
+  </ng-container>
+</div>

@@ -28,6 +28,9 @@ import ai.kompile.app.services.pipeline.ParallelIngestPipeline;
 import ai.kompile.app.services.pipeline.PipelineResult;
 import ai.kompile.app.services.pipeline.ProcessingState;
 import ai.kompile.app.services.preprocessing.LargeDocumentPreprocessor;
+import ai.kompile.app.services.scheduler.JobResourceProfiles;
+import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
+import ai.kompile.app.services.scheduler.ScheduledJob;
 import ai.kompile.app.services.subprocess.SubprocessConfigService;
 import ai.kompile.app.services.subprocess.SubprocessIngestLauncher;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
@@ -82,6 +85,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     private final ai.kompile.core.embeddings.EmbeddingModel embeddingModel;
     private final LargeDocumentPreprocessor largeDocumentPreprocessor;
     private final SubprocessIngestLauncher subprocessIngestLauncher;
+    private final ResourceAwareJobScheduler resourceScheduler;
 
     // Track active tasks for status queries - use bounded map to prevent memory
     // leaks
@@ -140,7 +144,8 @@ public class DocumentIngestService implements org.springframework.beans.factory.
             @Autowired(required = false) IndexingJobHistoryService indexingJobHistoryService,
             @Autowired(required = false) LargeDocumentPreprocessor largeDocumentPreprocessor,
             @Autowired(required = false) SubprocessIngestLauncher subprocessIngestLauncher,
-            @Autowired(required = false) SubprocessConfigService subprocessConfigService) {
+            @Autowired(required = false) SubprocessConfigService subprocessConfigService,
+            @Autowired(required = false) ResourceAwareJobScheduler resourceScheduler) {
         this.messagingTemplate = messagingTemplate; // May be null if WebSocket not configured
         this.documentLoaders = documentLoaders;
         this.textChunkers = textChunkers;
@@ -151,6 +156,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
         this.indexingJobHistoryService = indexingJobHistoryService;
         this.subprocessIngestLauncher = subprocessIngestLauncher;
         this.subprocessConfigService = subprocessConfigService;
+        this.resourceScheduler = resourceScheduler;
 
         // Select non-NoOp indexer if available
         this.indexerService = indexerServices.stream()
@@ -468,6 +474,50 @@ public class DocumentIngestService implements org.springframework.beans.factory.
 
         if (useSubprocess && subprocessIngestLauncher != null) {
             logger.info("[Task {}] Delegating to SUBPROCESS mode for crash isolation", taskId);
+
+            // === SCHEDULER INTEGRATION: Submit through scheduler for queuing, priority, and history ===
+            if (resourceScheduler != null) {
+                try {
+                    final String fLoaderName = loaderName;
+                    final String fChunkerName = chunkerName;
+                    ScheduledJob job = ScheduledJob.builder()
+                            .jobId(taskId)
+                            .jobType("ingest")
+                            .description("Ingest: " + fileName)
+                            .resourceProfile(JobResourceProfiles.INGEST)
+                            .executor(ctx -> {
+                                try {
+                                    var resultFuture = subprocessIngestLauncher.launchIngest(
+                                            taskId, filePath, fLoaderName, fChunkerName, subprocessOptions);
+                                    var result = resultFuture.get();
+                                    if (result != null && !result.success()) {
+                                        throw new RuntimeException("Ingest failed: " + result.errorMessage());
+                                    }
+                                    if (result != null) {
+                                        logger.info("[Task {}] Subprocess ingest completed via scheduler: {} docs loaded, {} indexed",
+                                                taskId, result.documentsLoaded(), result.documentsIndexed());
+                                    }
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    throw new RuntimeException("Ingest interrupted", e);
+                                } catch (ExecutionException e) {
+                                    throw new RuntimeException("Ingest failed: " + e.getCause().getMessage(), e.getCause());
+                                }
+                            })
+                            .priority(50)
+                            .build();
+                    // Broadcast QUEUED state so the UI shows the task immediately
+                    // while it waits in the scheduler priority queue
+                    sendProgress(IngestProgressUpdate.queued(taskId, fileName, null));
+                    resourceScheduler.submit(job);
+                    logger.info("[Task {}] Ingest submitted to scheduler (queued)", taskId);
+                    return;
+                } catch (Exception e) {
+                    logger.error("[Task {}] Failed to submit ingest to scheduler: {}", taskId, e.getMessage(), e);
+                    // Fall through to direct subprocess launch
+                }
+            }
+
             try {
                 subprocessIngestLauncher.launchIngest(taskId, filePath, loaderName, chunkerName, subprocessOptions)
                         .whenComplete((result, error) -> {
@@ -1333,6 +1383,44 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     }
 
     /**
+     * Submit an ingest job through the resource-aware scheduler.
+     * The scheduler queues the job and dispatches it when GPU resources are available.
+     *
+     * <p>Falls back to direct {@link #processDocumentAsync} if the scheduler is not available.</p>
+     *
+     * @return CompletableFuture that completes when the ingest finishes
+     */
+    public CompletableFuture<ScheduledJob.JobResult> scheduleIngest(
+            String taskId, Path filePath, String loaderName, String chunkerName,
+            Map<String, Object> options) {
+        if (resourceScheduler == null) {
+            logger.debug("[Task {}] No scheduler available, falling back to direct async ingest", taskId);
+            processDocumentAsync(taskId, filePath, loaderName, chunkerName, ProcessingMode.AUTO, options);
+            return CompletableFuture.completedFuture(
+                    new ScheduledJob.JobResult(true, null, 0));
+        }
+
+        String fileName = filePath.getFileName().toString();
+        ScheduledJob job = ScheduledJob.builder()
+                .jobId(taskId)
+                .jobType(JobResourceProfiles.INGEST.serviceType())
+                .description("Ingest: " + fileName)
+                .resourceProfile(JobResourceProfiles.INGEST)
+                .priority(50)
+                .metadata(Map.of(
+                        "filePath", filePath.toString(),
+                        "loaderName", loaderName != null ? loaderName : "",
+                        "chunkerName", chunkerName != null ? chunkerName : ""
+                ))
+                .executor(ctx -> processDocumentAsync(
+                        taskId, filePath, loaderName, chunkerName, ProcessingMode.AUTO, options))
+                .build();
+
+        logger.info("[Task {}] Submitting ingest job to scheduler for '{}'", taskId, fileName);
+        return resourceScheduler.submit(job);
+    }
+
+    /**
      * Cancels a task by its ID. The task will stop processing as soon as possible.
      * Returns true if the task was found and marked for cancellation, false
      * otherwise.
@@ -1421,6 +1509,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
             case CONVERTING -> IngestEvent.IngestPhase.CONVERTING;
             case CHUNKING -> IngestEvent.IngestPhase.CHUNKING;
             case EXTRACTION -> IngestEvent.IngestPhase.EXTRACTION;
+            case GRAPH_EXTRACTION -> IngestEvent.IngestPhase.GRAPH_EXTRACTION;
             case INDEXING_AND_EMBEDDING -> IngestEvent.IngestPhase.INDEXING_AND_EMBEDDING;
             case EMBEDDING -> IngestEvent.IngestPhase.EMBEDDING;
             case INDEXING -> IngestEvent.IngestPhase.INDEXING;
@@ -2184,4 +2273,5 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     public Map<String, ParallelIngestPipeline> getActivePipelines() {
         return Collections.unmodifiableMap(activePipelines);
     }
+
 }

@@ -333,7 +333,7 @@ class RagServiceImplTest {
             assertNotNull(result);
             // Only the "good content" doc should be included
             assertEquals(1, result.getRetrievedDocs().size());
-            assertEquals("good content", result.getRetrievedDocs().get(0).getContent());
+            assertEquals("good content", result.getRetrievedDocs().get(0).getText());
         }
 
         @Test

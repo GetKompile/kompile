@@ -597,6 +597,9 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
   // Active embedding model status
   activeEmbeddingStatus: EmbeddingModelStatus | null = null;
 
+  // Embedding init-status (subprocess initialization details)
+  embeddingInitStatus: any = null;
+
   constructor(
     private http: HttpClient,
     private snackBar: MatSnackBar,
@@ -709,10 +712,11 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
     this.isLoading = true;
     this.errorMessage = null;
 
-    // Load models list and ND4J environment in parallel
+    // Load models list, ND4J environment, and init status in parallel
     Promise.all([
       this.loadModels(),
-      this.loadNd4jEnvironment()
+      this.loadNd4jEnvironment(),
+      this.loadInitStatus()
     ]).finally(() => {
       this.isLoading = false;
       this.cdr.detectChanges();
@@ -745,6 +749,18 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
           this.showSnackbar('Failed to load ND4J environment: ' + this.getErrorMessage(err), true);
           resolve();
         }
+      });
+    });
+  }
+
+  private loadInitStatus(): Promise<void> {
+    return new Promise((resolve) => {
+      this.http.get<any>(`${this.backendUrl}/models/init-status`).subscribe({
+        next: (response) => {
+          this.embeddingInitStatus = response;
+          resolve();
+        },
+        error: () => resolve()
       });
     });
   }

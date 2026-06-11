@@ -46,6 +46,8 @@ public final class ModuleCatalog {
         private final String artifactId;
         private final Category category;
         private final String description;
+        private final boolean bundled;
+        private final String displayName;
 
         public ModuleEntry(String id, String groupId, String artifactId, Category category, String description) {
             this.id = id;
@@ -53,6 +55,19 @@ public final class ModuleCatalog {
             this.artifactId = artifactId;
             this.category = category;
             this.description = description;
+            this.bundled = false;
+            this.displayName = toDisplayName(id);
+        }
+
+        public ModuleEntry(String id, String groupId, String artifactId, Category category,
+                           String description, boolean bundled, String displayName) {
+            this.id = id;
+            this.groupId = groupId;
+            this.artifactId = artifactId;
+            this.category = category;
+            this.description = description;
+            this.bundled = bundled;
+            this.displayName = displayName != null ? displayName : toDisplayName(id);
         }
 
         public String getId() { return id; }
@@ -60,6 +75,31 @@ public final class ModuleCatalog {
         public String getArtifactId() { return artifactId; }
         public Category getCategory() { return category; }
         public String getDescription() { return description; }
+
+        /**
+         * Returns true if this module is bundled with the full application (app-main)
+         * and is always included rather than optional.
+         */
+        public boolean isBundled() { return bundled; }
+
+        /**
+         * Returns a human-readable display name for this module.
+         */
+        public String getDisplayName() { return displayName; }
+
+        private static String toDisplayName(String id) {
+            if (id == null || id.isEmpty()) return id;
+            String[] parts = id.split("-");
+            StringBuilder sb = new StringBuilder();
+            for (String part : parts) {
+                if (!part.isEmpty()) {
+                    if (sb.length() > 0) sb.append(" ");
+                    sb.append(Character.toUpperCase(part.charAt(0)));
+                    if (part.length() > 1) sb.append(part.substring(1));
+                }
+            }
+            return sb.toString();
+        }
     }
 
     private static final Map<String, ModuleEntry> MODULES = new LinkedHashMap<>();
@@ -78,6 +118,7 @@ public final class ModuleCatalog {
         register("llm-openai", "ai.kompile", "kompile-app-openai-llm", Category.LLM, "OpenAI LLM provider");
         register("llm-anthropic", "ai.kompile", "kompile-app-anthropic-llm", Category.LLM, "Anthropic LLM provider");
         register("llm-gemini", "ai.kompile", "kompile-app-gemini-llm", Category.LLM, "Google Gemini LLM provider");
+        register("llm-cli-agent", null, null, Category.LLM, "Local CLI agent LLM (no API key required)");
 
         // Embedding providers
         register("embedding-openai", "ai.kompile", "kompile-embedding-openai", Category.EMBEDDING, "OpenAI embeddings");
@@ -104,15 +145,38 @@ public final class ModuleCatalog {
         // Tools
         register("tool-filesystem", "ai.kompile", "kompile-tool-filesystem", Category.TOOL, "File system MCP tool");
         register("tool-rag", "ai.kompile", "kompile-tool-rag", Category.TOOL, "RAG query tool");
-        register("tool-model-staging", "ai.kompile", "kompile-tool-model-staging", Category.TOOL, "Model staging operations");
+        register("tool-model-staging", "ai.kompile", "kompile-tool-model-staging", Category.TOOL, "Model staging operations (separate process)");
+
+        // Document loaders (extended)
+        register("loader-pdf-tables", "ai.kompile", "kompile-loader-pdf-tables", Category.LOADER, "PDF table extraction");
+        register("loader-excel", "ai.kompile", "kompile-loader-excel", Category.LOADER, "Excel spreadsheet loader");
+
+        // OCR and VLM
+        register("ocr-core", "ai.kompile", "kompile-ocr-core", Category.OCR, "OCR pipeline interfaces and config");
+        register("ocr-models", "ai.kompile", "kompile-ocr-models", Category.OCR, "OCR and VLM model implementations (SameDiff)");
+        register("ocr-postprocess", "ai.kompile", "kompile-ocr-postprocess", Category.OCR, "LLM-based OCR post-processing");
+        register("ocr-integration", "ai.kompile", "kompile-ocr-integration", Category.OCR, "OCR pipeline service and document loader bridge");
+        register("ocr-datapipeline", "ai.kompile", "kompile-ocr-datapipeline", Category.OCR, "OCR output parsing and entity indexing");
+
+        // Crawl and graph
+        register("crawler-core", "ai.kompile", "kompile-crawler-core", Category.ADVANCED, "Web/file/HTML/Excel crawlers and pipeline routing");
+        register("crawl-graph", "ai.kompile", "kompile-crawl-graph", Category.ADVANCED, "Unified crawl-to-graph extraction service");
+        register("tool-crawler", "ai.kompile", "kompile-tool-crawler", Category.TOOL, "Crawler MCP tools (start/status/cancel)");
+        register("process-discovery", "ai.kompile", "kompile-process-discovery", Category.ADVANCED, "LLM-based business process discovery from graphs");
+        register("cli-llm", "ai.kompile", "kompile-app-cli-llm", Category.LLM, "CLI agent LLM provider (subprocess-managed Claude/Codex)");
+
+        // Data enrichment
+        register("data-enrichment", "ai.kompile", "kompile-data-enrichment", Category.TOOL, "LLM-based data enrichment and labeling");
 
         // Enterprise / Advanced
         register("kvcache", "ai.kompile", "kompile-kvcache", Category.ENTERPRISE, "KV cache management");
         register("model-staging", "ai.kompile", "kompile-model-staging", Category.ENTERPRISE, "Model staging and registry");
         register("model-manager", "ai.kompile", "kompile-model-manager", Category.ENTERPRISE, "Model download and caching");
         register("pipeline-management", "ai.kompile", "kompile-pipeline-management", Category.ENTERPRISE, "Pipeline management service");
+        register("code-indexer", "ai.kompile", "kompile-code-indexer", Category.ENTERPRISE, "Code project indexing and search");
         register("graph-neo4j", "ai.kompile", "kompile-graph-neo4j", Category.ADVANCED, "Graph RAG with Neo4j");
         register("knowledge-graph", "ai.kompile", "kompile-knowledge-graph", Category.ADVANCED, "Knowledge graph integration");
+        register("graph-algorithms", "ai.kompile", "kompile-graph-algorithms", Category.ADVANCED, "Graph algorithms (PageRank, communities, shortest path)");
 
         // Pipeline
         register("pipelines-core", "ai.kompile", "kompile-pipelines-framework-core", Category.PIPELINE, "Pipeline execution engine");

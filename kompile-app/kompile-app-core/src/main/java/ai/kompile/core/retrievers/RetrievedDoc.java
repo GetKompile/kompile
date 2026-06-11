@@ -438,12 +438,6 @@ public class RetrievedDoc {
         return new Builder().id(this.id).text(this.text).media(this.media).metadata(this.metadata).score(this.score);
     }
 
-    // Legacy method for backward compatibility
-    @Deprecated
-    public String getContent() {
-        return this.text;
-    }
-
     public static class Builder {
 
         private String id;
@@ -535,12 +529,6 @@ public class RetrievedDoc {
         public Builder score(Double score) {
             this.score = score;
             return this;
-        }
-
-        // Legacy method for backward compatibility
-        @Deprecated
-        public Builder content(String content) {
-            return this.text(content);
         }
 
         // ═══════════════════════════════════════════════════════════════════════════

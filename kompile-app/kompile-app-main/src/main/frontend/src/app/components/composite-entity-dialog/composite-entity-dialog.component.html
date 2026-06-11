@@ -1,0 +1,98 @@
+<h2 mat-dialog-title>
+  <mat-icon class="title-icon">account_tree</mat-icon>
+  Create Composite Entity
+</h2>
+
+<mat-dialog-content [formGroup]="form">
+
+  <!-- Title -->
+  <mat-form-field appearance="outline" class="full-width">
+    <mat-label>Entity Title *</mat-label>
+    <input matInput formControlName="title" placeholder="e.g. Financial Report 2024">
+    <mat-error *ngIf="form.get('title')?.hasError('required')">Title is required</mat-error>
+  </mat-form-field>
+
+  <!-- Description -->
+  <mat-form-field appearance="outline" class="full-width">
+    <mat-label>Description</mat-label>
+    <textarea matInput formControlName="description" rows="3"
+              placeholder="What does this composite entity represent?"></textarea>
+  </mat-form-field>
+
+  <!-- External ID -->
+  <mat-form-field appearance="outline" class="full-width">
+    <mat-label>External ID</mat-label>
+    <input matInput formControlName="externalId"
+           placeholder="Unique identifier (auto-generated if blank)">
+    <mat-hint>Used to reference this entity from external systems</mat-hint>
+  </mat-form-field>
+
+  <!-- Parent Node -->
+  <mat-form-field appearance="outline" class="full-width">
+    <mat-label>Parent Node</mat-label>
+    <mat-select formControlName="parentNodeId">
+      <mat-option value="">(None — top-level)</mat-option>
+      <mat-option *ngFor="let node of availableNodes" [value]="node.nodeId">
+        [{{ node.nodeType }}] {{ node.title }}
+      </mat-option>
+    </mat-select>
+    <mat-hint>Optional: attach this entity under an existing node</mat-hint>
+  </mat-form-field>
+
+  <!-- Confidence Slider -->
+  <div class="slider-row">
+    <label class="slider-label">Confidence Score</label>
+    <mat-slider min="0" max="1" step="0.01" discrete class="confidence-slider"
+                [displayWith]="formatConfidence">
+      <input matSliderThumb formControlName="confidence">
+    </mat-slider>
+    <span class="slider-value">{{ formatConfidence(form.get('confidence')?.value ?? 0.8) }}</span>
+  </div>
+
+  <mat-divider class="section-divider"></mat-divider>
+
+  <!-- Metadata key-value editor -->
+  <div class="metadata-section">
+    <div class="metadata-header">
+      <span class="metadata-title">Metadata</span>
+      <button mat-stroked-button type="button" (click)="addMetadataEntry()">
+        <mat-icon>add</mat-icon> Add Entry
+      </button>
+    </div>
+
+    <div class="metadata-row" *ngFor="let entry of metadataEntries; let i = index">
+      <mat-form-field appearance="outline" class="meta-key">
+        <mat-label>Key</mat-label>
+        <input matInput [(ngModel)]="entry.key" [ngModelOptions]="{standalone: true}"
+               placeholder="key">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="meta-value">
+        <mat-label>Value</mat-label>
+        <input matInput [(ngModel)]="entry.value" [ngModelOptions]="{standalone: true}"
+               placeholder="value">
+      </mat-form-field>
+
+      <button mat-icon-button color="warn" type="button" (click)="removeMetadataEntry(i)"
+              matTooltip="Remove entry">
+        <mat-icon>remove_circle_outline</mat-icon>
+      </button>
+    </div>
+
+    <div class="no-metadata" *ngIf="!metadataEntries.length">
+      <span>No metadata entries. Click "Add Entry" to add key-value pairs.</span>
+    </div>
+  </div>
+
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-stroked-button (click)="cancel()" [disabled]="saving">Cancel</button>
+  <button mat-raised-button color="primary"
+          (click)="save()"
+          [disabled]="form.invalid || saving">
+    <mat-spinner *ngIf="saving" diameter="18" class="inline-spinner"></mat-spinner>
+    <mat-icon *ngIf="!saving">save</mat-icon>
+    {{ saving ? 'Saving...' : 'Create Entity' }}
+  </button>
+</mat-dialog-actions>

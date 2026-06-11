@@ -1,0 +1,171 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="tool-use-log">
+  <!-- Stats Banner -->
+  <div class="stats-banner" *ngIf="stats">
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.totalActions }}</div>
+      <div class="stat-label">Total Calls</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.byActionType?.['READ'] || 0 }}</div>
+      <div class="stat-label">
+        <mat-icon class="stat-icon" style="color: #16a34a">visibility</mat-icon>
+        Reads
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.byActionType?.['WRITE'] || 0 }}</div>
+      <div class="stat-label">
+        <mat-icon class="stat-icon" style="color: #2563eb">edit</mat-icon>
+        Writes
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.byActionType?.['EXECUTE'] || 0 }}</div>
+      <div class="stat-label">
+        <mat-icon class="stat-icon" style="color: #ea580c">play_arrow</mat-icon>
+        Executes
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.undoablePending }}</div>
+      <div class="stat-label">
+        <mat-icon class="stat-icon" style="color: #7c3aed">undo</mat-icon>
+        Undoable
+      </div>
+    </div>
+  </div>
+
+  <!-- Top Tools -->
+  <div class="top-tools" *ngIf="getTopTools().length > 0">
+    <h4>Most Used Tools</h4>
+    <div class="top-tools-row">
+      <div *ngFor="let tool of getTopTools()" class="top-tool-chip"
+           (click)="toolNameFilter = tool.name; loadActions()">
+        <span class="top-tool-name">{{ tool.name }}</span>
+        <span class="top-tool-count">{{ tool.count }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="log-toolbar">
+    <div class="filters">
+      <mat-form-field appearance="outline" class="filter-field">
+        <mat-label>Tool name</mat-label>
+        <input matInput [(ngModel)]="toolNameFilter" (ngModelChange)="loadActions()" [ngModelOptions]="{standalone: true}"
+               placeholder="Filter by tool...">
+        <button mat-icon-button matSuffix *ngIf="toolNameFilter" (click)="toolNameFilter = ''; loadActions()">
+          <mat-icon>close</mat-icon>
+        </button>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="filter-field filter-select">
+        <mat-label>Action Type</mat-label>
+        <mat-select [(ngModel)]="actionTypeFilter" (selectionChange)="loadActions()" [ngModelOptions]="{standalone: true}">
+          <mat-option value="">All</mat-option>
+          <mat-option *ngFor="let type of actionTypes.slice(1)" [value]="type">
+            <mat-icon [style.color]="getActionTypeColor(type)">{{ getActionTypeIcon(type) }}</mat-icon>
+            {{ type }}
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="filter-field filter-select">
+        <mat-label>Limit</mat-label>
+        <mat-select [(ngModel)]="limitFilter" (selectionChange)="loadActions()" [ngModelOptions]="{standalone: true}">
+          <mat-option [value]="25">25</mat-option>
+          <mat-option [value]="50">50</mat-option>
+          <mat-option [value]="100">100</mat-option>
+          <mat-option [value]="250">250</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-slide-toggle [(ngModel)]="undoableOnly" (change)="loadActions()" [ngModelOptions]="{standalone: true}">
+        Undoable only
+      </mat-slide-toggle>
+    </div>
+
+    <div class="toolbar-actions">
+      <mat-slide-toggle [(ngModel)]="autoRefresh" [ngModelOptions]="{standalone: true}" matTooltip="Auto-refresh every 5s">
+        Live
+      </mat-slide-toggle>
+      <button mat-icon-button (click)="loadActions(); loadStats()" matTooltip="Refresh now">
+        <mat-icon>refresh</mat-icon>
+      </button>
+      <button mat-button color="warn" (click)="undoLast()" matTooltip="Undo most recent undoable action">
+        <mat-icon>undo</mat-icon> Undo Last
+      </button>
+      <button mat-icon-button color="warn" (click)="clearLog()" matTooltip="Clear all entries">
+        <mat-icon>delete_sweep</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Action Log Table -->
+  <div class="log-entries" *ngIf="actions.length > 0">
+    <div *ngFor="let action of actions" class="log-entry"
+         [class.expanded]="expandedActionId === action.id"
+         [class.undone]="action.undone">
+      <div class="entry-row" (click)="toggleExpand(action)">
+        <mat-icon class="entry-type-icon" [style.color]="getActionTypeColor(action.actionType)">
+          {{ getActionTypeIcon(action.actionType) }}
+        </mat-icon>
+        <span class="entry-tool">{{ action.toolName }}</span>
+        <span class="entry-category">{{ action.toolCategory }}</span>
+        <span class="entry-time">{{ formatTime(action.timestamp) }}</span>
+        <div class="entry-badges">
+          <mat-icon *ngIf="action.undone" class="badge-undone" matTooltip="Undone">undo</mat-icon>
+          <mat-icon *ngIf="action.undoable && !action.undone" class="badge-undoable" matTooltip="Undoable">restore</mat-icon>
+        </div>
+        <button mat-icon-button *ngIf="action.undoable && !action.undone"
+                (click)="$event.stopPropagation(); undoAction(action.id)" matTooltip="Undo this action">
+          <mat-icon color="warn">undo</mat-icon>
+        </button>
+        <mat-icon class="expand-icon">{{ expandedActionId === action.id ? 'expand_less' : 'expand_more' }}</mat-icon>
+      </div>
+
+      <div class="entry-detail" *ngIf="expandedActionId === action.id && expandedDetail">
+        <mat-divider></mat-divider>
+        <div class="detail-grid">
+          <div class="detail-block">
+            <h5>Arguments</h5>
+            <pre class="detail-json">{{ formatJson(expandedDetail.arguments) }}</pre>
+          </div>
+          <div class="detail-block" *ngIf="expandedDetail.result">
+            <h5>Result</h5>
+            <pre class="detail-json">{{ formatJson(expandedDetail.result) }}</pre>
+          </div>
+        </div>
+        <div class="detail-meta">
+          <span *ngIf="expandedDetail.sessionId">Session: {{ expandedDetail.sessionId }}</span>
+          <span>{{ formatDate(expandedDetail.timestamp) }} {{ formatTime(expandedDetail.timestamp) }}</span>
+          <button mat-button (click)="copyToClipboard(formatJson(expandedDetail))">
+            <mat-icon>content_copy</mat-icon> Copy
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="empty-state" *ngIf="actions.length === 0 && !isLoading">
+    <mat-icon>receipt_long</mat-icon>
+    <p>No tool calls recorded yet.</p>
+    <p class="hint">Tool calls made through the MCP protocol or the debugger will appear here.</p>
+  </div>
+</div>

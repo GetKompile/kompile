@@ -16,7 +16,7 @@
 
 package ai.kompile.staging.web.dto;
 
-import ai.kompile.staging.staging.StagingModelInfo;
+import ai.kompile.core.staging.StagingModelInfo;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;

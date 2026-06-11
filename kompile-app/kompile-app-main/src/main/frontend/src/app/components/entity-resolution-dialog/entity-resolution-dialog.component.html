@@ -1,0 +1,158 @@
+<div class="entity-resolution-dialog">
+  <div class="dialog-header">
+    <mat-icon class="header-icon">hub</mat-icon>
+    <h2 mat-dialog-title>Entity Resolution</h2>
+    <span class="header-query" *ngIf="data.searchQuery">"{{ data.searchQuery }}"</span>
+    <span class="spacer"></span>
+    <button mat-icon-button (click)="showSettings = !showSettings"
+            [class.active-toggle]="showSettings"
+            matTooltip="Resolution settings">
+      <mat-icon>tune</mat-icon>
+    </button>
+    <button mat-icon-button (click)="close()" matTooltip="Close">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Settings panel -->
+  <div class="settings-panel" *ngIf="showSettings">
+    <div class="settings-row">
+      <label class="threshold-label">Similarity threshold</label>
+      <mat-slider min="0.5" max="1.0" step="0.05" discrete [displayWith]="formatThreshold">
+        <input matSliderThumb [(ngModel)]="threshold">
+      </mat-slider>
+      <span class="threshold-value">{{ (threshold * 100).toFixed(0) }}%</span>
+    </div>
+    <div class="settings-toggles">
+      <mat-slide-toggle [(ngModel)]="crossTypeMerging" color="primary">
+        <span class="toggle-label">Cross-type merging</span>
+      </mat-slide-toggle>
+      <mat-slide-toggle [(ngModel)]="entityTypeCorrection" color="primary">
+        <span class="toggle-label">Entity type correction</span>
+      </mat-slide-toggle>
+      <mat-slide-toggle [(ngModel)]="crossLanguageResolution" color="primary">
+        <span class="toggle-label">Cross-language resolution</span>
+      </mat-slide-toggle>
+    </div>
+    <button mat-stroked-button color="primary" (click)="loadCandidates()" class="refresh-btn">
+      <mat-icon>refresh</mat-icon> Refresh candidates
+    </button>
+  </div>
+
+  <mat-dialog-content>
+    <!-- Loading spinner -->
+    <div class="loading-state" *ngIf="loading">
+      <mat-spinner diameter="36"></mat-spinner>
+      <span>Finding matching candidates...</span>
+    </div>
+
+    <!-- Empty state -->
+    <div class="empty-state" *ngIf="!loading && visibleCandidates.length === 0">
+      <mat-icon class="empty-icon">check_circle</mat-icon>
+      <p *ngIf="candidates.length === 0">No duplicate candidates found for "{{ data.searchQuery }}"</p>
+      <p *ngIf="candidates.length > 0 && visibleCandidates.length === 0">
+        All {{ candidates.length }} candidates have been resolved
+      </p>
+    </div>
+
+    <!-- Candidate list -->
+    <div class="candidate-list" *ngIf="!loading && visibleCandidates.length > 0">
+      <div class="candidate-summary">
+        {{ visibleCandidates.length }} candidate{{ visibleCandidates.length !== 1 ? 's' : '' }}
+        <span *ngIf="totalMerged > 0" class="merged-count">
+          ({{ totalMerged }} merged this session)
+        </span>
+      </div>
+
+      <div *ngFor="let candidate of visibleCandidates" class="candidate-card">
+        <div class="candidate-entities">
+          <div class="entity-side">
+            <span class="entity-type-chip">{{ candidate.entityType }}</span>
+            <span class="entity-title">{{ candidate.titleA }}</span>
+          </div>
+          <div class="match-indicator">
+            <mat-icon>compare_arrows</mat-icon>
+            <span class="match-score" [ngClass]="getScoreClass(candidate.score)">
+              {{ (candidate.score * 100).toFixed(0) }}%
+            </span>
+          </div>
+          <div class="entity-side">
+            <span class="entity-type-chip">{{ candidate.entityType }}</span>
+            <span class="entity-title">{{ candidate.titleB }}</span>
+          </div>
+        </div>
+
+        <div class="candidate-reasons" *ngIf="candidate.reasons?.length">
+          <mat-icon class="reason-icon">info_outline</mat-icon>
+          <span class="reason-text">{{ candidate.reasons.join(' · ') }}</span>
+        </div>
+
+        <div class="candidate-actions">
+          <button mat-stroked-button color="primary" (click)="merge(candidate)"
+                  [disabled]="isMerging(candidate)">
+            <mat-spinner *ngIf="isMerging(candidate)" diameter="16"></mat-spinner>
+            <mat-icon *ngIf="!isMerging(candidate)">merge</mat-icon>
+            Merge
+          </button>
+          <button mat-stroked-button (click)="explain(candidate)"
+                  [class.active-explain]="isExplaining(candidate)"
+                  [disabled]="explanationLoading && isExplaining(candidate)">
+            <mat-spinner *ngIf="explanationLoading && isExplaining(candidate)" diameter="16"></mat-spinner>
+            <mat-icon *ngIf="!(explanationLoading && isExplaining(candidate))">psychology</mat-icon>
+            Explain
+          </button>
+          <button mat-stroked-button color="warn" (click)="skip(candidate)">
+            <mat-icon>block</mat-icon>
+            Skip
+          </button>
+        </div>
+
+        <!-- Inline explanation -->
+        <div class="explanation-panel" *ngIf="isExplaining(candidate) && selectedExplanation">
+          <div class="explanation-header">
+            <mat-icon>psychology</mat-icon>
+            <strong>Match Explanation</strong>
+            <span class="explanation-verdict" [ngClass]="selectedExplanation.wouldMerge ? 'would-merge' : 'would-not-merge'">
+              {{ selectedExplanation.wouldMerge ? 'Would merge' : 'Would not merge' }}
+            </span>
+          </div>
+          <div class="explanation-score">
+            Score: <strong [ngClass]="getScoreClass(selectedExplanation.score)">
+              {{ (selectedExplanation.score * 100).toFixed(1) }}%
+            </strong>
+          </div>
+          <div class="explanation-reasons" *ngIf="selectedExplanation.matchReasons?.length">
+            <div class="explanation-label">Match signals:</div>
+            <mat-chip-set>
+              <mat-chip *ngFor="let reason of selectedExplanation.matchReasons" highlighted color="primary">
+                {{ reason }}
+              </mat-chip>
+            </mat-chip-set>
+          </div>
+          <div class="explanation-blockers" *ngIf="selectedExplanation.blockers?.length">
+            <div class="explanation-label">Blockers:</div>
+            <mat-chip-set>
+              <mat-chip *ngFor="let blocker of selectedExplanation.blockers" highlighted color="warn">
+                {{ blocker }}
+              </mat-chip>
+            </mat-chip-set>
+          </div>
+        </div>
+      </div>
+    </div>
+  </mat-dialog-content>
+
+  <mat-dialog-actions align="end">
+    <span class="merge-summary" *ngIf="totalMerged > 0">
+      <mat-icon>check_circle</mat-icon> {{ totalMerged }} merged
+    </span>
+    <span class="spacer"></span>
+    <button mat-button (click)="close()">Close</button>
+    <button mat-raised-button color="primary" (click)="mergeAll()"
+            [disabled]="loading || visibleCandidates.length === 0"
+            *ngIf="visibleCandidates.length > 1">
+      <mat-icon>merge</mat-icon>
+      Merge All ({{ visibleCandidates.length }})
+    </button>
+  </mat-dialog-actions>
+</div>

@@ -1,0 +1,339 @@
+<!--
+     Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<div class="graph-eval-debugger">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-info">
+      <h3><mat-icon>hub</mat-icon> Graph Extraction Evaluator</h3>
+      <p>Upload text, extract entities and relationships, then evaluate against ground truth.</p>
+    </div>
+    <button mat-icon-button matTooltip="Refresh Status" (click)="loadStatus()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading...</span>
+  </div>
+
+  <!-- Error -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="error = null">Dismiss</button>
+  </div>
+
+  <!-- Not Available -->
+  <div *ngIf="!loading && status && !status.extractionAvailable" class="not-available">
+    <mat-icon>info</mat-icon>
+    <span>Graph extraction is not available. Configure an LLM provider to enable entity extraction.</span>
+  </div>
+
+  <!-- Main Content -->
+  <ng-container *ngIf="!loading && status">
+    <div class="main-content">
+      <!-- Left: Input Panel -->
+      <div class="input-panel">
+        <!-- Source Text -->
+        <mat-card>
+          <mat-card-header>
+            <mat-icon mat-card-avatar>description</mat-icon>
+            <mat-card-title>Source Text</mat-card-title>
+            <mat-card-subtitle>Paste text or upload a file to extract entities from</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field class="full-width">
+              <mat-label>Source text</mat-label>
+              <textarea matInput [(ngModel)]="sourceText" [ngModelOptions]="{standalone: true}"
+                        rows="8" placeholder="Paste or type text here..."></textarea>
+            </mat-form-field>
+            <div class="file-upload-row">
+              <button mat-stroked-button (click)="fileInput.click()">
+                <mat-icon>upload_file</mat-icon> Upload Text File
+              </button>
+              <input #fileInput type="file" accept=".txt,.md,.html,.csv,.json" hidden (change)="handleFileUpload($event)">
+              <span class="char-count" *ngIf="sourceText">{{ sourceText.length }} chars</span>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Matching Options -->
+        <mat-card class="options-card">
+          <mat-card-content>
+            <div class="config-row toggle-row">
+              <div class="config-info">
+                <span class="config-label">Fuzzy Matching</span>
+                <span class="config-description">Allow approximate entity name matching</span>
+              </div>
+              <mat-slide-toggle [(ngModel)]="fuzzyMatch" [ngModelOptions]="{standalone: true}" color="primary">
+              </mat-slide-toggle>
+            </div>
+            <div class="config-row" *ngIf="fuzzyMatch">
+              <div class="config-info">
+                <span class="config-label">Similarity Threshold</span>
+                <span class="config-description">{{ formatPercent(similarityThreshold) }}</span>
+              </div>
+              <mat-slider min="0.5" max="1" step="0.05" discrete>
+                <input matSliderThumb [(ngModel)]="similarityThreshold" [ngModelOptions]="{standalone: true}">
+              </mat-slider>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Ground Truth -->
+        <mat-expansion-panel>
+          <mat-expansion-panel-header>
+            <mat-panel-title><mat-icon>fact_check</mat-icon> Ground Truth</mat-panel-title>
+            <mat-panel-description>
+              {{ groundTruthEntities.length }} entities, {{ groundTruthRelationships.length }} relationships
+            </mat-panel-description>
+          </mat-expansion-panel-header>
+
+          <div class="ground-truth-actions">
+            <button mat-stroked-button (click)="gtFileInput.click()" matTooltip="Import from JSON">
+              <mat-icon>file_upload</mat-icon> Import
+            </button>
+            <input #gtFileInput type="file" accept=".json" hidden (change)="handleGroundTruthUpload($event)">
+            <button mat-stroked-button (click)="exportGroundTruth()"
+                    [disabled]="groundTruthEntities.length === 0 && groundTruthRelationships.length === 0"
+                    matTooltip="Export as JSON">
+              <mat-icon>file_download</mat-icon> Export
+            </button>
+          </div>
+
+          <!-- Entities -->
+          <h4>Entities</h4>
+          <div class="gt-list">
+            <div *ngFor="let entity of groundTruthEntities; let i = index" class="gt-item">
+              <mat-icon class="gt-icon">person</mat-icon>
+              <span class="gt-title">{{ entity.title }}</span>
+              <span class="gt-type-chip">{{ entity.type }}</span>
+              <button mat-icon-button (click)="removeEntity(i)" matTooltip="Remove"><mat-icon>close</mat-icon></button>
+            </div>
+          </div>
+          <div class="add-form">
+            <mat-form-field class="title-field">
+              <mat-label>Entity title</mat-label>
+              <input matInput [(ngModel)]="newEntity.title" [ngModelOptions]="{standalone: true}"
+                     (keydown.enter)="addEntity()" placeholder="e.g. Alice">
+            </mat-form-field>
+            <mat-form-field class="type-field">
+              <mat-label>Type</mat-label>
+              <mat-select [(ngModel)]="newEntity.type" [ngModelOptions]="{standalone: true}">
+                <mat-option *ngFor="let t of entityTypes" [value]="t">{{ t }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <button mat-icon-button color="primary" (click)="addEntity()" matTooltip="Add entity"
+                    [disabled]="!newEntity.title?.trim()">
+              <mat-icon>add_circle</mat-icon>
+            </button>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Relationships -->
+          <h4>Relationships</h4>
+          <div class="gt-list">
+            <div *ngFor="let rel of groundTruthRelationships; let i = index" class="gt-item">
+              <mat-icon class="gt-icon">share</mat-icon>
+              <span class="gt-title">{{ rel.source }} &rarr; {{ rel.target }}</span>
+              <span class="gt-type-chip">{{ rel.type }}</span>
+              <button mat-icon-button (click)="removeRelationship(i)" matTooltip="Remove"><mat-icon>close</mat-icon></button>
+            </div>
+          </div>
+          <div class="add-form">
+            <mat-form-field class="source-field">
+              <mat-label>Source</mat-label>
+              <input matInput [(ngModel)]="newRelationship.source" [ngModelOptions]="{standalone: true}"
+                     placeholder="e.g. Alice">
+            </mat-form-field>
+            <mat-form-field class="target-field">
+              <mat-label>Target</mat-label>
+              <input matInput [(ngModel)]="newRelationship.target" [ngModelOptions]="{standalone: true}"
+                     (keydown.enter)="addRelationship()" placeholder="e.g. Acme Corp">
+            </mat-form-field>
+            <mat-form-field class="type-field">
+              <mat-label>Type</mat-label>
+              <mat-select [(ngModel)]="newRelationship.type" [ngModelOptions]="{standalone: true}">
+                <mat-option *ngFor="let t of relationshipTypes" [value]="t">{{ t }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <button mat-icon-button color="primary" (click)="addRelationship()" matTooltip="Add relationship"
+                    [disabled]="!newRelationship.source?.trim() || !newRelationship.target?.trim()">
+              <mat-icon>add_circle</mat-icon>
+            </button>
+          </div>
+        </mat-expansion-panel>
+
+        <!-- Run Button -->
+        <div class="actions">
+          <button mat-raised-button color="primary" (click)="runEvaluation()"
+                  [disabled]="running || !sourceText.trim() || !status.extractionAvailable">
+            <mat-icon>play_arrow</mat-icon>
+            {{ running ? 'Extracting...' : 'Extract & Evaluate' }}
+          </button>
+          <mat-spinner *ngIf="running" diameter="24"></mat-spinner>
+          <span class="evaluator-count" *ngIf="status">
+            {{ status.evaluatorCount }} evaluator{{ status.evaluatorCount !== 1 ? 's' : '' }} active
+          </span>
+        </div>
+      </div>
+
+      <!-- Right: Results Panel -->
+      <div class="results-panel" *ngIf="result?.success">
+        <mat-tab-group>
+          <!-- Extracted Graph Tab -->
+          <mat-tab label="Extracted Graph">
+            <div class="tab-content">
+              <h4>Entities ({{ result?.extractedGraph?.entities?.length || 0 }})</h4>
+              <div class="extracted-list">
+                <div *ngFor="let entity of result?.extractedGraph?.entities" class="extracted-item">
+                  <mat-icon>person</mat-icon>
+                  <span class="entity-title">{{ entity.title }}</span>
+                  <span class="entity-type-chip">{{ entity.type }}</span>
+                  <span class="confidence" *ngIf="entity.confidence">
+                    {{ formatPercent(entity.confidence) }}
+                  </span>
+                </div>
+                <div *ngIf="!result?.extractedGraph?.entities?.length" class="empty-state">
+                  No entities extracted
+                </div>
+              </div>
+
+              <mat-divider></mat-divider>
+
+              <h4>Relationships ({{ result?.extractedGraph?.relationships?.length || 0 }})</h4>
+              <div class="extracted-list">
+                <div *ngFor="let rel of result?.extractedGraph?.relationships" class="extracted-item">
+                  <mat-icon>share</mat-icon>
+                  <span class="entity-title">{{ rel.source }} &rarr; {{ rel.target }}</span>
+                  <span class="entity-type-chip">{{ rel.type }}</span>
+                </div>
+                <div *ngIf="!result?.extractedGraph?.relationships?.length" class="empty-state">
+                  No relationships extracted
+                </div>
+              </div>
+            </div>
+          </mat-tab>
+
+          <!-- Evaluation Results Tab -->
+          <mat-tab label="Evaluation Results" *ngIf="result?.evaluationResults?.length">
+            <div class="tab-content">
+              <div class="eval-time">
+                Completed in {{ result?.evaluationTimeMs }}ms
+              </div>
+
+              <div *ngFor="let evalResult of result?.evaluationResults" class="eval-result-card">
+                <mat-card [class.passed]="evalResult.passed" [class.failed]="!evalResult.passed && !evalResult.error">
+                  <mat-card-header>
+                    <mat-icon mat-card-avatar
+                              [style.color]="evalResult.error ? '#999' : (evalResult.passed ? '#4caf50' : '#f44336')">
+                      {{ evalResult.error ? 'warning' : (evalResult.passed ? 'check_circle' : 'cancel') }}
+                    </mat-icon>
+                    <mat-card-title>{{ evalResult.evaluatorName }}</mat-card-title>
+                    <mat-card-subtitle>{{ evalResult.evaluationType }}</mat-card-subtitle>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div *ngIf="evalResult.error" class="eval-error">{{ evalResult.error }}</div>
+
+                    <ng-container *ngIf="!evalResult.error">
+                      <!-- Score metrics -->
+                      <div class="metrics-grid">
+                        <div class="metric">
+                          <span class="metric-label">F1</span>
+                          <span class="metric-value" [style.color]="getScoreColor(evalResult.f1)">
+                            {{ formatPercent(evalResult.f1) }}
+                          </span>
+                        </div>
+                        <div class="metric">
+                          <span class="metric-label">Precision</span>
+                          <span class="metric-value" [style.color]="getScoreColor(evalResult.precision)">
+                            {{ formatPercent(evalResult.precision) }}
+                          </span>
+                        </div>
+                        <div class="metric">
+                          <span class="metric-label">Recall</span>
+                          <span class="metric-value" [style.color]="getScoreColor(evalResult.recall)">
+                            {{ formatPercent(evalResult.recall) }}
+                          </span>
+                        </div>
+                        <div class="metric">
+                          <span class="metric-label">TP/FP/FN</span>
+                          <span class="metric-value">
+                            {{ evalResult.truePositives }}/{{ evalResult.falsePositives }}/{{ evalResult.falseNegatives }}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div class="explanation" *ngIf="evalResult.explanation">
+                        {{ evalResult.explanation }}
+                      </div>
+
+                      <!-- Entity matches detail -->
+                      <div *ngIf="evalResult.entityMatches?.length" class="matches-section">
+                        <h5>Entity Matches</h5>
+                        <div *ngFor="let m of evalResult.entityMatches" class="match-row"
+                             [style.border-left-color]="getMatchTypeColor(m.matchType)">
+                          <span class="match-badge" [style.background]="getMatchTypeColor(m.matchType)">
+                            {{ getMatchTypeLabel(m.matchType) }}
+                          </span>
+                          <span class="match-detail" *ngIf="m.matchType === 'TRUE_POSITIVE' || m.matchType === 'TYPE_MISMATCH'">
+                            {{ m.extractedTitle }} [{{ m.extractedType }}]
+                            <mat-icon class="match-arrow">arrow_forward</mat-icon>
+                            {{ m.expectedTitle }} [{{ m.expectedType }}]
+                          </span>
+                          <span class="match-detail" *ngIf="m.matchType === 'FALSE_POSITIVE'">
+                            {{ m.extractedTitle }} [{{ m.extractedType }}] (unexpected)
+                          </span>
+                          <span class="match-detail" *ngIf="m.matchType === 'FALSE_NEGATIVE'">
+                            {{ m.expectedTitle }} [{{ m.expectedType }}] (missing)
+                          </span>
+                        </div>
+                      </div>
+
+                      <!-- Relationship matches detail -->
+                      <div *ngIf="evalResult.relationshipMatches?.length" class="matches-section">
+                        <h5>Relationship Matches</h5>
+                        <div *ngFor="let m of evalResult.relationshipMatches" class="match-row"
+                             [style.border-left-color]="getMatchTypeColor(m.matchType)">
+                          <span class="match-badge" [style.background]="getMatchTypeColor(m.matchType)">
+                            {{ getMatchTypeLabel(m.matchType) }}
+                          </span>
+                          <span class="match-detail" *ngIf="m.matchType === 'TRUE_POSITIVE'">
+                            {{ m.extractedSource }} &rarr; {{ m.extractedTarget }} [{{ m.extractedType }}]
+                          </span>
+                          <span class="match-detail" *ngIf="m.matchType === 'FALSE_POSITIVE'">
+                            {{ m.extractedSource }} &rarr; {{ m.extractedTarget }} [{{ m.extractedType }}] (unexpected)
+                          </span>
+                          <span class="match-detail" *ngIf="m.matchType === 'FALSE_NEGATIVE'">
+                            {{ m.expectedSource }} &rarr; {{ m.expectedTarget }} [{{ m.expectedType }}] (missing)
+                          </span>
+                        </div>
+                      </div>
+                    </ng-container>
+                  </mat-card-content>
+                </mat-card>
+              </div>
+            </div>
+          </mat-tab>
+        </mat-tab-group>
+      </div>
+    </div>
+  </ng-container>
+</div>

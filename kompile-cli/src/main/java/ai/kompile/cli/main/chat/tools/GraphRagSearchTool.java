@@ -20,9 +20,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
+import java.net.ConnectException;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
@@ -32,23 +30,20 @@ import java.util.Map;
  * endpoint. Queries entities, relationships, and community summaries in
  * a Neo4j-backed knowledge graph.
  * <p>
- * Supports LOCAL search (entity-centric, specific facts) and GLOBAL search
- * (community-level, broad themes and summaries).
- * <p>
- * Requires a running kompile-app instance with Neo4j and graph construction enabled.
+ * Uses {@link KompileBackendClient} for auto-detection, reconnection,
+ * and configurable timeouts.
  */
 public class GraphRagSearchTool implements CliTool {
 
-    private final String baseUrl;
-    private final HttpClient httpClient;
+    private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
 
     public GraphRagSearchTool(String baseUrl, ObjectMapper objectMapper) {
-        this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+        this.backend = KompileBackendClient.getInstance();
+        if (baseUrl != null && !baseUrl.isEmpty()) {
+            backend.setBaseUrl(baseUrl);
+        }
     }
 
     @Override
@@ -106,9 +101,10 @@ public class GraphRagSearchTool implements CliTool {
             return ToolResult.error("query is required");
         }
 
-        if (baseUrl == null || baseUrl.isEmpty()) {
+        if (!backend.isAvailable()) {
             return ToolResult.error("Graph search requires a running kompile-app instance with Neo4j. " +
-                    "Start kompile-app with Neo4j enabled or use --url to connect.");
+                    "Start kompile-app with Neo4j enabled or use --url to connect. " +
+                    "The backend will be auto-detected when it comes online.");
         }
 
         try {
@@ -120,16 +116,10 @@ public class GraphRagSearchTool implements CliTool {
                 request.put("conversationId", conversationId);
             }
 
-            String url = baseUrl + "/api/graph-rag/search";
-
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                    .timeout(Duration.ofSeconds(30))
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = backend.post(
+                    "/api/graph-rag/search",
+                    objectMapper.writeValueAsString(request),
+                    Duration.ofSeconds(30));
 
             if (response.statusCode() != 200) {
                 return ToolResult.error("Graph search failed (HTTP " + response.statusCode() + "): " +
@@ -139,9 +129,11 @@ public class GraphRagSearchTool implements CliTool {
             JsonNode result = objectMapper.readTree(response.body());
             return formatResults(query, result, searchType);
 
-        } catch (java.net.ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl +
-                    ". Is it running with Neo4j enabled?");
+        } catch (ConnectException e) {
+            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
+        } catch (java.net.http.HttpTimeoutException e) {
+            return ToolResult.error("Graph search timed out after 30s. " +
+                    "The graph query may be too broad. Try a more specific query.");
         } catch (Exception e) {
             return ToolResult.error("Graph search error: " + e.getMessage());
         }
@@ -152,7 +144,6 @@ public class GraphRagSearchTool implements CliTool {
         sb.append("Knowledge graph search (").append(searchType.toLowerCase()).append("): \"")
                 .append(query).append("\"\n\n");
 
-        // Format entities
         JsonNode entities = result.path("entities");
         if (entities.isArray() && !entities.isEmpty()) {
             sb.append("### Entities\n");
@@ -168,7 +159,6 @@ public class GraphRagSearchTool implements CliTool {
             sb.append("\n");
         }
 
-        // Format relationships
         JsonNode relationships = result.path("relationships");
         if (relationships.isArray() && !relationships.isEmpty()) {
             sb.append("### Relationships\n");
@@ -177,14 +167,13 @@ public class GraphRagSearchTool implements CliTool {
                 String target = rel.path("target").asText(rel.path("to").asText("?"));
                 String relType = rel.path("type").asText(rel.path("relationship").asText("related_to"));
                 String desc = rel.path("description").asText("");
-                sb.append("- ").append(source).append(" → [").append(relType).append("] → ").append(target);
+                sb.append("- ").append(source).append(" -> [").append(relType).append("] -> ").append(target);
                 if (!desc.isEmpty()) sb.append(": ").append(desc);
                 sb.append("\n");
             }
             sb.append("\n");
         }
 
-        // Format community summaries (global search)
         JsonNode communities = result.path("communities");
         if (communities.isArray() && !communities.isEmpty()) {
             sb.append("### Community Summaries\n");
@@ -195,7 +184,6 @@ public class GraphRagSearchTool implements CliTool {
             }
         }
 
-        // Format context text if present
         String contextText = result.path("context").asText(
                 result.path("summary").asText(""));
         if (!contextText.isEmpty()) {

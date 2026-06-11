@@ -57,14 +57,18 @@ public class InstallKompileApp implements Callable<Integer> {
             defaultValue = "8080")
     private int port = 8080;
 
-    @CommandLine.Option(names = {"--build-from-source"}, 
+    @CommandLine.Option(names = {"--build-from-source"},
             description = "Build from local source instead of downloading")
     private String sourceDir;
+
+    @CommandLine.Option(names = {"--local"},
+            description = "Install from a local JAR file (e.g., a pre-built exec JAR)")
+    private File localJar;
 
     @Override
     public Integer call() throws Exception {
         ComponentRegistry registry = new ComponentRegistry();
-        
+
         // Override version if specified
         if (version != null) {
             registry.setVersion(version);
@@ -81,8 +85,15 @@ public class InstallKompileApp implements Callable<Integer> {
 
         try {
             File installedJar;
-            
-            if (sourceDir != null) {
+
+            if (localJar != null) {
+                // Install from local JAR file directly
+                if (!localJar.isFile()) {
+                    System.err.println("Local JAR not found: " + localJar.getAbsolutePath());
+                    return 1;
+                }
+                installedJar = installer.installFromLocalJar(ComponentRegistry.KOMPILE_APP_MAIN, localJar);
+            } else if (sourceDir != null) {
                 // Build from source
                 installedJar = installer.buildFromSource(ComponentRegistry.KOMPILE_APP_MAIN, sourceDir);
             } else {
@@ -91,18 +102,18 @@ public class InstallKompileApp implements Callable<Integer> {
                 installedJar = installer.installComponent(ComponentRegistry.KOMPILE_APP_MAIN, releaseSource);
             }
 
-            System.out.println("\n✓ kompile-app-main installed successfully!");
+            System.out.println("\nkompile-app-main installed successfully!");
             System.out.println("  JAR: " + installedJar.getAbsolutePath());
             System.out.println("  Default port: " + port);
             System.out.println("\nTo start the application:");
             System.out.println("  kompile manage start kompile-app-main --port " + port);
-            System.out.println("\nOr manually:");
-            System.out.println("  java -jar " + installedJar.getAbsolutePath() + " --server.port=" + port);
+            System.out.println("\nOr use within a project:");
+            System.out.println("  kompile project start");
 
             return 0;
 
         } catch (Exception e) {
-            System.err.println("\n✗ Failed to install kompile-app-main: " + e.getMessage());
+            System.err.println("\nFailed to install kompile-app-main: " + e.getMessage());
             if (verbose) {
                 e.printStackTrace();
             }

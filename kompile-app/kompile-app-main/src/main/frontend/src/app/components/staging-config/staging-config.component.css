@@ -1827,3 +1827,19 @@ mat-card-actions button mat-spinner {
     gap: 4px;
   }
 }
+
+/* LLM Serving Status Card */
+.llm-serving-card { margin-bottom: 16px; }
+.llm-serving-row { display: flex; align-items: center; gap: 12px; }
+.llm-serving-row mat-icon { font-size: 24px; width: 24px; height: 24px; }
+.llm-serving-info { display: flex; flex-direction: column; }
+.llm-serving-label { font-weight: 600; font-size: 14px; }
+.llm-serving-detail { font-size: 12px; color: rgba(0,0,0,0.6); }
+.text-success { color: #4caf50; }
+.text-warn { color: #ff9800; }
+.app-embedding-status { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.app-embedding-status .usage-item { font-size: 11px; color: rgba(0,0,0,0.5); }
+.loading-phase-detail { display: flex; gap: 8px; align-items: center; margin: 4px 0; font-size: 12px; }
+.phase-label { color: #1976d2; font-weight: 500; }
+.phase-msg { color: rgba(0,0,0,0.6); }
+.phase-elapsed { color: rgba(0,0,0,0.4); font-size: 11px; }

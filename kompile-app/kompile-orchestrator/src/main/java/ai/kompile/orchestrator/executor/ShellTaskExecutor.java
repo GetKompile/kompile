@@ -97,38 +97,56 @@ public class ShellTaskExecutor implements TaskExecutor {
 
             Process process = pb.start();
             runningProcesses.put(task.getId(), process);
+            cancelFlags.put(task.getId(), new AtomicBoolean(false));
 
+            final TaskInstance savedTask = task;
             StringBuilder output = new StringBuilder();
             outputBuffers.put(task.getId(), output);
 
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
+            // Read output in a background thread so waitFor timeout can fire
+            Thread outputReader = new Thread(() -> {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(process.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        output.append(line).append("\n");
 
-                    if (options.isStreamOutput()) {
-                        eventPublisher.publishEvent(new TaskOutputEvent(
-                                this, task.getOrchestratorInstanceId(), task.getId(), line));
+                        if (options.isStreamOutput()) {
+                            eventPublisher.publishEvent(new TaskOutputEvent(
+                                    this, savedTask.getOrchestratorInstanceId(), savedTask.getId(), line));
+                        }
                     }
+                } catch (Exception e) {
+                    // Process destroyed or stream closed — expected on timeout/cancel
                 }
-            }
+            });
+            outputReader.setDaemon(true);
+            outputReader.start();
 
             long timeoutSeconds = task.getTimeoutSeconds() != null ? task.getTimeoutSeconds() : 300;
             boolean completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
 
             if (!completed) {
                 process.destroyForcibly();
+                outputReader.join(1000);
                 task.markTimeout();
                 eventPublisher.publishEvent(TaskEvent.timeout(this, task));
             } else {
-                int exitCode = process.exitValue();
-                if (exitCode == 0) {
-                    task.markSuccess(output.toString(), exitCode);
-                    eventPublisher.publishEvent(TaskEvent.completed(this, task));
+                outputReader.join(5000);
+                // Check if cancelled externally (e.g. via cancelTask)
+                AtomicBoolean cancelFlag = cancelFlags.get(task.getId());
+                if (cancelFlag != null && cancelFlag.get()) {
+                    task.markCancelled();
+                    eventPublisher.publishEvent(TaskEvent.cancelled(this, task));
                 } else {
-                    task.markFailed(output.toString(), exitCode, "Exit code: " + exitCode);
-                    eventPublisher.publishEvent(TaskEvent.failed(this, task));
+                    int exitCode = process.exitValue();
+                    if (exitCode == 0) {
+                        task.markSuccess(output.toString(), exitCode);
+                        eventPublisher.publishEvent(TaskEvent.completed(this, task));
+                    } else {
+                        task.markFailed(output.toString(), exitCode, "Exit code: " + exitCode);
+                        eventPublisher.publishEvent(TaskEvent.failed(this, task));
+                    }
                 }
             }
 

@@ -374,6 +374,51 @@ public class IndexingJobHistoryService {
         });
     }
 
+    // ===================== RESUME / CHECKPOINT METHODS =====================
+
+    /**
+     * Record the checkpoint path for a job, enabling it to be resumed later.
+     *
+     * @param taskId Task identifier
+     * @param checkpointPath Path to the checkpoint file
+     * @param phase The ingest phase at which the checkpoint was created
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void recordCheckpointPath(String taskId, String checkpointPath, IngestPhase phase) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.setCheckpointPath(checkpointPath);
+            job.setResumeFromPhase(phase);
+            repository.save(job);
+            log.debug("Recorded checkpoint path for job {}: {} at phase {}", taskId, checkpointPath, phase);
+        });
+    }
+
+    /**
+     * Link a resumed job to the original task it was resumed from.
+     *
+     * @param newTaskId The task ID of the new (resumed) job
+     * @param originalTaskId The task ID of the original job that was resumed
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void setResumedFromTaskId(String newTaskId, String originalTaskId) {
+        repository.findByTaskId(newTaskId).ifPresent(job -> {
+            job.setResumedFromTaskId(originalTaskId);
+            repository.save(job);
+            log.debug("Linked resumed job {} to original {}", newTaskId, originalTaskId);
+        });
+    }
+
+    /**
+     * List all jobs that have a checkpoint and can be resumed.
+     * Returns jobs that are in FAILED, MEMORY_KILLED, CANCELLED, or PAUSED status with a checkpoint.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> listResumableJobs() {
+        return repository.findAll().stream()
+                .filter(IndexingJobHistory::isResumable)
+                .toList();
+    }
+
     // ===================== RESTART TRACKING METHODS =====================
 
     /**
@@ -859,4 +904,5 @@ public class IndexingJobHistoryService {
         }
         return false;
     }
+
 }

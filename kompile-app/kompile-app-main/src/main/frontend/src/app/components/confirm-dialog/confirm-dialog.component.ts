@@ -16,6 +16,7 @@
 
 import { Component, Inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { MatDialogRef, MAT_DIALOG_DATA, MatDialogModule } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -28,12 +29,16 @@ export interface ConfirmDialogData {
   confirmColor?: 'primary' | 'accent' | 'warn';
   icon?: string;
   iconColor?: string;
+  /** If set, shows a text input field with this placeholder */
+  inputPlaceholder?: string;
+  /** Default value for the input field */
+  inputValue?: string;
 }
 
 @Component({
   selector: 'app-confirm-dialog',
   standalone: true,
-  imports: [CommonModule, MatDialogModule, MatButtonModule, MatIconModule],
+  imports: [CommonModule, FormsModule, MatDialogModule, MatButtonModule, MatIconModule],
   template: `
     <div class="confirm-dialog">
       <div class="dialog-header" [class.warn]="data.confirmColor === 'warn'">
@@ -42,6 +47,11 @@ export interface ConfirmDialogData {
       </div>
       <mat-dialog-content>
         <p>{{ data.message }}</p>
+        <textarea *ngIf="data.inputPlaceholder"
+                  [(ngModel)]="inputValue"
+                  [placeholder]="data.inputPlaceholder"
+                  rows="3"
+                  class="dialog-input"></textarea>
       </mat-dialog-content>
       <mat-dialog-actions align="end">
         <button mat-button (click)="onCancel()">{{ data.cancelText || 'Cancel' }}</button>
@@ -96,13 +106,35 @@ export interface ConfirmDialogData {
       padding: 8px 16px 16px 16px;
       gap: 8px;
     }
+
+    .dialog-input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 14px;
+      margin-top: 12px;
+      resize: vertical;
+      font-family: inherit;
+      box-sizing: border-box;
+    }
+
+    .dialog-input:focus {
+      outline: none;
+      border-color: #1976d2;
+      box-shadow: 0 0 0 2px rgba(25,118,210,0.1);
+    }
   `]
 })
 export class ConfirmDialogComponent {
+  inputValue = '';
+
   constructor(
     public dialogRef: MatDialogRef<ConfirmDialogComponent>,
     @Inject(MAT_DIALOG_DATA) public data: ConfirmDialogData
-  ) {}
+  ) {
+    this.inputValue = data.inputValue || '';
+  }
 
   getIconColor(): string {
     switch (this.data.confirmColor) {
@@ -117,6 +149,7 @@ export class ConfirmDialogComponent {
   }
 
   onConfirm(): void {
-    this.dialogRef.close(true);
+    // When input field is present, return the input value; otherwise return true
+    this.dialogRef.close(this.data.inputPlaceholder ? this.inputValue : true);
   }
 }

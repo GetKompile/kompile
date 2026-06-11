@@ -60,6 +60,10 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-project-store</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-embedding-anserini</artifactId>
             <exclusions>
                 <exclusion>
@@ -135,6 +139,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.github.tomakehurst</groupId>
+            <artifactId>wiremock-jre8-standalone</artifactId>
+            <version>2.35.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -218,12 +228,6 @@
             <artifactId>kompile-orchestrator</artifactId>
         </dependency>
 
-        <!-- Model Staging service for remote model registry -->
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-model-staging</artifactId>
-        </dependency>
-
         <!-- H2 Database for JPA (required by orchestrator) -->
         <dependency>
             <groupId>com.h2database</groupId>
@@ -267,6 +271,12 @@
             <artifactId>kompile-pipeline-management</artifactId>
         </dependency>
 
+        <!-- Pipeline Serving (subprocess-based execution) -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipeline-serving</artifactId>
+        </dependency>
+
         <!-- RAG Pipeline Management -->
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -277,6 +287,137 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-kvcache</artifactId>
+        </dependency>
+
+        <!-- A2A protocol -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-a2a</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Process engine -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-process-engine</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Tool gateway -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-gateway</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Data enrichment -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-data-enrichment</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Compute graph core -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-compute-graph-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Code indexer -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-code-indexer</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Crawl graph -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-crawl-graph</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Process discovery -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-process-discovery</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Tool crawler -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-crawler</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Directory watcher (for Obsidian vault sync) -->
+        <dependency>
+            <groupId>io.methvin</groupId>
+            <artifactId>directory-watcher</artifactId>
+            <version>0.19.0</version>
+        </dependency>
+
+        <!-- HTML parsing for source-to-Markdown conversion -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+        </dependency>
+
+        <!-- Flexmark markdown parsing (for Notion converter) -->
+        <dependency>
+            <groupId>com.vladsch.flexmark</groupId>
+            <artifactId>flexmark-all</artifactId>
+            <version>0.64.8</version>
+        </dependency>
+
+        <!-- Test milestone tracking -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-test-milestone</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Email IMAP loader -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-email-imap</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Email inbox value extraction -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-email-inbox</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Excel loader -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-excel</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- KClaw agent -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-kclaw</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Unified knowledge search tool -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-knowledge</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Table search tool -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-tool-table-search</artifactId>
         </dependency>
 
         <!-- LLM: pipeline-backed LanguageModel and on-demand /api/llm/* endpoints -->

@@ -3,6 +3,7 @@ package ai.kompile.cli.mcp.stdio;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -67,8 +68,7 @@ public class StdioQuorumTaskTool {
         var items = agents.putObject("items");
         items.put("type", "string");
         ArrayNode enumValues = items.putArray("enum");
-        enumValues.add("qwen"); enumValues.add("claude"); enumValues.add("codex");
-        enumValues.add("gemini"); enumValues.add("opencode");
+        for (String name : CliAgentRegistry.commandNames()) enumValues.add(name);
         agents.put("minItems", 2);
 
         var role = props.putObject("role");

@@ -46,7 +46,7 @@ public class McpStdioCommand implements Callable<Integer> {
     private String baseUrl;
 
     @CommandLine.Option(names = {"--no-daemon"}, description = "Skip daemon bridge, always run in-process",
-            defaultValue = "false")
+            defaultValue = "true")
     private boolean noDaemon;
 
     @CommandLine.Option(names = {"--profile"},
@@ -123,6 +123,15 @@ public class McpStdioCommand implements Callable<Integer> {
     /** Async executor — runs tools in background when _background=true, supports polling. */
     private volatile ai.kompile.cli.mcp.stdio.AsyncToolExecutor asyncExecutor;
 
+    /** Structured audit logger — writes MCP tool calls to the shared tool-call catalog. */
+    private volatile ai.kompile.cli.mcp.stdio.McpToolAuditLogger auditLogger;
+
+    /** CLI-side tool gateway — applies gateway rules outside the Spring MCP registry. */
+    private volatile ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor gatewayInterceptor;
+
+    /** Enforcer tool call guard — blocks tool calls that violate active enforcer policy. */
+    private volatile ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard enforcerGuard;
+
     /** Output writer for sending JSON-RPC notifications (stored as field for access from helpers). */
     private volatile OutputStreamWriter mcpOut;
 
@@ -159,6 +168,18 @@ public class McpStdioCommand implements Callable<Integer> {
     public Integer call() {
         Path wd = workDir != null ? Paths.get(workDir) : Paths.get(System.getProperty("user.dir"));
 
+        // Auto-detect kompile-app for tools that need the HTTP backend (RAG, GraphRAG).
+        // When launched via stdio (no --url), probe common ports so those tools work
+        // without requiring the user to pass --url explicitly.
+        if (baseUrl == null || baseUrl.isBlank()) {
+            String detected = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
+            if (detected != null) {
+                // Strip /mcp/sse suffix — tools need the base URL (e.g. http://localhost:8080)
+                baseUrl = detected.replaceAll("/mcp/sse$", "");
+                System.err.println("[MCP] Auto-detected kompile-app at " + baseUrl);
+            }
+        }
+
         // Auto-start daemon if needed, then bridge — collapses N MCP processes into one
         if (!noDaemon) {
             ai.kompile.cli.main.serve.DaemonClient client =
@@ -194,6 +215,16 @@ public class McpStdioCommand implements Callable<Integer> {
             resultReferenceCache = new ai.kompile.cli.main.chat.tools.ToolResultReferenceCache();
             progressLogger = new ai.kompile.cli.mcp.stdio.McpToolProgressLogger();
             asyncExecutor = new ai.kompile.cli.mcp.stdio.AsyncToolExecutor(progressLogger);
+            gatewayInterceptor = ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.fromConfig(om);
+            auditLogger = new ai.kompile.cli.mcp.stdio.McpToolAuditLogger(
+                    sessionTracker.getMetrics().getSessionId(),
+                    "kompile-mcp-stdio",
+                    "mcp-stdio",
+                    wd,
+                    om);
+
+            // Load enforcer tool call guard from environment (if enforcer mode is active)
+            enforcerGuard = ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard.fromEnvironment(om);
 
             // ── CRITICAL: Start event loop FIRST, defer heavy init ──────────
             // Claude Code drops the MCP connection if the server doesn't respond
@@ -228,14 +259,15 @@ public class McpStdioCommand implements Callable<Integer> {
             // Resolved profile for filtering
             String resolvedProfile = (profile != null && !profile.isBlank()) ? profile.toLowerCase().trim() : "full";
 
-            // Background init thread — does all heavy lifting while event loop handles protocol
+            // Two-phase initialization: fast tools first (unblocks tools/list quickly),
+            // then slow tools (semantic memory, file watcher, delegation) on a second pass.
+            // This prevents 30s timeout on MCP clients that call tools/list immediately.
             Thread initThread = new Thread(() -> {
                 try {
                     // Platform hooks for non-Claude agents (Codex, OpenCode, Gemini)
                     new PlatformHooksInstaller(wd, System.err).installAll();
 
-                    // Build all tools (includes SharedResourcePool, CoordinationStateManager,
-                    // FileWatcherService, SemanticMemoryEngine — the slow parts)
+                    // Phase 1: Build all tools (fast + slow together)
                     Map<String, ToolDef> builtTools = buildToolMap(om, wd);
 
                     // Register with dynamic tool manager
@@ -387,9 +419,9 @@ public class McpStdioCommand implements Callable<Integer> {
                 }
 
                 case "tools/list" -> {
-                    // Wait for background tool initialization to complete (max 30s)
+                    // Wait for background tool initialization to complete (max 90s for native image cold start)
                     if (!toolsReady.get()) {
-                        long deadline = System.currentTimeMillis() + 30_000;
+                        long deadline = System.currentTimeMillis() + 90_000;
                         while (!toolsReady.get() && System.currentTimeMillis() < deadline) {
                             try { Thread.sleep(50); } catch (InterruptedException ignored) { break; }
                         }
@@ -453,7 +485,7 @@ public class McpStdioCommand implements Callable<Integer> {
                 case "tools/call" -> {
                     // Wait for background tool initialization if needed
                     if (!toolsReady.get()) {
-                        long deadline = System.currentTimeMillis() + 30_000;
+                        long deadline = System.currentTimeMillis() + 90_000;
                         while (!toolsReady.get() && System.currentTimeMillis() < deadline) {
                             try { Thread.sleep(50); } catch (InterruptedException ignored) { break; }
                         }
@@ -472,6 +504,15 @@ public class McpStdioCommand implements Callable<Integer> {
                         }
                     }
 
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> originalArgMap = args != null && !args.isMissingNode() && !args.isNull()
+                            ? om.convertValue(args, Map.class)
+                            : new LinkedHashMap<>();
+                    if (originalArgMap == null) {
+                        originalArgMap = new LinkedHashMap<>();
+                    }
+                    Map<String, Object> effectiveArgMap = new LinkedHashMap<>(originalArgMap);
+
                     ToolDef td = tools.get(toolName);
                     if (td == null) {
                         ObjectNode callResult = om.createObjectNode();
@@ -480,27 +521,120 @@ public class McpStdioCommand implements Callable<Integer> {
                         result.set("result", callResult);
                         if (sessionTracker != null) sessionTracker.recordToolCall(toolName, true, 0);
                         if (progressLogger != null) progressLogger.toolError("unknown", toolName, 0, "Unknown tool");
+                        if (auditLogger != null) {
+                            auditLogger.recordDecision(toolName, originalArgMap, null,
+                                    "unknown_tool", "Unknown tool", true, 0);
+                        }
                     } else {
+                        String auditDecision = "executed";
+                        String auditReason = null;
+
+                        var gateway = gatewayInterceptor;
+                        if (gateway != null && gateway.isEnabled()) {
+                            var gatewayDecision = gateway.evaluate(toolName, effectiveArgMap);
+                            if (gatewayDecision.action
+                                    == ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.InterceptAction.BLOCK) {
+                                ObjectNode callResult = om.createObjectNode();
+                                String blockMsg = "BLOCKED by gateway: " + gatewayDecision.reason;
+                                callResult.putArray("content").addObject().put("type", "text").put("text", blockMsg);
+                                callResult.put("isError", true);
+                                result.set("result", callResult);
+                                if (sessionTracker != null) sessionTracker.recordToolCall(toolName, true, 0);
+                                if (progressLogger != null) {
+                                    progressLogger.toolError("gateway-blocked", toolName, 0, gatewayDecision.reason);
+                                }
+                                if (auditLogger != null) {
+                                    auditLogger.recordDecision(toolName, originalArgMap, effectiveArgMap,
+                                            "gateway_blocked", gatewayDecision.reason, true, 0);
+                                }
+                                return result;
+                            } else if (gatewayDecision.action
+                                    == ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor.InterceptAction.REWRITE
+                                    && gatewayDecision.rewrittenArgs != null) {
+                                effectiveArgMap = new LinkedHashMap<>(gatewayDecision.rewrittenArgs);
+                                auditDecision = "gateway_rewritten";
+                                auditReason = gatewayDecision.reason;
+                            }
+                        }
+
+                        // Enforcer gate: check the final tool call against policy BEFORE execution.
+                        if (enforcerGuard != null && enforcerGuard.isActive()) {
+                            var guardDecision = enforcerGuard.evaluate(toolName, effectiveArgMap);
+                            if (!guardDecision.isAllowed()) {
+                                ObjectNode callResult = om.createObjectNode();
+                                String blockMsg = "BLOCKED by enforcer: " + guardDecision.blockMessage();
+                                if (!guardDecision.getCorrectionPrompt().isEmpty()) {
+                                    blockMsg += "\n\n" + guardDecision.getCorrectionPrompt();
+                                }
+                                callResult.putArray("content").addObject().put("type", "text").put("text", blockMsg);
+                                callResult.put("isError", true);
+                                result.set("result", callResult);
+                                if (sessionTracker != null) sessionTracker.recordToolCall(toolName, true, 0);
+                                if (progressLogger != null) progressLogger.toolError("enforcer-blocked", toolName, 0, guardDecision.blockMessage());
+                                if (auditLogger != null) {
+                                    auditLogger.recordDecision(toolName, originalArgMap, effectiveArgMap,
+                                            "enforcer_blocked", guardDecision.blockMessage(), true, 0);
+                                }
+                                return result;
+                            } else if (guardDecision.isRewrite() && guardDecision.getRewrittenArgs() != null) {
+                                effectiveArgMap = new LinkedHashMap<>(guardDecision.getRewrittenArgs());
+                                auditDecision = "enforcer_rewritten";
+                                auditReason = appendAuditReason(auditReason, guardDecision.getReason());
+                            }
+                        }
+
                         // Send progress start notification
                         if (progressToken != null) {
                             sendProgress(progressToken, 0, 1);
                         }
 
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> argMap = om.convertValue(args, Map.class);
+                        Map<String, Object> argMap = new LinkedHashMap<>(effectiveArgMap);
 
-                        // Check for _background mode — run tool async and return immediately
+                        // Check for _background mode — run tool async and return immediately.
+                        // Delegation tools (task, multi_task, quorum_task) are ALWAYS async
+                        // because they spawn external agent processes that can take minutes.
                         boolean background = argMap != null
                                 && Boolean.TRUE.equals(argMap.remove("_background"));
+                        // Force async for delegation tools to avoid client-side timeouts
+                        if (!background && td.annotations() == ai.kompile.cli.main.chat.tools.McpToolAnnotations.DELEGATION) {
+                            background = true;
+                        }
 
                         if (background && asyncExecutor != null) {
-                            // Log start and submit to background executor
-                            String callId = progressLogger != null
-                                    ? progressLogger.toolStart(toolName, argMap)
-                                    : null;
-
                             final Map<String, Object> finalArgs = argMap;
-                            String taskId = asyncExecutor.submit(toolName, () -> td.executor().apply(finalArgs));
+                            final Map<String, Object> auditOriginal = new LinkedHashMap<>(originalArgMap);
+                            final Map<String, Object> auditEffective = new LinkedHashMap<>(argMap);
+                            final String backgroundAuditDecision = "executed".equals(auditDecision)
+                                    ? "background"
+                                    : auditDecision + "+background";
+                            final String backgroundAuditReason = auditReason;
+                            String taskId = asyncExecutor.submit(toolName, () -> {
+                                long backgroundStart = System.currentTimeMillis();
+                                try {
+                                    var tr = td.executor().apply(finalArgs);
+                                    long backgroundDuration = System.currentTimeMillis() - backgroundStart;
+                                    if (sessionTracker != null) {
+                                        sessionTracker.recordToolCall(toolName, tr.isError(), backgroundDuration);
+                                    }
+                                    if (auditLogger != null) {
+                                        auditLogger.recordDecision(toolName, auditOriginal, auditEffective,
+                                                backgroundAuditDecision, backgroundAuditReason,
+                                                tr.isError(), backgroundDuration);
+                                    }
+                                    return tr;
+                                } catch (Exception e) {
+                                    long backgroundDuration = System.currentTimeMillis() - backgroundStart;
+                                    if (sessionTracker != null) {
+                                        sessionTracker.recordToolCall(toolName, true, backgroundDuration);
+                                    }
+                                    if (auditLogger != null) {
+                                        auditLogger.recordDecision(toolName, auditOriginal, auditEffective,
+                                                backgroundAuditDecision, appendAuditReason(backgroundAuditReason, e.getMessage()),
+                                                true, backgroundDuration);
+                                    }
+                                    throw e;
+                                }
+                            });
 
                             ObjectNode callResult = om.createObjectNode();
                             var content = callResult.putArray("content");
@@ -518,6 +652,11 @@ public class McpStdioCommand implements Callable<Integer> {
                             long callStart = System.currentTimeMillis();
                             var tr = td.executor().apply(argMap);
                             long callDuration = System.currentTimeMillis() - callStart;
+                            if (sessionTracker != null) sessionTracker.recordToolCall(toolName, tr.isError(), callDuration);
+                            if (auditLogger != null) {
+                                auditLogger.recordDecision(toolName, originalArgMap, argMap,
+                                        auditDecision, auditReason, tr.isError(), callDuration);
+                            }
                             result.set("result", buildCallResult(tr));
 
                         } else {
@@ -542,6 +681,10 @@ public class McpStdioCommand implements Callable<Integer> {
                             }
 
                             if (sessionTracker != null) sessionTracker.recordToolCall(toolName, tr.isError(), callDuration);
+                            if (auditLogger != null) {
+                                auditLogger.recordDecision(toolName, originalArgMap, argMap,
+                                        auditDecision, auditReason, tr.isError(), callDuration);
+                            }
 
                             // Send progress complete notification
                             if (progressToken != null) {
@@ -750,7 +893,7 @@ public class McpStdioCommand implements Callable<Integer> {
 
             // --- kompile MCP tool progress hooks ---
             ObjectNode preMatcher = om.createObjectNode();
-            preMatcher.put("matcher", "mcp__kompile__.*");
+            preMatcher.put("matcher", ".*");
             ArrayNode preHooks = preMatcher.putArray("hooks");
             preHooks.addObject().put("type", "command").put("command", preCmd);
             preArray.add(preMatcher);
@@ -761,7 +904,7 @@ public class McpStdioCommand implements Callable<Integer> {
                     : hooks.putArray("PostToolUse");
 
             ObjectNode postMatcher = om.createObjectNode();
-            postMatcher.put("matcher", "mcp__kompile__.*");
+            postMatcher.put("matcher", ".*");
             ArrayNode postHooks = postMatcher.putArray("hooks");
             postHooks.addObject().put("type", "command").put("command", postCmd);
             postArray.add(postMatcher);
@@ -794,11 +937,26 @@ public class McpStdioCommand implements Callable<Integer> {
         if (arr == null || !arr.isArray()) return;
         ArrayNode arrayNode = (ArrayNode) arr;
         for (int i = arrayNode.size() - 1; i >= 0; i--) {
-            String matcher = arrayNode.get(i).path("matcher").asText("");
-            if (matcher.contains("mcp__kompile")) {
+            JsonNode entry = arrayNode.get(i);
+            String matcher = entry.path("matcher").asText("");
+            if (matcher.contains("mcp__kompile") || hasKompileHookCommand(entry)) {
                 arrayNode.remove(i);
             }
         }
+    }
+
+    private static boolean hasKompileHookCommand(JsonNode entry) {
+        JsonNode hooks = entry.path("hooks");
+        if (!hooks.isArray()) {
+            return false;
+        }
+        for (JsonNode hook : hooks) {
+            String command = hook.path("command").asText("");
+            if (command.contains("[kompile]") || command.contains("Kompile MCP")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ── Notification helpers ────────────────────────────────────────────────
@@ -851,6 +1009,16 @@ public class McpStdioCommand implements Callable<Integer> {
         sendNotification("notifications/message", params);
     }
 
+    private static String appendAuditReason(String existing, String next) {
+        if (next == null || next.isBlank()) {
+            return existing;
+        }
+        if (existing == null || existing.isBlank()) {
+            return next;
+        }
+        return existing + "; " + next;
+    }
+
     // ── Profile & schema helpers ────────────────────────────────────────────
 
     /**
@@ -898,6 +1066,7 @@ public class McpStdioCommand implements Callable<Integer> {
     // ── Tool building ───────────────────────────────────────────────────────
 
     private Map<String, ToolDef> buildToolMap(ObjectMapper om, Path wd) {
+        long t0 = System.currentTimeMillis();
         Map<String, ToolDef> tools = new LinkedHashMap<>();
 
         // Reuse SharedResourcePool to avoid duplicating registry/config construction
@@ -907,6 +1076,7 @@ public class McpStdioCommand implements Callable<Integer> {
         var roleManager = pool.roleManager();
         var processManager = new ai.kompile.cli.main.chat.tools.BackgroundProcessManager(System.getProperty("user.dir"));
         var subagentRunner = new ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio(wd, roleManager);
+        System.err.println("[MCP] SharedResourcePool: " + (System.currentTimeMillis() - t0) + "ms");
 
         // ── Skills injection for subagents (from shared pool) ────────────
         try {
@@ -932,6 +1102,7 @@ public class McpStdioCommand implements Callable<Integer> {
         // ── Coordination state manager ────────────────────────────────────
         String coordSessionId = "mcp-stdio-" + System.currentTimeMillis();
         coordinator = new ai.kompile.cli.main.coordination.CoordinationStateManager(wd, coordSessionId, om);
+        System.err.println("[MCP] Core init: " + (System.currentTimeMillis() - t0) + "ms");
 
         // ── File I/O tools ─────────────────────────────────────────────────
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ReadTool(), om, wd);
@@ -976,6 +1147,7 @@ public class McpStdioCommand implements Callable<Integer> {
         // ── Config tools ──────────────────────────────────────────────────
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ConfigArchiveTool(), om, wd);
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ProjectConfigTool(), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.EnforcerConfigTool(), om, wd);
 
         // ── Test milestone tracking ───────────────────────────────────────
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.TestMilestoneTool(), om, wd);
@@ -993,7 +1165,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.GraphRagSearchTool(baseUrl, om), om, wd);
 
         // ── Process management ─────────────────────────────────────────────
-        var procTool = new ai.kompile.cli.main.chat.tools.ProcessManagementTool(processManager, coordinator);
+        var procTool = new ai.kompile.cli.main.chat.tools.ProcessManagementTool(processManager);
         tools.put(procTool.id(), new ToolDef(procTool.id(), procTool.description(), procTool.parameterSchema(),
             procTool.mcpAnnotations(),
             args -> { try { return procTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
@@ -1002,9 +1174,11 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.EditCoordinatorTool(coordinator), om, wd);
 
         // ── Semantic memory (passive vector retrieval) ────────────────────
+        long tSem = System.currentTimeMillis();
         semanticMemoryEngine = new ai.kompile.cli.main.chat.tools.SemanticMemoryEngine();
         semanticMemoryEngine.initialize();
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.SemanticMemoryTool(semanticMemoryEngine), om, wd);
+        System.err.println("[MCP] SemanticMemoryEngine: " + (System.currentTimeMillis() - tSem) + "ms");
 
         // ── File activity tracking (multi-agent file change notifications) ──
         try {
@@ -1078,6 +1252,7 @@ public class McpStdioCommand implements Callable<Integer> {
         // Wire session tracker into subagent runner for post-completion evaluation
         subagentRunner.setSessionTracker(sessionTracker);
 
+
         // ── Poll tool (check status of background tool executions) ───────
         {
             ObjectNode pollSchema = om.createObjectNode();
@@ -1125,6 +1300,7 @@ public class McpStdioCommand implements Callable<Integer> {
             }
         }
 
+        System.err.println("[MCP] buildToolMap total: " + (System.currentTimeMillis() - t0) + "ms (" + tools.size() + " tools)");
         return tools;
     }
 

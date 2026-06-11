@@ -15,6 +15,7 @@
  */
 package ai.kompile.orchestrator.model.task;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -33,6 +34,8 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 public class TaskInstance {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -245,7 +248,7 @@ public class TaskInstance {
      * Create a new instance from a task definition.
      */
     public static TaskInstance fromDefinition(TaskDefinition definition, Map<String, String> variables) {
-        return TaskInstance.builder()
+        TaskInstance instance = TaskInstance.builder()
                 .taskDefinitionId(definition.getTaskId())
                 .name(definition.getName())
                 .taskType(definition.getTaskType())
@@ -255,5 +258,68 @@ public class TaskInstance {
                 .variables(variables != null ? new HashMap<>(variables) : new HashMap<>())
                 .status(TaskStatus.PENDING)
                 .build();
+
+        // Carry over HTTP-specific fields as metadata for HttpTaskExecutor
+        if (definition.getTaskType() == TaskType.HTTP) {
+            Map<String, String> httpMeta = new HashMap<>();
+            if (definition.getHttpUrl() != null) {
+                String resolvedUrl = definition.resolveTemplate(definition.getHttpUrl(), variables);
+                httpMeta.put("httpUrl", resolvedUrl);
+                instance.setCommand(resolvedUrl);
+            }
+            if (definition.getHttpMethod() != null) {
+                httpMeta.put("httpMethod", definition.getHttpMethod());
+            }
+            if (definition.getHttpHeadersJson() != null) {
+                httpMeta.put("httpHeaders", definition.getHttpHeadersJson());
+            }
+            if (definition.getHttpBodyTemplate() != null) {
+                String resolvedBody = definition.resolveTemplate(definition.getHttpBodyTemplate(), variables);
+                httpMeta.put("httpBody", resolvedBody);
+            }
+            try {
+                instance.setMetadataJson(OBJECT_MAPPER.writeValueAsString(httpMeta));
+            } catch (Exception e) {
+                // Best effort — metadata serialization failure shouldn't block task creation
+            }
+        }
+
+        // Carry over LLM-specific fields as metadata for LlmQueryTaskExecutor
+        if (definition.getTaskType() == TaskType.LLM_QUERY) {
+            Map<String, String> llmMeta = new HashMap<>();
+            if (definition.getPromptTemplate() != null) {
+                llmMeta.put("prompt", definition.resolvePrompt(variables));
+            }
+            if (definition.getSystemPrompt() != null) {
+                llmMeta.put("systemPrompt", definition.getSystemPrompt());
+            }
+            if (definition.getAgentName() != null) {
+                llmMeta.put("agentName", definition.getAgentName());
+            }
+            try {
+                instance.setMetadataJson(OBJECT_MAPPER.writeValueAsString(llmMeta));
+            } catch (Exception e) {
+                // Best effort
+            }
+        }
+
+        // Carry over CODE-specific fields as metadata for CodeTaskExecutor
+        if (definition.getTaskType() == TaskType.CODE) {
+            Map<String, String> codeMeta = new HashMap<>();
+            if (definition.getExecutorClassName() != null) {
+                codeMeta.put("executorClassName", definition.getExecutorClassName());
+            }
+            // Carry language variable into metadata so it survives DB round-trips
+            if (variables != null && variables.containsKey("language")) {
+                codeMeta.put("language", variables.get("language"));
+            }
+            try {
+                instance.setMetadataJson(OBJECT_MAPPER.writeValueAsString(codeMeta));
+            } catch (Exception e) {
+                // Best effort
+            }
+        }
+
+        return instance;
     }
 }

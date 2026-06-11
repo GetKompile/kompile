@@ -13,6 +13,7 @@ import {
   ValidationResponse,
   LlmGenerationPreset
 } from '../models/samediff-llm-pipeline-models';
+import { backendUrl } from './base.service';
 
 /**
  * Angular service for LLM pipeline configuration management.
@@ -25,17 +26,7 @@ export class SameDiffLlmPipelineService {
   private apiUrl: string;
 
   constructor(private http: HttpClient) {
-    this.apiUrl = this.getApiUrl();
-  }
-
-  private getApiUrl(): string {
-    if (typeof window !== 'undefined' && window.location) {
-      const protocol = window.location.protocol;
-      const hostname = window.location.hostname;
-      const port = window.location.port;
-      return `${protocol}//${hostname}${port ? ':' + port : ''}`;
-    }
-    return '';
+    this.apiUrl = backendUrl.replace(/\/api$/, '');
   }
 
   private handleError(error: HttpErrorResponse) {

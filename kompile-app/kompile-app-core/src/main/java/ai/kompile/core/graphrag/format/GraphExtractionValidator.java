@@ -129,6 +129,11 @@ public final class GraphExtractionValidator {
     public static Graph toGraph(ExtractionResult result) {
         Graph graph = new Graph();
 
+        if (result.metadata() != null) {
+            graph.setId(result.metadata().graphId());
+            graph.setParentGraphId(result.metadata().parentGraphId());
+        }
+
         List<Entity> entities = new ArrayList<>();
         for (ExtractedEntity ee : result.entities()) {
             Entity entity = new Entity();
@@ -221,7 +226,7 @@ public final class GraphExtractionValidator {
         }
 
         return ExtractionResult.of(entities, relations,
-                GraphExtractionSchema.ExtractionMetadata.forChunk(null, null, model));
+                GraphExtractionSchema.ExtractionMetadata.forChunkInGraph(null, null, model, graph.getId(), graph.getParentGraphId()));
     }
 
     /**

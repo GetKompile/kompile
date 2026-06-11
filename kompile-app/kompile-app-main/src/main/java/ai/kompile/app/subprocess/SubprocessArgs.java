@@ -131,6 +131,12 @@ public record SubprocessArgs(
          */
         int gpuMemoryKillThresholdPercent,
 
+        /**
+         * GPU soft limit percentage (0-100) for CudaMemoryPool proactive failover.
+         * Default: 70
+         */
+        int gpuSoftLimitPercent,
+
         // === Off-Heap (JavaCPP/Native) Memory Monitoring Configuration ===
 
         /**
@@ -204,6 +210,11 @@ public record SubprocessArgs(
     public static final int DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT = 92;
 
     /**
+     * Default GPU soft limit percentage for CudaMemoryPool proactive failover.
+     */
+    public static final int DEFAULT_GPU_SOFT_LIMIT_PERCENT = 70;
+
+    /**
      * Default off-heap memory threshold percentage at which to trigger graceful stop.
      */
     public static final int DEFAULT_OFF_HEAP_THRESHOLD_PERCENT = 80;
@@ -258,6 +269,7 @@ public record SubprocessArgs(
                 DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT,
                 DEFAULT_GPU_MEMORY_CRITICAL_PERCENT,
                 DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT,
+                DEFAULT_GPU_SOFT_LIMIT_PERCENT,
                 DEFAULT_OFF_HEAP_THRESHOLD_PERCENT,
                 DEFAULT_OFF_HEAP_CRITICAL_PERCENT,
                 DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT,
@@ -367,6 +379,7 @@ public record SubprocessArgs(
         private int gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
         private int gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
         private int gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
+        private int gpuSoftLimitPercent = DEFAULT_GPU_SOFT_LIMIT_PERCENT;
         // Off-heap memory monitoring config
         private int offHeapThresholdPercent = DEFAULT_OFF_HEAP_THRESHOLD_PERCENT;
         private int offHeapCriticalPercent = DEFAULT_OFF_HEAP_CRITICAL_PERCENT;
@@ -503,6 +516,11 @@ public record SubprocessArgs(
             return this;
         }
 
+        public Builder gpuSoftLimitPercent(int gpuSoftLimitPercent) {
+            this.gpuSoftLimitPercent = Math.max(0, Math.min(gpuSoftLimitPercent, 100));
+            return this;
+        }
+
         public Builder offHeapThresholdPercent(int offHeapThresholdPercent) {
             this.offHeapThresholdPercent = Math.max(0, Math.min(offHeapThresholdPercent, 100));
             return this;
@@ -568,6 +586,7 @@ public record SubprocessArgs(
                     gpuMemoryThresholdPercent,
                     gpuMemoryCriticalPercent,
                     gpuMemoryKillThresholdPercent,
+                    gpuSoftLimitPercent,
                     offHeapThresholdPercent,
                     offHeapCriticalPercent,
                     offHeapKillThresholdPercent,

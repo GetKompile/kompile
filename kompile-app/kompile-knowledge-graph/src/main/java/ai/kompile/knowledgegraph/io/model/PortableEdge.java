@@ -17,5 +17,15 @@ public record PortableEdge(
         String toExternalId,
         String edgeType,
         Double weight,
-        String description
-) {}
+        String description,
+        String provenance,
+        Double confidence
+) {
+    /**
+     * Compact constructor for backwards-compatible creation without provenance/confidence.
+     */
+    public PortableEdge(String fromExternalId, String toExternalId, String edgeType,
+                        Double weight, String description) {
+        this(fromExternalId, toExternalId, edgeType, weight, description, null, null);
+    }
+}

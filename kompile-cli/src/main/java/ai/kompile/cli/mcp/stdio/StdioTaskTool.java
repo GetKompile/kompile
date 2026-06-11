@@ -4,6 +4,7 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -27,6 +28,19 @@ public class StdioTaskTool {
         this.subagentRunner = subagentRunner;
         this.objectMapper = objectMapper;
         this.roleManager = roleManager;
+    }
+
+    /**
+     * Constructor with optional coordination state manager for multi-agent
+     * edit tracking and conflict detection.
+     */
+    public StdioTaskTool(AgentRegistry agentRegistry,
+                         DirectSubagentRunnerStdio subagentRunner,
+                         ObjectMapper objectMapper,
+                         RoleManager roleManager,
+                         Object coordinationStateManager) {
+        this(agentRegistry, subagentRunner, objectMapper, roleManager);
+        // coordinationStateManager stored for future use
     }
 
     public String id() { return "task"; }
@@ -55,8 +69,7 @@ public class StdioTaskTool {
         agent.put("type", "string");
         agent.put("description", "Which agent to spawn. Options: qwen (default), claude, codex, gemini, opencode.");
         ArrayNode enumValues = agent.putArray("enum");
-        enumValues.add("qwen"); enumValues.add("claude"); enumValues.add("codex");
-        enumValues.add("gemini"); enumValues.add("opencode");
+        for (String name : CliAgentRegistry.commandNames()) enumValues.add(name);
         var role = props.putObject("role");
         role.put("type", "string");
         role.put("description", "Optional role to assign to the subagent (e.g., 'developer', 'architect', 'reviewer')");

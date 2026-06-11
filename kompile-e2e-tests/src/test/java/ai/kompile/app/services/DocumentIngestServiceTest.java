@@ -74,7 +74,8 @@ class DocumentIngestServiceTest {
                 null,   // indexingJobHistoryService (optional)
                 null,   // largeDocumentPreprocessor (optional)
                 null,   // subprocessIngestLauncher (optional)
-                null    // subprocessConfigService (optional)
+                null,   // subprocessConfigService (optional)
+                null    // resourceScheduler (optional)
         );
     }
 
@@ -111,7 +112,7 @@ class DocumentIngestServiceTest {
                     mockIngestConfig,
                     mockMemoryWatchdog,
                     mockTextConversion,
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
             assertNotNull(service);
         }
 
@@ -128,7 +129,7 @@ class DocumentIngestServiceTest {
                     mockIngestConfig,
                     mockMemoryWatchdog,
                     mockTextConversion,
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
 
             Object selectedIndexer = getField(service, "indexerService");
             assertNotNull(selectedIndexer);
@@ -149,7 +150,7 @@ class DocumentIngestServiceTest {
                     mockIngestConfig,
                     mockMemoryWatchdog,
                     mockTextConversion,
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
 
             Object selectedIndexer = getField(service, "indexerService");
             assertNotNull(selectedIndexer);

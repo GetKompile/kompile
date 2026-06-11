@@ -37,8 +37,8 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatTableModule } from '@angular/material/table';
 import { MatBadgeModule } from '@angular/material/badge';
 import { MatSelectModule } from '@angular/material/select';
-import { Subject, forkJoin, Subscription } from 'rxjs';
-import { takeUntil, filter } from 'rxjs/operators';
+import { Subject, forkJoin, Subscription, interval, of } from 'rxjs';
+import { takeUntil, filter, switchMap, catchError } from 'rxjs/operators';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import { SdkHubComponent } from '../sdk-hub/sdk-hub.component';
 
@@ -67,8 +67,43 @@ import {
   ArchiveStatus,
   ArchiveModelInfo,
   FactSheet,
-  ModelStatusUpdate
+  ModelStatusUpdate,
+  UpdateFactSheetRequest
 } from '../../models/api-models';
+
+// ─── Local interfaces for API response shapes ────────────────────────────────
+
+interface EmbeddingModelStatus {
+  available: boolean;
+  modelId?: string;
+  activeModelId?: string;
+  dimensions?: number;
+  loading?: boolean;
+  initialized?: boolean;
+  error?: string;
+  source?: string;
+}
+
+interface RemoteModelEntry {
+  modelId: string;
+  type: string;
+  status: string;
+  metadata?: {
+    embeddingDim?: number;
+    description?: string;
+    [key: string]: unknown;
+  };
+  version?: string;
+  [key: string]: unknown;
+}
+
+interface RemoteModelRegistry {
+  models: Record<string, RemoteModelEntry>;
+  version?: string;
+  lastUpdated?: string;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 @Component({
   selector: 'app-staging-config',
@@ -127,9 +162,13 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
   activatingModel: string | null = null;
   loadingModel: string | null = null;
   currentEmbeddingModel: string | null = null;
-  embeddingModelStatus: any = null;
+  embeddingModelStatus: EmbeddingModelStatus | null = null;
   embeddingModelReady = false;
   embeddingModelLoading = false;
+  embeddingOptimalBatchSize: number | null = null;
+  embeddingLoadingPhase: string | null = null;
+  embeddingLoadingMessage: string | null = null;
+  embeddingLoadingElapsedMs = 0;
 
   // === Download State ===
   downloadingModel: string | null = null;
@@ -139,7 +178,7 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
   downloadedModels: Set<string> = new Set();
 
   // === Remote Registry State ===
-  remoteRegistry: any = null;
+  remoteRegistry: RemoteModelRegistry | null = null;
   remoteRegistryLoading = false;
   promotingModel: string | null = null;
 
@@ -150,6 +189,10 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
   connectionStatus: ConnectionStatus | null = null;
   retryingConnection = false;
   showConnectionRetryBanner = false;
+
+  // === LLM Serving Status ===
+  llmServingStatus: any = null;
+  llmServingPolling = false;
 
   // Form state
   showForm = false;
@@ -199,6 +242,7 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
     this.loadEmbeddingStatus();
     this.loadGraphOptimizationStatus();
     this.loadLocalRegistry();
+    this.pollLlmServingStatus();
 
     // Connect to WebSocket and subscribe to model status updates
     this.setupWebSocketSubscription();
@@ -265,6 +309,26 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
     });
   }
 
+  pollLlmServingStatus(): void {
+    // Poll LLM serving status every 10 seconds
+    interval(10000).pipe(
+      takeUntil(this.destroy$),
+      switchMap(() => this.stagingConfigService.getLlmServingStatus().pipe(
+        catchError(() => of(null))
+      ))
+    ).subscribe((status: any) => {
+      this.llmServingStatus = status;
+      this.cdr.markForCheck();
+    });
+    // Initial fetch
+    this.stagingConfigService.getLlmServingStatus().pipe(
+      catchError(() => of(null))
+    ).subscribe((status: any) => {
+      this.llmServingStatus = status;
+      this.cdr.markForCheck();
+    });
+  }
+
   ngOnDestroy(): void {
     // Unsubscribe from WebSocket model status updates
     this.webSocketService.unsubscribeFromModelStatus();
@@ -321,13 +385,13 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const request: any = {
+    const request: UpdateFactSheetRequest = {
       embeddingModelSource: source
     };
 
     // If switching to staging, clear the archive ID
     if (source === 'staging') {
-      request.embeddingArchiveId = null;
+      request.embeddingArchiveId = undefined;
     }
 
     this.factSheetService.updateSheet(this.activeFactSheet.id, request).subscribe({
@@ -363,14 +427,14 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const request: any = {
+    const request: UpdateFactSheetRequest = {
       embeddingModel: modelId,
       embeddingModelSource: source
     };
 
     // Clear archive ID if switching to staging source
     if (source === 'staging') {
-      request.embeddingArchiveId = null;
+      request.embeddingArchiveId = undefined;
     }
 
     this.factSheetService.updateSheet(this.activeFactSheet.id, request).subscribe({
@@ -721,6 +785,10 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
 
       // Update loading state from WebSocket
       this.embeddingModelLoading = status.embedding.loading || false;
+      this.embeddingOptimalBatchSize = status.embedding.optimalBatchSize || null;
+      this.embeddingLoadingPhase = status.embedding.loadingPhase || null;
+      this.embeddingLoadingMessage = status.embedding.loadingMessage || null;
+      this.embeddingLoadingElapsedMs = status.embedding.loadingElapsedMs || 0;
 
       // Update ready state
       this.embeddingModelReady = isNowReady;
@@ -847,22 +915,22 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
     return this.downloadedModels.has(modelId);
   }
 
-  getStagedModels(): any[] {
+  getStagedModels(): RemoteModelEntry[] {
     if (!this.remoteRegistry?.models) return [];
     return Object.entries(this.remoteRegistry.models)
-      .filter(([_, model]: [string, any]) => model.status === 'staged')
-      .map(([id, model]: [string, any]) => ({ modelId: id, ...model }));
+      .filter(([_, model]) => model.status === 'staged')
+      .map(([id, model]) => ({ ...model, modelId: id }));
   }
 
-  getActiveRemoteModels(): any[] {
+  getActiveRemoteModels(): RemoteModelEntry[] {
     if (!this.remoteRegistry?.models) {
       // Don't spam the console - this gets called frequently by change detection
       return [];
     }
     const entries = Object.entries(this.remoteRegistry.models);
     const activeModels = entries
-      .filter(([_, model]: [string, any]) => model.status === 'active')
-      .map(([id, model]: [string, any]) => ({ modelId: id, ...model }));
+      .filter(([_, model]) => model.status === 'active')
+      .map(([id, model]) => ({ ...model, modelId: id }));
     return activeModels;
   }
 
@@ -1132,7 +1200,7 @@ export class StagingConfigComponent implements OnInit, OnDestroy {
     return this.activeModelsByType[type] || null;
   }
 
-  getModelStatus(model: any): string {
+  getModelStatus(model: RemoteModelEntry): string {
     if (model.status === 'active') return 'active';
     if (model.status === 'available') return 'available';
     if (model.status === 'unavailable') return 'unavailable';

@@ -39,7 +39,7 @@ public class ManagedKVCache implements AutoCloseable {
     private QuantizedPagedKVCache quantizedCache;
     private MLAKVCache mlaCache;
     private PerLayerPagedKVCache perLayerCache;
-    private TurboQuantKvCacheManager turboQuantCache;
+    private UnifiedKvCacheManager turboQuantCache;
 
     // Track tokens appended per sequence for prefix indexing
     private final Map<Integer, java.util.List<int[]>> sequenceTokenHistory = new HashMap<>();
@@ -91,8 +91,7 @@ public class ManagedKVCache implements AutoCloseable {
                 perLayerCache = new PerLayerPagedKVCache(policy, maxBatch, kvHeads, hDim, blockSize);
                 break;
             case "turboquant":
-                int tqBits = config.getTurboQuantBits() != null ? config.getTurboQuantBits() : 3;
-                turboQuantCache = new TurboQuantKvCacheManager(tqBits, ModelIOConfig.builder().build());
+                turboQuantCache = new UnifiedKvCacheManager(KvCacheStrategy.TURBOQUANT, ModelIOConfig.builder().build());
                 break;
             default: // "paged"
                 pagedCache = new PagedKVCache(maxBatch, maxSeq, kvHeads, hDim, blockSize, dt, poolFactor);
@@ -250,7 +249,7 @@ public class ManagedKVCache implements AutoCloseable {
     /**
      * Returns the TurboQuant KV cache manager if this cache is of type "turboquant".
      */
-    public TurboQuantKvCacheManager getTurboQuantCache() {
+    public UnifiedKvCacheManager getTurboQuantCache() {
         return turboQuantCache;
     }
 

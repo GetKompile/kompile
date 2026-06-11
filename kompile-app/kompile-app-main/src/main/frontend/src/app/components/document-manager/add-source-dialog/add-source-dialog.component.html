@@ -439,6 +439,13 @@
       <mat-label>Optional: Desired File Name (if downloaded)</mat-label>
       <input matInput formControlName="fileNameInput" placeholder="e.g., my-document.html" [disabled]="isSubmitting">
     </mat-form-field>
+
+    <mat-checkbox formControlName="convertToMarkdown" class="markdown-convert-checkbox" [disabled]="isSubmitting">
+      Convert to Markdown before indexing
+      <mat-icon matTooltip="Stores a Markdown copy in the source browser and indexes the Markdown version when possible" class="info-icon">
+        info_outline
+      </mat-icon>
+    </mat-checkbox>
   </div>
 
   <!-- Text/Clipboard Section -->

@@ -1,0 +1,484 @@
+<!--
+     Copyright 2025 Kompile Inc.
+    Licensed under the Apache License, Version 2.0
+-->
+
+<div class="tool-gateway-settings">
+  <!-- Header -->
+  <div class="settings-header">
+    <div class="header-info">
+      <h3>
+        <mat-icon>shield</mat-icon>
+        Tool Gateway Configuration
+      </h3>
+      <p>LLM-based gateway that intercepts tool calls and applies rules to allow, rewrite, or block them.</p>
+    </div>
+    <button mat-icon-button matTooltip="Refresh" (click)="loadConfiguration()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Not Available -->
+  <div *ngIf="!loading && !config.available" class="not-available">
+    <mat-icon>info</mat-icon>
+    <span>Tool gateway module is not loaded. Set <code>kompile.tool-gateway.enabled=true</code> in application.properties to activate.</span>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading configuration...</span>
+  </div>
+
+  <!-- Error -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="loadConfiguration()">Retry</button>
+  </div>
+
+  <!-- Success -->
+  <div *ngIf="successMessage" class="success-message">
+    <mat-icon>check_circle</mat-icon>
+    <span>{{ successMessage }}</span>
+  </div>
+
+  <!-- Main Content -->
+  <ng-container *ngIf="!loading && config.available">
+    <!-- Master Toggle -->
+    <mat-card class="master-toggle-card">
+      <mat-card-content>
+        <div class="config-row toggle-row">
+          <div class="config-info">
+            <span class="config-label">Enable Tool Gateway</span>
+            <span class="config-description">
+              Master switch to enable or disable LLM-based tool call interception
+            </span>
+          </div>
+          <mat-slide-toggle
+            [(ngModel)]="config.enabled" [ngModelOptions]="{standalone: true}"
+            (change)="toggleEnabled()"
+            color="primary">
+          </mat-slide-toggle>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Model Configuration -->
+    <mat-expansion-panel [expanded]="true" *ngIf="config.enabled">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>smart_toy</mat-icon>
+          Model Configuration
+        </mat-panel-title>
+        <mat-panel-description>
+          {{ config.model.configured ? 'Dedicated: ' + config.model.baseUrl : 'Using global ChatModel' }}
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-card class="guardrail-card">
+        <mat-card-content>
+          <div class="model-info-banner" *ngIf="!config.model.configured">
+            <mat-icon>info</mat-icon>
+            <span>No dedicated model configured. The gateway will use the application's global LLM.
+              Set a base URL below to use a specific endpoint (kompile-serve, Ollama, OpenAI, etc.).</span>
+          </div>
+
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Base URL</span>
+              <span class="config-description">
+                OpenAI-compatible API endpoint. Examples: http://localhost:8090 (kompile-serve),
+                http://localhost:11434 (Ollama), https://api.openai.com (OpenAI)
+              </span>
+            </div>
+            <mat-form-field appearance="outline" class="config-input-wide">
+              <input matInput [(ngModel)]="modelBaseUrl" [ngModelOptions]="{standalone: true}"
+                     placeholder="http://localhost:8090">
+            </mat-form-field>
+          </div>
+
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">API Key</span>
+              <span class="config-description">
+                Required for cloud APIs. For local servers, use any value (e.g., "kompile").
+                {{ config.model.apiKeySet ? '(currently set)' : '(not set)' }}
+              </span>
+            </div>
+            <mat-form-field appearance="outline" class="config-input-wide">
+              <input matInput type="password" [(ngModel)]="modelApiKey" [ngModelOptions]="{standalone: true}"
+                     placeholder="{{ config.model.apiKeySet ? '••••••••' : 'Enter API key' }}">
+            </mat-form-field>
+          </div>
+
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Model Name</span>
+              <span class="config-description">
+                Model ID to request (e.g., loaded model name for kompile-serve, "gpt-4o-mini" for OpenAI, "llama3" for Ollama)
+              </span>
+            </div>
+            <mat-form-field appearance="outline" class="config-input-wide">
+              <input matInput [(ngModel)]="modelName" [ngModelOptions]="{standalone: true}"
+                     placeholder="e.g., gpt-4o-mini">
+            </mat-form-field>
+          </div>
+
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Temperature</span>
+              <span class="config-description">
+                LLM temperature for rule evaluation (0.0 = deterministic, recommended for consistent decisions)
+              </span>
+            </div>
+            <mat-form-field appearance="outline" class="config-input">
+              <input matInput type="number" [(ngModel)]="modelTemperature" [ngModelOptions]="{standalone: true}"
+                     min="0" max="2" step="0.1">
+            </mat-form-field>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </mat-expansion-panel>
+
+    <!-- Gateway Settings -->
+    <mat-expansion-panel [expanded]="true" *ngIf="config.enabled">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>settings</mat-icon>
+          Gateway Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          Behavior, timeouts, and failure policy
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <mat-card class="guardrail-card">
+        <mat-card-content>
+          <!-- Dry Run -->
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Dry Run Mode</span>
+              <span class="config-description">Evaluate rules and log decisions but never actually block or rewrite</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.dryRun" [ngModelOptions]="{standalone: true}"
+              color="accent">
+            </mat-slide-toggle>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Fail Open -->
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Fail Open</span>
+              <span class="config-description">Allow tool calls when LLM evaluation fails (otherwise block on failure)</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.failOpen" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Verbose Logging -->
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Verbose Logging</span>
+              <span class="config-description">Log all evaluations at INFO level (not just BLOCK/REWRITE)</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.verboseLogging" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Hot Reload -->
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Hot Reload Rules</span>
+              <span class="config-description">Re-read rules file on every tool call (development only)</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.hotReload" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Evaluation Timeout -->
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Evaluation Timeout (ms)</span>
+              <span class="config-description">Maximum time for LLM evaluation before fail-open/closed policy applies</span>
+            </div>
+            <mat-form-field appearance="outline" class="config-input">
+              <input matInput type="number" [(ngModel)]="config.evaluationTimeoutMs" [ngModelOptions]="{standalone: true}" min="1000" step="1000">
+            </mat-form-field>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Default Action -->
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Default Action</span>
+              <span class="config-description">Action when no rules match a tool call</span>
+            </div>
+            <mat-form-field appearance="outline" class="config-input">
+              <mat-select [(ngModel)]="config.defaultAction" [ngModelOptions]="{standalone: true}">
+                <mat-option value="ALLOW">ALLOW</mat-option>
+                <mat-option value="BLOCK">BLOCK</mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- System Prompt -->
+          <div class="config-row vertical">
+            <div class="config-info">
+              <span class="config-label">System Prompt</span>
+              <span class="config-description">Instructions prepended to every LLM evaluation (e.g., "Be conservative, prefer BLOCK when uncertain")</span>
+            </div>
+            <mat-form-field appearance="outline" class="full-width">
+              <textarea matInput [(ngModel)]="config.systemPrompt" [ngModelOptions]="{standalone: true}"
+                        rows="3" placeholder="Optional system-level instructions for the gateway LLM"></textarea>
+            </mat-form-field>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </mat-expansion-panel>
+
+    <!-- Rules -->
+    <mat-expansion-panel [expanded]="true" *ngIf="config.enabled">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>rule</mat-icon>
+          Rules ({{ rules.length }})
+        </mat-panel-title>
+        <mat-panel-description>
+          Define conditions that trigger ALLOW, REWRITE, or BLOCK actions
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="rules-toolbar">
+        <button mat-stroked-button color="primary" (click)="showNewRuleForm = !showNewRuleForm">
+          <mat-icon>add</mat-icon>
+          Add Rule
+        </button>
+        <button mat-stroked-button (click)="reloadRules()" matTooltip="Reload rules from disk">
+          <mat-icon>sync</mat-icon>
+          Reload from Disk
+        </button>
+      </div>
+
+      <!-- New Rule Form -->
+      <mat-card *ngIf="showNewRuleForm" class="new-rule-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>add_circle</mat-icon>
+          <mat-card-title>New Rule</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row">
+            <mat-form-field appearance="outline" class="flex-field">
+              <mat-label>Rule ID</mat-label>
+              <input matInput [(ngModel)]="newRule.id" [ngModelOptions]="{standalone: true}" placeholder="e.g., block-destructive-writes">
+            </mat-form-field>
+          </div>
+          <div class="config-row">
+            <mat-form-field appearance="outline" class="flex-field">
+              <mat-label>Description</mat-label>
+              <input matInput [(ngModel)]="newRule.description" [ngModelOptions]="{standalone: true}" placeholder="Human-readable description">
+            </mat-form-field>
+          </div>
+          <div class="config-row">
+            <mat-form-field appearance="outline" class="flex-field">
+              <mat-label>Condition (natural language)</mat-label>
+              <textarea matInput [(ngModel)]="newRule.condition" [ngModelOptions]="{standalone: true}" rows="2"
+                        placeholder="e.g., The file path targets a system directory outside workspace"></textarea>
+            </mat-form-field>
+          </div>
+          <div class="config-row">
+            <mat-form-field appearance="outline" class="config-input">
+              <mat-label>Action</mat-label>
+              <mat-select [(ngModel)]="newRule.action" [ngModelOptions]="{standalone: true}">
+                <mat-option value="ALLOW">ALLOW</mat-option>
+                <mat-option value="REWRITE">REWRITE</mat-option>
+                <mat-option value="BLOCK">BLOCK</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline" class="config-input">
+              <mat-label>Priority</mat-label>
+              <input matInput type="number" [(ngModel)]="newRule.priority" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+          </div>
+
+          <div *ngIf="newRule.action === 'BLOCK'" class="config-row">
+            <mat-form-field appearance="outline" class="flex-field">
+              <mat-label>Block Message</mat-label>
+              <input matInput [(ngModel)]="newRule.blockMessage" [ngModelOptions]="{standalone: true}" placeholder="Message returned to caller">
+            </mat-form-field>
+          </div>
+
+          <div *ngIf="newRule.action === 'REWRITE'" class="config-row">
+            <mat-form-field appearance="outline" class="flex-field">
+              <mat-label>Rewrite Instructions</mat-label>
+              <textarea matInput [(ngModel)]="newRule.rewriteInstructions" [ngModelOptions]="{standalone: true}" rows="2"
+                        placeholder="e.g., Remove PII fields and replace with [REDACTED]"></textarea>
+            </mat-form-field>
+          </div>
+
+          <!-- Tool Patterns -->
+          <div class="config-row vertical">
+            <span class="config-label">Tool Patterns (empty = all tools)</span>
+            <mat-chip-set>
+              <mat-chip *ngFor="let p of newRule.toolPatterns" (removed)="removeToolPattern(p)">
+                {{ p }}
+                <button matChipRemove><mat-icon>cancel</mat-icon></button>
+              </mat-chip>
+            </mat-chip-set>
+            <div class="add-topic">
+              <mat-form-field appearance="outline">
+                <input matInput [(ngModel)]="newToolPattern" [ngModelOptions]="{standalone: true}" placeholder="e.g., write_* or delete_file"
+                       (keyup.enter)="addToolPattern()">
+              </mat-form-field>
+              <button mat-icon-button color="primary" (click)="addToolPattern()">
+                <mat-icon>add</mat-icon>
+              </button>
+            </div>
+          </div>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-raised-button color="primary" (click)="submitNewRule()" [disabled]="!newRule.id || !newRule.condition">
+            <mat-icon>save</mat-icon> Save Rule
+          </button>
+          <button mat-button (click)="showNewRuleForm = false">Cancel</button>
+        </mat-card-actions>
+      </mat-card>
+
+      <!-- Existing Rules List -->
+      <mat-card *ngFor="let rule of rules" class="rule-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar [class]="'action-' + rule.action.toLowerCase()">
+            {{ rule.action === 'BLOCK' ? 'block' : rule.action === 'REWRITE' ? 'edit' : 'check_circle' }}
+          </mat-icon>
+          <mat-card-title>{{ rule.id }}</mat-card-title>
+          <mat-card-subtitle>{{ rule.description || rule.condition }}</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="rule-details">
+            <div class="detail-row">
+              <span class="detail-label">Action:</span>
+              <span [class]="'action-badge action-' + rule.action.toLowerCase()">{{ rule.action }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Priority:</span>
+              <span>{{ rule.priority }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Enabled:</span>
+              <span>{{ rule.enabled ? 'Yes' : 'No' }}</span>
+            </div>
+            <div class="detail-row" *ngIf="rule.toolPatterns?.length">
+              <span class="detail-label">Tools:</span>
+              <mat-chip-set>
+                <mat-chip *ngFor="let p of rule.toolPatterns" class="small-chip">{{ p }}</mat-chip>
+              </mat-chip-set>
+            </div>
+            <div class="detail-row" *ngIf="!rule.toolPatterns?.length">
+              <span class="detail-label">Tools:</span>
+              <span class="dim">All tools</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Condition:</span>
+              <span class="condition-text">{{ rule.condition }}</span>
+            </div>
+            <div class="detail-row" *ngIf="rule.action === 'BLOCK' && rule.blockMessage">
+              <span class="detail-label">Block Message:</span>
+              <span>{{ rule.blockMessage }}</span>
+            </div>
+            <div class="detail-row" *ngIf="rule.action === 'REWRITE' && rule.rewriteInstructions">
+              <span class="detail-label">Rewrite:</span>
+              <span>{{ rule.rewriteInstructions }}</span>
+            </div>
+          </div>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-button color="warn" (click)="deleteRule(rule.id)">
+            <mat-icon>delete</mat-icon> Delete
+          </button>
+        </mat-card-actions>
+      </mat-card>
+
+      <div *ngIf="rules.length === 0 && !showNewRuleForm" class="no-rules">
+        <mat-icon>rule_folder</mat-icon>
+        <span>No rules configured. Add a rule or create a rules file at <code>{{ config.rulesFilePath }}</code></span>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Judge Quality Scores -->
+    <mat-expansion-panel *ngIf="config.enabled" class="scores-panel">
+      <mat-expansion-panel-header (click)="!showScores && loadScores()">
+        <mat-panel-title>
+          <mat-icon>assessment</mat-icon>
+          Judge Quality Scores
+        </mat-panel-title>
+        <mat-panel-description>
+          Recent tool evaluation quality ({{ judgeScores.length }} scores)
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div *ngIf="scoresLoading" class="loading-container">
+        <mat-spinner diameter="24"></mat-spinner>
+        <span>Loading scores...</span>
+      </div>
+
+      <div *ngIf="!scoresLoading && showScores">
+        <div *ngIf="judgeScores.length > 0" class="scores-summary">
+          <div class="score-avg">
+            <span class="score-label">Avg Correctness:</span>
+            <span class="score-value">{{ getAvgScore('correctness') }} / 5</span>
+          </div>
+          <div class="score-avg">
+            <span class="score-label">Avg Completeness:</span>
+            <span class="score-value">{{ getAvgScore('completeness') }} / 5</span>
+          </div>
+        </div>
+
+        <div *ngFor="let score of judgeScores; let i = index" class="score-entry">
+          <div class="score-header">
+            <span class="score-tool">{{ score.toolName }}</span>
+            <span class="score-badge correctness">C: {{ score.correctness }}/5</span>
+            <span class="score-badge completeness">K: {{ score.completeness }}/5</span>
+          </div>
+          <div class="score-reasoning" *ngIf="score.reasoning">{{ score.reasoning }}</div>
+        </div>
+
+        <div *ngIf="judgeScores.length === 0" class="empty-scores">
+          No judge scores recorded yet. Scores appear after tool evaluations run.
+        </div>
+
+        <button mat-button color="primary" (click)="loadScores()" class="refresh-scores">
+          <mat-icon>refresh</mat-icon> Refresh Scores
+        </button>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Save Button -->
+    <div class="actions" *ngIf="config.enabled">
+      <button mat-raised-button color="primary"
+              (click)="saveConfiguration()"
+              [disabled]="saving">
+        <mat-icon>save</mat-icon>
+        Save Configuration
+      </button>
+      <mat-spinner *ngIf="saving" diameter="24"></mat-spinner>
+    </div>
+  </ng-container>
+</div>

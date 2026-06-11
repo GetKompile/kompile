@@ -1,0 +1,158 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="cli-injection">
+  <!-- Header -->
+  <div class="section-header">
+    <div>
+      <h3>
+        <mat-icon>terminal</mat-icon>
+        CLI Tool Injection
+      </h3>
+      <p class="subtitle">Manage kompile MCP tool injection into coding agent CLIs</p>
+    </div>
+    <button mat-icon-button (click)="loadStatus()" matTooltip="Refresh status">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <mat-progress-bar *ngIf="isLoading" mode="indeterminate"></mat-progress-bar>
+
+  <!-- Injection Status -->
+  <div class="status-summary" *ngIf="status">
+    <div class="summary-text">
+      <mat-icon style="color: #4f46e5">info</mat-icon>
+      <span>
+        <strong>{{ status.injectedCount }}</strong> of <strong>{{ status.totalAgents }}</strong> agents have kompile tools injected.
+        Working directory: <code>{{ status.workingDir }}</code>
+      </span>
+    </div>
+  </div>
+
+  <!-- Agent Cards -->
+  <div class="agent-grid" *ngIf="status">
+    <div *ngFor="let agent of status.agents" class="agent-card"
+         [class.injected]="agent.injected"
+         [class.expanded]="expandedAgent === agent.id">
+      <div class="agent-header" (click)="toggleAgent(agent.id)">
+        <mat-icon class="agent-icon" [style.color]="getStatusColor(agent)">
+          {{ getAgentIcon(agent.id) }}
+        </mat-icon>
+        <div class="agent-info">
+          <span class="agent-name">{{ agent.name }}</span>
+          <span class="agent-desc">{{ agent.description }}</span>
+        </div>
+        <div class="agent-status">
+          <mat-icon *ngIf="agent.injected" class="status-injected" matTooltip="Kompile tools injected">check_circle</mat-icon>
+          <mat-icon *ngIf="!agent.injected && (agent.projectConfigExists || agent.homeConfigExists)"
+                    class="status-config-exists" matTooltip="Config exists but no kompile entry">radio_button_unchecked</mat-icon>
+          <mat-icon *ngIf="!agent.injected && !agent.projectConfigExists && !agent.homeConfigExists"
+                    class="status-not-configured" matTooltip="Not configured">remove_circle_outline</mat-icon>
+        </div>
+        <mat-icon class="expand-arrow">{{ expandedAgent === agent.id ? 'expand_less' : 'expand_more' }}</mat-icon>
+      </div>
+
+      <div class="agent-detail" *ngIf="expandedAgent === agent.id">
+        <mat-divider></mat-divider>
+        <div class="detail-rows">
+          <div class="detail-item">
+            <span class="detail-label">Config file:</span>
+            <code>{{ agent.configFile }}</code>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Project config:</span>
+            <span [style.color]="agent.projectConfigExists ? '#16a34a' : '#9ca3af'">
+              {{ agent.projectConfigExists ? 'Exists' : 'Not found' }}
+              <span *ngIf="agent.injectedProject"> (injected)</span>
+            </span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Home config:</span>
+            <span [style.color]="agent.homeConfigExists ? '#16a34a' : '#9ca3af'">
+              {{ agent.homeConfigExists ? 'Exists' : 'Not found' }}
+              <span *ngIf="agent.injectedHome"> (injected)</span>
+            </span>
+          </div>
+          <div class="detail-item" *ngIf="agent.hasBackup">
+            <span class="detail-label">Backup:</span>
+            <span style="color: #ea580c">Active injection backup exists</span>
+          </div>
+        </div>
+
+        <div class="config-preview" *ngIf="agentConfig?.content">
+          <h5>Current Configuration</h5>
+          <pre>{{ agentConfig.content }}</pre>
+        </div>
+
+        <div class="config-preview" *ngIf="agentConfig && !agentConfig.exists">
+          <p class="hint">No configuration file found. Run the injection command below to create one.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CLI Commands Section -->
+  <div class="cli-section" *ngIf="cliCommands">
+    <h4>
+      <mat-icon>code</mat-icon>
+      Injection Commands
+    </h4>
+
+    <div class="command-box">
+      <div class="command-header">
+        <span>Start MCP stdio server</span>
+        <button mat-icon-button (click)="copyCommand(cliCommands.inject)" matTooltip="Copy command">
+          <mat-icon>content_copy</mat-icon>
+        </button>
+      </div>
+      <code class="command-text">{{ cliCommands.inject }}</code>
+    </div>
+
+    <!-- Profiles -->
+    <div class="profiles-section">
+      <h5>Tool Profiles</h5>
+      <mat-form-field appearance="outline" class="profile-select">
+        <mat-label>Profile</mat-label>
+        <mat-select [(ngModel)]="selectedProfile" (selectionChange)="onProfileChange()" [ngModelOptions]="{standalone: true}">
+          <mat-option *ngFor="let profile of cliCommands.profiles" [value]="profile.name">
+            {{ profile.name }} ({{ profile.toolCount }} tools)
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <div class="profile-cards">
+        <div *ngFor="let profile of cliCommands.profiles" class="profile-card"
+             [class.active]="selectedProfile === profile.name"
+             (click)="selectedProfile = profile.name; onProfileChange()">
+          <span class="profile-name">{{ profile.name }}</span>
+          <span class="profile-desc">{{ profile.description }}</span>
+          <span class="profile-count">{{ profile.toolCount }} tools</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Schema Compression -->
+    <div class="schema-section">
+      <h5>Schema Compression Levels</h5>
+      <div class="schema-cards">
+        <div *ngFor="let level of cliCommands.schemaLevels" class="schema-card">
+          <span class="schema-name">{{ level.name }}</span>
+          <span class="schema-desc">{{ level.description }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.render;
 
 import java.util.*;
+import java.util.function.IntSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -78,6 +79,14 @@ public class AsciiRenderer {
     private static final Pattern BLOCKQUOTE_PATTERN = Pattern.compile("^>\\s?(.*)$");
     private static final Pattern HR_PATTERN = Pattern.compile("^([-*_])\\1{2,}\\s*$");
 
+    // Tool block and thinking patterns (agent-specific markers)
+    private static final Pattern TOOL_BLOCK_PATTERN = Pattern.compile(
+            "\\[tool:(\\w+)]\\n?(.*?)\\[/tool]", Pattern.DOTALL);
+    private static final Pattern TOOL_RESULT_PATTERN = Pattern.compile(
+            "\\[tool-result]\\n?(.*?)\\[/tool-result]", Pattern.DOTALL);
+    private static final Pattern THINKING_PATTERN = Pattern.compile(
+            "<thinking>\\n?(.*?)</thinking>", Pattern.DOTALL);
+
     // ========================================================================
     // Diff patterns
     // ========================================================================
@@ -102,6 +111,15 @@ public class AsciiRenderer {
         this.term = terminalRenderer;
         this.defaultBorder = term.isAnsiEnabled() ? ROUNDED : ASCII;
         this.terminalWidth = Math.max(40, terminalWidth);
+    }
+
+    /**
+     * Constructor with a dynamic width supplier. The width is sampled once at
+     * construction time; for fully dynamic resizing the caller should recreate
+     * the renderer.
+     */
+    public AsciiRenderer(TerminalRenderer terminalRenderer, IntSupplier widthSupplier) {
+        this(terminalRenderer, widthSupplier != null ? widthSupplier.getAsInt() : 100);
     }
 
     // ========================================================================
@@ -337,6 +355,9 @@ public class AsciiRenderer {
     public String renderMarkdown(String markdown) {
         if (markdown == null || markdown.isEmpty()) return "";
 
+        // Pre-process agent-specific blocks before line-by-line markdown rendering
+        markdown = preprocessAgentBlocks(markdown);
+
         StringBuilder sb = new StringBuilder();
         String[] lines = markdown.split("\n", -1);
         boolean inCodeBlock = false;
@@ -427,6 +448,34 @@ public class AsciiRenderer {
         }
 
         return sb.toString().stripTrailing();
+    }
+
+    /**
+     * Replace agent-specific block markers ([tool:X]...[/tool], [tool-result]...[/tool-result],
+     * &lt;thinking&gt;...&lt;/thinking&gt;) with rendered panel equivalents before line-by-line
+     * markdown processing.
+     */
+    private String preprocessAgentBlocks(String text) {
+        // [tool:Name]\n{...}\n[/tool] → rendered panel with tool name header
+        text = replacePatterned(text, TOOL_BLOCK_PATTERN, m -> {
+            String toolName = m.group(1);
+            String body = m.group(2).trim();
+            return panel(term.bold(toolName), body, SINGLE, "dim");
+        });
+
+        // [tool-result]\n...\n[/tool-result] → rendered panel
+        text = replacePatterned(text, TOOL_RESULT_PATTERN, m -> {
+            String body = m.group(1).trim();
+            return panel(term.dim("Result"), body, SINGLE, "dim");
+        });
+
+        // <thinking>\n...\n</thinking> → rendered dim panel
+        text = replacePatterned(text, THINKING_PATTERN, m -> {
+            String body = m.group(1).trim();
+            return panel(term.dim("Thinking"), term.dim(body), SINGLE, "dim");
+        });
+
+        return text;
     }
 
     private String renderHeading(String text, int level) {
@@ -999,6 +1048,85 @@ public class AsciiRenderer {
             case "cyan": return "\033[36m";
             default: return "";
         }
+    }
+
+    // ========================================================================
+    // Sparklines, heatmaps, and score trends
+    // ========================================================================
+
+    /**
+     * Render a score as a colored heatmap cell (e.g., "3.8" colored green/yellow/red).
+     * Score is expected in 0.0–5.0 range. Returns a fixed-width colored string.
+     */
+    public String scoreHeatmap(double score) {
+        String formatted = String.format("%.1f", score);
+        if (score >= 4.0) {
+            return term.green(formatted);
+        } else if (score >= 2.5) {
+            return term.yellow(formatted);
+        } else {
+            return term.red(formatted);
+        }
+    }
+
+    /**
+     * Render a score trend sparkline with a colored indicator based on current average.
+     * trend is an array of score values; avg is the current rolling average.
+     */
+    public String scoreTrend(double[] trend, double avg) {
+        String sparkline = sparkline(trend);
+        if (avg >= 4.0) {
+            return term.green(sparkline);
+        } else if (avg >= 2.5) {
+            return term.yellow(sparkline);
+        } else {
+            return term.red(sparkline);
+        }
+    }
+
+    /**
+     * Render a sparkline with color based on the trend direction (rising=green, falling=red).
+     */
+    public String coloredSparkline(double[] values) {
+        if (values == null || values.length == 0) return "";
+        String sparkline = sparkline(values);
+        if (values.length >= 2) {
+            double last = values[values.length - 1];
+            double first = values[0];
+            if (last > first) {
+                return term.green(sparkline);
+            } else if (last < first) {
+                return term.red(sparkline);
+            }
+        }
+        return term.dim(sparkline);
+    }
+
+    /**
+     * Render a raw sparkline string from an array of values.
+     * Uses Unicode block characters: ▁▂▃▄▅▆▇█
+     */
+    public static String sparkline(double[] values) {
+        if (values == null || values.length == 0) return "";
+        final char[] BLOCKS = {'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'};
+        double min = Double.MAX_VALUE, max = Double.MIN_VALUE;
+        for (double v : values) {
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+        double range = max - min;
+        StringBuilder sb = new StringBuilder();
+        for (double v : values) {
+            int idx;
+            if (range == 0) {
+                idx = 3; // middle block when all values are equal
+            } else {
+                idx = (int) Math.round((v - min) / range * (BLOCKS.length - 1));
+                idx = Math.max(0, Math.min(BLOCKS.length - 1, idx));
+            }
+            sb.append(BLOCKS[idx]);
+        }
+        return sb.toString();
     }
 
     /**

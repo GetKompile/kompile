@@ -361,6 +361,25 @@
                 <span><strong>Tests:</strong> {{ result.passedCount }}/{{ result.totalCount }}</span>
               </div>
               <mat-progress-bar mode="determinate" [value]="result.passRate * 100"></mat-progress-bar>
+
+              <!-- Pass rates by type breakdown -->
+              <div class="type-breakdown" *ngIf="result.passRatesByType">
+                <strong>Pass Rates by Type:</strong>
+                <div class="type-row" *ngFor="let entry of result.passRatesByType | keyvalue">
+                  <span class="type-name">{{ entry.key }}</span>
+                  <mat-progress-bar mode="determinate" [value]="entry.value * 100" class="type-bar"></mat-progress-bar>
+                  <span class="type-rate">{{ (entry.value * 100).toFixed(1) }}%</span>
+                </div>
+              </div>
+
+              <!-- Failed tests by type -->
+              <div class="failed-tests-breakdown" *ngIf="result.failedTests">
+                <strong>Failed Tests:</strong>
+                <div *ngFor="let entry of result.failedTests | keyvalue" class="failed-type">
+                  <span class="failed-type-name">{{ entry.key }}:</span>
+                  <span class="failed-test-name" *ngFor="let name of entry.value">{{ name }}</span>
+                </div>
+              </div>
             </mat-card-content>
           </mat-card>
         </div>

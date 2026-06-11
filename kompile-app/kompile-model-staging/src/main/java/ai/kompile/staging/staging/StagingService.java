@@ -23,11 +23,14 @@ import ai.kompile.staging.download.DownloadProgress;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.web.dto.StageWithOptimizationRequest;
 import ai.kompile.modelmanager.registry.*;
+import ai.kompile.core.staging.StagingModelInfo;
+import ai.kompile.core.staging.StagingStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import org.nd4j.autodiff.samediff.SameDiff;
 
@@ -37,13 +40,14 @@ import java.nio.file.*;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /**
  * Service for staging models through the download-convert-validate-promote pipeline.
  */
 @Service
-public class StagingService {
+public class StagingService implements ai.kompile.core.staging.StagingServiceApi {
 
     private static final Logger log = LoggerFactory.getLogger(StagingService.class);
 
@@ -56,6 +60,7 @@ public class StagingService {
 
     // Track active staging operations
     private final Map<String, StagingModelInfo> stagingModels = new ConcurrentHashMap<>();
+    private final Map<String, List<SseEmitter>> stagingEmitters = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
 
     // Auto-optimization configuration (set via API, applied to newly staged models)
@@ -119,6 +124,7 @@ public class StagingService {
         StagingModelInfo info = StagingModelInfo.create(modelId, source, request.getModelType());
         stagingModels.put(modelId, info);
         progressCallback.accept(info);
+        emitStagingStatus(modelId, info);
 
         try {
             // 1. Download
@@ -136,9 +142,9 @@ public class StagingService {
                             dlProgress.getMessage(),
                             dlProgress.getBytesDownloaded(),
                             dlProgress.getTotalBytes(),
-                            dlProgress.getBytesPerSecond(),
-                            dlProgress.getFileName()
+                            dlProgress.getBytesPerSecond()
                     );
+                    info.setCurrentFile(dlProgress.getFileName());
                 } else if (dlProgress.getPhase() == DownloadProgress.Phase.EXTRACTING) {
                     info.withStatus(StagingStatus.DOWNLOADING, 36, dlProgress.getMessage());
                 } else if (dlProgress.getPhase() == DownloadProgress.Phase.VERIFYING) {
@@ -230,7 +236,7 @@ public class StagingService {
             }
 
             // Create production directory
-            ModelType type = info.getType() != null ? info.getType() : ModelType.ENCODER;
+            ModelType type = info.getType() instanceof ModelType ? (ModelType) info.getType() : ModelType.ENCODER;
             Path productionDir = modelsDir.resolve(type.getDirectoryName()).resolve(modelId);
             Files.createDirectories(productionDir);
 
@@ -441,6 +447,7 @@ public class StagingService {
 
         StagingModelInfo info = StagingModelInfo.create(modelId, source, ModelType.DENSE_ENCODER);
         stagingModels.put(modelId, info);
+        emitStagingStatus(modelId, info);
 
         // Run staging asynchronously
         executor.submit(() -> {
@@ -455,7 +462,8 @@ public class StagingService {
 
                 long fileSize = Files.exists(localModelPath) ? Files.size(localModelPath) : 0;
                 info.withDownloadProgress(20, "File copied to staging",
-                        fileSize, fileSize, 0, modelPath.getFileName().toString());
+                        fileSize, fileSize, 0);
+                info.setCurrentFile(modelPath.getFileName().toString());
 
                 // 2. Convert if needed
                 Path outputPath;
@@ -528,6 +536,8 @@ public class StagingService {
         StagingModelInfo info = stagingModels.get(modelId);
         if (info != null && !info.getStatus().isTerminal()) {
             info.failed("Cancelled by user");
+            emitStagingStatus(modelId, info);
+            completeStagingEmitters(modelId);
             stagingModels.remove(modelId);
             return true;
         }
@@ -626,6 +636,76 @@ public class StagingService {
         }
 
         return missing;
+    }
+
+    // ==================== SSE Streaming ====================
+
+    /**
+     * Subscribe to real-time staging progress updates for a model via SSE.
+     *
+     * @param modelId the model being staged
+     * @return SseEmitter for streaming status events
+     */
+    public SseEmitter subscribeToStagingStream(String modelId) {
+        SseEmitter emitter = new SseEmitter(300000L); // 5 min timeout
+        stagingEmitters.computeIfAbsent(modelId, k -> new CopyOnWriteArrayList<>()).add(emitter);
+
+        emitter.onCompletion(() -> {
+            List<SseEmitter> emitters = stagingEmitters.get(modelId);
+            if (emitters != null) emitters.remove(emitter);
+        });
+        emitter.onTimeout(() -> {
+            List<SseEmitter> emitters = stagingEmitters.get(modelId);
+            if (emitters != null) emitters.remove(emitter);
+        });
+        emitter.onError(e -> {
+            List<SseEmitter> emitters = stagingEmitters.get(modelId);
+            if (emitters != null) emitters.remove(emitter);
+        });
+
+        // Send current status immediately so client has the latest state
+        StagingModelInfo current = stagingModels.get(modelId);
+        if (current != null) {
+            try {
+                emitter.send(SseEmitter.event().name("status").data(current));
+            } catch (IOException e) {
+                log.debug("Failed to send initial status for model {}", modelId);
+            }
+        }
+
+        return emitter;
+    }
+
+    /**
+     * Push a status update to all SSE subscribers for a model.
+     */
+    private void emitStagingStatus(String modelId, StagingModelInfo info) {
+        List<SseEmitter> emitters = stagingEmitters.get(modelId);
+        if (emitters != null) {
+            for (SseEmitter emitter : emitters) {
+                try {
+                    emitter.send(SseEmitter.event().name("status").data(info));
+                } catch (Exception e) {
+                    emitters.remove(emitter);
+                }
+            }
+        }
+    }
+
+    /**
+     * Complete and close all SSE emitters for a model (on terminal state).
+     */
+    private void completeStagingEmitters(String modelId) {
+        List<SseEmitter> emitters = stagingEmitters.get(modelId);
+        if (emitters != null) {
+            for (SseEmitter emitter : emitters) {
+                try {
+                    emitter.complete();
+                } catch (Exception ignored) {
+                }
+            }
+            emitters.clear();
+        }
     }
 
     // Helper methods

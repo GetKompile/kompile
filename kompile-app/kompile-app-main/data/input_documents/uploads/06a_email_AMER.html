@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AMER forecast Q3 (FINAL v2) — sorry it's late, attached</title>
+<style>
+  :root {
+    --bg: #faf9f6;
+    --surface: #ffffff;
+    --surface-hover: #f3f2ee;
+    --surface-sunken: #ebeae5;
+    --text: #2c2c2a;
+    --text-secondary: #5f5e5a;
+    --text-tertiary: #888780;
+    --border: rgba(0,0,0,0.10);
+    --accent: #0078d4;
+    --accent-bg: #deecf9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1f1e1c;
+      --surface: #292826;
+      --surface-hover: #34332f;
+      --surface-sunken: #1a1917;
+      --text: #e5e3da;
+      --text-secondary: #a8a69c;
+      --text-tertiary: #73726c;
+      --border: rgba(255,255,255,0.10);
+      --accent: #60a5fa;
+      --accent-bg: rgba(96,165,250,0.15);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  .topbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .topbar a { color: var(--accent); text-decoration: none; }
+  .topbar .actions { margin-left: auto; display: flex; gap: 12px; }
+  .actions span { cursor: default; }
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 28px 32px 64px;
+  }
+  h1.subject { font-size: 22px; font-weight: 600; margin: 0 0 16px; line-height: 1.3; }
+  .meta {
+    display: grid;
+    grid-template-columns: 50px 36px 1fr;
+    gap: 12px;
+    align-items: start;
+    padding: 14px 0 18px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 22px;
+  }
+  .avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: #c66a3a;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 600;
+    grid-row: span 2;
+  }
+  .from-line { font-size: 14.5px; color: var(--text); margin-top: 2px; }
+  .from-line .name { font-weight: 600; }
+  .from-line .email { color: var(--text-tertiary); }
+  .to-line { font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; }
+  .date-line { grid-column: 3; font-size: 12.5px; color: var(--text-tertiary); margin-top: -2px; align-self: end; }
+
+  .body {
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .body p { margin: 0 0 14px; }
+  .signature {
+    margin-top: 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .attach-block {
+    margin-top: 24px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    gap: 14px;
+    align-items: center;
+  }
+  .attach-icon {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, #1a7e44 0%, #186b3a 100%);
+    color: white;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .attach-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+  .attach-name a { color: var(--accent); text-decoration: none; }
+  .attach-name a:hover { text-decoration: underline; }
+  .attach-size { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
+  .attach-actions { font-size: 12.5px; color: var(--accent); display: flex; gap: 14px; }
+  .attach-actions a { color: var(--accent); text-decoration: none; }
+  .attach-actions a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="06_inbox.html">← Back to inbox</a>
+  <span style="color: var(--text-tertiary);">Inbox</span>
+  <div class="actions">
+    <span>Reply</span>
+    <span>Reply all</span>
+    <span>Forward</span>
+    <span>Delete</span>
+  </div>
+</div>
+
+<div class="container">
+  <h1 class="subject">AMER forecast Q3 (FINAL v2) — sorry it's late, attached</h1>
+
+  <div class="meta">
+    <div class="avatar">SC</div>
+    <div></div>
+    <div>
+      <div class="from-line"><span class="name">Sarah Chen</span> <span class="email">&lt;s.chen@northstar.co&gt;</span></div>
+      <div class="to-line">To: Mei Chen &lt;m.chen@northstar.co&gt;; J. Park &lt;j.park@northstar.co&gt;</div>
+      <div class="to-line">Cc: AMER-sales-ops@northstar.co</div>
+    </div>
+    <div></div>
+    <div class="date-line">Sunday, May 4, 2026  ·  8:14 PM PT</div>
+  </div>
+
+  <div class="body">
+    <p>hey Mei!! 👋</p>
+
+    <p>sorry this is going up sunday night again 😩 — short version: <strong>V2 is the right one, ignore v1 and v3 i sent you in slack earlier today.</strong> v3 had a copy-paste glitch on the wholesale tab where the august numbers got duplicated into july, fixed in v2. (yes the file is named v3 still bc i renamed it 5 times and gave up.)</p>
+
+    <p>couple things to flag for you:</p>
+
+    <p>
+    1) <strong>target line review</strong> — still TBD. ali (target buyer) said wed/thu next week. forecast assumes flat hold for Q3 but i can do a downside version if you need it for the CFO pack. could swing -$400 to -$700k for the quarter.<br>
+    2) <strong>costco bundle test</strong> — flagged LOST in the file (orange row). they wanted bigger margin than we can give. moving on.<br>
+    3) <strong>HYD-110 (the new sleep serum)</strong> — launches july 1. i have it at conservative phasing — 4200 units in jul, 6800 in aug. happy to run a +/- 30% sensitivity if you want.<br>
+    4) channels — i know i'm inconsistent in there 🫠 some rows say "Direct-to-Consumer" some say "DTC" some say "ecom" — please normalize on your end? salesforce export is what it is. (will clean this up next month, promise!!)
+    </p>
+
+    <p>also fyi the <strong>subtotals in the file are stale</strong> — i added a few rows after running them and didn't redo. the GRAND TOTAL row is also off — pls don't use those, just SUM the detail rows. sorry.</p>
+
+    <p>let me know if you have ?s. on a flight monday morning til 11am PT but text/slack works.</p>
+
+    <p>thx — and sorry again for the sunday night drop 🙏</p>
+
+    <p>S</p>
+
+    <div class="attach-block">
+      <div class="attach-icon">XLSX</div>
+      <div>
+        <div class="attach-name"><a href="05a_AMER_Forecast_Q3_v3_FINAL_v2.xlsx">AMER_Forecast_Q3_v3_FINAL_v2.xlsx</a></div>
+        <div class="attach-size">Microsoft Excel · 19 KB</div>
+      </div>
+      <div class="attach-actions">
+        <a href="05a_AMER_Forecast_Q3_v3_FINAL_v2.xlsx">Download</a>
+        <span style="color: var(--text-tertiary);">|</span>
+        <a href="05a_AMER_Forecast_Q3_v3_FINAL_v2.xlsx">Open</a>
+      </div>
+    </div>
+
+    <div class="signature">
+      <strong>Sarah Chen</strong> · Senior Manager, Sales Ops · Americas<br>
+      Northstar Goods, Inc.  ·  Mobile: +1 (415) 555-0118<br>
+      <em style="color: var(--text-tertiary);">"Build something that lasts."</em>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

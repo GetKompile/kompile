@@ -16,6 +16,7 @@
 
 package ai.kompile.app.facts.domain;
 
+import ai.kompile.app.sync.domain.SyncProvider;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -95,6 +96,19 @@ public class Note {
     /** Comma-separated tags for categorization. */
     @Column(length = 1024)
     private String tags;
+
+    /** External ID for synced notes (e.g., Notion page ID, Obsidian file path). */
+    @Column(length = 512)
+    private String externalId;
+
+    /** The sync provider this note is linked to. */
+    @Enumerated(EnumType.STRING)
+    @Column(length = 32)
+    private SyncProvider syncProvider;
+
+    /** Last updated timestamp from the external source. */
+    @Column
+    private Instant externalUpdatedAt;
 
     @Column(nullable = false)
     private Instant createdAt;

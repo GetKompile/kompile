@@ -35,11 +35,11 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
-import { Subject, takeUntil, debounceTime, interval, filter } from 'rxjs';
+import { Subject, Subscription, takeUntil, debounceTime, interval, filter } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 
 import { GraphCanvasComponent } from './graph-canvas.component';
-import { GraphService } from '../../services/graph.service';
+import { GraphService, GraphBuildStatus, FactSheetGraphStatistics } from '../../services/graph.service';
 import { SourceWeightService } from '../../services/source-weight.service';
 import {
   D3VisualizationData,
@@ -130,7 +130,7 @@ import {
           <span>{{buildStatus.conceptsExtracted}} concepts extracted</span>
         </div>
         <mat-progress-bar mode="determinate"
-          [value]="buildStatus.totalDocuments > 0 ? (buildStatus.processedDocuments / buildStatus.totalDocuments * 100) : 0">
+          [value]="(buildStatus.totalDocuments || 0) > 0 ? ((buildStatus.processedDocuments || 0) / (buildStatus.totalDocuments || 1) * 100) : 0">
         </mat-progress-bar>
         <button mat-icon-button (click)="cancelBuild()" matTooltip="Cancel Build">
           <mat-icon>cancel</mat-icon>
@@ -1049,7 +1049,7 @@ import {
 export class GraphVisualizerComponent implements OnInit, OnDestroy {
   private destroy$ = new Subject<void>();
   private searchSubject = new Subject<string>();
-  private buildPollSubscription: any = null;
+  private buildPollSubscription: Subscription | null = null;
 
   // Fact sheet inputs
   @Input() factSheetId: number | null = null;
@@ -1062,8 +1062,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   selectedNode: D3Node | null = null;
   showSidePanel = true;
   linkMode = false;
-  buildStatus: any = null;
-  graphStatistics: any = null;
+  buildStatus: GraphBuildStatus | null = null;
+  graphStatistics: FactSheetGraphStatistics | null = null;
   selectedTabIndex = 0;
 
   // Link mode state
@@ -1113,7 +1113,9 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     DOCUMENT: '#3b82f6',
     SNIPPET: '#f59e0b',
     ENTITY: '#a855f7',
-    CUSTOM: '#64748b'
+    CUSTOM: '#64748b',
+    TABLE: '#00bcd4',
+    ATTACHMENT: '#795548'
   };
 
   constructor(
@@ -1296,8 +1298,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
         next: (stats) => {
           this.graphStatistics = stats;
           // Show statistics in a snackbar or dialog
-          const nodeCount = Object.values(stats.nodesByType || {}).reduce((a: number, b: any) => a + b, 0);
-          const edgeCount = Object.values(stats.edgesByType || {}).reduce((a: number, b: any) => a + b, 0);
+          const nodeCount = Object.values(stats.nodesByType || {}).reduce((a: number, b: number) => a + b, 0);
+          const edgeCount = Object.values(stats.edgesByType || {}).reduce((a: number, b: number) => a + b, 0);
           this.snackBar.open(`Graph: ${nodeCount} nodes, ${edgeCount} edges, ${stats.distinctConcepts || 0} concepts`, 'Dismiss', { duration: 5000 });
         },
         error: (err) => {

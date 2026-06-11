@@ -1,0 +1,38 @@
+.memory-watchdog { padding: 16px; }
+.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.section-header h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 18px; }
+.loading { display: flex; justify-content: center; padding: 32px; }
+.error-bar, .success-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
+.error-bar { background: #fce4ec; color: #c62828; }
+.success-bar { background: #e8f5e9; color: #2e7d32; }
+
+.watchdog-card { background: #f5f5f5; border-radius: 10px; padding: 16px; margin-bottom: 16px; border-left: 4px solid #4caf50; }
+.watchdog-card.pressure-warning { border-left-color: #ff9800; background: #fff8e1; }
+.watchdog-card.pressure-critical { border-left-color: #f44336; background: #fce4ec; }
+.watchdog-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.watchdog-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
+.watchdog-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e0e0e0; color: #616161; }
+.watchdog-badge.enabled { background: #c8e6c9; color: #2e7d32; }
+
+.watchdog-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+.wd-stat { display: flex; flex-direction: column; gap: 2px; }
+.wd-label { font-size: 11px; color: #757575; text-transform: uppercase; }
+.wd-value { font-size: 16px; font-weight: 600; }
+.wd-value.warn-value { color: #e65100; }
+
+.running-jobs { margin-top: 12px; }
+.running-jobs h4 { font-size: 13px; margin: 0 0 8px 0; }
+.job-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid #eee; font-size: 12px; }
+.job-task { font-family: monospace; font-weight: 500; }
+.job-file { color: #616161; flex: 1; }
+.job-badge { font-size: 10px; padding: 2px 6px; border-radius: 8px; background: #c8e6c9; color: #2e7d32; }
+.job-badge.marked-stop { background: #fce4ec; color: #c62828; font-weight: 600; }
+
+.pool-section { margin-top: 16px; padding-top: 12px; border-top: 1px solid #e0e0e0; }
+.pool-section h4 { display: flex; align-items: center; gap: 6px; font-size: 14px; margin: 0 0 10px 0; }
+.kv-grid { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.kv-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; border-bottom: 1px solid #eee; }
+.kv-key { color: #616161; font-weight: 500; }
+.kv-value { color: #212121; font-family: monospace; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 768px) { .watchdog-grid { grid-template-columns: repeat(2, 1fr); } }

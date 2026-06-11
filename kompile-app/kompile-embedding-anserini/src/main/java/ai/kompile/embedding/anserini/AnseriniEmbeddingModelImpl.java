@@ -12,6 +12,7 @@ import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import ai.kompile.app.subprocess.SubprocessRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -81,6 +82,9 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     // Subprocess launcher - ALL embedding work goes through this
     private volatile EmbeddingSubprocessLauncher subprocessLauncher;
     private final Object launcherLock = new Object();
+
+    @Autowired(required = false)
+    private SubprocessRegistry subprocessRegistry;
 
     // Model state (mirrors subprocess state)
     private volatile String modelIdentifier;
@@ -292,6 +296,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 }
 
                 subprocessLauncher = launcherBuilder.build();
+
+                // Inject subprocess registry for lifecycle tracking
+                if (subprocessRegistry != null) {
+                    subprocessLauncher.setSubprocessRegistry(subprocessRegistry);
+                }
 
                 // Apply device routing overrides if configured
                 if (deviceRoutingEnabled) {

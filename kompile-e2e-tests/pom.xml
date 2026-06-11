@@ -185,6 +185,12 @@
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-compute-graph-scripting</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!-- Tool and service modules                                       -->
@@ -428,6 +434,13 @@
         <artifactId>maven-jar-plugin</artifactId>
         <configuration>
           <skipIfEmpty>true</skipIfEmpty>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-install-plugin</artifactId>
+        <configuration>
+          <skip>true</skip>
         </configuration>
       </plugin>
     </plugins>

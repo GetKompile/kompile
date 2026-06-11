@@ -253,4 +253,20 @@ export class CrossIndexService {
       enabled
     });
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ACTIVE SYNCS & FRESHNESS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  getActiveSyncs(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.baseUrl}/sync/active`);
+  }
+
+  markDocumentStale(documentId: string): Observable<any> {
+    return this.http.post(`${this.baseUrl}/documents/${documentId}/mark-stale`, {});
+  }
+
+  scanFreshness(factSheetId: number): Observable<any> {
+    return this.http.post(`${this.baseUrl}/fact-sheets/${factSheetId}/scan-freshness`, {});
+  }
 }

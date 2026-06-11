@@ -36,10 +36,10 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("All-args constructor should set all fields")
         void allArgsConstructor_shouldSetAllFields() {
-            GraphRagResult result = new GraphRagResult(
-                    "The answer is 42",
-                    "Context: Entity1, Entity2"
-            );
+            GraphRagResult result = GraphRagResult.builder()
+                    .answer("The answer is 42")
+                    .formattedContext("Context: Entity1, Entity2")
+                    .build();
 
             assertEquals("The answer is 42", result.getAnswer());
             assertEquals("Context: Entity1, Entity2", result.getFormattedContext());
@@ -57,7 +57,7 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("Constructor should allow null values")
         void constructor_shouldAllowNullValues() {
-            GraphRagResult result = new GraphRagResult(null, null);
+            GraphRagResult result = GraphRagResult.builder().answer(null).formattedContext(null).build();
 
             assertNull(result.getAnswer());
             assertNull(result.getFormattedContext());
@@ -66,7 +66,7 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("Constructor should allow empty strings")
         void constructor_shouldAllowEmptyStrings() {
-            GraphRagResult result = new GraphRagResult("", "");
+            GraphRagResult result = GraphRagResult.builder().answer("").formattedContext("").build();
 
             assertEquals("", result.getAnswer());
             assertEquals("", result.getFormattedContext());
@@ -103,8 +103,8 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("Results with same values should be equal")
         void resultsWithSameValues_shouldBeEqual() {
-            GraphRagResult result1 = new GraphRagResult("Answer", "Context");
-            GraphRagResult result2 = new GraphRagResult("Answer", "Context");
+            GraphRagResult result1 = GraphRagResult.builder().answer("Answer").formattedContext("Context").build();
+            GraphRagResult result2 = GraphRagResult.builder().answer("Answer").formattedContext("Context").build();
 
             assertEquals(result1, result2);
             assertEquals(result1.hashCode(), result2.hashCode());
@@ -113,8 +113,8 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("Results with different answers should not be equal")
         void resultsWithDifferentAnswers_shouldNotBeEqual() {
-            GraphRagResult result1 = new GraphRagResult("Answer 1", "Context");
-            GraphRagResult result2 = new GraphRagResult("Answer 2", "Context");
+            GraphRagResult result1 = GraphRagResult.builder().answer("Answer 1").formattedContext("Context").build();
+            GraphRagResult result2 = GraphRagResult.builder().answer("Answer 2").formattedContext("Context").build();
 
             assertNotEquals(result1, result2);
         }
@@ -122,8 +122,8 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("Results with different contexts should not be equal")
         void resultsWithDifferentContexts_shouldNotBeEqual() {
-            GraphRagResult result1 = new GraphRagResult("Answer", "Context 1");
-            GraphRagResult result2 = new GraphRagResult("Answer", "Context 2");
+            GraphRagResult result1 = GraphRagResult.builder().answer("Answer").formattedContext("Context 1").build();
+            GraphRagResult result2 = GraphRagResult.builder().answer("Answer").formattedContext("Context 2").build();
 
             assertNotEquals(result1, result2);
         }
@@ -131,7 +131,7 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("Result should not equal null")
         void result_shouldNotEqualNull() {
-            GraphRagResult result = new GraphRagResult("Answer", "Context");
+            GraphRagResult result = GraphRagResult.builder().answer("Answer").formattedContext("Context").build();
 
             assertNotEquals(null, result);
         }
@@ -139,7 +139,7 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("Result should not equal different type")
         void result_shouldNotEqualDifferentType() {
-            GraphRagResult result = new GraphRagResult("Answer", "Context");
+            GraphRagResult result = GraphRagResult.builder().answer("Answer").formattedContext("Context").build();
 
             assertNotEquals("Answer", result);
         }
@@ -152,7 +152,7 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("toString should contain answer")
         void toString_shouldContainAnswer() {
-            GraphRagResult result = new GraphRagResult("The answer is 42", "Context");
+            GraphRagResult result = GraphRagResult.builder().answer("The answer is 42").formattedContext("Context").build();
 
             String str = result.toString();
             assertTrue(str.contains("The answer is 42"));
@@ -161,7 +161,7 @@ public class GraphRagResultTest {
         @Test
         @DisplayName("toString should contain formatted context")
         void toString_shouldContainFormattedContext() {
-            GraphRagResult result = new GraphRagResult("Answer", "Entity: TechCorp");
+            GraphRagResult result = GraphRagResult.builder().answer("Answer").formattedContext("Entity: TechCorp").build();
 
             String str = result.toString();
             assertTrue(str.contains("Entity: TechCorp"));
@@ -189,7 +189,7 @@ public class GraphRagResultTest {
                 longAnswer.append("This is sentence ").append(i).append(". ");
             }
 
-            GraphRagResult result = new GraphRagResult(longAnswer.toString(), "Context");
+            GraphRagResult result = GraphRagResult.builder().answer(longAnswer.toString()).formattedContext("Context").build();
 
             assertEquals(longAnswer.toString(), result.getAnswer());
         }
@@ -200,10 +200,10 @@ public class GraphRagResultTest {
             String answerWithSpecialChars = "Answer with <html>, \"quotes\", and \n newlines";
             String contextWithSpecialChars = "Context: Entity<1> -> Entity\"2\"";
 
-            GraphRagResult result = new GraphRagResult(
-                    answerWithSpecialChars,
-                    contextWithSpecialChars
-            );
+            GraphRagResult result = GraphRagResult.builder()
+                    .answer(answerWithSpecialChars)
+                    .formattedContext(contextWithSpecialChars)
+                    .build();
 
             assertEquals(answerWithSpecialChars, result.getAnswer());
             assertEquals(contextWithSpecialChars, result.getFormattedContext());
@@ -215,7 +215,8 @@ public class GraphRagResultTest {
             String unicodeAnswer = "La respuesta es: 日本語テスト 中文测试 한국어테스트";
             String unicodeContext = "实体: 公司A -> 公司B";
 
-            GraphRagResult result = new GraphRagResult(unicodeAnswer, unicodeContext);
+            GraphRagResult result = GraphRagResult.builder()
+                    .answer(unicodeAnswer).formattedContext(unicodeContext).build();
 
             assertEquals(unicodeAnswer, result.getAnswer());
             assertEquals(unicodeContext, result.getFormattedContext());

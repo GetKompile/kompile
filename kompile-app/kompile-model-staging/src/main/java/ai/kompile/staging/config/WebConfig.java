@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.config;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
@@ -28,15 +29,19 @@ import java.io.IOException;
 /**
  * Web configuration for serving the Angular SPA.
  * Handles SPA routing by forwarding non-API requests to index.html.
+ * Only active when running as the standalone staging server.
  */
 @Configuration
+@ConditionalOnProperty(name = "kompile.staging.ui.enabled", havingValue = "true", matchIfMissing = false)
 public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        // Serve static resources, forwarding non-existent paths to index.html for SPA routing
+        // Serve static resources, forwarding non-existent paths to index.html for SPA routing.
+        // Resources are namespaced under /static/model-staging/ to avoid conflicting with
+        // kompile-app-main's /static/ resources when both JARs are on the same classpath.
         registry.addResourceHandler("/**")
-                .addResourceLocations("classpath:/static/")
+                .addResourceLocations("classpath:/static/model-staging/")
                 .resourceChain(true)
                 .addResolver(new PathResourceResolver() {
                     @Override
@@ -54,7 +59,7 @@ public class WebConfig implements WebMvcConfigurer {
                         }
 
                         // For all other requests (SPA routes), serve index.html
-                        return new ClassPathResource("/static/index.html");
+                        return new ClassPathResource("/static/model-staging/index.html");
                     }
                 });
     }

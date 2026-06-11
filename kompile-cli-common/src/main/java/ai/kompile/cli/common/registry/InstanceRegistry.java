@@ -106,6 +106,19 @@ public class InstanceRegistry {
     }
 
     /**
+     * Finds all instances associated with a given project directory path.
+     */
+    public static List<InstanceInfo> findByProjectDir(String projectDir) throws IOException {
+        List<InstanceInfo> result = new ArrayList<>();
+        for (InstanceInfo info : listAll()) {
+            if (projectDir.equals(info.getProjectDir())) {
+                result.add(info);
+            }
+        }
+        return result;
+    }
+
+    /**
      * Finds an instance by port.
      */
     public static InstanceInfo findByPort(int port) throws IOException {

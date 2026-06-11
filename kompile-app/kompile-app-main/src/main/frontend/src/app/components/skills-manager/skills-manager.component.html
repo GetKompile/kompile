@@ -1,0 +1,319 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="skills-manager">
+  <!-- Header -->
+  <div class="header">
+    <div class="title-section">
+      <h2>Skills Manager</h2>
+      <p class="subtitle">Manage slash command skills injected into agent system prompts</p>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" (click)="toggleMarkdownView()">
+        {{ showMarkdownView ? 'Hide' : 'View' }} skills.md
+      </button>
+      <button class="btn btn-secondary" (click)="refreshSkills()">
+        Refresh
+      </button>
+      <button class="btn btn-primary" (click)="startCreate()">
+        + New Skill
+      </button>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary-cards" *ngIf="summary">
+    <div class="card">
+      <div class="card-value">{{ summary.total }}</div>
+      <div class="card-label">Total</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.builtIn }}</div>
+      <div class="card-label">Built-in</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.custom }}</div>
+      <div class="card-label">Custom</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.categories.length }}</div>
+      <div class="card-label">Categories</div>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  <div class="alert alert-error" *ngIf="errorMessage">
+    {{ errorMessage }}
+    <button class="close-btn" (click)="errorMessage = null">&times;</button>
+  </div>
+  <div class="alert alert-success" *ngIf="successMessage">
+    {{ successMessage }}
+  </div>
+
+  <!-- Markdown View -->
+  <div class="markdown-view" *ngIf="showMarkdownView">
+    <div class="markdown-header">
+      <h3>Generated skills.md</h3>
+      <p class="hint">This content is injected into agent system prompts when launching via passthrough mode.</p>
+    </div>
+    <pre class="markdown-content">{{ skillsMarkdown }}</pre>
+  </div>
+
+  <!-- Search Bar -->
+  <div class="search-bar">
+    <div class="search-input-wrapper">
+      <input
+        type="text"
+        class="search-input"
+        [(ngModel)]="searchQuery" [ngModelOptions]="{standalone: true}"
+        (keyup.enter)="searchSkills()"
+        placeholder="Search skills by name or description..."
+      />
+      <button class="search-btn" (click)="searchSkills()">Search</button>
+      <button class="clear-btn" *ngIf="searchQuery" (click)="clearSearch()">Clear</button>
+    </div>
+  </div>
+
+  <!-- Category Filters -->
+  <div class="category-filters" *ngIf="summary?.categories?.length">
+    <button
+      class="filter-btn"
+      [class.active]="selectedCategory === null"
+      (click)="filterByCategory(null)">
+      All
+    </button>
+    <button
+      *ngFor="let cat of summary!.categories"
+      class="filter-btn"
+      [class.active]="selectedCategory === cat"
+      (click)="filterByCategory(cat)">
+      {{ cat }}
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading" *ngIf="isLoading">Loading skills...</div>
+
+  <!-- Skills List by Category -->
+  <div class="skills-list" *ngIf="!isLoading">
+    <div *ngFor="let cat of categoryKeys; trackBy: trackByCategory" class="category-section">
+      <h3 class="category-title">{{ cat }}</h3>
+      <div class="skill-grid">
+        <div
+          *ngFor="let skill of skillsByCategory[cat]; trackBy: trackByName"
+          class="skill-card"
+          [class.selected]="selectedSkill?.name === skill.name"
+          (click)="selectSkill(skill)">
+          <div class="skill-card-header">
+            <span class="skill-name">/{{ skill.name }}</span>
+            <span class="skill-badge" [class.built-in]="skill.builtIn" [class.custom]="!skill.builtIn">
+              {{ skill.builtIn ? 'built-in' : 'custom' }}
+            </span>
+          </div>
+          <div class="skill-description">{{ skill.description }}</div>
+          <div class="skill-meta">
+            <span class="tools-label">Tools: {{ getToolsDisplay(skill) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div *ngIf="skills.length === 0 && !isLoading" class="empty-state">
+      No skills found. Create a new skill or check your search criteria.
+    </div>
+  </div>
+
+  <!-- Detail Panel (slide-over) -->
+  <div class="detail-panel" *ngIf="selectedSkill || isCreating">
+    <div class="panel-overlay" (click)="closeDetail()"></div>
+    <div class="panel-content">
+      <div class="panel-header">
+        <h3 *ngIf="!isCreating">{{ isEditMode ? 'Edit' : 'View' }}: /{{ selectedSkill!.name }}</h3>
+        <h3 *ngIf="isCreating">Create New Skill</h3>
+        <button class="close-btn" (click)="closeDetail()">&times;</button>
+      </div>
+
+      <!-- View Mode -->
+      <div *ngIf="!isEditMode && selectedSkill" class="panel-body">
+        <div class="detail-field">
+          <label>Name</label>
+          <div class="field-value">/{{ selectedSkill.name }}</div>
+        </div>
+        <div class="detail-field" *ngIf="selectedSkill.displayName">
+          <label>Display Name</label>
+          <div class="field-value">{{ selectedSkill.displayName }}</div>
+        </div>
+        <div class="detail-field">
+          <label>Category</label>
+          <div class="field-value">{{ selectedSkill.category }}</div>
+        </div>
+        <div class="detail-field">
+          <label>Description</label>
+          <div class="field-value">{{ selectedSkill.description }}</div>
+        </div>
+        <div class="detail-field">
+          <label>Source</label>
+          <div class="field-value">{{ selectedSkill.builtIn ? 'Built-in' : 'Custom' }}</div>
+        </div>
+        <div class="detail-field">
+          <label>Allowed Tools</label>
+          <div class="field-value">{{ getToolsDisplay(selectedSkill) }}</div>
+        </div>
+        <div class="detail-field" *ngIf="selectedSkill.modelHint">
+          <label>Model Hint</label>
+          <div class="field-value">{{ selectedSkill.modelHint }}</div>
+        </div>
+        <div class="detail-field" *ngIf="selectedSkill.maxSteps">
+          <label>Max Steps</label>
+          <div class="field-value">{{ selectedSkill.maxSteps }}</div>
+        </div>
+        <div class="detail-field">
+          <label>Prompt Template</label>
+          <pre class="template-view">{{ selectedSkill.promptTemplate }}</pre>
+        </div>
+
+        <!-- Preview Section -->
+        <div class="preview-section">
+          <h4>Preview</h4>
+          <div class="preview-input">
+            <input
+              type="text"
+              [(ngModel)]="previewArgs" [ngModelOptions]="{standalone: true}"
+              placeholder="Enter arguments to substitute into the template..."
+              class="preview-args-input"
+            />
+            <button class="btn btn-secondary" (click)="expandPreview()" [disabled]="isPreviewLoading">
+              {{ isPreviewLoading ? 'Expanding...' : 'Expand' }}
+            </button>
+          </div>
+          <pre class="preview-result" *ngIf="previewResult">{{ previewResult }}</pre>
+        </div>
+
+        <!-- Actions -->
+        <div class="panel-actions">
+          <button class="btn btn-primary" (click)="startEdit()" *ngIf="!selectedSkill.builtIn">
+            Edit
+          </button>
+          <button class="btn btn-danger" (click)="deleteSkill()" *ngIf="!selectedSkill.builtIn">
+            Delete
+          </button>
+          <span class="read-only-notice" *ngIf="selectedSkill.builtIn">
+            Built-in skills cannot be modified
+          </span>
+        </div>
+      </div>
+
+      <!-- Edit / Create Mode -->
+      <div *ngIf="isEditMode" class="panel-body">
+        <div class="form-field">
+          <label>Name</label>
+          <input
+            type="text"
+            [(ngModel)]="editForm.name" [ngModelOptions]="{standalone: true}"
+            [disabled]="!isCreating"
+            placeholder="skill-name"
+            class="form-input"
+          />
+          <span class="field-hint" *ngIf="isCreating">Used as /name in chat. Letters, digits, hyphens, underscores.</span>
+        </div>
+
+        <div class="form-field">
+          <label>Display Name</label>
+          <input
+            type="text"
+            [(ngModel)]="editForm.displayName" [ngModelOptions]="{standalone: true}"
+            placeholder="Human-readable name"
+            class="form-input"
+          />
+        </div>
+
+        <div class="form-field">
+          <label>Description</label>
+          <input
+            type="text"
+            [(ngModel)]="editForm.description" [ngModelOptions]="{standalone: true}"
+            placeholder="What this skill does"
+            class="form-input"
+          />
+        </div>
+
+        <div class="form-field">
+          <label>Category</label>
+          <select [(ngModel)]="editForm.category" [ngModelOptions]="{standalone: true}" class="form-input">
+            <option value="git">git</option>
+            <option value="code">code</option>
+            <option value="debug">debug</option>
+            <option value="devops">devops</option>
+            <option value="custom">custom</option>
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label>Prompt Template</label>
+          <textarea
+            [(ngModel)]="editForm.promptTemplate" [ngModelOptions]="{standalone: true}"
+            rows="12"
+            placeholder="Your prompt template. Use curly-brace args placeholder for user arguments."
+            class="form-textarea"
+          ></textarea>
+          <span class="field-hint">Use <code>{{ '{{args}}' }}</code> where user arguments should be inserted.</span>
+        </div>
+
+        <div class="form-field">
+          <label>Allowed Tools</label>
+          <input
+            type="text"
+            [ngModel]="editToolsString" [ngModelOptions]="{standalone: true}"
+            (ngModelChange)="onToolsStringChange($event)"
+            placeholder="bash, read, grep, glob (or * for all)"
+            class="form-input"
+          />
+          <span class="field-hint">Comma-separated list of allowed tools, or * for all.</span>
+        </div>
+
+        <div class="form-field">
+          <label>Model Hint</label>
+          <input
+            type="text"
+            [(ngModel)]="editForm.modelHint" [ngModelOptions]="{standalone: true}"
+            placeholder="Optional model suggestion"
+            class="form-input"
+          />
+        </div>
+
+        <div class="form-field">
+          <label>Max Steps</label>
+          <input
+            type="number"
+            [(ngModel)]="editForm.maxSteps" [ngModelOptions]="{standalone: true}"
+            placeholder="0 = inherit from agent"
+            class="form-input"
+          />
+        </div>
+
+        <!-- Edit Actions -->
+        <div class="panel-actions">
+          <button class="btn btn-primary" (click)="isCreating ? saveNewSkill() : saveEdit()">
+            {{ isCreating ? 'Create' : 'Save' }}
+          </button>
+          <button class="btn btn-secondary" (click)="cancelEdit()">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

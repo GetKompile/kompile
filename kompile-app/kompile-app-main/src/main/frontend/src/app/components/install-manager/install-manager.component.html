@@ -1,0 +1,117 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="install-manager-container">
+
+  <!-- Header -->
+  <div class="im-header">
+    <div class="header-left">
+      <mat-icon class="header-icon">download_for_offline</mat-icon>
+      <div>
+        <h2>Install Manager</h2>
+        <p class="subtitle">Manage developer tools under <code class="home-path">~/.kompile/</code></p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span class="last-refreshed" *ngIf="lastRefreshed">
+        Updated {{ lastRefreshed | date:'HH:mm:ss' }}
+      </span>
+      <button mat-icon-button (click)="loadTools()" [disabled]="loading" matTooltip="Refresh tool status">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading (first load only) -->
+  <div class="loading-state" *ngIf="loading && tools.length === 0">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Checking installation status...</span>
+  </div>
+
+  <!-- Error -->
+  <div class="error-state" *ngIf="error && !loading">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button (click)="loadTools()">Retry</button>
+  </div>
+
+  <!-- Tool list -->
+  <mat-card class="tools-card" *ngIf="tools.length > 0">
+    <mat-card-content>
+      <div class="tool-row" *ngFor="let tool of tools; let last = last">
+
+        <!-- Tool icon -->
+        <div class="tool-icon-wrap">
+          <mat-icon class="tool-icon">{{ toolIcon(tool.id) }}</mat-icon>
+        </div>
+
+        <!-- Tool info -->
+        <div class="tool-info">
+          <div class="tool-name">{{ tool.name }}</div>
+          <div class="tool-desc">{{ tool.description }}</div>
+          <code class="tool-path" [matTooltip]="tool.path">{{ tool.path }}</code>
+          <span class="tool-version" *ngIf="tool.version">v{{ tool.version }}</span>
+        </div>
+
+        <!-- Status chip -->
+        <div class="tool-status">
+          <span class="status-chip"
+                [class.chip-installed]="tool.installed"
+                [class.chip-missing]="!tool.installed"
+                [matTooltip]="tool.installed ? 'Found at ' + tool.path : 'Not found at ' + tool.path">
+            <mat-icon class="chip-icon">{{ tool.installed ? 'check_circle' : 'cancel' }}</mat-icon>
+            {{ tool.installed ? 'Installed' : 'Not Installed' }}
+          </span>
+        </div>
+
+        <!-- Action button -->
+        <div class="tool-action">
+          <ng-container *ngIf="!tool.installed; else uninstallBtn">
+            <button mat-raised-button
+                    color="primary"
+                    class="action-btn install-btn"
+                    [disabled]="isActionInProgress(tool.id)"
+                    (click)="installTool(tool)"
+                    matTooltip="Queue install of {{ tool.name }} server-side">
+              <mat-spinner *ngIf="isActionInProgress(tool.id)" diameter="16" class="btn-spinner"></mat-spinner>
+              <mat-icon *ngIf="!isActionInProgress(tool.id)">download</mat-icon>
+              {{ isActionInProgress(tool.id) ? 'Queuing...' : 'Install' }}
+            </button>
+          </ng-container>
+          <ng-template #uninstallBtn>
+            <button mat-stroked-button
+                    color="warn"
+                    class="action-btn uninstall-btn"
+                    [disabled]="isActionInProgress(tool.id)"
+                    (click)="uninstallTool(tool)"
+                    matTooltip="Queue uninstall of {{ tool.name }} server-side">
+              <mat-spinner *ngIf="isActionInProgress(tool.id)" diameter="16" class="btn-spinner"></mat-spinner>
+              <mat-icon *ngIf="!isActionInProgress(tool.id)">delete_outline</mat-icon>
+              {{ isActionInProgress(tool.id) ? 'Queuing...' : 'Uninstall' }}
+            </button>
+          </ng-template>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Empty state (no tools returned and not loading) -->
+  <div class="empty-state" *ngIf="!loading && !error && tools.length === 0">
+    <mat-icon>inventory_2</mat-icon>
+    <span>No tools found. Check server connectivity.</span>
+  </div>
+
+</div>

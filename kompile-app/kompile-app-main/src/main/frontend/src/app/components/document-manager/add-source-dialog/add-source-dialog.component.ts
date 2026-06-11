@@ -101,6 +101,7 @@ interface AddSourceFormModel {
   fileNameInput: FormControl<string | null>;
   loaderSelect: FormControl<string | null>;
   rebuildIndex: FormControl<boolean>; // Added for the checkbox
+  convertToMarkdown: FormControl<boolean>;
   textInput: FormControl<string | null>; // For pasting text content
   textSourceName: FormControl<string | null>; // Optional name for the text source
   youtubeUrl: FormControl<string | null>;
@@ -335,6 +336,7 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       fileNameInput: new FormControl(''),
       loaderSelect: new FormControl(''),
       rebuildIndex: new FormControl(false, { nonNullable: true }), // Initialize checkbox form control
+      convertToMarkdown: new FormControl(false, { nonNullable: true }),
       textInput: new FormControl(''), // For pasting text content
       textSourceName: new FormControl(''), // Optional name for text source
       youtubeUrl: new FormControl('', { validators: [Validators.pattern(/^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)[a-zA-Z0-9_-]{11}/)] }),
@@ -621,6 +623,7 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       sourceType: formValue.sourceType,
       selectedLoader: formValue.loaderSelect || undefined,
       rebuildIndex: formValue.rebuildIndex,
+      convertToMarkdown: formValue.convertToMarkdown,
       chunkerName: this.chunkingConfig.strategy !== 'auto' ? this.chunkingConfig.strategy : undefined,
       chunkerOptions: this.chunkingConfig.useCustomSettings ? this.buildChunkerOptions() : undefined,
       largeDocumentConfig: this.largeDocConfig.mode !== 'standard' || this.documentAnalysis?.hasLargeFiles ? this.largeDocConfig : undefined,
@@ -2049,7 +2052,8 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     const formValues = this.addSourceForm.getRawValue();
     const result: AddSourceDialogResult = {
       selectedLoader: formValues.loaderSelect || undefined,
-      rebuildIndex: formValues.rebuildIndex
+      rebuildIndex: formValues.rebuildIndex,
+      convertToMarkdown: formValues.convertToMarkdown
     };
 
     // Include chunking configuration if custom settings are used
@@ -2155,19 +2159,6 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       result.confluenceIncludeChildren = formValues.confluenceIncludeChildren;
       result.confluenceIncludeAttachments = formValues.confluenceIncludeAttachments;
     }
-
-    // DEBUG: Log what we're sending
-    console.log('=== ADD SOURCE DIALOG DEBUG ===');
-    console.log('selectedProcessingMode:', this.selectedProcessingMode);
-    console.log('result.processingMode:', result.processingMode);
-    console.log('subprocessConfig.enabled:', this.subprocessConfig.enabled);
-    console.log('result.subprocessConfig:', JSON.stringify(result.subprocessConfig));
-    console.log('chunkingConfig.strategy:', this.chunkingConfig.strategy);
-    console.log('chunkingConfig.useCustomSettings:', this.chunkingConfig.useCustomSettings);
-    console.log('result.chunkerName:', result.chunkerName);
-    console.log('result.selectedLoader:', result.selectedLoader);
-    console.log('Full result:', JSON.stringify(result, null, 2));
-    console.log('=== END DEBUG ===');
 
     this.dialogRef.close(result);
   }

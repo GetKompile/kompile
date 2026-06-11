@@ -18,9 +18,8 @@ package ai.kompile.anserini;
 
 import ai.kompile.core.indexers.NoOpIndexerService;
 import ai.kompile.core.retrievers.DocumentRetriever;
-import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
-import ai.kompile.anserini.config.AnseriniConfig;
+import ai.kompile.anserini.config.AnseriniConfigService;
 import ai.kompile.core.indexers.IndexerService;
 
 import io.anserini.search.SimpleSearcher;
@@ -28,11 +27,8 @@ import io.anserini.search.ScoredDoc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.lucene.index.IndexableField;
-// We will use the fully qualified name for org.apache.lucene.document.Document to avoid import clashes
-// import org.springframework.ai.document.Document; // Not directly used in this class's method signatures
 
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.context.annotation.DependsOn;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
@@ -49,27 +45,27 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+@Primary
 @Service("anseriniDocumentRetriever")
 public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
 
     private static final Logger logger = LoggerFactory.getLogger(AnseriniDocumentRetrieverImpl.class);
-    private  AnseriniConfig anseriniConfig;
+    private AnseriniConfigService anseriniConfigService;
     private SimpleSearcher searcher;
     private IndexerService indexerService;
 
-    public AnseriniDocumentRetrieverImpl(AnseriniConfig anseriniConfig,
+    public AnseriniDocumentRetrieverImpl(AnseriniConfigService anseriniConfigService,
                                          List<IndexerService> indexerService) {
-        this.anseriniConfig = anseriniConfig;
-        if(indexerService.size() > 1)  {
-            for(IndexerService indexerService1 : indexerService) {
-                if(indexerService1 instanceof NoOpIndexerService) {
+        this.anseriniConfigService = anseriniConfigService;
+        if (indexerService.size() > 1) {
+            for (IndexerService indexerService1 : indexerService) {
+                if (indexerService1 instanceof NoOpIndexerService) {
                     continue;
                 } else {
                     this.indexerService = indexerService1;
                     break;
                 }
             }
-
         } else {
             this.indexerService = indexerService.get(0);
         }
@@ -80,27 +76,37 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
     @PostConstruct
     public void init() {
         logger.info("Attempting to initialize AnseriniDocumentRetrieverImpl's SimpleSearcher...");
-        if (!indexerService.isIndexAvailable()) {
-            logger.error("Index is reported as not available by IndexerService. AnseriniDocumentRetrieverImpl cannot initialize searcher.");
-            // This state means the application might not be able to perform retrieval.
-            // For now, it will log and searcher will be null.
-            return;
+        if (!tryInitSearcher()) {
+            logger.info("Index not yet available at startup — searcher will be initialized lazily on first query.");
         }
+    }
 
+    /**
+     * Attempts to initialize the SimpleSearcher if the index is available.
+     * @return true if the searcher was successfully initialized, false otherwise.
+     */
+    private synchronized boolean tryInitSearcher() {
+        if (this.searcher != null) {
+            return true;
+        }
+        if (!indexerService.isIndexAvailable()) {
+            return false;
+        }
         try {
-            Path indexPath = Paths.get(anseriniConfig.getIndexPath());
+            Path indexPath = Paths.get(anseriniConfigService.getIndexPath());
             if (!Files.exists(indexPath) || !Files.isDirectory(indexPath) || isEmpty(indexPath)) {
-                logger.error("Anserini index path {} does not exist, is not a directory, or is empty, despite IndexerService reporting it as available. This is unexpected.", indexPath);
-                throw new IllegalStateException("Anserini index at " + indexPath + " is not valid for SimpleSearcher initialization, even after IndexerService check.");
+                logger.warn("Index path {} does not exist or is empty despite IndexerService reporting available.", indexPath);
+                return false;
             }
-            this.searcher = new SimpleSearcher(anseriniConfig.getIndexPath());
-            logger.info("Anserini SimpleSearcher initialized successfully for index path: {}", anseriniConfig.getIndexPath());
+            this.searcher = new SimpleSearcher(anseriniConfigService.getIndexPath());
+            logger.info("Anserini SimpleSearcher initialized successfully for index path: {}", anseriniConfigService.getIndexPath());
+            return true;
         } catch (IOException e) {
-            logger.error("Failed to initialize Anserini SimpleSearcher at path {}: {}", anseriniConfig.getIndexPath(), e.getMessage(), e);
-            throw new IllegalStateException("Could not initialize AnseriniRetriever due to IOException: " + e.getMessage(), e);
+            logger.error("Failed to initialize Anserini SimpleSearcher at path {}: {}", anseriniConfigService.getIndexPath(), e.getMessage(), e);
+            return false;
         } catch (Exception e) {
-            logger.error("An unexpected error occurred during Anserini SimpleSearcher initialization: {}", e.getMessage(), e);
-            throw new IllegalStateException("Unexpected error initializing AnseriniRetriever", e);
+            logger.error("Unexpected error during Anserini SimpleSearcher initialization: {}", e.getMessage(), e);
+            return false;
         }
     }
 
@@ -127,8 +133,11 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
     @Override
     public List<RetrievedDoc> retrieveWithDetails(String query, int maxResults) {
         if (this.searcher == null) {
-            logger.error("Anserini SimpleSearcher is not initialized. Cannot perform detailed search. Indexing might have failed or index is unavailable.");
-            return Collections.emptyList();
+            // Lazy init — index may have been created after startup
+            if (!tryInitSearcher()) {
+                logger.warn("Anserini SimpleSearcher not initialized and index still unavailable. Cannot search.");
+                return Collections.emptyList();
+            }
         }
         if (query == null || query.trim().isEmpty()) {
             logger.warn("Search query is null or empty.");
@@ -161,13 +170,9 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
 
     /**
      * Creates a RetrievedDoc from an Anserini ScoredDoc hit.
-     *
-     * @param hit The ScoredDoc from Anserini search results
-     * @return A RetrievedDoc containing the document content and metadata, or null if document cannot be retrieved
      */
     private RetrievedDoc createRetrievedDoc(ScoredDoc hit) {
         try {
-            // Use fully qualified name for org.apache.lucene.document.Document
             org.apache.lucene.document.Document luceneDoc = retrieveLuceneDocument(hit);
 
             if (luceneDoc == null) {
@@ -191,13 +196,6 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
         }
     }
 
-    /**
-     * Retrieves the Lucene document for a given ScoredDoc hit.
-     * Tries internal lucene_docid first, then falls back to external docid.
-     *
-     * @param hit The ScoredDoc hit
-     * @return The Lucene Document or null if not found
-     */
     private org.apache.lucene.document.Document retrieveLuceneDocument(ScoredDoc hit) {
         try {
             org.apache.lucene.document.Document luceneDoc = searcher.doc(hit.lucene_docid);
@@ -212,14 +210,6 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
         }
     }
 
-    /**
-     * Extracts content from a Lucene document.
-     * Prefers 'raw' field, falls back to 'contents' field.
-     *
-     * @param luceneDoc The Lucene document
-     * @param docId The document ID for error messages
-     * @return The extracted content or an error message
-     */
     private String extractContent(org.apache.lucene.document.Document luceneDoc, String docId) {
         String content = luceneDoc.get("raw");
         if (content != null) {
@@ -236,73 +226,43 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
         return "[Content not available in stored fields for doc " + docId + "]";
     }
 
-    /**
-     * Extracts metadata from a Lucene document and ScoredDoc hit.
-     *
-     * @param luceneDoc The Lucene document
-     * @param hit The ScoredDoc hit
-     * @return A map containing the extracted metadata
-     */
     private Map<String, Object> extractMetadata(org.apache.lucene.document.Document luceneDoc, ScoredDoc hit) {
         Map<String, Object> metadata = new HashMap<>();
 
-        // Extract metadata from all document fields
         for (IndexableField field : luceneDoc.getFields()) {
             String fieldName = field.name();
             String fieldValue = field.stringValue();
 
-            // Skip content fields and null values
             if (shouldIncludeFieldInMetadata(fieldName, fieldValue)) {
                 metadata.put(fieldName, fieldValue);
             }
         }
 
-        // Add search-specific metadata
         addSearchMetadata(metadata, hit);
 
         return metadata;
     }
 
-    /**
-     * Determines whether a field should be included in metadata.
-     *
-     * @param fieldName The field name
-     * @param fieldValue The field value
-     * @return true if the field should be included in metadata
-     */
     private boolean shouldIncludeFieldInMetadata(String fieldName, String fieldValue) {
         return fieldValue != null
                 && !"raw".equals(fieldName)
                 && !"contents".equals(fieldName);
     }
 
-    /**
-     * Adds search-specific metadata to the metadata map.
-     *
-     * @param metadata The metadata map to add to
-     * @param hit The ScoredDoc hit
-     */
     private void addSearchMetadata(Map<String, Object> metadata, ScoredDoc hit) {
         metadata.put("lucene_internal_id", hit.lucene_docid);
         metadata.put("search_score", hit.score);
         metadata.put("retriever_type", "anserini");
-        metadata.put("index_path", anseriniConfig.getIndexPath());
+        metadata.put("index_path", anseriniConfigService.getIndexPath());
     }
 
-    /**
-     * Creates an error RetrievedDoc for cases where document processing fails.
-     *
-     * @param hit The ScoredDoc hit
-     * @param errorMessage The error message
-     * @return A RetrievedDoc containing error information
-     */
     private RetrievedDoc createErrorRetrievedDoc(ScoredDoc hit, String errorMessage) {
         Map<String, Object> errorMetadata = new HashMap<>();
         errorMetadata.put("lucene_internal_id", hit.lucene_docid);
         errorMetadata.put("search_score", hit.score);
         errorMetadata.put("error", errorMessage);
         errorMetadata.put("retriever_type", "anserini");
-        errorMetadata.put("index_path", anseriniConfig.getIndexPath());
+        errorMetadata.put("index_path", anseriniConfigService.getIndexPath());
 
         return RetrievedDoc.builder()
                 .id(hit.docid)

@@ -38,7 +38,7 @@ import java.util.List;
 @ConditionalOnProperty(name = "kompile.evaluation.enabled", havingValue = "true", matchIfMissing = false)
 public class EvaluationConfiguration {
 
-    @Bean
+    @Bean("coreEvaluationService")
     public EvaluationService evaluationService(
             @Autowired(required = false) List<RagEvaluator> evaluators,
             EvaluationProperties properties) {

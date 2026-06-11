@@ -441,7 +441,12 @@ public class ConversationExporter {
 
                 ObjectNode message = entry.putObject("message");
                 message.put("role", "user");
-                message.put("content", turn.content());
+                // Use raw content blocks if available (preserves tool_result structure)
+                if (turn.rawContentBlocks() != null && !turn.rawContentBlocks().isEmpty()) {
+                    message.set("content", turn.rawContentBlocks());
+                } else {
+                    message.put("content", turn.content());
+                }
             } else {
                 entry.put("type", "assistant");
 
@@ -450,14 +455,27 @@ public class ConversationExporter {
                 message.put("id", "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
                 message.put("type", "message");
                 message.put("role", "assistant");
-                message.putNull("stop_reason");
-                message.putNull("stop_sequence");
 
-                // Claude uses array of content blocks
-                ArrayNode contentArray = message.putArray("content");
-                ObjectNode textBlock = contentArray.addObject();
-                textBlock.put("type", "text");
-                textBlock.put("text", turn.content());
+                // Use raw content blocks if available (preserves tool_use structure)
+                if (turn.rawContentBlocks() != null && !turn.rawContentBlocks().isEmpty()) {
+                    message.set("content", turn.rawContentBlocks());
+                    // Set stop_reason based on whether tool_use blocks are present
+                    boolean hasToolUse = false;
+                    for (JsonNode block : turn.rawContentBlocks()) {
+                        if ("tool_use".equals(block.path("type").asText(""))) {
+                            hasToolUse = true;
+                            break;
+                        }
+                    }
+                    message.put("stop_reason", hasToolUse ? "tool_use" : "end_turn");
+                } else {
+                    ArrayNode contentArray = message.putArray("content");
+                    ObjectNode textBlock = contentArray.addObject();
+                    textBlock.put("type", "text");
+                    textBlock.put("text", turn.content());
+                    message.put("stop_reason", "end_turn");
+                }
+                message.putNull("stop_sequence");
 
                 ObjectNode usage = message.putObject("usage");
                 usage.put("input_tokens", 0);
@@ -1027,8 +1045,9 @@ public class ConversationExporter {
             }
         }
 
-        // Also write file-based storage entries so the TUI can find the session
-        writeOpenCodeFileStorage(sessId, storedProjectId, cwd, title, turns, effectiveProviderId, effectiveModelId, now);
+        // NOTE: Do NOT call writeOpenCodeFileStorage() here — opencode import already
+        // writes all messages to the DB and file storage. Calling it again would create
+        // duplicate messages with different UUIDs, causing every turn to appear twice.
 
         // Return result - use -s without --continue (--continue causes hang on imported sessions)
         String resumeCommand = "opencode -s " + sessId;

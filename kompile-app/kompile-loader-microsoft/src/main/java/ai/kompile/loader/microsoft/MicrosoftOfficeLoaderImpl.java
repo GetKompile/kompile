@@ -66,7 +66,7 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
             return false;
         }
 
-        String path = sourceDescriptor.getPathOrUrl().toLowerCase();
+        String path = sourceDescriptor.getPathOrUrl() != null ? sourceDescriptor.getPathOrUrl().toLowerCase() : "";
         return SUPPORTED_EXTENSIONS.stream().anyMatch(path::endsWith);
     }
 

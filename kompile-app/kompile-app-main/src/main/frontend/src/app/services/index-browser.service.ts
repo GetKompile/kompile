@@ -301,5 +301,17 @@ export class IndexBrowserService extends BaseService {
     console.error(errorMessage);
     return throwError(() => new Error(errorMessage));
   }
+
+  // ==================== Admin Recovery ====================
+
+  rebuildAllSources(): Observable<any> {
+    return this.http.post(`${this.backendUrl}/indexer/rebuild-all-sources`, {})
+      .pipe(catchError(this.handleError));
+  }
+
+  indexFromLucene(): Observable<any> {
+    return this.http.post(`${this.backendUrl}/indexer/index-from-lucene`, {})
+      .pipe(catchError(this.handleError));
+  }
 }
 

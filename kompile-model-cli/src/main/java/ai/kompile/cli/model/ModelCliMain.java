@@ -24,6 +24,7 @@ import java.util.concurrent.Callable;
         subcommands = {
                 ModelListCommand.class,
                 ModelDownloadCommand.class,
+                ModelCloneCommand.class,
                 ModelInfoCommand.class,
                 ModelExportCommand.class,
                 ModelImportCommand.class,

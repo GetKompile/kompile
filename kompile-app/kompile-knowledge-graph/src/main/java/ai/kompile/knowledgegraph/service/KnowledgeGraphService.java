@@ -78,6 +78,58 @@ public interface KnowledgeGraphService {
     }
 
     /**
+     * Create a table/sheet node under a parent document node.
+     *
+     * @param parentNodeId Parent document node UUID
+     * @param externalId   Stable external ID for the table
+     * @param tableTitle   Display title (e.g. sheet name)
+     * @param rowCount     Number of rows
+     * @param columnCount  Number of columns
+     * @param headers      Column header names
+     * @param contentPreview Short preview of the table content
+     * @param metadata     Additional metadata
+     * @return Created table node, or {@code null} if parent not found
+     */
+    default GraphNode createTableNode(String parentNodeId, String externalId, String tableTitle,
+                                       int rowCount, int columnCount, List<String> headers,
+                                       String contentPreview, Map<String, Object> metadata) {
+        Optional<GraphNode> parentOpt = getNode(parentNodeId);
+        if (parentOpt.isEmpty()) {
+            return null;
+        }
+        GraphNode parent = parentOpt.get();
+
+        // Enrich metadata with table-specific fields
+        Map<String, Object> tableMeta = metadata != null ? new java.util.LinkedHashMap<>(metadata)
+                                                         : new java.util.LinkedHashMap<>();
+        tableMeta.put("rowCount", rowCount);
+        tableMeta.put("columnCount", columnCount);
+        if (headers != null && !headers.isEmpty()) {
+            tableMeta.put("headers", String.join(",", headers));
+        }
+
+        String description = contentPreview;
+        if (description != null && description.length() > 500) {
+            description = description.substring(0, 500) + "...";
+        }
+
+        GraphNode tableNode = createNode(NodeLevel.TABLE, externalId, tableTitle,
+                description, tableMeta);
+
+        // Create hierarchical CONTAINS edge from parent → table
+        try {
+            if (!edgeExists(parent.getNodeId(), tableNode.getNodeId())) {
+                createEdge(parent.getNodeId(), tableNode.getNodeId(),
+                        EdgeType.HIERARCHICAL, 1.0, "Contains table: " + tableTitle);
+            }
+        } catch (Exception ignored) {
+            // Edge creation is best-effort
+        }
+
+        return tableNode;
+    }
+
+    /**
      * Create a custom/entity node
      *
      * @param nodeType Type of node
@@ -91,6 +143,16 @@ public interface KnowledgeGraphService {
                           String description, Map<String, Object> metadata);
 
     /**
+     * Create a custom/entity node scoped to a fact sheet.
+     * Default implementation delegates to the non-scoped overload (ignoring factSheetId).
+     */
+    default GraphNode createNode(NodeLevel nodeType, String externalId, String title,
+                                  String description, Map<String, Object> metadata,
+                                  Long factSheetId) {
+        return createNode(nodeType, externalId, title, description, metadata);
+    }
+
+    /**
      * Get a node by its UUID
      */
     Optional<GraphNode> getNode(String nodeId);
@@ -99,6 +161,14 @@ public interface KnowledgeGraphService {
      * Get a node by external ID and type
      */
     Optional<GraphNode> getNodeByExternalId(String externalId, NodeLevel nodeType);
+
+    /**
+     * Get a node by external ID and type, scoped to a fact sheet.
+     * Default implementation delegates to the non-scoped overload.
+     */
+    default Optional<GraphNode> getNodeByExternalId(String externalId, NodeLevel nodeType, Long factSheetId) {
+        return getNodeByExternalId(externalId, nodeType);
+    }
 
     /**
      * Get children of a node
@@ -173,6 +243,50 @@ public interface KnowledgeGraphService {
     boolean edgeExists(String sourceNodeId, String targetNodeId);
 
     /**
+     * Check if a specific typed edge (with optional label and fact sheet scope) exists
+     */
+    default boolean edgeExists(String sourceNodeId, String targetNodeId,
+                                EdgeType edgeType, String label, Long factSheetId) {
+        return edgeExists(sourceNodeId, targetNodeId);
+    }
+
+    /**
+     * Delete multiple edges in a single batch operation
+     */
+    default void deleteEdgesBulk(java.util.List<String> edgeIds) {
+        if (edgeIds != null) {
+            edgeIds.forEach(this::deleteEdge);
+        }
+    }
+
+    /**
+     * Create an edge with full metadata including provenance
+     */
+    default GraphEdge createEdgeWithMetadata(String sourceNodeId, String targetNodeId,
+                                              EdgeType edgeType, Double weight,
+                                              String label, String description,
+                                              String metaJson, EdgeProvenance provenance,
+                                              Long factSheetId) {
+        return createEdge(sourceNodeId, targetNodeId, edgeType, weight,
+                description != null ? description : label);
+    }
+
+    /**
+     * Add a document to the graph, creating or updating the source node and document node.
+     * Default implementation uses createOrUpdateSourceNode + createDocumentNode.
+     */
+    default GraphNode addDocument(String sourceExternalId, String jobId, String sourceType,
+                                   String sourcePath, String fileName,
+                                   String contentPreview, Map<String, Object> docMeta,
+                                   Long factSheetId) {
+        Map<String, Object> sourceMeta = docMeta == null ? Map.of() : new java.util.HashMap<>(docMeta);
+        GraphNode sourceNode = createOrUpdateSourceNode(sourceExternalId, jobId, sourceType, sourcePath, sourceMeta);
+        Map<String, Object> documentMeta = docMeta == null ? Map.of() : new java.util.HashMap<>(docMeta);
+        if (contentPreview != null) documentMeta.put("contentPreview", contentPreview);
+        return createDocumentNode(sourceNode, sourcePath, fileName != null ? fileName : sourcePath, documentMeta);
+    }
+
+    /**
      * Search edges by description or connected node titles
      *
      * @param query Search query
@@ -203,6 +317,59 @@ public interface KnowledgeGraphService {
      * @return List of related nodes
      */
     List<GraphNode> findRelatedNodes(String nodeId, int maxResults);
+
+    /**
+     * Find the shortest path between two nodes using BFS.
+     *
+     * @param fromNodeId Source node UUID
+     * @param toNodeId   Target node UUID
+     * @param maxDepth   Maximum BFS depth to prevent runaway traversal
+     * @return Ordered list of nodes from source to target, or empty if no path found
+     */
+    default List<GraphNode> findShortestPath(String fromNodeId, String toNodeId, int maxDepth) {
+        if (fromNodeId.equals(toNodeId)) {
+            return getNode(fromNodeId).map(List::of).orElse(List.of());
+        }
+
+        // BFS with parent tracking
+        java.util.Map<String, String> parentMap = new java.util.LinkedHashMap<>();
+        java.util.Queue<String> queue = new java.util.ArrayDeque<>();
+        java.util.Set<String> visited = new java.util.HashSet<>();
+
+        queue.add(fromNodeId);
+        visited.add(fromNodeId);
+        parentMap.put(fromNodeId, null);
+        int depth = 0;
+
+        while (!queue.isEmpty() && depth < maxDepth) {
+            int levelSize = queue.size();
+            for (int i = 0; i < levelSize; i++) {
+                String current = queue.poll();
+                for (GraphEdge edge : getEdgesForNode(current)) {
+                    String neighbor = edge.getSourceNode() != null
+                            && edge.getSourceNode().getNodeId().equals(current)
+                            ? (edge.getTargetNode() != null ? edge.getTargetNode().getNodeId() : null)
+                            : (edge.getSourceNode() != null ? edge.getSourceNode().getNodeId() : null);
+                    if (neighbor == null || visited.contains(neighbor)) continue;
+                    visited.add(neighbor);
+                    parentMap.put(neighbor, current);
+                    if (neighbor.equals(toNodeId)) {
+                        // Reconstruct path
+                        java.util.LinkedList<GraphNode> path = new java.util.LinkedList<>();
+                        String step = toNodeId;
+                        while (step != null) {
+                            getNode(step).ifPresent(path::addFirst);
+                            step = parentMap.get(step);
+                        }
+                        return path;
+                    }
+                    queue.add(neighbor);
+                }
+            }
+            depth++;
+        }
+        return List.of();
+    }
 
     /**
      * Compute relevance scores for nodes relative to a query node

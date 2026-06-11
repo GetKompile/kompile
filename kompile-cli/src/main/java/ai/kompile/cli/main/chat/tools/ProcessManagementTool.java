@@ -98,6 +98,9 @@ public class ProcessManagementTool implements CliTool {
     public String permissionKey() { return "process"; }
 
     @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.DESTRUCTIVE; }
+
+    @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         String action = params.path("action").asText("");
         if (action.isEmpty()) {
@@ -130,9 +133,9 @@ public class ProcessManagementTool implements CliTool {
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("%-10s %-8s %-10s %-12s %-6s %s\n",
-                "ID", "PID", "STATE", "DURATION", "EXIT", "COMMAND"));
-        sb.append("-".repeat(80)).append("\n");
+        sb.append(String.format("%-12s %-9s %-8s %-10s %-12s %-6s %s\n",
+                "ID", "KIND", "PID", "STATE", "DURATION", "EXIT", "COMMAND"));
+        sb.append("-".repeat(96)).append("\n");
 
         for (BackgroundProcessManager.ProcessEntry entry : all) {
             String duration = formatDuration(entry.getDuration());
@@ -142,9 +145,11 @@ public class ProcessManagementTool implements CliTool {
                 cmd = cmd.substring(0, 37) + "...";
             }
 
-            sb.append(String.format("%-10s %-8d %-10s %-12s %-6s %s\n",
+            String pidStr = entry.getPid() > 0 ? String.valueOf(entry.getPid()) : "-";
+            sb.append(String.format("%-12s %-9s %-8s %-10s %-12s %-6s %s\n",
                     entry.getId(),
-                    entry.getPid(),
+                    entry.getKind().label(),
+                    pidStr,
                     entry.getState(),
                     duration,
                     exitStr,
@@ -152,7 +157,10 @@ public class ProcessManagementTool implements CliTool {
 
             if (entry.getDescription() != null && !entry.getDescription().isEmpty()
                     && !entry.getDescription().equals(entry.getCommand())) {
-                sb.append(String.format("%-10s %s\n", "", "  -> " + entry.getDescription()));
+                sb.append(String.format("%-12s %s\n", "", "  -> " + entry.getDescription()));
+            }
+            if (!entry.getMetadata().isEmpty()) {
+                sb.append(String.format("%-12s %s\n", "", "  -> " + formatMetadata(entry.getMetadata())));
             }
         }
 
@@ -216,10 +224,13 @@ public class ProcessManagementTool implements CliTool {
 
         boolean killed = processManager.kill(processId);
         if (killed) {
+            String pidText = entry.getPid() > 0 ? " (PID " + entry.getPid() + ")" : "";
             return ToolResult.success("killed " + processId,
-                    "Process " + processId + " (PID " + entry.getPid() + ") killed.\n" +
+                    "Process " + processId + pidText + " killed.\n" +
                             "Duration: " + formatDuration(entry.getDuration()),
-                    Map.of("processId", processId, "pid", entry.getPid()));
+                    Map.of("processId", processId,
+                            "pid", entry.getPid(),
+                            "kind", entry.getKind().label()));
         } else {
             return ToolResult.error("Failed to kill process " + processId);
         }
@@ -241,8 +252,9 @@ public class ProcessManagementTool implements CliTool {
 
         String output = processManager.readOutput(processId, tailLines);
 
-        String header = String.format("[%s] PID %d | %s | %s\n---\n",
-                entry.getId(), entry.getPid(), entry.getState(),
+        String pidText = entry.getPid() > 0 ? "PID " + entry.getPid() : "no pid";
+        String header = String.format("[%s] %s | %s | %s | %s\n---\n",
+                entry.getId(), entry.getKind().label(), pidText, entry.getState(),
                 formatDuration(entry.getDuration()));
 
         return ToolResult.success("output " + processId, header + output,
@@ -263,10 +275,14 @@ public class ProcessManagementTool implements CliTool {
 
         StringBuilder sb = new StringBuilder();
         sb.append("Process: ").append(entry.getId()).append("\n");
-        sb.append("  PID:         ").append(entry.getPid()).append("\n");
+        sb.append("  Kind:        ").append(entry.getKind().label()).append("\n");
+        sb.append("  PID:         ").append(entry.getPid() > 0 ? String.valueOf(entry.getPid()) : "-").append("\n");
         sb.append("  State:       ").append(entry.getState()).append("\n");
         sb.append("  Command:     ").append(entry.getCommand()).append("\n");
         sb.append("  Description: ").append(entry.getDescription()).append("\n");
+        if (!entry.getMetadata().isEmpty()) {
+            sb.append("  Metadata:    ").append(formatMetadata(entry.getMetadata())).append("\n");
+        }
         sb.append("  Started:     ").append(entry.getStartTime()).append("\n");
         if (entry.getEndTime() != null) {
             sb.append("  Ended:       ").append(entry.getEndTime()).append("\n");
@@ -290,6 +306,20 @@ public class ProcessManagementTool implements CliTool {
                         processManager.listAll().size() + " entries remaining (" +
                         processManager.listRunning().size() + " running).",
                 Map.of("removed", removed));
+    }
+
+    private static String formatMetadata(Map<String, String> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        metadata.forEach((key, value) -> {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(key).append("=").append(value);
+        });
+        return sb.toString();
     }
 
     /**

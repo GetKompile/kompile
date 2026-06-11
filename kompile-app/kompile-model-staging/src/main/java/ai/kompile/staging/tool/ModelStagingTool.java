@@ -32,7 +32,8 @@ import ai.kompile.staging.optimization.ComparisonService;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.pipeline.PipelineService;
 import ai.kompile.modelmanager.registry.*;
-import ai.kompile.staging.staging.StagingModelInfo;
+import ai.kompile.core.staging.StagingModelInfo;
+import ai.kompile.core.staging.TrainingJobStatus;
 import ai.kompile.staging.staging.StagingService;
 import ai.kompile.staging.config.StagingSettings;
 import ai.kompile.staging.config.StagingSettingsService;
@@ -2571,7 +2572,9 @@ public class ModelStagingTool {
         map.put("message", info.getMessage());
         map.put("progress", info.getProgress());
         map.put("source", info.getSource());
-        map.put("type", info.getType() != null ? info.getType().getValue() : null);
+        map.put("type", info.getType() instanceof ai.kompile.modelmanager.registry.ModelType
+                ? ((ai.kompile.modelmanager.registry.ModelType) info.getType()).getValue()
+                : info.getType() != null ? info.getType().toString() : null);
         if (info.getStartedAt() != null) map.put("startedAt", info.getStartedAt());
         if (info.getCompletedAt() != null) map.put("completedAt", info.getCompletedAt());
         if (info.getError() != null) map.put("error", info.getError());

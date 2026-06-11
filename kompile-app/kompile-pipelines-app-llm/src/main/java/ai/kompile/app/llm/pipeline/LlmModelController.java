@@ -15,12 +15,14 @@
  */
 package ai.kompile.app.llm.pipeline;
 
+import ai.kompile.app.config.KompileServerConstants;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
@@ -59,6 +61,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/llm")
 @CrossOrigin(origins = "*")
+@ConditionalOnProperty(name = "kompile.llm.direct-serving.enabled", havingValue = "true", matchIfMissing = false)
 public class LlmModelController {
 
     private static final Logger logger = LoggerFactory.getLogger(LlmModelController.class);
@@ -68,14 +71,34 @@ public class LlmModelController {
     private final ObjectMapper objectMapper;
     private final String defaultStagingUrl;
     private final Path cacheDir;
+    private final SubprocessLauncher subprocessLauncher;
 
     @Autowired
     public LlmModelController(
             SameDiffLanguageModelImpl languageModel,
             RestTemplateBuilder restTemplateBuilder,
             ObjectMapper objectMapper,
-            @Value("${kompile.staging.url:http://localhost:8090}") String defaultStagingUrl,
-            @Value("${kompile.llm.cache.dir:${user.home}/.kompile/llm-cache}") String cacheDir) {
+            ObjectProvider<SubprocessLauncher> subprocessLauncherProvider) {
+        this(languageModel, restTemplateBuilder, objectMapper, KompileServerConstants.DEFAULT_STAGING_URL,
+                Paths.get(System.getProperty("user.home"), ".kompile", "llm-cache"), subprocessLauncherProvider.getIfAvailable());
+    }
+
+    public LlmModelController(
+            SameDiffLanguageModelImpl languageModel,
+            RestTemplateBuilder restTemplateBuilder,
+            ObjectMapper objectMapper,
+            String defaultStagingUrl,
+            String cacheDir) {
+        this(languageModel, restTemplateBuilder, objectMapper, defaultStagingUrl, Paths.get(cacheDir), null);
+    }
+
+    private LlmModelController(
+            SameDiffLanguageModelImpl languageModel,
+            RestTemplateBuilder restTemplateBuilder,
+            ObjectMapper objectMapper,
+            String defaultStagingUrl,
+            Path cacheDir,
+            SubprocessLauncher subprocessLauncher) {
         this.languageModel = languageModel;
         this.restTemplate = restTemplateBuilder
                 .setConnectTimeout(Duration.ofSeconds(30))
@@ -83,7 +106,8 @@ public class LlmModelController {
                 .build();
         this.objectMapper = objectMapper;
         this.defaultStagingUrl = defaultStagingUrl;
-        this.cacheDir = Paths.get(cacheDir);
+        this.cacheDir = cacheDir;
+        this.subprocessLauncher = subprocessLauncher;
     }
 
     @PostMapping("/load")
@@ -122,7 +146,13 @@ public class LlmModelController {
             //    This handles sharded models (model.shard0-of-N.sdnb, etc.) and tokenizers.
             String filesUrl = baseUrl + "/api/staging/registry/model/" + modelId + "/files";
             logger.info("LLM load: listing files from {}", filesUrl);
-            String filesJson = restTemplate.getForObject(filesUrl, String.class);
+            String filesJson = null;
+            try {
+                filesJson = restTemplate.getForObject(filesUrl, String.class);
+            } catch (Exception e) {
+                logger.info("LLM load: /files endpoint unavailable for modelId='{}' ({}); using legacy downloads",
+                        modelId, e.getMessage());
+            }
 
             List<String> downloadedFiles = new ArrayList<>();
             if (filesJson != null && !filesJson.isBlank()) {
@@ -134,9 +164,18 @@ public class LlmModelController {
                         Path localFile = modelDir.resolve(fileName);
                         long remoteSize = fileEntry.has("size") ? fileEntry.get("size").asLong() : -1;
 
-                        if (Files.exists(localFile) && Files.size(localFile) > 0
-                                && (remoteSize < 0 || Files.size(localFile) == remoteSize)) {
+                        long localSize = Files.exists(localFile) ? Files.size(localFile) : -1;
+                        if (Files.exists(localFile)
+                                && ((remoteSize == 0 && localSize == 0)
+                                    || (localSize > 0 && (remoteSize < 0 || localSize == remoteSize)))) {
                             logger.info("LLM load: reusing cached file {}", localFile);
+                        } else if (remoteSize == 0) {
+                            // SameDiff sharded models may expose a zero-byte logical base
+                            // file such as model.sdnb. The shard files hold the content; the
+                            // local marker only needs to exist for path-based loading.
+                            logger.info("LLM load: creating zero-byte marker {}", localFile);
+                            Files.deleteIfExists(localFile);
+                            Files.createFile(localFile);
                         } else {
                             String fileDownloadUrl = baseUrl + "/api/staging/registry/model/" + modelId + "/download/file/" + fileName;
                             logger.info("LLM load: downloading {} -> {}", fileDownloadUrl, localFile);
@@ -180,16 +219,26 @@ public class LlmModelController {
 
             // 5) Hand off to the language model bean
             Map<String, Object> options = request.getOptions() != null ? request.getOptions() : new LinkedHashMap<>();
-            languageModel.loadModel(modelId, modelPath, vocabPath, options);
+            String servingStatusJson = null;
+            if (subprocessLauncher != null) {
+                logger.info("LLM load: delegating model '{}' to serving subprocess", modelId);
+                servingStatusJson = subprocessLauncher.loadModel(modelId, modelPath.toString(), options);
+            } else {
+                languageModel.loadModel(modelId, modelPath, vocabPath, options);
+            }
 
             long durationMs = System.currentTimeMillis() - startMs;
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("loaded", true);
+            response.put("mode", subprocessLauncher != null ? "subprocess" : "direct");
             response.put("modelId", modelId);
             response.put("modelFile", modelPath.toString());
             response.put("tokenizerFile", vocabPath.toString());
             response.put("filesDownloaded", downloadedFiles.size());
             response.put("durationMs", durationMs);
+            if (servingStatusJson != null) {
+                response.put("servingSubprocessStatus", readJsonMap(servingStatusJson));
+            }
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             logger.error("LLM load failed for modelId='{}'", modelId, e);
@@ -202,9 +251,43 @@ public class LlmModelController {
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> status() {
         Map<String, Object> response = new LinkedHashMap<>();
+        if (subprocessLauncher != null) {
+            response.put("mode", "subprocess");
+            response.put("servingSubprocessAvailable", true);
+            response.put("servingSubprocessRunning", subprocessLauncher.isRunning());
+            response.put("servingPort", subprocessLauncher.getServingPort());
+            if (!subprocessLauncher.isRunning()) {
+                response.put("loaded", false);
+                response.put("modelId", null);
+                response.put("loading", false);
+                response.put("loadingPhase", "STOPPED");
+                response.put("stagingUrl", defaultStagingUrl);
+                response.put("cacheDir", cacheDir.toString());
+                return ResponseEntity.ok(response);
+            }
+            try {
+                response.putAll(readJsonMap(subprocessLauncher.getStatus()));
+            } catch (Exception e) {
+                response.put("loaded", false);
+                response.put("error", "Failed to query serving subprocess: " + e.getMessage());
+                response.put("loadingPhase", "STATUS_UNAVAILABLE");
+            }
+            response.put("stagingUrl", defaultStagingUrl);
+            response.put("cacheDir", cacheDir.toString());
+            return ResponseEntity.ok(response);
+        }
+        response.put("mode", "direct");
         response.put("loaded", languageModel.isLoaded());
         response.put("modelId", languageModel.getLoadedModelId());
         response.put("loadDurationMs", languageModel.getLoadDurationMs());
+        response.put("loading", languageModel.isLoading());
+        response.put("loadingModelId", languageModel.getLoadingModelId());
+        response.put("loadElapsedMs", languageModel.getLoadElapsedMs());
+        response.put("loadingPhase", languageModel.getLoadingPhase());
+        response.put("dspPlanPhase", languageModel.getDspPlanPhase());
+        response.put("dspFrozenCount", languageModel.getDspFrozenCount());
+        response.put("dspPlanReport", languageModel.getDspPlanReport());
+        response.put("dspCompilationStats", languageModel.getDspCompilationStats());
         response.put("stagingUrl", defaultStagingUrl);
         response.put("cacheDir", cacheDir.toString());
         return ResponseEntity.ok(response);
@@ -212,10 +295,15 @@ public class LlmModelController {
 
     @PostMapping("/unload")
     public ResponseEntity<Map<String, Object>> unload() {
-        String previous = languageModel.getLoadedModelId();
-        languageModel.unloadModel();
+        String previous = subprocessLauncher != null ? null : languageModel.getLoadedModelId();
+        if (subprocessLauncher != null) {
+            subprocessLauncher.stop();
+        } else {
+            languageModel.unloadModel();
+        }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("unloaded", true);
+        response.put("mode", subprocessLauncher != null ? "subprocess" : "direct");
         response.put("previousModelId", previous);
         return ResponseEntity.ok(response);
     }
@@ -241,6 +329,31 @@ public class LlmModelController {
         map.put("loaded", false);
         map.put("error", message);
         return map;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readJsonMap(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            return Map.of("raw", json);
+        }
+    }
+
+    /**
+     * Optional bridge implemented by app-main when the LLM should run in a separate
+     * serving JVM. Keeping the type here avoids a dependency from this pipeline
+     * module back to the full app-main launcher implementation.
+     */
+    public interface SubprocessLauncher {
+        String loadModel(String modelId, String modelPath, Map<String, Object> options) throws Exception;
+        String getStatus() throws Exception;
+        boolean isRunning();
+        int getServingPort();
+        void stop();
     }
 
     /** Request body for {@code POST /api/llm/load}. */

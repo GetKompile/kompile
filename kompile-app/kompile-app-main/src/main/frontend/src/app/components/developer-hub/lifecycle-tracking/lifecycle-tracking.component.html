@@ -1,0 +1,86 @@
+<div class="lifecycle-tracking">
+  <div class="section-header">
+    <h3><mat-icon>bug_report</mat-icon> NDArray Lifecycle Tracking</h3>
+    <button mat-icon-button (click)="loadAll()" matTooltip="Refresh"><mat-icon>refresh</mat-icon></button>
+  </div>
+
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="message" class="success-bar"><mat-icon>check_circle</mat-icon> {{ message }}</div>
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+
+  <ng-container *ngIf="!loading">
+    <!-- Tracking Controls -->
+    <div class="control-section">
+      <h4><mat-icon>toggle_on</mat-icon> Tracking Controls</h4>
+      <div class="control-row">
+        <button mat-raised-button color="primary" (click)="toggleTracking(true)"><mat-icon>play_arrow</mat-icon> Enable</button>
+        <button mat-raised-button (click)="toggleTracking(false)"><mat-icon>stop</mat-icon> Disable</button>
+        <button mat-stroked-button (click)="printReport()"><mat-icon>print</mat-icon> Print Report</button>
+      </div>
+      <div class="preset-row">
+        <span class="preset-label">Presets:</span>
+        <button mat-stroked-button (click)="applyPreset('minimal')">Minimal</button>
+        <button mat-stroked-button (click)="applyPreset('balanced')">Balanced</button>
+        <button mat-stroked-button (click)="applyPreset('detailed')">Detailed</button>
+      </div>
+    </div>
+
+    <!-- Current Config -->
+    <div class="config-section" *ngIf="config">
+      <h4><mat-icon>settings</mat-icon> Current Configuration</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getConfigKeys()">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(config[key]) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cache Stats -->
+    <div class="cache-section" *ngIf="cacheStats">
+      <h4><mat-icon>cached</mat-icon> Cache Statistics</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getCacheKeys()">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(cacheStats[key]) }}</span>
+        </div>
+      </div>
+      <div class="cache-actions">
+        <button mat-stroked-button (click)="clearCache('shape')">Clear Shape</button>
+        <button mat-stroked-button (click)="clearCache('tad')">Clear TAD</button>
+        <button mat-stroked-button color="warn" (click)="clearCache('all')">Clear All</button>
+      </div>
+    </div>
+
+    <!-- Periodic Reporting -->
+    <div class="periodic-section" *ngIf="periodicConfig">
+      <h4><mat-icon>schedule</mat-icon> Periodic Reporting</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of periodicConfig | keyvalue">
+          <span class="kv-key">{{ key.key }}</span>
+          <span class="kv-value">{{ formatValue(key.value) }}</span>
+        </div>
+      </div>
+      <div class="control-row">
+        <button mat-stroked-button (click)="togglePeriodicReporting(true)">Enable</button>
+        <button mat-stroked-button (click)="togglePeriodicReporting(false)">Disable</button>
+      </div>
+    </div>
+
+    <!-- Cleanup -->
+    <div class="cleanup-section" *ngIf="cleanupConfig">
+      <h4><mat-icon>cleaning_services</mat-icon> Leak Report Cleanup</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getCleanupKeys()">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(cleanupConfig[key]) }}</span>
+        </div>
+      </div>
+      <div class="control-row">
+        <button mat-stroked-button (click)="toggleCleanup(true)">Enable</button>
+        <button mat-stroked-button (click)="toggleCleanup(false)">Disable</button>
+        <button mat-raised-button color="primary" (click)="triggerCleanup()">Trigger Now</button>
+      </div>
+    </div>
+  </ng-container>
+</div>

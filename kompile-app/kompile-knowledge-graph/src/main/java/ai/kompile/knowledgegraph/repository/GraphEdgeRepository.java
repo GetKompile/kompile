@@ -279,6 +279,18 @@ public interface GraphEdgeRepository extends JpaRepository<GraphEdge, Long> {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
+     * Find edges whose source node UUID is in the given list
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.sourceNode.nodeId IN :nodeIds")
+    List<GraphEdge> findBySourceNodeNodeIdIn(@Param("nodeIds") java.util.List<String> nodeIds);
+
+    /**
+     * Find edges whose target node UUID is in the given list
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.targetNode.nodeId IN :nodeIds")
+    List<GraphEdge> findByTargetNodeNodeIdIn(@Param("nodeIds") java.util.List<String> nodeIds);
+
+    /**
      * Find outgoing edges by source node title within a fact sheet.
      * Used by KGEmbeddingRetriever for graph expansion.
      */

@@ -34,6 +34,7 @@ import java.util.Map;
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
 @JsonSubTypes({
+        @JsonSubTypes.Type(value = SubprocessMessage.Ready.class, name = "READY"),
         @JsonSubTypes.Type(value = SubprocessMessage.Progress.class, name = "PROGRESS"),
         @JsonSubTypes.Type(value = SubprocessMessage.PhaseTransition.class, name = "PHASE_TRANSITION"),
         @JsonSubTypes.Type(value = SubprocessMessage.Heartbeat.class, name = "HEARTBEAT"),
@@ -43,7 +44,8 @@ import java.util.Map;
         @JsonSubTypes.Type(value = SubprocessMessage.Log.class, name = "LOG")
 })
 public sealed interface SubprocessMessage
-        permits SubprocessMessage.Progress,
+        permits SubprocessMessage.Ready,
+        SubprocessMessage.Progress,
         SubprocessMessage.PhaseTransition,
         SubprocessMessage.Heartbeat,
         SubprocessMessage.Completed,
@@ -56,6 +58,23 @@ public sealed interface SubprocessMessage
 
     /** Get the task ID associated with this message */
     String taskId();
+
+    /**
+     * Explicit readiness signal emitted once after initialization completes
+     * (model loaded, beans wired, ready to accept work).
+     *
+     * Launchers should wait for this message with a configurable timeout
+     * rather than relying on the first heartbeat to detect startup.
+     */
+    record Ready(
+            String taskId,
+            long startupTimeMs,       // Time from process start to ready
+            String subprocessType,    // "embedding", "vector-population", "ingest", etc.
+            String modelId,           // Model identifier if applicable (null otherwise)
+            Integer modelDimension,   // Embedding dimension if applicable
+            long pid                  // Subprocess PID for cross-reference
+    ) implements SubprocessMessage {
+    }
 
     /**
      * Progress update during processing.
@@ -450,6 +469,15 @@ public sealed interface SubprocessMessage
         public static WorkerStatusSnapshot waiting(int id, String type, int processed) {
             return new WorkerStatusSnapshot(id, type, "waiting", processed, 0, 0, null);
         }
+    }
+
+    /**
+     * Factory method to create a ready message.
+     */
+    static Ready ready(String taskId, long startupTimeMs, String subprocessType,
+                        String modelId, Integer modelDimension) {
+        long pid = ProcessHandle.current().pid();
+        return new Ready(taskId, startupTimeMs, subprocessType, modelId, modelDimension, pid);
     }
 
     /**

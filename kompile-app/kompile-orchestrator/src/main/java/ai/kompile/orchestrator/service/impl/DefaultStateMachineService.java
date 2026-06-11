@@ -17,12 +17,15 @@ package ai.kompile.orchestrator.service.impl;
 
 import ai.kompile.orchestrator.api.StateHandler;
 import ai.kompile.orchestrator.api.StateMachineService;
+import ai.kompile.orchestrator.api.TaskExecutionService;
 import ai.kompile.orchestrator.model.OrchestratorInstance;
 import ai.kompile.orchestrator.model.OrchestratorStatus;
 import ai.kompile.orchestrator.model.event.StateChangeEvent;
 import ai.kompile.orchestrator.model.state.DefaultState;
 import ai.kompile.orchestrator.model.state.StateDefinition;
 import ai.kompile.orchestrator.model.state.StateHandlerResult;
+import ai.kompile.orchestrator.model.task.TaskExecutionOptions;
+import ai.kompile.orchestrator.model.task.TaskInstance;
 import ai.kompile.orchestrator.repository.OrchestratorInstanceRepository;
 import ai.kompile.orchestrator.service.registry.StateHandlerRegistry;
 import ai.kompile.orchestrator.service.registry.StateRegistry;
@@ -52,6 +55,16 @@ public class DefaultStateMachineService implements StateMachineService {
 
     private final ScheduledExecutorService pollingExecutor = Executors.newScheduledThreadPool(4);
     private final Map<String, ScheduledFuture<?>> pollingTasks = new ConcurrentHashMap<>();
+
+    /**
+     * Optional task execution service for executing onEnterTaskId/onExitTaskId hooks.
+     * Set via setter to avoid circular dependency with TaskExecutionService.
+     */
+    private TaskExecutionService taskExecutionService;
+
+    public void setTaskExecutionService(TaskExecutionService taskExecutionService) {
+        this.taskExecutionService = taskExecutionService;
+    }
 
     // ==================== State Registration ====================
 
@@ -228,6 +241,28 @@ public class DefaultStateMachineService implements StateMachineService {
                 log.error("Error in onEnter handler for state {}: {}", state.getStateId(), e.getMessage(), e);
             }
         }
+
+        // Execute onEnterTaskId if configured
+        if (state.getOnEnterTaskId() != null && taskExecutionService != null) {
+            try {
+                log.info("Executing onEnter task '{}' for state '{}' on orchestrator {}",
+                        state.getOnEnterTaskId(), state.getStateId(), instance.getInstanceId());
+                TaskExecutionOptions options = TaskExecutionOptions.builder()
+                        .async(true)
+                        .streamOutput(true)
+                        .build();
+                TaskInstance task = taskExecutionService.executeTask(
+                        state.getOnEnterTaskId(),
+                        Collections.emptyMap(),
+                        instance.getInstanceId(),
+                        options);
+                log.info("Started onEnter task {} (instance {}) for state '{}'",
+                        state.getOnEnterTaskId(), task.getId(), state.getStateId());
+            } catch (Exception e) {
+                log.error("Error executing onEnter task '{}' for state {}: {}",
+                        state.getOnEnterTaskId(), state.getStateId(), e.getMessage(), e);
+            }
+        }
     }
 
     private void executeStateExit(OrchestratorInstance instance, StateDefinition state, Map<String, Object> context) {
@@ -239,6 +274,28 @@ public class DefaultStateMachineService implements StateMachineService {
                 handler.get().onExit(instance, state, context);
             } catch (Exception e) {
                 log.error("Error in onExit handler for state {}: {}", state.getStateId(), e.getMessage(), e);
+            }
+        }
+
+        // Execute onExitTaskId if configured
+        if (state.getOnExitTaskId() != null && taskExecutionService != null) {
+            try {
+                log.info("Executing onExit task '{}' for state '{}' on orchestrator {}",
+                        state.getOnExitTaskId(), state.getStateId(), instance.getInstanceId());
+                TaskExecutionOptions options = TaskExecutionOptions.builder()
+                        .async(true)
+                        .streamOutput(true)
+                        .build();
+                TaskInstance task = taskExecutionService.executeTask(
+                        state.getOnExitTaskId(),
+                        Collections.emptyMap(),
+                        instance.getInstanceId(),
+                        options);
+                log.info("Started onExit task {} (instance {}) for state '{}'",
+                        state.getOnExitTaskId(), task.getId(), state.getStateId());
+            } catch (Exception e) {
+                log.error("Error executing onExit task '{}' for state {}: {}",
+                        state.getOnExitTaskId(), state.getStateId(), e.getMessage(), e);
             }
         }
     }

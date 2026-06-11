@@ -1350,6 +1350,96 @@ public class KompileModelManager {
     }
 
     /**
+     * Download a pipeline model from HuggingFace Hub.
+     * Downloads all model files (config.json, tokenizer, weights) into the local cache directory.
+     *
+     * @param huggingFaceRepoId The HuggingFace repository ID (e.g., "Qwen/Qwen3-0.6B")
+     * @param revision           Git revision or branch name (null/empty for "main")
+     * @param hfToken            HuggingFace API token for private models (may be null)
+     * @param progressConsumer   Receives progress messages during download (may be null)
+     * @return Path to the downloaded model directory
+     * @throws java.io.IOException if the download fails
+     */
+    public Path downloadPipelineModel(String huggingFaceRepoId, String revision, String hfToken,
+                                      java.util.function.Consumer<String> progressConsumer)
+            throws java.io.IOException {
+        String effectiveRevision = (revision != null && !revision.isBlank()) ? revision : "main";
+        Path modelDir = getPipelineModelDirectory(huggingFaceRepoId);
+        java.nio.file.Files.createDirectories(modelDir);
+
+        // Build the HuggingFace Hub URL base
+        String baseUrl = "https://huggingface.co/" + huggingFaceRepoId + "/resolve/" + effectiveRevision;
+
+        // Files to try downloading (standard HuggingFace repo layout)
+        String[] candidateFiles = {
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            "model.safetensors",
+            "pytorch_model.bin",
+            "model.gguf",
+            "model.onnx"
+        };
+
+        boolean anyDownloaded = false;
+        java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(30))
+                .followRedirects(java.net.http.HttpClient.Redirect.ALWAYS)
+                .build();
+
+        for (String fileName : candidateFiles) {
+            String fileUrl = baseUrl + "/" + fileName;
+            Path destPath = modelDir.resolve(fileName);
+
+            if (java.nio.file.Files.exists(destPath)) {
+                if (progressConsumer != null) progressConsumer.accept("Cached: " + fileName);
+                anyDownloaded = true;
+                continue;
+            }
+
+            try {
+                var requestBuilder = java.net.http.HttpRequest.newBuilder()
+                        .uri(java.net.URI.create(fileUrl))
+                        .timeout(java.time.Duration.ofMinutes(30))
+                        .GET();
+                if (hfToken != null && !hfToken.isBlank()) {
+                    requestBuilder.header("Authorization", "Bearer " + hfToken);
+                }
+
+                var response = httpClient.send(requestBuilder.build(),
+                        java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+
+                if (response.statusCode() == 200) {
+                    if (progressConsumer != null) progressConsumer.accept("Downloading: " + fileName);
+                    try (var in = response.body()) {
+                        java.nio.file.Files.copy(in, destPath,
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    anyDownloaded = true;
+                    if (progressConsumer != null) progressConsumer.accept("Downloaded: " + fileName);
+                }
+                // 404/401 = file doesn't exist in this repo, skip silently
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException("Download interrupted", e);
+            } catch (Exception e) {
+                LOGGER.debug("Could not download {}: {}", fileUrl, e.getMessage());
+            }
+        }
+
+        if (!anyDownloaded) {
+            throw new java.io.IOException("Could not download any files for model: " + huggingFaceRepoId
+                    + ". Check the model ID and ensure the model exists on HuggingFace Hub.");
+        }
+
+        if (progressConsumer != null) {
+            progressConsumer.accept("Model saved to: " + modelDir);
+        }
+        return modelDir;
+    }
+
+    /**
      * Get the directory path for a HuggingFace model.
      * This is where downloaded model files will be stored.
      *

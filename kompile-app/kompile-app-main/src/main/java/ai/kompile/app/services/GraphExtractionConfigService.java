@@ -236,11 +236,14 @@ public class GraphExtractionConfigService {
         public Integer maxRelationshipsPerChunk;
 
         // Entity Extraction Model settings
-        public String extractionModelProvider;  // e.g., "openai", "anthropic", "ollama", "default"
-        public String extractionModelName;      // e.g., "gpt-4o", "claude-3-5-sonnet", "llama3.2"
+        public String extractionModelProvider;  // Provider ID from registered LlmProviders, or "default"
+        public String extractionModelName;      // Model ID from the selected provider
         public Double extractionTemperature;    // 0.0 to 2.0, lower = more deterministic
         public Integer extractionMaxTokens;     // Max tokens for extraction response
         public String customExtractionPrompt;   // Optional custom prompt template
+
+        // Schema preset
+        public String activeSchemaPresetId;
 
         // Deduplication settings
         public Boolean deduplicationEnabled;

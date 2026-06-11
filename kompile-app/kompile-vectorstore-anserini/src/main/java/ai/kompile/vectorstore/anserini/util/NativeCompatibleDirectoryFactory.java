@@ -16,7 +16,7 @@
 
 package ai.kompile.vectorstore.anserini.util;
 
-import ai.kompile.cli.main.util.NativeImageInfo;
+import ai.kompile.cli.common.util.NativeImageInfo;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.LockFactory;

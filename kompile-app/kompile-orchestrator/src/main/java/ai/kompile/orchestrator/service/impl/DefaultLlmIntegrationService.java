@@ -109,6 +109,13 @@ public class DefaultLlmIntegrationService implements LlmIntegrationService {
             // Update with provider results
             session.setProcessId(startedSession.getProcessId());
             session.setStatus(startedSession.getStatus());
+            // Copy output if provider already completed (e.g., synchronous providers)
+            if (startedSession.getOutput() != null) {
+                session.setOutput(startedSession.getOutput());
+            }
+            if (startedSession.getEndTime() != null) {
+                session.setEndTime(startedSession.getEndTime());
+            }
             session = sessionRepository.save(session);
 
             return session;

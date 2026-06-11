@@ -14,24 +14,29 @@
  * limitations under the License.
  */
 
-package ai.kompile.tool.filesystem.config; // New package for this module's config
+package ai.kompile.tool.filesystem.config;
 
 import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.stereotype.Component; // Make it a bean for easy discovery by @EnableConfigurationProperties
 
 import java.util.Map;
 
+/**
+ * Plain data class representing the filesystem tool roots configuration.
+ *
+ * <p>Previously used as a Spring {@code @ConfigurationProperties} bean. Settings are now
+ * managed via {@link FilesystemToolConfigService} and persisted to
+ * {@code ~/.kompile/config/filesystem-tool-config.json}.</p>
+ *
+ * <p>This class is retained as the shape of the root config entries used by
+ * {@link FilesystemToolConfigService} and {@link ai.kompile.tool.filesystem.FilesystemToolImpl}.</p>
+ */
 @Data
-@Component // Ensure it's picked up by component scan if not explicitly listed in @EnableConfigurationProperties
-@ConfigurationProperties(prefix = "mcp.filesystem")
 public class FilesystemToolProperties {
     private Map<String, RootConfig> roots;
 
     @Data
     public static class RootConfig {
-        private String path; // Actual path on the filesystem
+        private String path;  // Actual path on the filesystem
         private String alias; // Alias expected by the tool in its input
-        // Add permissions if needed: readOnly = true, etc.
     }
 }

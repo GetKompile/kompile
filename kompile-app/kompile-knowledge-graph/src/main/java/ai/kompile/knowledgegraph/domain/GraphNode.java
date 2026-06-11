@@ -159,6 +159,20 @@ public class GraphNode {
     @Column(name = "fact_sheet_id")
     private Long factSheetId;
 
+    /**
+     * Confidence score for this node (0.0 to 1.0).
+     * Used during entity resolution and compaction.
+     */
+    @Column
+    private Double confidence;
+
+    /**
+     * Named graph this node belongs to (optional).
+     * Enables grouping nodes into logical sub-graphs.
+     */
+    @Column(name = "named_graph_id", length = 255)
+    private String namedGraphId;
+
     // ═══════════════════════════════════════════════════════════════════════════
     // KNOWLEDGE GRAPH EMBEDDINGS
     // ═══════════════════════════════════════════════════════════════════════════

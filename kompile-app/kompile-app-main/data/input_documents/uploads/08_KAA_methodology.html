@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KAA — Knowledge and Action Automation methodology</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f5f5f5;
+    --surface-sunken: #ededed;
+    --text: #1a1a1a;
+    --text-secondary: #5a5a5a;
+    --text-tertiary: #858585;
+    --border: rgba(0,0,0,0.10);
+    --border-strong: rgba(0,0,0,0.20);
+    --accent: #DC143C;
+    --accent-bg: #FCE5EA;
+
+    --gray-50: #F1EFE8; --gray-600: #5F5E5A; --gray-800: #444441;
+    --blue-50: #E6F1FB; --blue-600: #185FA5; --blue-800: #0C447C;
+    --amber-50: #FAEEDA; --amber-600: #854F0B; --amber-800: #633806;
+    --green-50: #EAF3DE; --green-600: #3B6D11; --green-800: #27500A;
+    --purple-50: #EEEDFE; --purple-600: #534AB7; --purple-800: #3C3489;
+    --coral-50: #FAECE7; --coral-600: #993C1D; --coral-800: #712B13;
+    --teal-50: #E1F5EE; --teal-600: #0F6E56; --teal-800: #085041;
+    --pink-50: #FBEAF0; --pink-600: #993556; --pink-800: #72243E;
+    --red-50: #FBE9E7; --red-600: #B43124; --red-800: #821E13;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --surface: #1a1a1a;
+      --surface-hover: #262626;
+      --surface-sunken: #0d0d0d;
+      --text: #f5f5f5;
+      --text-secondary: #a8a8a8;
+      --text-tertiary: #707070;
+      --border: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.22);
+      --accent: #F08197;
+      --accent-bg: rgba(220,20,60,0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 22px 32px;
+  }
+  .header-inner { max-width: 1340px; margin: 0 auto; }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .logo-mark {
+    width: 22px; height: 22px; border-radius: 5px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--purple-600) 100%);
+    flex-shrink: 0;
+  }
+  .logo-text { font-size: 12px; color: var(--text-tertiary); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+  .logo-slash {
+    font-family: inherit;
+    font-weight: 800;
+    color: var(--accent);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+  .logo-wordmark {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: -4px;
+  }
+  .logo-divider { color: var(--text-tertiary); margin: 0 4px; font-size: 12px; }
+  .logo-context {
+    font-size: 12px; color: var(--text-tertiary);
+    font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
+  .sub { font-size: 14px; color: var(--text-secondary); margin: 0; max-width: 820px; }
+
+  main { max-width: 1340px; margin: 0 auto; padding: 36px 32px 64px; }
+
+  /* Wedge intro */
+  .wedge {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 18px 24px;
+    margin-bottom: 28px;
+    font-size: 14.5px;
+  }
+  .wedge strong { color: var(--text); font-weight: 600; }
+  .wedge em { color: var(--accent); font-style: normal; font-weight: 600; }
+  .wedge .ka {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-weight: 600;
+    font-size: 12px;
+    margin: 0 3px;
+  }
+  .wedge .ka.k { background: var(--purple-50); color: var(--purple-800); }
+  .wedge .ka.a { background: var(--coral-50); color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .wedge .ka.k { background: rgba(83,74,183,0.18); color: #BEB7F5; }
+    .wedge .ka.a { background: rgba(153,60,29,0.18); color: #E8A48A; }
+  }
+
+  .section-header {
+    display: flex; align-items: baseline; gap: 12px;
+    margin: 36px 0 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-num { font-size: 11px; font-weight: 600; color: var(--text-tertiary); letter-spacing: 0.06em; text-transform: uppercase; }
+  .section-header h2 { font-size: 18px; font-weight: 500; margin: 0; }
+
+  /* ============ SECTION 1 — STACK + PLANES MATRIX ============ */
+  .matrix {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+  }
+  .matrix-head {
+    display: grid;
+    grid-template-columns: 60px 280px 1fr 1fr 1fr;
+    gap: 0;
+    background: var(--surface-sunken);
+    border-bottom: 1px solid var(--border);
+  }
+  .matrix-head > div {
+    padding: 12px 16px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-right: 1px solid var(--border);
+  }
+  .matrix-head > div:last-child { border-right: none; }
+  .matrix-head .plane-head { display: grid; grid-template-columns: 18px 1fr; gap: 8px; align-items: center; }
+  .matrix-head .plane-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .pl-gov .plane-dot { background: var(--red-600); }
+  .pl-op  .plane-dot { background: var(--amber-600); }
+  .pl-obs .plane-dot { background: var(--green-600); }
+
+  .matrix-row {
+    display: grid;
+    grid-template-columns: 60px 280px 1fr 1fr 1fr;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    min-height: 96px;
+  }
+  .matrix-row:last-child { border-bottom: none; }
+
+  /* Side rail with K/A badge */
+  .rail {
+    background: var(--surface-sunken);
+    border-right: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    color: var(--text-tertiary);
+  }
+  .rail-k { background: rgba(83,74,183,0.06); color: var(--purple-800); }
+  .rail-a { background: rgba(153,60,29,0.06); color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .rail-k { background: rgba(83,74,183,0.10); color: #BEB7F5; }
+    .rail-a { background: rgba(153,60,29,0.10); color: #E8A48A; }
+  }
+
+  /* Layer cell */
+  .layer-cell {
+    padding: 14px 18px;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: relative;
+  }
+  .layer-stripe-vert {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 4px;
+  }
+  .ly-num {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+  .ly-name {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .ly-tag {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
+  /* Layer color codes */
+  .l0 .layer-stripe-vert { background: var(--pink-600); }
+  .l1 .layer-stripe-vert { background: var(--blue-600); }
+  .l2 .layer-stripe-vert { background: var(--purple-600); }
+  .l3 .layer-stripe-vert { background: var(--teal-600); }
+  .l4 .layer-stripe-vert { background: var(--gray-600); }
+  .l5 .layer-stripe-vert { background: var(--coral-600); }
+  .l0 .ly-name { color: var(--pink-800); }
+  .l1 .ly-name { color: var(--blue-800); }
+  .l2 .ly-name { color: var(--purple-800); }
+  .l3 .ly-name { color: var(--teal-800); }
+  .l4 .ly-name { color: var(--gray-800); }
+  .l5 .ly-name { color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .l0 .ly-name { color: #ECA1B7; }
+    .l1 .ly-name { color: #BEDDF6; }
+    .l2 .ly-name { color: #BEB7F5; }
+    .l3 .ly-name { color: #94CFB8; }
+    .l4 .ly-name { color: #C4C2BB; }
+    .l5 .ly-name { color: #E8A48A; }
+  }
+
+  /* Plane cells */
+  .plane-cell {
+    padding: 12px 16px;
+    border-right: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--text);
+    line-height: 1.45;
+  }
+  .plane-cell:last-child { border-right: none; }
+  .plane-cell strong { font-weight: 600; }
+  .plane-cell .role { color: var(--text-secondary); font-size: 11.5px; display: block; margin-top: 3px; }
+
+  /* KA divider — between L3 and L4 */
+  .ka-divider {
+    grid-column: 1 / span 5;
+    background: linear-gradient(to right, var(--purple-50) 0%, var(--coral-50) 100%);
+    color: var(--text);
+    padding: 8px 16px;
+    font-size: 11.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    text-align: center;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  @media (prefers-color-scheme: dark) {
+    .ka-divider { background: linear-gradient(to right, rgba(83,74,183,0.15) 0%, rgba(153,60,29,0.15) 100%); }
+  }
+  .ka-divider .k-side { color: var(--purple-800); }
+  .ka-divider .a-side { color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .ka-divider .k-side { color: #BEB7F5; }
+    .ka-divider .a-side { color: #E8A48A; }
+  }
+  .ka-divider .arrow { margin: 0 16px; color: var(--text-tertiary); }
+
+  /* Feedback loop SVG overlay */
+  .feedback-overlay {
+    background: var(--surface-sunken);
+    border-top: 1px solid var(--border);
+    padding: 14px 20px;
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    gap: 24px;
+    align-items: center;
+  }
+  .feedback-overlay svg {
+    height: 140px;
+  }
+  .feedback-overlay .title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .feedback-overlay .body {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* ============ SECTION 3 — PROCESS GRAPH ============ */
+  .pg-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin-bottom: 18px;
+  }
+  .pg-card h3 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .pg-card .lead { margin: 0 0 16px; font-size: 13px; color: var(--text-secondary); }
+  .pg-card svg { display: block; width: 100%; height: auto; }
+
+  /* ============ SECTION 4 — FLYWHEEL ============ */
+  .flywheel-wrap {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 18px;
+    align-items: start;
+  }
+  @media (max-width: 980px) { .flywheel-wrap { grid-template-columns: 1fr; } }
+  .flywheel-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+  }
+  .flywheel-card h3 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .flywheel-card .lead { margin: 0 0 14px; font-size: 13px; color: var(--text-secondary); }
+  .flywheel-card svg { display: block; width: 100%; height: auto; }
+  .flywheel-card.text p { font-size: 13.5px; color: var(--text); margin: 0 0 12px; line-height: 1.55; }
+  .flywheel-card.text p:last-child { margin-bottom: 0; }
+
+  /* ============ SECTION 5 — GAPS PUNCHLIST ============ */
+  .gaps-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }
+  @media (max-width: 980px) { .gaps-grid { grid-template-columns: 1fr; } }
+  .gap-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    border-top: 4px solid var(--text-tertiary);
+  }
+  .gap-card.done    { border-top-color: var(--green-600); }
+  .gap-card.named   { border-top-color: var(--amber-600); }
+  .gap-card.future  { border-top-color: var(--coral-600); }
+  .gap-card h4 {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 8px;
+  }
+  .gap-card.done h4   { color: var(--green-800); }
+  .gap-card.named h4  { color: var(--amber-800); }
+  .gap-card.future h4 { color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .gap-card.done h4   { color: #B7E07A; }
+    .gap-card.named h4  { color: #F0C171; }
+    .gap-card.future h4 { color: #E8A48A; }
+  }
+  .gap-card ul { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+  .gap-card ul li { margin: 4px 0; }
+  .gap-card ul li strong { font-weight: 600; }
+
+  footer {
+    max-width: 1340px;
+    margin: 0 auto;
+    padding: 32px 32px 56px;
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+
+  /* SVG common */
+  .svg-text { fill: var(--text); font-family: inherit; font-size: 12px; }
+  .svg-text-sm { fill: var(--text-secondary); font-family: inherit; font-size: 11px; }
+  .svg-arrow { stroke: var(--text-secondary); fill: none; stroke-width: 1.2; }
+  .svg-arrow-thick { stroke: var(--text-secondary); fill: none; stroke-width: 1.6; }
+  .svg-arrow-feedback { stroke: var(--coral-600); fill: none; stroke-width: 1.8; stroke-dasharray: 4 3; }
+
+  /* Responsive small-screen accommodation */
+  @media (max-width: 1100px) {
+    .matrix-head, .matrix-row {
+      grid-template-columns: 60px 220px 1fr 1fr 1fr;
+    }
+  }
+  @media (max-width: 880px) {
+    .matrix-head, .matrix-row {
+      grid-template-columns: 1fr;
+    }
+    .rail { writing-mode: horizontal-tb; transform: none; padding: 8px; min-height: auto; }
+    .layer-cell { border-right: none; border-bottom: 1px solid var(--border); }
+    .plane-cell { border-right: none; border-bottom: 1px solid var(--border); }
+    .matrix-head { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="logo-row">
+      <span class="logo-slash">//</span>
+      <span class="logo-wordmark">PROSSIMO</span>
+      <span class="logo-divider">·</span>
+      <span class="logo-context">KAA Methodology</span>
+    </div>
+    <h1>Knowledge and Action Automation (KAA)</h1>
+    <p class="sub">An operationalizable methodology for automating the modeling of work, not just the work itself. Six layers, three governance planes, one closed feedback loop, and a cross-customer flywheel.</p>
+  </div>
+</header>
+
+<main>
+
+  <div class="wedge">
+    KAA splits the problem along a deliberate seam. <span class="ka k">KNOWLEDGE</span> layers (L1–L3) produce claims about how work happens and how it should happen. <span class="ka a">ACTION</span> layers (L4–L5) produce executable connections and agents that do the work. The seam between them is where governance, operating model, and observability concerns must be made explicit — otherwise the methodology cannot survive contact with a real customer.
+  </div>
+
+  <!-- ===================== SECTION 1: MATRIX ===================== -->
+  <div class="section-header">
+    <span class="section-num">Section 1</span>
+    <h2>The KAA matrix — six layers × three cross-cutting planes</h2>
+  </div>
+
+  <div class="matrix">
+    <div class="matrix-head">
+      <div></div>
+      <div>Layer (stack)</div>
+      <div class="plane-head pl-gov"><span class="plane-dot"></span><span>Governance plane</span></div>
+      <div class="plane-head pl-op"><span class="plane-dot"></span><span>Operating-model plane</span></div>
+      <div class="plane-head pl-obs"><span class="plane-dot"></span><span>Observability / quality plane</span></div>
+    </div>
+
+    <!-- L5 ACTION -->
+    <div class="matrix-row">
+      <div class="rail rail-a">Action</div>
+      <div class="layer-cell l5">
+        <div class="layer-stripe-vert"></div>
+        <span class="ly-num">Layer 5</span>
+        <h3 class="ly-name">Agents</h3>
+        <span class="ly-tag">Specialized agents for judgment-laden steps. Specs (prompt + tools + evals + escalation policy) are the deliverable, not the model.</span>
+      </div>
+      <div class="plane-cell">
+        Agent liability boundaries · per-agent SLA · incident playbooks
+        <span class="role">EU AI Act risk class · NIST AI RMF mappings</span>
+      </div>
+      <div class="plane-cell">
+        Reviewer pool · queue ownership · on-call rotation
+        <span class="role">Owner: Process steward · Backup: VP Finance</span>
+      </div>
+      <div class="plane-cell">
+        Golden eval set · production drift monitor · A/B between versions · semantic diff vs. human ground truth
+      </div>
+    </div>
+
+    <!-- L4 ACTION -->
+    <div class="matrix-row">
+      <div class="rail rail-a">Action</div>
+      <div class="layer-cell l4">
+        <div class="layer-stripe-vert"></div>
+        <span class="ly-num">Layer 4</span>
+        <h3 class="ly-name">Integrations</h3>
+        <span class="ly-tag">Authenticated, observable connections to source systems. Table-stakes — defensibility lives elsewhere.</span>
+      </div>
+      <div class="plane-cell">
+        Access control · scope-limited credentials · data-residency rules
+        <span class="role">SOC 2 / ISO 27001 mappings</span>
+      </div>
+      <div class="plane-cell">
+        IT operations ownership · vendor security review · deprovisioning runbook
+        <span class="role">Owner: Customer IT · Liaison: ProssimoTech CS</span>
+      </div>
+      <div class="plane-cell">
+        Connector health · rate-limit telemetry · auth-failure alerting
+      </div>
+    </div>
+
+    <!-- KA divider -->
+    <div class="ka-divider">
+      <span class="k-side">▲ KNOWLEDGE — claims about work</span>
+      <span class="arrow">|</span>
+      <span class="a-side">ACTION — execution of work ▼</span>
+    </div>
+
+    <!-- L3 KNOWLEDGE -->
+    <div class="matrix-row">
+      <div class="rail rail-k">Knowledge</div>
+      <div class="layer-cell l3">
+        <div class="layer-stripe-vert"></div>
+        <span class="ly-num">Layer 3</span>
+        <h3 class="ly-name">Process</h3>
+        <span class="ly-tag">Versioned model of as-is and to-be states with named human approvers gating every transition. Process-graph, not single-process.</span>
+      </div>
+      <div class="plane-cell">
+        SOX / J-SOX in-scope tagging per step · ICFR control mapping · approval evidence retention
+        <span class="role">Audit-defensible state-transition log</span>
+      </div>
+      <div class="plane-cell">
+        Process steward · approval matrix per state · change-management cadence
+        <span class="role">Owner: Process steward (customer)</span>
+      </div>
+      <div class="plane-cell">
+        Replay-against-history sandbox · counterfactual diff · cycle-time tracking
+      </div>
+    </div>
+
+    <!-- L2 KNOWLEDGE -->
+    <div class="matrix-row">
+      <div class="rail rail-k">Knowledge</div>
+      <div class="layer-cell l2">
+        <div class="layer-stripe-vert"></div>
+        <span class="ly-num">Layer 2</span>
+        <h3 class="ly-name">Ontology</h3>
+        <span class="ly-tag">Shared vocabulary — entities, relationships, controls, role mappings. The strategic moat. Templates seed it; learning specializes it.</span>
+      </div>
+      <div class="plane-cell">
+        Schema versioning · breaking-change governance · cross-customer anonymization rules
+        <span class="role">IP firewall between customers</span>
+      </div>
+      <div class="plane-cell">
+        Ontology custodian · domain-template library curator
+        <span class="role">Owner: ProssimoTech + customer SME</span>
+      </div>
+      <div class="plane-cell">
+        Coverage metrics · consistency checks · template-fitness score · learned-specialization index
+      </div>
+    </div>
+
+    <!-- L1 KNOWLEDGE -->
+    <div class="matrix-row">
+      <div class="rail rail-k">Knowledge</div>
+      <div class="layer-cell l1">
+        <div class="layer-stripe-vert"></div>
+        <span class="ly-num">Layer 1</span>
+        <h3 class="ly-name">Discovery</h3>
+        <span class="ly-tag">Multi-modal process mining — manuals, Excel/macros, screen recordings, AI interviews. Output: evidence graph.</span>
+      </div>
+      <div class="plane-cell">
+        Recording consent · PII redaction · evidence retention policy · data-localization
+        <span class="role">GDPR · employee privacy reviews</span>
+      </div>
+      <div class="plane-cell">
+        Discovery owner · interview consent workflow · employee comms
+        <span class="role">Owner: ProssimoTech lead · Customer sponsor</span>
+      </div>
+      <div class="plane-cell">
+        Evidence saturation curve · conflict-rate monitor · completion criterion
+      </div>
+    </div>
+
+    <!-- L0 KNOWLEDGE -->
+    <div class="matrix-row">
+      <div class="rail rail-k">Knowledge</div>
+      <div class="layer-cell l0">
+        <div class="layer-stripe-vert"></div>
+        <span class="ly-num">Layer 0</span>
+        <h3 class="ly-name">Engagement &amp; Baseline</h3>
+        <span class="ly-tag">Prerequisite to the stack. Score processes on automatability × value × risk; sign scope; capture as-is metrics. Without this, the rest is unmeasurable.</span>
+      </div>
+      <div class="plane-cell">
+        Statement of work · data-handling agreement · regulatory pre-screening
+        <span class="role">Procurement &amp; legal sign-off</span>
+      </div>
+      <div class="plane-cell">
+        Customer sponsor · steering committee · cadence
+        <span class="role">Owner: Customer exec sponsor</span>
+      </div>
+      <div class="plane-cell">
+        Baseline metrics: hours/cycle, error rate, $ at risk, FTE allocation
+      </div>
+    </div>
+
+    <!-- Feedback loop overlay -->
+    <div class="feedback-overlay">
+      <svg viewBox="0 0 240 140" xmlns="http://www.w3.org/2000/svg">
+        <!-- Stack mini -->
+        <rect x="80" y="10"  width="80" height="14" fill="var(--coral-50)"  stroke="var(--coral-600)" stroke-width="0.8" rx="3"/>
+        <rect x="80" y="28"  width="80" height="14" fill="var(--gray-50)"   stroke="var(--gray-600)"  stroke-width="0.8" rx="3"/>
+        <rect x="80" y="46"  width="80" height="14" fill="var(--teal-50)"   stroke="var(--teal-600)"  stroke-width="0.8" rx="3"/>
+        <rect x="80" y="64"  width="80" height="14" fill="var(--purple-50)" stroke="var(--purple-600)" stroke-width="0.8" rx="3"/>
+        <rect x="80" y="82"  width="80" height="14" fill="var(--blue-50)"   stroke="var(--blue-600)"  stroke-width="0.8" rx="3"/>
+        <rect x="80" y="100" width="80" height="14" fill="var(--pink-50)"   stroke="var(--pink-600)"  stroke-width="0.8" rx="3"/>
+
+        <text x="120" y="20" text-anchor="middle" class="svg-text-sm" fill="var(--coral-800)" font-weight="600">L5 Agents</text>
+        <text x="120" y="38" text-anchor="middle" class="svg-text-sm" fill="var(--gray-800)">L4 Integrations</text>
+        <text x="120" y="56" text-anchor="middle" class="svg-text-sm" fill="var(--teal-800)">L3 Process</text>
+        <text x="120" y="74" text-anchor="middle" class="svg-text-sm" fill="var(--purple-800)" font-weight="600">L2 Ontology</text>
+        <text x="120" y="92" text-anchor="middle" class="svg-text-sm" fill="var(--blue-800)" font-weight="600">L1 Discovery</text>
+        <text x="120" y="110" text-anchor="middle" class="svg-text-sm" fill="var(--pink-800)">L0 Engagement</text>
+
+        <!-- Up flow (forward) -->
+        <path class="svg-arrow" d="M 120,100 L 120,96"/>
+        <path class="svg-arrow" d="M 120,82 L 120,78"/>
+        <path class="svg-arrow" d="M 120,64 L 120,60"/>
+        <path class="svg-arrow" d="M 120,46 L 120,42"/>
+        <path class="svg-arrow" d="M 120,28 L 120,24"/>
+
+        <!-- Feedback loops (down, dashed coral) -->
+        <path class="svg-arrow-feedback" d="M 160,17 C 220,17 220,71 162,71"/>
+        <path class="svg-arrow-feedback" d="M 160,17 C 230,17 230,89 162,89"/>
+
+        <!-- Markers -->
+        <polygon points="158,69 164,71 158,73" fill="var(--coral-600)"/>
+        <polygon points="158,87 164,89 158,91" fill="var(--coral-600)"/>
+
+        <text x="234" y="50" class="svg-text-sm" fill="var(--coral-800)" font-weight="600">telemetry</text>
+        <text x="234" y="64" class="svg-text-sm" fill="var(--coral-800)" font-weight="600">↓ feedback</text>
+      </svg>
+      <div>
+        <div class="title">The closed-loop feedback the original 5-layer stack didn't show.</div>
+        <div class="body">
+          Layer 5 telemetry — corrected decisions, recurring exception patterns, confidence-vs-outcome divergence — flows back into Layer 2 (ontology refinement) and Layer 1 (re-evidence). Without this loop, KAA is a one-shot consulting deliverable. With it, KAA is a learning system. The single highest-leverage operational addition.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== SECTION 3: PROCESS GRAPH ===================== -->
+  <div class="section-header">
+    <span class="section-num">Section 2</span>
+    <h2>Process-graph view — Layer 3, redrawn for the real world</h2>
+  </div>
+
+  <div class="pg-card">
+    <h3>Real finance is a dependency graph, not a single workflow.</h3>
+    <p class="lead">Every Layer-3 process model in production has upstream and downstream dependencies. The single-process abstraction breaks on customer two. KAA models the graph, not just the node.</p>
+
+    <svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="pg-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="var(--text-secondary)"/>
+        </marker>
+        <marker id="pg-arr-strong" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="var(--blue-600)"/>
+        </marker>
+      </defs>
+
+      <!-- Lane labels -->
+      <text x="20" y="36" class="svg-text-sm" fill="var(--text-tertiary)" font-weight="600" letter-spacing="0.05em">UPSTREAM (Day −5 to Day 0)</text>
+      <text x="540" y="36" class="svg-text-sm" fill="var(--text-tertiary)" font-weight="600" letter-spacing="0.05em">CORE CLOSE (Day 1 to Day 8)</text>
+      <text x="940" y="36" class="svg-text-sm" fill="var(--text-tertiary)" font-weight="600" letter-spacing="0.05em">DOWNSTREAM (Day 9+)</text>
+
+      <line x1="0" y1="48" x2="1200" y2="48" stroke="var(--border)" stroke-width="0.5"/>
+
+      <!-- Upstream nodes -->
+      <g>
+        <rect x="40" y="80" width="180" height="48" rx="8" fill="var(--gray-50)" stroke="var(--gray-600)" stroke-width="0.6"/>
+        <text x="130" y="100" text-anchor="middle" class="svg-text" fill="var(--gray-800)" font-weight="600">Procurement</text>
+        <text x="130" y="116" text-anchor="middle" class="svg-text-sm" fill="var(--gray-600)">PO creation, vendor master</text>
+      </g>
+
+      <g>
+        <rect x="40" y="148" width="180" height="48" rx="8" fill="var(--gray-50)" stroke="var(--gray-600)" stroke-width="0.6"/>
+        <text x="130" y="168" text-anchor="middle" class="svg-text" fill="var(--gray-800)" font-weight="600">Goods receipt</text>
+        <text x="130" y="184" text-anchor="middle" class="svg-text-sm" fill="var(--gray-600)">3PL + warehouse</text>
+      </g>
+
+      <g>
+        <rect x="40" y="216" width="180" height="48" rx="8" fill="var(--gray-50)" stroke="var(--gray-600)" stroke-width="0.6"/>
+        <text x="130" y="236" text-anchor="middle" class="svg-text" fill="var(--gray-800)" font-weight="600">Sales transactions</text>
+        <text x="130" y="252" text-anchor="middle" class="svg-text-sm" fill="var(--gray-600)">Shopify + Amazon + EDI</text>
+      </g>
+
+      <g>
+        <rect x="40" y="284" width="180" height="48" rx="8" fill="var(--gray-50)" stroke="var(--gray-600)" stroke-width="0.6"/>
+        <text x="130" y="304" text-anchor="middle" class="svg-text" fill="var(--gray-800)" font-weight="600">Payroll cycle</text>
+        <text x="130" y="320" text-anchor="middle" class="svg-text-sm" fill="var(--gray-600)">Workday + bank file</text>
+      </g>
+
+      <!-- Core close nodes -->
+      <g>
+        <rect x="280" y="80" width="180" height="48" rx="8" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+        <text x="370" y="100" text-anchor="middle" class="svg-text" fill="var(--blue-800)" font-weight="600">Three-way match</text>
+        <text x="370" y="116" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)">PO · GR · Invoice</text>
+      </g>
+
+      <g>
+        <rect x="280" y="216" width="180" height="48" rx="8" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+        <text x="370" y="236" text-anchor="middle" class="svg-text" fill="var(--blue-800)" font-weight="600">Revenue close</text>
+        <text x="370" y="252" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)">Cutoff + deferred</text>
+      </g>
+
+      <g>
+        <rect x="280" y="284" width="180" height="48" rx="8" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+        <text x="370" y="304" text-anchor="middle" class="svg-text" fill="var(--blue-800)" font-weight="600">AP close</text>
+        <text x="370" y="320" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)">Accruals · cutoff</text>
+      </g>
+
+      <!-- The headline node -->
+      <g>
+        <rect x="540" y="170" width="220" height="56" rx="10" fill="var(--purple-50)" stroke="var(--purple-600)" stroke-width="1.6"/>
+        <text x="650" y="194" text-anchor="middle" class="svg-text" fill="var(--purple-800)" font-weight="700">Monthly close + 3-mo P&amp;L</text>
+        <text x="650" y="212" text-anchor="middle" class="svg-text-sm" fill="var(--purple-600)">the demo's process</text>
+      </g>
+
+      <g>
+        <rect x="540" y="80" width="180" height="48" rx="8" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+        <text x="630" y="100" text-anchor="middle" class="svg-text" fill="var(--blue-800)" font-weight="600">Inventory close</text>
+        <text x="630" y="116" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)">Cycle counts · WAC</text>
+      </g>
+
+      <g>
+        <rect x="540" y="266" width="180" height="48" rx="8" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+        <text x="630" y="286" text-anchor="middle" class="svg-text" fill="var(--blue-800)" font-weight="600">FX revaluation</text>
+        <text x="630" y="302" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)">Treasury · OCI</text>
+      </g>
+
+      <!-- Downstream -->
+      <g>
+        <rect x="800" y="100" width="180" height="48" rx="8" fill="var(--coral-50)" stroke="var(--coral-600)" stroke-width="0.8"/>
+        <text x="890" y="120" text-anchor="middle" class="svg-text" fill="var(--coral-800)" font-weight="600">Variance commentary</text>
+        <text x="890" y="136" text-anchor="middle" class="svg-text-sm" fill="var(--coral-600)">Auto-drafted + CFO edit</text>
+      </g>
+      <g>
+        <rect x="800" y="170" width="180" height="48" rx="8" fill="var(--coral-50)" stroke="var(--coral-600)" stroke-width="0.8"/>
+        <text x="890" y="190" text-anchor="middle" class="svg-text" fill="var(--coral-800)" font-weight="600">Board pack</text>
+        <text x="890" y="206" text-anchor="middle" class="svg-text-sm" fill="var(--coral-600)">Quarterly</text>
+      </g>
+      <g>
+        <rect x="800" y="240" width="180" height="48" rx="8" fill="var(--coral-50)" stroke="var(--coral-600)" stroke-width="0.8"/>
+        <text x="890" y="260" text-anchor="middle" class="svg-text" fill="var(--coral-800)" font-weight="600">Tax provision</text>
+        <text x="890" y="276" text-anchor="middle" class="svg-text-sm" fill="var(--coral-600)">Quarterly true-up</text>
+      </g>
+      <g>
+        <rect x="1000" y="170" width="180" height="48" rx="8" fill="var(--green-50)" stroke="var(--green-600)" stroke-width="0.8"/>
+        <text x="1090" y="190" text-anchor="middle" class="svg-text" fill="var(--green-800)" font-weight="600">External reporting</text>
+        <text x="1090" y="206" text-anchor="middle" class="svg-text-sm" fill="var(--green-600)">10-Q / IR</text>
+      </g>
+
+      <!-- Edges -->
+      <!-- Procurement -> Three-way match -->
+      <path class="svg-arrow" d="M 220,104 L 280,104" marker-end="url(#pg-arr)"/>
+      <!-- GR -> Three-way match -->
+      <path class="svg-arrow" d="M 220,172 C 250,172 250,108 280,108" marker-end="url(#pg-arr)"/>
+      <!-- Sales -> Revenue close -->
+      <path class="svg-arrow" d="M 220,240 L 280,240" marker-end="url(#pg-arr)"/>
+      <!-- Payroll -> AP close -->
+      <path class="svg-arrow" d="M 220,308 L 280,308" marker-end="url(#pg-arr)"/>
+
+      <!-- Three-way match -> AP close -->
+      <path class="svg-arrow" d="M 460,104 C 500,104 500,308 460,308" marker-end="url(#pg-arr)" stroke-dasharray="3 3"/>
+      <!-- Three-way match -> Monthly close -->
+      <path class="svg-arrow-thick" d="M 460,104 C 510,104 510,184 540,184" marker-end="url(#pg-arr-strong)" stroke="var(--blue-600)"/>
+      <!-- Inventory -> Monthly close -->
+      <path class="svg-arrow-thick" d="M 720,104 C 740,104 740,184 540,196" marker-end="url(#pg-arr-strong)" stroke="var(--blue-600)"/>
+      <!-- Revenue -> Monthly close -->
+      <path class="svg-arrow-thick" d="M 460,240 C 500,240 500,200 540,200" marker-end="url(#pg-arr-strong)" stroke="var(--blue-600)"/>
+      <!-- AP close -> Monthly close -->
+      <path class="svg-arrow-thick" d="M 460,308 C 500,308 500,212 540,212" marker-end="url(#pg-arr-strong)" stroke="var(--blue-600)"/>
+      <!-- FX -> Monthly close -->
+      <path class="svg-arrow-thick" d="M 720,290 C 740,290 740,222 540,222" marker-end="url(#pg-arr-strong)" stroke="var(--blue-600)"/>
+
+      <!-- Monthly close -> downstream -->
+      <path class="svg-arrow" d="M 760,184 C 790,184 790,124 800,124" marker-end="url(#pg-arr)"/>
+      <path class="svg-arrow" d="M 760,196 L 800,194" marker-end="url(#pg-arr)"/>
+      <path class="svg-arrow" d="M 760,212 C 790,212 790,264 800,264" marker-end="url(#pg-arr)"/>
+
+      <!-- Variance + Board pack -> External reporting -->
+      <path class="svg-arrow" d="M 980,124 C 990,124 990,184 1000,184" marker-end="url(#pg-arr)"/>
+      <path class="svg-arrow" d="M 980,194 L 1000,194" marker-end="url(#pg-arr)"/>
+    </svg>
+
+    <p class="lead" style="margin-top: 14px; margin-bottom: 0;">
+      The demo's "monthly close + 3-mo P&amp;L" (purple) is one node. Real engagements must model the upstream dependencies (procurement, sales, GR, payroll), the parallel close streams (3-way match, AP close, revenue close, inventory close, FX), and the downstream consumers (variance commentary, board pack, tax, external reporting). Layer 3 must support this graph, including shared ontology across nodes and cross-process escalation paths.
+    </p>
+  </div>
+
+  <!-- ===================== SECTION 4: FLYWHEEL ===================== -->
+  <div class="section-header">
+    <span class="section-num">Section 3</span>
+    <h2>The cross-customer flywheel — how KAA becomes a platform</h2>
+  </div>
+
+  <div class="flywheel-wrap">
+    <div class="flywheel-card">
+      <h3>Asset accumulation across customers</h3>
+      <p class="lead">The platform thesis: customer-N is faster than customer-(N−1) because the shared knowledge base compounds. Without an explicit accumulation policy, every customer is a new project.</p>
+
+      <svg viewBox="0 0 480 380" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="fw-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 Z" fill="var(--text-secondary)"/>
+          </marker>
+          <marker id="fw-arr-out" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 Z" fill="var(--green-600)"/>
+          </marker>
+        </defs>
+
+        <!-- Center asset hub -->
+        <circle cx="240" cy="190" r="80" fill="var(--purple-50)" stroke="var(--purple-600)" stroke-width="1.2"/>
+        <text x="240" y="170" text-anchor="middle" class="svg-text" fill="var(--purple-800)" font-weight="700">Shared</text>
+        <text x="240" y="186" text-anchor="middle" class="svg-text" fill="var(--purple-800)" font-weight="700">asset library</text>
+        <text x="240" y="206" text-anchor="middle" class="svg-text-sm" fill="var(--purple-600)">ontology templates</text>
+        <text x="240" y="220" text-anchor="middle" class="svg-text-sm" fill="var(--purple-600)">eval datasets</text>
+        <text x="240" y="234" text-anchor="middle" class="svg-text-sm" fill="var(--purple-600)">connector library</text>
+
+        <!-- Customer nodes -->
+        <g>
+          <circle cx="100" cy="80" r="36" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+          <text x="100" y="78" text-anchor="middle" class="svg-text-sm" fill="var(--blue-800)" font-weight="600">Customer 1</text>
+          <text x="100" y="92" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)" font-size="10">CPG · FP&amp;A</text>
+        </g>
+        <g>
+          <circle cx="380" cy="80" r="36" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+          <text x="380" y="78" text-anchor="middle" class="svg-text-sm" fill="var(--blue-800)" font-weight="600">Customer 2</text>
+          <text x="380" y="92" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)" font-size="10">SaaS · Close</text>
+        </g>
+        <g>
+          <circle cx="60" cy="290" r="36" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+          <text x="60" y="288" text-anchor="middle" class="svg-text-sm" fill="var(--blue-800)" font-weight="600">Customer 3</text>
+          <text x="60" y="302" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)" font-size="10">Mfg · P2P</text>
+        </g>
+        <g>
+          <circle cx="420" cy="290" r="36" fill="var(--blue-50)" stroke="var(--blue-600)" stroke-width="0.8"/>
+          <text x="420" y="288" text-anchor="middle" class="svg-text-sm" fill="var(--blue-800)" font-weight="600">Customer 4</text>
+          <text x="420" y="302" text-anchor="middle" class="svg-text-sm" fill="var(--blue-600)" font-size="10">CPG · OTC</text>
+        </g>
+        <g>
+          <circle cx="240" cy="340" r="40" fill="var(--coral-50)" stroke="var(--coral-600)" stroke-width="1.6" stroke-dasharray="3 2"/>
+          <text x="240" y="338" text-anchor="middle" class="svg-text-sm" fill="var(--coral-800)" font-weight="700">Customer N</text>
+          <text x="240" y="352" text-anchor="middle" class="svg-text-sm" fill="var(--coral-600)" font-size="10">faster onboard</text>
+        </g>
+
+        <!-- Contribute (in) arrows — customers → hub -->
+        <path class="svg-arrow" d="M 124,98 L 178,150" marker-end="url(#fw-arr)"/>
+        <path class="svg-arrow" d="M 356,98 L 302,150" marker-end="url(#fw-arr)"/>
+        <path class="svg-arrow" d="M 86,272 L 175,222" marker-end="url(#fw-arr)"/>
+        <path class="svg-arrow" d="M 394,272 L 305,222" marker-end="url(#fw-arr)"/>
+
+        <!-- Benefit (out) arrow to Customer N -->
+        <path d="M 240,272 L 240,302" stroke="var(--green-600)" stroke-width="2" fill="none" marker-end="url(#fw-arr-out)"/>
+
+        <!-- Labels -->
+        <text x="138" y="142" class="svg-text-sm" fill="var(--text-tertiary)" font-size="10">→ contribute</text>
+        <text x="316" y="142" class="svg-text-sm" fill="var(--text-tertiary)" font-size="10">→ contribute</text>
+        <text x="248" y="290" class="svg-text-sm" fill="var(--green-800)" font-weight="600" font-size="10">benefit ↓</text>
+      </svg>
+    </div>
+
+    <div class="flywheel-card text">
+      <h3>What contributes, what compounds</h3>
+      <p><strong>Ontology templates (Layer 2):</strong> domain-shaped (FP&amp;A, P2P, OTC, ITGC, R&amp;D capitalization, lease accounting). Customer-N starts from a 70%-accurate template instead of zero.</p>
+      <p><strong>Anonymized eval sets (Layer 5):</strong> "what good agent behavior looks like" for variance triage, exception routing, commentary drafting. Customer-N's agents are quality-graded against accumulated industry baselines.</p>
+      <p><strong>Connector implementations (Layer 4):</strong> NetSuite, SAP, Workday, Salesforce, Shopify, Coupa. Once built, the marginal cost is near zero.</p>
+      <p><strong>Process patterns (Layer 3):</strong> "the close-cycle pattern" or "the P2P three-way match pattern" — re-applicable shapes, customer-specific instances.</p>
+      <p><strong>What does NOT compound (and must not):</strong> customer data, customer-specific evidence, anything PII or trade-secret. The IP firewall is part of the moat — without it, no customer signs.</p>
+    </div>
+  </div>
+
+  <!-- ===================== SECTION 5: GAPS PUNCHLIST ===================== -->
+  <div class="section-header">
+    <span class="section-num">Section 4</span>
+    <h2>Operationalization gaps — addressed, named, and still ahead</h2>
+  </div>
+
+  <div class="gaps-grid">
+
+    <div class="gap-card done">
+      <h4>✓ Addressed in this view</h4>
+      <ul>
+        <li><strong>Layer 0</strong> for engagement, scoping, baseline metrics</li>
+        <li><strong>Three planes</strong>: governance, operating model, observability</li>
+        <li><strong>Closed-loop feedback</strong> from Layer 5 to Layers 2 and 1</li>
+        <li><strong>Knowledge / Action</strong> seam made visually explicit</li>
+        <li><strong>Process-graph</strong> view replacing single-process Layer 3</li>
+        <li><strong>Cross-customer flywheel</strong> for asset accumulation</li>
+      </ul>
+    </div>
+
+    <div class="gap-card named">
+      <h4>◆ Named, not yet implemented</h4>
+      <ul>
+        <li><strong>Discovery completion criterion</strong> — coverage of named roles, evidence saturation, conflict-resolution rate</li>
+        <li><strong>HITL fatigue management</strong> — queue prioritization, batch approval, threshold tuning, circuit breakers</li>
+        <li><strong>Replay / counterfactual sandbox</strong> — Layer 3 needs a "what would have happened" mode</li>
+        <li><strong>Drift detectors per layer</strong> — when does the model need re-discovery?</li>
+        <li><strong>Methodological specificity per layer</strong> — what discipline lives in each (BPMN/CMMN/DMN, OWL/DDD, agent-spec format)</li>
+        <li><strong>Per-layer unit economics</strong> — cost driver, pricing posture</li>
+      </ul>
+    </div>
+
+    <div class="gap-card future">
+      <h4>→ Future work</h4>
+      <ul>
+        <li><strong>Integration with PMM estate</strong> — Signavio, Workiva, Confluence, Collibra: read &amp; write into the customer's existing process-management investment</li>
+        <li><strong>Liability / SLA framework</strong> — explicit boundaries and incident-response playbooks per agent class</li>
+        <li><strong>Continuous-discovery automation</strong> — triggered by drift, customer events (M&amp;A, ERP migration, reorg)</li>
+        <li><strong>Multi-tenant ontology federation</strong> — how customer-specific specializations co-exist with shared templates without leaking IP</li>
+        <li><strong>Industry / domain plug-in mechanism</strong> — how new verticals (healthcare, legal, public sector) get added without forking the core</li>
+        <li><strong>Regulatory-framework mappings</strong> — explicit traceability from each layer's outputs to SOX, J-SOX, EU AI Act, NIST AI RMF, ISO 27001 evidence requirements</li>
+      </ul>
+    </div>
+
+  </div>
+
+</main>
+
+<footer>
+  <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+    <span style="font-weight: 800; color: var(--accent); font-size: 16px; letter-spacing: -0.02em;">//</span>
+    <strong style="color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; margin-left: -2px;">PROSSIMO</strong>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>KAA Methodology</span>
+  </div>
+  Knowledge and Action Automation. Six layers, three planes, one feedback loop, one flywheel. The diagram is the methodology made operationalizable; the gaps below it are what we're building next.<br>
+  <span style="color: var(--text-tertiary);">© 2026 ProssimoTech · Tokyo · <a href="https://www.linkedin.com/company/prossimo-tech/" style="color: var(--accent); text-decoration: none;">LinkedIn</a> · info@prossimotech.com</span>
+</footer>
+
+</body>
+</html>

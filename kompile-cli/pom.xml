@@ -40,6 +40,11 @@
             <artifactId>kompile-cli-common</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-project-store</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- MCP SDK for stdio server -->
         <dependency>
@@ -60,6 +65,11 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-pipelines-framework-runtime</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipeline-serving</artifactId>
             <version>${project.version}</version>
         </dependency>
 
@@ -88,6 +98,16 @@
             <groupId>org.eclipse.jgit</groupId>
             <artifactId>org.eclipse.jgit</artifactId>
             <version>${jgit.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.4</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>${jsoup.version}</version>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -259,12 +279,17 @@
                                 <buildArg>--initialize-at-run-time=org.eclipse.jgit.internal.storage.file.WindowCache</buildArg>
                                 <buildArg>--initialize-at-run-time=org.eclipse.jgit.transport.HttpAuthMethod</buildArg>
                                 <buildArg>--initialize-at-run-time=org.eclipse.jgit.nls.GlobalBundleCache</buildArg>
+                                <buildArg>--initialize-at-build-time=org.sqlite.util.ProcessRunner</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
+                                <buildArg>-H:IncludeResources=cli-agents\.json</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/.*\.schema\.json</buildArg>
                                 <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg> </buildArgs>
+                                <buildArg>-H:IncludeResources=org/apache/pdfbox/resources/afm/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/jline/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/org/jline/.*</buildArg> </buildArgs>
                         </configuration>
                     </plugin>
                 </plugins>

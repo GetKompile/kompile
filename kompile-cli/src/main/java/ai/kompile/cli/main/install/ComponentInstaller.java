@@ -80,8 +80,9 @@ public class ComponentInstaller {
         String downloadUrl = registry.resolveDownloadUrl(componentId, source);
         System.out.println("  Download URL: " + downloadUrl);
 
-        // Download to temporary location
-        File tempFile = new File(installDir, componentId + ".download");
+        // Download to temporary location — preserve extension for processDownload dispatch
+        String ext = extractExtension(downloadUrl);
+        File tempFile = new File(installDir, componentId + ".download" + ext);
         try {
             System.out.println("  Downloading...");
             InstallMain.downloadTo(downloadUrl, tempFile.getAbsolutePath(), true);
@@ -259,37 +260,120 @@ public class ComponentInstaller {
             throw new FileNotFoundException("pom.xml not found in: " + sourceDir);
         }
 
+        // Find Maven — prefer configured path, fall back to PATH
+        String mvnCmd = "mvn";
+        File configuredMvn = new File(System.getProperty("user.home"), "dev-apps/mvn/bin/mvn");
+        if (configuredMvn.isFile() && configuredMvn.canExecute()) {
+            mvnCmd = configuredMvn.getAbsolutePath();
+        }
+
         // Run Maven build
-        ProcessBuilder pb = new ProcessBuilder("mvn", "clean", "package", "-DskipTests");
+        ProcessBuilder pb = new ProcessBuilder(mvnCmd, "clean", "package", "-DskipTests");
         pb.directory(new File(sourceDir));
         pb.inheritIO();
-        
+
         Process process = pb.start();
         int exitCode = process.waitFor();
-        
+
         if (exitCode != 0) {
             throw new IOException("Maven build failed with exit code: " + exitCode);
         }
 
-        // Find built JAR in target/
+        // Find built JAR in target/ — prefer exec JAR (fat JAR with all dependencies)
         File targetDir = new File(sourceDir, "target");
-        File builtJar = findJarInDirectory(targetDir, componentId);
-        
+        File builtJar = findExecJarInDirectory(targetDir, componentId);
+        if (builtJar == null) {
+            builtJar = findJarInDirectory(targetDir, componentId);
+        }
+
         if (builtJar == null) {
             throw new FileNotFoundException("Built JAR not found in target/ directory");
         }
 
-        // Install to kompile directory
+        // Install to kompile directory — use canonical name so it replaces any prior install
         File installDir = registry.getInstallDirectory(componentId);
         if (!installDir.exists()) {
             installDir.mkdirs();
         }
-        
+
         File targetJar = registry.getJarPath(componentId);
+        clearOldJars(installDir, targetJar.getName());
         FileUtils.copyFile(builtJar, targetJar);
-        
-        System.out.println("  ✓ Built and installed to: " + targetJar.getAbsolutePath());
+
+        System.out.println("  Built and installed to: " + targetJar.getAbsolutePath());
         return targetJar;
+    }
+
+    /**
+     * Extract the file extension from a download URL, stripping query params and fragments.
+     * Returns ".tar.gz", ".tgz", ".zip", ".jar", or "" if unknown.
+     */
+    private static String extractExtension(String url) {
+        // Strip query params and fragment
+        String clean = url;
+        int q = clean.indexOf('?');
+        if (q >= 0) clean = clean.substring(0, q);
+        int h = clean.indexOf('#');
+        if (h >= 0) clean = clean.substring(0, h);
+
+        if (clean.endsWith(".tar.gz")) return ".tar.gz";
+        if (clean.endsWith(".tgz")) return ".tgz";
+        if (clean.endsWith(".zip")) return ".zip";
+        if (clean.endsWith(".jar")) return ".jar";
+        return "";
+    }
+
+    /**
+     * Find exec JAR (Spring Boot fat JAR) in directory matching component ID.
+     * Exec JARs are the self-contained runnable JARs.
+     */
+    protected File findExecJarInDirectory(File directory, String componentId) {
+        if (!directory.exists()) return null;
+        File[] files = directory.listFiles((dir, name) ->
+                name.startsWith(componentId) && name.endsWith("-exec.jar"));
+        if (files != null && files.length > 0) return files[0];
+        return null;
+    }
+
+    /**
+     * Install a component from a local JAR file (copy to install directory).
+     * Uses the canonical component name so it replaces any prior install.
+     */
+    public File installFromLocalJar(String componentId, File localJar) throws Exception {
+        ComponentDescriptor descriptor = registry.getComponent(componentId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown component: " + componentId));
+
+        System.out.println("Installing " + descriptor.getName() + " from local JAR...");
+        System.out.println("  Source: " + localJar.getAbsolutePath());
+
+        File installDir = registry.getInstallDirectory(componentId);
+        if (!installDir.exists()) {
+            installDir.mkdirs();
+        }
+
+        File targetJar = registry.getJarPath(componentId);
+        clearOldJars(installDir, targetJar.getName());
+        FileUtils.copyFile(localJar, targetJar);
+
+        // Validate
+        validateInstallation(componentId, targetJar);
+
+        System.out.println("  Installed to: " + targetJar.getAbsolutePath());
+        return targetJar;
+    }
+
+    /**
+     * Remove all JARs in the install directory except the one we're about to write.
+     * Prevents stale JARs with different names from being picked up.
+     */
+    private void clearOldJars(File installDir, String keepName) {
+        File[] oldJars = installDir.listFiles((dir, name) ->
+                name.endsWith(".jar") && !name.equals(keepName));
+        if (oldJars != null) {
+            for (File old : oldJars) {
+                old.delete();
+            }
+        }
     }
 
     // Getters and setters

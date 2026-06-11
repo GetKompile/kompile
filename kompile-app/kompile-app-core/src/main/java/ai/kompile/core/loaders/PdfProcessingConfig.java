@@ -16,6 +16,9 @@
 
 package ai.kompile.core.loaders;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Map;
 
 /**
@@ -31,6 +34,8 @@ import java.util.Map;
  * </ul>
  */
 public class PdfProcessingConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(PdfProcessingConfig.class);
 
     /**
      * Processing mode for PDF files.
@@ -212,7 +217,9 @@ public class PdfProcessingConfig {
         if (map.containsKey("processingMode")) {
             try {
                 builder.processingMode(ProcessingMode.valueOf(String.valueOf(map.get("processingMode")).toUpperCase()));
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("Failed to parse config value for processingMode: {}", e.getMessage());
+            }
         }
 
         if (map.containsKey("useVlm")) {
@@ -224,7 +231,9 @@ public class PdfProcessingConfig {
         if (map.containsKey("vlmOutputFormat")) {
             try {
                 builder.vlmOutputFormat(VlmOutputFormat.valueOf(String.valueOf(map.get("vlmOutputFormat")).toUpperCase()));
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("Failed to parse config value for vlmOutputFormat: {}", e.getMessage());
+            }
         }
         if (map.containsKey("maxNewTokens")) {
             builder.maxNewTokens(Integer.parseInt(String.valueOf(map.get("maxNewTokens"))));
@@ -241,12 +250,16 @@ public class PdfProcessingConfig {
         if (map.containsKey("tableStorageMode")) {
             try {
                 builder.tableStorageMode(TableStorageMode.valueOf(String.valueOf(map.get("tableStorageMode")).toUpperCase()));
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("Failed to parse config value for tableStorageMode: {}", e.getMessage());
+            }
         }
         if (map.containsKey("tableExtractionMethod")) {
             try {
                 builder.tableExtractionMethod(TableExtractionMethod.valueOf(String.valueOf(map.get("tableExtractionMethod")).toUpperCase()));
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("Failed to parse config value for tableExtractionMethod: {}", e.getMessage());
+            }
         }
         if (map.containsKey("useCompositeLoader")) {
             builder.useCompositeLoader(Boolean.parseBoolean(String.valueOf(map.get("useCompositeLoader"))));

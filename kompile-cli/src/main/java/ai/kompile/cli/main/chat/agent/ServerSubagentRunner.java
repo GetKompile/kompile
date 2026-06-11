@@ -51,6 +51,7 @@ public class ServerSubagentRunner implements SubagentRunner {
     private final ToolRegistry toolRegistry;
     private final PermissionService permissionService;
     private final TerminalRenderer renderer;
+    private volatile LifecycleListener lifecycleListener;
 
     public ServerSubagentRunner(String baseUrl, ToolRegistry toolRegistry,
                                  PermissionService permissionService, ObjectMapper objectMapper,
@@ -66,9 +67,18 @@ public class ServerSubagentRunner implements SubagentRunner {
     }
 
     @Override
+    public void setLifecycleListener(LifecycleListener listener) {
+        this.lifecycleListener = listener;
+    }
+
+    @Override
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         long startTime = System.currentTimeMillis();
+        String subagentId = agent.getName() + "-" + Long.toHexString(startTime);
         System.out.println(renderer.renderSubagentStart(agent.getName(), truncate(prompt, 80)));
+        if (lifecycleListener != null) {
+            lifecycleListener.onSubagentStart(subagentId, agent.getName(), truncate(prompt, 60));
+        }
 
         // Build the system prompt with available tools
         String systemPrompt = agent.getSystemPrompt() + "\n\n" +
@@ -160,6 +170,10 @@ public class ServerSubagentRunner implements SubagentRunner {
         String result = fullResponse.toString().trim();
 
         System.out.println(renderer.renderSubagentComplete(agent.getName(), durationMs));
+
+        if (lifecycleListener != null) {
+            lifecycleListener.onSubagentEnd(subagentId);
+        }
 
         return result.isEmpty() ? "(subagent returned empty response)" : result;
     }

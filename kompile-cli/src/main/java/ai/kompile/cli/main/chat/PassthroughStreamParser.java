@@ -20,7 +20,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -33,6 +35,12 @@ public class PassthroughStreamParser {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /** Tracks last aggregated_output per Codex item ID for delta computation. */
+    private final Map<String, String> codexAggregatedOutputs = new HashMap<>();
+
+    /** Tracks last streamed text per Codex agent_message item ID for delta computation. */
+    private final Map<String, String> codexAgentMessages = new HashMap<>();
+
     /**
      * Parsed event from agent output.
      */
@@ -40,8 +48,25 @@ public class PassthroughStreamParser {
     }
 
     public record TextChunk(String text) implements PassthroughEvent {}
+    /** Model reasoning/thinking content — not displayed as response text but signals active generation. */
+    public record ThinkingChunk(String text) implements PassthroughEvent {}
     public record ToolUse(String name, String input) implements PassthroughEvent {}
-    public record TurnComplete(long durationMs, double costUsd, int numTurns) implements PassthroughEvent {}
+    public record TurnComplete(long durationMs, double costUsd, int numTurns,
+                               long inputTokens, long outputTokens,
+                               long cacheReadTokens, long cacheCreationTokens) implements PassthroughEvent {
+        public TurnComplete(long durationMs, double costUsd, int numTurns) {
+            this(durationMs, costUsd, numTurns, 0, 0, 0, 0);
+        }
+    }
+    public record TokenUsage(long inputTokens, long outputTokens,
+                              long cacheReadTokens, long cacheCreationTokens) implements PassthroughEvent {}
+    public record ToolOutput(String output) implements PassthroughEvent {}
+    public record ToolComplete(String name, String output, int exitCode, boolean error) implements PassthroughEvent {
+        /** Backward-compatible constructor — error defaults to exitCode != 0. */
+        public ToolComplete(String name, String output, int exitCode) {
+            this(name, output, exitCode, exitCode != 0);
+        }
+    }
     public record SessionInit(String sessionId) implements PassthroughEvent {}
     public record PromptDetected() implements PassthroughEvent {}
 
@@ -202,6 +227,13 @@ public class PassthroughStreamParser {
                     }
                     return null;
                 }
+                case "reasoning" -> {
+                    JsonNode part = node.get("part");
+                    if (part != null && part.has("text")) {
+                        return new ThinkingChunk(part.get("text").asText());
+                    }
+                    return null;
+                }
                 case "tool_use" -> {
                     JsonNode part = node.get("part");
                     if (part != null) {
@@ -230,30 +262,32 @@ public class PassthroughStreamParser {
                 }
                 case "step_finish" -> {
                     JsonNode part = node.get("part");
-                    long durationMs = 0;
-                    double cost = 0.0;
-                    int turns = 0;
-                    if (part != null) {
-                        if (part.has("tokens") && part.get("tokens").has("total")) {
-                            // No explicit duration in OpenCode step_finish, but we can
-                            // compute from timestamps if needed. For now, leave as 0.
+                    if (part != null && part.has("tokens")) {
+                        JsonNode tokens = part.get("tokens");
+                        long input = tokens.has("input") ? tokens.get("input").asLong() : 0;
+                        long output = tokens.has("output") ? tokens.get("output").asLong() : 0;
+                        long cacheRead = 0;
+                        long cacheWrite = 0;
+                        if (tokens.has("cache")) {
+                            JsonNode cache = tokens.get("cache");
+                            cacheRead = cache.has("read") ? cache.get("read").asLong() : 0;
+                            cacheWrite = cache.has("write") ? cache.get("write").asLong() : 0;
                         }
-                        if (part.has("cost")) {
-                            cost = part.get("cost").asDouble();
-                        }
+                        return new TokenUsage(input, output, cacheRead, cacheWrite);
                     }
-                    return new TurnComplete(durationMs, cost, turns);
+                    double cost = 0.0;
+                    if (part != null && part.has("cost")) {
+                        cost = part.get("cost").asDouble();
+                    }
+                    return new TurnComplete(0, cost, 0);
                 }
                 default -> {
                     return null;
                 }
             }
         } catch (Exception e) {
-            // Not valid JSON — treat as plain text (OpenCode may emit non-JSON lines)
-            String trimmed = line.trim();
-            if (!trimmed.isEmpty()) {
-                return new TextChunk(trimmed);
-            }
+            // Not valid JSON — TUI noise (spinner, progress bars) from opencode.
+            // All real content arrives as JSON events with --format json.
             return null;
         }
     }
@@ -371,18 +405,13 @@ public class PassthroughStreamParser {
                     }
                     return null;
                 }
-                case "message.delta" -> {
-                    if (node.has("delta")) {
-                        return new TextChunk(node.get("delta").asText());
-                    }
-                    return null;
+                case "message.delta", "agent_message_delta", "response.output_text.delta" -> {
+                    String text = firstText(node, "delta", "text", "content");
+                    return text != null && !text.isEmpty() ? new TextChunk(text) : null;
                 }
-                case "message.completed" -> {
-                    // Full message — extract text if delta streaming wasn't used
-                    if (node.has("content")) {
-                        return new TextChunk(node.get("content").asText());
-                    }
-                    return null;
+                case "message.completed", "agent_message", "response.output_text.done" -> {
+                    String text = extractCodexText(node);
+                    return text != null && !text.isEmpty() ? new TextChunk(text) : null;
                 }
                 case "exec.started" -> {
                     String command = "";
@@ -462,16 +491,83 @@ public class PassthroughStreamParser {
                     }
                     return new TextChunk("[Error] " + msg);
                 }
+                case "item.started" -> {
+                    JsonNode item = node.get("item");
+                    if (item != null) {
+                        String itemType = item.has("type") ? item.get("type").asText() : "";
+                        String itemId = item.has("id") ? item.get("id").asText() : "";
+                        if ("command_execution".equals(itemType)) {
+                            String command = item.has("command") ? item.get("command").asText() : "";
+                            String aggregated = item.has("aggregated_output") ? item.get("aggregated_output").asText() : "";
+                            codexAggregatedOutputs.put(itemId, aggregated);
+                            return new ToolUse("exec", command);
+                        } else if ("agent_message".equals(itemType) && !itemId.isEmpty()) {
+                            codexAgentMessages.put(itemId, extractCodexText(item, ""));
+                        }
+                    }
+                    return null;
+                }
+                case "item.updated" -> {
+                    JsonNode item = node.get("item");
+                    if (item != null) {
+                        String itemType = item.has("type") ? item.get("type").asText() : "";
+                        String itemId = item.has("id") ? item.get("id").asText() : "";
+                        if ("command_execution".equals(itemType) && item.has("aggregated_output")) {
+                            String newAggregated = item.get("aggregated_output").asText();
+                            String previous = codexAggregatedOutputs.getOrDefault(itemId, "");
+                            codexAggregatedOutputs.put(itemId, newAggregated);
+                            // Emit delta: new chars since last snapshot
+                            String delta = newAggregated.substring(Math.min(previous.length(), newAggregated.length()));
+                            if (!delta.isEmpty()) {
+                                return new ToolOutput(delta);
+                            }
+                        } else if ("agent_message".equals(itemType)) {
+                            return codexAgentMessageDelta(itemId, item, false);
+                        }
+                    }
+                    return null;
+                }
+                case "item.completed" -> {
+                    JsonNode item = node.get("item");
+                    if (item != null) {
+                        String itemType = item.has("type") ? item.get("type").asText() : "";
+                        String itemId = item.has("id") ? item.get("id").asText() : "";
+                        if ("agent_message".equals(itemType)) {
+                            return codexAgentMessageDelta(itemId, item, true);
+                        } else if ("command_execution".equals(itemType)) {
+                            String aggregated = item.has("aggregated_output") ? item.get("aggregated_output").asText() : "";
+                            int exitCode = item.has("exit_code") && !item.get("exit_code").isNull()
+                                    ? item.get("exit_code").asInt() : -1;
+                            String previous = codexAggregatedOutputs.getOrDefault(itemId, "");
+                            codexAggregatedOutputs.remove(itemId);
+                            // Emit delta output
+                            String delta = aggregated.substring(Math.min(previous.length(), aggregated.length()));
+                            return new ToolComplete("exec", delta, exitCode);
+                        }
+                    }
+                    return null;
+                }
                 case "turn.completed" -> {
                     long durationMs = 0;
                     double cost = 0.0;
+                    long inputTokens = 0;
+                    long outputTokens = 0;
+                    long cacheReadTokens = 0;
+                    long cacheCreationTokens = 0;
                     if (node.has("usage")) {
-                        // Codex may include usage stats
+                        JsonNode usage = node.get("usage");
+                        inputTokens = usage.has("input_tokens") ? usage.get("input_tokens").asLong() : 0;
+                        outputTokens = usage.has("output_tokens") ? usage.get("output_tokens").asLong() : 0;
+                        cacheReadTokens = usage.has("cached_input_tokens") ? usage.get("cached_input_tokens").asLong() : 0;
                     }
-                    return new TurnComplete(durationMs, cost, 0);
+                    return new TurnComplete(durationMs, cost, 0, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens);
                 }
                 case "turn.started" -> {
                     return null; // Skip
+                }
+                case "response_item" -> {
+                    String text = extractCodexText(node.has("payload") ? node.get("payload") : node);
+                    return text != null && !text.isEmpty() ? new TextChunk(text) : null;
                 }
                 default -> {
                     return null;
@@ -480,11 +576,74 @@ public class PassthroughStreamParser {
         } catch (Exception e) {
             // Not valid JSON — could be a plain-text warning
             String trimmed = line.trim();
-            if (!trimmed.isEmpty() && !trimmed.equals("Reading additional input from stdin...")) {
+            if (!trimmed.isEmpty()
+                    && !trimmed.equals("Reading additional input from stdin...")
+                    && !trimmed.equals("Reading prompt from stdin...")) {
                 return new TextChunk(trimmed);
             }
             return null;
         }
+    }
+
+    private PassthroughEvent codexAgentMessageDelta(String itemId, JsonNode item, boolean completed) {
+        String text = extractCodexText(item);
+        if (text == null) {
+            return null;
+        }
+
+        String previous = itemId != null && !itemId.isEmpty()
+                ? codexAgentMessages.getOrDefault(itemId, "") : "";
+        String delta = text.substring(Math.min(previous.length(), text.length()));
+        if (itemId != null && !itemId.isEmpty()) {
+            if (completed) {
+                codexAgentMessages.remove(itemId);
+            } else {
+                codexAgentMessages.put(itemId, text);
+            }
+        }
+        return !delta.isEmpty() ? new TextChunk(delta) : null;
+    }
+
+    private String extractCodexText(JsonNode node) {
+        return extractCodexText(node, null);
+    }
+
+    private String extractCodexText(JsonNode node, String defaultValue) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return defaultValue;
+        }
+        String direct = firstText(node, "text", "delta", "content", "message");
+        if (direct != null) {
+            return direct;
+        }
+        if (node.has("message") && node.get("message").isObject()) {
+            String fromMessage = extractCodexText(node.get("message"));
+            if (fromMessage != null) return fromMessage;
+        }
+        if (node.has("content") && node.get("content").isArray()) {
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode part : node.get("content")) {
+                String partText = firstText(part, "text", "content", "delta");
+                if (partText != null) sb.append(partText);
+            }
+            if (sb.length() > 0) return sb.toString();
+        }
+        if (node.has("payload") && node.get("payload").isObject()) {
+            String fromPayload = extractCodexText(node.get("payload"));
+            if (fromPayload != null) return fromPayload;
+        }
+        return defaultValue;
+    }
+
+    private String firstText(JsonNode node, String... fields) {
+        if (node == null) return null;
+        for (String field : fields) {
+            JsonNode value = node.get(field);
+            if (value != null && value.isTextual()) {
+                return value.asText();
+            }
+        }
+        return null;
     }
 
     /**
@@ -578,6 +737,197 @@ public class PassthroughStreamParser {
             }
         }
         return new InteractiveQuestion(callId, "", "", "", question, options, true);
+    }
+
+    /**
+     * Multi-event variant of {@link #parseOpenCodeLine(String)}.
+     * A single {@code tool_use} line with {@code state.status=completed} produces
+     * both a {@link ToolUse} and a {@link ToolComplete} event.
+     * A {@code step_finish} line with token data produces a {@link TokenUsage} event.
+     */
+    public List<PassthroughEvent> parseOpenCodeLineMulti(String line) {
+        if (line == null || line.isBlank()) return List.of();
+
+        try {
+            JsonNode node = objectMapper.readTree(line);
+            String type = node.has("type") ? node.get("type").asText() : "";
+
+            if ("tool_use".equals(type)) {
+                JsonNode part = node.get("part");
+                if (part != null) {
+                    String tool = part.has("tool") ? part.get("tool").asText() : "unknown";
+                    // Detect ask_user tools — delegate to single-event parser
+                    String toolLower = tool.toLowerCase();
+                    if (toolLower.contains("ask_user") || toolLower.contains("askuserquestion")
+                            || toolLower.contains("question")) {
+                        PassthroughEvent event = parseOpenCodeAskUser(part);
+                        return event != null ? List.of(event) : List.of();
+                    }
+
+                    List<PassthroughEvent> events = new ArrayList<>();
+                    String input = "";
+                    String output = "";
+                    int exitCode = -1;
+                    boolean completed = false;
+
+                    if (part.has("state")) {
+                        JsonNode state = part.get("state");
+                        if (state.has("input")) {
+                            JsonNode inputNode = state.get("input");
+                            if (inputNode.has("description")) {
+                                input = inputNode.get("description").asText();
+                            } else if (inputNode.has("command")) {
+                                input = inputNode.get("command").asText();
+                            } else {
+                                input = inputNode.toString();
+                            }
+                        }
+                        if (state.has("output")) {
+                            output = state.get("output").asText();
+                        }
+                        if (state.has("metadata") && state.get("metadata").has("exit")) {
+                            exitCode = state.get("metadata").get("exit").asInt();
+                        }
+                        completed = "completed".equals(state.has("status") ? state.get("status").asText() : "");
+                    }
+
+                    events.add(new ToolUse(tool, input));
+                    if (completed) {
+                        events.add(new ToolComplete(tool, output, exitCode));
+                    }
+                    return events;
+                }
+            }
+
+            // For all other types, delegate to single-event parser
+            PassthroughEvent event = parseOpenCodeLine(line);
+            return event != null ? List.of(event) : List.of();
+        } catch (Exception e) {
+            PassthroughEvent event = parseOpenCodeLine(line);
+            return event != null ? List.of(event) : List.of();
+        }
+    }
+
+    /** Tracks last Pi tool output per callId for delta computation. */
+    private final Map<String, String> piToolOutputs = new HashMap<>();
+
+    /**
+     * Parse a single line of Pi agent JSON output.
+     * <p>
+     * Pi event types:
+     * <ul>
+     *   <li>{@code session} — session start with {@code id}</li>
+     *   <li>{@code message_update} — text delta via {@code assistantMessageEvent.delta}</li>
+     *   <li>{@code message_end} — message completed (suppressed to avoid duplicating deltas)</li>
+     *   <li>{@code tool_execution_start} — tool invocation with {@code toolName}, {@code args}</li>
+     *   <li>{@code tool_execution_update} — partial tool output</li>
+     *   <li>{@code tool_execution_end} — tool completion with {@code result}, {@code exitCode}</li>
+     * </ul>
+     */
+    public PassthroughEvent parsePiLine(String line) {
+        if (line == null || line.isBlank()) return null;
+
+        try {
+            JsonNode node = objectMapper.readTree(line);
+            String type = node.has("type") ? node.get("type").asText() : "";
+
+            switch (type) {
+                case "session" -> {
+                    String id = node.has("id") ? node.get("id").asText() : "";
+                    return new SessionInit(id);
+                }
+                case "message_update" -> {
+                    JsonNode event = node.get("assistantMessageEvent");
+                    if (event != null) {
+                        String eventType = event.has("type") ? event.get("type").asText() : "";
+                        if ("text_delta".equals(eventType) && event.has("delta")) {
+                            return new TextChunk(event.get("delta").asText());
+                        }
+                    }
+                    return null;
+                }
+                case "message_end" -> {
+                    // Suppress — text was already emitted as text_delta events
+                    return null;
+                }
+                case "tool_execution_start" -> {
+                    String toolName = node.has("toolName") ? node.get("toolName").asText() : "unknown";
+                    String args = node.has("args") ? node.get("args").toString() : "";
+                    String callId = node.has("toolCallId") ? node.get("toolCallId").asText() : "";
+                    piToolOutputs.put(callId, "");
+                    return new ToolUse(toolName, args);
+                }
+                case "tool_execution_update" -> {
+                    String callId = node.has("toolCallId") ? node.get("toolCallId").asText() : "";
+                    if (node.has("partialResult") && node.get("partialResult").has("content")) {
+                        StringBuilder sb = new StringBuilder();
+                        for (JsonNode block : node.get("partialResult").get("content")) {
+                            if ("text".equals(block.has("type") ? block.get("type").asText() : "")
+                                    && block.has("text")) {
+                                sb.append(block.get("text").asText());
+                            }
+                        }
+                        String fullOutput = sb.toString();
+                        piToolOutputs.put(callId, fullOutput);
+                        return new ToolOutput(fullOutput);
+                    }
+                    return null;
+                }
+                case "tool_execution_end" -> {
+                    String callId = node.has("toolCallId") ? node.get("toolCallId").asText() : "";
+                    String toolName = node.has("toolName") ? node.get("toolName").asText() : "unknown";
+                    int exitCode = 0;
+                    boolean isError = false;
+                    String fullOutput = "";
+
+                    if (node.has("result")) {
+                        JsonNode result = node.get("result");
+                        if (result.has("exitCode") && !result.get("exitCode").isNull()) {
+                            exitCode = result.get("exitCode").asInt();
+                        }
+                        if (result.has("content")) {
+                            StringBuilder sb = new StringBuilder();
+                            for (JsonNode block : result.get("content")) {
+                                if ("text".equals(block.has("type") ? block.get("type").asText() : "")
+                                        && block.has("text")) {
+                                    sb.append(block.get("text").asText());
+                                }
+                            }
+                            fullOutput = sb.toString();
+                        }
+                    }
+                    if (node.has("isError")) {
+                        isError = node.get("isError").asBoolean();
+                    }
+
+                    // Compute delta from last partial output
+                    String previous = piToolOutputs.getOrDefault(callId, "");
+                    piToolOutputs.remove(callId);
+                    String delta = fullOutput.substring(Math.min(previous.length(), fullOutput.length()));
+
+                    return new ToolComplete(toolName, delta, exitCode, isError || exitCode != 0);
+                }
+                default -> {
+                    return null;
+                }
+            }
+        } catch (Exception e) {
+            // Not valid JSON — treat as plain text
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty()) {
+                return new TextChunk(trimmed);
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Multi-event variant of {@link #parsePiLine(String)}.
+     */
+    public List<PassthroughEvent> parsePiLineMulti(String line) {
+        if (line == null || line.isBlank()) return List.of();
+        PassthroughEvent event = parsePiLine(line);
+        return event != null ? List.of(event) : List.of();
     }
 
     /**

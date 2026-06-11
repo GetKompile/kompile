@@ -43,6 +43,7 @@ public class DirectSubagentRunner implements SubagentRunner {
     private final ToolRegistry toolRegistry;
     private final PermissionService permissionService;
     private final TerminalRenderer renderer;
+    private volatile LifecycleListener lifecycleListener;
 
     public DirectSubagentRunner(ChatConfig chatConfig, ObjectMapper objectMapper,
                                  ToolRegistry toolRegistry, PermissionService permissionService,
@@ -55,9 +56,18 @@ public class DirectSubagentRunner implements SubagentRunner {
     }
 
     @Override
+    public void setLifecycleListener(LifecycleListener listener) {
+        this.lifecycleListener = listener;
+    }
+
+    @Override
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         long startTime = System.currentTimeMillis();
+        String subagentId = agent.getName() + "-" + Long.toHexString(startTime);
         System.out.println(renderer.renderSubagentStart(agent.getName(), truncate(prompt, 80)));
+        if (lifecycleListener != null) {
+            lifecycleListener.onSubagentStart(subagentId, agent.getName(), truncate(prompt, 60));
+        }
 
         // Create isolated LLM client for this subagent
         DirectLlmClient subClient = new DirectLlmClient(chatConfig, objectMapper);
@@ -160,6 +170,10 @@ public class DirectSubagentRunner implements SubagentRunner {
             finalResult += "\n[Subagent reached maximum steps (" + maxSteps + ")]";
         } else {
             System.out.println(renderer.renderSubagentComplete(agent.getName(), durationMs));
+        }
+
+        if (lifecycleListener != null) {
+            lifecycleListener.onSubagentEnd(subagentId);
         }
 
         return finalResult.isEmpty() ? "(subagent returned empty response)" : finalResult;

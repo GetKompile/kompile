@@ -898,7 +898,12 @@ public class ProcessingSettingsController {
 
         try {
             // Get the encoder - in subprocess mode this returns null
-            Object encoderObj = embeddingModel.getEncoder();
+            Object encoderObj = null;
+            try {
+                encoderObj = embeddingModel.getEncoder();
+            } catch (Exception encoderEx) {
+                logger.warn("getEncoder() threw an exception: {}", encoderEx.getMessage());
+            }
             if (encoderObj == null || !(encoderObj instanceof SameDiffEncoder<?>)) {
                 response.put("success", false);
                 response.put("error", "Graph optimization not available - encoder runs in subprocess mode");

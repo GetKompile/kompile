@@ -84,6 +84,23 @@
           </mat-select>
         </mat-form-field>
 
+        <div *ngIf="taskForm.get('taskType')?.value && taskForm.get('taskType')?.value !== 'SHELL'"
+             class="task-type-warning">
+          <mat-icon>warning</mat-icon>
+          <span *ngIf="taskForm.get('taskType')?.value === 'HTTP'">
+            HTTP executor is not yet implemented. Task definitions can be saved but execution will fail at runtime.
+          </span>
+          <span *ngIf="taskForm.get('taskType')?.value === 'CODE'">
+            CODE executor is not yet implemented. Use SHELL type with a script runner instead.
+          </span>
+          <span *ngIf="taskForm.get('taskType')?.value === 'LLM_QUERY'">
+            LLM_QUERY tasks execute via the orchestrator's LLM integration. Ensure an agent is configured.
+          </span>
+          <span *ngIf="taskForm.get('taskType')?.value === 'CUSTOM'">
+            CUSTOM tasks require a Java executor class on the classpath. Specify the executor class name below.
+          </span>
+        </div>
+
         <mat-form-field appearance="outline" class="full-width"
                         *ngIf="taskForm.get('taskType')?.value === 'SHELL' || taskForm.get('taskType')?.value === 'CODE'">
           <mat-label>Command / Code</mat-label>

@@ -1,0 +1,60 @@
+<div class="auto-configure">
+  <div class="section-header">
+    <h3><mat-icon>auto_fix_high</mat-icon> Auto-Configure</h3>
+    <button mat-icon-button (click)="detect()" matTooltip="Re-detect"><mat-icon>refresh</mat-icon></button>
+  </div>
+
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="message" class="success-bar"><mat-icon>check_circle</mat-icon> {{ message }}</div>
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+
+  <ng-container *ngIf="!loading && detectResult">
+    <!-- Hardware Detection -->
+    <div class="panel">
+      <h4><mat-icon>computer</mat-icon> Detected Hardware</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getHardwareKeys()">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(detectResult!.hardware[key]) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recommended Config -->
+    <div class="panel" *ngIf="detectResult!.recommended">
+      <h4><mat-icon>recommend</mat-icon> Recommended Configuration</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getRecommendedKeys()">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(detectResult!.recommended![key]) }}</span>
+        </div>
+      </div>
+      <p class="note" *ngIf="detectResult!.note">{{ detectResult!.note }}</p>
+    </div>
+
+    <!-- Options -->
+    <div class="options">
+      <mat-checkbox [(ngModel)]="hasLocalEmbedding">Has local embedding model</mat-checkbox>
+    </div>
+
+    <!-- Apply Button -->
+    <div class="apply-section">
+      <button mat-raised-button color="primary" (click)="apply()" [disabled]="applying">
+        <mat-icon>check</mat-icon>
+        {{ applying ? 'Applying...' : 'Apply Recommended Config' }}
+      </button>
+    </div>
+
+    <!-- Applied Result -->
+    <div class="panel applied" *ngIf="applyResult">
+      <h4><mat-icon>check_circle</mat-icon> Applied Configuration</h4>
+      <div class="kv-grid" *ngIf="applyResult.applied">
+        <div class="kv-row" *ngFor="let key of applyResult.applied | keyvalue">
+          <span class="kv-key">{{ key.key }}</span>
+          <span class="kv-value">{{ formatValue(key.value) }}</span>
+        </div>
+      </div>
+      <p class="note" *ngIf="applyResult.message">{{ applyResult.message }}</p>
+    </div>
+  </ng-container>
+</div>
