@@ -337,6 +337,60 @@
     margin-bottom: 8px;
   }
 
+  .type-breakdown {
+    margin-top: 12px;
+    font-size: 13px;
+  }
+
+  .type-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .type-name {
+    min-width: 120px;
+    font-weight: 500;
+  }
+
+  .type-bar {
+    flex: 1;
+    max-width: 200px;
+  }
+
+  .type-rate {
+    min-width: 50px;
+    text-align: right;
+    font-family: monospace;
+  }
+
+  .failed-tests-breakdown {
+    margin-top: 12px;
+    font-size: 13px;
+  }
+
+  .failed-type {
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .failed-type-name {
+    font-weight: 600;
+    color: #c62828;
+  }
+
+  .failed-test-name {
+    background: #ffcdd2;
+    color: #b71c1c;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+  }
+
   .result-answer {
     margin-top: 12px;
 

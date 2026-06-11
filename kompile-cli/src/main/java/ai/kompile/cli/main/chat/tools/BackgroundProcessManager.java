@@ -51,6 +51,19 @@ public class BackgroundProcessManager {
     }
 
     /**
+     * Category of tracked work. COMMAND entries are real launched OS subprocesses;
+     * JUDGE and ENFORCER entries can be lightweight watcher registrations backed
+     * by another component's lifecycle.
+     */
+    public enum ProcessKind {
+        COMMAND,
+        JUDGE,
+        ENFORCER;
+
+        public String label() { return name().toLowerCase(Locale.ROOT); }
+    }
+
+    /**
      * Information about a tracked process.
      */
     public static class ProcessEntry {
@@ -64,9 +77,12 @@ public class BackgroundProcessManager {
         private final Path outputFile;
         private final String description;
         private final Process process;
+        private final ProcessKind kind;
+        private final Map<String, String> metadata;
 
         ProcessEntry(String id, String command, long pid, Instant startTime,
-                     Path outputFile, String description, Process process) {
+                     Path outputFile, String description, Process process,
+                     ProcessKind kind, Map<String, String> metadata) {
             this.id = id;
             this.command = command;
             this.pid = pid;
@@ -77,6 +93,8 @@ public class BackgroundProcessManager {
             this.outputFile = outputFile;
             this.description = description;
             this.process = process;
+            this.kind = kind != null ? kind : ProcessKind.COMMAND;
+            this.metadata = metadata != null ? Map.copyOf(metadata) : Map.of();
         }
 
         public String getId() { return id; }
@@ -88,6 +106,9 @@ public class BackgroundProcessManager {
         public ProcessState getState() { return state; }
         public Path getOutputFile() { return outputFile; }
         public String getDescription() { return description; }
+        public ProcessKind getKind() { return kind; }
+        public Map<String, String> getMetadata() { return metadata; }
+        public boolean isVirtual() { return process == null; }
 
         /**
          * Duration from start to end (or to now if still running).
@@ -115,6 +136,9 @@ public class BackgroundProcessManager {
     private final ExecutorService ioExecutor;
     private volatile ExitCallback exitCallback;
     private final Thread shutdownHook;
+
+    // General state-change listeners (fired on launch, exit, kill)
+    private final List<Runnable> changeListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /**
      * Default retention for completed process entries (1 hour).
@@ -152,6 +176,30 @@ public class BackgroundProcessManager {
     }
 
     /**
+     * Register a listener invoked on any process state change (launch, exit, kill).
+     * Useful for status bar redraws.
+     */
+    public void addChangeListener(Runnable listener) {
+        if (listener != null) {
+            changeListeners.add(listener);
+        }
+    }
+
+    public void removeChangeListener(Runnable listener) {
+        changeListeners.remove(listener);
+    }
+
+    private void fireChange() {
+        for (Runnable l : changeListeners) {
+            try {
+                l.run();
+            } catch (RuntimeException e) {
+                // Swallow — a buggy listener must not break the REPL.
+            }
+        }
+    }
+
+    /**
      * Launch a background process from a command string.
      *
      * @param command     shell command to execute
@@ -182,7 +230,7 @@ public class BackgroundProcessManager {
         // Ensure output directory exists
         Files.createDirectories(outputDir);
 
-        String id = "proc-" + String.format("%03d", counter.incrementAndGet());
+        String id = nextId(ProcessKind.COMMAND);
         Path outputFile = outputDir.resolve(id + ".log");
 
         ProcessBuilder pb = new ProcessBuilder(args);
@@ -199,12 +247,47 @@ public class BackgroundProcessManager {
 
         Process process = pb.start();
         ProcessEntry entry = new ProcessEntry(
-                id, command, process.pid(), Instant.now(), outputFile, description, process);
+                id, command, process.pid(), Instant.now(), outputFile, description, process,
+                ProcessKind.COMMAND, Map.of());
         processes.put(id, entry);
 
         // Start daemon thread to capture output and watch for exit
         ioExecutor.submit(() -> captureOutputAndWait(entry));
 
+        fireChange();
+        return entry;
+    }
+
+    /**
+     * Register a non-owned process or logical watcher in the same process list
+     * used by the chat status bar. The caller owns its lifecycle and should call
+     * {@link #complete(String)} or {@link #fail(String, int)} when finished.
+     */
+    public ProcessEntry registerVirtual(ProcessKind kind, String command, String description,
+                                        Map<String, String> metadata) {
+        return registerVirtual(kind, command, description, -1L, metadata);
+    }
+
+    /**
+     * Register a non-owned process or logical watcher with a known OS PID.
+     */
+    public ProcessEntry registerVirtual(ProcessKind kind, String command, String description,
+                                        long pid, Map<String, String> metadata) {
+        ProcessKind resolvedKind = kind != null ? kind : ProcessKind.COMMAND;
+        String id = nextId(resolvedKind);
+        Path outputFile = outputDir.resolve(id + ".log");
+        ProcessEntry entry = new ProcessEntry(
+                id,
+                command != null ? command : resolvedKind.label(),
+                pid,
+                Instant.now(),
+                outputFile,
+                description != null ? description : resolvedKind.label(),
+                null,
+                resolvedKind,
+                metadata);
+        processes.put(id, entry);
+        fireChange();
         return entry;
     }
 
@@ -250,6 +333,8 @@ public class BackgroundProcessManager {
                 // Don't let callback errors propagate
             }
         }
+
+        fireChange();
     }
 
     /**
@@ -278,7 +363,38 @@ public class BackgroundProcessManager {
     }
 
     private boolean killProcess(ProcessEntry entry) {
-        if (!entry.isRunning() || entry.process == null || !entry.process.isAlive()) {
+        if (!entry.isRunning()) {
+            return false;
+        }
+
+        if (entry.process == null) {
+            if (entry.pid > 0) {
+                ProcessHandle.of(entry.pid).ifPresent(handle -> {
+                    handle.destroy();
+                    try {
+                        if (handle.isAlive()) {
+                            Thread.sleep(500);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    if (handle.isAlive()) {
+                        handle.destroyForcibly();
+                    }
+                });
+            }
+            entry.endTime = Instant.now();
+            entry.state = ProcessState.KILLED;
+            entry.exitCode = -1;
+            fireChange();
+            return true;
+        }
+
+        if (!entry.process.isAlive()) {
+            entry.endTime = Instant.now();
+            entry.state = ProcessState.COMPLETED;
+            entry.exitCode = 0;
+            fireChange();
             return false;
         }
 
@@ -318,7 +434,54 @@ public class BackgroundProcessManager {
         entry.state = ProcessState.KILLED;
         entry.exitCode = -1;
 
+        fireChange();
         return true;
+    }
+
+    /**
+     * Mark a tracked virtual/owned process completed.
+     */
+    public boolean complete(String processId) {
+        ProcessEntry entry = processes.get(processId);
+        if (entry == null || !entry.isRunning()) {
+            return false;
+        }
+        entry.endTime = Instant.now();
+        entry.exitCode = 0;
+        entry.state = ProcessState.COMPLETED;
+        fireChange();
+        return true;
+    }
+
+    /**
+     * Mark a tracked virtual/owned process failed.
+     */
+    public boolean fail(String processId, int exitCode) {
+        ProcessEntry entry = processes.get(processId);
+        if (entry == null || !entry.isRunning()) {
+            return false;
+        }
+        entry.endTime = Instant.now();
+        entry.exitCode = exitCode;
+        entry.state = ProcessState.FAILED;
+        fireChange();
+        return true;
+    }
+
+    /**
+     * Mark a tracked virtual/owned process failed with a generic exit code.
+     */
+    public boolean fail(String processId) {
+        return fail(processId, -1);
+    }
+
+    private String nextId(ProcessKind kind) {
+        String prefix = switch (kind != null ? kind : ProcessKind.COMMAND) {
+            case JUDGE -> "judge";
+            case ENFORCER -> "enforcer";
+            case COMMAND -> "proc";
+        };
+        return prefix + "-" + String.format("%03d", counter.incrementAndGet());
     }
 
     /**

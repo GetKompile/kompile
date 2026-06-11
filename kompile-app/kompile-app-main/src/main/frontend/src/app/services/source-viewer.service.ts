@@ -23,6 +23,7 @@ import {
   SourceInfo,
   SourceListResponse,
   TextContentResponse,
+  MarkdownConversionResponse,
   SupportedTypesResponse
 } from '../models/api-models';
 
@@ -102,6 +103,16 @@ export class SourceViewerService extends BaseService {
   getSupportedTypes(): Observable<SupportedTypesResponse> {
     return this.http.get<SupportedTypesResponse>(`${this.backendUrl}/sources/supported-types`)
       .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Convert a source file into Markdown and store it in the source browser.
+   */
+  convertToMarkdown(fileName: string, checksum?: string | null): Observable<MarkdownConversionResponse> {
+    return this.http.post<MarkdownConversionResponse>(`${this.backendUrl}/sources/markdown/convert`, {
+      fileName,
+      checksum: checksum || null
+    }).pipe(catchError(this.handleError));
   }
 
   /**

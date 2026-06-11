@@ -1,0 +1,11 @@
+To set up Kompile RAG from scratch:
+
+1. Build the CLI: cd kompile-cli && mvn clean package -DskipTests
+2. Build the staging server: cd kompile-app/kompile-model-staging && mvn clean package -DskipTests -Dskip.ui
+3. Generate a RAG app: kompile build-rag-app --instanceId=myapp --enableAnserini=true
+4. Run automated setup: kompile setup run --stage-model=bge-base-en-v1.5
+5. Index documents: Upload via the web UI or use the indexing API
+
+The setup command handles starting the staging server, downloading and converting the
+embedding model, configuring the main app to pull from the staging server, and waiting
+for the model to load. The entire process takes about 2-3 minutes.

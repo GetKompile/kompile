@@ -34,7 +34,7 @@ import java.util.Map;
  * REST controller for workflow management.
  */
 @Slf4j
-@RestController
+@RestController("orchestratorWorkflowController")
 @RequestMapping("/api/orchestrator/{instanceId}/workflows")
 @RequiredArgsConstructor
 public class WorkflowController {

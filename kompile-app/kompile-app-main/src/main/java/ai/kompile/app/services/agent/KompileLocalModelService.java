@@ -1,5 +1,6 @@
 package ai.kompile.app.services.agent;
 
+import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.AgentType;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -7,7 +8,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.net.HttpURLConnection;
@@ -31,8 +31,7 @@ public class KompileLocalModelService {
     private final AgentRegistryService agentRegistryService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @Value("${kompile.staging.url:http://localhost:8090}")
-    private String stagingUrl;
+    private String stagingUrl = KompileServerConstants.DEFAULT_STAGING_URL;
 
     private volatile boolean connected = false;
     private volatile String currentModelId = null;

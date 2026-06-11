@@ -1,0 +1,273 @@
+.crawler-manager {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #fdecea;
+  border-radius: 4px;
+  color: var(--accent-red);
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.seed-field {
+  flex: 1;
+  min-width: 300px;
+}
+
+.jobs-card mat-card-header {
+  display: flex;
+  align-items: center;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.no-jobs {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.job-row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.job-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.job-seed {
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-id {
+  font-family: monospace;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.resumed-chip {
+  background: #ede9fe !important;
+  color: #7c3aed !important;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.resumed-chip mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  margin-right: 2px;
+}
+
+.crawl-resume-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.06), rgba(139, 92, 246, 0.1));
+  border: 1px solid rgba(124, 58, 237, 0.3);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #6d28d9;
+}
+
+.crawl-resume-banner mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #7c3aed;
+}
+
+.job-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin: 8px 0;
+}
+
+.queue-stats {
+  color: #455a64;
+  background: #f5f7f8;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.job-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.pipeline-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.pipeline-step {
+  border: 1px solid #dfe5e8;
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--bg-surface);
+}
+
+.pipeline-step.pipeline-status-running {
+  border-color: #80cbc4;
+  background: #f2fbfa;
+}
+
+.pipeline-step.pipeline-status-completed {
+  border-color: #a5d6a7;
+  background: #f6fbf6;
+}
+
+.pipeline-step.pipeline-status-failed {
+  border-color: #ef9a9a;
+  background: #fff6f6;
+}
+
+.pipeline-step.pipeline-status-skipped {
+  opacity: 0.72;
+}
+
+.pipeline-step-header {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.pipeline-step-header mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #546e7a;
+}
+
+.pipeline-name {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pipeline-type,
+.pipeline-status {
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.pipeline-type {
+  background: #eceff1;
+  color: #455a64;
+}
+
+.pipeline-type-vlm,
+.pipeline-type-ocr {
+  background: var(--bg-selected);
+  color: var(--color-primary);
+}
+
+.pipeline-type-code {
+  background: #ede7f6;
+  color: #4527a0;
+}
+
+.pipeline-type-table-aware {
+  background: #e8f5e9;
+  color: var(--accent-green);
+}
+
+.pipeline-type-keyword-only {
+  background: #fff8e1;
+  color: #8a5d00;
+}
+
+.pipeline-status {
+  background: var(--bg-card-secondary);
+  color: #616161;
+}
+
+.pipeline-status-running .pipeline-status {
+  background: #e0f2f1;
+  color: #00695c;
+}
+
+.pipeline-status-completed .pipeline-status {
+  background: #e8f5e9;
+  color: var(--accent-green);
+}
+
+.pipeline-status-failed .pipeline-status {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.pipeline-step mat-progress-bar {
+  height: 6px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.live-progress { background: #e3f2fd; border: 1px solid #90caf9; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
+.live-progress-row { display: flex; gap: 16px; font-size: 12px; color: #1565c0; margin-bottom: 4px; }
+.live-current { font-size: 11px; color: #666; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pipeline-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  color: #607d8b;
+  font-size: 12px;
+}
+
+.pipeline-current {
+  margin-top: 6px;
+  color: #78909c;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pipeline-log-panel {
+  margin-top: 10px;
+  border: 1px solid #dfe5e8;
+  border-radius: 6px;
+  overflow: hidden;
+}

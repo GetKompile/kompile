@@ -1,0 +1,14 @@
+The Kompile RAG architecture follows a standard retrieval-augmented generation pattern:
+
+1. Document Ingestion: Documents are loaded via specialized loaders (PDF, Office, etc.),
+   parsed into text chunks with configurable overlap.
+2. Embedding: Each chunk is embedded using a dense encoder model (e.g., BGE-base-en-v1.5)
+   running in a GPU subprocess for performance.
+3. Indexing: Embeddings are stored in a Lucene HNSW vector index for fast approximate
+   nearest-neighbor search.
+4. Query: User queries are embedded with the same model, similarity search retrieves
+   relevant chunks, and the context is passed to an LLM for answer generation.
+
+The embedding model runs in a separate subprocess with CUDA support for GPU acceleration.
+The staging server handles model downloads, ONNX-to-SameDiff conversion, and registry
+management.

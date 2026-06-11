@@ -17,8 +17,11 @@
 package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.PersistentAgentProcess;
+import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.skill.SkillsInjection;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -28,6 +31,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Spawns external agent processes (qwen, claude, codex, etc.) as subagents.
@@ -59,6 +63,21 @@ public class DirectSubagentRunnerStdio {
         this.workDir = workDir;
         this.roleManager = roleManager;
     }
+
+    private volatile McpSessionTracker sessionTracker;
+    private volatile SkillsInjection skillsInjection;
+    private volatile SystemPromptManager systemPromptManager;
+    private volatile Map<String, String> extraEnvironment = Map.of();
+    private volatile String lastTaskId;
+
+    /** Persistent claude subprocess — kept alive across task invocations. */
+    private volatile PersistentAgentProcess claudeProcess;
+
+    public void setSessionTracker(McpSessionTracker tracker) { this.sessionTracker = tracker; }
+    public void setSkillsInjection(SkillsInjection injection) { this.skillsInjection = injection; }
+    public void setSystemPromptManager(SystemPromptManager spm) { this.systemPromptManager = spm; }
+    public void setExtraEnvironment(Map<String, String> env) { this.extraEnvironment = env != null ? env : Map.of(); }
+    public String getLastTaskId() { return lastTaskId; }
 
     /** Maximum subagent recursion depth before MCP tool injection is disabled. */
     private static final int MAX_SUBAGENT_DEPTH = 3;
@@ -94,13 +113,18 @@ public class DirectSubagentRunnerStdio {
                 System.err.println(DIM + "  Warning: role '" + roleName + "' not found, using prompt as-is" + RESET);
             }
         }
+
+        // Claude uses persistent streaming API — never spawns a process with -p
+        if (agentName.toLowerCase().contains("claude")) {
+            return runClaudeStreaming(agent, effectivePrompt);
+        }
+
         String binary = resolveAgentBinary(agentName);
 
         if (binary == null) {
             return String.format(
                 "Agent '%s' not found in PATH.\n\n" +
                 "Please install the agent first:\n" +
-                "  - Claude Code: npm install -g @anthropic-ai/claude-code\n" +
                 "  - Codex: Install from OpenAI\n" +
                 "  - Qwen Code: npm install -g @anthropic-ai/qwen-code\n" +
                 "  - Gemini CLI: npm install -g @anthropic-ai/gemini-code\n" +
@@ -298,9 +322,9 @@ public class DirectSubagentRunnerStdio {
     }
 
     private String resolveAgentBinary(String agentName) {
+        // NOTE: claude is handled via streaming API in runClaudeStreaming(), never reaches here
         String binary = switch (agentName.toLowerCase()) {
             case "qwen", "qwen-code" -> "qwen";
-            case "claude", "claude-code" -> "claude";
             case "codex" -> "codex";
             case "gemini" -> "gemini";
             case "opencode", "open-code" -> "opencode";
@@ -328,13 +352,9 @@ public class DirectSubagentRunnerStdio {
         String name = agentName.toLowerCase();
 
         // Build the non-interactive command for each agent.
-        // Each agent has its own flags for auto-approve and one-shot prompt execution.
-        if (name.contains("claude")) {
-            // claude --dangerously-skip-permissions -p "prompt"
-            cmd.add("--dangerously-skip-permissions");
-            cmd.add("-p");
-            cmd.add(prompt);
-        } else if (name.contains("codex")) {
+        // NOTE: claude -p is BANNED (expensive one-shot invocation). Claude subagents
+        // must use persistent subprocess mode via the kompile session, not spawned here.
+        if (name.contains("codex")) {
             // codex exec --full-auto "prompt"
             cmd.add("exec");
             cmd.add("--full-auto");
@@ -362,6 +382,63 @@ public class DirectSubagentRunnerStdio {
         return cmd;
     }
 
+    /**
+     * Run a claude subagent via persistent subprocess with stream-json protocol.
+     * Keeps the process alive across invocations — no -p one-shot spawn.
+     */
+    private String runClaudeStreaming(AgentConfig agent, String prompt) throws Exception {
+        long startTime = System.currentTimeMillis();
+        System.err.println(GREEN + "⟳ Starting claude subagent (persistent stream-json)" + RESET);
+        System.err.println(DIM + "  Prompt: " + prompt.substring(0, Math.min(80, prompt.length())) + "..." + RESET);
+        System.err.flush();
+
+        try {
+            ensureClaudeProcess(agent);
+            String result = claudeProcess.sendMessage(prompt);
+
+            long elapsed = System.currentTimeMillis() - startTime;
+            System.err.println(GREEN + "✓ Claude subagent completed in " +
+                    String.format("%.1fs", elapsed / 1000.0) + RESET);
+            System.err.flush();
+
+            return result.isEmpty() ? "(claude subagent returned empty response)" : result;
+        } catch (Exception e) {
+            // Process died — clear reference so next call starts fresh
+            if (claudeProcess != null) {
+                claudeProcess.close();
+                claudeProcess = null;
+            }
+            long elapsed = System.currentTimeMillis() - startTime;
+            System.err.println(RED + "✗ Claude subagent failed after " +
+                    String.format("%.1fs", elapsed / 1000.0) + ": " + e.getMessage() + RESET);
+            System.err.flush();
+            throw e;
+        }
+    }
+
+    /**
+     * Ensure the persistent claude subprocess is running, starting it if needed.
+     */
+    private void ensureClaudeProcess(AgentConfig agent) throws IOException, InterruptedException {
+        if (claudeProcess != null && claudeProcess.isAlive()) return;
+
+        String systemPrompt = agent.getSystemPrompt();
+        String binary = ai.kompile.cli.main.chat.agent.SubprocessAgentRunner.resolveAgentBinary("claude");
+        if (binary == null) {
+            throw new IOException("claude not found on PATH");
+        }
+
+        claudeProcess = PersistentAgentProcess.builder(binary)
+                .workDir(workDir)
+                .systemPrompt(systemPrompt)
+                .skipPermissions(true)
+                .build();
+        claudeProcess.start();
+        System.err.println(DIM + "  Persistent claude process started (session: " +
+                claudeProcess.getSessionId() + ")" + RESET);
+        System.err.flush();
+    }
+
     private RoleConfig resolveRole(String roleName) {
         if (roleManager != null) {
             return roleManager.getRole(roleName);
@@ -384,6 +461,33 @@ public class DirectSubagentRunnerStdio {
             sb.append(role.getDescription());
         }
         return sb.toString();
+    }
+
+    // ── Optional extension hooks ──────────────────────────────────────────────
+
+    /**
+     * Install a session tracker for post-completion evaluation scoring.
+     * The tracker type is kept as Object to avoid hard dependency; callers
+     * that need the typed reference should cast.
+     */
+    public void setSessionTracker(Object sessionTracker) {
+        // No-op by default — subclasses or enhanced runners may override
+    }
+
+    /**
+     * Install a skills injection configuration so subagents can access
+     * kompile skills (kompile-injected MCP prompts).
+     */
+    public void setSkillsInjection(Object skillsInjection) {
+        // No-op by default — store if needed in subclasses
+    }
+
+    /**
+     * Install a system prompt manager so subagents receive system prompt
+     * injection via CLI flags or environment variables.
+     */
+    public void setSystemPromptManager(Object systemPromptManager) {
+        // No-op by default — subclasses or enhanced runners may override
     }
 
     /** Max chars for summary sections. */

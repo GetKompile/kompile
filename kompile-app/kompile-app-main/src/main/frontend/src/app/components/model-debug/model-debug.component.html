@@ -392,6 +392,14 @@
                 <span class="detail-label">Dimensions:</span>
                 <span class="detail-value">{{ serviceState.embeddingModel?.primary?.dimensions }}d</span>
               </div>
+              <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.optimalBatchSize">
+                <span class="detail-label">Optimal Batch Size:</span>
+                <span class="detail-value">{{ serviceState.embeddingModel?.primary?.optimalBatchSize }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.maxBatchSize">
+                <span class="detail-label">Max Batch Size:</span>
+                <span class="detail-value">{{ serviceState.embeddingModel?.primary?.maxBatchSize }}</span>
+              </div>
               <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.batchConfig">
                 <span class="detail-label">Batch Size (512 tokens):</span>
                 <span class="detail-value">optimal {{ serviceState.embeddingModel?.primary?.batchConfig?.optimal512Tokens }}, max {{ serviceState.embeddingModel?.primary?.batchConfig?.max512Tokens }}</span>
@@ -423,6 +431,42 @@
               <div class="detail-row warning" *ngIf="serviceState.embeddingModel?.primary?.isShuttingDown">
                 <mat-icon>warning</mat-icon>
                 <span class="detail-value">Model is shutting down</span>
+              </div>
+
+              <!-- Init Status (subprocess initialization details) -->
+              <div class="init-status-section" *ngIf="embeddingInitStatus">
+                <div class="detail-row" *ngIf="embeddingInitStatus.loading">
+                  <span class="detail-label">Init Phase:</span>
+                  <span class="detail-value">{{ embeddingInitStatus.loadingPhase || 'Initializing' }}</span>
+                </div>
+                <div class="detail-row" *ngIf="embeddingInitStatus.loadingMessage">
+                  <span class="detail-label">Init Message:</span>
+                  <span class="detail-value">{{ embeddingInitStatus.loadingMessage }}</span>
+                </div>
+                <div class="detail-row" *ngIf="embeddingInitStatus.subprocess?.status">
+                  <span class="detail-label">Subprocess Status:</span>
+                  <span class="detail-value">{{ embeddingInitStatus.subprocess.status }}</span>
+                </div>
+                <div class="detail-row" *ngIf="embeddingInitStatus.subprocess?.progress !== undefined">
+                  <span class="detail-label">Subprocess Progress:</span>
+                  <span class="detail-value">{{ embeddingInitStatus.subprocess.progress }}%</span>
+                </div>
+                <div class="detail-row" *ngIf="embeddingInitStatus.subprocess?.phaseDescription">
+                  <span class="detail-label">Subprocess Phase:</span>
+                  <span class="detail-value">{{ embeddingInitStatus.subprocess.phaseDescription }}</span>
+                </div>
+                <div class="detail-row" *ngIf="embeddingInitStatus.subprocess?.launcherTaskId">
+                  <span class="detail-label">Launcher Task:</span>
+                  <span class="detail-value monospace">{{ embeddingInitStatus.subprocess.launcherTaskId }}</span>
+                </div>
+                <div class="detail-row" *ngIf="embeddingInitStatus.initializationError">
+                  <span class="detail-label">Init Error:</span>
+                  <span class="detail-value error-text">{{ embeddingInitStatus.initializationError }}</span>
+                </div>
+                <div class="detail-row" *ngIf="embeddingInitStatus.subprocess?.errorRetriable !== undefined">
+                  <span class="detail-label">Retriable:</span>
+                  <span class="detail-value">{{ embeddingInitStatus.subprocess.errorRetriable ? 'Yes' : 'No' }}</span>
+                </div>
               </div>
             </div>
           </mat-card-content>

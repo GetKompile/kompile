@@ -1,6 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { GraphExtractionService, ModelProvider, ModelInfo } from '../../services/graph-extraction.service';
 
 interface ContextualRagConfig {
   enabled: boolean;
@@ -34,16 +35,20 @@ interface PresetInfo {
   description: string;
 }
 
+interface ProviderModelInfo {
+  id: string;
+  name: string;
+  displayName: string;
+  description?: string;
+  contextWindow?: number;
+  supportsTools?: boolean;
+}
+
 interface ProviderInfo {
   id: string;
   displayName: string;
-  models: ModelInfo[];
-}
-
-interface ModelInfo {
-  id: string;
-  displayName: string;
-  description: string;
+  available?: boolean;
+  models?: ProviderModelInfo[];
 }
 
 interface TestResult {
@@ -428,9 +433,9 @@ export class ContextualRagDebugComponent implements OnInit {
   // UTILITIES
   // ═══════════════════════════════════════════════════════════════════════════
 
-  getModelsForProvider(providerId: string): ModelInfo[] {
+  getModelsForProvider(providerId: string): ProviderModelInfo[] {
     const provider = this.providers.find(p => p.id === providerId);
-    return provider ? provider.models : [];
+    return provider?.models ?? [];
   }
 
   copyToClipboard(text: string): void {

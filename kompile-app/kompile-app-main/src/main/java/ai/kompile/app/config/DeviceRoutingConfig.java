@@ -43,6 +43,7 @@ public record DeviceRoutingConfig(
     public static final String SERVICE_VLM = "vlm";
     public static final String SERVICE_VLM_ENCODER = "vlmEncoder";
     public static final String SERVICE_VLM_DECODER = "vlmDecoder";
+    public static final String SERVICE_LLM = "llm";
 
     /**
      * Per-service device configuration overlay.

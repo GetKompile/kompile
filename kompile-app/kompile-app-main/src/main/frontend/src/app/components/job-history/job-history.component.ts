@@ -68,6 +68,7 @@ export class JobHistoryComponent implements OnInit, OnDestroy {
   // UI State
   loading = false;
   error: string | null = null;
+  lastRefreshed: Date | null = null;
   viewMode: 'list' | 'stats' | 'detail' = 'list';
   autoRefresh = true;
   refreshIntervalSeconds = 30;
@@ -255,6 +256,7 @@ export class JobHistoryComponent implements OnInit, OnDestroy {
           this.jobs = this.filterJobs(jobs);
           this.totalJobs = jobs.length;
           this.loading = false;
+          this.lastRefreshed = new Date();
           this.cdr.markForCheck();
         },
         error: (err) => {
@@ -271,6 +273,7 @@ export class JobHistoryComponent implements OnInit, OnDestroy {
           this.jobs = this.filterJobs(jobs);
           this.totalJobs = jobs.length;
           this.loading = false;
+          this.lastRefreshed = new Date();
           this.cdr.markForCheck();
         },
         error: (err) => {

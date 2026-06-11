@@ -43,5 +43,10 @@ public enum NodeLevel {
     /**
      * Custom user-defined node
      */
-    CUSTOM
+    CUSTOM,
+
+    /**
+     * Table or spreadsheet-sheet node extracted from tabular data
+     */
+    TABLE
 }

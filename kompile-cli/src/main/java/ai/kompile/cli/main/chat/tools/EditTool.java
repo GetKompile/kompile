@@ -31,6 +31,20 @@ import java.util.Map;
  */
 public class EditTool implements CliTool {
 
+    /**
+     * Optional coordination manager for multi-agent edit tracking. May be null.
+     */
+    @SuppressWarnings("unused")
+    private final Object coordinationManager;
+
+    public EditTool() {
+        this.coordinationManager = null;
+    }
+
+    public EditTool(Object coordinationManager) {
+        this.coordinationManager = coordinationManager;
+    }
+
     @Override
     public String id() { return "edit"; }
 

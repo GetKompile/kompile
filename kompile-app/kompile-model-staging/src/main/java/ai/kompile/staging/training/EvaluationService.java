@@ -17,6 +17,7 @@
 package ai.kompile.staging.training;
 
 import ai.kompile.staging.web.dto.*;
+import ai.kompile.core.staging.TrainingJobStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.eclipse.deeplearning4j.llm.eval.*;
 import org.eclipse.deeplearning4j.llm.eval.benchmark.*;
@@ -46,7 +47,7 @@ import java.util.stream.Collectors;
  * Uses samediff-llm EvalRunner and benchmark infrastructure when model files are available,
  * with simulation fallback when they are not.
  */
-@Service
+@Service("stagingEvaluationService")
 public class EvaluationService {
     private static final Logger log = LoggerFactory.getLogger(EvaluationService.class);
 

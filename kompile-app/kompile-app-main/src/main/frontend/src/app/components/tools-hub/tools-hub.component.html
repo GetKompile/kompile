@@ -17,62 +17,107 @@
 <div class="tools-hub">
   <div class="hub-header">
     <h2>Tools</h2>
-    <p class="subtitle">MCP servers, orchestration, document chunking, knowledge graphs, pipelines, and prompts</p>
+    <p class="subtitle">MCP servers, orchestration, document chunking, knowledge graphs, pipelines, prompts, business processes, workflows, compute graphs, crawlers, and code projects</p>
   </div>
 
   <div class="sub-tabs">
     <button
       class="sub-tab"
+      [class.active]="activeSubTab === 'indexBrowser'"
+      (click)="selectSubTab('indexBrowser')">
+      <mat-icon class="tab-icon">manage_search</mat-icon>
+      <span class="tab-label">Index Browser</span>
+    </button>
+    <button
+      class="sub-tab"
       [class.active]="activeSubTab === 'mcp'"
-      (click)="activeSubTab = 'mcp'">
+      (click)="selectSubTab('mcp')">
       <mat-icon class="tab-icon">hub</mat-icon>
       <span class="tab-label">MCP</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'orchestrator'"
-      (click)="activeSubTab = 'orchestrator'">
+      (click)="selectSubTab('orchestrator')">
       <mat-icon class="tab-icon">account_tree</mat-icon>
       <span class="tab-label">Orchestrator</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'chunkManager'"
-      (click)="activeSubTab = 'chunkManager'">
+      (click)="selectSubTab('chunkManager')">
       <mat-icon class="tab-icon">view_module</mat-icon>
       <span class="tab-label">Chunk Manager</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'knowledgeGraph'"
-      (click)="activeSubTab = 'knowledgeGraph'">
+      (click)="selectSubTab('knowledgeGraph')">
       <mat-icon class="tab-icon">share</mat-icon>
       <span class="tab-label">Knowledge Graph</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'backup'"
-      (click)="activeSubTab = 'backup'">
+      (click)="selectSubTab('backup')">
       <mat-icon class="tab-icon">backup</mat-icon>
       <span class="tab-label">Backup</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'pipelines'"
-      (click)="activeSubTab = 'pipelines'">
+      (click)="selectSubTab('pipelines')">
       <mat-icon class="tab-icon">linear_scale</mat-icon>
       <span class="tab-label">Pipelines</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'prompts'"
-      (click)="activeSubTab = 'prompts'">
+      (click)="selectSubTab('prompts')">
       <mat-icon class="tab-icon">description</mat-icon>
       <span class="tab-label">Prompts</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'processEngine'"
+      (click)="selectSubTab('processEngine')">
+      <mat-icon class="tab-icon">fact_check</mat-icon>
+      <span class="tab-label">Business Processes</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'workflows'"
+      (click)="selectSubTab('workflows')">
+      <mat-icon class="tab-icon">device_hub</mat-icon>
+      <span class="tab-label">Workflows</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'computeGraph'"
+      (click)="selectSubTab('computeGraph')">
+      <mat-icon class="tab-icon">scatter_plot</mat-icon>
+      <span class="tab-label">Compute Graph</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'crawlers'"
+      (click)="selectSubTab('crawlers')">
+      <mat-icon class="tab-icon">travel_explore</mat-icon>
+      <span class="tab-label">Crawlers</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'codeProjects'"
+      (click)="selectSubTab('codeProjects')">
+      <mat-icon class="tab-icon">code</mat-icon>
+      <span class="tab-label">Code Projects</span>
     </button>
   </div>
 
   <div class="sub-tab-content">
+    <div *ngIf="activeSubTab === 'indexBrowser'">
+      <app-index-browser></app-index-browser>
+    </div>
     <div *ngIf="activeSubTab === 'mcp'">
       <app-mcp-hub></app-mcp-hub>
     </div>
@@ -93,6 +138,21 @@
     </div>
     <div *ngIf="activeSubTab === 'prompts'" class="prompts-container">
       <app-prompt-manager></app-prompt-manager>
+    </div>
+    <div *ngIf="activeSubTab === 'processEngine'">
+      <app-process-engine-dashboard></app-process-engine-dashboard>
+    </div>
+    <div *ngIf="activeSubTab === 'workflows'">
+      <app-workflows-hub></app-workflows-hub>
+    </div>
+    <div *ngIf="activeSubTab === 'computeGraph'">
+      <app-compute-graph-dashboard></app-compute-graph-dashboard>
+    </div>
+    <div *ngIf="activeSubTab === 'crawlers'">
+      <app-crawler-manager></app-crawler-manager>
+    </div>
+    <div *ngIf="activeSubTab === 'codeProjects'">
+      <app-code-projects-hub></app-code-projects-hub>
     </div>
   </div>
 </div>

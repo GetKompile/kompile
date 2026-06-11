@@ -45,7 +45,23 @@ import java.util.concurrent.Callable;
                 GraphQueryCommand.class,
                 GraphImportCommand.class,
                 GraphExportCommand.class,
-                GraphShellCommand.class
+                GraphShellCommand.class,
+                GraphBrowseCommand.class,
+                GraphBuildCommand.class,
+                GraphBuilderCommand.class,
+                GraphConfigCommand.class,
+                GraphCreateCommand.class,
+                GraphDeleteCommand.class,
+                GraphExtractCommand.class,
+                GraphHierarchyCommand.class,
+                GraphLinkSourcesCommand.class,
+                GraphListCommand.class,
+                GraphMergeCommand.class,
+                GraphMoveCommand.class,
+                GraphProposalsCommand.class,
+                GraphReportCommand.class,
+                GraphSourceChunksCommand.class,
+                GraphWeightsCommand.class
         },
         mixinStandardHelpOptions = true
 )

@@ -1,0 +1,171 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="system-info-container">
+
+  <!-- Header -->
+  <div class="info-header">
+    <div class="header-left">
+      <mat-icon class="header-icon">info</mat-icon>
+      <div>
+        <h2>System Information</h2>
+        <p class="subtitle">Runtime environment details and installed tools</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span class="last-refreshed" *ngIf="lastRefreshed">
+        Updated {{ lastRefreshed | date:'HH:mm:ss' }}
+      </span>
+      <button mat-icon-button (click)="loadInfo()" [disabled]="loading" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-state" *ngIf="loading && !info">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading system information...</span>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-state" *ngIf="error && !loading">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button (click)="loadInfo()">Retry</button>
+  </div>
+
+  <!-- Content -->
+  <div class="info-content" *ngIf="info && !loading">
+
+    <!-- Version Info Card -->
+    <mat-card class="info-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar class="card-icon">verified</mat-icon>
+        <mat-card-title>Version Information</mat-card-title>
+        <mat-card-subtitle>Application and runtime versions</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <table class="version-table">
+          <tbody>
+            <tr *ngFor="let field of versionFields()">
+              <td class="field-label">{{ field.label }}</td>
+              <td class="field-value">{{ field.value }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Installed Tools Card -->
+    <mat-card class="info-card" *ngIf="installedToolEntries().length > 0">
+      <mat-card-header>
+        <mat-icon mat-card-avatar class="card-icon">build</mat-icon>
+        <mat-card-title>Installed Tools</mat-card-title>
+        <mat-card-subtitle>Available CLI utilities and runtimes</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="tools-grid">
+          <div class="tool-chip"
+               *ngFor="let tool of installedToolEntries()"
+               [class.installed]="tool.installed"
+               [class.missing]="!tool.installed"
+               [matTooltip]="tool.installed ? tool.name + ' is installed' : tool.name + ' is not found'">
+            <mat-icon class="tool-icon">{{ tool.installed ? 'check_circle' : 'cancel' }}</mat-icon>
+            <span class="tool-name">{{ tool.name }}</span>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Runtime Card -->
+    <mat-card class="info-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar class="card-icon">memory</mat-icon>
+        <mat-card-title>Runtime</mat-card-title>
+        <mat-card-subtitle>Memory usage, CPU, and uptime</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+
+        <!-- Memory Bar -->
+        <div class="memory-section">
+          <div class="memory-header">
+            <span class="memory-label">JVM Heap Memory</span>
+            <span class="memory-values">
+              {{ formatBytes(memoryUsedBytes) }} used /
+              {{ formatBytes(info.runtime?.maxMemory) }} max
+              <span class="memory-free">({{ formatBytes(info.runtime?.freeMemory) }} free)</span>
+            </span>
+          </div>
+          <mat-progress-bar
+            mode="determinate"
+            [value]="memoryUsedPercent()"
+            [class.warn-bar]="memoryUsedPercent() >= 75"
+            [class.critical-bar]="memoryUsedPercent() >= 90"
+            class="memory-bar">
+          </mat-progress-bar>
+          <div class="memory-percent">{{ memoryUsedPercent() }}% used</div>
+        </div>
+
+        <mat-divider class="section-divider"></mat-divider>
+
+        <!-- CPU and Uptime -->
+        <div class="runtime-stats">
+          <div class="stat-item">
+            <mat-icon class="stat-icon">developer_board</mat-icon>
+            <div class="stat-details">
+              <span class="stat-label">CPU Cores</span>
+              <span class="stat-value">{{ info.runtime?.availableProcessors ?? 'N/A' }}</span>
+            </div>
+          </div>
+          <div class="stat-item">
+            <mat-icon class="stat-icon">timer</mat-icon>
+            <div class="stat-details">
+              <span class="stat-label">Uptime</span>
+              <span class="stat-value">{{ info.runtime?.uptime ?? 'N/A' }}</span>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Home Directory Card -->
+    <mat-card class="info-card" *ngIf="info.homeDirectory">
+      <mat-card-header>
+        <mat-icon mat-card-avatar class="card-icon">folder_open</mat-icon>
+        <mat-card-title>Kompile Home</mat-card-title>
+        <mat-card-subtitle>Configuration and data directory</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="home-dir-row">
+          <mat-icon class="dir-status-icon"
+                    [class.exists]="info.homeExists"
+                    [class.missing]="!info.homeExists"
+                    [matTooltip]="info.homeExists ? 'Directory exists' : 'Directory not found'">
+            {{ info.homeExists ? 'check_circle' : 'cancel' }}
+          </mat-icon>
+          <code class="dir-path">{{ info.homeDirectory }}</code>
+          <span class="dir-status-label"
+                [class.exists]="info.homeExists"
+                [class.missing]="!info.homeExists">
+            {{ info.homeExists ? 'exists' : 'not found' }}
+          </span>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+  </div>
+</div>

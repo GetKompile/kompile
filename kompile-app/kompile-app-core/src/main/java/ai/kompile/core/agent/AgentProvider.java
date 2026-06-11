@@ -16,11 +16,11 @@
 
 package ai.kompile.core.agent;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Configuration for an AI agent provider.
@@ -35,7 +35,7 @@ public class AgentProvider {
     private String command;
     private String skipPermissionsFlag;
     private boolean skipPermissions;
-    private Set<String> args;
+    private List<String> args;
     private Map<String, String> environment;
     private boolean available;
     private boolean isDefault;
@@ -62,7 +62,7 @@ public class AgentProvider {
     private String helpOutput;              // Cached --help output for reference
 
     public AgentProvider() {
-        this.args = new HashSet<>();
+        this.args = new ArrayList<>();
         this.environment = new HashMap<>();
     }
 
@@ -99,8 +99,8 @@ public class AgentProvider {
             return this;
         }
 
-        public Builder args(Set<String> args) {
-            provider.args = args != null ? new HashSet<>(args) : new HashSet<>();
+        public Builder args(List<String> args) {
+            provider.args = args != null ? new ArrayList<>(args) : new ArrayList<>();
             return this;
         }
 
@@ -200,8 +200,8 @@ public class AgentProvider {
     }
 
     // Safe accessors that never return null
-    public Set<String> safeArgs() {
-        return args != null ? Collections.unmodifiableSet(args) : Collections.emptySet();
+    public List<String> safeArgs() {
+        return args != null ? Collections.unmodifiableList(args) : Collections.emptyList();
     }
 
     public Map<String, String> safeEnvironment() {
@@ -249,11 +249,11 @@ public class AgentProvider {
         this.skipPermissions = skipPermissions;
     }
 
-    public Set<String> getArgs() {
+    public List<String> getArgs() {
         return args;
     }
 
-    public void setArgs(Set<String> args) {
+    public void setArgs(List<String> args) {
         this.args = args;
     }
 

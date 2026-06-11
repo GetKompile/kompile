@@ -1,0 +1,111 @@
+/* Dialog header icon */
+h2 mat-icon.title-icon {
+  vertical-align: middle;
+  margin-right: 8px;
+  color: #667eea;
+}
+
+mat-dialog-content {
+  min-width: 480px;
+  max-width: 560px;
+  padding-top: 8px !important;
+}
+
+.full-width {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+/* Confidence slider row */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.slider-label {
+  width: 140px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.confidence-slider {
+  flex: 1;
+}
+
+.slider-value {
+  width: 48px;
+  text-align: right;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+/* Divider between main form and metadata */
+.section-divider {
+  margin: 16px 0;
+}
+
+/* Metadata section */
+.metadata-section {
+  margin-bottom: 8px;
+}
+
+.metadata-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.metadata-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.metadata-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.meta-key {
+  flex: 1;
+}
+
+.meta-value {
+  flex: 2;
+}
+
+.no-metadata {
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 8px 0;
+}
+
+/* Inline spinner in button */
+.inline-spinner {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+mat-dialog-actions button mat-icon {
+  margin-right: 6px;
+}
+
+@media (max-width: 560px) {
+  mat-dialog-content {
+    min-width: unset;
+  }
+
+  .slider-row {
+    flex-wrap: wrap;
+  }
+}

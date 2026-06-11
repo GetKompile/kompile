@@ -41,6 +41,8 @@ public class PermissionService {
     private final Set<String> sessionAllowed = new HashSet<>();
     /** Permissions that have been permanently denied for this session. */
     private final Set<String> sessionDenied = new HashSet<>();
+    /** When true, all permission checks return ALLOWED without prompting. */
+    private volatile boolean autoApproveAll = false;
 
     private final Map<String, PermissionLevel> defaults;
     private final Map<String, PermissionLevel> userOverrides;
@@ -94,9 +96,22 @@ public class PermissionService {
     }
 
     /**
+     * Enable or disable auto-approval of all permission requests.
+     * When true, all {@link #check} calls return ALLOWED without prompting the user.
+     * Useful for non-interactive runs such as eval harnesses.
+     */
+    public void setAutoApproveAll(boolean autoApproveAll) {
+        this.autoApproveAll = autoApproveAll;
+    }
+
+    /**
      * Check permission for a tool action. May prompt the user interactively.
      */
     public PermissionResult check(AgentConfig agent, String permissionKey, String description) {
+        // Auto-approve mode: skip all prompting
+        if (autoApproveAll) {
+            return PermissionResult.ALLOWED;
+        }
         // Check session-level overrides first
         if (sessionAllowed.contains(permissionKey)) {
             return PermissionResult.ALLOWED;

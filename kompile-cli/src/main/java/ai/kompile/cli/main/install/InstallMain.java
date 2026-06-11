@@ -31,6 +31,7 @@ import java.util.concurrent.Callable;
         InstallPython.class,
         InstallMaven.class,
         InstallAll.class,
+        InstallGitXet.class,
         NativeToolsCompilation.class,
         ListPropertyPrograms.class,
         OpenBlasInstaller.class,

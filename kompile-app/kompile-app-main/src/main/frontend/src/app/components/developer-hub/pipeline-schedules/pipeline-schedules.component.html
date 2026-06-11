@@ -1,0 +1,78 @@
+<div class="pipeline-schedules">
+  <div class="section-header">
+    <h3><mat-icon>schedule</mat-icon> Pipeline Schedules</h3>
+    <div class="header-actions">
+      <button mat-icon-button (click)="loadSchedules()" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+      <button mat-raised-button color="primary" (click)="showCreateForm = !showCreateForm">
+        <mat-icon>add</mat-icon> New Schedule
+      </button>
+    </div>
+  </div>
+
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="message" class="success-bar"><mat-icon>check_circle</mat-icon> {{ message }}</div>
+
+  <!-- Create Form -->
+  <div class="create-form" *ngIf="showCreateForm">
+    <h4>Create Schedule</h4>
+    <div class="form-row">
+      <div class="form-field">
+        <label>Type</label>
+        <select [(ngModel)]="newScheduleType" [ngModelOptions]="{standalone: true}">
+          <option value="staleness-check">Staleness Check</option>
+          <option value="re-ingestion">Re-Ingestion</option>
+          <option value="eval-suite">Eval Suite</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Cron Expression</label>
+        <input type="text" [(ngModel)]="newCron" [ngModelOptions]="{standalone: true}" placeholder="0 0 * * *">
+      </div>
+      <div class="form-field" *ngIf="newScheduleType !== 'eval-suite'">
+        <label>Fact Sheet ID</label>
+        <input type="number" [(ngModel)]="newFactSheetId" [ngModelOptions]="{standalone: true}" min="1">
+      </div>
+      <div class="form-field" *ngIf="newScheduleType === 'eval-suite'">
+        <label>Suite ID</label>
+        <input type="text" [(ngModel)]="newSuiteId" [ngModelOptions]="{standalone: true}" placeholder="suite-id">
+      </div>
+    </div>
+    <div class="form-actions">
+      <button mat-raised-button color="primary" (click)="createSchedule()" [disabled]="creating">
+        <mat-icon>add</mat-icon> Create
+      </button>
+      <button mat-button (click)="showCreateForm = false">Cancel</button>
+      <mat-spinner *ngIf="creating" diameter="20"></mat-spinner>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+
+  <!-- Schedule List -->
+  <div *ngIf="!loading && schedules.length === 0 && !error" class="empty-state">
+    <mat-icon>event_busy</mat-icon>
+    <span>No pipeline schedules configured</span>
+  </div>
+
+  <div class="schedule-list" *ngIf="!loading && schedules.length > 0">
+    <div class="schedule-card" *ngFor="let schedule of schedules">
+      <div class="schedule-info">
+        <mat-icon>{{ getTypeIcon(schedule.type) }}</mat-icon>
+        <div class="schedule-details">
+          <span class="schedule-id">{{ schedule.scheduleId }}</span>
+          <span class="schedule-meta">
+            Type: {{ schedule.type }} &middot; Cron: <code>{{ schedule.cron }}</code>
+            <span *ngIf="schedule.factSheetId"> &middot; Fact Sheet: {{ schedule.factSheetId }}</span>
+            <span *ngIf="schedule.suiteId"> &middot; Suite: {{ schedule.suiteId }}</span>
+          </span>
+        </div>
+      </div>
+      <button mat-icon-button color="warn" matTooltip="Delete" (click)="deleteSchedule(schedule.scheduleId)">
+        <mat-icon>delete</mat-icon>
+      </button>
+    </div>
+  </div>
+</div>

@@ -23,6 +23,7 @@ import { OrchestratorService } from '../../../../services/orchestrator.service';
 import {
   OutputClassifier,
   ClassificationRule,
+  ClassificationResult,
   ClassificationType,
   ClassificationSeverity,
   ClassificationAction,
@@ -57,6 +58,11 @@ export class OutputClassifierConfigComponent implements OnInit, OnDestroy {
   // Pattern testing
   testPatternInput = '';
   testPatternResult: PatternTestResult | null = null;
+
+  // Classify output testing
+  classifyTestInput = '';
+  classifyTestResult: ClassificationResult | null = null;
+  classifyTesting = false;
 
   // Dropdown options
   classificationTypes: ClassificationType[] = [
@@ -519,5 +525,23 @@ export class OutputClassifierConfigComponent implements OnInit, OnDestroy {
 
   clearError(): void {
     this.error = null;
+  }
+
+  classifyOutput(): void {
+    if (!this.selectedClassifier || !this.classifyTestInput.trim()) return;
+    this.classifyTesting = true;
+    this.classifyTestResult = null;
+    this.orchestratorService.classifyOutput(this.instanceId, this.selectedClassifier.id!, this.classifyTestInput)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (result) => {
+          this.classifyTestResult = result;
+          this.classifyTesting = false;
+        },
+        error: (err) => {
+          this.error = 'Classification failed: ' + (err.error?.message || err.message);
+          this.classifyTesting = false;
+        }
+      });
   }
 }

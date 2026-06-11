@@ -22,7 +22,7 @@ import ai.kompile.app.services.subprocess.SubprocessConfigService.SubprocessConf
 import ai.kompile.app.services.subprocess.SubprocessConfigService.SubprocessConfigUpdate;
 import ai.kompile.app.services.subprocess.SubprocessHandle;
 import ai.kompile.app.services.subprocess.SubprocessIngestLauncher;
-import ai.kompile.cli.main.util.NativeImageInfo;
+import ai.kompile.cli.common.util.NativeImageInfo;
 import ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl;
 import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessLauncher;
 import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessLauncher.DebugConfig;

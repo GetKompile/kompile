@@ -235,7 +235,7 @@ public class McpToolInjection {
                     ? (com.fasterxml.jackson.databind.node.ArrayNode) hooks.get("PreToolUse")
                     : hooks.putArray("PreToolUse");
             ObjectNode preMatcher = OM.createObjectNode();
-            preMatcher.put("matcher", "mcp__kompile__.*");
+            preMatcher.put("matcher", ".*");
             preMatcher.putArray("hooks").addObject().put("type", "command").put("command", preCmd);
             preArray.add(preMatcher);
 
@@ -243,9 +243,68 @@ public class McpToolInjection {
                     ? (com.fasterxml.jackson.databind.node.ArrayNode) hooks.get("PostToolUse")
                     : hooks.putArray("PostToolUse");
             ObjectNode postMatcher = OM.createObjectNode();
-            postMatcher.put("matcher", "mcp__kompile__.*");
+            postMatcher.put("matcher", ".*");
             postMatcher.putArray("hooks").addObject().put("type", "command").put("command", postCmd);
             postArray.add(postMatcher);
+
+            // ── Enforcer PreToolUse hook: blocks ALL tool calls matching keyword bans ──
+            // This is the only way to truly gate Claude Code's native tools (Bash, Write, etc.)
+            // before execution. The hook reads the enforcer policy file from env and runs
+            // keyword checks against tool_name + tool_input. Non-zero exit = block.
+            String enforcerPolicyEnv = System.getenv("KOMPILE_ENFORCER_POLICY_FILE");
+            if (enforcerPolicyEnv != null && !enforcerPolicyEnv.isBlank()) {
+                String enforcerHookCmd = "bash -c '"
+                        + "INPUT=$(cat); "
+                        + "POLICY_FILE=\"" + enforcerPolicyEnv + "\"; "
+                        + "if [ ! -f \"$POLICY_FILE\" ]; then exit 0; fi; "
+                        + "TN=$(echo \"$INPUT\" | jq -r \".tool_name // \\\"\\\"\" 2>/dev/null); "
+                        + "TI=$(echo \"$INPUT\" | jq -rc \".tool_input // {}\" 2>/dev/null); "
+                        + "RULES=$(jq -r \".rules // \\\"\\\"\" \"$POLICY_FILE\" 2>/dev/null); "
+                        + "if [ -z \"$RULES\" ]; then exit 0; fi; "
+                        // Check BAN_TOOL: rules against tool name
+                        + "echo \"$RULES\" | grep -i \"^BAN_TOOL:\" | while IFS=: read -r _ BANNED; do "
+                        + "  BANNED=$(echo \"$BANNED\" | xargs); "
+                        + "  if echo \"$TN\" | grep -qi \"$BANNED\"; then "
+                        + "    echo \"BLOCKED: tool $TN is banned by enforcer rule\" >&2; exit 1; "
+                        + "  fi; "
+                        + "done || exit 1; "
+                        // Check BAN_CMD: rules against tool args
+                        + "echo \"$RULES\" | grep -i \"^BAN_CMD:\" | while IFS=: read -r _ BANNED; do "
+                        + "  BANNED=$(echo \"$BANNED\" | xargs); "
+                        + "  if echo \"$TI\" | grep -qi \"$BANNED\"; then "
+                        + "    echo \"BLOCKED: command containing \\\"$BANNED\\\" banned by enforcer\" >&2; exit 1; "
+                        + "  fi; "
+                        + "done || exit 1; "
+                        // Check STOP_TOOL: rules
+                        + "echo \"$RULES\" | grep -i \"^STOP_TOOL:\" | while IFS=: read -r _ BANNED; do "
+                        + "  BANNED=$(echo \"$BANNED\" | xargs); "
+                        + "  if echo \"$TN\" | grep -qi \"$BANNED\"; then "
+                        + "    echo \"BLOCKED: tool $TN is critically banned by enforcer\" >&2; exit 1; "
+                        + "  fi; "
+                        + "done || exit 1; "
+                        // Check STOP_CMD: rules
+                        + "echo \"$RULES\" | grep -i \"^STOP_CMD:\" | while IFS=: read -r _ BANNED; do "
+                        + "  BANNED=$(echo \"$BANNED\" | xargs); "
+                        + "  if echo \"$TI\" | grep -qi \"$BANNED\"; then "
+                        + "    echo \"BLOCKED: command containing \\\"$BANNED\\\" critically banned\" >&2; exit 1; "
+                        + "  fi; "
+                        + "done || exit 1; "
+                        // Check plain lines (keywords banned everywhere)
+                        + "echo \"$RULES\" | grep -v \"^#\" | grep -v \"^//\" | grep -v -i \"^BAN\" | grep -v -i \"^STOP\" | grep -v -i \"^REGEX\" | while IFS= read -r KW; do "
+                        + "  KW=$(echo \"$KW\" | xargs); "
+                        + "  if [ -z \"$KW\" ]; then continue; fi; "
+                        + "  if echo \"$TI\" | grep -qi \"$KW\"; then "
+                        + "    echo \"BLOCKED: \\\"$KW\\\" found in tool args, violates enforcer rules\" >&2; exit 1; "
+                        + "  fi; "
+                        + "done || exit 1; "
+                        + "exit 0"
+                        + "'";
+
+                ObjectNode enforcerMatcher = OM.createObjectNode();
+                enforcerMatcher.put("matcher", ".*");
+                enforcerMatcher.putArray("hooks").addObject().put("type", "command").put("command", enforcerHookCmd);
+                preArray.add(enforcerMatcher);
+            }
 
             Files.createDirectories(settingsDir);
             String newContent = OM.writerWithDefaultPrettyPrinter().writeValueAsString(settings);
@@ -268,11 +327,25 @@ public class McpToolInjection {
             com.fasterxml.jackson.databind.JsonNode entry = array.get(i);
             if (entry.isObject() && entry.has("matcher")) {
                 String matcher = entry.get("matcher").asText("");
-                if (matcher.contains("kompile")) {
+                if (matcher.contains("kompile") || hasKompileHookCommand(entry)) {
                     array.remove(i);
                 }
             }
         }
+    }
+
+    private static boolean hasKompileHookCommand(com.fasterxml.jackson.databind.JsonNode entry) {
+        com.fasterxml.jackson.databind.JsonNode hooks = entry.path("hooks");
+        if (!hooks.isArray()) {
+            return false;
+        }
+        for (com.fasterxml.jackson.databind.JsonNode hook : hooks) {
+            String command = hook.path("command").asText("");
+            if (command.contains("[kompile]") || command.contains("Kompile MCP")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -485,11 +558,10 @@ public class McpToolInjection {
             mode = "remote";
         } else {
             kompile.put("type", "local");
-            kompile.put("command", launcher.command());
-            List<String> fullArgs = launcher.buildArgs(workingDir);
-            ArrayNode argsArray = kompile.putArray("args");
-            for (String arg : fullArgs) {
-                argsArray.add(arg);
+            ArrayNode cmdArray = kompile.putArray("command");
+            cmdArray.add(launcher.command());
+            for (String arg : launcher.buildArgs(workingDir)) {
+                cmdArray.add(arg);
             }
             mode = "local";
         }

@@ -53,6 +53,15 @@ public class ApiAgentChatExecutor {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ExecutorService executorService = Executors.newCachedThreadPool();
+    private final ModelCapabilityService modelCapabilityService;
+
+    public ApiAgentChatExecutor(ModelCapabilityService modelCapabilityService) {
+        this.modelCapabilityService = modelCapabilityService;
+    }
+
+    public ApiAgentChatExecutor() {
+        this(new ModelCapabilityService(null));
+    }
 
     // Track active connections for cancellation
     private final Map<String, HttpURLConnection> activeConnections = new ConcurrentHashMap<>();
@@ -228,6 +237,23 @@ public class ApiAgentChatExecutor {
     /**
      * Build OpenAI-compatible chat completions request body.
      */
+    /**
+     * Validate that any attachments are compatible with the agent's model.
+     *
+     * @return {@code null} if attachments are valid (or there are none), otherwise an error message
+     */
+    public String validateAttachments(AgentProvider agent, List<AgentChatRequest.MessageAttachment> attachments) {
+        if (attachments == null || attachments.isEmpty()) return null;
+        String modelId = agent != null ? agent.getModelName() : null;
+        for (AgentChatRequest.MessageAttachment att : attachments) {
+            if (att.isImage() && !modelCapabilityService.supportsVision(modelId)) {
+                return "Model '" + modelId + "' does not support image attachments. " +
+                        "Please select a vision-capable model.";
+            }
+        }
+        return null;
+    }
+
     private String buildOpenAiRequest(AgentProvider agent, AgentChatRequest request, String augmentedPrompt) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("model", agent.getModelName());
@@ -237,7 +263,7 @@ public class ApiAgentChatExecutor {
 
         ArrayNode messages = root.putArray("messages");
 
-        // Add chat history if present
+        // Add chat history if present — always flat strings (no attachments on history)
         if (request.getChatHistory() != null) {
             for (AgentChatRequest.ChatHistoryEntry entry : request.getChatHistory()) {
                 ObjectNode msg = messages.addObject();
@@ -246,10 +272,38 @@ public class ApiAgentChatExecutor {
             }
         }
 
-        // Add the current message (with RAG context if augmented)
+        // Add the current message
+        List<AgentChatRequest.MessageAttachment> attachments = request.getAttachments();
         ObjectNode userMsg = messages.addObject();
         userMsg.put("role", "user");
-        userMsg.put("content", augmentedPrompt);
+
+        if (attachments == null || attachments.isEmpty()) {
+            // No attachments — keep backward-compatible flat string content
+            userMsg.put("content", augmentedPrompt);
+        } else {
+            // Multimodal content — build a content array
+            ArrayNode contentArray = userMsg.putArray("content");
+
+            for (AgentChatRequest.MessageAttachment att : attachments) {
+                if (att.isImage() && att.base64Data() != null) {
+                    // OpenAI image_url block
+                    ObjectNode imgBlock = contentArray.addObject();
+                    imgBlock.put("type", "image_url");
+                    ObjectNode imgUrl = imgBlock.putObject("image_url");
+                    imgUrl.put("url", "data:" + att.mimeType() + ";base64," + att.base64Data());
+                } else if (att.textContent() != null) {
+                    // Text file block — embed content with filename header
+                    ObjectNode textBlock = contentArray.addObject();
+                    textBlock.put("type", "text");
+                    textBlock.put("text", "[File: " + att.filename() + "]\n" + att.textContent());
+                }
+            }
+
+            // Append the user's prompt as the last text block
+            ObjectNode promptBlock = contentArray.addObject();
+            promptBlock.put("type", "text");
+            promptBlock.put("text", augmentedPrompt);
+        }
 
         return root.toString();
     }
@@ -382,12 +436,12 @@ public class ApiAgentChatExecutor {
         List<Map<String, Object>> sources = new ArrayList<>();
         int index = 1;
         for (RetrievedDoc doc : docs) {
-            if (doc.getContent() == null || doc.getContent().isEmpty()) continue;
+            if (doc.getText() == null || doc.getText().isEmpty()) continue;
             Map<String, Object> source = new HashMap<>();
             source.put("index", index);
             source.put("id", doc.getId() != null ? doc.getId() : "doc-" + index);
             source.put("score", doc.getScore() != null ? doc.getScore() : 0.0);
-            String content = doc.getContent();
+            String content = doc.getText();
             source.put("preview", content.length() > 300 ? content.substring(0, 300) + "..." : content);
             source.put("content", content.length() > 2000 ? content.substring(0, 2000) + "... [truncated]" : content);
             sources.add(source);

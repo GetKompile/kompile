@@ -1,0 +1,166 @@
+<div class="training-history">
+  <div class="section-header">
+    <h3><mat-icon>model_training</mat-icon> Training Job History</h3>
+    <div class="header-actions">
+      <button mat-icon-button (click)="loadAll()" matTooltip="Refresh"><mat-icon>refresh</mat-icon></button>
+      <button mat-stroked-button color="warn" (click)="cleanup(30)" matTooltip="Remove records older than 30 days">
+        <mat-icon>cleaning_services</mat-icon> Cleanup
+      </button>
+    </div>
+  </div>
+
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="message" class="success-bar"><mat-icon>check_circle</mat-icon> {{ message }}</div>
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+
+  <!-- Statistics Overview -->
+  <div class="stats-grid" *ngIf="statistics">
+    <div class="stat-card" *ngFor="let key of ['totalJobs','completedJobs','failedJobs','activeJobs','avgDurationMs','memoryKilledCount']">
+      <span class="stat-label">{{ key }}</span>
+      <span class="stat-value">{{ key.includes('Duration') ? formatDuration(statistics[key]) : statistics[key] || 0 }}</span>
+    </div>
+  </div>
+
+  <!-- Active Jobs -->
+  <div class="active-section" *ngIf="activeJobs.length > 0">
+    <h4><mat-icon>play_circle</mat-icon> Active Jobs ({{ activeJobs.length }})</h4>
+    <div class="active-job-card" *ngFor="let job of activeJobs">
+      <div class="job-header">
+        <span class="job-id">{{ job.taskId }}</span>
+        <span class="status-badge" [ngClass]="svc.getStatusClass(job.status)">{{ job.status }}</span>
+        <span class="job-model">{{ job.modelId }}</span>
+        <span class="job-type">{{ job.trainingType }}</span>
+      </div>
+      <div class="progress-row" *ngIf="job.totalEpochs">
+        <span>Epoch {{ job.currentEpoch || 0 }}/{{ job.totalEpochs }}</span>
+        <mat-progress-bar mode="determinate" [value]="getProgressPercent(job)"></mat-progress-bar>
+        <span>{{ getProgressPercent(job) }}%</span>
+      </div>
+      <div class="job-metrics" *ngIf="job.finalLoss != null">
+        <span>Loss: {{ formatLoss(job.finalLoss) }}</span>
+        <span *ngIf="job.learningRate">LR: {{ job.learningRate }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="filter-row">
+    <mat-form-field appearance="outline" class="filter-field">
+      <mat-label>Filter by Status</mat-label>
+      <mat-select [(value)]="statusFilter" (selectionChange)="filterByStatus($event.value)">
+        <mat-option value="">All</mat-option>
+        <mat-option value="COMPLETED">Completed</mat-option>
+        <mat-option value="FAILED">Failed</mat-option>
+        <mat-option value="CANCELLED">Cancelled</mat-option>
+        <mat-option value="MEMORY_KILLED">Memory Killed</mat-option>
+        <mat-option value="RUNNING">Running</mat-option>
+        <mat-option value="QUEUED">Queued</mat-option>
+      </mat-select>
+    </mat-form-field>
+    <mat-form-field appearance="outline" class="filter-field">
+      <mat-label>Filter by Type</mat-label>
+      <mat-select [(value)]="typeFilter" (selectionChange)="filterByType($event.value)">
+        <mat-option value="">All</mat-option>
+        <mat-option value="FINETUNE">Fine-tune</mat-option>
+        <mat-option value="LORA">LoRA</mat-option>
+        <mat-option value="DISTILLATION">Distillation</mat-option>
+        <mat-option value="ALIGNMENT">Alignment</mat-option>
+      </mat-select>
+    </mat-form-field>
+  </div>
+
+  <!-- Job Table -->
+  <div class="job-list" *ngIf="!loading">
+    <div class="job-row" *ngFor="let job of jobs" (click)="selectJob(job)"
+         [class.selected]="selectedJob?.taskId === job.taskId">
+      <span class="job-id">{{ job.taskId }}</span>
+      <span class="status-badge" [ngClass]="svc.getStatusClass(job.status)">{{ job.status }}</span>
+      <span class="job-type-badge">{{ job.trainingType }}</span>
+      <span class="job-model">{{ job.modelId }}</span>
+      <span class="job-duration">{{ formatDuration(job.totalDurationMs) }}</span>
+      <span class="job-loss">{{ formatLoss(job.finalLoss) }}</span>
+      <span *ngIf="job.failureReason && job.failureReason !== 'NONE'" class="failure-badge">
+        <mat-icon>{{ svc.getFailureIcon(job.failureReason) }}</mat-icon> {{ job.failureReason }}
+      </span>
+      <span *ngIf="job.recoveredAfterRestart" class="recovered-badge">
+        <mat-icon>restart_alt</mat-icon> Recovered
+      </span>
+    </div>
+  </div>
+
+  <!-- Pagination -->
+  <div class="pagination" *ngIf="totalPages > 1">
+    <button mat-icon-button [disabled]="currentPage === 0" (click)="changePage(-1)">
+      <mat-icon>chevron_left</mat-icon>
+    </button>
+    <span>Page {{ currentPage + 1 }} / {{ totalPages }} ({{ totalElements }} total)</span>
+    <button mat-icon-button [disabled]="currentPage >= totalPages - 1" (click)="changePage(1)">
+      <mat-icon>chevron_right</mat-icon>
+    </button>
+  </div>
+
+  <!-- Detail Panel -->
+  <div class="detail-panel" *ngIf="selectedJob">
+    <h4>
+      Job Details: {{ selectedJob.taskId }}
+      <button mat-icon-button (click)="deleteJob(selectedJob.taskId)" matTooltip="Delete" color="warn">
+        <mat-icon>delete</mat-icon>
+      </button>
+    </h4>
+    <div class="detail-grid">
+      <div class="detail-row"><span class="dk">Model</span><span class="dv">{{ selectedJob.modelId }}</span></div>
+      <div class="detail-row"><span class="dk">Type</span><span class="dv">{{ selectedJob.trainingType }}</span></div>
+      <div class="detail-row"><span class="dk">Dataset</span><span class="dv">{{ selectedJob.datasetId || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Status</span><span class="dv status-badge" [ngClass]="svc.getStatusClass(selectedJob.status)">{{ selectedJob.status }}</span></div>
+      <div class="detail-row"><span class="dk">Start</span><span class="dv">{{ selectedJob.startTime }}</span></div>
+      <div class="detail-row"><span class="dk">End</span><span class="dv">{{ selectedJob.endTime || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Duration</span><span class="dv">{{ formatDuration(selectedJob.totalDurationMs) }}</span></div>
+      <div class="detail-row"><span class="dk">Epochs</span><span class="dv">{{ selectedJob.currentEpoch || '-' }} / {{ selectedJob.totalEpochs || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Steps</span><span class="dv">{{ selectedJob.currentStep || '-' }} / {{ selectedJob.totalSteps || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Final Loss</span><span class="dv">{{ formatLoss(selectedJob.finalLoss) }}</span></div>
+      <div class="detail-row"><span class="dk">Eval Loss</span><span class="dv">{{ formatLoss(selectedJob.finalEvalLoss) }}</span></div>
+      <div class="detail-row"><span class="dk">Learning Rate</span><span class="dv">{{ selectedJob.learningRate || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Batch Size</span><span class="dv">{{ selectedJob.batchSize || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Grad Accum</span><span class="dv">{{ selectedJob.gradientAccumulationSteps || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">LR Schedule</span><span class="dv">{{ selectedJob.lrSchedule || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Warmup</span><span class="dv">{{ selectedJob.warmupRatio || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Max Grad Norm</span><span class="dv">{{ selectedJob.maxGradNorm || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">FP16</span><span class="dv">{{ selectedJob.fp16 }}</span></div>
+      <div class="detail-row"><span class="dk">BF16</span><span class="dv">{{ selectedJob.bf16 }}</span></div>
+      <div class="detail-row"><span class="dk">PEFT</span><span class="dv">{{ selectedJob.peftType || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Output</span><span class="dv monospace">{{ selectedJob.outputModelPath || '-' }}</span></div>
+    </div>
+
+    <!-- Environment -->
+    <div class="env-section" *ngIf="selectedJob.nd4jBackend">
+      <h5>Environment</h5>
+      <div class="detail-grid">
+        <div class="detail-row"><span class="dk">ND4J Backend</span><span class="dv">{{ selectedJob.nd4jBackend }}</span></div>
+        <div class="detail-row"><span class="dk">Java</span><span class="dv">{{ selectedJob.javaVersion || '-' }}</span></div>
+        <div class="detail-row"><span class="dk">OS</span><span class="dv">{{ selectedJob.osInfo || '-' }}</span></div>
+        <div class="detail-row"><span class="dk">CPUs</span><span class="dv">{{ selectedJob.availableProcessors || '-' }}</span></div>
+        <div class="detail-row"><span class="dk">Max Heap</span><span class="dv">{{ selectedJob.maxHeapMemoryBytes ? ((selectedJob.maxHeapMemoryBytes / 1073741824) | number:'1.1-1') + ' GB' : '-' }}</span></div>
+      </div>
+    </div>
+
+    <!-- Failure Info -->
+    <div class="failure-section" *ngIf="selectedJob.failureReason && selectedJob.failureReason !== 'NONE'">
+      <h5><mat-icon color="warn">{{ svc.getFailureIcon(selectedJob.failureReason) }}</mat-icon> Failure: {{ selectedJob.failureReason }}</h5>
+      <div class="detail-row"><span class="dk">Error Type</span><span class="dv">{{ selectedJob.errorType || '-' }}</span></div>
+      <div class="detail-row"><span class="dk">Error</span><span class="dv error-text">{{ selectedJob.errorMessage || '-' }}</span></div>
+      <div class="stack-trace" *ngIf="selectedJob?.stackTrace">
+        <pre>{{ selectedJob?.stackTrace }}</pre>
+      </div>
+    </div>
+
+    <!-- Restart Info -->
+    <div class="restart-section" *ngIf="selectedJob?.restartAttempts">
+      <h5><mat-icon>restart_alt</mat-icon> Restart History</h5>
+      <div class="detail-grid">
+        <div class="detail-row"><span class="dk">Attempts</span><span class="dv">{{ selectedJob?.restartAttempts }} / {{ selectedJob?.maxRestartAttempts }}</span></div>
+        <div class="detail-row"><span class="dk">Last Restart</span><span class="dv">{{ selectedJob?.lastRestartTime || '-' }}</span></div>
+        <div class="detail-row"><span class="dk">Recovered</span><span class="dv">{{ selectedJob?.recoveredAfterRestart ? 'Yes' : 'No' }}</span></div>
+      </div>
+    </div>
+  </div>
+</div>

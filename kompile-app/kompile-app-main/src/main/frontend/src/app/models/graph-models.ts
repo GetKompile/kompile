@@ -19,7 +19,7 @@
  */
 
 // Node hierarchy levels
-export type NodeLevel = 'SOURCE' | 'DOCUMENT' | 'SNIPPET' | 'ENTITY' | 'CUSTOM';
+export type NodeLevel = 'SOURCE' | 'DOCUMENT' | 'SNIPPET' | 'ENTITY' | 'CUSTOM' | 'ATTACHMENT' | 'TABLE';
 
 // Edge relationship types
 export type EdgeType = 'HIERARCHICAL' | 'EMBEDDING_SIMILARITY' | 'SHARED_ENTITY' | 'USER_DEFINED' | 'CITATION' | 'TEMPORAL' | 'CROSS_SOURCE';
@@ -55,6 +55,13 @@ export interface GraphNode {
   selected?: boolean;
   highlighted?: boolean;
   expanded?: boolean;
+
+  // Composite entity / hierarchy fields
+  confidence?: number;
+  contentPreview?: string;
+  pathOrUrl?: string;
+  isComposite?: boolean;
+  subGraphId?: string;
 }
 
 /**
@@ -150,6 +157,27 @@ export interface D3Node {
   metadata?: Record<string, any>;
   childCount?: number;
   edgeCount?: number;
+  symbolType?: string;
+  language?: string;
+  fqn?: string;
+  filePath?: string;
+  file?: string;
+  startLine?: number;
+  endLine?: number;
+  line?: number;
+  signature?: string;
+  docComment?: string;
+  fullyQualifiedName?: string;
+  name?: string;
+}
+
+export interface CreateCompositeEntityRequest {
+  title: string;
+  externalId?: string;
+  description?: string;
+  parentNodeId?: string;
+  confidence?: number;
+  metadata?: Record<string, string>;
 }
 
 export interface D3Link {
@@ -281,7 +309,9 @@ export const NODE_COLORS: Record<NodeLevel, string> = {
   DOCUMENT: '#2196F3',    // Blue
   SNIPPET: '#FF9800',     // Orange
   ENTITY: '#9C27B0',      // Purple
-  CUSTOM: '#607D8B'       // Grey
+  CUSTOM: '#607D8B',      // Grey
+  TABLE: '#795548',       // Brown
+  ATTACHMENT: '#FF5722'   // Deep Orange
 };
 
 /**
@@ -292,7 +322,9 @@ export const NODE_SIZES: Record<NodeLevel, number> = {
   DOCUMENT: 15,
   SNIPPET: 10,
   ENTITY: 12,
-  CUSTOM: 12
+  CUSTOM: 12,
+  ATTACHMENT: 10,
+  TABLE: 10
 };
 
 /**
@@ -320,3 +352,132 @@ export const EDGE_DASH_PATTERNS: Record<EdgeType, string> = {
   TEMPORAL: '5,2,2,2',
   CROSS_SOURCE: '8,4'
 };
+
+export interface ProvenanceCitation {
+  sourceId: string;
+  sourceName: string;
+  excerpt: string;
+  relevance: number;
+  page?: number;
+  section?: string;
+  confidence?: number;
+  discoverySource?: string;
+  documentTitle?: string;
+  entityType?: string;
+  extractedText?: string;
+  location?: string;
+  nodeId?: string;
+  title?: string;
+}
+
+/**
+ * Tree node for hierarchical graph display
+ */
+export interface HierarchyTreeNode {
+  nodeId: string;
+  nodeType: NodeLevel;
+  id: string;
+  type: NodeLevel;
+  label: string;
+  title?: string;
+  description?: string;
+  childCount?: number;
+  edgeCount?: number;
+  confidence?: number;
+  isComposite?: boolean;
+  subGraphId?: string;
+  depth?: number;
+  children?: HierarchyTreeNode[];
+  hasMore?: boolean;
+}
+
+/**
+ * A named graph (sub-graph or named grouping within the knowledge graph)
+ */
+export interface NamedGraph {
+  graphId: string;
+  name: string;
+  description?: string;
+  parentGraphId?: string;
+  nodeCount?: number;
+  edgeCount?: number;
+  childGraphCount?: number;
+  childGraphs?: NamedGraph[];
+  createdAt?: string;
+  updatedAt?: string;
+  metadata?: Record<string, any>;
+  ontologyType?: string;
+  factSheetId?: number;
+}
+
+/**
+ * Request to create a named graph
+ */
+export interface CreateNamedGraphRequest {
+  name: string;
+  description?: string;
+  ontologyType?: string;
+  parentGraphId?: string;
+  metadata?: Record<string, any>;
+}
+
+/**
+ * A single metadata patch rule
+ */
+export interface GraphMetadataPatchRule {
+  nodeType?: NodeLevel | string;
+  name?: string;
+  entityType?: string;
+  titleEquals?: string[];
+  titleRegex?: string;
+  metadataEquals?: Record<string, any>;
+  metadataExists?: string[];
+  setMetadata: Record<string, any>;
+  removeMetadataKeys?: string[];
+}
+
+/**
+ * Request to patch node metadata in bulk
+ */
+export interface GraphMetadataPatchRequest {
+  factSheetId?: number | null;
+  allowGlobal?: boolean;
+  dryRun?: boolean;
+  limit?: number | null;
+  rules: GraphMetadataPatchRule[];
+}
+
+/**
+ * Sample showing before/after metadata change from a patch operation
+ */
+export interface GraphMetadataPatchSample {
+  nodeId: string;
+  title?: string;
+  matchedRules: string[];
+  beforeMetadata: Record<string, any>;
+  afterMetadata: Record<string, any>;
+}
+
+/**
+ * Result of a metadata patch operation
+ */
+export interface GraphMetadataPatchResult {
+  dryRun?: boolean;
+  allowGlobal?: boolean;
+  scannedCount?: number;
+  matchedCount?: number;
+  changedCount?: number;
+  updatedCount?: number;
+  unchangedCount?: number;
+  skippedByLimitCount?: number;
+  samples?: GraphMetadataPatchSample[];
+}
+
+/**
+ * Move graph result
+ */
+export interface MoveGraphResult {
+  graphId: string;
+  newParentGraphId?: string;
+  success?: boolean;
+}

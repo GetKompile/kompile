@@ -71,4 +71,52 @@ public interface GraphConstructor {
      * @return A {@link Graph} representing the knowledge extracted from the provided documents.
      */
     Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema graphSchema, SchemaEnforcementMode enforcementMode);
+
+    /**
+     * Constructs a graph from a list of retrieved documents with additional options.
+     *
+     * @param docs The list of documents to process
+     * @param graphSchema The schema to enforce
+     * @param enforcementMode The schema enforcement mode
+     * @param skipEmbedding Whether to skip embedding generation
+     * @param skipMatrixGraph Whether to skip matrix graph persistence
+     * @param progressListener Optional listener for per-document extraction progress
+     * @return A Graph representing the extracted knowledge
+     */
+    default Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema graphSchema,
+                                         SchemaEnforcementMode enforcementMode,
+                                         boolean skipEmbedding, boolean skipMatrixGraph,
+                                         ProgressListener progressListener) {
+        return constructGraphFromDocs(docs, graphSchema, enforcementMode);
+    }
+
+    /**
+     * Listener for per-document extraction progress during graph construction.
+     */
+    @FunctionalInterface
+    interface ProgressListener {
+        void onProgress(DocumentExtractionProgress progress);
+    }
+
+    /**
+     * Status of a single document extraction within a batch.
+     */
+    enum DocumentExtractionStatus {
+        STARTED, COMPLETED, FAILED, TIMED_OUT
+    }
+
+    /**
+     * Progress report for a single document extraction.
+     */
+    record DocumentExtractionProgress(
+            String documentId,
+            int documentIndex,
+            int totalDocuments,
+            DocumentExtractionStatus status,
+            String errorMessage,
+            int entities,
+            int relationships,
+            int textLength,
+            long elapsedMs
+    ) {}
 }

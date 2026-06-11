@@ -23,6 +23,11 @@
     <button mat-icon-button (click)="exportConfig()" matTooltip="Export">
       <mat-icon>download</mat-icon>
     </button>
+
+    <button mat-icon-button (click)="importFileInput.click()" matTooltip="Import">
+      <mat-icon>upload</mat-icon>
+    </button>
+    <input #importFileInput type="file" accept=".json" (change)="importConfig($event)" style="display: none;">
   </div>
 
   <!-- Error Banner -->

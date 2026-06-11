@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -38,6 +39,12 @@ class PassthroughStreamParserTest {
         parser = new PassthroughStreamParser();
     }
 
+    /** Helper: wraps parseClaudeLineMulti to return a single event (first element or null). */
+    private PassthroughStreamParser.PassthroughEvent parseClaudeLine(String line) {
+        List<PassthroughStreamParser.PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+        return (events == null || events.isEmpty()) ? null : events.get(0);
+    }
+
     // =========================================================================
     // Claude stream-json parsing
     // =========================================================================
@@ -50,7 +57,7 @@ class PassthroughStreamParserTest {
         @DisplayName("should parse session init event")
         void parsesSessionInit() {
             String line = "{\"type\":\"system\",\"session_id\":\"sess-123\"}";
-            PassthroughStreamParser.PassthroughEvent event = parser.parseClaudeLine(line);
+            PassthroughStreamParser.PassthroughEvent event = parseClaudeLine(line);
 
             assertNotNull(event);
             assertInstanceOf(PassthroughStreamParser.SessionInit.class, event);
@@ -62,7 +69,7 @@ class PassthroughStreamParserTest {
         @DisplayName("should parse assistant text content")
         void parsesAssistantText() {
             String line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Hello world\"}]}}";
-            PassthroughStreamParser.PassthroughEvent event = parser.parseClaudeLine(line);
+            PassthroughStreamParser.PassthroughEvent event = parseClaudeLine(line);
 
             assertNotNull(event);
             assertInstanceOf(PassthroughStreamParser.TextChunk.class, event);
@@ -74,7 +81,7 @@ class PassthroughStreamParserTest {
         @DisplayName("should parse tool_use from content blocks")
         void parsesToolUse() {
             String line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file\":\"/tmp/test.txt\"}}]}}";
-            PassthroughStreamParser.PassthroughEvent event = parser.parseClaudeLine(line);
+            PassthroughStreamParser.PassthroughEvent event = parseClaudeLine(line);
 
             assertNotNull(event);
             assertInstanceOf(PassthroughStreamParser.ToolUse.class, event);
@@ -87,7 +94,7 @@ class PassthroughStreamParserTest {
         @DisplayName("should parse result event with stats")
         void parsesResult() {
             String line = "{\"type\":\"result\",\"duration_ms\":1500,\"cost_usd\":0.0042,\"num_turns\":3}";
-            PassthroughStreamParser.PassthroughEvent event = parser.parseClaudeLine(line);
+            PassthroughStreamParser.PassthroughEvent event = parseClaudeLine(line);
 
             assertNotNull(event);
             assertInstanceOf(PassthroughStreamParser.TurnComplete.class, event);
@@ -101,7 +108,7 @@ class PassthroughStreamParserTest {
         @DisplayName("should parse content_block text")
         void parsesContentBlock() {
             String line = "{\"content_block\":{\"text\":\"streaming chunk\"}}";
-            PassthroughStreamParser.PassthroughEvent event = parser.parseClaudeLine(line);
+            PassthroughStreamParser.PassthroughEvent event = parseClaudeLine(line);
 
             assertNotNull(event);
             assertInstanceOf(PassthroughStreamParser.TextChunk.class, event);
@@ -111,15 +118,15 @@ class PassthroughStreamParserTest {
         @Test
         @DisplayName("should return null for blank lines")
         void nullForBlank() {
-            assertNull(parser.parseClaudeLine(""));
-            assertNull(parser.parseClaudeLine("   "));
-            assertNull(parser.parseClaudeLine(null));
+            assertNull(parseClaudeLine(""));
+            assertNull(parseClaudeLine("   "));
+            assertNull(parseClaudeLine(null));
         }
 
         @Test
         @DisplayName("should return TextChunk for non-JSON lines")
         void nonJsonAsText() {
-            PassthroughStreamParser.PassthroughEvent event = parser.parseClaudeLine("plain text output");
+            PassthroughStreamParser.PassthroughEvent event = parseClaudeLine("plain text output");
             assertInstanceOf(PassthroughStreamParser.TextChunk.class, event);
             assertEquals("plain text output", ((PassthroughStreamParser.TextChunk) event).text());
         }
@@ -128,14 +135,14 @@ class PassthroughStreamParserTest {
         @DisplayName("should return null for system event without session_id")
         void systemWithoutSessionId() {
             String line = "{\"type\":\"system\",\"message\":\"init\"}";
-            assertNull(parser.parseClaudeLine(line));
+            assertNull(parseClaudeLine(line));
         }
 
         @Test
         @DisplayName("should handle result with missing fields")
         void resultWithDefaults() {
             String line = "{\"type\":\"result\"}";
-            PassthroughStreamParser.PassthroughEvent event = parser.parseClaudeLine(line);
+            PassthroughStreamParser.PassthroughEvent event = parseClaudeLine(line);
 
             assertInstanceOf(PassthroughStreamParser.TurnComplete.class, event);
             PassthroughStreamParser.TurnComplete tc = (PassthroughStreamParser.TurnComplete) event;
@@ -218,23 +225,23 @@ class PassthroughStreamParserTest {
         @DisplayName("Claude: full message flow (init -> text -> tool_use -> result)")
         void claudeFullFlow() {
             // Session init
-            PassthroughStreamParser.PassthroughEvent e1 = parser.parseClaudeLine(
+            PassthroughStreamParser.PassthroughEvent e1 = parseClaudeLine(
                     "{\"type\":\"system\",\"session_id\":\"abc-123\"}");
             assertInstanceOf(PassthroughStreamParser.SessionInit.class, e1);
 
             // Text response
-            PassthroughStreamParser.PassthroughEvent e2 = parser.parseClaudeLine(
+            PassthroughStreamParser.PassthroughEvent e2 = parseClaudeLine(
                     "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"I'll help you\"}]}}");
             assertInstanceOf(PassthroughStreamParser.TextChunk.class, e2);
 
             // Tool use
-            PassthroughStreamParser.PassthroughEvent e3 = parser.parseClaudeLine(
+            PassthroughStreamParser.PassthroughEvent e3 = parseClaudeLine(
                     "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}");
             assertInstanceOf(PassthroughStreamParser.ToolUse.class, e3);
             assertEquals("Bash", ((PassthroughStreamParser.ToolUse) e3).name());
 
             // Result (turn complete)
-            PassthroughStreamParser.PassthroughEvent e4 = parser.parseClaudeLine(
+            PassthroughStreamParser.PassthroughEvent e4 = parseClaudeLine(
                     "{\"type\":\"result\",\"duration_ms\":5000,\"cost_usd\":0.01,\"num_turns\":2}");
             assertInstanceOf(PassthroughStreamParser.TurnComplete.class, e4);
             assertEquals(5000, ((PassthroughStreamParser.TurnComplete) e4).durationMs());

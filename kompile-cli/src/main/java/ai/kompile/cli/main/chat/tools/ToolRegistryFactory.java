@@ -24,6 +24,7 @@ import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
@@ -85,9 +86,10 @@ public class ToolRegistryFactory {
         registry.register(new WebFetchTool());
         registry.register(new WebSearchTool());
 
-        // Workflow tools
+        // Workflow and TUI tools
         registry.register(new TodoWriteTool());
         registry.register(new TodoReadTool());
+        registry.register(new SidePanelTool(new SidePanelManager()));
 
         // Process management tools
         if (processManager != null) {
@@ -113,6 +115,10 @@ public class ToolRegistryFactory {
                     baseUrl, registry, permissionService, objectMapper, renderer);
         }
         registry.register(new TaskTool(agentRegistry, subagentRunner));
+        registry.setSubagentRunner(subagentRunner);
+
+        // Evaluation tool
+        registry.register(new EvalTool());
 
         // Role management tool (exposed as MCP tool for subagent coordination)
         if (roleManager != null) {

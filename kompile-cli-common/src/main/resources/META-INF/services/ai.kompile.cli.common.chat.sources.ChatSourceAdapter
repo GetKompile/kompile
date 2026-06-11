@@ -8,3 +8,4 @@ ai.kompile.cli.common.chat.sources.adapters.CursorAdapter
 ai.kompile.cli.common.chat.sources.adapters.AiderAdapter
 ai.kompile.cli.common.chat.sources.adapters.ClineAdapter
 ai.kompile.cli.common.chat.sources.adapters.ContinueAdapter
+ai.kompile.cli.common.chat.sources.adapters.PiAdapter

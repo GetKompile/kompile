@@ -22,15 +22,18 @@ import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PostConstruct;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Scheduled service that automatically imports new CLI transcripts into the app database.
- * Runs on startup and periodically (default 5 min) to discover and import new conversations
- * from all registered chat source adapters.
+ * Runs after startup (async) and periodically (default 5 min) to discover and import
+ * new conversations from all registered chat source adapters.
  */
 @Slf4j
 @Service
@@ -40,10 +43,12 @@ public class CliTranscriptSyncService {
 
     private final CliTranscriptService cliTranscriptService;
     private final ChatHistoryProperties properties;
+    private final AtomicBoolean syncInProgress = new AtomicBoolean(false);
 
-    @PostConstruct
+    @Async
+    @EventListener(ApplicationReadyEvent.class)
     void initialSync() {
-        log.info("CLI transcript sync: running initial sync...");
+        log.info("CLI transcript sync: running initial sync (async, non-blocking)...");
         syncAll();
     }
 
@@ -54,6 +59,18 @@ public class CliTranscriptSyncService {
     }
 
     private void syncAll() {
+        if (!syncInProgress.compareAndSet(false, true)) {
+            log.debug("CLI transcript sync: skipping, previous sync still in progress");
+            return;
+        }
+        try {
+            doSyncAll();
+        } finally {
+            syncInProgress.set(false);
+        }
+    }
+
+    private void doSyncAll() {
         int totalImported = 0;
         int batchSize = properties.getCliSyncBatchSize();
 

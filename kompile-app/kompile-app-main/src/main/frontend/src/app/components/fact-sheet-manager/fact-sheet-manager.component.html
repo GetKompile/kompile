@@ -1077,6 +1077,24 @@
                 </div>
 
 
+                <!-- Restart Info (OOM recovery) -->
+                <div class="restart-info" *ngIf="upload.restartInfo">
+                  <mat-icon [color]="upload.restartInfo.heapIncreased ? 'warn' : 'primary'">
+                    {{ upload.restartInfo.heapIncreased ? 'memory' : 'restart_alt' }}
+                  </mat-icon>
+                  <span>
+                    Restarting (attempt {{ upload.restartInfo.attemptNumber }}/{{ upload.restartInfo.maxAttempts }})
+                    <span *ngIf="upload.restartInfo.heapIncreased" class="oom-badge">Heap ↑ {{ upload.restartInfo.currentHeapSize }}</span>
+                    <span *ngIf="upload.restartInfo.memoryAnalysisReason"> &mdash; {{ upload.restartInfo.memoryAnalysisReason }}</span>
+                  </span>
+                </div>
+
+                <!-- Failure Reason -->
+                <div class="failure-reason" *ngIf="upload.failureReason && upload.status === 'FAILED'">
+                  <mat-icon color="warn">report_problem</mat-icon>
+                  <span>Failure: {{ upload.failureReason }}</span>
+                </div>
+
                 <!-- Error Message -->
                 <div class="error-message" *ngIf="upload.status === 'FAILED' && upload.errorMessage">
                   <mat-icon color="warn">error</mat-icon>
@@ -1087,6 +1105,350 @@
                 <div class="completion-message" *ngIf="upload.status === 'COMPLETED'">
                   <mat-icon color="primary">check_circle</mat-icon>
                   <span>Processing complete</span>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Active Crawl Jobs Progress Panel -->
+        <mat-card class="active-crawl-jobs-card" *ngIf="activeCrawlJobs.length > 0">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon class="spinning-icon">language</mat-icon>
+              Crawl In Progress ({{ activeCrawlJobs.length }})
+            </mat-card-title>
+            <mat-card-subtitle>Source crawl, embedding, and indexing pipeline</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngFor="let job of activeCrawlJobs; trackBy: trackByCrawlJobId" class="crawl-job-item">
+              <!-- Header Row -->
+              <div class="crawl-job-header">
+                <div class="phase-icon-container" [ngClass]="job.status.toLowerCase()">
+                  <mat-icon>{{ getCrawlJobPhaseIcon(job.currentPhase) }}</mat-icon>
+                </div>
+                <div class="crawl-job-info">
+                  <span class="crawl-job-name" [matTooltip]="job.name">
+                    {{ job.name | slice:0:40 }}{{ job.name.length > 40 ? '...' : '' }}
+                  </span>
+                  <div class="crawl-job-meta">
+                    <span class="crawl-status-chip" [ngClass]="job.status.toLowerCase()">{{ job.status }}</span>
+                    <span class="crawl-phase-chip" *ngIf="job.currentPhase">
+                      <mat-icon style="font-size:12px;width:12px;height:12px">{{ getCrawlJobPhaseIcon(job.currentPhase) }}</mat-icon>
+                      {{ formatCrawlPhase(job.currentPhase) }}
+                    </span>
+                    <span *ngIf="job.currentFile" style="font-size:0.7rem;color:var(--text-tertiary)">
+                      {{ job.currentFile | slice:0:30 }}{{ (job.currentFile?.length || 0) > 30 ? '...' : '' }}
+                    </span>
+                    <span *ngIf="job.elapsedMs" style="font-size:0.7rem;color:var(--text-tertiary)">
+                      {{ formatElapsedTime(job.elapsedMs) }}
+                    </span>
+                    <span *ngIf="job.queuePosition" style="font-size:0.7rem;color:var(--text-tertiary)">
+                      Queue #{{ job.queuePosition }}
+                    </span>
+                    <span *ngIf="job.errorCount > 0" class="crawl-error-toggle"
+                          (click)="toggleCrawlErrors(job.jobId); $event.stopPropagation()">
+                      <mat-icon style="font-size:14px;width:14px;height:14px;color:#d32f2f">{{ isCrawlErrorsExpanded(job.jobId) ? 'expand_less' : 'error' }}</mat-icon>
+                      {{ job.errorCount }} error{{ job.errorCount !== 1 ? 's' : '' }}
+                    </span>
+                    <mat-chip *ngIf="job.graphExtractionEnabled" class="mode-chip-small" style="background:#f3e5f5;color:#7b1fa2;font-size:0.6rem;height:18px;min-height:18px">Graph</mat-chip>
+                    <mat-chip *ngIf="job.vectorIndexEnabled" class="mode-chip-small" style="background:#e8f5e9;color:#2e7d32;font-size:0.6rem;height:18px;min-height:18px">Vector</mat-chip>
+                    <mat-chip *ngIf="job.llmProvider" class="mode-chip-small" style="background:#e3f2fd;color:#1565c0;font-size:0.6rem;height:18px;min-height:18px"
+                              [matTooltip]="'LLM: ' + job.llmProvider + (job.llmModel ? ' / ' + job.llmModel : '')">
+                      LLM: {{ job.llmProvider }}
+                    </mat-chip>
+                    <mat-chip *ngIf="job.graphExtractionEnabled && !job.llmProvider" class="mode-chip-small"
+                              style="background:#ffebee;color:#d32f2f;font-size:0.6rem;height:18px;min-height:18px"
+                              matTooltip="Graph extraction enabled but no LLM configured — extraction will be skipped">
+                      No LLM
+                    </mat-chip>
+                  </div>
+                </div>
+                <mat-spinner *ngIf="job.status === 'RUNNING' && !job.currentPhase" diameter="20"></mat-spinner>
+                <button mat-icon-button color="warn" *ngIf="job.status === 'RUNNING' || job.status === 'PENDING'"
+                        (click)="cancelCrawlJob(job.jobId)" matTooltip="Cancel crawl">
+                  <mat-icon>stop</mat-icon>
+                </button>
+              </div>
+
+              <!-- ═══ Expandable Error Panel — full error context ═══ -->
+              <div class="crawl-errors-panel" *ngIf="job.errorCount > 0 && isCrawlErrorsExpanded(job.jobId)">
+                <div class="crawl-errors-header">
+                  <mat-icon style="font-size:16px;width:16px;height:16px;color:#d32f2f">error_outline</mat-icon>
+                  <span>{{ job.errorCount }} Error{{ job.errorCount !== 1 ? 's' : '' }}</span>
+                  <span *ngIf="job.errorMessage" class="crawl-error-fatal">Fatal: {{ job.errorMessage }}</span>
+                </div>
+                <div class="crawl-errors-list">
+                  <div class="crawl-error-entry" *ngFor="let error of job.errors; let i = index">
+                    <span class="crawl-error-index">#{{ i + 1 }}</span>
+                    <pre class="crawl-error-text">{{ error }}</pre>
+                  </div>
+                  <div class="crawl-error-entry" *ngIf="!job.errors?.length && job.errorCount > 0">
+                    <span class="crawl-error-text" style="color:var(--text-tertiary);font-style:italic">
+                      {{ job.errorCount }} error{{ job.errorCount !== 1 ? 's' : '' }} recorded (details not available in summary)
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ═══ Per-Stage Progress Breakdown (replaces single opaque progress bar) ═══ -->
+              <div class="crawl-stage-breakdown"
+                   *ngIf="job.documentsDiscovered > 0 || job.documentsLoaded > 0 || job.chunksCreated || job.currentPhase">
+
+                <!-- Discovery -->
+                <div class="stage-row" [ngClass]="{
+                  'active': isStageActive(job, 'DISCOVERY'),
+                  'complete': isStageComplete(job, 'DISCOVERY'),
+                  'inactive': !isStageActive(job, 'DISCOVERY') && !isStageComplete(job, 'DISCOVERY') && job.documentsDiscovered === 0
+                }">
+                  <div class="stage-row-label">
+                    <mat-icon>search</mat-icon>
+                    <span class="stage-name">Discovery</span>
+                  </div>
+                  <div class="stage-row-bar">
+                    <mat-progress-bar
+                      [mode]="isStageActive(job, 'DISCOVERY') ? 'indeterminate' : 'determinate'"
+                      [value]="job.documentsDiscovered > 0 ? 100 : 0">
+                    </mat-progress-bar>
+                  </div>
+                  <span class="stage-row-stat">{{ job.documentsDiscovered }} found</span>
+                </div>
+
+                <!-- Loading -->
+                <div class="stage-row" [ngClass]="{
+                  'active': isStageActive(job, 'LOADING'),
+                  'complete': isStageComplete(job, 'LOADING'),
+                  'inactive': !isStageActive(job, 'LOADING') && !isStageComplete(job, 'LOADING') && job.documentsLoaded === 0
+                }">
+                  <div class="stage-row-label">
+                    <mat-icon>description</mat-icon>
+                    <span class="stage-name">Loading</span>
+                  </div>
+                  <div class="stage-row-bar">
+                    <mat-progress-bar
+                      mode="determinate"
+                      [value]="getStageProgress(job, 'LOADING')">
+                    </mat-progress-bar>
+                  </div>
+                  <span class="stage-row-stat">{{ job.documentsLoaded }}/{{ job.documentsDiscovered || '?' }}
+                    <span class="stage-pct" *ngIf="getStageProgress(job, 'LOADING') > 0">({{ getStageProgress(job, 'LOADING') }}%)</span>
+                  </span>
+                </div>
+
+                <!-- Chunking -->
+                <div class="stage-row" [ngClass]="{
+                  'active': isStageActive(job, 'CHUNKING'),
+                  'complete': isStageComplete(job, 'CHUNKING'),
+                  'inactive': !isStageActive(job, 'CHUNKING') && !isStageComplete(job, 'CHUNKING') && !(job.chunksCreated || job.chunksProcessed)
+                }">
+                  <div class="stage-row-label">
+                    <mat-icon>content_cut</mat-icon>
+                    <span class="stage-name">Chunking</span>
+                  </div>
+                  <div class="stage-row-bar">
+                    <mat-progress-bar
+                      [mode]="isStageActive(job, 'CHUNKING') && getStageProgress(job, 'CHUNKING') === 0 ? 'indeterminate' : 'determinate'"
+                      [value]="getStageProgress(job, 'CHUNKING')">
+                    </mat-progress-bar>
+                  </div>
+                  <span class="stage-row-stat">{{ job.chunksCreated || job.chunksProcessed || 0 }} chunks</span>
+                </div>
+
+                <!-- Graph Extraction (if enabled) -->
+                <div class="stage-row" *ngIf="job.graphExtractionEnabled" [ngClass]="{
+                  'active': isStageActive(job, 'GRAPH_EXTRACTION'),
+                  'complete': isStageComplete(job, 'GRAPH_EXTRACTION'),
+                  'inactive': !isStageActive(job, 'GRAPH_EXTRACTION') && !isStageComplete(job, 'GRAPH_EXTRACTION') && !(job.graphChunksProcessed)
+                }">
+                  <div class="stage-row-label">
+                    <mat-icon>hub</mat-icon>
+                    <span class="stage-name">Graph Extraction</span>
+                  </div>
+                  <div class="stage-row-bar">
+                    <mat-progress-bar
+                      mode="determinate"
+                      [value]="getStageProgress(job, 'GRAPH_EXTRACTION')"
+                      color="accent">
+                    </mat-progress-bar>
+                  </div>
+                  <span class="stage-row-stat">
+                    {{ job.graphChunksProcessed || 0 }}/{{ job.graphChunksTotal || '?' }}
+                    <span class="stage-pct" *ngIf="getStageProgress(job, 'GRAPH_EXTRACTION') > 0">({{ getStageProgress(job, 'GRAPH_EXTRACTION') }}%)</span>
+                    <span *ngIf="job.entitiesExtracted" style="margin-left:4px;color:var(--text-secondary)">
+                      {{ job.entitiesExtracted }} entities, {{ job.relationshipsExtracted }} rels
+                    </span>
+                  </span>
+                </div>
+
+                <!-- Embedding (if vector index enabled) -->
+                <div class="stage-row" *ngIf="job.vectorIndexEnabled" [ngClass]="{
+                  'active': isStageActive(job, 'EMBEDDING'),
+                  'complete': isStageComplete(job, 'EMBEDDING'),
+                  'inactive': !isStageActive(job, 'EMBEDDING') && !isStageComplete(job, 'EMBEDDING') && !(job.chunksEmbedded)
+                }">
+                  <div class="stage-row-label">
+                    <mat-icon>memory</mat-icon>
+                    <span class="stage-name">Embedding</span>
+                  </div>
+                  <div class="stage-row-bar">
+                    <mat-progress-bar
+                      mode="determinate"
+                      [value]="getStageProgress(job, 'EMBEDDING')">
+                    </mat-progress-bar>
+                  </div>
+                  <span class="stage-row-stat">
+                    {{ job.chunksEmbedded || 0 }}/{{ job.chunksQueuedForEmbedding || job.chunksCreated || job.chunksProcessed || '?' }}
+                    <span class="stage-pct" *ngIf="getStageProgress(job, 'EMBEDDING') > 0">({{ getStageProgress(job, 'EMBEDDING') }}%)</span>
+                    <span *ngIf="job.vectorBatchesTotal" style="margin-left:4px;color:var(--text-secondary)">
+                      batch {{ job.vectorBatchesCompleted || 0 }}/{{ job.vectorBatchesTotal }}
+                    </span>
+                    <span *ngIf="job.currentBatchStep" style="margin-left:4px;color:var(--text-tertiary);font-style:italic">
+                      {{ job.currentBatchStep }}
+                    </span>
+                  </span>
+                </div>
+
+                <!-- Indexing (if vector index enabled) -->
+                <div class="stage-row" *ngIf="job.vectorIndexEnabled" [ngClass]="{
+                  'active': isStageActive(job, 'INDEXING'),
+                  'complete': isStageComplete(job, 'INDEXING'),
+                  'inactive': !isStageActive(job, 'INDEXING') && !isStageComplete(job, 'INDEXING') && !job.documentsIndexed
+                }">
+                  <div class="stage-row-label">
+                    <mat-icon>storage</mat-icon>
+                    <span class="stage-name">Indexing</span>
+                  </div>
+                  <div class="stage-row-bar">
+                    <mat-progress-bar
+                      mode="determinate"
+                      [value]="getStageProgress(job, 'INDEXING')">
+                    </mat-progress-bar>
+                  </div>
+                  <span class="stage-row-stat">{{ job.documentsIndexed || 0 }} indexed</span>
+                </div>
+              </div>
+
+              <!-- ═══ Pipeline Steps — inline with message and throughput ═══ -->
+              <div class="crawl-pipeline-steps-inline" *ngIf="getVisibleCrawlPipelineSteps(job.pipelineSteps).length > 0">
+                <div class="pipeline-step-row" *ngFor="let step of getVisibleCrawlPipelineSteps(job.pipelineSteps)"
+                     [ngClass]="{ 'step-running': step.status === 'RUNNING', 'step-complete': step.status === 'COMPLETED', 'step-failed': step.status === 'FAILED', 'step-skipped': step.status === 'SKIPPED' }">
+                  <mat-icon class="step-icon" [ngStyle]="{'color': step.status === 'FAILED' ? '#d32f2f' : step.status === 'SKIPPED' ? '#f57c00' : ''}">
+                    {{ step.status === 'FAILED' ? 'error' : step.status === 'SKIPPED' ? 'block' : getCrawlStepIcon(step.stepType) }}
+                  </mat-icon>
+                  <span class="step-name" [ngStyle]="{'color': step.status === 'FAILED' ? '#d32f2f' : step.status === 'SKIPPED' ? '#f57c00' : ''}">{{ step.displayName }}</span>
+                  <span class="step-status-badge" *ngIf="step.status === 'FAILED'" style="background:#ffebee;color:#d32f2f;padding:1px 6px;border-radius:8px;font-size:0.65rem;font-weight:600">FAILED</span>
+                  <span class="step-status-badge" *ngIf="step.status === 'SKIPPED'" style="background:#fff3e0;color:#f57c00;padding:1px 6px;border-radius:8px;font-size:0.65rem;font-weight:600">SKIPPED</span>
+                  <div class="step-bar-inline" *ngIf="step.status !== 'FAILED' && step.status !== 'SKIPPED'">
+                    <div class="step-bar-fill" [style.width.%]="step.progressPercent"></div>
+                  </div>
+                  <span class="step-counts" *ngIf="step.status !== 'SKIPPED'">{{ step.completedItems }}/{{ step.totalItems }}<span *ngIf="step.failedItems > 0" style="color:#d32f2f;font-weight:600"> ({{ step.failedItems }} failed)</span></span>
+                  <span class="step-rate" *ngIf="getStepThroughput(step)">{{ getStepThroughput(step) }}</span>
+                  <span class="step-elapsed" *ngIf="step.elapsedMs">{{ formatElapsedTime(step.elapsedMs) }}</span>
+                  <span class="step-message" *ngIf="step.message"
+                        [ngStyle]="{'color': step.status === 'FAILED' ? '#d32f2f' : step.status === 'SKIPPED' ? '#f57c00' : ''}"
+                        [matTooltip]="step.message">{{ step.message | slice:0:80 }}{{ (step.message?.length || 0) > 80 ? '...' : '' }}</span>
+                </div>
+              </div>
+
+              <!-- ═══ Live Activity Feed — recent pipeline events ═══ -->
+              <div class="crawl-activity-feed" *ngIf="job.recentEvents?.length">
+                <div class="activity-feed-header">
+                  <mat-icon style="font-size:14px;width:14px;height:14px">article</mat-icon>
+                  <span>Activity Log</span>
+                  <span class="activity-count">({{ job.recentEvents!.length }})</span>
+                </div>
+                <div class="activity-feed-entries">
+                  <div class="activity-entry" *ngFor="let event of job.recentEvents!.slice(-8)"
+                       [ngClass]="getEventLevelClass(event.level)">
+                    <span class="event-time">{{ formatEventTime(event.timestamp) }}</span>
+                    <span class="event-phase-tag">{{ event.phase }}</span>
+                    <span class="event-message">{{ event.message }}</span>
+                    <span class="event-details" *ngIf="event.details" [matTooltip]="event.details">
+                      {{ event.details | slice:0:80 }}{{ (event.details?.length || 0) > 80 ? '...' : '' }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ═══ Expandable Detail Section (memory, batch config, etc.) ═══ -->
+              <div class="job-info-panel">
+                <div class="job-info-header" (click)="toggleCrawlJobDetail(job.jobId)">
+                  <mat-icon>{{ isCrawlJobExpanded(job.jobId) ? 'expand_less' : 'expand_more' }}</mat-icon>
+                  <mat-icon class="info-icon">info</mat-icon>
+                  <span class="job-info-title">System Details</span>
+                  <span class="job-info-summary">
+                    <span *ngIf="job.sourceCount">{{ job.sourceCount }} source{{ job.sourceCount !== 1 ? 's' : '' }}</span>
+                    <span *ngIf="job.memoryUsagePercent"> | {{ job.memoryUsagePercent | number:'1.0-0' }}% heap</span>
+                    <span *ngIf="job.nativeMemoryUsagePercent"> | {{ job.nativeMemoryUsagePercent | number:'1.0-0' }}% native</span>
+                  </span>
+                </div>
+
+                <div class="job-info-content" *ngIf="isCrawlJobExpanded(job.jobId)">
+                  <!-- Embedding Batch Details -->
+                  <div *ngIf="job.vectorIndexEnabled && (job.vectorBatchesTotal || job.embeddingBatchSize)" style="margin-bottom:8px">
+                    <div class="worker-section-header" style="margin-bottom:4px">
+                      <mat-icon>memory</mat-icon>
+                      <span>Embedding Config</span>
+                    </div>
+                    <div class="crawl-detail-grid">
+                      <div class="crawl-detail-item" *ngIf="job.currentBatchSize">
+                        <span class="detail-label">Batch Size</span>
+                        <span class="detail-value">{{ job.currentBatchSize }}</span>
+                      </div>
+                      <div class="crawl-detail-item" *ngIf="job.embeddingBatchSize">
+                        <span class="detail-label">Configured</span>
+                        <span class="detail-value">{{ job.embeddingBatchSize }}</span>
+                      </div>
+                      <div class="crawl-detail-item" *ngIf="job.embeddingModelOptimalBatchSize">
+                        <span class="detail-label">Model Optimal</span>
+                        <span class="detail-value">{{ job.embeddingModelOptimalBatchSize }}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Memory Stats -->
+                  <div *ngIf="job.memoryUsagePercent || job.processTreeRssBytes">
+                    <div class="worker-section-header" style="margin-bottom:4px">
+                      <mat-icon>developer_board</mat-icon>
+                      <span>Memory</span>
+                    </div>
+                    <div class="crawl-detail-grid">
+                      <div class="crawl-detail-item" *ngIf="job.memoryUsagePercent">
+                        <span class="detail-label">Heap</span>
+                        <span class="detail-value">{{ job.memoryUsagePercent | number:'1.0-0' }}%</span>
+                      </div>
+                      <div class="crawl-detail-item" *ngIf="job.nativeMemoryUsagePercent">
+                        <span class="detail-label">Native</span>
+                        <span class="detail-value">{{ job.nativeMemoryUsagePercent | number:'1.0-0' }}%</span>
+                      </div>
+                      <div class="crawl-detail-item" *ngIf="job.processTreeRssBytes">
+                        <span class="detail-label">Process RSS</span>
+                        <span class="detail-value">{{ formatSize(job.processTreeRssBytes) }}</span>
+                      </div>
+                      <div class="crawl-detail-item" *ngIf="job.embeddingSubprocessRssBytes">
+                        <span class="detail-label">Embedding RSS</span>
+                        <span class="detail-value">{{ formatSize(job.embeddingSubprocessRssBytes) }}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Graph Stats -->
+                  <div *ngIf="job.graphExtractionEnabled && (job.graphNodeCount || job.graphEdgeCount)" style="margin-top:8px">
+                    <div class="worker-section-header" style="margin-bottom:4px">
+                      <mat-icon>hub</mat-icon>
+                      <span>Graph Stats</span>
+                    </div>
+                    <div class="crawl-detail-grid">
+                      <div class="crawl-detail-item">
+                        <span class="detail-label">Nodes</span>
+                        <span class="detail-value">{{ job.graphNodeCount }}</span>
+                      </div>
+                      <div class="crawl-detail-item">
+                        <span class="detail-label">Edges</span>
+                        <span class="detail-value">{{ job.graphEdgeCount }}</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1360,428 +1722,8 @@
       </div>
     </mat-tab>
 
-    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
-    <!-- INDEX BROWSER TAB -->
-    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
-    <mat-tab>
-      <ng-template mat-tab-label>
-        <mat-icon>search</mat-icon>
-        <span class="tab-label">Index Browser</span>
-      </ng-template>
+    <!-- Index Browser has been moved to the Tools Hub tab for full functionality -->
 
-      <div class="tab-content index-browser-content">
-        <!-- Status Section -->
-        <div class="status-section" *ngIf="!statusLoading">
-          <div class="status-header">
-            <mat-icon>info</mat-icon>
-            <h3>Index Status</h3>
-            <button mat-icon-button (click)="refreshIndexerStatus()" matTooltip="Refresh status">
-              <mat-icon>refresh</mat-icon>
-            </button>
-          </div>
-          <div class="status-content" *ngIf="indexerStatus">
-            <!-- Keyword Index Status -->
-            <div class="status-group">
-              <h4 class="status-group-title">
-                <mat-icon>text_snippet</mat-icon> Keyword Index
-                <mat-icon *ngIf="indexerStatus.isNoOpIndexer" class="warning-icon" color="warn"
-                  matTooltip="Using NoOp implementation">warning</mat-icon>
-              </h4>
-              <div class="status-row">
-                <strong>Documents:</strong>
-                <span class="status-count">{{ indexerStatus.approximateDocumentCount ?? 0 }}</span>
-              </div>
-              <div class="status-row">
-                <strong>Available:</strong>
-                <span [class.text-success]="indexerStatus.indexAvailable"
-                  [class.text-error]="!indexerStatus.indexAvailable">
-                  {{ indexerStatus.indexAvailable ? 'Yes' : 'No' }}
-                </span>
-              </div>
-              <div class="status-row" *ngIf="indexerStatus.indexPath">
-                <strong>Path:</strong>
-                <span class="path-display" [matTooltip]="indexerStatus.indexPath">{{ indexerStatus.indexPath }}</span>
-              </div>
-              <div class="status-row" *ngIf="indexerStatus.indexerImplementation">
-                <strong>Implementation:</strong>
-                <span class="implementation-name">{{ indexerStatus.indexerImplementation }}</span>
-              </div>
-            </div>
-
-            <!-- Vector Store Status -->
-            <div class="status-group">
-              <h4 class="status-group-title">
-                <mat-icon>hub</mat-icon> Vector Store
-                <mat-icon *ngIf="indexerStatus.isNoOpVectorStore" class="warning-icon" color="warn"
-                  matTooltip="Using NoOp implementation">warning</mat-icon>
-              </h4>
-              <div class="status-row">
-                <strong>Vectors:</strong>
-                <span class="status-count">{{ indexerStatus.approximateVectorCount ?? 0 }}</span>
-              </div>
-              <div class="status-row">
-                <strong>Available:</strong>
-                <span [class.text-success]="indexerStatus.vectorStoreAvailable"
-                  [class.text-error]="!indexerStatus.vectorStoreAvailable">
-                  {{ indexerStatus.vectorStoreAvailable ? 'Yes' : 'No' }}
-                </span>
-              </div>
-              <div class="status-row" *ngIf="indexerStatus.vectorStorePath">
-                <strong>Path:</strong>
-                <span class="path-display" [matTooltip]="indexerStatus.vectorStorePath">{{ indexerStatus.vectorStorePath
-                  }}</span>
-              </div>
-              <div class="status-row" *ngIf="indexerStatus.vectorStoreImplementation">
-                <strong>Implementation:</strong>
-                <span class="implementation-name">{{ indexerStatus.vectorStoreImplementation }}</span>
-              </div>
-              <div class="status-row" *ngIf="indexerStatus.isUsingFallbackIndex">
-                <strong>Fallback:</strong>
-                <span class="text-warning">Using fallback index</span>
-              </div>
-
-              <!-- Embedding Model Information -->
-              <div class="embedding-model-section">
-                <div class="status-row embedding-header">
-                  <strong>Embedding Model:</strong>
-                </div>
-                <div class="embedding-model-info" *ngIf="embeddingStatus">
-                  <div class="status-row"
-                    [ngClass]="{'ready': isVectorSearchReady(), 'not-ready': !isVectorSearchReady()}">
-                    <span class="model-name">
-                      <mat-icon class="model-status-icon"
-                        [ngClass]="{'ready': isVectorSearchReady(), 'not-ready': !isVectorSearchReady()}">
-                        {{ isVectorSearchReady() ? 'check_circle' : 'cancel' }}
-                      </mat-icon>
-                      {{ embeddingStatus.modelId || 'None' }}
-                    </span>
-                  </div>
-                  <div class="status-row embedding-details" *ngIf="isVectorSearchReady()">
-                    <span class="embedding-badge source-badge">
-                      <mat-icon class="badge-icon">{{ embeddingStatus.source === 'REGISTRY' ? 'storage' : 'archive'
-                        }}</mat-icon>
-                      {{ embeddingStatus.source }}
-                    </span>
-                    <span class="embedding-badge dim-badge">{{ embeddingStatus.dimensions }}d</span>
-                    <span class="embedding-badge seq-badge" *ngIf="embeddingStatus.maxSequenceLength">{{
-                      embeddingStatus.maxSequenceLength }} tokens</span>
-                  </div>
-                  <div class="status-row embedding-details not-ready" *ngIf="!isVectorSearchReady()">
-                    <span class="embedding-badge error-badge" *ngIf="!embeddingStatus.initialized">
-                      <mat-icon class="badge-icon">error</mat-icon>
-                      Not Initialized
-                    </span>
-                    <span class="embedding-badge error-badge"
-                      *ngIf="embeddingStatus.initialized && (embeddingStatus.dimensions || 0) <= 0">
-                      <mat-icon class="badge-icon">error</mat-icon>
-                      Invalid Dimensions
-                    </span>
-                  </div>
-                </div>
-                <div class="embedding-model-info not-loaded" *ngIf="!embeddingStatus">
-                  <div class="status-row">
-                    <span class="text-muted">
-                      <mat-icon class="model-status-icon not-ready">help_outline</mat-icon>
-                      No embedding model loaded
-                    </span>
-                  </div>
-                </div>
-                <div class="embedding-action" *ngIf="!isVectorSearchReady()">
-                  <button mat-stroked-button color="primary" (click)="navigateToModelStaging()" class="small-button">
-                    <mat-icon>settings</mat-icon>
-                    Configure Model
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="status-loading" *ngIf="!indexerStatus">
-            <mat-icon>warning</mat-icon>
-            <span>Could not load index status</span>
-          </div>
-        </div>
-
-        <!-- Loading status -->
-        <div class="status-loading" *ngIf="statusLoading">
-          <mat-spinner diameter="24"></mat-spinner>
-          <span>Loading index status...</span>
-        </div>
-
-        <!-- Search Tabs (Keyword + Vector) -->
-        <mat-tab-group class="index-tabs">
-          <!-- Keyword Index Tab -->
-          <mat-tab>
-            <ng-template mat-tab-label>
-              <mat-icon class="tab-icon">text_fields</mat-icon>
-              <span>Keyword Index</span>
-              <span class="tab-badge" *ngIf="keywordTotalResults">({{ keywordTotalResults }})</span>
-            </ng-template>
-
-            <div class="search-tab-content">
-              <!-- Search Section -->
-              <div class="search-section">
-                <mat-form-field appearance="outline" class="search-field">
-                  <mat-label>Search keyword index</mat-label>
-                  <input matInput [formControl]="keywordSearchControl" placeholder="Enter search query...">
-                  <mat-icon matPrefix>search</mat-icon>
-                  <button mat-icon-button matSuffix *ngIf="keywordSearchQuery" (click)="clearKeywordSearch()">
-                    <mat-icon>close</mat-icon>
-                  </button>
-                </mat-form-field>
-
-                <div class="search-controls" *ngIf="keywordSearchQuery.length >= 2">
-                  <div class="search-info">
-                    <mat-icon>search</mat-icon>
-                    <span *ngIf="keywordSearchLoading">Searching...</span>
-                    <span *ngIf="!keywordSearchLoading">{{ keywordTotalResults }} result{{ keywordTotalResults !== 1 ?
-                      's' : '' }} found</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Loading -->
-              <mat-progress-bar mode="indeterminate" *ngIf="keywordSearchLoading"
-                class="page-progress-bar"></mat-progress-bar>
-
-              <!-- Results Table -->
-              <div class="table-container" *ngIf="keywordDocuments.length > 0">
-                <table mat-table [dataSource]="keywordDataSource" class="mat-elevation-z2">
-                  <ng-container matColumnDef="id">
-                    <th mat-header-cell *matHeaderCellDef>ID</th>
-                    <td mat-cell *matCellDef="let doc">
-                      <span class="doc-id">{{ truncateContent(doc.id, 12) }}</span>
-                    </td>
-                  </ng-container>
-
-                  <ng-container matColumnDef="content">
-                    <th mat-header-cell *matHeaderCellDef>Content Preview</th>
-                    <td mat-cell *matCellDef="let doc">
-                      <div class="doc-preview">
-                        <span class="preview-text">{{ getDocPreview(doc) }}</span>
-                      </div>
-                    </td>
-                  </ng-container>
-
-                  <ng-container matColumnDef="score">
-                    <th mat-header-cell *matHeaderCellDef>Score</th>
-                    <td mat-cell *matCellDef="let doc">
-                      <span class="score-badge" [ngClass]="getScoreClass(doc.score)">
-                        {{ doc.score | number:'1.3-3' }}
-                      </span>
-                    </td>
-                  </ng-container>
-
-                  <ng-container matColumnDef="originalDoc">
-                    <th mat-header-cell *matHeaderCellDef>Source</th>
-                    <td mat-cell *matCellDef="let doc">
-                      <span class="original-doc">{{ doc.originalDocument || '-' }}</span>
-                    </td>
-                  </ng-container>
-
-                  <ng-container matColumnDef="actions">
-                    <th mat-header-cell *matHeaderCellDef>Actions</th>
-                    <td mat-cell *matCellDef="let doc">
-                      <button mat-icon-button matTooltip="View details" (click)="selectDocument(doc)">
-                        <mat-icon>visibility</mat-icon>
-                      </button>
-                    </td>
-                  </ng-container>
-
-                  <tr mat-header-row *matHeaderRowDef="keywordDisplayedColumns"></tr>
-                  <tr mat-row *matRowDef="let row; columns: keywordDisplayedColumns;" class="search-result-row"
-                    [class.selected]="selectedDocument?.id === row.id" (click)="selectDocument(row)"></tr>
-                </table>
-
-                <mat-paginator #keywordPaginator [length]="keywordTotalResults" [pageSize]="keywordPageSize"
-                  [pageSizeOptions]="[5, 10, 25, 50]" (page)="onKeywordPageChange($event)">
-                </mat-paginator>
-              </div>
-
-              <!-- Empty State -->
-              <div class="empty-state-message"
-                *ngIf="!keywordSearchLoading && keywordDocuments.length === 0 && keywordSearchQuery.length >= 2">
-                <mat-icon>search_off</mat-icon>
-                <p>No results found for "{{ keywordSearchQuery }}"</p>
-              </div>
-
-              <!-- Initial State -->
-              <div class="empty-state-message" *ngIf="keywordDocuments.length === 0 && keywordSearchQuery.length < 2">
-                <mat-icon>search</mat-icon>
-                <p>Enter at least 2 characters to search the keyword index</p>
-              </div>
-            </div>
-          </mat-tab>
-
-          <!-- Vector Store Tab -->
-          <mat-tab>
-            <ng-template mat-tab-label>
-              <mat-icon class="tab-icon">psychology</mat-icon>
-              <span>Vector Store</span>
-              <span class="tab-badge" *ngIf="vectorTotalResults">({{ vectorTotalResults }})</span>
-            </ng-template>
-
-            <div class="search-tab-content">
-              <!-- Vector Population Action Bar -->
-              <div class="vector-action-bar">
-                <button mat-stroked-button color="accent" (click)="startVectorPopulation()"
-                  [disabled]="isVectorPopulating || !indexerStatus?.indexAvailable || indexerStatus?.isNoOpIndexer"
-                  matTooltip="Create vector embeddings from all documents in the keyword index">
-                  <mat-icon>auto_fix_high</mat-icon>
-                  {{ isVectorPopulating ? 'Populating...' : 'Populate from Keyword Index' }}
-                </button>
-                <span class="vector-info" *ngIf="indexerStatus?.approximateVectorCount !== undefined">
-                  <mat-icon>hub</mat-icon>
-                  {{ indexerStatus?.approximateVectorCount ?? 0 }} vectors indexed
-                </span>
-              </div>
-
-<!-- Search Section -->
-<div class="search-section">
-  <div class="search-row">
-    <mat-form-field appearance="outline" class="search-field">
-      <mat-label>Semantic search</mat-label>
-      <input matInput [formControl]="vectorSearchControl" placeholder="Enter a question or phrase...">
-      <mat-icon matPrefix>psychology</mat-icon>
-      <button mat-icon-button matSuffix *ngIf="vectorSearchQuery" (click)="clearVectorSearch()">
-        <mat-icon>close</mat-icon>
-      </button>
-    </mat-form-field>
-
-    <div class="threshold-control">
-      <span class="threshold-label">Similarity threshold: {{ similarityThreshold | number:'1.2-2'
-        }}</span>
-      <mat-slider min="0" max="1" step="0.05" discrete [displayWith]="formatThreshold">
-        <input matSliderThumb [value]="similarityThreshold" (valueChange)="onSimilarityThresholdChange($event)">
-      </mat-slider>
-    </div>
-  </div>
-
-  <div class="search-controls" *ngIf="vectorSearchQuery.length >= 2">
-    <div class="search-info">
-      <mat-icon>psychology</mat-icon>
-      <span *ngIf="vectorSearchLoading">Computing embeddings and searching...</span>
-      <span *ngIf="!vectorSearchLoading">{{ vectorTotalResults }} similar document{{ vectorTotalResults
-        !== 1 ? 's' : '' }} found</span>
-    </div>
-  </div>
-</div>
-
-<!-- Loading -->
-<mat-progress-bar mode="indeterminate" *ngIf="vectorSearchLoading" class="page-progress-bar"></mat-progress-bar>
-
-<!-- Results Table -->
-<div class="table-container" *ngIf="vectorDocuments.length > 0">
-  <table mat-table [dataSource]="vectorDataSource" class="mat-elevation-z2">
-    <ng-container matColumnDef="id">
-      <th mat-header-cell *matHeaderCellDef>ID</th>
-      <td mat-cell *matCellDef="let doc">
-        <span class="doc-id">{{ truncateContent(doc.id, 12) }}</span>
-      </td>
-    </ng-container>
-
-    <ng-container matColumnDef="content">
-      <th mat-header-cell *matHeaderCellDef>Content Preview</th>
-      <td mat-cell *matCellDef="let doc">
-        <div class="doc-preview">
-          <span class="preview-text">{{ getDocPreview(doc) }}</span>
-        </div>
-      </td>
-    </ng-container>
-
-    <ng-container matColumnDef="score">
-      <th mat-header-cell *matHeaderCellDef>Similarity</th>
-      <td mat-cell *matCellDef="let doc">
-        <span class="score-badge vector-score" [ngClass]="getScoreClass(doc.score)">
-          {{ (doc.score * 100) | number:'1.1-1' }}%
-        </span>
-      </td>
-    </ng-container>
-
-    <ng-container matColumnDef="originalDoc">
-      <th mat-header-cell *matHeaderCellDef>Source</th>
-      <td mat-cell *matCellDef="let doc">
-        <span class="original-doc">{{ doc.originalDocument || '-' }}</span>
-      </td>
-    </ng-container>
-
-    <ng-container matColumnDef="actions">
-      <th mat-header-cell *matHeaderCellDef>Actions</th>
-      <td mat-cell *matCellDef="let doc">
-        <button mat-icon-button matTooltip="View details" (click)="selectDocument(doc)">
-          <mat-icon>visibility</mat-icon>
-        </button>
-      </td>
-    </ng-container>
-
-    <tr mat-header-row *matHeaderRowDef="vectorDisplayedColumns"></tr>
-    <tr mat-row *matRowDef="let row; columns: vectorDisplayedColumns;" class="search-result-row"
-      [class.selected]="selectedDocument?.id === row.id" (click)="selectDocument(row)"></tr>
-  </table>
-
-  <mat-paginator #vectorPaginator [length]="vectorTotalResults" [pageSize]="vectorPageSize"
-    [pageSizeOptions]="[5, 10, 25, 50]" (page)="onVectorPageChange($event)">
-  </mat-paginator>
-</div>
-
-<!-- Empty State -->
-<div class="empty-state-message"
-  *ngIf="!vectorSearchLoading && vectorDocuments.length === 0 && vectorSearchQuery.length >= 2">
-  <mat-icon>search_off</mat-icon>
-  <p>No similar documents found for "{{ vectorSearchQuery }}"</p>
-  <p class="empty-hint">Try lowering the similarity threshold or using different search terms</p>
-</div>
-
-<!-- Initial State -->
-<div class="empty-state-message" *ngIf="vectorDocuments.length === 0 && vectorSearchQuery.length < 2">
-  <mat-icon>psychology</mat-icon>
-  <p>Enter at least 2 characters for semantic search</p>
-  <p class="empty-hint">Semantic search finds conceptually similar content using AI embeddings</p>
-</div>
-</div>
-</mat-tab>
-</mat-tab-group>
-
-<!-- Document Detail View -->
-<mat-card class="document-detail-view" *ngIf="selectedDocument">
-  <mat-card-header>
-    <mat-card-title class="document-title">
-      Document Details
-      <mat-chip class="score-chip" *ngIf="selectedDocument.score">
-        Score: {{ selectedDocument.score | number:'1.3-3' }}
-      </mat-chip>
-    </mat-card-title>
-    <div class="document-header-actions">
-      <span class="original-doc-info" *ngIf="selectedDocument.originalDocument">
-        <mat-icon>description</mat-icon>
-        {{ selectedDocument.originalDocument }}
-      </span>
-      <button mat-icon-button class="close-button" (click)="closeDocumentDetail()" matTooltip="Close">
-        <mat-icon>close</mat-icon>
-      </button>
-    </div>
-  </mat-card-header>
-  <mat-card-content>
-    <mat-form-field appearance="outline" class="full-width-field content-textarea">
-      <mat-label>Content</mat-label>
-      <textarea matInput [value]="selectedDocument.content || selectedDocument.text || ''" rows="10"
-        readonly></textarea>
-    </mat-form-field>
-
-    <div class="metadata-section" *ngIf="selectedDocument.metadata">
-      <h3>Metadata</h3>
-      <div class="metadata-display">
-        <div class="metadata-item" *ngFor="let key of objectKeys(selectedDocument.metadata)">
-          <strong>{{ key }}:</strong>
-          <span class="metadata-value">{{ selectedDocument.metadata[key] }}</span>
-        </div>
-        <p class="no-metadata" *ngIf="objectKeys(selectedDocument.metadata).length === 0">No metadata available
-        </p>
-      </div>
-    </div>
-  </mat-card-content>
-</mat-card>
-</div>
-</mat-tab>
 
 <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
 <!-- SETTINGS TAB -->
@@ -2433,6 +2375,107 @@
       <app-pipeline-settings-panel [showAdvanced]="true" [availableLoaders]="availableLoaders">
       </app-pipeline-settings-panel>
     </div>
+  </div>
+</mat-tab>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+<!-- SERVER FILES TAB -->
+<!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+<mat-tab>
+  <ng-template mat-tab-label>
+    <mat-icon>folder_open</mat-icon>
+    <span class="tab-label">Server Files</span>
+    <mat-chip *ngIf="serverFiles.length > 0" class="tab-count">{{ serverFiles.length }}</mat-chip>
+  </ng-template>
+
+  <div class="tab-content server-files-tab">
+    <!-- Processing Status Summary -->
+    <mat-card class="processing-status-card" *ngIf="processingStatus">
+      <mat-card-content>
+        <div class="status-summary-row">
+          <div class="status-chip">
+            <mat-icon [class.text-success]="processingStatus.systemReady" [class.text-warn]="!processingStatus.systemReady">
+              {{ processingStatus.systemReady ? 'check_circle' : 'warning' }}
+            </mat-icon>
+            <span>{{ processingStatus.systemReady ? 'System Ready' : 'System Not Ready' }}</span>
+          </div>
+          <div class="status-chip">
+            <mat-icon>description</mat-icon>
+            <span>{{ processingStatus.approximateDocumentCount }} indexed docs</span>
+          </div>
+          <div class="status-chip">
+            <mat-icon>extension</mat-icon>
+            <span>{{ processingStatus.availableLoaders }} loaders</span>
+          </div>
+          <div class="status-chip">
+            <mat-icon>content_cut</mat-icon>
+            <span>{{ processingStatus.availableChunkers }} chunkers</span>
+          </div>
+          <div class="status-chip">
+            <mat-icon>file_upload</mat-icon>
+            <span>{{ processingStatus.uploadedFileCount }} uploaded files</span>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Server Files Header -->
+    <div class="server-files-header">
+      <div class="header-left">
+        <h3>Server Upload Directory</h3>
+        <span class="server-path" *ngIf="serverFilesLocation">{{ serverFilesLocation }}</span>
+      </div>
+      <button mat-raised-button color="primary" (click)="loadServerFiles()">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+    </div>
+
+    <!-- Loading -->
+    <div *ngIf="serverFilesLoading" class="loading-center">
+      <mat-spinner diameter="32"></mat-spinner>
+    </div>
+
+    <!-- Empty State -->
+    <div *ngIf="!serverFilesLoading && serverFiles.length === 0" class="empty-state-card">
+      <mat-icon>cloud_upload</mat-icon>
+      <p>No files found in the uploads directory. Upload files using the Facts tab or drop files into the server directory.</p>
+    </div>
+
+    <!-- Files Table -->
+    <table mat-table [dataSource]="serverFiles" class="server-files-table" *ngIf="!serverFilesLoading && serverFiles.length > 0">
+      <ng-container matColumnDef="icon">
+        <th mat-header-cell *matHeaderCellDef></th>
+        <td mat-cell *matCellDef="let f">
+          <mat-icon class="file-type-icon">{{ getMimeIcon(f.mimeType) }}</mat-icon>
+        </td>
+      </ng-container>
+      <ng-container matColumnDef="fileName">
+        <th mat-header-cell *matHeaderCellDef>File Name</th>
+        <td mat-cell *matCellDef="let f">{{ f.fileName }}</td>
+      </ng-container>
+      <ng-container matColumnDef="mimeType">
+        <th mat-header-cell *matHeaderCellDef>Type</th>
+        <td mat-cell *matCellDef="let f">{{ f.mimeType || '-' }}</td>
+      </ng-container>
+      <ng-container matColumnDef="sizeBytes">
+        <th mat-header-cell *matHeaderCellDef>Size</th>
+        <td mat-cell *matCellDef="let f">{{ f.sizeBytes >= 0 ? formatFileSize(f.sizeBytes) : '-' }}</td>
+      </ng-container>
+      <ng-container matColumnDef="lastModified">
+        <th mat-header-cell *matHeaderCellDef>Modified</th>
+        <td mat-cell *matCellDef="let f">{{ formatLastModified(f.lastModifiedMs) }}</td>
+      </ng-container>
+      <ng-container matColumnDef="actions">
+        <th mat-header-cell *matHeaderCellDef>Actions</th>
+        <td mat-cell *matCellDef="let f">
+          <button mat-icon-button color="primary" (click)="processServerFile(f)" matTooltip="Process & Index">
+            <mat-icon>play_arrow</mat-icon>
+          </button>
+        </td>
+      </ng-container>
+      <tr mat-header-row *matHeaderRowDef="['icon', 'fileName', 'mimeType', 'sizeBytes', 'lastModified', 'actions']"></tr>
+      <tr mat-row *matRowDef="let row; columns: ['icon', 'fileName', 'mimeType', 'sizeBytes', 'lastModified', 'actions'];"></tr>
+    </table>
   </div>
 </mat-tab>
 

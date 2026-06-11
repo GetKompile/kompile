@@ -38,6 +38,7 @@ export interface ChatSessionDto {
   source?: string;
   messages?: ChatMessageDto[];
   messageCount: number;
+  originalTimestamp?: number;
 }
 
 export interface CreateSessionRequest {

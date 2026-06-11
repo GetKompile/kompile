@@ -77,6 +77,9 @@
               <span *ngIf="connection.lastUsedAt">
                 Last used: {{ formatDate(connection.lastUsedAt) }}
               </span>
+              <span *ngIf="connection.expiresAt" [class.expiring-soon]="connection.needsRefresh">
+                Expires: {{ formatDate(connection.expiresAt) }}
+              </span>
             </div>
           </div>
 

@@ -24,6 +24,7 @@ import ai.kompile.core.mcp.optimization.McpOptimizationConfig.MetaToolMode;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.tool.filesystem.FilesystemToolImpl;
 import ai.kompile.tool.rag.RagToolImpl;
+import ai.kompile.tool.tablesearch.TableSearchToolImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,6 +73,9 @@ public class McpSseServerConfiguration {
     @Autowired(required = false)
     private FilesystemToolImpl filesystemTool;
 
+    @Autowired(required = false)
+    private TableSearchToolImpl tableSearchTool;
+
     // Application tools from kompile-app-main
     @Autowired(required = false)
     private ModelDebugTool modelDebugTool;
@@ -107,6 +111,9 @@ public class McpSseServerConfiguration {
     private DiffTrackerTool diffTrackerTool;
 
     @Autowired(required = false)
+    private DiffIndexTool diffIndexTool;
+
+    @Autowired(required = false)
     private ToolResponseCompressorRegistry compressorRegistry;
 
     @Autowired
@@ -137,6 +144,7 @@ public class McpSseServerConfiguration {
         // Add core tools from kompile-tool modules
         addToolIfAvailable(toolObjects, ragTool, "RAG");
         addToolIfAvailable(toolObjects, filesystemTool, "Filesystem");
+        addToolIfAvailable(toolObjects, tableSearchTool, "Table Search");
 
         // Add application tools from kompile-app-main
         addToolIfAvailable(toolObjects, modelDebugTool, "Model Debug");
@@ -150,6 +158,7 @@ public class McpSseServerConfiguration {
         addToolIfAvailable(toolObjects, agentDelegationTool, "Agent Delegation");
         addToolIfAvailable(toolObjects, agentTaskTool, "Agent Task");
         addToolIfAvailable(toolObjects, diffTrackerTool, "Diff Tracker");
+        addToolIfAvailable(toolObjects, diffIndexTool, "Diff Index");
 
         // Meta-tools are always registered; the mode filter below decides which
         // tool *names* the MCP client actually sees.

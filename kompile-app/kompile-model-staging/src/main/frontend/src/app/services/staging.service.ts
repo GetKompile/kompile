@@ -574,6 +574,16 @@ export class StagingService {
       .pipe(catchError(this.handleError));
   }
 
+  // ==================== SSE Streaming ====================
+
+  /**
+   * Connect to real-time staging progress stream for a model via SSE.
+   * Returns an EventSource that emits 'status' events with StagingModelInfo data.
+   */
+  connectToStagingStream(modelId: string): EventSource {
+    return new EventSource(`${this.baseUrl}/models/${encodeURIComponent(modelId)}/stream`);
+  }
+
   // ==================== Polling Utilities ====================
 
   /**

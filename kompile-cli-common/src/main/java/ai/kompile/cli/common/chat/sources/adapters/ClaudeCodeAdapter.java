@@ -22,6 +22,7 @@ import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
 import ai.kompile.cli.common.chat.sources.ChatTurn;
 import ai.kompile.cli.common.chat.sources.SourceInfo;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -126,13 +127,33 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
                     String role = ChatAdapterSupport.extractRole(node);
                     String content = ChatAdapterSupport.extractContent(node);
                     if (role != null && content != null && !content.isBlank()) {
-                        out.add(new ChatTurn(role, content));
+                        ArrayNode rawBlocks = extractRawContentBlocks(node);
+                        out.add(new ChatTurn(role, content, null, rawBlocks));
                     }
                 } catch (Exception ignore) {
                 }
             }
         }
         return out;
+    }
+
+    private static ArrayNode extractRawContentBlocks(JsonNode node) {
+        JsonNode msg = node.path("message");
+        JsonNode contentNode = msg.isObject() ? msg.path("content") : node.path("content");
+        if (contentNode.isArray()) {
+            boolean hasStructured = false;
+            for (JsonNode block : contentNode) {
+                String type = block.path("type").asText("");
+                if ("tool_use".equals(type) || "tool_result".equals(type)) {
+                    hasStructured = true;
+                    break;
+                }
+            }
+            if (hasStructured) {
+                return (ArrayNode) contentNode;
+            }
+        }
+        return null;
     }
 
     private ChatSessionSummary toSummary(Path path) {

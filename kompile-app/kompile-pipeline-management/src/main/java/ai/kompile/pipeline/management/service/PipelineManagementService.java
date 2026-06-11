@@ -1,6 +1,7 @@
 package ai.kompile.pipeline.management.service;
 
 import ai.kompile.pipeline.management.dto.*;
+import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipelines.framework.api.Pipeline;
 import ai.kompile.pipelines.framework.api.PipelineExecutor;
 import ai.kompile.pipelines.framework.api.PipelineStepRunnerFactory;
@@ -93,25 +94,39 @@ public class PipelineManagementService {
     public List<PipelineSummaryDto> listAll() {
         fileLock.readLock().lock();
         try {
+            List<PipelineSummaryDto> results = new ArrayList<>();
             if (!Files.exists(pipelinesDir)) {
-                return Collections.emptyList();
+                return results;
             }
+            // Scan legacy pipeline definitions
             try (Stream<Path> paths = Files.list(pipelinesDir)) {
-                return paths
-                        .filter(p -> p.toString().endsWith(".json"))
-                        .map(p -> {
+                paths.filter(p -> Files.isRegularFile(p) && p.toString().endsWith(".json"))
+                        .forEach(p -> {
                             try {
                                 String id = p.getFileName().toString().replace(".json", "");
                                 CreatePipelineRequest req = jsonMapper.readValue(p.toFile(), CreatePipelineRequest.class);
-                                return toSummary(id, req);
+                                results.add(toSummary(id, req));
                             } catch (IOException e) {
                                 log.warn("Failed to read pipeline file: {}", p, e);
-                                return null;
                             }
-                        })
-                        .filter(Objects::nonNull)
-                        .collect(Collectors.toList());
+                        });
             }
+            // Scan unified pipeline definitions
+            Path unifiedDir = pipelinesDir.resolve("unified");
+            if (Files.exists(unifiedDir) && Files.isDirectory(unifiedDir)) {
+                try (Stream<Path> uPaths = Files.list(unifiedDir)) {
+                    uPaths.filter(p -> p.toString().endsWith(".json"))
+                            .forEach(p -> {
+                                try {
+                                    UnifiedPipelineDefinition def = jsonMapper.readValue(p.toFile(), UnifiedPipelineDefinition.class);
+                                    results.add(toUnifiedSummary(def));
+                                } catch (IOException e) {
+                                    log.warn("Failed to read unified pipeline file: {}", p, e);
+                                }
+                            });
+                }
+            }
+            return results;
         } catch (IOException e) {
             throw new RuntimeException("Failed to list pipelines", e);
         } finally {
@@ -126,11 +141,49 @@ public class PipelineManagementService {
         fileLock.writeLock().lock();
         try {
             Path file = pipelinesDir.resolve(id + ".json");
-            return Files.deleteIfExists(file);
+            boolean deleted = Files.deleteIfExists(file);
+            // Also try unified subdirectory
+            Path unifiedFile = pipelinesDir.resolve("unified").resolve(id + ".json");
+            deleted |= Files.deleteIfExists(unifiedFile);
+            return deleted;
         } catch (IOException e) {
             throw new RuntimeException("Failed to delete pipeline: " + id, e);
         } finally {
             fileLock.writeLock().unlock();
+        }
+    }
+
+    // ==================== Unified Pipeline CRUD ====================
+
+    public void saveUnified(UnifiedPipelineDefinition definition) {
+        String id = definition.getPipelineId();
+        fileLock.writeLock().lock();
+        try {
+            Path dir = pipelinesDir.resolve("unified");
+            Files.createDirectories(dir);
+            Path file = dir.resolve(id + ".json");
+            String json = jsonMapper.writerWithDefaultPrettyPrinter().writeValueAsString(definition);
+            Files.writeString(file, json);
+            log.info("Saved unified pipeline: {}", id);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to save unified pipeline: " + id, e);
+        } finally {
+            fileLock.writeLock().unlock();
+        }
+    }
+
+    public UnifiedPipelineDefinition getUnified(String id) {
+        fileLock.readLock().lock();
+        try {
+            Path file = pipelinesDir.resolve("unified").resolve(id + ".json");
+            if (!Files.exists(file)) {
+                return null;
+            }
+            return jsonMapper.readValue(file.toFile(), UnifiedPipelineDefinition.class);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read unified pipeline: " + id, e);
+        } finally {
+            fileLock.readLock().unlock();
         }
     }
 
@@ -442,6 +495,15 @@ public class PipelineManagementService {
                 .stepTypes(stepTypes)
                 .updatedAt(modified)
                 .serving(servingExecutors.containsKey(id))
+                .build();
+    }
+
+    private PipelineSummaryDto toUnifiedSummary(UnifiedPipelineDefinition def) {
+        return PipelineSummaryDto.builder()
+                .pipelineId(def.getPipelineId())
+                .pipelineType("unified")
+                .kind(def.getKind() != null ? def.getKind().name() : null)
+                .serving(servingExecutors.containsKey(def.getPipelineId()))
                 .build();
     }
 

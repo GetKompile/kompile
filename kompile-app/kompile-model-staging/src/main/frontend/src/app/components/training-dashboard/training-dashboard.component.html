@@ -63,8 +63,41 @@
           </td>
         </ng-container>
         <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-        <tr mat-row *matRowDef="let row; columns: displayedColumns;" (click)="toggleExpand(row.jobId)" class="clickable-row"></tr>
+        <tr mat-row *matRowDef="let row; columns: displayedColumns;" (click)="toggleExpand(row.jobId)"
+            class="clickable-row" [class.expanded]="expandedJobId === row.jobId"></tr>
       </table>
+
+      <!-- Expanded Detail (SSE live data) -->
+      <div class="expanded-detail" *ngIf="expandedJobId">
+        <div class="detail-section" *ngIf="jobLogs.get(expandedJobId)?.length">
+          <h4>Live Logs ({{ jobLogs.get(expandedJobId)?.length || 0 }} entries)</h4>
+          <div class="log-feed">
+            <div class="log-entry" *ngFor="let log of (jobLogs.get(expandedJobId) || []).slice(-20)"
+                 [class.log-error]="log.level === 'ERROR'"
+                 [class.log-warn]="log.level === 'WARN'">
+              <span class="log-step" *ngIf="log.step">Step {{ log.step }}</span>
+              <span class="log-level">{{ log.level }}</span>
+              <span class="log-msg">{{ log.message }}</span>
+              <span class="log-loss" *ngIf="log.loss">loss={{ log.loss | number:'1.4-4' }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="detail-section" *ngIf="jobMetrics.get(expandedJobId)?.length">
+          <h4>Metrics</h4>
+          <div class="metrics-row">
+            <ng-container *ngFor="let m of [jobMetrics.get(expandedJobId)![jobMetrics.get(expandedJobId)!.length - 1]]">
+              <span class="metric" *ngIf="m.trainLoss"><strong>Train Loss:</strong> {{ m.trainLoss | number:'1.4-4' }}</span>
+              <span class="metric" *ngIf="m.evalLoss"><strong>Eval Loss:</strong> {{ m.evalLoss | number:'1.4-4' }}</span>
+              <span class="metric" *ngIf="m.tokensPerSecond"><strong>Tok/s:</strong> {{ m.tokensPerSecond | number:'1.0-0' }}</span>
+              <span class="metric" *ngIf="m.samplesPerSecond"><strong>Samples/s:</strong> {{ m.samplesPerSecond | number:'1.1-1' }}</span>
+              <span class="metric" *ngIf="m.learningRate"><strong>LR:</strong> {{ m.learningRate | number:'1.2-6' }}</span>
+            </ng-container>
+          </div>
+        </div>
+        <div class="detail-section" *ngIf="!jobLogs.get(expandedJobId)?.length && !jobMetrics.get(expandedJobId)?.length">
+          <p class="connecting-msg">Connecting to SSE stream...</p>
+        </div>
+      </div>
     </mat-card-content>
   </mat-card>
 </div>

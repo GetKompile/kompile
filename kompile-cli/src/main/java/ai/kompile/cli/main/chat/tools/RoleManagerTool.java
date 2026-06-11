@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -130,6 +131,9 @@ public class RoleManagerTool implements CliTool {
     public String permissionKey() {
         return "write"; // Role management includes write operations (create, update, delete, assign)
     }
+
+    @Override
+    public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.WRITE; }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -285,9 +289,7 @@ public class RoleManagerTool implements CliTool {
         }
     }
 
-    private static final java.util.Set<String> VALID_AGENTS = java.util.Set.of(
-            "claude", "qwen", "codex", "gemini", "opencode"
-    );
+    private static final java.util.Set<String> VALID_AGENTS = new java.util.HashSet<>(CliAgentRegistry.commandNames());
 
     private ToolResult assignRole(JsonNode params) {
         String name = params.path("name").asText("");

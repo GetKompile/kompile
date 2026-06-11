@@ -29,6 +29,8 @@ import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
+import ai.kompile.core.rag.query.ProcessedQuery;
+import ai.kompile.core.rag.query.QueryProcessor;
 import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
@@ -43,8 +45,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -69,6 +69,7 @@ public class AgentChatService {
     private final AgentRegistryService agentRegistry;
     private final AgentProcessDiagnosticService diagnosticService;
     private final ClaudeStreamParser streamParser;
+    private final AgentSubprocessExecutor subprocessExecutor;
     private final DocumentRetriever keywordRetriever;
     private final VectorStore vectorStore;
     private final GraphRagService graphRagService;
@@ -77,6 +78,7 @@ public class AgentChatService {
     private final ServerPortService serverPortService;
     private final FolderService folderService;
     private final ApiAgentChatExecutor apiAgentChatExecutor;
+    private final QueryProcessor queryProcessor;
 
     // Track running processes by processId for interrupt support
     private final Map<String, Process> runningProcesses = new ConcurrentHashMap<>();
@@ -115,22 +117,26 @@ public class AgentChatService {
             AgentRegistryService agentRegistry,
             AgentProcessDiagnosticService diagnosticService,
             ClaudeStreamParser streamParser,
+            AgentSubprocessExecutor subprocessExecutor,
             List<DocumentRetriever> keywordRetrievers,
             List<VectorStore> vectorStores,
             @Autowired(required = false) List<GraphRagService> graphRagServices,
             @Autowired(required = false) BuiltInToolDiscoveryService toolDiscoveryService,
             ServerPortService serverPortService,
             @Autowired(required = false) FolderService folderService,
-            @Autowired(required = false) ApiAgentChatExecutor apiAgentChatExecutor) {
+            @Autowired(required = false) ApiAgentChatExecutor apiAgentChatExecutor,
+            @Autowired(required = false) QueryProcessor queryProcessor) {
 
         this.agentRegistry = agentRegistry;
         this.diagnosticService = diagnosticService;
         this.streamParser = streamParser;
+        this.subprocessExecutor = subprocessExecutor;
         this.executorService = Executors.newCachedThreadPool();
         this.toolDiscoveryService = toolDiscoveryService;
         this.serverPortService = serverPortService;
         this.folderService = folderService;
         this.apiAgentChatExecutor = apiAgentChatExecutor;
+        this.queryProcessor = queryProcessor;
 
         // Select non-NoOp implementations
         this.keywordRetriever = keywordRetrievers.stream()
@@ -178,19 +184,48 @@ public class AgentChatService {
                     return;
                 }
 
+                // Run query processing and emit query_info event
+                if (queryProcessor != null) {
+                    try {
+                        ProcessedQuery processedQuery = queryProcessor.process(request.getMessage(), List.of());
+                        if (processedQuery.wasRewritten()) {
+                            Map<String, Object> queryInfo = new LinkedHashMap<>();
+                            queryInfo.put("originalQuery", processedQuery.originalQuery());
+                            queryInfo.put("rewrittenQuery", processedQuery.rewrittenQuery());
+                            queryInfo.put("wasRewritten", true);
+                            if (processedQuery.intent() != null) {
+                                queryInfo.put("intent", processedQuery.intent().name());
+                            }
+                            sendEvent(emitter, "query_info", queryInfo);
+                        }
+                    } catch (Exception e) {
+                        log.debug("Query processing skipped: {}", e.getMessage());
+                    }
+                }
+
                 // Branch on agent type: API agents use HTTP, CLI agents use subprocess
                 if (agent.isApiAgent()) {
                     if (apiAgentChatExecutor == null) {
                         sendError(emitter, "API agent executor not available");
                         return;
                     }
+                    long apiRagStartMs = System.currentTimeMillis();
                     String augmentedPrompt = buildPromptWithSources(request, retrievedSources);
+                    long apiRagRetrievalMs = System.currentTimeMillis() - apiRagStartMs;
+                    if (!retrievedSources.isEmpty()) {
+                        sendEvent(emitter, "rag_metrics", Map.of(
+                                "retrievalMs", apiRagRetrievalMs,
+                                "documentsRetrieved", retrievedSources.size()));
+                    }
                     apiAgentChatExecutor.executeApiChat(agent, request, augmentedPrompt, retrievedSources, emitter);
                     return;
                 }
 
                 // CLI agent path: build command and execute subprocess
-                List<String> command = buildCommand(agent, request, buildPromptWithSources(request, retrievedSources));
+                long ragStartMs = System.currentTimeMillis();
+                String augmented = buildPromptWithSources(request, retrievedSources);
+                long ragRetrievalMs = System.currentTimeMillis() - ragStartMs;
+                List<String> command = buildCommand(agent, request, augmented);
 
                 // Create process status for tracking
                 processStatus = diagnosticService.startProcess(agent.getName(), command);
@@ -199,6 +234,9 @@ public class AgentChatService {
                 // Send sources event if RAG was used
                 if (!retrievedSources.isEmpty()) {
                     sendEvent(emitter, "sources", formatSourcesForClient(retrievedSources));
+                    sendEvent(emitter, "rag_metrics", Map.of(
+                            "retrievalMs", ragRetrievalMs,
+                            "documentsRetrieved", retrievedSources.size()));
                 }
 
                 log.info("Executing agent command: {} (args hidden)", agent.getCommand());
@@ -485,7 +523,7 @@ public class AgentChatService {
         int index = 1;
 
         for (RetrievedDoc doc : docs) {
-            if (doc.getContent() == null || doc.getContent().isEmpty()) {
+            if (doc.getText() == null || doc.getText().isEmpty()) {
                 continue;
             }
 
@@ -499,7 +537,7 @@ public class AgentChatService {
             source.put("sourceName", sourceName);
 
             // Content preview (first 300 chars)
-            String content = doc.getContent();
+            String content = doc.getText();
             String preview = content.length() > 300 ? content.substring(0, 300) + "..." : content;
             source.put("preview", preview);
 
@@ -579,12 +617,12 @@ public class AgentChatService {
 
                 if (keywordDocs != null) {
                     keywordDocs.stream()
-                            .filter(doc -> doc != null && doc.getContent() != null && !doc.getContent().isEmpty())
-                            .filter(doc -> !doc.getContent().startsWith("Error:"))
+                            .filter(doc -> doc != null && doc.getText() != null && !doc.getText().isEmpty())
+                            .filter(doc -> !doc.getText().startsWith("Error:"))
                             .forEach(combinedDocs::add);
 
                     log.debug("Keyword search returned {} valid documents",
-                            keywordDocs.stream().filter(d -> d != null && d.getContent() != null).count());
+                            keywordDocs.stream().filter(d -> d != null && d.getText() != null).count());
                 }
             } catch (Exception e) {
                 log.error("Error during keyword retrieval: {}", e.getMessage());
@@ -636,7 +674,7 @@ public class AgentChatService {
         int docNum = 1;
 
         for (RetrievedDoc doc : docs) {
-            String content = doc.getContent();
+            String content = doc.getText();
             if (content == null || content.isEmpty()) {
                 continue;
             }
@@ -659,42 +697,16 @@ public class AgentChatService {
      * Build the base interactive command for the agent (without -p prompt).
      * Used by both one-shot and passthrough interactive modes.
      */
-    List<String> buildInteractiveCommand(AgentProvider agent, boolean skipPermissions, boolean injectMcpTools) {
-        return buildInteractiveCommand(agent, skipPermissions, injectMcpTools, null);
+    public List<String> buildInteractiveCommand(AgentProvider agent, boolean skipPermissions, boolean injectMcpTools) {
+        return subprocessExecutor.buildInteractiveCommand(agent, skipPermissions, injectMcpTools);
     }
 
     /**
      * Build the base interactive command for the agent (without -p prompt).
-     * Used by both one-shot and passthrough interactive modes.
-     *
-     * @param agent           the agent provider
-     * @param skipPermissions whether to add the skip-permissions flag
-     * @param injectMcpTools  whether to inject MCP server args
-     * @param agentArgs       optional extra CLI arguments to pass through to the agent
+     * Delegates to {@link AgentSubprocessExecutor}.
      */
-    List<String> buildInteractiveCommand(AgentProvider agent, boolean skipPermissions, boolean injectMcpTools, List<String> agentArgs) {
-        List<String> command = new ArrayList<>();
-        command.add(agent.getCommand());
-
-        // Add skip permissions flag if enabled
-        if (skipPermissions && agent.getSkipPermissionsFlag() != null) {
-            command.add(agent.getSkipPermissionsFlag());
-        }
-
-        // Add MCP server configuration if agent supports it and tools are available
-        if (injectMcpTools && agent.isMcpSupported() && toolDiscoveryService != null) {
-            addMcpServerArgs(command, agent);
-        }
-
-        // Add agent-specific args
-        command.addAll(agent.safeArgs());
-
-        // Add caller-supplied pass-through args
-        if (agentArgs != null && !agentArgs.isEmpty()) {
-            command.addAll(agentArgs);
-        }
-
-        return command;
+    public List<String> buildInteractiveCommand(AgentProvider agent, boolean skipPermissions, boolean injectMcpTools, List<String> agentArgs) {
+        return subprocessExecutor.buildInteractiveCommand(agent, skipPermissions, injectMcpTools, agentArgs);
     }
 
     /**
@@ -704,122 +716,8 @@ public class AgentChatService {
      * project directory.
      */
     private List<String> buildCommand(AgentProvider agent, AgentChatRequest request, String prompt) {
-        List<String> command = buildInteractiveCommand(agent, request.isSkipPermissions(), request.isInjectMcpTools(), request.getAgentArgs());
-
-        // Add the prompt - handle Gemini's workspace restrictions
-        command.add("-p");
-
-        // For Gemini CLI, we need to use a prompt file in the project directory
-        // because Gemini has workspace restrictions and can't read from /tmp/
-        if (isGeminiAgent(agent)) {
-            try {
-                String promptFilePath = createGeminiPromptFile(request.getWorkingDirectory(), prompt);
-                // Use @ prefix to indicate file path for prompt
-                command.add("@" + promptFilePath);
-                log.debug("Created Gemini prompt file at: {}", promptFilePath);
-            } catch (IOException e) {
-                log.warn("Failed to create Gemini prompt file, using inline prompt: {}", e.getMessage());
-                command.add(prompt);
-            }
-        } else {
-            command.add(prompt);
-        }
-
-        return command;
-    }
-
-    /**
-     * Check if the agent is a Gemini CLI agent.
-     */
-    private boolean isGeminiAgent(AgentProvider agent) {
-        if (agent == null || agent.getName() == null) {
-            return false;
-        }
-        String name = agent.getName().toLowerCase();
-        String command = agent.getCommand() != null ? agent.getCommand().toLowerCase() : "";
-        return name.contains("gemini") || command.contains("gemini");
-    }
-
-    /**
-     * Create a prompt file in the Gemini-accessible directory.
-     * Gemini CLI can only read files within:
-     * - The project directory
-     * - The user's ~/.gemini/tmp/ directory
-     *
-     * We prefer creating files in the project's .gemini/tmp/ directory.
-     */
-    private String createGeminiPromptFile(String workingDirectory, String prompt) throws IOException {
-        Path promptDir;
-
-        if (workingDirectory != null && !workingDirectory.isEmpty()) {
-            // Create in project's .gemini/tmp/ directory
-            promptDir = Path.of(workingDirectory, ".gemini", "tmp");
-        } else {
-            throw new IllegalStateException("workingDirectory is required for Gemini agents but was not provided");
-        }
-
-        // Ensure directory exists
-        Files.createDirectories(promptDir);
-
-        // Create unique prompt file
-        String filename = "agent-prompt-" + System.currentTimeMillis() + "-" +
-                UUID.randomUUID().toString().substring(0, 8) + ".txt";
-        Path promptFile = promptDir.resolve(filename);
-
-        // Write prompt to file
-        Files.writeString(promptFile, prompt);
-
-        // Schedule cleanup after 5 minutes
-        schedulePromptFileCleanup(promptFile);
-
-        return promptFile.toAbsolutePath().toString();
-    }
-
-    /**
-     * Schedule cleanup of the prompt file after a delay.
-     */
-    private void schedulePromptFileCleanup(Path promptFile) {
-        executorService.submit(() -> {
-            try {
-                // Wait 5 minutes before cleanup
-                Thread.sleep(5 * 60 * 1000);
-                if (Files.exists(promptFile)) {
-                    Files.delete(promptFile);
-                    log.debug("Cleaned up prompt file: {}", promptFile);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } catch (IOException e) {
-                log.debug("Failed to cleanup prompt file: {}", e.getMessage());
-            }
-        });
-    }
-
-    /**
-     * Add MCP server arguments to the command based on the agent's detected
-     * capabilities.
-     */
-    private void addMcpServerArgs(List<String> command, AgentProvider agent) {
-        if (toolDiscoveryService == null || toolDiscoveryService.getDiscoveredTools().isEmpty()) {
-            return;
-        }
-
-        String mcpServerUrl = serverPortService.getMcpApiUrl();
-
-        // Use the appropriate flag based on what was detected
-        if (agent.getMcpServerFlag() != null) {
-            // For Claude CLI: --mcp-server "name:url"
-            // Format: --mcp-server "kompile-rag:http://localhost:PORT/api/mcp"
-            command.add(agent.getMcpServerFlag());
-            command.add("kompile-rag:" + mcpServerUrl);
-            log.info("Injecting MCP server for agent '{}': {} kompile-rag:{}",
-                    agent.getName(), agent.getMcpServerFlag(), mcpServerUrl);
-        } else if (agent.getMcpConfigFlag() != null) {
-            // For agents that need a config file, we could write one
-            // This is a fallback - most CLIs should support inline server specification
-            log.debug("Agent '{}' requires config file for MCP - skipping auto-injection",
-                    agent.getName());
-        }
+        return subprocessExecutor.buildCommand(agent, request.isSkipPermissions(), request.isInjectMcpTools(),
+                request.getAgentArgs(), prompt, request.getWorkingDirectory());
     }
 
     /**

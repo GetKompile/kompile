@@ -1,0 +1,441 @@
+.code-projects-container {
+  padding: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.tab-content {
+  padding: 16px 0;
+}
+
+/* Projects Header */
+.projects-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.projects-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+/* Projects Grid */
+.projects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 16px;
+}
+
+.projects-grid mat-card {
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s;
+  border: 2px solid transparent;
+}
+
+.projects-grid mat-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.projects-grid mat-card.selected-card {
+  border-color: #1976d2;
+}
+
+.projects-grid mat-card.active-card {
+  border-color: #4caf50;
+}
+
+.state-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.active-badge {
+  background: #4caf50;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  margin-left: 8px;
+  font-weight: bold;
+}
+
+.project-description {
+  color: #666;
+  font-size: 0.9rem;
+  margin: 8px 0;
+}
+
+.project-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.project-stats .stat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.project-stats .stat mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.project-languages {
+  margin: 8px 0;
+}
+
+.project-footer {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: #999;
+}
+
+/* Empty State */
+.empty-state {
+  text-align: center;
+  padding: 64px 16px;
+  color: #666;
+}
+
+.empty-state mat-icon {
+  font-size: 64px;
+  width: 64px;
+  height: 64px;
+  color: #ccc;
+}
+
+.empty-state h3 {
+  margin: 16px 0 8px;
+}
+
+/* Indexing Progress */
+.indexing-progress {
+  background: #f5f5f5;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.indexing-progress h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.mode-badge {
+  background: #e3f2fd;
+  color: #1565c0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.progress-stats {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.progress-pct {
+  margin-left: auto;
+  font-weight: bold;
+  color: #1976d2;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Fact Sheet Content */
+.fact-sheet-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.fact-sheet-header mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+}
+
+.fact-sheet-header h2 {
+  margin: 0;
+}
+
+.fact-sheet-header p {
+  margin: 4px 0 0;
+  color: #666;
+}
+
+/* Stats Grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+
+.stat-card {
+  text-align: center;
+  padding: 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #1976d2;
+}
+
+.stat-label {
+  font-size: 0.85rem;
+  color: #666;
+  margin-top: 4px;
+}
+
+/* Sections */
+.section {
+  margin: 24px 0;
+}
+
+.section h3 {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+}
+
+/* Entity Breakdown */
+.entity-breakdown {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.entity-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #fafafa;
+  border-radius: 4px;
+}
+
+.entity-type {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.entity-count {
+  font-weight: bold;
+  color: #333;
+}
+
+/* Directory List */
+.directory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.directory-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 8px;
+}
+
+.dir-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.dir-name {
+  font-weight: 500;
+}
+
+.dir-path {
+  font-size: 0.8rem;
+  color: #999;
+  font-family: monospace;
+}
+
+.dir-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.small-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+/* Sessions */
+.sessions-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.sessions-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-card {
+  transition: box-shadow 0.2s;
+}
+
+.session-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+
+.session-icon {
+  color: #1976d2;
+}
+
+.source-badge {
+  background: #e3f2fd;
+  color: #1565c0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: bold;
+  margin-right: 8px;
+}
+
+.session-id {
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: #999;
+}
+
+.session-meta {
+  display: flex;
+  gap: 24px;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.session-meta span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.session-count-badge {
+  background: #1976d2;
+  color: white;
+  border-radius: 10px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: bold;
+  margin-left: 6px;
+  min-width: 18px;
+  text-align: center;
+  display: inline-block;
+  line-height: 18px;
+}
+
+.empty-state code {
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+/* Dialog */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog-content {
+  background: white;
+  border-radius: 12px;
+  padding: 32px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.dialog-content h2 {
+  margin: 0 0 24px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.directories-section {
+  margin: 16px 0;
+}
+
+.directories-section h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.add-directory-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.dir-input {
+  flex: 1;
+}
+
+.directory-chips {
+  margin-top: 8px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}

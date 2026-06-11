@@ -1,0 +1,298 @@
+<div class="code-projects-container">
+  <mat-tab-group [(selectedIndex)]="activeTabIndex">
+
+    <!-- Projects Tab -->
+    <mat-tab label="Projects">
+      <div class="tab-content">
+        <div class="projects-header">
+          <h2>Code Projects</h2>
+          <button mat-raised-button color="primary" (click)="openCreateDialog()">
+            <mat-icon>add</mat-icon> New Project
+          </button>
+        </div>
+
+        <div class="projects-grid" *ngIf="projects.length > 0">
+          <mat-card *ngFor="let project of projects"
+                    [class.active-card]="project.isActive"
+                    [class.selected-card]="selectedProject?.projectId === project.projectId"
+                    (click)="selectProject(project)">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [style.color]="project.color">{{ project.icon }}</mat-icon>
+              <mat-card-title>{{ project.name }}</mat-card-title>
+              <mat-card-subtitle>
+                <mat-icon [style.color]="getStateColor(project.indexState)" class="state-icon">
+                  {{ getStateIcon(project.indexState) }}
+                </mat-icon>
+                {{ project.indexState }}
+                <span *ngIf="project.isActive" class="active-badge">ACTIVE</span>
+              </mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <p *ngIf="project.description" class="project-description">{{ project.description }}</p>
+              <div class="project-stats">
+                <span class="stat"><mat-icon>insert_drive_file</mat-icon> {{ project.totalFiles }} files</span>
+                <span class="stat"><mat-icon>account_tree</mat-icon> {{ project.totalEntities }} entities</span>
+                <span class="stat"><mat-icon>link</mat-icon> {{ project.totalRelations }} relations</span>
+                <span class="stat"><mat-icon>folder</mat-icon> {{ project.directoryCount }} dirs</span>
+              </div>
+              <div class="project-languages" *ngIf="project.languages">
+                <mat-chip-set>
+                  <mat-chip *ngFor="let lang of getLanguagesList(project.languages)">{{ lang }}</mat-chip>
+                </mat-chip-set>
+              </div>
+              <div class="project-footer">
+                <span class="last-indexed">Last indexed: {{ formatDate(project.lastIndexedAt) }}</span>
+              </div>
+            </mat-card-content>
+
+            <mat-card-actions>
+              <button mat-button (click)="indexProject(project); $event.stopPropagation()"
+                      [disabled]="project.indexState === 'INDEXING'"
+                      matTooltip="Incremental index (only changed files)">
+                <mat-icon>refresh</mat-icon> Index
+              </button>
+              <button mat-button (click)="indexProject(project, true); $event.stopPropagation()"
+                      [disabled]="project.indexState === 'INDEXING'"
+                      matTooltip="Full reindex (wipe and rebuild)">
+                <mat-icon>replay</mat-icon> Full Reindex
+              </button>
+              <button mat-button *ngIf="!project.isActive"
+                      (click)="activateProject(project); $event.stopPropagation()">
+                <mat-icon>star</mat-icon> Activate
+              </button>
+              <button mat-icon-button [matMenuTriggerFor]="projectMenu"
+                      (click)="$event.stopPropagation()">
+                <mat-icon>more_vert</mat-icon>
+              </button>
+              <mat-menu #projectMenu="matMenu">
+                <button mat-menu-item (click)="deleteProject(project)">
+                  <mat-icon color="warn">delete</mat-icon> Delete
+                </button>
+              </mat-menu>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+
+        <div class="empty-state" *ngIf="projects.length === 0">
+          <mat-icon>code_off</mat-icon>
+          <h3>No Code Projects</h3>
+          <p>Create a code project to index and analyze your codebase.</p>
+          <button mat-raised-button color="primary" (click)="openCreateDialog()">
+            <mat-icon>add</mat-icon> Create Project
+          </button>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Fact Sheet / Details Tab -->
+    <mat-tab label="Fact Sheet" [disabled]="!selectedProject">
+      <div class="tab-content" *ngIf="selectedProject">
+        <!-- Indexing progress -->
+        <div class="indexing-progress" *ngIf="indexingProgress && !indexingProgress.completed">
+          <h3>
+            <mat-icon class="spin">sync</mat-icon>
+            Indexing {{ selectedProject.name }}
+            <span class="mode-badge">{{ indexingProgress.incremental ? 'INCREMENTAL' : 'FULL' }}</span>
+          </h3>
+          <mat-progress-bar mode="determinate" [value]="indexingProgress.progressPercent"></mat-progress-bar>
+          <div class="progress-stats">
+            <span>{{ indexingProgress.filesProcessed }} processed</span>
+            <span>{{ indexingProgress.filesSkipped }} skipped</span>
+            <span>{{ indexingProgress.entitiesFound }} entities</span>
+            <span>{{ indexingProgress.errors }} errors</span>
+            <span class="progress-pct">{{ indexingProgress.progressPercent }}%</span>
+          </div>
+        </div>
+
+        <!-- Fact sheet details -->
+        <div class="fact-sheet-content" *ngIf="factSheet">
+          <div class="fact-sheet-header">
+            <mat-icon [style.color]="selectedProject.color">{{ selectedProject.icon }}</mat-icon>
+            <div>
+              <h2>{{ factSheet.name }}</h2>
+              <p *ngIf="factSheet.description">{{ factSheet.description }}</p>
+            </div>
+          </div>
+
+          <mat-divider></mat-divider>
+
+          <!-- Statistics Overview -->
+          <div class="stats-grid" *ngIf="factSheet.statistics">
+            <div class="stat-card">
+              <div class="stat-value">{{ factSheet.statistics.totalEntities || 0 }}</div>
+              <div class="stat-label">Total Entities</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">{{ factSheet.statistics.totalRelations || 0 }}</div>
+              <div class="stat-label">Relations</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">{{ (factSheet.languages || []).length }}</div>
+              <div class="stat-label">Languages</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value">{{ (factSheet.directories || []).length }}</div>
+              <div class="stat-label">Directories</div>
+            </div>
+          </div>
+
+          <!-- Languages -->
+          <div class="section" *ngIf="factSheet.languages?.length > 0">
+            <h3>Languages</h3>
+            <mat-chip-set>
+              <mat-chip *ngFor="let lang of factSheet.languages">{{ lang }}</mat-chip>
+            </mat-chip-set>
+          </div>
+
+          <!-- Entity Breakdown -->
+          <div class="section" *ngIf="factSheet.entityBreakdown">
+            <h3>Entity Breakdown</h3>
+            <div class="entity-breakdown">
+              <div class="entity-row" *ngFor="let entry of factSheet.entityBreakdown | keyvalue">
+                <span class="entity-type">{{ entry.key }}</span>
+                <span class="entity-count">{{ entry.value }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Directories -->
+          <div class="section" *ngIf="factSheet.directories?.length > 0">
+            <h3>Indexed Directories</h3>
+            <div class="directory-list">
+              <div class="directory-item" *ngFor="let dir of factSheet.directories">
+                <mat-icon>folder</mat-icon>
+                <div class="dir-info">
+                  <span class="dir-name">{{ dir.displayName }}</span>
+                  <span class="dir-path">{{ dir.path }}</span>
+                </div>
+                <div class="dir-stats">
+                  <span>{{ dir.filesIndexed }} files</span>
+                  <span>{{ dir.entitiesFound }} entities</span>
+                  <mat-icon [style.color]="getStateColor(dir.status)" class="small-icon">
+                    {{ getStateIcon(dir.status) }}
+                  </mat-icon>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Sessions Tab -->
+    <mat-tab [disabled]="!selectedProject">
+      <ng-template mat-tab-label>
+        Sessions
+        <span class="session-count-badge" *ngIf="projectSessions.length > 0">{{ projectSessions.length }}</span>
+      </ng-template>
+      <div class="tab-content" *ngIf="selectedProject">
+        <div class="sessions-header">
+          <h2>CLI Sessions — {{ selectedProject.name }}</h2>
+          <button mat-icon-button (click)="loadProjectSessions(selectedProject.projectId)" matTooltip="Refresh">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+
+        <div class="sessions-list" *ngIf="projectSessions.length > 0">
+          <mat-card *ngFor="let session of projectSessions" class="session-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar class="session-icon">{{ getSourceIcon(session.source) }}</mat-icon>
+              <mat-card-title>{{ session.title }}</mat-card-title>
+              <mat-card-subtitle>
+                <span class="source-badge">{{ session.source || 'app' }}</span>
+                <span class="session-id">{{ session.sessionId }}</span>
+              </mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="session-meta">
+                <span><mat-icon class="small-icon">chat</mat-icon> {{ session.messageCount }} messages</span>
+                <span><mat-icon class="small-icon">schedule</mat-icon> {{ formatDate(session.updatedAt) }}</span>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <div class="empty-state" *ngIf="projectSessions.length === 0">
+          <mat-icon>forum</mat-icon>
+          <h3>No Sessions</h3>
+          <p>Launch <code>kompile chat</code> from this project's directory to see sessions here.</p>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Code Graph Tab (existing component) -->
+    <mat-tab label="Code Graph" [disabled]="!selectedProject">
+      <div class="tab-content" *ngIf="selectedProject">
+        <app-code-graph-builder></app-code-graph-builder>
+      </div>
+    </mat-tab>
+
+    <!-- Diff Index Tab -->
+    <mat-tab label="Diff Index">
+      <div class="tab-content">
+        <app-diff-index-browser></app-diff-index-browser>
+      </div>
+    </mat-tab>
+
+  </mat-tab-group>
+</div>
+
+<!-- Create Project Dialog -->
+<div class="dialog-overlay" *ngIf="showCreateDialog" (click)="closeCreateDialog()">
+  <div class="dialog-content" (click)="$event.stopPropagation()">
+    <h2>Create Code Project</h2>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Project Name</mat-label>
+      <input matInput [(ngModel)]="newProject.name" (blur)="generateProjectId()" placeholder="My Project">
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Project ID</mat-label>
+      <input matInput [(ngModel)]="newProject.projectId" placeholder="my-project">
+      <mat-hint>Unique identifier (auto-generated from name)</mat-hint>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Description</mat-label>
+      <textarea matInput [(ngModel)]="newProject.description" rows="2" placeholder="What is this project?"></textarea>
+    </mat-form-field>
+
+    <!-- Directories -->
+    <div class="directories-section">
+      <h3>Source Directories</h3>
+      <div class="add-directory-row">
+        <mat-form-field appearance="outline" class="dir-input">
+          <mat-label>Directory Path</mat-label>
+          <input matInput [(ngModel)]="newDirectoryPath" placeholder="/path/to/source"
+                 (keyup.enter)="addDirectory()">
+        </mat-form-field>
+        <button mat-icon-button color="primary" (click)="addDirectory()" [disabled]="!newDirectoryPath.trim()">
+          <mat-icon>add_circle</mat-icon>
+        </button>
+      </div>
+      <div class="directory-chips">
+        <mat-chip-set>
+          <mat-chip *ngFor="let dir of newProject.directories; let i = index" (removed)="removeDirectory(i)">
+            {{ dir.path }}
+            <mat-icon matChipRemove>cancel</mat-icon>
+          </mat-chip>
+        </mat-chip-set>
+      </div>
+    </div>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Tags</mat-label>
+      <input matInput [(ngModel)]="newProject.tags" placeholder="java,backend,microservice">
+    </mat-form-field>
+
+    <div class="dialog-actions">
+      <button mat-button (click)="closeCreateDialog()">Cancel</button>
+      <button mat-raised-button color="primary" (click)="createProject()"
+              [disabled]="!newProject.projectId || !newProject.name">
+        Create Project
+      </button>
+    </div>
+  </div>
+</div>

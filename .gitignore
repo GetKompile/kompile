@@ -45,6 +45,16 @@ dist/
 hs_err_pid*.log
 *.hs_err*
 
+# Kompile runtime metadata
+.kompile/
+**/.kompile/
+
+# Editor/tool metadata
+.opencode/
+**/.opencode/
+*.kompile-backup
+*.kompile-skills-backup
+
 # Data/model directories
 anserini-models/
 anserini-downloads/
@@ -134,3 +144,56 @@ tokenizers-rust/libt
 
 # glibc builds
 glibc-*/
+
+# Documents and office files
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.xlsm
+*.ppt
+*.pptx
+*.odt
+*.ods
+*.odp
+*.csv
+
+# Video/audio files
+*.m4v
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.mp3
+*.wav
+*.flac
+*.m4a
+
+# Image files (large)
+*.psd
+*.ai
+*.tiff
+*.tif
+*.bmp
+*.raw
+
+# Database backup files
+*.mv.db.bak*
+*.mv.db.empty_backup
+*.sql.gz
+*.dump
+
+# Archive files (already have *.zip and *.tar.gz above)
+*.rar
+*.7z
+
+# Compiled/model binaries (large)
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.h5
+*.hdf5
+*.keras

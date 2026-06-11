@@ -267,6 +267,24 @@
                       <mat-hint>Separate executable for model initialization (optional)</mat-hint>
                     </mat-form-field>
                   </div>
+
+                  <div class="config-item full-width">
+                    <label>Training Subprocess Executable</label>
+                    <mat-form-field appearance="outline" class="full-width-input">
+                      <mat-label>Training Executable</mat-label>
+                      <input matInput [(ngModel)]="editTrainingExecutablePath" [ngModelOptions]="{standalone: true}" placeholder="Leave empty to use unified executable">
+                      <mat-hint>Separate executable for training jobs (optional)</mat-hint>
+                    </mat-form-field>
+                  </div>
+
+                  <div class="config-item full-width">
+                    <label>VLM Test Subprocess Executable</label>
+                    <mat-form-field appearance="outline" class="full-width-input">
+                      <mat-label>VLM Test Executable</mat-label>
+                      <input matInput [(ngModel)]="editVlmTestExecutablePath" [ngModelOptions]="{standalone: true}" placeholder="Leave empty to use unified executable">
+                      <mat-hint>Separate executable for VLM test jobs (optional)</mat-hint>
+                    </mat-form-field>
+                  </div>
                 </div>
               </mat-expansion-panel>
             </mat-card-content>

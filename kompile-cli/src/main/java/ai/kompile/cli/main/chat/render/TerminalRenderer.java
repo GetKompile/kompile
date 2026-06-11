@@ -18,7 +18,13 @@ package ai.kompile.cli.main.chat.render;
 
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.TodoWriteTool;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,8 +57,9 @@ public class TerminalRenderer {
 
     // Braille spinner frames (like OpenCode's)
     private static final String[] SPINNER_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"};
+    private static final int MAX_CONTEXT_TOOL_BUCKETS = 4;
 
-    // Tool icons (Unicode)
+    // Tool icons (Unicode) — keys are lowercase short names (no MCP prefix)
     private static final Map<String, String> TOOL_ICONS = Map.ofEntries(
             Map.entry("read", "📖"),
             Map.entry("write", "✏️"),
@@ -65,9 +72,57 @@ public class TerminalRenderer {
             Map.entry("webfetch", "🌐"),
             Map.entry("websearch", "🔎"),
             Map.entry("task", "🤖"),
+            Map.entry("multi_task", "🤖"),
+            Map.entry("quorum_task", "🤖"),
             Map.entry("todowrite", "📝"),
             Map.entry("todoread", "📝"),
-            Map.entry("exit_plan_mode", "✅")
+            Map.entry("exit_plan_mode", "✅"),
+            Map.entry("code_search", "🔍"),
+            Map.entry("code_graph", "🔗"),
+            Map.entry("rag_search", "📚"),
+            Map.entry("graph_search", "🔗"),
+            Map.entry("memory", "🧠"),
+            Map.entry("semantic_memory", "🧠"),
+            Map.entry("explore", "🗺️"),
+            Map.entry("process", "⚙️"),
+            Map.entry("browser", "🌐"),
+            Map.entry("edit_coordinator", "🔒"),
+            Map.entry("toolsearch", "🔍"),
+            Map.entry("agent", "🤖"),
+            Map.entry("exec", "⚡")
+    );
+
+    /** Shared Jackson mapper for JSON input parsing. */
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    /**
+     * Primary parameter keys per tool — these are extracted from JSON input
+     * and shown as the human-readable description instead of raw JSON.
+     * Order matters: first key found wins for single-line display.
+     */
+    private static final Map<String, String[]> PRIMARY_PARAMS = Map.ofEntries(
+            Map.entry("read", new String[]{"file_path"}),
+            Map.entry("write", new String[]{"file_path"}),
+            Map.entry("edit", new String[]{"file_path"}),
+            Map.entry("patch", new String[]{"file_path"}),
+            Map.entry("glob", new String[]{"pattern"}),
+            Map.entry("grep", new String[]{"pattern", "path"}),
+            Map.entry("bash", new String[]{"command"}),
+            Map.entry("list", new String[]{"path"}),
+            Map.entry("webfetch", new String[]{"url"}),
+            Map.entry("websearch", new String[]{"query"}),
+            Map.entry("task", new String[]{"description"}),
+            Map.entry("multi_task", new String[]{"description"}),
+            Map.entry("quorum_task", new String[]{"description"}),
+            Map.entry("toolsearch", new String[]{"query"}),
+            Map.entry("code_search", new String[]{"query"}),
+            Map.entry("code_graph", new String[]{"query"}),
+            Map.entry("rag_search", new String[]{"query"}),
+            Map.entry("graph_search", new String[]{"query"}),
+            Map.entry("memory", new String[]{"query", "key"}),
+            Map.entry("explore", new String[]{"query"}),
+            Map.entry("agent", new String[]{"description"}),
+            Map.entry("browser", new String[]{"url"})
     );
 
     private final boolean ansiEnabled;
@@ -86,36 +141,50 @@ public class TerminalRenderer {
 
     /**
      * Render a tool call start (pending/running state).
+     * Automatically prettifies MCP-prefixed tool names and parses JSON input
+     * into human-readable descriptions.
+     * <p>
+     * Example: {@code mcp__kompile__read} with input
+     * {@code {"file_path":"src/app/foo.ts"}} renders as:
+     * <pre>  📖 Read src/app/foo.ts</pre>
      */
     public String renderToolCallStart(String toolName, String description) {
-        String icon = TOOL_ICONS.getOrDefault(toolName, "🔧");
-        String desc = description != null && !description.isEmpty() ? " " + dim(description) : "";
-        return "  " + icon + " " + bold(cyan(toolName)) + desc;
+        String cleanName = stripMcpPrefix(toolName);
+        String displayName = prettifyToolName(toolName);
+        String icon = TOOL_ICONS.getOrDefault(cleanName, "🔧");
+
+        // Try to prettify JSON input into a readable summary
+        String prettyDesc = prettifyToolInput(cleanName, description, 80);
+        String desc = !prettyDesc.isEmpty() ? " " + dim(prettyDesc) : "";
+        return "  " + icon + " " + bold(cyan(displayName)) + desc;
     }
 
     /**
      * Render a tool call running with spinner.
      */
     public String renderToolCallRunning(String toolName, int spinnerFrame) {
-        String icon = TOOL_ICONS.getOrDefault(toolName, "🔧");
+        String cleanName = stripMcpPrefix(toolName);
+        String displayName = prettifyToolName(toolName);
         String spinner = ansiEnabled ? yellow(SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]) : "...";
-        return "  " + spinner + " " + cyan(toolName) + " " + dim("running...");
+        return "  " + spinner + " " + cyan(displayName) + " " + dim("running...");
     }
 
     /**
      * Render a completed tool call with result summary.
      */
     public String renderToolCallComplete(String toolName, ToolResult result) {
-        String icon = TOOL_ICONS.getOrDefault(toolName, "🔧");
+        String cleanName = stripMcpPrefix(toolName);
+        String displayName = prettifyToolName(toolName);
+        String icon = TOOL_ICONS.getOrDefault(cleanName, "🔧");
         StringBuilder sb = new StringBuilder();
 
         if (result.isError()) {
-            sb.append("  ").append(icon).append(" ").append(bold(red(toolName)));
+            sb.append("  ").append(icon).append(" ").append(bold(red(displayName)));
             sb.append(" ").append(red("✗"));
             String errorPreview = truncatePreview(result.getOutput(), 120);
             sb.append("\n    ").append(red(errorPreview));
         } else {
-            sb.append("  ").append(icon).append(" ").append(bold(green(toolName)));
+            sb.append("  ").append(icon).append(" ").append(bold(green(displayName)));
             sb.append(" ").append(green("✓"));
 
             // Show title if present
@@ -146,8 +215,10 @@ public class TerminalRenderer {
      * Render a tool call that was denied (permission).
      */
     public String renderToolCallDenied(String toolName, String reason) {
-        String icon = TOOL_ICONS.getOrDefault(toolName, "🔧");
-        return "  " + icon + " " + bold(yellow(toolName)) + " " + yellow("⊘ denied") +
+        String cleanName = stripMcpPrefix(toolName);
+        String displayName = prettifyToolName(toolName);
+        String icon = TOOL_ICONS.getOrDefault(cleanName, "🔧");
+        return "  " + icon + " " + bold(yellow(displayName)) + " " + yellow("⊘ denied") +
                 (reason != null ? " " + dim(reason) : "");
     }
 
@@ -168,9 +239,11 @@ public class TerminalRenderer {
      * Render a subagent tool call (indented under the subagent block).
      */
     public String renderSubagentToolCall(String toolName, boolean isError) {
-        String icon = TOOL_ICONS.getOrDefault(toolName, "🔧");
+        String cleanName = stripMcpPrefix(toolName);
+        String displayName = prettifyToolName(toolName);
+        String icon = TOOL_ICONS.getOrDefault(cleanName, "🔧");
         String status = isError ? red("✗") : green("✓");
-        return "  " + magenta("│") + "  " + icon + " " + cyan(toolName) + " " + status;
+        return "  " + magenta("│") + "  " + icon + " " + cyan(displayName) + " " + status;
     }
 
     /**
@@ -321,18 +394,67 @@ public class TerminalRenderer {
 
     /**
      * Render context grouping for read-only tools.
+     * Tool names in the map are prettified for display.
      */
     public String renderContextGroup(Map<String, Integer> toolCounts) {
+        if (toolCounts == null || toolCounts.isEmpty()) {
+            return "";
+        }
+
+        Map<String, Integer> aggregated = new LinkedHashMap<>();
+        int totalCalls = 0;
+        for (Map.Entry<String, Integer> entry : toolCounts.entrySet()) {
+            int count = entry.getValue() != null ? entry.getValue() : 0;
+            if (count <= 0) {
+                continue;
+            }
+            String cleanName = stripMcpPrefix(entry.getKey());
+            if (cleanName.isEmpty()) {
+                cleanName = "unknown";
+            }
+            aggregated.merge(cleanName, count, Integer::sum);
+            totalCalls += count;
+        }
+
+        if (aggregated.isEmpty()) {
+            return "";
+        }
+
+        List<Map.Entry<String, Integer>> entries = new ArrayList<>(aggregated.entrySet());
+        entries.sort(Comparator
+                .<Map.Entry<String, Integer>>comparingInt(Map.Entry::getValue)
+                .reversed()
+                .thenComparing(Map.Entry::getKey));
+
         StringBuilder sb = new StringBuilder();
         sb.append("  ").append(dim("Gathered context: "));
+        sb.append(cyan(String.valueOf(totalCalls))).append(dim(totalCalls == 1 ? " call" : " calls"));
+        sb.append(dim(" ("));
         boolean first = true;
-        for (Map.Entry<String, Integer> entry : toolCounts.entrySet()) {
+        int shownCalls = 0;
+        int shownBuckets = Math.min(entries.size(), MAX_CONTEXT_TOOL_BUCKETS);
+        for (int i = 0; i < shownBuckets; i++) {
+            Map.Entry<String, Integer> entry = entries.get(i);
             if (!first) sb.append(dim(", "));
+            String displayName = prettifyToolName(entry.getKey());
             sb.append(cyan(String.valueOf(entry.getValue())))
-                    .append(dim(" " + entry.getKey()));
+                    .append(dim(" " + displayName));
             if (entry.getValue() > 1) sb.append(dim("s"));
             first = false;
+            shownCalls += entry.getValue();
         }
+
+        int remainingCalls = totalCalls - shownCalls;
+        int remainingBuckets = entries.size() - shownBuckets;
+        if (remainingCalls > 0) {
+            if (!first) sb.append(dim(", "));
+            sb.append(dim("+")).append(cyan(String.valueOf(remainingCalls))).append(dim(" more"));
+            if (remainingBuckets > 0) {
+                sb.append(dim(" across ")).append(cyan(String.valueOf(remainingBuckets)))
+                        .append(dim(remainingBuckets == 1 ? " tool" : " tools"));
+            }
+        }
+        sb.append(dim(")"));
         return sb.toString();
     }
 
@@ -358,8 +480,9 @@ public class TerminalRenderer {
      * Start a spinner thread that updates in-place. Returns a handle to stop it.
      */
     public SpinnerHandle startSpinner(String toolName) {
+        String displayName = prettifyToolName(toolName);
         if (!ansiEnabled) {
-            System.out.print("  " + toolName + "...");
+            System.out.print("  " + displayName + "...");
             System.out.flush();
             return new SpinnerHandle(null);
         }
@@ -367,11 +490,10 @@ public class TerminalRenderer {
         AtomicBoolean running = new AtomicBoolean(true);
         Thread spinnerThread = new Thread(() -> {
             int frame = 0;
-            String icon = TOOL_ICONS.getOrDefault(toolName, "🔧");
             while (running.get()) {
                 String spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
                 // Move cursor to start of line, clear line, print spinner
-                System.out.print("\r" + ESC + "2K  " + yellow(spinner) + " " + cyan(toolName) + " " + dim("running..."));
+                System.out.print("\r" + ESC + "2K  " + yellow(spinner) + " " + cyan(displayName) + " " + dim("running..."));
                 System.out.flush();
                 frame++;
                 try {
@@ -392,6 +514,8 @@ public class TerminalRenderer {
      */
     public static class SpinnerHandle {
         private final AtomicBoolean running;
+        /** Volatile phase override — spinner thread reads this each frame. */
+        private volatile String phaseOverride;
 
         SpinnerHandle(AtomicBoolean running) {
             this.running = running;
@@ -405,11 +529,73 @@ public class TerminalRenderer {
                 System.out.flush();
             }
         }
+
+        /**
+         * Change the spinner phase text (e.g. from "Generating" to "Thinking").
+         * The spinner thread picks this up on the next frame.
+         */
+        public void setPhase(String phase) {
+            this.phaseOverride = phase;
+        }
+    }
+
+    /**
+     * Returns a no-op SpinnerHandle that does nothing on stop/setPhase.
+     * Used when the spinner would conflict with an active readline.
+     */
+    public SpinnerHandle noOpSpinner() {
+        return new SpinnerHandle(null);
     }
 
     // ========================================================================
     // Generating spinner (animated waiting indicator during LLM response)
     // ========================================================================
+
+    /**
+     * Start an animated "Generating..." spinner with terminal title update.
+     * Shows a braille spinner animation on the current line and sets the
+     * terminal tab/title to indicate processing is in progress.
+     *
+     * @param chainInfo optional queue chain info (e.g., " [2/5]")
+     * @return a SpinnerHandle to stop the spinner when the response arrives
+     */
+    public SpinnerHandle startStaticSpinner(String chainInfo) {
+        if (chainInfo == null) chainInfo = "";
+        final String chain = chainInfo;
+        setTerminalTitle("⏳ Generating..." + (chain.isEmpty() ? "" : " " + chain));
+
+        if (ansiEnabled) {
+            System.out.print("\r" + ESC + "2K"
+                    + "  " + DIM + "Generating..." + RESET + chain
+                    + DIM + "  (Esc to cancel, Ctrl+B to background)" + RESET);
+            System.out.flush();
+        } else {
+            System.out.println("  Generating..." + chain + "  (Esc to cancel, Ctrl+B to background)");
+            System.out.flush();
+        }
+
+        return new SpinnerHandle(null) {
+            @Override
+            public void stop() {
+                if (ansiEnabled) {
+                    System.out.print("\r" + ESC + "2K");
+                    System.out.flush();
+                }
+                resetTerminalTitle();
+            }
+
+            @Override
+            public void setPhase(String phase) {
+                super.setPhase(phase);
+                if (ansiEnabled && phase != null) {
+                    System.out.print("\r" + ESC + "2K"
+                            + "  " + DIM + phase + "..." + RESET + chain
+                            + DIM + "  (Esc to cancel, Ctrl+B to background)" + RESET);
+                    System.out.flush();
+                }
+            }
+        };
+    }
 
     /**
      * Start an animated "Generating..." spinner with terminal title update.
@@ -438,12 +624,32 @@ public class TerminalRenderer {
         }
 
         AtomicBoolean running = new AtomicBoolean(true);
+        SpinnerHandle handle = new SpinnerHandle(running) {
+            @Override
+            public void stop() {
+                super.stop();
+                resetTerminalTitle();
+            }
+        };
         Thread spinnerThread = new Thread(() -> {
             int frame = 0;
-            String[] phases = {"Generating", "Generating.", "Generating..", "Generating..."};
+            String[][] phasesets = {
+                {"Generating", "Generating.", "Generating..", "Generating..."},
+                {"Thinking", "Thinking.", "Thinking..", "Thinking..."},
+            };
+            String[] currentPhases = phasesets[0];
             while (running.get()) {
+                // Check for phase override from the handle
+                String override = handle.phaseOverride;
+                if (override != null) {
+                    if ("Thinking".equals(override)) {
+                        currentPhases = phasesets[1];
+                    } else {
+                        currentPhases = phasesets[0];
+                    }
+                }
                 String spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
-                String phase = phases[(frame / 3) % phases.length];
+                String phase = currentPhases[(frame / 3) % currentPhases.length];
                 System.out.print("\r" + ESC + "2K"
                         + "  " + yellow(spinner) + " " + DIM + phase + RESET
                         + chain
@@ -460,13 +666,7 @@ public class TerminalRenderer {
         spinnerThread.setDaemon(true);
         spinnerThread.start();
 
-        return new SpinnerHandle(running) {
-            @Override
-            public void stop() {
-                super.stop();
-                resetTerminalTitle();
-            }
-        };
+        return handle;
     }
 
     // ========================================================================
@@ -489,6 +689,151 @@ public class TerminalRenderer {
      */
     public void resetTerminalTitle() {
         setTerminalTitle("kompile chat");
+    }
+
+    // ========================================================================
+    // Tool name & input prettification
+    // ========================================================================
+
+    /**
+     * Strip MCP server prefixes from a tool name, returning the lowercase short name.
+     * E.g., {@code "mcp__kompile__read"} → {@code "read"}, {@code "Read"} → {@code "read"}.
+     */
+    public static String stripMcpPrefix(String rawName) {
+        if (rawName == null || rawName.isEmpty()) return "";
+        String name = rawName;
+        // mcp__<server>__<tool> → <tool>
+        if (name.startsWith("mcp__")) {
+            int lastSep = name.lastIndexOf("__");
+            if (lastSep > 4) { // "mcp__" is 5 chars
+                name = name.substring(lastSep + 2);
+            }
+        }
+        return name.toLowerCase();
+    }
+
+    /**
+     * Clean up a raw tool name for display. Strips MCP prefixes, capitalizes,
+     * and converts underscores to title case.
+     * <p>
+     * Examples:
+     * <ul>
+     *   <li>{@code "mcp__kompile__read"} → {@code "Read"}</li>
+     *   <li>{@code "mcp__kompile__code_search"} → {@code "Code Search"}</li>
+     *   <li>{@code "ToolSearch"} → {@code "ToolSearch"} (unchanged)</li>
+     *   <li>{@code "exec"} → {@code "Exec"}</li>
+     * </ul>
+     */
+    public static String prettifyToolName(String rawName) {
+        if (rawName == null || rawName.isEmpty()) return "unknown";
+
+        String name = rawName;
+        // Strip MCP prefix
+        if (name.startsWith("mcp__")) {
+            int lastSep = name.lastIndexOf("__");
+            if (lastSep > 4) {
+                name = name.substring(lastSep + 2);
+            }
+        }
+
+        // If already CamelCase (contains uppercase after position 0), keep as-is
+        if (name.length() > 1) {
+            boolean hasMidUppercase = false;
+            for (int i = 1; i < name.length(); i++) {
+                if (Character.isUpperCase(name.charAt(i))) {
+                    hasMidUppercase = true;
+                    break;
+                }
+            }
+            if (hasMidUppercase) {
+                // Capitalize first letter and return (e.g., "toolSearch" → "ToolSearch")
+                return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+            }
+        }
+
+        // Convert underscore_case to Title Case
+        if (name.contains("_")) {
+            String[] parts = name.split("_");
+            StringBuilder sb = new StringBuilder();
+            for (String part : parts) {
+                if (part.isEmpty()) continue;
+                if (sb.length() > 0) sb.append(" ");
+                sb.append(Character.toUpperCase(part.charAt(0)));
+                if (part.length() > 1) sb.append(part.substring(1));
+            }
+            return sb.toString();
+        }
+
+        // Simple lowercase name → capitalize
+        return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+    }
+
+    /**
+     * Parse tool input (often raw JSON) into a human-readable one-line summary.
+     * <p>
+     * For known tools, extracts the primary parameter value. For example,
+     * a {@code read} tool with input {@code {"file_path":"src/app/foo.ts","limit":100}}
+     * returns {@code "src/app/foo.ts"}.
+     * <p>
+     * For unknown tools or non-JSON input, returns a truncated plain-text version.
+     *
+     * @param toolName  lowercase short tool name (no MCP prefix)
+     * @param rawInput  the raw input string (JSON or plain text)
+     * @param maxLen    maximum length of the returned string
+     */
+    public static String prettifyToolInput(String toolName, String rawInput, int maxLen) {
+        if (rawInput == null || rawInput.isBlank()) return "";
+
+        String trimmed = rawInput.trim();
+
+        // If not JSON, return truncated plain text
+        if (!trimmed.startsWith("{")) {
+            return truncatePreview(trimmed, maxLen);
+        }
+
+        try {
+            JsonNode node = JSON.readTree(trimmed);
+            if (!node.isObject()) {
+                return truncatePreview(trimmed, maxLen);
+            }
+
+            // Look for primary params by tool name
+            String[] primaryKeys = PRIMARY_PARAMS.get(toolName);
+            if (primaryKeys != null) {
+                StringBuilder sb = new StringBuilder();
+                for (String key : primaryKeys) {
+                    if (node.has(key) && !node.get(key).isNull()) {
+                        JsonNode val = node.get(key);
+                        String valStr = val.isTextual() ? val.asText() : val.toString();
+                        if (!valStr.isEmpty()) {
+                            if (sb.length() > 0) sb.append(" in ");
+                            sb.append(valStr);
+                        }
+                    }
+                }
+                if (sb.length() > 0) {
+                    return truncatePreview(sb.toString(), maxLen);
+                }
+            }
+
+            // Fallback: show fields as "key=value" pairs, skipping noise
+            StringBuilder sb = new StringBuilder();
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> entry = fields.next();
+                if (sb.length() > 0) sb.append(", ");
+                String val = entry.getValue().isTextual()
+                        ? entry.getValue().asText()
+                        : entry.getValue().toString();
+                sb.append(entry.getKey()).append("=").append(val);
+                if (sb.length() > maxLen) break;
+            }
+            return truncatePreview(sb.toString(), maxLen);
+
+        } catch (Exception e) {
+            // JSON parse failed — return truncated raw text
+            return truncatePreview(trimmed, maxLen);
+        }
     }
 
     // ========================================================================

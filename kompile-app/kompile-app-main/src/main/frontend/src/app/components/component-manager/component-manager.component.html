@@ -1,0 +1,127 @@
+<div class="component-manager">
+
+  <mat-card class="main-card">
+    <mat-card-header class="card-header">
+      <mat-icon mat-card-avatar>settings_applications</mat-icon>
+      <mat-card-title>Component Manager</mat-card-title>
+      <mat-card-subtitle>Manage kompile services (start / stop / restart)</mat-card-subtitle>
+      <span class="header-spacer"></span>
+      <button mat-icon-button
+              (click)="loadComponents()"
+              [disabled]="loading"
+              matTooltip="Refresh component list">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </mat-card-header>
+
+    <mat-divider></mat-divider>
+
+    <mat-card-content class="card-content">
+
+      <!-- Loading spinner -->
+      <div *ngIf="loading" class="spinner-row">
+        <mat-progress-spinner mode="indeterminate" diameter="36"></mat-progress-spinner>
+        <span class="loading-label">Loading components…</span>
+      </div>
+
+      <!-- Empty state -->
+      <p *ngIf="!loading && components.length === 0" class="empty-hint">
+        <mat-icon class="empty-icon">inbox</mat-icon>
+        No components found. Ensure the backend is reachable and exposes
+        <code>GET /api/system/components</code>.
+      </p>
+
+      <!-- Component table -->
+      <table *ngIf="!loading && components.length > 0"
+             mat-table
+             [dataSource]="components"
+             class="components-table">
+
+        <!-- Component ID column -->
+        <ng-container matColumnDef="id">
+          <th mat-header-cell *matHeaderCellDef>Component</th>
+          <td mat-cell *matCellDef="let c">
+            <div class="component-id-cell">
+              <span class="component-id">{{ c.id }}</span>
+              <span *ngIf="c.description" class="component-description">{{ c.description }}</span>
+            </div>
+          </td>
+        </ng-container>
+
+        <!-- Status column -->
+        <ng-container matColumnDef="status">
+          <th mat-header-cell *matHeaderCellDef>Status</th>
+          <td mat-cell *matCellDef="let c">
+            <span class="status-chip" [ngClass]="getStatusClass(c.status)">
+              <mat-icon class="status-icon">{{ getStatusIcon(c.status) }}</mat-icon>
+              {{ c.status }}
+            </span>
+          </td>
+        </ng-container>
+
+        <!-- Port column -->
+        <ng-container matColumnDef="port">
+          <th mat-header-cell *matHeaderCellDef>Port</th>
+          <td mat-cell *matCellDef="let c">
+            <span *ngIf="c.port" class="mono">{{ c.port }}</span>
+            <span *ngIf="!c.port" class="dim">—</span>
+          </td>
+        </ng-container>
+
+        <!-- PID column -->
+        <ng-container matColumnDef="pid">
+          <th mat-header-cell *matHeaderCellDef>PID</th>
+          <td mat-cell *matCellDef="let c">
+            <span *ngIf="c.pid" class="mono">{{ c.pid }}</span>
+            <span *ngIf="!c.pid" class="dim">—</span>
+          </td>
+        </ng-container>
+
+        <!-- Actions column -->
+        <ng-container matColumnDef="actions">
+          <th mat-header-cell *matHeaderCellDef>Actions</th>
+          <td mat-cell *matCellDef="let c">
+            <div class="action-buttons">
+
+              <!-- Start -->
+              <button mat-icon-button
+                      color="primary"
+                      (click)="start(c)"
+                      [disabled]="isRunning(c) || isActionInProgress(c.id)"
+                      matTooltip="Start component">
+                <mat-icon *ngIf="!isActionInProgress(c.id)">play_arrow</mat-icon>
+                <mat-progress-spinner *ngIf="isActionInProgress(c.id)"
+                                      mode="indeterminate"
+                                      diameter="18">
+                </mat-progress-spinner>
+              </button>
+
+              <!-- Stop -->
+              <button mat-icon-button
+                      color="warn"
+                      (click)="stop(c)"
+                      [disabled]="isStopped(c) || isActionInProgress(c.id)"
+                      matTooltip="Stop component">
+                <mat-icon>stop</mat-icon>
+              </button>
+
+              <!-- Restart -->
+              <button mat-icon-button
+                      (click)="restart(c)"
+                      [disabled]="isActionInProgress(c.id)"
+                      matTooltip="Restart component">
+                <mat-icon>refresh</mat-icon>
+              </button>
+
+            </div>
+          </td>
+        </ng-container>
+
+        <tr mat-header-row *matHeaderRowDef="tableColumns"></tr>
+        <tr mat-row *matRowDef="let row; columns: tableColumns" class="component-row"></tr>
+      </table>
+
+    </mat-card-content>
+  </mat-card>
+
+</div>

@@ -46,23 +46,37 @@ public class StagingSettingsService {
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private final Path settingsFile;
 
+    private Path settingsFile;
     private volatile StagingSettings settings;
 
-    @Value("${kompile.home:${user.home}/.kompile}")
-    private String kompileHome;
+    @Value("${kompile.staging.settings-dir:${kompile.home:${user.home}/.kompile}}")
+    private String settingsDir;
+
+    @Value("${kompile.staging.callback-url:}")
+    private String callbackUrlOverride;
 
     public StagingSettingsService() {
         this.objectMapper = new ObjectMapper();
         this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
         this.restTemplate = new RestTemplate();
-        this.settingsFile = Paths.get(System.getProperty("user.home"), ".kompile", SETTINGS_FILENAME);
     }
 
     @PostConstruct
     public void init() {
+        this.settingsFile = Paths.get(settingsDir).resolve(SETTINGS_FILENAME);
+        log.info("Staging settings file: {}", settingsFile);
         loadSettings();
+        // Apply callback URL override from Spring property if settings file didn't have one
+        if (callbackUrlOverride != null && !callbackUrlOverride.isBlank()) {
+            StagingSettings s = getSettings();
+            if (s.getCallbackUrl() == null || s.getCallbackUrl().isBlank()) {
+                s.setCallbackUrl(callbackUrlOverride);
+                s.setAutoReloadEnabled(true);
+                updateSettings(s);
+                log.info("Set callback URL from property: {}", callbackUrlOverride);
+            }
+        }
     }
 
     /**

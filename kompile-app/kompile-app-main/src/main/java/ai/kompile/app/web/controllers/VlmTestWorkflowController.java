@@ -16,6 +16,9 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.services.scheduler.JobResourceProfiles;
+import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
+import ai.kompile.app.services.scheduler.ScheduledJob;
 import ai.kompile.app.services.subprocess.SubprocessConfigService;
 import ai.kompile.app.services.subprocess.SubprocessConfigService.SubprocessConfigUpdate;
 import ai.kompile.app.services.subprocess.VlmTestSubprocessLauncher;
@@ -49,15 +52,18 @@ public class VlmTestWorkflowController {
 
     private final VlmTestSubprocessLauncher launcher;
     private final SubprocessConfigService configService;
+    private final ResourceAwareJobScheduler resourceScheduler;
 
     // Track completed results so they can be polled after subprocess finishes
     private final Map<String, VlmTestResult> completedResults = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<VlmTestResult>> activeFutures = new ConcurrentHashMap<>();
 
     public VlmTestWorkflowController(VlmTestSubprocessLauncher launcher,
-                                      @Autowired(required = false) SubprocessConfigService configService) {
+                                      @Autowired(required = false) SubprocessConfigService configService,
+                                      @Autowired(required = false) ResourceAwareJobScheduler resourceScheduler) {
         this.launcher = launcher;
         this.configService = configService;
+        this.resourceScheduler = resourceScheduler;
     }
 
     /**
@@ -105,28 +111,69 @@ public class VlmTestWorkflowController {
             if (maxKvLen != null) options.put("maxKvLen", String.valueOf(maxKvLen));
             if (maxPages != null) options.put("maxPages", String.valueOf(maxPages));
 
-            // Launch subprocess
-            CompletableFuture<VlmTestResult> future = launcher.launchTest(
-                    taskId, tempFile.toAbsolutePath().toString(), modelId, outputFormat, options);
+            // === SCHEDULER INTEGRATION: Submit through scheduler for queuing, priority, and history ===
+            if (resourceScheduler != null) {
+                final String fOriginalName = originalName;
+                ScheduledJob schedulerJob = ScheduledJob.builder()
+                        .jobId(taskId)
+                        .jobType("vlm")
+                        .description("VLM test: " + (originalName != null ? originalName : "unknown"))
+                        .resourceProfile(JobResourceProfiles.VLM)
+                        .executor(ctx -> {
+                            CompletableFuture<VlmTestResult> f = launcher.launchTest(
+                                    taskId, tempFile.toAbsolutePath().toString(), modelId, outputFormat, options);
+                            activeFutures.put(taskId, f);
+                            try {
+                                VlmTestResult r = f.get();
+                                activeFutures.remove(taskId);
+                                if (r != null) {
+                                    completedResults.put(taskId, r);
+                                    if (!"COMPLETED".equals(r.status)) {
+                                        throw new RuntimeException("VLM failed: " + r.errorMessage);
+                                    }
+                                }
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException("VLM test interrupted", e);
+                            } catch (java.util.concurrent.ExecutionException e) {
+                                activeFutures.remove(taskId);
+                                VlmTestResult failedResult = new VlmTestResult(taskId,
+                                        tempFile.toAbsolutePath().toString(), "FAILED");
+                                failedResult.errorMessage = e.getCause().getMessage();
+                                completedResults.put(taskId, failedResult);
+                                throw new RuntimeException("VLM failed: " + e.getCause().getMessage(), e.getCause());
+                            } finally {
+                                try { Files.deleteIfExists(tempFile); } catch (Exception ignored) {}
+                            }
+                        })
+                        .priority(60)
+                        .build();
+                resourceScheduler.submit(schedulerJob);
+                logger.info("Submitted VLM test {} to scheduler for file {} with model {}", taskId, fOriginalName, modelId);
+            } else {
+                // Direct launch without scheduler
+                CompletableFuture<VlmTestResult> future = launcher.launchTest(
+                        taskId, tempFile.toAbsolutePath().toString(), modelId, outputFormat, options);
 
-            activeFutures.put(taskId, future);
+                activeFutures.put(taskId, future);
 
-            // When complete, move result to completed map
-            future.whenComplete((result, error) -> {
-                activeFutures.remove(taskId);
-                if (result != null) {
-                    completedResults.put(taskId, result);
-                } else if (error != null) {
-                    VlmTestResult failedResult = new VlmTestResult(taskId,
-                            tempFile.toAbsolutePath().toString(), "FAILED");
-                    failedResult.errorMessage = error.getMessage();
-                    completedResults.put(taskId, failedResult);
-                }
-                // Clean up temp file after a delay
-                try { Files.deleteIfExists(tempFile); } catch (Exception ignored) {}
-            });
+                // When complete, move result to completed map
+                future.whenComplete((result, error) -> {
+                    activeFutures.remove(taskId);
+                    if (result != null) {
+                        completedResults.put(taskId, result);
+                    } else if (error != null) {
+                        VlmTestResult failedResult = new VlmTestResult(taskId,
+                                tempFile.toAbsolutePath().toString(), "FAILED");
+                        failedResult.errorMessage = error.getMessage();
+                        completedResults.put(taskId, failedResult);
+                    }
+                    // Clean up temp file after a delay
+                    try { Files.deleteIfExists(tempFile); } catch (Exception ignored) {}
+                });
 
-            logger.info("Started VLM test {} for file {} with model {}", taskId, originalName, modelId);
+                logger.info("Started VLM test {} for file {} with model {}", taskId, originalName, modelId);
+            }
 
             return ResponseEntity.ok(Map.of(
                     "taskId", taskId,
@@ -170,6 +217,20 @@ public class VlmTestWorkflowController {
                     "currentPhase", status.currentPhase(),
                     "pagesCompleted", status.pagesCompleted()
             ));
+        }
+
+        // Check if queued in scheduler (not yet dispatched to launcher)
+        if (resourceScheduler != null) {
+            var jobView = resourceScheduler.getJobView(taskId);
+            if (jobView != null) {
+                return ResponseEntity.ok(Map.of(
+                        "taskId", taskId,
+                        "status", jobView.state(),
+                        "progressPercent", 0,
+                        "currentPhase", "QUEUED".equals(jobView.state()) ? "QUEUED" : jobView.currentPhase(),
+                        "pagesCompleted", 0
+                ));
+            }
         }
 
         return ResponseEntity.notFound().build();
@@ -298,7 +359,7 @@ public class VlmTestWorkflowController {
                 null, null, null, null, null, null, // restart config
                 null, null, null, null, // stall detection
                 null, null, null, null, null, null, null, // native exec config
-                null, null, null, null, null, null // memory watchdog thresholds
+                null, null, null, null, null, null, null // memory watchdog thresholds (incl. gpuSoftLimitPercent)
         );
         configService.updateConfiguration(configUpdate);
 

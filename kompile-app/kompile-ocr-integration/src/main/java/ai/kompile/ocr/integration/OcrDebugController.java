@@ -16,6 +16,7 @@
 
 package ai.kompile.ocr.integration;
 
+import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.ModelType;
 import ai.kompile.modelmanager.registry.RegistryService;
@@ -59,7 +60,7 @@ public class OcrDebugController {
 
     private final RegistryService registryService;
     private final RestTemplate restTemplate;
-    private String stagingBaseUrl = "http://localhost:8090";
+    private String stagingBaseUrl = KompileServerConstants.DEFAULT_STAGING_URL;
 
     @Autowired
     public OcrDebugController(

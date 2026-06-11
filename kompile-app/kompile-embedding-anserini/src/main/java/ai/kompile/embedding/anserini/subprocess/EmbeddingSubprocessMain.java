@@ -126,15 +126,19 @@ public class EmbeddingSubprocessMain {
             initializeNd4j();
             sendProgress("INITIALIZING", 40, "ND4J ready", "Native backend initialized");
 
-            // Initialize memory watchdog with default thresholds (GPU + off-heap monitoring auto-enabled)
+            // Initialize memory watchdog with configurable GPU thresholds
+            int gpuStopPercent = Integer.getInteger("kompile.subprocess.memory.gpu-stop-threshold-percent", 75);
+            int gpuCriticalPercent = Integer.getInteger("kompile.subprocess.memory.gpu-critical-threshold-percent", 85);
+            int gpuKillPercent = Integer.getInteger("kompile.subprocess.memory.gpu-kill-threshold-percent", 92);
             memoryWatchdog = new SubprocessMemoryWatchdog(
                     80, 90, 95,  // Heap thresholds: stop=80%, critical=90%, kill=95%
                     2000,        // Check interval: 2 seconds
-                    75, 85, 92,  // GPU thresholds: stop=75%, critical=85%, kill=92%
+                    gpuStopPercent, gpuCriticalPercent, gpuKillPercent,
                     80, 90, 95   // Off-heap thresholds: stop=80%, critical=90%, kill=95%
             );
             memoryWatchdog.start();
-            logger.info("Memory watchdog started: heap stop=80%, critical=90%, kill=95%; GPU stop=75%, critical=85%, kill=92%; off-heap stop=80%, critical=90%, kill=95%");
+            logger.info("Memory watchdog started: heap stop=80%, critical=90%, kill=95%; GPU stop={}%, critical={}%, kill={}%; off-heap stop=80%, critical=90%, kill=95%",
+                    gpuStopPercent, gpuCriticalPercent, gpuKillPercent);
 
             // Configure model source from system properties (passed from main process)
             // MUST happen AFTER ND4J init since registry may use ND4J
@@ -366,6 +370,14 @@ public class EmbeddingSubprocessMain {
             }
             if ("true".equalsIgnoreCase(System.getProperty("nd4j.environment.opContextTracking"))) {
                 env.setOpContextTracking(true);
+            }
+
+            // Apply OpExecutioner NaN/Inf profiling mode
+            String nanCheck = System.getProperty("nd4j.opProfiler.nanCheck");
+            if ("true".equalsIgnoreCase(nanCheck)) {
+                logger.info("Enabling NAN_PANIC profiling mode — will throw on first NaN-producing op");
+                org.nd4j.linalg.factory.Nd4j.getExecutioner().setProfilingMode(
+                        org.nd4j.linalg.api.ops.executioner.OpExecutioner.ProfilingMode.NAN_PANIC);
             }
 
             // Apply thread settings
@@ -654,9 +666,25 @@ public class EmbeddingSubprocessMain {
             currentModelId = req.modelId();
             currentDimensions = testEmbedding.length;
             modelSource = "REGISTRY";
+
+            // Warmup DSP plans at key bucket sizes to avoid cold-start latency
+            // and ensure the planner has seen representative shapes before real traffic.
+            if (encoder instanceof GenericDenseSameDiffEncoder denseEncoder) {
+                warmupDspBuckets(denseEncoder);
+            }
+
+            // Set model context on watchdog so OOM kill logs identify the model
+            if (memoryWatchdog != null) {
+                memoryWatchdog.setModelId(currentModelId);
+            }
+
             modelLoaded = true;
             loading = false;
             loadingPhase = "COMPLETE";
+
+            // Trim GPU memory pools after model load + test embedding to release
+            // temporary allocations back to the OS
+            trimGpuMemoryPools("post-model-load");
 
             long loadTimeMs = System.currentTimeMillis() - loadStart;
 
@@ -1154,6 +1182,31 @@ public class EmbeddingSubprocessMain {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
+    // GPU MEMORY POOL TRIMMING
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Trim GPU memory pools on all CUDA devices to release unused reserved memory
+     * back to the OS. This is especially useful after DSP warmup or model loading
+     * where temporary allocations may have expanded the pool.
+     *
+     * @param reason descriptive reason for the trim (logged for diagnostics)
+     */
+    private static void trimGpuMemoryPools(String reason) {
+        try {
+            var nativeOps = Nd4j.getNativeOps();
+            int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+            for (int d = 0; d < numDevices; d++) {
+                nativeOps.trimMemoryPool(d);
+            }
+            logger.info("Trimmed GPU memory pools on {} device(s) (reason: {})", numDevices, reason);
+            sendLog("INFO", "GPU", "Trimmed GPU memory pools on " + numDevices + " device(s) (reason: " + reason + ")");
+        } catch (Exception e) {
+            logger.debug("Could not trim GPU memory pools (CPU backend?): {}", e.getMessage());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
     // CLEANUP
     // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1238,5 +1291,59 @@ public class EmbeddingSubprocessMain {
         } catch (Exception | NoClassDefFoundError e) {
             logger.warn("Error during ND4J cleanup: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Warmup DSP plans at key bucket sizes so the planner has pre-built
+     * execution plans for the most common RAG chunk lengths.
+     * Each bucket triggers one SLOT_BY_SLOT → FREEZE cycle (~<1s each on GPU).
+     * Buckets that fail warmup are logged as warnings — the plan will be built
+     * on-demand at first use instead.
+     */
+    private static void warmupDspBuckets(GenericDenseSameDiffEncoder denseEncoder) {
+        // Target the buckets that cover typical RAG chunk sizes (200-500 tokens).
+        // We don't warmup 64 (too small to matter) or 1024+ (risk OOM on smaller GPUs).
+        int[] warmupBuckets = {128, 256, 512};
+
+        sendLog("INFO", "DspWarmup", "Pre-warming DSP plans for " + warmupBuckets.length +
+                " bucket sizes: 128, 256, 512");
+        sendProgress("LOADING_MODEL", 85, "Warming DSP plans", "Pre-building execution plans...");
+
+        for (int i = 0; i < warmupBuckets.length; i++) {
+            int bucket = warmupBuckets[i];
+            try {
+                int progressPct = 85 + ((i + 1) * 5); // 90, 95, 100 but capped below
+                sendProgress("LOADING_MODEL", Math.min(progressPct, 98),
+                        "Warming DSP plans", "Building plan for seq_len=" + bucket);
+
+                // Generate dummy text that tokenizes to approximately `bucket` tokens.
+                // Average English word → ~1.3 subword tokens, so we need ~bucket/1.3 words.
+                // Using "warmup " (single token per word roughly) repeated.
+                int wordCount = (int) (bucket / 1.3) + 10;
+                StringBuilder sb = new StringBuilder(wordCount * 8);
+                for (int w = 0; w < wordCount; w++) {
+                    sb.append("warmup ");
+                }
+                String dummyText = sb.toString();
+
+                long start = System.currentTimeMillis();
+                float[] result = denseEncoder.encode(dummyText);
+                long elapsed = System.currentTimeMillis() - start;
+
+                if (result != null && result.length > 0) {
+                    sendLog("INFO", "DspWarmup",
+                            "DSP plan warmed for bucket=" + bucket + " in " + elapsed + "ms");
+                } else {
+                    sendLog("WARN", "DspWarmup",
+                            "Warmup returned empty result for bucket=" + bucket);
+                }
+            } catch (Exception e) {
+                sendLog("WARN", "DspWarmup",
+                        "Warmup failed for bucket=" + bucket + ": " + e.getMessage());
+                logger.warn("DSP warmup failed for bucket={}: {}", bucket, e.getMessage());
+            }
+        }
+
+        sendLog("INFO", "DspWarmup", "DSP bucket warmup complete");
     }
 }

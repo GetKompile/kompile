@@ -77,7 +77,7 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
             return false;
         }
 
-        String path = source.getPathOrUrl().toLowerCase();
+        String path = source.getPathOrUrl() != null ? source.getPathOrUrl().toLowerCase() : "";
         return STREAMING_EXTENSIONS.stream().anyMatch(path::endsWith);
     }
 

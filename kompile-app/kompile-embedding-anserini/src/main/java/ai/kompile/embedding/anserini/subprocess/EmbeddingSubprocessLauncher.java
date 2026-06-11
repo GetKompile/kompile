@@ -123,6 +123,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     private volatile Integer deviceRoutingCudaDevice;
     private volatile Long deviceRoutingMaxDeviceMemory;
 
+    // Subprocess registry for centralized lifecycle tracking (optional)
+    private volatile ai.kompile.app.subprocess.SubprocessRegistry subprocessRegistry;
+
     // Callbacks
     private Consumer<EmbeddingSubprocessMessage.Heartbeat> heartbeatCallback;
     private Consumer<EmbeddingSubprocessMessage.Progress> progressCallback;
@@ -1046,6 +1049,15 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         return new Builder();
     }
 
+    /**
+     * Set the subprocess registry for centralized lifecycle tracking.
+     * When set, the launcher registers/deregisters its process with the registry,
+     * enabling orphan protection via JVM shutdown hook.
+     */
+    public void setSubprocessRegistry(ai.kompile.app.subprocess.SubprocessRegistry registry) {
+        this.subprocessRegistry = registry;
+    }
+
     private EmbeddingSubprocessLauncher(Builder builder) {
         this.javaHome = builder.javaHome;
         this.classpath = builder.classpath.isEmpty() ?
@@ -1353,6 +1365,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         }
 
         process = pb.start();
+
+        // Register with centralized subprocess registry for orphan protection
+        if (subprocessRegistry != null) {
+            subprocessRegistry.register("embedding", process, "embedding");
+        }
 
         // Initialise per-run log writer (non-fatal if it fails)
         String logRunId = currentTaskId != null ? currentTaskId : UUID.randomUUID().toString();
@@ -1719,6 +1736,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
 
         running.set(false);
         modelLoaded = false;
+
+        // Deregister from centralized subprocess registry
+        if (subprocessRegistry != null) {
+            subprocessRegistry.deregister("embedding");
+        }
 
         // Finalise central log writer on graceful stop
         Integer stopExitCode = null;

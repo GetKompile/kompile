@@ -103,8 +103,7 @@ public class BackupService {
     /**
      * Scheduled backup task running at configured interval.
      */
-    @Scheduled(fixedRateString = "${kompile.backup.fixed-rate-ms:21600000}",
-               initialDelayString = "${kompile.backup.initial-delay-ms:60000}")
+    @Scheduled(fixedRateString = "${kompile.backup.fixedRateMs:21600000}", initialDelayString = "${kompile.backup.initialDelayMs:60000}")
     public void scheduledBackup() {
         log.info("Starting scheduled backup...");
         performBackup();

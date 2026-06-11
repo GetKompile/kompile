@@ -41,6 +41,7 @@ export interface AddUrlRequest {
   loaderName?: string;
   chunkerName?: string;
   rebuildIndex?: boolean;
+  convertToMarkdown?: boolean;
 }
 
 export interface AddPathRequest {
@@ -188,6 +189,9 @@ export interface ChunkerInfo {
 export interface UploadedFileInfo {
   fileName: string;
   filePath: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  lastModifiedMs?: number;
 }
 
 export enum DocumentSourceType {
@@ -542,6 +546,7 @@ export interface SearchRequest {
 export interface SearchResult {
   id: string;
   content: string;
+  text?: string;
   preview: string;
   score: number;
   metadata: { [key: string]: any };
@@ -1110,6 +1115,7 @@ export interface AddSourceDialogResult {
   fileName?: string;
   selectedLoader?: string;
   rebuildIndex?: boolean; // Added flag for optional rebuild
+  convertToMarkdown?: boolean; // Convert fetched URL/source content to Markdown before indexing
   chunkerName?: string; // Selected chunker strategy
   chunkerOptions?: { [key: string]: any }; // Chunking options
   largeDocumentConfig?: Partial<LargeDocumentConfig>; // Large document handling
@@ -1772,6 +1778,20 @@ export interface IngestProgressUpdate {
   keywordIndexPath?: string;
   /** Vector store path (for VECTOR_POPULATION jobs) */
   vectorIndexPath?: string;
+  /** Failure categorization */
+  failureReason?: string;
+  /** Restart info for OOM/crash recovery */
+  restartInfo?: {
+    attemptNumber: number;
+    maxAttempts: number;
+    restartScheduled: boolean;
+    nextRestartTime?: number;
+    currentHeapSize?: string;
+    heapIncreased?: boolean;
+    ompThreads?: number;
+    blasThreads?: number;
+    memoryAnalysisReason?: string;
+  };
 }
 
 export interface BatchAsyncUploadResponse {
@@ -2747,6 +2767,20 @@ export interface LocalAgentMessage {
     model?: string;
   };
 
+  /** RAG retrieval metrics */
+  ragMetrics?: {
+    retrievalMs: number;
+    documentsRetrieved: number;
+  };
+
+  /** Query processing info (rewriting, intent detection) */
+  queryInfo?: {
+    originalQuery: string;
+    rewrittenQuery: string;
+    wasRewritten: boolean;
+    intent?: string;
+  };
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // BRANCHING/FORK FIELDS
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -3103,6 +3137,9 @@ export interface LocalAgentChatRequest {
 
   /** Timeout in seconds (0 = no timeout, default 300 = 5 minutes) */
   timeoutSeconds?: number;
+
+  /** File attachments for the chat request */
+  attachments?: MessageAttachment[];
 }
 
 /**
@@ -4732,7 +4769,7 @@ export type SourceViewMode = 'TEXT' | 'IMAGE' | 'EMBEDDED' | 'DOWNLOAD_ONLY';
 /**
  * Source type indicating where the document came from.
  */
-export type SourceType = 'UPLOAD' | 'STORED' | 'URL';
+export type SourceType = 'UPLOAD' | 'STORED' | 'URL' | 'MARKDOWN';
 
 /**
  * Information about a source file.
@@ -4794,6 +4831,21 @@ export interface TextContentResponse {
   error: string | null;
   /** Whether content was truncated */
   truncated: boolean;
+}
+
+/**
+ * Response after converting a source into Markdown.
+ */
+export interface MarkdownConversionResponse {
+  fileName: string;
+  filePath: string;
+  checksum: string | null;
+  originalFileName: string;
+  originalPath: string;
+  originalChecksum: string | null;
+  sourceUrl: string | null;
+  sizeBytes: number;
+  convertedAt: string;
 }
 
 /**
@@ -6295,4 +6347,147 @@ export interface PassthroughSessionStatus {
   messageCount: number;
   startedAt: string;
   uptimeSeconds: number;
+}
+
+export interface EnrichmentProgressUpdate {
+  taskId: string;
+  phase: string;
+  progressPercent: number;
+  message: string;
+  entityType?: string;
+  processedCount?: number;
+  totalCount?: number;
+  timestamp?: string;
+  eventType?: string;
+  factSheetId?: number;
+}
+
+export type EnrichmentJobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+
+export interface EnrichmentJob {
+  id: string;
+  factSheetId: number;
+  status: EnrichmentJobStatus;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+  errorMessage?: string;
+  phases?: string[];
+  currentPhase?: string;
+  progressPercent?: number;
+  jobId?: string;
+  statusValue?: string;
+}
+
+/**
+ * Enrichment status object returned from the backend for a fact sheet.
+ * Describes whether enrichment has been performed and the current taxonomy state.
+ */
+export interface EnrichmentStatus {
+  enriched?: boolean;
+  taxonomyVersion?: string;
+  categoryCount?: number;
+  lastEnrichmentAt?: string;
+  status?: EnrichmentJobStatus;
+  jobId?: string;
+}
+
+export interface MassReassignRequest {
+  entityIds: string[];
+  targetCategoryId: string;
+}
+
+export interface CategoryPatch {
+  label?: string;
+  description?: string;
+  color?: string;
+  parentCategoryId?: string;
+}
+
+export interface MassEditResult {
+  success: boolean;
+  updatedCount: number;
+  entitiesAffected?: number;
+  message?: string;
+  errors?: string[];
+}
+
+export interface AutoLabelSuggestion {
+  entityId: string;
+  suggestedLabel: string;
+  confidence: number;
+  reasoning?: string;
+}
+
+export interface EnrichmentAuditEntry {
+  id: string;
+  auditId: string;
+  enrichmentJobId: string;
+  phase: string;
+  action: string;
+  description?: string;
+  entityId?: string;
+  targetNodeId?: string;
+  targetType?: string;
+  before?: any;
+  after?: any;
+  beforeSnapshot?: string;
+  afterSnapshot?: string;
+  reverted?: boolean;
+  timestamp: string;
+  createdAt?: string;
+}
+
+export interface AuditSummary {
+  totalActions: number;
+  actionsByPhase: Record<string, number>;
+  actionsByType: Record<string, number>;
+  revertibleCount: number;
+  revertedCount?: number;
+  phases?: string[];
+}
+
+export interface RevertResult {
+  success: boolean;
+  message: string;
+  revertedCount?: number;
+  actionsReverted?: number;
+  nodesRestored?: number;
+  warnings?: string[];
+  factSheetId?: number;
+}
+
+export interface MessageAttachment {
+  name?: string;
+  filename?: string;
+  content?: string;
+  textContent?: string;
+  base64Data?: string;
+  mimeType?: string;
+  isImage?: boolean;
+  size?: number;
+  previewUrl?: string;
+}
+
+export interface TaxonomyNode {
+  id: string;
+  label: string;
+  description?: string;
+  parentId?: string;
+  children?: TaxonomyNode[];
+  entityCount?: number;
+  level?: string;
+  entityTypes?: string[];
+}
+
+export interface EntityCategory {
+  id: string;
+  categoryId: string;
+  label: string;
+  description?: string;
+  parentCategoryId?: string;
+  color?: string;
+  source?: string;
+  children?: EntityCategory[];
+  entityCount?: number;
 }

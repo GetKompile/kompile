@@ -81,7 +81,7 @@ class AgentDelegationToolTest {
                     new ClaudeStreamParser(),
                     List.of(new NoOpDocumentRetrieverImpl()),
                     List.of(new NoOpVectorStoreImpl()),
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
         }
 
         void setResultToReturn(SyncChatResult result) {

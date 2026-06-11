@@ -16,6 +16,7 @@
 
 package ai.kompile.knowledgegraph.embedding.config;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,7 +25,6 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -60,37 +60,22 @@ public class KGEmbeddingConfigService {
     // Current configuration (in memory)
     private volatile KGEmbeddingConfig config;
 
-    // Default LLM providers and models
-    private static final List<String> DEFAULT_LLM_PROVIDERS = Arrays.asList(
-            "openai", "anthropic", "google"
-    );
-
-    private static final List<String> OPENAI_MODELS = Arrays.asList(
-            "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"
-    );
-
-    private static final List<String> ANTHROPIC_MODELS = Arrays.asList(
-            "claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"
-    );
-
-    private static final List<String> GOOGLE_MODELS = Arrays.asList(
-            "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"
-    );
-
     private static final List<String> DEFAULT_ENTITY_TYPES = Arrays.asList(
             "PERSON", "ORGANIZATION", "LOCATION", "CONCEPT", "EVENT", "PRODUCT", "TECHNOLOGY"
     );
 
-    public KGEmbeddingConfigService(
-            @Value("${kompile.data.dir:#{null}}") String dataDir) {
+    public KGEmbeddingConfigService() {
+        this(KompileHome.dataDir().toPath());
+    }
+
+    public KGEmbeddingConfigService(String dataDir) {
+        this(Paths.get(dataDir));
+    }
+
+    private KGEmbeddingConfigService(Path dataDir) {
         this.objectMapper = new ObjectMapper();
 
-        // Use provided dataDir, or fall back to ~/.kompile if not set
-        String effectiveDataDir = dataDir;
-        if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
-            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
-        }
-        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        this.configFilePath = dataDir.resolve("config").resolve(CONFIG_FILENAME);
 
         // Initialize with defaults
         this.config = KGEmbeddingConfig.defaults();
@@ -287,6 +272,28 @@ public class KGEmbeddingConfigService {
     }
 
     /**
+     * Returns the list of available LLM providers for graph building.
+     */
+    public List<String> getAvailableLlmProviders() {
+        return Arrays.asList("default", "openai", "anthropic", "google");
+    }
+
+    /**
+     * Returns the list of available models for a given LLM provider.
+     */
+    public List<String> getAvailableLlmModels(String provider) {
+        if (provider == null) return Arrays.asList();
+        return switch (provider.toLowerCase()) {
+            case "openai" -> Arrays.asList("gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo");
+            case "anthropic" -> Arrays.asList(
+                    "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-3-5",
+                    "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022");
+            case "google" -> Arrays.asList("gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash");
+            default -> Arrays.asList();
+        };
+    }
+
+    /**
      * Resets configuration to defaults.
      */
     public KGEmbeddingConfig resetToDefaults() {
@@ -463,25 +470,6 @@ public class KGEmbeddingConfigService {
     }
 
     /**
-     * Gets available LLM providers.
-     */
-    public List<String> getAvailableLlmProviders() {
-        return DEFAULT_LLM_PROVIDERS;
-    }
-
-    /**
-     * Gets available models for a specific LLM provider.
-     */
-    public List<String> getAvailableLlmModels(String provider) {
-        return switch (provider.toLowerCase()) {
-            case "openai" -> OPENAI_MODELS;
-            case "anthropic" -> ANTHROPIC_MODELS;
-            case "google" -> GOOGLE_MODELS;
-            default -> OPENAI_MODELS;
-        };
-    }
-
-    /**
      * Graph building configuration record.
      */
     public record GraphBuildingConfig(
@@ -501,7 +489,7 @@ public class KGEmbeddingConfigService {
         public static GraphBuildingConfig defaults() {
             return new GraphBuildingConfig(
                     false, "llm", "jpa", false, 0.9,
-                    DEFAULT_ENTITY_TYPES, "openai", "gpt-4o-mini",
+                    DEFAULT_ENTITY_TYPES, "default", "",
                     0.0, 2048, 10, ""
             );
         }
@@ -509,7 +497,7 @@ public class KGEmbeddingConfigService {
         public static GraphBuildingConfig withDefaults(boolean enabled, String builderType, String storageType) {
             return new GraphBuildingConfig(
                     enabled, builderType, storageType, false, 0.9,
-                    DEFAULT_ENTITY_TYPES, "openai", "gpt-4o-mini",
+                    DEFAULT_ENTITY_TYPES, "default", "",
                     0.0, 2048, 10, ""
             );
         }

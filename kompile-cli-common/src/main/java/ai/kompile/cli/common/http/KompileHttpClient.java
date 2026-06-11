@@ -155,6 +155,22 @@ public class KompileHttpClient {
     }
 
     /**
+     * Sends a PUT request with JSON body and returns raw string.
+     */
+    public String putString(String path, Object body) throws IOException, InterruptedException {
+        String json = objectMapper.writeValueAsString(body);
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString(json))
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        checkResponse(response);
+        return response.body();
+    }
+
+    /**
      * Sends a PUT request with JSON body.
      */
     public <T> T put(String path, Object body, Class<T> responseType) throws IOException, InterruptedException {

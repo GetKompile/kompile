@@ -330,7 +330,8 @@ class SubprocessConfigServiceTest {
                     null, null, null, null, null, null,
                     null, null, null, null,
                     null, null, null, null, null, null, null,
-                    null, null, null, null, null, null);
+                    null, null, null, null, null, null,
+                    null); // gpuSoftLimitPercent
 
             service.updateConfiguration(update);
 
@@ -351,7 +352,8 @@ class SubprocessConfigServiceTest {
                     null, null, null, null, null, null,
                     null, null, null, null,
                     null, null, null, null, null, null, null,
-                    null, null, null, null, null, null);
+                    null, null, null, null, null, null,
+                    null); // gpuSoftLimitPercent
 
             service.updateConfiguration(update);
 

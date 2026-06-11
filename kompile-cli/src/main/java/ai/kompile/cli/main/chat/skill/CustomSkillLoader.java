@@ -100,7 +100,7 @@ public class CustomSkillLoader {
     /**
      * Parse a single skill definition file.
      */
-    SkillConfig parseSkillFile(Path file) throws IOException {
+    public SkillConfig parseSkillFile(Path file) throws IOException {
         String content = Files.readString(file);
 
         // Split frontmatter from body

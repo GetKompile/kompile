@@ -15,6 +15,7 @@ import java.util.List;
 public class PipelineSummaryDto {
     private String pipelineId;
     private String pipelineType;
+    private String kind;
     private int stepCount;
     private List<String> stepTypes;
     private Instant createdAt;

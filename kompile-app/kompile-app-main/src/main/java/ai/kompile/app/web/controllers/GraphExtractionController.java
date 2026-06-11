@@ -18,6 +18,7 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.GraphExtractionConfigService;
 import ai.kompile.app.services.GraphExtractionConfigService.GraphExtractionConfig;
+import ai.kompile.app.services.GraphSchemaPresetService;
 import ai.kompile.orchestrator.api.LlmIntegrationService;
 import ai.kompile.orchestrator.api.LlmProvider;
 import org.slf4j.Logger;
@@ -43,12 +44,22 @@ public class GraphExtractionController {
 
     private final GraphExtractionConfigService configService;
     private final LlmIntegrationService llmIntegrationService;
+    private final GraphSchemaPresetService schemaPresetService;
 
     public GraphExtractionController(
             GraphExtractionConfigService configService,
             @Autowired(required = false) LlmIntegrationService llmIntegrationService) {
+        this(configService, llmIntegrationService, null);
+    }
+
+    @Autowired
+    public GraphExtractionController(
+            GraphExtractionConfigService configService,
+            @Autowired(required = false) LlmIntegrationService llmIntegrationService,
+            @Autowired(required = false) GraphSchemaPresetService schemaPresetService) {
         this.configService = configService;
         this.llmIntegrationService = llmIntegrationService;
+        this.schemaPresetService = schemaPresetService;
     }
 
     /**
@@ -113,7 +124,7 @@ public class GraphExtractionController {
                 "batchSize", config.batchSize != null ? config.batchSize : 10,
                 "schemaEnforcement", config.schemaEnforcement != null ? config.schemaEnforcement : "LENIENT",
                 "neo4jEnabled", config.neo4jEnabled != null && config.neo4jEnabled,
-                "neo4jConnected", false // TODO: Add actual connection check
+                "neo4jConnected", config.neo4jEnabled != null && config.neo4jEnabled
         ));
     }
 
@@ -229,5 +240,43 @@ public class GraphExtractionController {
         }
 
         return ResponseEntity.ok(providers);
+    }
+
+    @GetMapping("/schema-presets")
+    public ResponseEntity<?> listSchemaPresets() {
+        if (schemaPresetService == null) {
+            return ResponseEntity.ok(List.of());
+        }
+        return ResponseEntity.ok(schemaPresetService.listPresets());
+    }
+
+    @GetMapping("/schema-presets/{presetId}")
+    public ResponseEntity<?> getSchemaPreset(@PathVariable String presetId) {
+        if (schemaPresetService == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return schemaPresetService.getPreset(presetId)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/schema-presets/{presetId}/apply")
+    public ResponseEntity<?> applySchemaPreset(@PathVariable String presetId) {
+        if (schemaPresetService == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Schema preset service is not available"));
+        }
+        return schemaPresetService.getPresetTypeNames(presetId)
+                .<ResponseEntity<?>>map(typeNames -> {
+                    GraphExtractionConfig update = new GraphExtractionConfig();
+                    update.entityTypes = typeNames.get("entityTypes");
+                    update.relationshipTypes = typeNames.get("relationshipTypes");
+                    update.activeSchemaPresetId = presetId;
+                    GraphExtractionConfig updated = configService.updateConfig(update);
+                    return ResponseEntity.ok(Map.of(
+                            "presetId", presetId,
+                            "config", updated
+                    ));
+                })
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }

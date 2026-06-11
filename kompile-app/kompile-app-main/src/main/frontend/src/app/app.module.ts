@@ -90,13 +90,13 @@ import { PromptManagerComponent } from './components/prompt-manager/prompt-manag
 import { ChunkingLoaderTestComponent } from './components/chunking-loader-test/chunking-loader-test.component';
 import { VlmModelsComponent } from './components/vlm-models/vlm-models.component';
 import { SdkHubComponent } from './components/sdk-hub/sdk-hub.component';
-import { OpenClawHubComponent } from './components/openclaw-hub/openclaw-hub.component';
-import { OpenClawAgentManagerComponent } from './components/openclaw-agent-manager/openclaw-agent-manager.component';
-import { OpenClawChannelManagerComponent } from './components/openclaw-channel-manager/openclaw-channel-manager.component';
-import { OpenClawChatComponent } from './components/openclaw-chat/openclaw-chat.component';
-import { OpenClawSessionViewerComponent } from './components/openclaw-session-viewer/openclaw-session-viewer.component';
-import { OpenClawHeartbeatManagerComponent } from './components/openclaw-heartbeat-manager/openclaw-heartbeat-manager.component';
-import { OpenClawPermissionManagerComponent } from './components/openclaw-permission-manager/openclaw-permission-manager.component';
+import { KClawHubComponent } from './components/kclaw-hub/kclaw-hub.component';
+import { KClawAgentManagerComponent } from './components/kclaw-agent-manager/kclaw-agent-manager.component';
+import { KClawChannelManagerComponent } from './components/kclaw-channel-manager/kclaw-channel-manager.component';
+import { KClawChatComponent } from './components/kclaw-chat/kclaw-chat.component';
+import { KClawSessionViewerComponent } from './components/kclaw-session-viewer/kclaw-session-viewer.component';
+import { KClawHeartbeatManagerComponent } from './components/kclaw-heartbeat-manager/kclaw-heartbeat-manager.component';
+import { KClawPermissionManagerComponent } from './components/kclaw-permission-manager/kclaw-permission-manager.component';
 import { PipelineHubComponent } from './components/pipeline-hub/pipeline-hub.component';
 import { BenchmarkRunnerComponent } from './components/benchmark-runner/benchmark-runner.component';
 import { KVCacheDashboardComponent } from './components/kvcache/kvcache-dashboard.component';
@@ -111,8 +111,34 @@ import { Nd4jFrameworkComponent } from './components/nd4j-framework/nd4j-framewo
 import { SameDiffLLMModelsComponent } from './components/samediff-llm-models/samediff-llm-models.component';
 import { VlmManagementComponent } from './components/developer-hub/vlm-management/vlm-management.component';
 import { GpuManagementComponent } from './components/developer-hub/gpu-management/gpu-management.component';
+import { SchedulerDashboardComponent } from './components/developer-hub/scheduler-dashboard/scheduler-dashboard.component';
 import { ModelStagingComponent } from './components/developer-hub/model-staging/model-staging.component';
 import { IngestHistoryComponent } from './components/developer-hub/ingest-history/ingest-history.component';
+import { SkillsManagerComponent } from './components/skills-manager/skills-manager.component';
+import { JobResumeComponent } from './components/job-resume/job-resume.component';
+import { McpToolUseLogComponent } from './components/mcp-tool-use-log/mcp-tool-use-log.component';
+import { McpCliInjectionComponent } from './components/mcp-cli-injection/mcp-cli-injection.component';
+import { ModelAdmissionComponent } from './components/developer-hub/model-admission/model-admission.component';
+import { PipelineSchedulesComponent } from './components/developer-hub/pipeline-schedules/pipeline-schedules.component';
+import { ModelSchedulerPanelComponent } from './components/developer-hub/model-scheduler-panel/model-scheduler-panel.component';
+import { MemoryWatchdogComponent } from './components/developer-hub/memory-watchdog/memory-watchdog.component';
+import { TrainingHistoryComponent } from './components/developer-hub/training-history/training-history.component';
+import { ExperimentsComponent } from './components/developer-hub/experiments/experiments.component';
+import { LifecycleTrackingComponent } from './components/developer-hub/lifecycle-tracking/lifecycle-tracking.component';
+import { ModelWarmupCacheComponent } from './components/developer-hub/model-warmup-cache/model-warmup-cache.component';
+import { AutoConfigureComponent } from './components/developer-hub/auto-configure/auto-configure.component';
+import { ProcessEngineDashboardComponent } from './components/process-engine/process-engine-dashboard.component';
+import { WorkflowsHubComponent } from './components/workflows-hub/workflows-hub.component';
+import { ComputeGraphDashboardComponent } from './components/compute-graph/compute-graph-dashboard.component';
+import { EnforcerDashboardComponent } from './components/enforcer-dashboard/enforcer-dashboard.component';
+import { ProjectEnforcerManagerComponent } from './components/project-enforcer-manager/project-enforcer-manager.component';
+import { CrawlerManagerComponent } from './components/crawler-manager/crawler-manager.component';
+import { CodeProjectsHubComponent } from './components/code-projects-hub/code-projects-hub.component';
+import { CodeGraphBuilderComponent } from './components/code-graph-builder/code-graph-builder.component';
+import { DiffIndexBrowserComponent } from './components/diff-index-browser/diff-index-browser.component';
+import { ProjectManagerComponent } from './components/project-manager/project-manager.component';
+import { MarkdownRendererComponent } from './components/markdown-renderer/markdown-renderer.component';
+import { ProjectExplorerComponent } from './components/project-explorer/project-explorer.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -144,6 +170,7 @@ import { DocumentDebuggerComponent } from './components/document-manager/documen
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatSliderModule } from '@angular/material/slider';
 import { MatToolbarModule } from '@angular/material/toolbar';
+import { MatTreeModule } from '@angular/material/tree';
 import { MatBadgeModule } from '@angular/material/badge';
 import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatNativeDateModule } from '@angular/material/core';
@@ -186,19 +213,34 @@ import { MatNativeDateModule } from '@angular/material/core';
     OcrDebugComponent,
     PromptManagerComponent,
     VlmModelsComponent,
-    OpenClawHubComponent,
-    OpenClawAgentManagerComponent,
-    OpenClawChannelManagerComponent,
-    OpenClawChatComponent,
-    OpenClawSessionViewerComponent,
-    OpenClawHeartbeatManagerComponent,
-    OpenClawPermissionManagerComponent,
+    KClawHubComponent,
+    KClawAgentManagerComponent,
+    KClawChannelManagerComponent,
+    KClawChatComponent,
+    KClawSessionViewerComponent,
+    KClawHeartbeatManagerComponent,
+    KClawPermissionManagerComponent,
     PipelineHubComponent,
     VlmTestWorkflowComponent,
     VlmManagementComponent,
     GpuManagementComponent,
+    SchedulerDashboardComponent,
     ModelStagingComponent,
-    IngestHistoryComponent
+    IngestHistoryComponent,
+    SkillsManagerComponent,
+    JobResumeComponent,
+    McpToolUseLogComponent,
+    McpCliInjectionComponent,
+    ModelAdmissionComponent,
+    PipelineSchedulesComponent,
+    ModelSchedulerPanelComponent,
+    MemoryWatchdogComponent,
+    TrainingHistoryComponent,
+    ExperimentsComponent,
+    LifecycleTrackingComponent,
+    ModelWarmupCacheComponent,
+    ProjectManagerComponent,
+    AutoConfigureComponent
   ],
   imports: [
     BrowserModule,
@@ -237,6 +279,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     MatButtonToggleModule,
     MatSliderModule,
     MatToolbarModule,
+    MatTreeModule,
     MatBadgeModule,
     DragDropModule,
     MatDatepickerModule,
@@ -284,7 +327,18 @@ import { MatNativeDateModule } from '@angular/material/core';
     MonitorsManagerComponent,
     PassthroughChatComponent,
     Nd4jFrameworkComponent,
-    SameDiffLLMModelsComponent
+    SameDiffLLMModelsComponent,
+    ProcessEngineDashboardComponent,
+    WorkflowsHubComponent,
+    ComputeGraphDashboardComponent,
+    EnforcerDashboardComponent,
+    ProjectEnforcerManagerComponent,
+    CrawlerManagerComponent,
+    CodeProjectsHubComponent,
+    CodeGraphBuilderComponent,
+    DiffIndexBrowserComponent,
+    MarkdownRendererComponent,
+    ProjectExplorerComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

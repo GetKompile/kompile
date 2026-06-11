@@ -350,9 +350,11 @@ public class PassthroughSessionManager {
                         }
                     }
                 } else {
-                    // Plain text mode for non-Claude agents
-                    responseBuffer.append(line).append("\n");
-                    sendEvent(emitter, "chunk", line + "\n");
+                    // Plain text mode for non-Claude agents — strip TUI escape sequences
+                    String cleanLine = ClaudeStreamParser.stripAnsi(line);
+                    if (cleanLine.isEmpty()) continue;
+                    responseBuffer.append(cleanLine).append("\n");
+                    sendEvent(emitter, "chunk", cleanLine + "\n");
 
                     // Check for prompt pattern (turn boundary)
                     if (promptPattern != null && promptPattern.matcher(line).matches()) {

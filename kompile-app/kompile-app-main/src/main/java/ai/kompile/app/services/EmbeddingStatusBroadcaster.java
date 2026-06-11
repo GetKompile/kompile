@@ -136,6 +136,13 @@ public class EmbeddingStatusBroadcaster {
             // Only broadcast if status changed or forced
             if (forceNextBroadcast || !currentHash.equals(previousStatusHash)) {
                 messagingTemplate.convertAndSend(TOPIC_COMBINED_STATUS, status);
+                // Also publish to dedicated topics for fine-grained subscribers
+                if (status.get("embedding") != null) {
+                    messagingTemplate.convertAndSend(TOPIC_EMBEDDING_STATUS, status.get("embedding"));
+                }
+                if (status.get("staging") != null) {
+                    messagingTemplate.convertAndSend(TOPIC_STAGING_STATUS, status.get("staging"));
+                }
                 previousStatusHash = currentHash;
                 forceNextBroadcast = false;
                 logger.debug("Broadcasted embedding/staging status update");
@@ -157,6 +164,12 @@ public class EmbeddingStatusBroadcaster {
         try {
             Map<String, Object> status = collectStatus();
             messagingTemplate.convertAndSend(TOPIC_COMBINED_STATUS, status);
+            if (status.get("embedding") != null) {
+                messagingTemplate.convertAndSend(TOPIC_EMBEDDING_STATUS, status.get("embedding"));
+            }
+            if (status.get("staging") != null) {
+                messagingTemplate.convertAndSend(TOPIC_STAGING_STATUS, status.get("staging"));
+            }
             previousStatusHash = computeStatusHash(status);
             logger.info("Immediate status broadcast sent");
         } catch (Exception e) {

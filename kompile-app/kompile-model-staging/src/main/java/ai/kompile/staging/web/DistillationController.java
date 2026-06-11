@@ -18,7 +18,7 @@ package ai.kompile.staging.web;
 
 import ai.kompile.staging.training.DistillationService;
 import ai.kompile.staging.web.dto.DistillationConfigRequest;
-import ai.kompile.staging.web.dto.TrainingJobStatus;
+import ai.kompile.core.staging.TrainingJobStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;

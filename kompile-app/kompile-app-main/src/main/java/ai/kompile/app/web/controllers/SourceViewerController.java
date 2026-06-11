@@ -18,7 +18,9 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.facts.domain.Fact;
 import ai.kompile.app.facts.repository.FactRepository;
+import ai.kompile.app.services.SourceMarkdownConversionService;
 import ai.kompile.core.source.SourceDocumentStorageService;
+import ai.kompile.core.source.SourceMetadataConstants;
 import ai.kompile.loaders.orchestrator.config.AppDocumentSourceProperties;
 
 import org.slf4j.Logger;
@@ -67,6 +69,7 @@ public class SourceViewerController {
     );
 
     private final SourceDocumentStorageService storageService;
+    private final SourceMarkdownConversionService markdownConversionService;
     private final AppDocumentSourceProperties sourceProperties;
     private final FactRepository factRepository;
     private final Path uploadsPath;
@@ -74,9 +77,13 @@ public class SourceViewerController {
     @Autowired
     public SourceViewerController(
             @Autowired(required = false) SourceDocumentStorageService storageService,
+            @Autowired(required = false) SourceMarkdownConversionService markdownConversionService,
             @Autowired(required = false) AppDocumentSourceProperties appDocumentSourceProperties,
             @Autowired(required = false) FactRepository factRepository) {
         this.storageService = storageService != null ? storageService : new SourceDocumentStorageService();
+        this.markdownConversionService = markdownConversionService != null
+                ? markdownConversionService
+                : new SourceMarkdownConversionService(this.storageService, appDocumentSourceProperties);
         this.sourceProperties = appDocumentSourceProperties;
         this.factRepository = factRepository;
 
@@ -147,7 +154,9 @@ public class SourceViewerController {
                 try (Stream<Path> dirs = Files.list(storageRoot)) {
                     dirs.filter(Files::isDirectory).forEach(prefixDir -> {
                         try (Stream<Path> files = Files.list(prefixDir)) {
-                            files.filter(Files::isRegularFile).forEach(file -> {
+                            files.filter(Files::isRegularFile)
+                                    .filter(file -> !file.getFileName().toString().endsWith(".meta.json"))
+                                    .forEach(file -> {
                                 try {
                                     String fileName = file.getFileName().toString();
                                     // Parse checksum from filename (checksum.extension format)
@@ -157,12 +166,13 @@ public class SourceViewerController {
                                     long size = Files.size(file);
                                     String modified = Files.getLastModifiedTime(file).toString();
                                     String sourceUrl = lookupSourceUrl(checksum);
+                                    String sourceType = lookupStoredSourceType(checksum, sourceUrl);
 
                                     SourceInfo info = new SourceInfo(
                                             fileName,
                                             file.toString(),
                                             checksum,
-                                            sourceUrl != null ? "URL" : "STORED",
+                                            sourceType,
                                             extension,
                                             getMimeType(fileName),
                                             size,
@@ -348,7 +358,7 @@ public class SourceViewerController {
 
             // Look up source URL for stored documents
             String sourceUrl = lookupSourceUrl(checksum);
-            String sourceType = sourceUrl != null ? "URL" : (checksum != null ? "STORED" : "UPLOAD");
+            String sourceType = checksum != null ? lookupStoredSourceType(checksum, sourceUrl) : "UPLOAD";
 
             SourceInfo info = new SourceInfo(
                     sanitizedFileName,
@@ -368,6 +378,24 @@ public class SourceViewerController {
         } catch (Exception e) {
             logger.error("Error getting source info: {}", fileName, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Convert a browsed source into a Markdown file under the uploads folder.
+     */
+    @PostMapping("/markdown/convert")
+    public ResponseEntity<?> convertSourceToMarkdown(@RequestBody MarkdownConversionRequest request) {
+        try {
+            SourceMarkdownConversionService.ConversionResult result = markdownConversionService.convertSource(
+                    request.fileName(), request.checksum());
+            return ResponseEntity.ok(MarkdownConversionResponse.from(result));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Error converting source to markdown: {}", request, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to convert source to markdown: " + e.getMessage()));
         }
     }
 
@@ -517,6 +545,23 @@ public class SourceViewerController {
         }
     }
 
+    private String lookupStoredSourceType(String checksum, String sourceUrl) {
+        if (checksum != null && !checksum.isEmpty()) {
+            try {
+                Optional<Map<String, Object>> metadata = storageService.getMetadata(checksum);
+                if (metadata.isPresent()) {
+                    Object sourceType = metadata.get().get(SourceMetadataConstants.SOURCE_TYPE);
+                    if ("MARKDOWN_DERIVED".equals(sourceType)) {
+                        return "MARKDOWN";
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("Error looking up source type for checksum {}: {}", checksum, e.getMessage());
+            }
+        }
+        return sourceUrl != null ? "URL" : "STORED";
+    }
+
     /**
      * Look up the source URL for a document by its checksum.
      * First tries the storage service metadata, then falls back to Fact repository.
@@ -588,4 +633,35 @@ public class SourceViewerController {
             String error,
             boolean truncated
     ) {}
+
+    public record MarkdownConversionRequest(
+            String fileName,
+            String checksum
+    ) {}
+
+    public record MarkdownConversionResponse(
+            String fileName,
+            String filePath,
+            String checksum,
+            String originalFileName,
+            String originalPath,
+            String originalChecksum,
+            String sourceUrl,
+            long sizeBytes,
+            String convertedAt
+    ) {
+        public static MarkdownConversionResponse from(SourceMarkdownConversionService.ConversionResult result) {
+            return new MarkdownConversionResponse(
+                    result.fileName(),
+                    result.filePath(),
+                    result.checksum(),
+                    result.originalFileName(),
+                    result.originalPath(),
+                    result.originalChecksum(),
+                    result.sourceUrl(),
+                    result.sizeBytes(),
+                    result.convertedAt()
+            );
+        }
+    }
 }

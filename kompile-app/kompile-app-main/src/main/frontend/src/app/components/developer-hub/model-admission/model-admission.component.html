@@ -1,0 +1,134 @@
+<div class="model-admission">
+  <div class="section-header">
+    <h3><mat-icon>security</mat-icon> Model Admission Control</h3>
+    <button mat-icon-button (click)="loadAll()" matTooltip="Refresh">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="actionMessage" class="action-bar"><mat-icon>check_circle</mat-icon> {{ actionMessage }}</div>
+
+  <ng-container *ngIf="!loading && status">
+    <!-- Status Overview -->
+    <div class="status-grid">
+      <div class="stat-card">
+        <span class="stat-label">Active Loads</span>
+        <span class="stat-value">{{ status.activeLoads }} / {{ status.maxConcurrentLoads }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Models Loaded</span>
+        <span class="stat-value">{{ status.totalModelsLoaded }} / {{ status.maxLoadedModels }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">GPU Memory Used</span>
+        <span class="stat-value">{{ admissionService.formatBytes(status.totalGpuMemoryUsedBytes) }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Memory Reserve</span>
+        <span class="stat-value">{{ admissionService.formatBytes(status.memoryReserveBytes) }}</span>
+      </div>
+    </div>
+
+    <!-- State Counts -->
+    <div class="state-counts" *ngIf="status.stateCounts">
+      <span *ngFor="let entry of status.stateCounts | keyvalue"
+            class="state-badge" [ngClass]="admissionService.getStateClass(entry.key)">
+        <mat-icon>{{ admissionService.getStateIcon(entry.key) }}</mat-icon>
+        {{ entry.key }}: {{ entry.value }}
+      </span>
+    </div>
+
+    <!-- GPU Models -->
+    <div class="model-section" *ngIf="getGpuModels().length > 0">
+      <h4><mat-icon>bolt</mat-icon> GPU Models</h4>
+      <div class="model-card" *ngFor="let model of getGpuModels()">
+        <div class="model-info">
+          <span class="model-id">{{ model.modelId }}</span>
+          <span class="model-meta">{{ model.device }} &middot; {{ admissionService.formatBytes(model.memoryBytes) }}</span>
+          <span class="model-meta">Loaded: {{ formatDate(model.loadedAt) }} &middot; Last used: {{ formatDate(model.lastUsedAt) }}</span>
+        </div>
+        <div class="model-actions">
+          <button mat-icon-button matTooltip="Demote to CPU" (click)="demoteModel(model.modelId)">
+            <mat-icon>arrow_downward</mat-icon>
+          </button>
+          <button mat-icon-button matTooltip="Unload" color="warn" (click)="unloadModel(model.modelId)">
+            <mat-icon>eject</mat-icon>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CPU Models -->
+    <div class="model-section" *ngIf="getCpuModels().length > 0">
+      <h4><mat-icon>memory</mat-icon> CPU Models</h4>
+      <div class="model-card" *ngFor="let model of getCpuModels()">
+        <div class="model-info">
+          <span class="model-id">{{ model.modelId }}</span>
+          <span class="model-meta">{{ admissionService.formatBytes(model.memoryBytes) }}</span>
+        </div>
+        <div class="model-actions">
+          <button mat-icon-button matTooltip="Promote to GPU" (click)="promoteModel(model.modelId)">
+            <mat-icon>arrow_upward</mat-icon>
+          </button>
+          <button mat-icon-button matTooltip="Unload" color="warn" (click)="unloadModel(model.modelId)">
+            <mat-icon>eject</mat-icon>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading Models -->
+    <div class="model-section" *ngIf="getLoadingModels().length > 0">
+      <h4><mat-icon>hourglass_top</mat-icon> Loading</h4>
+      <div class="model-card loading-model" *ngFor="let model of getLoadingModels()">
+        <div class="model-info">
+          <span class="model-id">{{ model.modelId }}</span>
+          <mat-spinner diameter="18"></mat-spinner>
+        </div>
+      </div>
+    </div>
+
+    <!-- No models -->
+    <div *ngIf="status.models?.length === 0" class="empty-state">
+      <mat-icon>inbox</mat-icon>
+      <span>No models tracked by admission control</span>
+    </div>
+
+    <!-- Configuration -->
+    <div class="config-section" *ngIf="config">
+      <h4><mat-icon>settings</mat-icon> Configuration</h4>
+      <div class="config-grid">
+        <div class="config-field">
+          <label>Enabled</label>
+          <mat-slide-toggle [(ngModel)]="config.enabled" [ngModelOptions]="{standalone: true}"></mat-slide-toggle>
+        </div>
+        <div class="config-field">
+          <label>Max Loaded Models</label>
+          <input matInput type="number" [(ngModel)]="config.max_loaded_models" [ngModelOptions]="{standalone: true}" min="1">
+        </div>
+        <div class="config-field">
+          <label>Max Concurrent Loads</label>
+          <input matInput type="number" [(ngModel)]="config.max_concurrent_loads" [ngModelOptions]="{standalone: true}" min="1">
+        </div>
+        <div class="config-field">
+          <label>Memory Reserve (MB)</label>
+          <input matInput type="number" [ngModel]="config.memory_reserve_bytes / (1024*1024)" [ngModelOptions]="{standalone: true}"
+                 (ngModelChange)="config.memory_reserve_bytes = $event * 1024 * 1024" min="0">
+        </div>
+        <div class="config-field">
+          <label>Warmup After Load</label>
+          <mat-slide-toggle [(ngModel)]="config.warmup_after_load" [ngModelOptions]="{standalone: true}"></mat-slide-toggle>
+        </div>
+      </div>
+      <div class="config-actions">
+        <button mat-raised-button color="primary" (click)="saveConfig()" [disabled]="saving">
+          <mat-icon>save</mat-icon> Save
+        </button>
+        <button mat-button (click)="resetConfig()" [disabled]="saving">Reset Defaults</button>
+        <mat-spinner *ngIf="saving" diameter="20"></mat-spinner>
+      </div>
+    </div>
+  </ng-container>
+</div>

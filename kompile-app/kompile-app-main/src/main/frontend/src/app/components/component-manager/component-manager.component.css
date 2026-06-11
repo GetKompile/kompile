@@ -1,0 +1,221 @@
+/* ============================================================
+   Component Manager — dark theme
+   ============================================================ */
+
+:host {
+  display: block;
+  background: var(--bg-body);
+  min-height: 100%;
+}
+
+.component-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  background: var(--bg-body);
+  min-height: 100%;
+}
+
+/* ---- Card ---- */
+
+.main-card {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.main-card mat-card-title {
+  color: var(--text-primary);
+  font-size: 1.15rem;
+}
+
+.main-card mat-card-subtitle {
+  color: var(--text-secondary);
+}
+
+/* ---- Card header layout ---- */
+
+.card-header {
+  display: flex;
+  align-items: center;
+  padding: 16px 16px 12px;
+}
+
+.header-spacer {
+  flex: 1;
+}
+
+/* ---- Table ---- */
+
+.components-table {
+  width: 100%;
+  background: transparent;
+  border-collapse: collapse;
+}
+
+.components-table th.mat-header-cell {
+  color: var(--text-link);
+  font-weight: 600;
+  font-size: 0.8rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-card-secondary);
+  padding: 10px 12px;
+}
+
+.components-table td.mat-cell {
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 10px 12px;
+  vertical-align: middle;
+}
+
+.component-row:hover td.mat-cell {
+  background: var(--bg-hover);
+}
+
+/* ---- Component ID cell ---- */
+
+.component-id-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.component-id {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.component-description {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+/* ---- Status chips ---- */
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px 3px 6px;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.status-icon {
+  font-size: 14px !important;
+  width: 14px !important;
+  height: 14px !important;
+  line-height: 14px !important;
+}
+
+.status-running {
+  background: rgba(76, 175, 80, 0.18);
+  color: #81c784;
+  border: 1px solid rgba(76, 175, 80, 0.35);
+}
+
+.status-starting {
+  background: rgba(255, 193, 7, 0.15);
+  color: #ffd54f;
+  border: 1px solid rgba(255, 193, 7, 0.35);
+}
+
+.status-stopped {
+  background: rgba(244, 67, 54, 0.15);
+  color: #ef9a9a;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+.status-unknown {
+  background: rgba(158, 158, 158, 0.15);
+  color: #bdbdbd;
+  border: 1px solid rgba(158, 158, 158, 0.3);
+}
+
+/* ---- Mono / dim helpers ---- */
+
+.mono {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.dim {
+  color: var(--text-tertiary);
+}
+
+/* ---- Action buttons ---- */
+
+.action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.action-buttons button[mat-icon-button] {
+  width: 34px;
+  height: 34px;
+  line-height: 34px;
+}
+
+.action-buttons mat-icon {
+  font-size: 20px;
+}
+
+/* ---- Spinner row ---- */
+
+.spinner-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 0;
+  color: var(--text-secondary);
+}
+
+.loading-label {
+  font-size: 0.9rem;
+}
+
+/* ---- Empty state ---- */
+
+.empty-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+.empty-icon {
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+  color: var(--text-tertiary);
+}
+
+.empty-hint code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.82rem;
+  background: var(--bg-card-secondary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-link);
+}
+
+/* ---- mat-card-content padding ---- */
+
+.card-content {
+  padding: 0 0 8px;
+}

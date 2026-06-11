@@ -426,3 +426,106 @@
     }
   }
 }
+
+/* Classify Output Test Section */
+.classify-test-section {
+  margin-top: 24px;
+  padding: 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+
+  h4 {
+    margin: 0 0 4px 0;
+    font-size: 1rem;
+    font-weight: 500;
+  }
+}
+
+.classify-test-hint {
+  margin: 0 0 10px 0;
+  font-size: 0.85rem;
+  color: #757575;
+}
+
+.classify-test-textarea {
+  width: 100%;
+  padding: 10px;
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 0.85rem;
+  border: 1px solid #bdbdbd;
+  border-radius: 4px;
+  resize: vertical;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.classify-test-actions {
+  margin-top: 8px;
+}
+
+.classify-test-result {
+  margin-top: 12px;
+  padding: 12px;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+}
+
+.classify-result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.classify-result-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.classify-matched {
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-weight: 500;
+}
+
+.classify-unmatched {
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #f5f5f5;
+  color: #757575;
+  font-weight: 500;
+}
+
+.classify-result-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: 0.85rem;
+}
+
+.classify-key {
+  font-weight: 500;
+  color: #616161;
+  min-width: 80px;
+}
+
+.classify-rules-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.classify-rule-chip {
+  font-size: 0.8rem;
+  padding: 1px 8px;
+  border-radius: 12px;
+  background: #e3f2fd;
+  color: #1565c0;
+}

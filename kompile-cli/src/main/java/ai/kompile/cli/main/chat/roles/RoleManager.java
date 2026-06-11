@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.roles;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -352,9 +353,7 @@ public class RoleManager {
     /**
      * Default agent fallback order used when a role does not define its own.
      */
-    private static final List<String> DEFAULT_FALLBACK_ORDER = List.of(
-        "qwen", "claude", "codex", "gemini", "opencode"
-    );
+    private static final List<String> DEFAULT_FALLBACK_ORDER = CliAgentRegistry.commandNames();
 
     /**
      * Get the agent fallback order for a role. If the role defines an

@@ -4,6 +4,7 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -41,6 +42,20 @@ public class StdioMultiTaskTool {
         this.objectMapper = objectMapper;
         this.workDir = workDir;
         this.roleManager = roleManager;
+    }
+
+    /**
+     * Constructor with optional coordination state manager for multi-agent
+     * edit tracking and conflict detection.
+     */
+    public StdioMultiTaskTool(AgentRegistry agentRegistry,
+                              DirectSubagentRunnerStdio subagentRunner,
+                              ObjectMapper objectMapper,
+                              Path workDir,
+                              RoleManager roleManager,
+                              Object coordinationStateManager) {
+        this(agentRegistry, subagentRunner, objectMapper, workDir, roleManager);
+        // coordinationStateManager stored for future use
     }
 
     public String id() { return "multi_task"; }
@@ -90,8 +105,7 @@ public class StdioMultiTaskTool {
         subAgent.put("type", "string");
         subAgent.put("description", "Single agent for this subtask. Ignored if 'agents' is provided. Defaults to qwen.");
         ArrayNode enumValues = subAgent.putArray("enum");
-        enumValues.add("qwen"); enumValues.add("claude"); enumValues.add("codex");
-        enumValues.add("gemini"); enumValues.add("opencode");
+        for (String name : CliAgentRegistry.commandNames()) enumValues.add(name);
 
         var subAgents = itemProps.putObject("agents");
         subAgents.put("type", "array");
@@ -99,8 +113,7 @@ public class StdioMultiTaskTool {
         var agentItems = subAgents.putObject("items");
         agentItems.put("type", "string");
         ArrayNode agentEnumValues = agentItems.putArray("enum");
-        agentEnumValues.add("qwen"); agentEnumValues.add("claude"); agentEnumValues.add("codex");
-        agentEnumValues.add("gemini"); agentEnumValues.add("opencode");
+        for (String name : CliAgentRegistry.commandNames()) agentEnumValues.add(name);
 
         var subRole = itemProps.putObject("role");
         subRole.put("type", "string");

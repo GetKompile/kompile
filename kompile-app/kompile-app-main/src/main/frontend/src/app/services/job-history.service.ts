@@ -241,6 +241,55 @@ export interface SubprocessStatistics {
   restartSuccessRate?: number;
 }
 
+/**
+ * Summary of a resumable ingest job (paused/interrupted).
+ */
+export interface ResumableJobSummary {
+  taskId: string;
+  fileName: string;
+  checkpointPath?: string;
+  resumeFromPhase?: string;
+  chunksEmbedded?: number;
+  chunksIndexed?: number;
+  totalChunks?: number;
+  stoppedAt?: string;
+  status: string;
+  errorMessage?: string;
+  loaderUsed?: string;
+  chunkerUsed?: string;
+  embeddingModelUsed?: string;
+}
+
+/**
+ * Summary of a resumable crawl job (checkpoint-able crawl).
+ */
+export interface ResumableCrawlJob {
+  crawlJobId: string;
+  seed: string;
+  crawlerId?: string;
+  documentsProcessed?: number;
+  documentsDiscovered?: number;
+  documentsFailed?: number;
+  documentsSkipped?: number;
+  startedAt?: string;
+  endedAt?: string;
+  lastCheckpointAt?: string;
+  errorMessage?: string;
+  status: JobStatus;
+  historyTaskId?: string;
+  hasCheckpoint?: boolean;
+  resumedFromJobId?: string;
+}
+
+/**
+ * Result from resuming an ingest job.
+ */
+export interface ResumeIngestResult {
+  newTaskId: string;
+  originalTaskId?: string;
+  message?: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -564,5 +613,65 @@ export class JobHistoryService {
    */
   formatSubprocessEventType(eventType: SubprocessEventType): string {
     return eventType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
+  }
+
+  // ===================== RESUMABLE JOB METHODS =====================
+
+  /**
+   * List ingest jobs that can be resumed (paused or failed with checkpoint data).
+   */
+  listResumableIngestJobs(): Observable<ResumableJobSummary[]> {
+    return this.http.get<ResumableJobSummary[]>(`${backendUrl}/ingest/resume/jobs`);
+  }
+
+  /**
+   * List crawl jobs that can be resumed from a checkpoint.
+   */
+  listResumableCrawlJobs(): Observable<ResumableCrawlJob[]> {
+    return this.http.get<ResumableCrawlJob[]>(`${backendUrl}/crawlers/jobs/resumable`);
+  }
+
+  /**
+   * Resume a paused or failed ingest job from where it left off.
+   * Returns a new task ID for the resumed subprocess.
+   */
+  resumeIngestJob(taskId: string): Observable<ResumeIngestResult> {
+    return this.http.post<ResumeIngestResult>(`${backendUrl}/ingest/resume/jobs/${encodeURIComponent(taskId)}`, {});
+  }
+
+  /**
+   * Get checkpoint status for a specific ingest job.
+   */
+  getIngestCheckpointStatus(taskId: string): Observable<any> {
+    return this.http.get<any>(`${backendUrl}/ingest/resume/jobs/${encodeURIComponent(taskId)}/checkpoint`);
+  }
+
+  /**
+   * Restart a crawl job from its last checkpoint.
+   */
+  restartCrawlJob(jobId: string): Observable<any> {
+    return this.http.post<any>(`${backendUrl}/crawlers/jobs/${encodeURIComponent(jobId)}/restart`, {});
+  }
+
+  // ==================== Embedding Logs ====================
+
+  getEmbeddingLogs(modelId: string): Observable<any[]> {
+    return this.http.get<any[]>(`${this.apiUrl}/embedding/${modelId}/logs`);
+  }
+
+  getAllEmbeddingLogs(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.apiUrl}/embedding/logs`);
+  }
+
+  getEmbeddingLogStats(): Observable<any> {
+    return this.http.get(`${this.apiUrl}/embedding/logs/stats`);
+  }
+
+  tailEmbeddingLogs(modelId: string): Observable<any[]> {
+    return this.http.get<any[]>(`${this.apiUrl}/embedding/${modelId}/logs/tail`);
+  }
+
+  clearEmbeddingLogs(modelId: string): Observable<any> {
+    return this.http.delete(`${this.apiUrl}/embedding/${modelId}/logs`);
   }
 }

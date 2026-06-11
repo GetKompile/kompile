@@ -16,7 +16,7 @@
 
 package ai.kompile.app.config;
 
-import ai.kompile.cli.main.util.NativeImageInfo;
+import ai.kompile.cli.common.util.NativeImageInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -132,6 +132,37 @@ public class SubprocessExecutableConfig {
      */
     @Value("${kompile.subprocess.executable.vlm-test-path:}")
     private String vlmTestPath;
+
+    /**
+     * Path to the CUDA-backend native executable (for backend-routed subprocess launching).
+     * When a subprocess requires CUDA (per DeviceRoutingConfig), this executable is used instead.
+     * If not set, falls back to classpath augmentation via SubprocessBackendResolver.
+     */
+    @Value("${kompile.subprocess.executable.cuda-path:}")
+    private String cudaExecutablePath;
+
+    /**
+     * Path to the CPU-backend native executable (for backend-routed subprocess launching).
+     * When a subprocess is routed to CPU, this executable is used.
+     * If not set, uses the default native-path or classpath mode.
+     */
+    @Value("${kompile.subprocess.executable.cpu-path:}")
+    private String cpuExecutablePath;
+
+    /**
+     * Path to the CUDA-backend fat JAR (for JVM mode backend routing).
+     * When a subprocess requires CUDA in JVM mode, this JAR's classpath is used.
+     * Typically: target/myapp-cuda.jar or ~/.kompile/lib/kompile-app-cuda.jar
+     */
+    @Value("${kompile.subprocess.executable.cuda-jar-path:}")
+    private String cudaJarPath;
+
+    /**
+     * Path to the CPU-backend fat JAR (for JVM mode backend routing).
+     * When a subprocess is routed to CPU in JVM mode, this JAR's classpath is used.
+     */
+    @Value("${kompile.subprocess.executable.cpu-jar-path:}")
+    private String cpuJarPath;
 
     /**
      * Subprocess type flag prefix for unified executable mode.
@@ -537,6 +568,76 @@ public class SubprocessExecutableConfig {
     public void setSubprocessTypeFlag(String subprocessTypeFlag) {
         this.subprocessTypeFlag = subprocessTypeFlag;
     }
+
+    // --- Backend-routed subprocess launching ---
+
+    /**
+     * Resolve the executable or JAR path for a subprocess that requires a specific backend.
+     * Used by subprocess launchers that consult DeviceRoutingConfigService.
+     *
+     * <p>Resolution order for native mode:</p>
+     * <ol>
+     *   <li>Backend-specific executable (cudaExecutablePath / cpuExecutablePath)</li>
+     *   <li>Subprocess-type-specific executable (e.g., embeddingPath)</li>
+     *   <li>Unified native executable (nativePath)</li>
+     * </ol>
+     *
+     * <p>Resolution order for JVM mode:</p>
+     * <ol>
+     *   <li>Backend-specific JAR (cudaJarPath / cpuJarPath) — used to derive classpath</li>
+     *   <li>SubprocessBackendResolver classpath augmentation (fallback)</li>
+     * </ol>
+     *
+     * @param requiresCuda whether the subprocess needs CUDA backend (from DeviceRoutingConfig)
+     * @return resolved path, or null if no backend-specific path is configured
+     */
+    public String resolveBackendExecutablePath(boolean requiresCuda) {
+        if (isNativeMode()) {
+            String path = requiresCuda ? cudaExecutablePath : cpuExecutablePath;
+            if (path != null && !path.isBlank()) {
+                Path resolved = Paths.get(path);
+                if (Files.exists(resolved) && Files.isExecutable(resolved)) {
+                    return resolved.toAbsolutePath().toString();
+                }
+                logger.warn("Backend executable path configured but not found: {} (requiresCuda={})", path, requiresCuda);
+            }
+            return null; // Fall back to type-specific or unified executable
+        } else {
+            // JVM mode: return the JAR path (launcher will extract classpath from it)
+            String jarPath = requiresCuda ? cudaJarPath : cpuJarPath;
+            if (jarPath != null && !jarPath.isBlank()) {
+                Path resolved = Paths.get(jarPath);
+                if (Files.exists(resolved)) {
+                    return resolved.toAbsolutePath().toString();
+                }
+                logger.warn("Backend JAR path configured but not found: {} (requiresCuda={})", jarPath, requiresCuda);
+            }
+            return null; // Fall back to SubprocessBackendResolver classpath augmentation
+        }
+    }
+
+    /**
+     * Check if backend-specific executable/JAR paths are configured.
+     * When true, subprocess launchers can use {@link #resolveBackendExecutablePath(boolean)}
+     * instead of the legacy SubprocessBackendResolver classpath manipulation.
+     */
+    public boolean hasBackendPaths() {
+        return (cudaExecutablePath != null && !cudaExecutablePath.isBlank())
+                || (cpuExecutablePath != null && !cpuExecutablePath.isBlank())
+                || (cudaJarPath != null && !cudaJarPath.isBlank())
+                || (cpuJarPath != null && !cpuJarPath.isBlank());
+    }
+
+    // Getters/setters for backend paths
+
+    public String getCudaExecutablePath() { return cudaExecutablePath; }
+    public void setCudaExecutablePath(String v) { this.cudaExecutablePath = v; }
+    public String getCpuExecutablePath() { return cpuExecutablePath; }
+    public void setCpuExecutablePath(String v) { this.cpuExecutablePath = v; }
+    public String getCudaJarPath() { return cudaJarPath; }
+    public void setCudaJarPath(String v) { this.cudaJarPath = v; }
+    public String getCpuJarPath() { return cpuJarPath; }
+    public void setCpuJarPath(String v) { this.cpuJarPath = v; }
 
     /**
      * Launch mode enumeration.

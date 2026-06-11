@@ -21,6 +21,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.Map;
+
 /**
  * Request DTO for staging a new model.
  */
@@ -38,4 +40,5 @@ public class StageModelRequest {
     private String revision;
     private String authToken;
     private String tokenizerUrl;
+    private Map<String, String> files;
 }

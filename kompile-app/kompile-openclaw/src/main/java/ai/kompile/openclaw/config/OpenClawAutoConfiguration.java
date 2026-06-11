@@ -59,7 +59,7 @@ public class OpenClawAutoConfiguration implements WebSocketConfigurer {
         return config;
     }
 
-    @Bean
+    @Bean("openclawSessionService")
     @ConditionalOnMissingBean
     public SessionService sessionService(OpenClawConfig openClawConfig) {
         try {
@@ -69,7 +69,7 @@ public class OpenClawAutoConfiguration implements WebSocketConfigurer {
         }
     }
 
-    @Bean
+    @Bean("openclawAgentRegistry")
     @ConditionalOnMissingBean
     public AgentRegistry agentRegistry() {
         AgentRegistry registry = new InMemoryAgentRegistry();
@@ -77,18 +77,18 @@ public class OpenClawAutoConfiguration implements WebSocketConfigurer {
         return registry;
     }
 
-    @Bean
+    @Bean("openclawPermissionService")
     @ConditionalOnMissingBean
     public PermissionService permissionService() {
         return new DefaultPermissionService();
     }
 
-    @Bean
+    @Bean("openclawShellExecutionTool")
     public ShellExecutionTool shellExecutionTool(PermissionService permissionService) {
         return new ShellExecutionTool(permissionService);
     }
 
-    @Bean
+    @Bean("openclawMemoryTool")
     public MemoryTool memoryTool(OpenClawConfig openClawConfig, PermissionService permissionService) {
         MemoryTool tool = new MemoryTool(openClawConfig.getWorkspace(), permissionService);
         try {
@@ -99,7 +99,7 @@ public class OpenClawAutoConfiguration implements WebSocketConfigurer {
         return tool;
     }
 
-    @Bean
+    @Bean("openclawToolkitRegistry")
     public ToolkitRegistry toolkitRegistry(ShellExecutionTool shellTool, MemoryTool memoryTool) {
         return new ToolkitRegistry(shellTool, memoryTool);
     }
@@ -114,7 +114,7 @@ public class OpenClawAutoConfiguration implements WebSocketConfigurer {
         return new OpenClawAgentService(reActAgentService, agentRegistry, sessionService, toolkitRegistry);
     }
 
-    @Bean
+    @Bean("openclawChannelManager")
     @ConditionalOnBean(OpenClawAgentService.class)
     public ChannelManager channelManager(OpenClawAgentService agentService) {
         ChannelManager manager = new ChannelManager();

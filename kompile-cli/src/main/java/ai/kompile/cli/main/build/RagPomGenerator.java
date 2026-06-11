@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.build;
 
+import ai.kompile.cli.main.build.config.BuildPreset;
+import ai.kompile.cli.main.build.config.ModuleSelection;
 import ai.kompile.modelmanager.KompileModelManager;
 import ai.kompile.modelmanager.ModelConstants;
 import ai.kompile.modelmanager.ModelDescriptor;
@@ -146,8 +148,8 @@ public class RagPomGenerator implements Callable<Void> {
     private boolean includeToolRag;
 
     @CommandLine.Option(names = {
-            "--includeToolModelStaging" }, description = "Include kompile-tool-model-staging module for MCP model staging operations", defaultValue = "true", negatable = true)
-    private boolean includeToolModelStaging;
+            "--includeToolTableSearch" }, description = "Include kompile-tool-table-search module for MCP table search operations", defaultValue = "true", negatable = true)
+    private boolean includeToolTableSearch;
 
     @CommandLine.Option(names = {
             "--includeKvCache" }, description = "Include kompile-kvcache module for KV cache management", defaultValue = "true", negatable = true)
@@ -160,6 +162,30 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {
             "--includeGraphAlgorithms" }, description = "Include kompile-graph-algorithms module (PageRank, communities, shortest path)", defaultValue = "true", negatable = true)
     private boolean includeGraphAlgorithms;
+
+    @CommandLine.Option(names = {
+            "--includeOcr" }, description = "Include OCR/VLM modules (ocr-core, ocr-models, ocr-postprocess, ocr-integration, ocr-datapipeline)", defaultValue = "false", negatable = true)
+    private boolean includeOcr;
+
+    @CommandLine.Option(names = {
+            "--includeCrawlGraph" }, description = "Include kompile-crawl-graph module for unified crawl-to-graph extraction", defaultValue = "false", negatable = true)
+    private boolean includeCrawlGraph;
+
+    @CommandLine.Option(names = {
+            "--includeCrawlerCore" }, description = "Include kompile-crawler-core for web/file/HTML crawling", defaultValue = "false", negatable = true)
+    private boolean includeCrawlerCore;
+
+    @CommandLine.Option(names = {
+            "--includeProcessDiscovery" }, description = "Include kompile-process-discovery for LLM-based process discovery", defaultValue = "false", negatable = true)
+    private boolean includeProcessDiscovery;
+
+    @CommandLine.Option(names = {
+            "--includeCodeIndexer" }, description = "Include kompile-code-indexer for managed code project indexing", defaultValue = "false", negatable = true)
+    private boolean includeCodeIndexer;
+
+    @CommandLine.Option(names = {
+            "--includeDataEnrichment" }, description = "Include kompile-data-enrichment for LLM-based data enrichment and labeling", defaultValue = "true", negatable = true)
+    private boolean includeDataEnrichment;
 
     @CommandLine.Option(names = {
             "--includeEmbeddingPostgresml" }, description = "Include kompile-embedding-postgresml module")
@@ -219,6 +245,9 @@ public class RagPomGenerator implements Callable<Void> {
 
     private Model model;
     private final List<Dependency> defaultDependencies = new ArrayList<>();
+
+    /** ND4J backend artifactId (e.g. "nd4j-cuda-12.9" or "nd4j-native"). Set by configureFrom(). */
+    private String backend = "nd4j-cuda-12.9";
 
     private static final String DEFAULT_SPRING_BOOT_VERSION = "3.4.5";
     private static final String DEFAULT_SPRING_AI_VERSION = "1.0.0";
@@ -306,6 +335,77 @@ public class RagPomGenerator implements Callable<Void> {
         LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("tr", "tr-sent.bin");
         LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("uk", "opennlp-uk-ud-iu-sentence-1.2-2.5.0.bin");
         LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("uk", "uk-sent.bin");
+    }
+
+    /**
+     * Programmatically configure this generator from a {@link ModuleSelection} and explicit parameters.
+     * Used by {@link ai.kompile.cli.main.build.InitProjectCommand} to drive generation without CLI parsing.
+     */
+    public void configureFrom(ModuleSelection modules,
+                              String projectName, String instanceGroupId, String instanceVersion,
+                              String ragMcpVersion, File outputFile,
+                              String javacppPlatform, String javacppExtension,
+                              String databaseUrl, String databaseUsername, String databasePassword,
+                              boolean enableSchemaInit, boolean buildNative,
+                              String appTitle, List<String> supportedLanguages,
+                              List<String> anseriniIndexIds, List<String> anseriniEncoderModelIds,
+                              int serverPort, String backend,
+                              BuildPreset.BackendAffinity backendAffinity) {
+        this.instanceArtifactId = projectName;
+        this.instanceGroupId = instanceGroupId;
+        this.instanceVersion = instanceVersion;
+        this.ragMcpVersion = ragMcpVersion;
+        this.outputFile = outputFile;
+        this.javacppPlatform = javacppPlatform != null ? javacppPlatform : "linux-x86_64";
+        this.javacppExtension = javacppExtension;
+        this.databaseUrl = databaseUrl;
+        this.databaseUsername = databaseUsername;
+        this.databasePassword = databasePassword;
+        this.enableSchemaInit = enableSchemaInit;
+        this.buildNative = buildNative;
+        this.backend = backend != null ? backend : "nd4j-cuda-12.9";
+        this.appTitle = appTitle != null ? appTitle : "Kompile RAG Console";
+        this.supportedLanguages = supportedLanguages != null ? supportedLanguages : Collections.singletonList("en");
+        this.anseriniIndexIds = anseriniIndexIds != null ? anseriniIndexIds : new ArrayList<>();
+        this.anseriniEncoderModelIds = anseriniEncoderModelIds != null ? anseriniEncoderModelIds : new ArrayList<>();
+
+        // Map ModuleSelection to the individual include* flags
+        Set<String> ids = modules.getAll();
+        this.includeAppMain = ids.contains("app-main");
+        this.includeAppCore = ids.contains("app-core");
+        this.includeLoadersOrchestrator = ids.contains("loaders-orchestrator");
+        this.includeLoaderTika = ids.contains("loader-tika");
+        this.includeLoaderPdf = ids.contains("loader-pdf");
+        this.includeLoaderMicrosoft = ids.contains("loader-microsoft");
+        this.includeLoaderMail = ids.contains("loader-mail");
+        this.includeLoaderPdfExtended = ids.contains("loader-pdf-extended");
+        this.includeAnserini = ids.contains("app-anserini");
+        this.includeEmbeddingAnserini = ids.contains("embedding-anserini");
+        this.includeVectorStoreAnserini = ids.contains("vectorstore-anserini");
+        this.includeLlmOpenai = ids.contains("llm-openai");
+        this.includeLlmAnthropic = ids.contains("llm-anthropic");
+        this.includeLlmGemini = ids.contains("llm-gemini");
+        this.includeEmbeddingOpenai = ids.contains("embedding-openai");
+        this.includeEmbeddingSentenceTransformer = ids.contains("embedding-sentence-transformer");
+        this.includeVectorstoreChroma = ids.contains("vectorstore-chroma");
+        this.includeVectorstorePgvector = ids.contains("vectorstore-pgvector");
+        this.includeToolFilesystem = ids.contains("tool-filesystem");
+        this.includeToolRag = ids.contains("tool-rag");
+        this.includeKvCache = ids.contains("kvcache");
+        this.includeRagPipeline = ids.contains("rag-pipeline") || ids.contains("pipeline-management");
+        this.includeGraphAlgorithms = ids.contains("graph-algorithms");
+        this.includeOcr = ids.contains("ocr-core");
+        this.includeCrawlGraph = ids.contains("crawl-graph");
+        this.includeCrawlerCore = ids.contains("crawler-core");
+        this.includeProcessDiscovery = ids.contains("process-discovery");
+        this.includeCodeIndexer = ids.contains("code-indexer");
+        this.includeDataEnrichment = ids.contains("data-enrichment");
+        this.includeEmbeddingPostgresml = ids.contains("embedding-postgresml");
+        this.includePgmlIndexer = ids.contains("pgml-indexer");
+        this.includeChunkerSentence = ids.contains("chunker-sentence");
+        this.includeChunkerRecursiveCharacter = ids.contains("chunker-recursive-character");
+        this.includeChunkerMarkdown = ids.contains("chunker-markdown");
+        this.includeChunkerToken = ids.contains("chunker-token");
     }
 
     private Dependency createDependencyInternal(String groupId, String artifactId, String versionProperty, String scope,
@@ -588,11 +688,16 @@ public class RagPomGenerator implements Callable<Void> {
         }
         props.setProperty("kompile.opennlp.sentence.language", defaultRuntimeLangForOpenNLP);
         props.setProperty("instanceArtifactId", this.instanceArtifactId);
+        props.setProperty("backend", this.backend);
 
         model.setProperties(props);
 
         addApplicationDependencies();
+        addBackendDependencies();
         addApplicationBuild();
+
+        // Always add cpu profile so -Pcpu switches to nd4j-native
+        addCpuProfile();
 
         if (buildNative) {
             addNativeProfile(CORE_APP_MAIN_CLASS_FQCN, Collections.emptyList());
@@ -1315,14 +1420,31 @@ public class RagPomGenerator implements Callable<Void> {
             addDependency(defaultDependencies, "ai.kompile", "kompile-tool-filesystem", "${kompile.project.version}");
         if (includeToolRag)
             addDependency(defaultDependencies, "ai.kompile", "kompile-tool-rag", "${kompile.project.version}");
-        if (includeToolModelStaging)
-            addDependency(defaultDependencies, "ai.kompile", "kompile-tool-model-staging", "${kompile.project.version}");
+        if (includeToolTableSearch)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-tool-table-search", "${kompile.project.version}");
         if (includeKvCache)
             addDependency(defaultDependencies, "ai.kompile", "kompile-kvcache", "${kompile.project.version}");
         if (includeRagPipeline)
             addDependency(defaultDependencies, "ai.kompile", "kompile-rag-pipeline", "${kompile.project.version}");
         if (includeGraphAlgorithms)
             addDependency(defaultDependencies, "ai.kompile", "kompile-graph-algorithms", "${kompile.project.version}");
+        if (includeOcr) {
+            addDependency(defaultDependencies, "ai.kompile", "kompile-ocr-core", "${kompile.project.version}");
+            addDependency(defaultDependencies, "ai.kompile", "kompile-ocr-models", "${kompile.project.version}");
+            addDependency(defaultDependencies, "ai.kompile", "kompile-ocr-postprocess", "${kompile.project.version}");
+            addDependency(defaultDependencies, "ai.kompile", "kompile-ocr-integration", "${kompile.project.version}");
+            addDependency(defaultDependencies, "ai.kompile", "kompile-ocr-datapipeline", "${kompile.project.version}");
+        }
+        if (includeCrawlGraph)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-crawl-graph", "${kompile.project.version}");
+        if (includeCrawlerCore)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-crawler-core", "${kompile.project.version}");
+        if (includeProcessDiscovery)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-process-discovery", "${kompile.project.version}");
+        if (includeCodeIndexer)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-code-indexer", "${kompile.project.version}");
+        if (includeDataEnrichment)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-data-enrichment", "${kompile.project.version}");
 
         addDependency(defaultDependencies, "org.projectlombok", "lombok", "${lombok.version}", "provided", null, true);
         addDependency(defaultDependencies, "com.fasterxml.jackson.core", "jackson-databind", "${jackson.version}");
@@ -2639,6 +2761,30 @@ public class RagPomGenerator implements Callable<Void> {
         } catch (XmlPullParserException | IOException e) {
             throw new RuntimeException("Error configuring build plugins", e);
         }
+    }
+
+    /**
+     * Add the ND4J backend dependency (base + platform-classified) using the ${backend} property.
+     * This allows -Pcpu to swap the entire backend by overriding the property.
+     */
+    private void addBackendDependencies() {
+        addDependency(defaultDependencies, "org.eclipse.deeplearning4j", "${backend}",
+                "1.0.0-SNAPSHOT");
+        addDependency(defaultDependencies, "org.eclipse.deeplearning4j", "${backend}",
+                "1.0.0-SNAPSHOT", "compile", javacppPlatform, false);
+    }
+
+    /**
+     * Add a 'cpu' profile that overrides the backend property to nd4j-native.
+     * Usage: mvn clean package -Pcpu
+     */
+    private void addCpuProfile() {
+        Profile cpuProfile = new Profile();
+        cpuProfile.setId("cpu");
+        Properties cpuProps = new Properties();
+        cpuProps.setProperty("backend", "nd4j-native");
+        cpuProfile.setProperties(cpuProps);
+        model.addProfile(cpuProfile);
     }
 
     private void addNativeProfile(String nativeImageMainClassFqcn, List<String> modelFilesToIncludePreviously) {

@@ -1,0 +1,75 @@
+<div class="kclaw-hub">
+  <!-- Header -->
+  <mat-card class="header-card">
+    <mat-card-header>
+      <mat-card-title>
+        <mat-icon>smart_toy</mat-icon>
+        KClaw Agent Hub
+      </mat-card-title>
+      <mat-card-subtitle>
+        Personal AI Assistant Platform
+      </mat-card-subtitle>
+    </mat-card-header>
+    
+    <!-- Stats Row -->
+    <mat-card-content>
+      <div class="stats-row">
+        <div class="stat-card">
+          <mat-icon>psychology</mat-icon>
+          <div class="stat-content">
+            <span class="stat-value">{{ stats.totalAgents }}</span>
+            <span class="stat-label">Agents</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <mat-icon>forum</mat-icon>
+          <div class="stat-content">
+            <span class="stat-value">{{ stats.activeChannels }}</span>
+            <span class="stat-label">Active Channels</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <mat-icon>schedule</mat-icon>
+          <div class="stat-content">
+            <span class="stat-value">{{ stats.scheduledHeartbeats }}</span>
+            <span class="stat-label">Heartbeats</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <mat-icon>history</mat-icon>
+          <div class="stat-content">
+            <span class="stat-value">{{ stats.totalSessions }}</span>
+            <span class="stat-label">Sessions</span>
+          </div>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Tab Navigation -->
+  <mat-tab-group [(selectedIndex)]="activeTabIndex" class="main-tabs">
+    <mat-tab label="Agents">
+      <app-kclaw-agent-manager></app-kclaw-agent-manager>
+    </mat-tab>
+    
+    <mat-tab label="Channels">
+      <app-kclaw-channel-manager></app-kclaw-channel-manager>
+    </mat-tab>
+    
+    <mat-tab label="Chat">
+      <app-kclaw-chat></app-kclaw-chat>
+    </mat-tab>
+    
+    <mat-tab label="Sessions">
+      <app-kclaw-session-viewer></app-kclaw-session-viewer>
+    </mat-tab>
+    
+    <mat-tab label="Heartbeats">
+      <app-kclaw-heartbeat-manager></app-kclaw-heartbeat-manager>
+    </mat-tab>
+    
+    <mat-tab label="Permissions">
+      <app-kclaw-permission-manager></app-kclaw-permission-manager>
+    </mat-tab>
+  </mat-tab-group>
+</div>

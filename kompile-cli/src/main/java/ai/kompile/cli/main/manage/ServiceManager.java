@@ -46,10 +46,10 @@ public class ServiceManager {
      */
     public ProcessResult startComponent(String componentId, int port, List<String> jvmArgs, List<String> appArgs) throws Exception {
         ComponentRegistry registry = new ComponentRegistry();
-        File jarFile = registry.getJarPath(componentId);
+        File jarFile = registry.findInstalledJar(componentId);
 
-        if (!jarFile.exists()) {
-            return ProcessResult.error("Component not installed: " + componentId + 
+        if (jarFile == null) {
+            return ProcessResult.error("Component not installed: " + componentId +
                     "\nInstall it with: kompile install " + componentId);
         }
 
@@ -278,6 +278,133 @@ public class ServiceManager {
         }
 
         return false;
+    }
+
+    /**
+     * Start a project component from a specific JAR file.
+     * Supports foreground (inherited IO) and background modes.
+     *
+     * @param instanceName registry name for this instance
+     * @param type         component type (e.g., "kompile-app-main")
+     * @param jarFile      path to the JAR or native executable
+     * @param port         port to bind
+     * @param workDir      working directory for the process
+     * @param jvmArgs      extra JVM flags (may be null)
+     * @param appArgs      extra application arguments (may be null)
+     * @param logDir       directory for stdout/stderr log files (null = inherited IO)
+     * @param foreground   true to inherit IO (blocking), false to redirect to log files
+     * @return the started Process
+     */
+    public Process startProjectComponent(String instanceName, String type, File jarFile,
+                                         int port, File workDir,
+                                         List<String> jvmArgs, List<String> appArgs,
+                                         File logDir, boolean foreground) throws IOException {
+        List<String> command = new ArrayList<>();
+
+        boolean isNative = !jarFile.getName().endsWith(".jar");
+        if (isNative) {
+            command.add(jarFile.getAbsolutePath());
+        } else {
+            command.add("java");
+            if (jvmArgs != null) {
+                command.addAll(jvmArgs);
+            }
+            boolean hasXmx = jvmArgs != null && jvmArgs.stream().anyMatch(arg -> arg.startsWith("-Xmx"));
+            if (!hasXmx) {
+                command.add("-Xmx4g");
+            }
+            command.add("-jar");
+            command.add(jarFile.getAbsolutePath());
+        }
+
+        command.add("--server.port=" + port);
+
+        if (appArgs != null) {
+            command.addAll(appArgs);
+        }
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(workDir);
+
+        if (foreground) {
+            pb.inheritIO();
+        } else if (logDir != null) {
+            logDir.mkdirs();
+            pb.redirectOutput(new File(logDir, instanceName + ".out.log"));
+            pb.redirectError(new File(logDir, instanceName + ".err.log"));
+        }
+
+        Process process = pb.start();
+
+        InstanceInfo info = new InstanceInfo(instanceName, type, port, process.pid(),
+                jarFile.getAbsolutePath(), workDir.getAbsolutePath());
+        InstanceRegistry.register(info);
+
+        return process;
+    }
+
+    /**
+     * Stop a running instance by its registry name.
+     */
+    public ProcessResult stopByName(String instanceName) throws Exception {
+        InstanceInfo info;
+        try {
+            info = InstanceRegistry.get(instanceName);
+        } catch (IOException e) {
+            return ProcessResult.error("Failed to read instance registry: " + e.getMessage());
+        }
+
+        if (info == null) {
+            return ProcessResult.error("Instance not found: " + instanceName);
+        }
+
+        Optional<ProcessHandle> processOpt = ProcessHandle.of(info.getPid());
+        if (!processOpt.isPresent() || !processOpt.get().isAlive()) {
+            InstanceRegistry.unregister(instanceName);
+            return ProcessResult.error("Process not running (stale registry entry removed)");
+        }
+
+        ProcessHandle process = processOpt.get();
+        System.out.println("Stopping " + instanceName + " (PID: " + info.getPid() + ")...");
+
+        process.destroy();
+        try {
+            process.onExit().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            process.destroyForcibly();
+        }
+
+        InstanceRegistry.unregister(instanceName);
+        System.out.println("  Stopped " + instanceName);
+        return ProcessResult.success(instanceName, info.getPid(), info.getPort(), "stopped");
+    }
+
+    /**
+     * Get the status of a named instance (as opposed to getComponentStatus which looks up by type).
+     */
+    public ComponentStatus getInstanceStatus(String instanceName) {
+        try {
+            InstanceInfo info = InstanceRegistry.get(instanceName);
+
+            if (info == null) {
+                return new ComponentStatus(instanceName, "not_running", false, null, null, null);
+            }
+
+            Optional<ProcessHandle> processOpt = ProcessHandle.of(info.getPid());
+            boolean isAlive = processOpt.isPresent() && processOpt.get().isAlive();
+
+            if (!isAlive) {
+                InstanceRegistry.unregister(instanceName);
+                return new ComponentStatus(instanceName, "dead", false, info.getPid(), info.getPort(), null);
+            }
+
+            boolean healthy = checkHealth(info.getPort());
+            String status = healthy ? "running" : "unhealthy";
+            return new ComponentStatus(instanceName, status, true, info.getPid(), info.getPort(), info.getUrl());
+
+        } catch (Exception e) {
+            return new ComponentStatus(instanceName, "error", false, null, null, e.getMessage());
+        }
     }
 
     /**

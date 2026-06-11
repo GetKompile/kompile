@@ -158,7 +158,8 @@ export class DiagnosticService extends BaseService {
       llmStatus: this.getLlmStatus(),
       mcpStatus: this.getMcpStatus(),
       memoryStatus: this.getMemoryStatus(),
-      environmentStatus: this.getEnvironmentStatus()
+      environmentStatus: this.getEnvironmentStatus(),
+      nd4jDiagnostics: this.getNd4jDiagnostics()
     }).pipe(
       map(results => this.buildReport(results)),
       catchError(err => {
@@ -216,6 +217,32 @@ export class DiagnosticService extends BaseService {
     );
   }
 
+  private getNd4jDiagnostics(): Observable<any> {
+    return this.http.get<any>(`${this.backendUrl}/diagnostics/allocation-log/summary`).pipe(
+      catchError(() => of(null))
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PUBLIC DIAGNOSTICS ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  getComprehensiveDiagnostics(includeAllocationDetails: boolean = false): Observable<any> {
+    const params: any = {};
+    if (includeAllocationDetails) {
+      params.includeAllocationDetails = 'true';
+    }
+    return this.http.get<any>(`${this.backendUrl}/diagnostics/comprehensive`, { params });
+  }
+
+  getAllocationLogEntries(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/diagnostics/allocation-log/entries`);
+  }
+
+  getAllocationLogPath(): Observable<any> {
+    return this.http.get<any>(`${this.backendUrl}/diagnostics/allocation-log/path`);
+  }
+
   private buildReport(results: any): DiagnosticReport {
     const checks: DiagnosticCheck[] = [];
 
@@ -256,6 +283,10 @@ export class DiagnosticService extends BaseService {
     checks.push(this.checkSubprocessConfig(results.environmentStatus));
     checks.push(this.checkDiskSpace(results.environmentStatus));
     checks.push(this.checkLlmApiKeys(results.environmentStatus));
+
+    // === ND4J / NATIVE DIAGNOSTICS ===
+    checks.push(this.checkNd4jAllocationLog(results.nd4jDiagnostics));
+    checks.push(this.checkNd4jLeaks(results.nd4jDiagnostics));
 
     // Build categories
     const categories = this.buildCategories(checks);
@@ -1067,6 +1098,61 @@ export class DiagnosticService extends BaseService {
     };
   }
 
+  // === ND4J / NATIVE DIAGNOSTICS ===
+
+  private checkNd4jAllocationLog(nd4j: any): DiagnosticCheck {
+    if (!nd4j) {
+      return { id: 'nd4j-alloc-log', name: 'ND4J Allocation Tracking', category: 'ND4J / Native',
+        status: 'unknown', message: 'Diagnostics endpoint not available' };
+    }
+    const totalAllocations = nd4j.totalAllocations || 0;
+    const totalBytes = nd4j.totalBytesAllocated || 0;
+    const totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
+    const topSites = nd4j.topAllocationSites || [];
+    const allocsByOp = nd4j.allocationsByOperation || {};
+    const largestAllocs = nd4j.largestAllocations || [];
+    const rateStats = nd4j.rateStats;
+
+    let detailParts: string[] = [];
+    if (topSites.length > 0) {
+      detailParts.push(`Top allocation sites:\n${topSites.slice(0, 5).map((s: any) => `  ${s.site}: ${s.count} allocs (${(s.bytes / (1024 * 1024)).toFixed(1)} MB)`).join('\n')}`);
+    }
+    const opEntries = Object.entries(allocsByOp);
+    if (opEntries.length > 0) {
+      detailParts.push(`By operation:\n${opEntries.slice(0, 8).map(([op, count]) => `  ${op}: ${count}`).join('\n')}`);
+    }
+    if (largestAllocs.length > 0) {
+      detailParts.push(`Largest allocations:\n${largestAllocs.slice(0, 5).map((a: any) => `  ${(a.bytes / (1024 * 1024)).toFixed(2)} MB - ${a.operation || a.site || 'unknown'}`).join('\n')}`);
+    }
+    if (rateStats) {
+      detailParts.push(`Rate: ${rateStats.allocsPerSecond?.toFixed(1) || '?'} allocs/sec, ${((rateStats.bytesPerSecond || 0) / (1024 * 1024)).toFixed(1)} MB/sec`);
+    }
+    const details = detailParts.length > 0 ? detailParts.join('\n\n') : undefined;
+
+    return { id: 'nd4j-alloc-log', name: 'ND4J Allocation Tracking', category: 'ND4J / Native',
+      status: totalAllocations > 0 ? 'pass' : 'warning',
+      message: `${totalAllocations} allocations tracked (${totalMB} MB total)`,
+      details,
+      recommendation: totalAllocations === 0 ? 'Enable allocation logging for memory debugging' : undefined };
+  }
+
+  private checkNd4jLeaks(nd4j: any): DiagnosticCheck {
+    if (!nd4j) {
+      return { id: 'nd4j-leak-check', name: 'ND4J Leak Detection', category: 'ND4J / Native',
+        status: 'unknown', message: 'Diagnostics endpoint not available' };
+    }
+    const ndarrayAllocs = nd4j.ndarrayAllocations || 0;
+    const opContextAllocs = nd4j.opContextAllocations || 0;
+    const logExists = nd4j.logFileExists === true;
+
+    return { id: 'nd4j-leak-check', name: 'ND4J Leak Detection', category: 'ND4J / Native',
+      status: logExists ? 'pass' : 'warning',
+      message: logExists
+        ? `Log active: ${ndarrayAllocs} NDArray + ${opContextAllocs} OpContext allocations`
+        : 'Allocation log file not found',
+      recommendation: !logExists ? 'Start the app with allocation logging enabled for leak detection' : undefined };
+  }
+
   // === CATEGORY BUILDING ===
 
   private buildCategories(checks: DiagnosticCheck[]): DiagnosticCategory[] {
@@ -1088,7 +1174,8 @@ export class DiagnosticService extends BaseService {
       'LLM': 'chat',
       'MCP': 'extension',
       'System': 'memory',
-      'Environment': 'settings_applications'
+      'Environment': 'settings_applications',
+      'ND4J / Native': 'developer_board'
     };
 
     return Array.from(categoryMap.entries()).map(([name, catChecks]) => {

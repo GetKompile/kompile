@@ -201,7 +201,7 @@ public class EntityResolutionService {
     /**
      * Normalize an entity name for comparison.
      */
-    static String normalize(String name) {
+    public static String normalize(String name) {
         if (name == null) return "";
         String result = name.trim().toLowerCase();
         result = SUFFIX_PATTERN.matcher(result).replaceAll("").trim();
@@ -213,7 +213,7 @@ public class EntityResolutionService {
     /**
      * Compute Levenshtein similarity between two strings (0.0 to 1.0).
      */
-    static double levenshteinSimilarity(String a, String b) {
+    public static double levenshteinSimilarity(String a, String b) {
         if (a.equals(b)) return 1.0;
         if (a.isEmpty() || b.isEmpty()) return 0.0;
 
@@ -222,7 +222,7 @@ public class EntityResolutionService {
         return 1.0 - (double) distance / maxLen;
     }
 
-    static int levenshteinDistance(String a, String b) {
+    public static int levenshteinDistance(String a, String b) {
         int lenA = a.length();
         int lenB = b.length();
         int[] prev = new int[lenB + 1];

@@ -189,6 +189,27 @@ public final class SourceMetadataConstants {
     public static final String PROCESSING_VERSION = "processing_version";
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // LANGUAGE DETECTION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * ISO 639-1 language code detected for the document content.
+     * Example: "en", "de", "fr"
+     */
+    public static final String LANGUAGE = "language";
+
+    /**
+     * Confidence score from the language detector (0.0-1.0).
+     * Example: "0.987"
+     */
+    public static final String LANGUAGE_CONFIDENCE = "language_confidence";
+
+    /**
+     * How language was assigned: "detected", "header", "config", "default".
+     */
+    public static final String LANGUAGE_DETECTION_METHOD = "language_detection_method";
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // HELPER METHODS
     // ═══════════════════════════════════════════════════════════════════════════
 

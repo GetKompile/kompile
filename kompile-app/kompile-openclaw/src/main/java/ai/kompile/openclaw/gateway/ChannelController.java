@@ -28,7 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 @Slf4j
-@RestController
+@RestController("openclawChannelController")
 @RequestMapping("/api/openclaw/channels")
 @RequiredArgsConstructor
 @ConditionalOnBean(ChannelManager.class)

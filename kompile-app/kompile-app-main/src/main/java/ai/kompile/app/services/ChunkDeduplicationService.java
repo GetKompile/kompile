@@ -38,7 +38,7 @@ import java.util.stream.Collectors;
  * </ul>
  */
 @Slf4j
-@Service
+@Service("appChunkDeduplicationService")
 public class ChunkDeduplicationService {
 
     public static final String STRATEGY_CONTENT_HASH = "content_hash";

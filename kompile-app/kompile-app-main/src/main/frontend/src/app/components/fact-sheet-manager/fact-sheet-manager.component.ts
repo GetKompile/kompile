@@ -53,6 +53,8 @@ import { SourceViewerService } from '../../services/source-viewer.service';
 import { ArchiveService } from '../../services/archive.service';
 import { LocalRegistryService, EmbeddingModelStatus } from '../../services/local-registry.service';
 import { ModelRegistryService } from '../../services/model-registry.service';
+import { UnifiedCrawlService, JobSummary as CrawlJobSummary, PipelineStepProgress, CrawlStageEvent } from '../../services/unified-crawl.service';
+import { CrossIndexService } from '../../services/cross-index.service';
 import { SourceViewerDialogComponent, SourceViewerDialogData } from '../source-viewer-dialog/source-viewer-dialog.component';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import {
@@ -83,7 +85,10 @@ import {
   JobType,
   SubprocessRuntimeInfo,
   ModelStatusUpdate,
-  BatchHistoryEntry
+  BatchHistoryEntry,
+  SearchResult,
+  UploadedFileInfo,
+  CrossIndexStatistics
 } from '../../models/api-models';
 
 // Interface for vector population progress tracking
@@ -119,6 +124,7 @@ interface VectorPopulationProgress {
   };
 }
 import { AddSourceDialogComponent, AddSourceDialogData } from '../document-manager/add-source-dialog/add-source-dialog.component';
+import { DocumentCrawlDialogComponent, DocumentCrawlDialogData } from '../document-manager/document-crawl-dialog/document-crawl-dialog.component';
 import { PipelineSettingsPanelComponent } from '../document-manager/pipeline-settings-panel/pipeline-settings-panel.component';
 import { SubprocessLogsComponent } from '../subprocess-logs/subprocess-logs.component';
 import { ConnectionsManagerComponent } from '../connections-manager/connections-manager.component';
@@ -161,8 +167,6 @@ import { ConnectionsManagerComponent } from '../connections-manager/connections-
 })
 export class FactSheetManagerComponent implements OnInit, OnDestroy {
   @ViewChild('fileInput') fileInput!: ElementRef<HTMLInputElement>;
-  @ViewChild('keywordPaginator') keywordPaginator!: MatPaginator;
-  @ViewChild('vectorPaginator') vectorPaginator!: MatPaginator;
 
   // Event to open Model Staging tab in parent
   @Output() openModelStaging = new EventEmitter<void>();
@@ -195,6 +199,12 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   activeUploads: Map<string, IngestProgressUpdate> = new Map();
   activeUploadsArray: IngestProgressUpdate[] = [];
   wsConnectionState: WebSocketConnectionState = WebSocketConnectionState.DISCONNECTED;
+
+  // Crawl job tracking
+  activeCrawlJobs: CrawlJobSummary[] = [];
+  expandedCrawlJobs: Set<string> = new Set();
+  expandedCrawlErrors: Set<string> = new Set();
+  private crawlPollSubscription: Subscription | null = null;
 
   // Completed jobs notification pane - shows recently completed jobs until dismissed
   completedJobs: IngestProgressUpdate[] = [];
@@ -242,6 +252,15 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   // Tab state
   selectedTabIndex = 0;
 
+  // Server files state
+  serverFiles: UploadedFileInfo[] = [];
+  serverFilesLocation = '';
+  serverFilesLoading = false;
+  processingStatus: any = null;
+
+  // Cross-index statistics
+  crossIndexStats: CrossIndexStatistics | null = null;
+
   // Create/Edit form
   showCreateForm = false;
   showEditForm = false;
@@ -275,29 +294,9 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   availableLoaders: LoaderInfo[] = [];
   availableChunkers: ChunkerInfo[] = [];
 
-  // Index Browser state
+  // Index Browser state (status used by vector population tracking)
   indexerStatus: any = null;
   statusLoading = true;
-  keywordDocuments: any[] = [];
-  vectorDocuments: any[] = [];
-  keywordDataSource = new MatTableDataSource<any>();
-  vectorDataSource = new MatTableDataSource<any>();
-  keywordDisplayedColumns = ['id', 'content', 'score', 'originalDoc', 'actions'];
-  vectorDisplayedColumns = ['id', 'content', 'score', 'originalDoc', 'actions'];
-  keywordSearchQuery = '';
-  vectorSearchQuery = '';
-  keywordTotalResults = 0;
-  vectorTotalResults = 0;
-  keywordPageSize = 10;
-  vectorPageSize = 10;
-  keywordCurrentPage = 0;
-  vectorCurrentPage = 0;
-  keywordSearchLoading = false;
-  vectorSearchLoading = false;
-  similarityThreshold = 0.5;
-  selectedDocument: any = null;
-  keywordSearchControl = new FormControl('');
-  vectorSearchControl = new FormControl('');
 
   // Index Storage Settings (per-sheet)
   editVectorStorePath = '';
@@ -393,6 +392,8 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     private archiveService: ArchiveService,
     private localRegistryService: LocalRegistryService,
     private modelRegistryService: ModelRegistryService,
+    private unifiedCrawlService: UnifiedCrawlService,
+    private crossIndexService: CrossIndexService,
     private http: HttpClient,
     private fb: FormBuilder,
     private snackBar: MatSnackBar,
@@ -434,6 +435,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
         this.activeSheet = sheet;
         if (sheet) {
           this.loadFacts();
+          this.loadCrossIndexStats();
           // Update index storage edit fields when active sheet changes
           this.editVectorStorePath = sheet.vectorStorePath || '';
           this.editKeywordIndexPath = sheet.keywordIndexPath || '';
@@ -443,7 +445,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
         // Always recompute filtered uploads when sheet changes to ensure UI stays in sync
         if (sheetChanged) {
-          console.log(`[FactSheetManager] Sheet changed from ${previousSheetId} to ${sheet?.id}, updating filtered uploads`);
+          console.debug(`[FactSheetManager] Sheet changed from ${previousSheetId} to ${sheet?.id}, updating filtered uploads`);
           this.updateFilteredUploadsArray();
 
           // Refresh index browser status when switching sheets
@@ -488,39 +490,21 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     this.modelRegistryService.changes$
       .pipe(takeUntil(this.destroy$))
       .subscribe(event => {
-        console.log('[FactSheetManager] Model registry change:', event.type, event.modelId);
+        console.debug('[FactSheetManager] Model registry change:', event.type, event.modelId);
         // Refresh embedding status and system config when models change
         this.loadSystemConfig();
         this.loadIndexerStatus();
         this.cdr.markForCheck();
       });
 
-    // Subscribe to keyword search input
-    this.keywordSearchControl.valueChanges.pipe(
-      debounceTime(400),
-      distinctUntilChanged(),
-      takeUntil(this.destroy$)
-    ).subscribe(value => {
-      this.keywordSearchQuery = value || '';
-      if (this.keywordSearchQuery.length >= 2) {
-        this.searchKeywordIndex();
-      }
-    });
-
-    // Subscribe to vector search input
-    this.vectorSearchControl.valueChanges.pipe(
-      debounceTime(400),
-      distinctUntilChanged(),
-      takeUntil(this.destroy$)
-    ).subscribe(value => {
-      this.vectorSearchQuery = value || '';
-      if (this.vectorSearchQuery.length >= 2) {
-        this.searchVectorStore();
-      }
-    });
-
     // Subscribe to WebSocket model status updates for real-time UI updates
     this.subscribeToModelStatusUpdates();
+
+    // Start crawl job polling
+    this.loadActiveCrawlJobs();
+    this.crawlPollSubscription = interval(5000).pipe(
+      takeUntil(this.destroy$)
+    ).subscribe(() => this.loadActiveCrawlJobs());
   }
 
   /**
@@ -545,7 +529,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       }
     });
 
-    console.log('[WS-MODEL] FactSheetManager subscribed to model status updates');
+    console.debug('[WS-MODEL] FactSheetManager subscribed to model status updates');
   }
 
   /**
@@ -562,7 +546,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       this.systemConfig.embeddingModel.dimensions > 0;
 
     if (!wasAvailable && isNowInitialized) {
-      console.log('[WS-MODEL] Embedding model is now ready in FactSheetManager!');
+      console.debug('[WS-MODEL] Embedding model is now ready in FactSheetManager!');
       this.snackBar.open('Embedding model is now ready!', 'Close', {
         duration: 5000,
         panelClass: ['snackbar-success']
@@ -589,6 +573,74 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     });
   }
 
+  loadServerFiles(): void {
+    this.serverFilesLoading = true;
+    this.documentService.getUploadedFiles().subscribe({
+      next: (res) => {
+        this.serverFiles = res.files || [];
+        this.serverFilesLocation = res.uploaded_files_location || '';
+        this.serverFilesLoading = false;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.serverFilesLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  loadProcessingStatus(): void {
+    this.documentService.getProcessingStatus().subscribe({
+      next: (status) => {
+        this.processingStatus = status;
+        this.cdr.markForCheck();
+      },
+      error: () => {}
+    });
+  }
+
+  formatLastModified(ms: number): string {
+    if (!ms) return '-';
+    return new Date(ms).toLocaleString();
+  }
+
+  getMimeIcon(mimeType: string): string {
+    if (!mimeType) return 'insert_drive_file';
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('video/')) return 'movie';
+    if (mimeType.startsWith('audio/')) return 'audiotrack';
+    if (mimeType.includes('pdf')) return 'picture_as_pdf';
+    if (mimeType.includes('spreadsheet') || mimeType.includes('excel') || mimeType.includes('csv')) return 'table_chart';
+    if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) return 'slideshow';
+    if (mimeType.includes('word') || mimeType.includes('document')) return 'article';
+    if (mimeType.includes('text/')) return 'text_snippet';
+    if (mimeType.includes('json') || mimeType.includes('xml')) return 'code';
+    if (mimeType.includes('zip') || mimeType.includes('tar') || mimeType.includes('compress')) return 'folder_zip';
+    return 'insert_drive_file';
+  }
+
+  loadCrossIndexStats(): void {
+    if (!this.activeSheet?.id) return;
+    this.crossIndexService.getStatistics(this.activeSheet.id).subscribe({
+      next: (stats) => {
+        this.crossIndexStats = stats;
+        this.cdr.markForCheck();
+      },
+      error: () => {}
+    });
+  }
+
+  processServerFile(file: UploadedFileInfo): void {
+    this.documentService.processUploadedFile(file.fileName).subscribe({
+      next: () => {
+        this.snackBar.open(`Processing started for ${file.fileName}`, 'Close', { duration: 3000 });
+      },
+      error: (err) => {
+        this.snackBar.open(`Failed to process ${file.fileName}: ${err.message || 'Unknown error'}`, 'Close', { duration: 5000 });
+      }
+    });
+  }
+
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
@@ -596,6 +648,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     this.logsSubscription?.unsubscribe();
     this.connectionSubscription?.unsubscribe();
     this.taskPollingSubscription?.unsubscribe();
+    this.crawlPollSubscription?.unsubscribe();
     this.unsubscribeFromVectorProgress();
     // Unsubscribe from model status WebSocket
     this.webSocketService.unsubscribeFromModelStatus();
@@ -664,6 +717,8 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     this.documentService.getAllIngestTasks().subscribe({
       next: (tasks) => {
         tasks.forEach(task => {
+          // Skip crawl tasks — they are tracked in the dedicated Active Crawl Jobs panel
+          if (task.taskId && task.taskId.startsWith('crawl-')) return;
           // Merge with existing data to preserve accumulated stats from WebSocket updates
           const existing = this.activeUploads.get(task.taskId);
           const merged = this.mergeProgressUpdate(existing, task);
@@ -692,6 +747,8 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
           next: (tasks) => {
             let hasChanges = false;
             tasks.forEach(task => {
+              // Skip crawl tasks — they are tracked in the dedicated Active Crawl Jobs panel
+              if (task.taskId && task.taskId.startsWith('crawl-')) return;
               if (this.cancelledTaskIds.has(task.taskId)) return;
 
               const existing = this.activeUploads.get(task.taskId);
@@ -743,7 +800,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     }
 
     // Log incoming update for debugging
-    console.log(`[FactSheetManager] Received progress update: taskId=${update.taskId.substring(0, 8)}, factSheetId=${update.factSheetId}, status=${update.status}, activeSheetId=${this.activeSheet?.id}`);
+    console.debug(`[FactSheetManager] Received progress update: taskId=${update.taskId.substring(0, 8)}, factSheetId=${update.factSheetId}, status=${update.status}, activeSheetId=${this.activeSheet?.id}`);
 
     const existing = this.activeUploads.get(update.taskId);
     const merged = this.mergeProgressUpdate(existing, update);
@@ -902,9 +959,9 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       return belongsToSheet || hasNoSheetId;
     });
 
-    console.log(`[FactSheetManager] updateFilteredUploadsArray: activeSheetId=${activeSheetId}, total=${allUploads.length}, filtered=${filtered.length}`);
+    console.debug(`[FactSheetManager] updateFilteredUploadsArray: activeSheetId=${activeSheetId}, total=${allUploads.length}, filtered=${filtered.length}`);
     if (allUploads.length > 0) {
-      console.log(`[FactSheetManager] All uploads factSheetIds:`, allUploads.map(u => ({ taskId: u.taskId.substring(0, 8), factSheetId: u.factSheetId, status: u.status })));
+      console.debug(`[FactSheetManager] All uploads factSheetIds:`, allUploads.map(u => ({ taskId: u.taskId.substring(0, 8), factSheetId: u.factSheetId, status: u.status })));
     }
 
     this.activeUploadsArray = filtered.map(u => ({ ...u }));
@@ -918,7 +975,223 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     // that might have missed their initial WebSocket event
     return this.activeUploadsArray.some(u =>
       u.status === IngestStatus.IN_PROGRESS || u.status === IngestStatus.PENDING
-    );
+    ) || this.activeCrawlJobs.length > 0;
+  }
+
+  /** Total active jobs including both ingest and crawl jobs */
+  getTotalActiveJobCount(): number {
+    return this.activeUploadsArray.length + this.activeCrawlJobs.length;
+  }
+
+  /** Scroll to the active processing section */
+  scrollToActiveProcessing(): void {
+    const el = document.querySelector('.active-crawl-jobs-card, .active-uploads-card');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // CRAWL JOB TRACKING
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private loadActiveCrawlJobs(): void {
+    this.unifiedCrawlService.listActiveJobs().subscribe({
+      next: (jobs) => {
+        // Filter to jobs matching the active fact sheet (or with no factSheetId)
+        const activeSheetId = this.activeSheet?.id;
+        this.activeCrawlJobs = jobs.filter(j => {
+          if (!activeSheetId) return true;
+          return !j.factSheetId || j.factSheetId === activeSheetId;
+        });
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        // Endpoint may not exist yet - silently ignore
+      }
+    });
+  }
+
+  toggleCrawlJobDetail(jobId: string): void {
+    if (this.expandedCrawlJobs.has(jobId)) {
+      this.expandedCrawlJobs.delete(jobId);
+    } else {
+      this.expandedCrawlJobs.add(jobId);
+    }
+  }
+
+  isCrawlJobExpanded(jobId: string): boolean {
+    return this.expandedCrawlJobs.has(jobId);
+  }
+
+  toggleCrawlErrors(jobId: string): void {
+    if (this.expandedCrawlErrors.has(jobId)) {
+      this.expandedCrawlErrors.delete(jobId);
+    } else {
+      this.expandedCrawlErrors.add(jobId);
+    }
+  }
+
+  isCrawlErrorsExpanded(jobId: string): boolean {
+    return this.expandedCrawlErrors.has(jobId);
+  }
+
+  cancelCrawlJob(jobId: string): void {
+    this.unifiedCrawlService.cancelJob(jobId).subscribe({
+      next: () => {
+        this.snackBar.open('Crawl job cancelled', 'OK', { duration: 3000 });
+        this.loadActiveCrawlJobs();
+      },
+      error: (err) => {
+        this.snackBar.open('Failed to cancel crawl job: ' + (err.error?.error || err.message), 'Dismiss', { duration: 5000 });
+      }
+    });
+  }
+
+  getCrawlJobPhaseIcon(phase: string | undefined): string {
+    switch (phase) {
+      case 'CRAWLING': return 'language';
+      case 'LOADING': return 'folder_open';
+      case 'CHUNKING': return 'content_cut';
+      case 'GRAPH_EXTRACTION': return 'hub';
+      case 'EMBEDDING': return 'memory';
+      case 'INDEXING': return 'storage';
+      case 'COMPLETED': return 'check_circle';
+      case 'FAILED': return 'error';
+      default: return 'sync';
+    }
+  }
+
+  formatCrawlPhase(phase: string | undefined): string {
+    if (!phase) return 'Starting';
+    return phase.replace(/_/g, ' ').toLowerCase()
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  formatElapsedTime(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return `${hours}h ${remainingMinutes}m`;
+  }
+
+  getCrawlStepIcon(stepType: string): string {
+    switch (stepType?.toUpperCase()) {
+      case 'EMBEDDING': return 'memory';
+      case 'GRAPH': case 'GRAPH_CONSTRUCTOR': return 'hub';
+      case 'LLM': return 'psychology';
+      case 'CHUNKING': return 'content_cut';
+      case 'LOADING': case 'IO': return 'folder_open';
+      case 'INDEXING': return 'storage';
+      default: return 'settings';
+    }
+  }
+
+  getVisibleCrawlPipelineSteps(steps: PipelineStepProgress[] | undefined): PipelineStepProgress[] {
+    if (!steps) return [];
+    // Show all steps including SKIPPED and FAILED — user must see what was NOT done
+    return steps.slice(0, 12);
+  }
+
+  /** Compute per-stage progress percent from actual counters (not the global hardcoded %) */
+  getStageProgress(job: CrawlJobSummary, stage: string): number {
+    switch (stage) {
+      case 'DISCOVERY': {
+        // No denominator for discovery — show indeterminate if active
+        return job.documentsDiscovered > 0 ? 100 : 0;
+      }
+      case 'LOADING': {
+        const total = job.documentsDiscovered || 0;
+        const done = job.documentsLoaded || 0;
+        return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+      }
+      case 'CHUNKING': {
+        const loaded = job.documentsLoaded || 0;
+        const chunked = (job.chunksCreated || job.chunksProcessed || 0) > 0 ? 1 : 0;
+        // Chunking doesn't have a clean item-by-item counter on the summary,
+        // so treat as binary (started vs not) or use pipeline step if available
+        const step = this.findPipelineStep(job, 'CHUNKING');
+        if (step && step.totalItems > 0) {
+          return Math.min(100, Math.round((step.completedItems / step.totalItems) * 100));
+        }
+        return loaded > 0 && chunked > 0 ? 100 : 0;
+      }
+      case 'GRAPH_EXTRACTION': {
+        const total = job.graphChunksTotal || 0;
+        const done = job.graphChunksProcessed || 0;
+        return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+      }
+      case 'EMBEDDING': {
+        const total = job.chunksQueuedForEmbedding || job.chunksCreated || job.chunksProcessed || 0;
+        const done = job.chunksEmbedded || 0;
+        return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+      }
+      case 'INDEXING': {
+        const total = job.chunksEmbedded || job.chunksCreated || job.chunksProcessed || 0;
+        const done = job.documentsIndexed || 0;
+        return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+      }
+      default:
+        return 0;
+    }
+  }
+
+  /** Check if a stage is the currently active one */
+  isStageActive(job: CrawlJobSummary, stage: string): boolean {
+    const phase = job.currentPhase?.toUpperCase();
+    if (!phase) return false;
+    switch (stage) {
+      case 'DISCOVERY': return phase === 'CRAWLING' || phase === 'DISCOVERING';
+      case 'LOADING': return phase === 'LOADING';
+      case 'CHUNKING': return phase === 'CHUNKING';
+      case 'GRAPH_EXTRACTION': return phase === 'GRAPH_EXTRACTION' || phase === 'ENTITY_RESOLUTION';
+      case 'EMBEDDING': return phase === 'EMBEDDING';
+      case 'INDEXING': return phase === 'INDEXING' || phase === 'VECTOR_INDEXING';
+      default: return false;
+    }
+  }
+
+  /** Check if a stage has completed */
+  isStageComplete(job: CrawlJobSummary, stage: string): boolean {
+    return this.getStageProgress(job, stage) >= 100 && !this.isStageActive(job, stage);
+  }
+
+  /** Find a pipeline step by type */
+  findPipelineStep(job: CrawlJobSummary, stepType: string): PipelineStepProgress | undefined {
+    return job.pipelineSteps?.find(s => s.stepType?.toUpperCase() === stepType.toUpperCase());
+  }
+
+  /** Get throughput for a pipeline step as items/sec */
+  getStepThroughput(step: PipelineStepProgress): string {
+    if (!step.elapsedMs || step.elapsedMs < 1000 || step.completedItems <= 0) return '';
+    const rate = step.completedItems / (step.elapsedMs / 1000);
+    if (rate >= 1) return `${rate.toFixed(1)}/s`;
+    const perMin = rate * 60;
+    return `${perMin.toFixed(1)}/min`;
+  }
+
+  /** Format event timestamp as relative time */
+  formatEventTime(timestamp: string): string {
+    if (!timestamp) return '';
+    const diff = Date.now() - new Date(timestamp).getTime();
+    if (diff < 1000) return 'now';
+    if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    return `${Math.floor(diff / 3600000)}h ago`;
+  }
+
+  /** Get CSS class for event level */
+  getEventLevelClass(level: string): string {
+    switch (level?.toUpperCase()) {
+      case 'WARN': case 'WARNING': return 'event-warn';
+      case 'ERROR': return 'event-error';
+      default: return 'event-info';
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -947,6 +1220,10 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   trackByTaskId(index: number, upload: IngestProgressUpdate): string {
     return upload.taskId;
+  }
+
+  trackByCrawlJobId(index: number, job: CrawlJobSummary): string {
+    return job.jobId;
   }
 
   getProgressColor(phase: IngestPhase): string {
@@ -1443,6 +1720,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   onTabChange(index: number): void {
     this.selectedTabIndex = index;
+    // Lazy-load server files and processing status when Server Files tab is selected
+    if (index === 4 && this.serverFiles.length === 0 && !this.serverFilesLoading) {
+      this.loadServerFiles();
+      this.loadProcessingStatus();
+    }
   }
 
   triggerFileInput(): void {
@@ -1477,6 +1759,32 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     dialogRef.afterClosed().subscribe((result: AddSourceDialogResult | undefined) => {
       if (result) {
         this.processAddSourceResult(result);
+      }
+    });
+  }
+
+  openDocumentCrawlDialog(): void {
+    if (!this.activeSheet) {
+      this.showError('Please select a fact sheet first');
+      return;
+    }
+
+    const dialogData: DocumentCrawlDialogData = {
+      factSheetId: this.activeSheet.id
+    };
+
+    const dialogRef = this.dialog.open(DocumentCrawlDialogComponent, {
+      width: '700px',
+      maxWidth: '95vw',
+      maxHeight: '90vh',
+      data: dialogData,
+      disableClose: false,
+      panelClass: 'document-crawl-dialog'
+    });
+
+    dialogRef.afterClosed().subscribe((jobId: string | null) => {
+      if (jobId) {
+        this.loadActiveCrawlJobs();
       }
     });
   }
@@ -1562,7 +1870,8 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       fileName: result.fileName,
       loaderName: result.selectedLoader,
       chunkerName: result.chunkerName,
-      rebuildIndex: result.rebuildIndex
+      rebuildIndex: result.rebuildIndex,
+      convertToMarkdown: result.convertToMarkdown
     }).subscribe({
       next: (response: any) => {
         if (response?.taskId) {
@@ -1799,11 +2108,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   selectSheet(sheet: FactSheet): void {
     if (sheet.isActive) return;
 
-    console.log(`[FactSheetManager] selectSheet called: switching from ${this.activeSheet?.id} to ${sheet.id}`);
+    console.debug(`[FactSheetManager] selectSheet called: switching from ${this.activeSheet?.id} to ${sheet.id}`);
     this.isLoading = true;
     this.factSheetService.activateSheet(sheet.id).subscribe({
       next: (activated) => {
-        console.log(`[FactSheetManager] Sheet activation complete: ${activated.id} (${activated.name})`);
+        console.debug(`[FactSheetManager] Sheet activation complete: ${activated.id} (${activated.name})`);
         this.isLoading = false;
         this.showSuccess(`Switched to "${activated.name}"`);
         // Force immediate update of filtered uploads after sheet switch
@@ -2212,14 +2521,14 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   private subscribeToVectorProgress(): void {
     this.unsubscribeFromVectorProgress();
 
-    console.log('[VECTOR-PROGRESS] Subscribing to vector population progress');
+    console.debug('[VECTOR-PROGRESS] Subscribing to vector population progress');
     this.webSocketService.connect();
 
     this.wsVectorProgressSub = this.webSocketService
       .subscribeToVectorPopulation<VectorPopulationProgress>()
       .subscribe({
         next: (progress: VectorPopulationProgress) => {
-          console.log('[VECTOR-PROGRESS] Received:', progress.taskId, progress.phase, progress.progressPercent + '%');
+          console.debug('[VECTOR-PROGRESS] Received:', progress.taskId, progress.phase, progress.progressPercent + '%');
 
           const isTerminal = this.isVectorPopulationTerminalPhase(progress.phase);
           if (!this.currentVectorTaskId || (!isTerminal && this.currentVectorTaskId !== progress.taskId)) {
@@ -2422,7 +2731,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       if (modelUsed) {
         this.factSheetService.setIndexedWithModel(this.activeSheet.id, modelUsed).subscribe({
           next: () => {
-            console.log(`Recorded indexedWithModel='${modelUsed}' for sheet '${this.activeSheet?.name}'`);
+            console.debug(`Recorded indexedWithModel='${modelUsed}' for sheet '${this.activeSheet?.name}'`);
           },
           error: (err) => {
             console.warn('Failed to record indexed model:', err);
@@ -2634,123 +2943,6 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     return hours + 'h ' + remainingMinutes + 'm';
   }
 
-  searchKeywordIndex(): void {
-    if (!this.keywordSearchQuery || this.keywordSearchQuery.length < 2) {
-      this.keywordDocuments = [];
-      this.keywordDataSource.data = [];
-      this.keywordTotalResults = 0;
-      return;
-    }
-
-    this.keywordSearchLoading = true;
-    this.indexBrowserService.searchIndexedDocs(
-      this.keywordSearchQuery,
-      this.keywordPageSize
-    ).subscribe({
-      next: (response: any) => {
-        this.keywordDocuments = response.results || [];
-        this.keywordDataSource.data = this.keywordDocuments;
-        this.keywordTotalResults = response.totalResults || 0;
-        this.keywordSearchLoading = false;
-        this.cdr.markForCheck();
-      },
-      error: () => {
-        this.keywordSearchLoading = false;
-        this.showError('Failed to search keyword index');
-      }
-    });
-  }
-
-  searchVectorStore(): void {
-    if (!this.vectorSearchQuery || this.vectorSearchQuery.length < 2) {
-      this.vectorDocuments = [];
-      this.vectorDataSource.data = [];
-      this.vectorTotalResults = 0;
-      return;
-    }
-
-    this.vectorSearchLoading = true;
-    this.indexBrowserService.searchVectorStore(
-      this.vectorSearchQuery,
-      this.vectorPageSize,
-      this.similarityThreshold
-    ).subscribe({
-      next: (response: any) => {
-        this.vectorDocuments = response.results || [];
-        this.vectorDataSource.data = this.vectorDocuments;
-        this.vectorTotalResults = response.totalResults || this.vectorDocuments.length;
-        this.vectorSearchLoading = false;
-        this.cdr.markForCheck();
-      },
-      error: () => {
-        this.vectorSearchLoading = false;
-        this.showError('Failed to search vector store');
-      }
-    });
-  }
-
-  onKeywordPageChange(event: PageEvent): void {
-    this.keywordCurrentPage = event.pageIndex;
-    this.keywordPageSize = event.pageSize;
-    this.searchKeywordIndex();
-  }
-
-  onVectorPageChange(event: PageEvent): void {
-    this.vectorCurrentPage = event.pageIndex;
-    this.vectorPageSize = event.pageSize;
-    this.searchVectorStore();
-  }
-
-  clearKeywordSearch(): void {
-    this.keywordSearchQuery = '';
-    this.keywordSearchControl.setValue('');
-    this.keywordDocuments = [];
-    this.keywordDataSource.data = [];
-    this.keywordTotalResults = 0;
-    this.keywordCurrentPage = 0;
-  }
-
-  clearVectorSearch(): void {
-    this.vectorSearchQuery = '';
-    this.vectorSearchControl.setValue('');
-    this.vectorDocuments = [];
-    this.vectorDataSource.data = [];
-    this.vectorTotalResults = 0;
-    this.vectorCurrentPage = 0;
-  }
-
-  selectDocument(doc: any): void {
-    this.selectedDocument = this.selectedDocument?.id === doc.id ? null : doc;
-  }
-
-  closeDocumentDetail(): void {
-    this.selectedDocument = null;
-  }
-
-  onSimilarityThresholdChange(value: number): void {
-    this.similarityThreshold = value;
-    if (this.vectorSearchQuery.length >= 2) {
-      this.searchVectorStore();
-    }
-  }
-
-  getScoreClass(score: number): string {
-    if (score >= 0.8) return 'high-score';
-    if (score >= 0.5) return 'medium-score';
-    return 'low-score';
-  }
-
-  truncateContent(content: string, maxLength: number = 150): string {
-    if (!content) return '';
-    if (content.length <= maxLength) return content;
-    return content.substring(0, maxLength) + '...';
-  }
-
-  getDocPreview(doc: any): string {
-    const content = doc.content || doc.text || '';
-    return this.truncateContent(content, 200);
-  }
-
   refreshIndexerStatus(): void {
     this.loadIndexerStatus();
   }
@@ -2806,10 +2998,6 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   objectKeys(obj: any): string[] {
     return obj ? Object.keys(obj) : [];
-  }
-
-  formatThreshold(value: number): string {
-    return value.toFixed(2);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -3350,7 +3538,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
             description: st.description
           }));
         }
-        console.log('[GraphConfig] Available storage types:', this.availableStorageTypes);
+        console.debug('[GraphConfig] Available storage types:', this.availableStorageTypes);
       },
       error: (err) => {
         console.warn('[GraphConfig] Failed to load storage types, using defaults:', err);
@@ -3439,6 +3627,99 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
    */
   navigateToModelStaging(): void {
     this.openModelStaging.emit();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // KEYWORD SEARCH STATE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  keywordSearchControl = new FormControl('');
+  keywordSearchQuery = '';
+  keywordSearchLoading = false;
+  keywordTotalResults = 0;
+  keywordDocuments: SearchResult[] = [];
+  keywordDataSource = new MatTableDataSource<SearchResult>([]);
+  keywordDisplayedColumns = ['id', 'content', 'score', 'originalDoc', 'actions'];
+  keywordPageSize = 10;
+
+  clearKeywordSearch(): void {
+    this.keywordSearchControl.setValue('');
+    this.keywordSearchQuery = '';
+    this.keywordDocuments = [];
+    this.keywordDataSource.data = [];
+    this.keywordTotalResults = 0;
+  }
+
+  onKeywordPageChange(event: any): void {
+    this.keywordPageSize = event.pageSize;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VECTOR SEARCH STATE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  vectorSearchControl = new FormControl('');
+  vectorSearchQuery = '';
+  vectorSearchLoading = false;
+  vectorTotalResults = 0;
+  vectorDocuments: SearchResult[] = [];
+  vectorDataSource = new MatTableDataSource<SearchResult>([]);
+  vectorDisplayedColumns = ['id', 'content', 'score', 'originalDoc', 'actions'];
+  vectorPageSize = 10;
+  similarityThreshold = 0.5;
+
+  clearVectorSearch(): void {
+    this.vectorSearchControl.setValue('');
+    this.vectorSearchQuery = '';
+    this.vectorDocuments = [];
+    this.vectorDataSource.data = [];
+    this.vectorTotalResults = 0;
+  }
+
+  onVectorPageChange(event: any): void {
+    this.vectorPageSize = event.pageSize;
+  }
+
+  formatThreshold(value: number): string {
+    return value.toFixed(2);
+  }
+
+  onSimilarityThresholdChange(value: number): void {
+    this.similarityThreshold = value;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DOCUMENT DETAIL STATE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  selectedDocument: SearchResult | null = null;
+
+  selectDocument(doc: SearchResult): void {
+    this.selectedDocument = doc;
+  }
+
+  closeDocumentDetail(): void {
+    this.selectedDocument = null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SEARCH HELPER METHODS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  truncateContent(text: string, maxLength: number): string {
+    if (!text) return '';
+    return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+  }
+
+  getDocPreview(doc: SearchResult): string {
+    const content = doc.preview || doc.content || '';
+    return this.truncateContent(content, 200);
+  }
+
+  getScoreClass(score: number): string {
+    if (score >= 0.8) return 'score-high';
+    if (score >= 0.5) return 'score-medium';
+    return 'score-low';
   }
 
   /**

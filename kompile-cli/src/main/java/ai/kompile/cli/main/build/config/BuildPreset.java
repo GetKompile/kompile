@@ -24,6 +24,20 @@ import java.util.*;
 public enum BuildPreset {
 
     /**
+     * CLI Agent RAG: local CLI agent (Claude Code, Codex, etc.) + Anserini embeddings + vectorstore.
+     */
+    CLI_AGENT_RAG("CLI Agent RAG application (local, no API keys)",
+            "app-main", "app-core", "loaders-orchestrator", "app-anserini", "chat-history", "pipelines-llm",
+            "llm-cli-agent",
+            "embedding-anserini",
+            "vectorstore-anserini",
+            "loader-pdf-extended",
+            "chunker-sentence",
+            "tool-filesystem", "tool-rag",
+            "kvcache", "model-manager"
+    ),
+
+    /**
      * Hosted LLM RAG: OpenAI LLM + Anserini embeddings/vectorstore + PDF loader + sentence chunker.
      */
     HOSTED_LLM_RAG("Hosted LLM RAG application",
@@ -33,7 +47,7 @@ public enum BuildPreset {
             "vectorstore-anserini",
             "loader-pdf-extended",
             "chunker-sentence",
-            "tool-filesystem", "tool-rag", "tool-model-staging",
+            "tool-filesystem", "tool-rag",
             "kvcache", "model-manager"
     ),
 
@@ -47,7 +61,7 @@ public enum BuildPreset {
             "loader-pdf-extended",
             "loader-tika",
             "chunker-sentence",
-            "tool-filesystem", "tool-rag", "tool-model-staging",
+            "tool-filesystem", "tool-rag",
             "kvcache", "model-manager"
     ),
 
@@ -63,14 +77,16 @@ public enum BuildPreset {
      */
     FULL("All modules enabled",
             "app-main", "app-core", "loaders-orchestrator", "app-anserini", "chat-history", "pipelines-llm",
-            "llm-openai", "llm-anthropic", "llm-gemini",
+            "llm-openai", "llm-anthropic", "llm-gemini", "cli-llm",
             "embedding-openai", "embedding-anserini", "embedding-sentence-transformer",
             "vectorstore-anserini", "vectorstore-chroma", "vectorstore-pgvector",
-            "loader-pdf-extended", "loader-microsoft", "loader-mail", "loader-tika",
+            "loader-pdf-extended", "loader-pdf-tables", "loader-microsoft", "loader-mail", "loader-excel", "loader-tika",
             "chunker-sentence", "chunker-recursive-character", "chunker-markdown", "chunker-token",
-            "tool-filesystem", "tool-rag", "tool-model-staging",
+            "tool-filesystem", "tool-rag", "tool-crawler",
+            "ocr-core", "ocr-models", "ocr-postprocess", "ocr-integration", "ocr-datapipeline",
+            "crawler-core", "crawl-graph", "process-discovery", "code-indexer",
             "kvcache", "model-staging", "model-manager", "pipeline-management",
-            "graph-neo4j", "knowledge-graph"
+            "graph-neo4j", "knowledge-graph", "graph-algorithms"
     ),
 
     /**
@@ -96,6 +112,18 @@ public enum BuildPreset {
             "tool-rag", "knowledge-graph", "model-manager", "model-staging"
     );
 
+    /**
+     * Backend affinity hint for code generation and build configuration.
+     */
+    public enum BackendAffinity {
+        /** Prefer CPU (nd4j-native) — works everywhere. */
+        CPU_ONLY,
+        /** Prefer CUDA when available, fall back to CPU. */
+        CUDA_PREFERRED,
+        /** Any backend is acceptable. */
+        ANY
+    }
+
     private final String description;
     private final Set<String> defaultModuleIds;
 
@@ -113,5 +141,21 @@ public enum BuildPreset {
      */
     public Set<String> getDefaultModules() {
         return defaultModuleIds;
+    }
+
+    /**
+     * Returns the recommended backend affinity for this preset.
+     */
+    public BackendAffinity getBackendAffinity() {
+        switch (this) {
+            case PIPELINE:
+                return BackendAffinity.CUDA_PREFERRED;
+            case CLI_AGENT_RAG:
+            case SAMEDIFF_RAG:
+            case LITE:
+                return BackendAffinity.CPU_ONLY;
+            default:
+                return BackendAffinity.ANY;
+        }
     }
 }

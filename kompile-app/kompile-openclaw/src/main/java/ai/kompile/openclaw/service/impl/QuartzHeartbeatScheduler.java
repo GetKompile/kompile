@@ -28,7 +28,7 @@ import java.util.Date;
 import java.util.List;
 
 @Slf4j
-@Service
+@Service("openclawHeartbeatScheduler")
 @ConditionalOnClass(Scheduler.class)
 public class QuartzHeartbeatScheduler implements HeartbeatScheduler {
 

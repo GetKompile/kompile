@@ -76,6 +76,26 @@ public enum EvaluationType {
     HALLUCINATION_DETECTION,
 
     /**
+     * Evaluate entity presence in graph extraction.
+     */
+    ENTITY_PRESENCE,
+
+    /**
+     * Evaluate entity type accuracy in graph extraction.
+     */
+    ENTITY_TYPE_ACCURACY,
+
+    /**
+     * Evaluate graph completeness.
+     */
+    GRAPH_COMPLETENESS,
+
+    /**
+     * Evaluate relationship presence in graph extraction.
+     */
+    RELATIONSHIP_PRESENCE,
+
+    /**
      * Custom evaluation type.
      */
     CUSTOM

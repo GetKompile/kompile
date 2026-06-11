@@ -16,7 +16,7 @@
 
 package ai.kompile.anserini;
 
-import ai.kompile.anserini.config.AnseriniConfig;
+import ai.kompile.anserini.config.AnseriniConfigService;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.NoOpEmbeddingModelImpl;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
@@ -90,7 +90,7 @@ import java.util.stream.Stream;
 @Service("anseriniIndexerService")
 public class AnseriniIndexerServiceImpl extends IndexerService {
     private static final Logger logger = LoggerFactory.getLogger(AnseriniIndexerServiceImpl.class);
-    private final AnseriniConfig anseriniConfig;
+    private final AnseriniConfigService anseriniConfig;
     private final ObjectMapper objectMapper;
     private final DocumentLoadingService documentLoadingService;
     private final List<DocumentLoader> documentLoaders;
@@ -130,7 +130,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     private static final int KEYWORD_INDEX_COMMIT_THRESHOLD = 500;
 
     @Autowired
-    public AnseriniIndexerServiceImpl(AnseriniConfig anseriniConfig,
+    public AnseriniIndexerServiceImpl(AnseriniConfigService anseriniConfig,
             ObjectMapper objectMapper,
             DocumentLoadingService documentLoadingService,
             List<DocumentLoader> documentLoaders,
@@ -1815,11 +1815,11 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 }
             }
 
-            // 2. Update Configuration
-            // Note: This updates the in-memory bean config.
-            // Persistence to application.properties is handled by the calling controller
-            // via AppConfigService.
-            anseriniConfig.setIndexPath(newPath);
+            // 2. Update Configuration via the config service (persists to JSON)
+            AnseriniConfigService.AnseriniJsonConfig updated = new AnseriniConfigService.AnseriniJsonConfig();
+            updated.setIndexPath(newPath);
+            updated.setCorpusPath(anseriniConfig.getCorpusPath());
+            anseriniConfig.updateConfig(updated);
 
             // 3. Reset state
             // We do typically NOT re-initialize immediately here because we want lazy

@@ -1,0 +1,55 @@
+<div class="model-scheduler-panel">
+  <div class="section-header">
+    <h3><mat-icon>speed</mat-icon> Model Scheduler &amp; Continuous Batcher</h3>
+    <button mat-icon-button (click)="loadAll()" matTooltip="Refresh"><mat-icon>refresh</mat-icon></button>
+  </div>
+
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="message" class="success-bar"><mat-icon>check_circle</mat-icon> {{ message }}</div>
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+
+  <ng-container *ngIf="!loading">
+    <!-- Status -->
+    <div class="status-section" *ngIf="status">
+      <div class="status-block">
+        <h4>Scheduler Status</h4>
+        <div class="kv-grid" *ngIf="status.scheduler">
+          <div class="kv-row" *ngFor="let key of getStatusKeys(status.scheduler)">
+            <span class="kv-key">{{ key }}</span>
+            <span class="kv-value">{{ formatValue(status.scheduler[key]) }}</span>
+          </div>
+        </div>
+        <div *ngIf="!status.scheduler" class="empty-note">Scheduler status not available</div>
+      </div>
+
+      <div class="status-block">
+        <h4>Continuous Batcher</h4>
+        <div class="kv-grid" *ngIf="status.continuousBatcher">
+          <div class="kv-row" *ngFor="let key of getStatusKeys(status.continuousBatcher)">
+            <span class="kv-key">{{ key }}</span>
+            <span class="kv-value">{{ formatValue(status.continuousBatcher[key]) }}</span>
+          </div>
+        </div>
+        <div *ngIf="!status.continuousBatcher" class="empty-note">Batcher status not available</div>
+      </div>
+    </div>
+
+    <!-- Config -->
+    <div class="config-section" *ngIf="config">
+      <h4><mat-icon>settings</mat-icon> Configuration</h4>
+      <div class="config-grid">
+        <div class="config-field" *ngFor="let key of getConfigKeys()">
+          <label>{{ key }}</label>
+          <span class="config-value">{{ formatValue(config[key]) }}</span>
+        </div>
+      </div>
+      <div class="config-actions">
+        <button mat-raised-button color="primary" (click)="saveConfig()" [disabled]="saving">
+          <mat-icon>save</mat-icon> Save
+        </button>
+        <button mat-button (click)="resetConfig()" [disabled]="saving">Reset</button>
+        <mat-spinner *ngIf="saving" diameter="20"></mat-spinner>
+      </div>
+    </div>
+  </ng-container>
+</div>

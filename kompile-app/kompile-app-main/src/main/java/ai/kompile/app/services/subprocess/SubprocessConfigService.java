@@ -16,14 +16,15 @@
 
 package ai.kompile.app.services.subprocess;
 
+import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.app.services.ServerPortService;
-import ai.kompile.cli.main.util.NativeImageInfo;
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -82,117 +83,89 @@ public class SubprocessConfigService {
     private volatile int indexingBatchAccumulationSize;
     private volatile int embeddingThreads;
 
-    // Defaults from @Value annotations - DEFAULT TO FALSE for in-process mode
+    // Defaults - DEFAULT TO FALSE for in-process mode
     // Subprocess mode can be enabled via UI (Developer Hub > Processing Settings)
     // or via API: POST /api/subprocess-config/enable
-    // or by setting kompile.ingest.subprocess.enabled=true in
-    // application.properties
-    @Value("${kompile.ingest.subprocess.enabled:false}")
-    private boolean defaultEnabled;
+    private boolean defaultEnabled = false;
 
-    @Value("${kompile.ingest.subprocess.java-path:java}")
-    private String defaultJavaPath;
+    private String defaultJavaPath = "java";
 
-    @Value("${kompile.ingest.subprocess.heap-size:4g}")
-    private String defaultHeapSize;
+    private String defaultHeapSize = "4g";
 
-    @Value("${kompile.ingest.subprocess.offheap-max-bytes:}")
-    private String defaultOffHeapMaxBytes;
+    private String defaultOffHeapMaxBytes = "";
 
-    @Value("${kompile.ingest.subprocess.off-heap-multiplier:2}")
-    private int defaultOffHeapMultiplier;
+    private int defaultOffHeapMultiplier = 2;
 
-    @Value("${kompile.ingest.subprocess.timeout-minutes:60}")
-    private int defaultTimeoutMinutes;
+    private int defaultTimeoutMinutes = 60;
 
     // VLM subprocess defaults
-    @Value("${kompile.vlm-test.subprocess.heap-size:16g}")
-    private String defaultVlmHeapSize;
+    private String defaultVlmHeapSize = "16g";
 
-    @Value("${kompile.vlm-test.subprocess.off-heap-multiplier:3}")
-    private int defaultVlmOffHeapMultiplier;
+    private int defaultVlmOffHeapMultiplier = 3;
 
-    @Value("${kompile.vlm-test.subprocess.timeout-minutes:30}")
-    private int defaultVlmTimeoutMinutes;
+    private int defaultVlmTimeoutMinutes = 30;
 
-    @Value("${kompile.vlm-test.subprocess.cuda-pinned-host-limit-mb:8192}")
-    private int defaultVlmCudaPinnedHostLimitMb;
+    private int defaultVlmCudaPinnedHostLimitMb = 8192;
 
-    @Value("${kompile.ingest.subprocess.heartbeat-interval-seconds:10}")
-    private int defaultHeartbeatIntervalSeconds;
+    private int defaultHeartbeatIntervalSeconds = 10;
 
-    @Value("${kompile.ingest.subprocess.stale-threshold-seconds:120}")
-    private int defaultStaleThresholdSeconds;
+    private int defaultStaleThresholdSeconds = 120;
 
     // Pipeline defaults (embedding batch sizes come from
     // AnseriniEmbeddingProperties/benchmark config)
-    @Value("${kompile.ingest.subprocess.queue-capacity:1000}")
-    private int defaultQueueCapacity;
+    private int defaultQueueCapacity = 1000;
 
-    @Value("${kompile.ingest.subprocess.parallel-indexing:true}")
-    private boolean defaultParallelIndexing;
+    private boolean defaultParallelIndexing = true;
 
-    @Value("${kompile.ingest.subprocess.indexing-workers:4}")
-    private int defaultIndexingWorkers;
+    private int defaultIndexingWorkers = 4;
 
-    @Value("${kompile.ingest.subprocess.indexing-batch-accumulation:8}")
-    private int defaultIndexingBatchAccumulationSize;
+    private int defaultIndexingBatchAccumulationSize = 8;
 
     // Embedding workers - use 1 worker to avoid thread contention
     // Parallelism comes from OpenMP/BLAS internally, not multiple workers
     private final int defaultEmbeddingThreads = 1;
 
     // Restart configuration defaults
-    @Value("${kompile.subprocess.restart.enabled:true}")
-    private boolean defaultRestartEnabled;
+    private boolean defaultRestartEnabled = true;
 
-    @Value("${kompile.subprocess.restart.max-attempts:3}")
-    private int defaultMaxRestartAttempts;
+    private int defaultMaxRestartAttempts = 3;
 
-    @Value("${kompile.subprocess.restart.initial-backoff-ms:5000}")
-    private int defaultInitialBackoffMs;
+    private int defaultInitialBackoffMs = 5000;
 
-    @Value("${kompile.subprocess.restart.backoff-multiplier:2.0}")
-    private double defaultBackoffMultiplier;
+    private double defaultBackoffMultiplier = 2.0;
 
-    @Value("${kompile.subprocess.restart.heap-increase-factor:1.25}")
-    private double defaultHeapIncreaseFactor;
+    private double defaultHeapIncreaseFactor = 1.25;
 
-    @Value("${kompile.subprocess.restart.system-ram-safety-margin:0.15}")
-    private double defaultSystemRamSafetyMargin;
+    private double defaultSystemRamSafetyMargin = 0.15;
 
     // Stall/deadlock detection defaults
-    @Value("${kompile.subprocess.restart.on-stall:true}")
-    private boolean defaultRestartOnStall;
+    private boolean defaultRestartOnStall = true;
 
-    @Value("${kompile.subprocess.restart.on-timeout:true}")
-    private boolean defaultRestartOnTimeout;
+    private boolean defaultRestartOnTimeout = true;
 
-    @Value("${kompile.subprocess.restart.stall-detection-threshold-seconds:300}")
-    private int defaultStallDetectionThresholdSeconds;
+    private int defaultStallDetectionThresholdSeconds = 300;
 
-    @Value("${kompile.subprocess.restart.progress-stall-warning-seconds:60}")
-    private int defaultProgressStallWarningSeconds;
+    private int defaultProgressStallWarningSeconds = 60;
 
     // GPU memory monitoring defaults
-    @Value("${kompile.memory.gpu-threshold-percent:75}")
-    private int defaultGpuMemoryThresholdPercent;
+    private int defaultGpuMemoryThresholdPercent = 75;
 
-    @Value("${kompile.memory.gpu-critical-percent:85}")
-    private int defaultGpuMemoryCriticalPercent;
+    private int defaultGpuMemoryCriticalPercent = 85;
 
-    @Value("${kompile.memory.gpu-kill-threshold-percent:92}")
-    private int defaultGpuMemoryKillThresholdPercent;
+    private int defaultGpuMemoryKillThresholdPercent = 92;
+
+    // GPU soft limit - proactive failover threshold for CudaMemoryPool
+    // When GPU usage exceeds this %, CudaMemoryPool::allocateFailover() routes
+    // allocations to other devices BEFORE the watchdog stop threshold fires.
+    // Must be BELOW gpuMemoryThresholdPercent to avoid clashing with watchdog.
+    private int defaultGpuSoftLimitPercent = 70;
 
     // Off-heap (JavaCPP native) memory monitoring defaults
-    @Value("${kompile.memory.offheap-threshold-percent:80}")
-    private int defaultOffHeapThresholdPercent;
+    private int defaultOffHeapThresholdPercent = 80;
 
-    @Value("${kompile.memory.offheap-critical-percent:90}")
-    private int defaultOffHeapCriticalPercent;
+    private int defaultOffHeapCriticalPercent = 90;
 
-    @Value("${kompile.memory.offheap-kill-threshold-percent:95}")
-    private int defaultOffHeapKillThresholdPercent;
+    private int defaultOffHeapKillThresholdPercent = 95;
 
     // Runtime restart configuration
     private volatile boolean restartEnabled;
@@ -212,6 +185,7 @@ public class SubprocessConfigService {
     private volatile int gpuMemoryThresholdPercent;
     private volatile int gpuMemoryCriticalPercent;
     private volatile int gpuMemoryKillThresholdPercent;
+    private volatile int gpuSoftLimitPercent;
 
     // Off-heap (JavaCPP native) memory monitoring runtime config
     private volatile int offHeapThresholdPercent;
@@ -229,41 +203,33 @@ public class SubprocessConfigService {
     private volatile String subprocessTypeFlag;
 
     // Native executable defaults
-    @Value("${kompile.subprocess.executable.mode:auto}")
-    private String defaultNativeExecutableMode;
+    private String defaultNativeExecutableMode = "auto";
 
-    @Value("${kompile.subprocess.executable.native-path:}")
-    private String defaultNativeExecutablePath;
+    private String defaultNativeExecutablePath = "";
 
-    @Value("${kompile.subprocess.executable.ingest-path:}")
-    private String defaultIngestExecutablePath;
+    private String defaultIngestExecutablePath = "";
 
-    @Value("${kompile.subprocess.executable.vector-population-path:}")
-    private String defaultVectorPopulationExecutablePath;
+    private String defaultVectorPopulationExecutablePath = "";
 
-    @Value("${kompile.subprocess.executable.embedding-path:}")
-    private String defaultEmbeddingExecutablePath;
+    private String defaultEmbeddingExecutablePath = "";
 
-    @Value("${kompile.subprocess.executable.model-init-path:}")
-    private String defaultModelInitExecutablePath;
+    private String defaultModelInitExecutablePath = "";
 
-    @Value("${kompile.subprocess.executable.type-flag:--subprocess=}")
-    private String defaultSubprocessTypeFlag;
+    private String defaultSubprocessTypeFlag = "--subprocess=";
 
     @Autowired
     public SubprocessConfigService(
-            @Autowired(required = false) ServerPortService serverPortService,
-            @Value("${kompile.data.dir:#{null}}") String dataDir) {
+            @Autowired(required = false) ServerPortService serverPortService) {
+        this(serverPortService, KompileHome.dataDir().getAbsolutePath());
+    }
+
+    public SubprocessConfigService(
+            ServerPortService serverPortService,
+            String dataDir) {
         this.serverPortService = serverPortService;
         this.objectMapper = new ObjectMapper();
 
-        // Use provided dataDir, or fall back to ~/.kompile if not set
-        String effectiveDataDir = dataDir;
-        if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
-            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
-            log.info("kompile.data.dir not set, using default: {}", effectiveDataDir);
-        }
-        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+        this.configFilePath = Paths.get(dataDir, "config", CONFIG_FILENAME);
         log.info("SubprocessConfigService initialized, config path: {}", configFilePath);
     }
 
@@ -312,6 +278,7 @@ public class SubprocessConfigService {
         this.gpuMemoryThresholdPercent = defaultGpuMemoryThresholdPercent;
         this.gpuMemoryCriticalPercent = defaultGpuMemoryCriticalPercent;
         this.gpuMemoryKillThresholdPercent = defaultGpuMemoryKillThresholdPercent;
+        this.gpuSoftLimitPercent = defaultGpuSoftLimitPercent;
 
         // Off-heap memory monitoring defaults
         this.offHeapThresholdPercent = defaultOffHeapThresholdPercent;
@@ -330,12 +297,6 @@ public class SubprocessConfigService {
         this.modelInitExecutablePath = normalizeOptionalString(defaultModelInitExecutablePath);
         this.subprocessTypeFlag = defaultSubprocessTypeFlag != null && !defaultSubprocessTypeFlag.isBlank()
                 ? defaultSubprocessTypeFlag : "--subprocess=";
-
-        // Skip loading if configFilePath is null (dataDir not configured)
-        if (configFilePath == null) {
-            log.warn("Cannot load subprocess config - kompile.data.dir not configured. Using defaults.");
-            return;
-        }
 
         log.info("Loading persisted subprocess config from: {}", configFilePath);
 
@@ -449,6 +410,9 @@ public class SubprocessConfigService {
             if (config.containsKey("gpuMemoryKillThresholdPercent")) {
                 this.gpuMemoryKillThresholdPercent = ((Number) config.get("gpuMemoryKillThresholdPercent")).intValue();
             }
+            if (config.containsKey("gpuSoftLimitPercent")) {
+                this.gpuSoftLimitPercent = ((Number) config.get("gpuSoftLimitPercent")).intValue();
+            }
 
             // Off-heap memory monitoring config
             if (config.containsKey("offHeapThresholdPercent")) {
@@ -555,6 +519,7 @@ public class SubprocessConfigService {
             config.put("gpuMemoryThresholdPercent", gpuMemoryThresholdPercent);
             config.put("gpuMemoryCriticalPercent", gpuMemoryCriticalPercent);
             config.put("gpuMemoryKillThresholdPercent", gpuMemoryKillThresholdPercent);
+            config.put("gpuSoftLimitPercent", gpuSoftLimitPercent);
 
             // Off-heap memory monitoring config
             config.put("offHeapThresholdPercent", offHeapThresholdPercent);
@@ -708,6 +673,10 @@ public class SubprocessConfigService {
         return gpuMemoryKillThresholdPercent;
     }
 
+    public int getGpuSoftLimitPercent() {
+        return gpuSoftLimitPercent;
+    }
+
     // Off-heap memory monitoring getters
     public int getOffHeapThresholdPercent() {
         return offHeapThresholdPercent;
@@ -833,7 +802,7 @@ public class SubprocessConfigService {
     public String getCallbackBaseUrl() {
         return serverPortService != null
                 ? serverPortService.getBaseUrl()
-                : "http://localhost:8080";
+                : KompileServerConstants.DEFAULT_APP_URL;
     }
 
     /**
@@ -1159,6 +1128,9 @@ public class SubprocessConfigService {
         if (update.gpuMemoryKillThresholdPercent() != null) {
             this.gpuMemoryKillThresholdPercent = update.gpuMemoryKillThresholdPercent();
         }
+        if (update.gpuSoftLimitPercent() != null) {
+            this.gpuSoftLimitPercent = update.gpuSoftLimitPercent();
+        }
         persistConfig();
         log.info("Updated subprocess configuration: {}", update);
     }
@@ -1216,6 +1188,7 @@ public class SubprocessConfigService {
         this.gpuMemoryThresholdPercent = defaultGpuMemoryThresholdPercent;
         this.gpuMemoryCriticalPercent = defaultGpuMemoryCriticalPercent;
         this.gpuMemoryKillThresholdPercent = defaultGpuMemoryKillThresholdPercent;
+        this.gpuSoftLimitPercent = defaultGpuSoftLimitPercent;
         persistConfig();
         log.info("Reset subprocess configuration to defaults");
     }
@@ -1275,6 +1248,7 @@ public class SubprocessConfigService {
                 gpuMemoryThresholdPercent,
                 gpuMemoryCriticalPercent,
                 getGpuMemoryKillThresholdPercent(),
+                gpuSoftLimitPercent,
                 // Computed/system info
                 getCallbackBaseUrl(),
                 getActualServerPort(),
@@ -1408,7 +1382,8 @@ public class SubprocessConfigService {
             Integer offHeapKillThresholdPercent,
             Integer gpuMemoryThresholdPercent,
             Integer gpuMemoryCriticalPercent,
-            Integer gpuMemoryKillThresholdPercent) {
+            Integer gpuMemoryKillThresholdPercent,
+            Integer gpuSoftLimitPercent) {
     }
 
     /**
@@ -1466,6 +1441,7 @@ public class SubprocessConfigService {
             int gpuMemoryThresholdPercent,
             int gpuMemoryCriticalPercent,
             int gpuMemoryKillThresholdPercent,
+            int gpuSoftLimitPercent,
             // Computed/system info
             String callbackBaseUrl,
             int actualServerPort,

@@ -110,10 +110,22 @@ public final class GraphExtractionSchema {
             @JsonProperty("sourceChunkId") String sourceChunkId,
             @JsonProperty("sourceDocumentId") String sourceDocumentId,
             @JsonProperty("extractionModel") String extractionModel,
-            @JsonProperty("extractionTimestamp") String extractionTimestamp
+            @JsonProperty("extractionTimestamp") String extractionTimestamp,
+            @JsonProperty("graphId") String graphId,
+            @JsonProperty("parentGraphId") String parentGraphId
     ) {
+        public ExtractionMetadata(String sourceChunkId, String sourceDocumentId,
+                                  String extractionModel, String extractionTimestamp) {
+            this(sourceChunkId, sourceDocumentId, extractionModel, extractionTimestamp, null, null);
+        }
+
         public static ExtractionMetadata forChunk(String chunkId, String documentId, String model) {
-            return new ExtractionMetadata(chunkId, documentId, model, Instant.now().toString());
+            return new ExtractionMetadata(chunkId, documentId, model, Instant.now().toString(), null, null);
+        }
+
+        public static ExtractionMetadata forChunkInGraph(String chunkId, String documentId,
+                                                          String model, String graphId, String parentGraphId) {
+            return new ExtractionMetadata(chunkId, documentId, model, Instant.now().toString(), graphId, parentGraphId);
         }
     }
 }

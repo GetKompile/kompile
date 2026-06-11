@@ -16,14 +16,21 @@
 
 package ai.kompile.core.graphrag.query;
 
+import ai.kompile.core.graphrag.model.Community;
+import ai.kompile.core.graphrag.model.Entity;
+import ai.kompile.core.graphrag.model.Relationship;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
+import java.util.List;
 
 /**
  * Represents the output of a query from the Graph RAG system.
  */
 @Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class GraphRagResult {
@@ -37,4 +44,24 @@ public class GraphRagResult {
      * This can be used for transparency and debugging.
      */
     private String formattedContext;
+
+    /**
+     * Entities found during graph traversal.
+     */
+    private List<Entity> entities;
+
+    /**
+     * Relationships found during graph traversal.
+     */
+    private List<Relationship> relationships;
+
+    /**
+     * Communities identified in the result graph.
+     */
+    private List<Community> communities;
+
+    /**
+     * Source text chunks that contributed to the answer.
+     */
+    private List<String> sourceChunks;
 }

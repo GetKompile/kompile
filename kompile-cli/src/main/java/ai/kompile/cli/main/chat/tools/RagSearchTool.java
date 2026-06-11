@@ -20,9 +20,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
+import java.net.ConnectException;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
@@ -32,20 +30,20 @@ import java.util.Map;
  * the kompile-app vector store and keyword index. Connects to the kompile-app
  * REST API for semantic and keyword search over indexed documents.
  * <p>
- * Requires a running kompile-app instance with documents indexed.
+ * Uses {@link KompileBackendClient} for auto-detection, reconnection,
+ * and configurable timeouts.
  */
 public class RagSearchTool implements CliTool {
 
-    private final String baseUrl;
-    private final HttpClient httpClient;
+    private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
 
     public RagSearchTool(String baseUrl, ObjectMapper objectMapper) {
-        this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+        this.backend = KompileBackendClient.getInstance();
+        if (baseUrl != null && !baseUrl.isEmpty()) {
+            backend.setBaseUrl(baseUrl);
+        }
     }
 
     @Override
@@ -102,13 +100,13 @@ public class RagSearchTool implements CliTool {
             return ToolResult.error("query is required");
         }
 
-        if (baseUrl == null || baseUrl.isEmpty()) {
+        if (!backend.isAvailable()) {
             return ToolResult.error("RAG search requires a running kompile-app instance. " +
-                    "Start kompile-app or use --url to connect.");
+                    "Start kompile-app or use --url to connect. " +
+                    "The backend will be auto-detected when it comes online.");
         }
 
         try {
-            // Build the cross-index search request
             ObjectNode request = objectMapper.createObjectNode();
             request.put("query", query);
             request.put("maxResults", maxResults);
@@ -119,16 +117,10 @@ public class RagSearchTool implements CliTool {
             request.put("enableSemanticSearch", enableSemantic);
             request.put("enableKeywordSearch", enableKeyword);
 
-            String url = baseUrl + "/api/search/cross-index";
-
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                    .timeout(Duration.ofSeconds(30))
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = backend.post(
+                    "/api/search/cross-index",
+                    objectMapper.writeValueAsString(request),
+                    Duration.ofSeconds(30));
 
             if (response.statusCode() != 200) {
                 return ToolResult.error("RAG search failed (HTTP " + response.statusCode() + "): " +
@@ -138,9 +130,11 @@ public class RagSearchTool implements CliTool {
             JsonNode result = objectMapper.readTree(response.body());
             return formatResults(query, result, searchType);
 
-        } catch (java.net.ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl +
-                    ". Is it running? Start with: kompile-app or kompile run");
+        } catch (ConnectException e) {
+            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
+        } catch (java.net.http.HttpTimeoutException e) {
+            return ToolResult.error("RAG search timed out after 30s. The query may be too broad " +
+                    "or the backend is under heavy load. Try a more specific query.");
         } catch (Exception e) {
             return ToolResult.error("RAG search error: " + e.getMessage());
         }
@@ -151,7 +145,6 @@ public class RagSearchTool implements CliTool {
 
         JsonNode documents = result.path("documents");
         if (!documents.isArray() || documents.isEmpty()) {
-            // Try alternate response format
             documents = result.path("results");
         }
 

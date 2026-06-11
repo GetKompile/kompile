@@ -48,7 +48,7 @@ public class ConversationReader {
         List<ChatTurn> turns = adapter.readTurns(externalId);
         List<ChatHistory.Turn> out = new ArrayList<>(turns.size());
         for (ChatTurn t : turns) {
-            out.add(new ChatHistory.Turn(t.role(), t.content()));
+            out.add(new ChatHistory.Turn(t.role(), t.content(), t.rawContentBlocks()));
         }
         return out;
     }

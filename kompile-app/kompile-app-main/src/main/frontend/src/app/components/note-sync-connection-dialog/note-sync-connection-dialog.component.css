@@ -1,0 +1,70 @@
+.tab-label {
+  margin-left: 8px;
+}
+
+.tab-content {
+  padding: 16px 0;
+}
+
+.provider-desc {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
+
+.full-width {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.common-settings {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.common-settings h4 {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+mat-dialog-content {
+  min-width: 480px;
+}
+
+.locked .mat-mdc-tab:not(.mdc-tab--active) {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.git-options {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.auth-help {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: var(--bg-card-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.auth-help mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.git-token-fields {
+  margin-top: 4px;
+}

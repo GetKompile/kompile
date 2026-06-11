@@ -21,6 +21,7 @@ import ai.kompile.cli.main.chat.permission.PermissionService;
 
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Context passed to every tool execution. Contains session info,
@@ -33,6 +34,8 @@ public class ToolContext {
     private final Path workingDirectory;
     private final AtomicBoolean aborted;
     private final ToolRegistry toolRegistry;
+    private volatile Consumer<String> outputConsumer;
+    private volatile boolean autoApproveAll = false;
 
     public ToolContext(String sessionId, AgentConfig agent,
                        PermissionService permissionService,
@@ -54,6 +57,30 @@ public class ToolContext {
     public boolean isAborted() { return aborted.get(); }
     public void abort() { aborted.set(true); }
     public AtomicBoolean getAbortSignal() { return aborted; }
+
+    /**
+     * Returns the output consumer for streaming progress to the caller, or null if not set.
+     */
+    public Consumer<String> getOutputConsumer() { return outputConsumer; }
+
+    /**
+     * Set a consumer that receives progress/output lines from tool execution.
+     */
+    public void setOutputConsumer(Consumer<String> outputConsumer) {
+        this.outputConsumer = outputConsumer;
+    }
+
+    /**
+     * Returns true if all permission prompts should be automatically approved.
+     */
+    public boolean isAutoApproveAll() { return autoApproveAll; }
+
+    /**
+     * Set whether to auto-approve all permission requests without prompting.
+     */
+    public void setAutoApproveAll(boolean autoApproveAll) {
+        this.autoApproveAll = autoApproveAll;
+    }
 
     /**
      * Check permission for a tool action. Throws ToolExecutionException

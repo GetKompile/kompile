@@ -28,6 +28,14 @@ import java.util.Set;
  */
 public class ModelConstants {
 
+    /**
+     * Returns architecture metadata for a model (num_layers, num_heads, model_size_bytes, etc.).
+     * Returns an empty map if the model ID is not recognized.
+     */
+    public static Map<String, Object> getArchitectureMetadata(String modelId) {
+        return Collections.emptyMap();
+    }
+
     // OpenNLP Constants (existing code remains unchanged)
     public static final String OPENNLP_MODEL_BASE_URL = "https://dlcdn.apache.org/opennlp/models/ud-models-1.2/";
     public static final String DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR = ".kompile/models";

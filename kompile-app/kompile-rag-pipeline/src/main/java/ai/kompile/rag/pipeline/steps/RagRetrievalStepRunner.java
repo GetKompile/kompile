@@ -43,8 +43,8 @@ public class RagRetrievalStepRunner implements PipelineStepRunner {
         this.topK = stepConfig.get(PARAM_TOP_K, 10);
         this.similarityThreshold = stepConfig.get(PARAM_SIMILARITY_THRESHOLD, 0.0);
 
-        this.vectorStore = context.get("vectorStore", VectorStore.class);
-        this.documentRetriever = context.get("documentRetriever", DocumentRetriever.class);
+        this.vectorStore = context.get("vectorStore", VectorStore.class).orElse(null);
+        this.documentRetriever = context.get("documentRetriever", DocumentRetriever.class).orElse(null);
 
         boolean needsSemantic = "SEMANTIC".equals(strategy) || "HYBRID".equals(strategy);
         boolean needsKeyword = "KEYWORD".equals(strategy) || "HYBRID".equals(strategy);
@@ -77,16 +77,13 @@ public class RagRetrievalStepRunner implements PipelineStepRunner {
         if (needsSemantic && vectorStore != null) {
             try {
                 // Try using pre-computed embedding from context
-                INDArray queryEmbedding = context.get("query_embedding", INDArray.class);
-                List<String> semanticResults;
-                if (queryEmbedding != null) {
-                    semanticResults = vectorStore.similaritySearch(query, topK, similarityThreshold);
-                } else {
-                    semanticResults = vectorStore.similaritySearch(query, topK, similarityThreshold);
-                }
-                for (String doc : semanticResults) {
-                    if (seen.add(doc)) {
-                        documents.add(doc);
+                INDArray queryEmbedding = context.get("query_embedding", INDArray.class).orElse(null);
+                List<org.springframework.ai.document.Document> semanticResults =
+                        vectorStore.similaritySearch(query, topK, similarityThreshold);
+                for (org.springframework.ai.document.Document doc : semanticResults) {
+                    String content = doc.getText();
+                    if (content != null && seen.add(content)) {
+                        documents.add(content);
                     }
                 }
                 log.debug("Semantic retrieval returned {} results", semanticResults.size());
@@ -100,7 +97,7 @@ public class RagRetrievalStepRunner implements PipelineStepRunner {
             try {
                 List<RetrievedDoc> keywordResults = documentRetriever.retrieveWithDetails(query, topK);
                 for (RetrievedDoc doc : keywordResults) {
-                    String content = doc.getContent();
+                    String content = doc.getText();
                     if (content != null && seen.add(content)) {
                         documents.add(content);
                     }
@@ -118,7 +115,7 @@ public class RagRetrievalStepRunner implements PipelineStepRunner {
 
         Data output = Data.empty();
         output.put("query", query);
-        output.putList("documents", documents);
+        output.putList("documents", documents, ai.kompile.pipelines.framework.api.data.ValueType.STRING);
         output.put("document_count", (long) documents.size());
 
         log.debug("Retrieval step produced {} documents for query", documents.size());

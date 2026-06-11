@@ -17,9 +17,10 @@
 package ai.kompile.app.services.subprocess;
 
 import ai.kompile.app.config.IngestConfiguration;
+import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
-import ai.kompile.cli.main.util.NativeImageInfo;
+import ai.kompile.cli.common.util.NativeImageInfo;
 import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.app.ingest.domain.IngestEvent;
@@ -44,7 +45,6 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -87,23 +87,17 @@ public class SubprocessIngestLauncher {
 
     private static final String SUBPROCESS_MAIN_CLASS = "ai.kompile.app.subprocess.IngestSubprocessMain";
 
-    @Value("${kompile.ingest.subprocess.java-path:java}")
-    private String javaPath;
+    private String javaPath = "java";
 
-    @Value("${kompile.ingest.subprocess.heap-size:4g}")
-    private String heapSize;
+    private String heapSize = "4g";
 
-    @Value("${kompile.ingest.subprocess.timeout-minutes:60}")
-    private int timeoutMinutes;
+    private int timeoutMinutes = 60;
 
-    @Value("${kompile.ingest.subprocess.heartbeat-interval-seconds:10}")
-    private int heartbeatIntervalSeconds;
+    private int heartbeatIntervalSeconds = 10;
 
-    @Value("${kompile.ingest.subprocess.progress-stall-threshold-seconds:60}")
-    private int progressStallThresholdSeconds;
+    private int progressStallThresholdSeconds = 60;
 
-    @Value("${kompile.ingest.subprocess.stale-threshold-seconds:120}")
-    private int staleThresholdSeconds;
+    private int staleThresholdSeconds = 120;
 
     private final IngestProgressTracker progressTracker;
     private final IngestEventService eventService;
@@ -123,6 +117,15 @@ public class SubprocessIngestLauncher {
 
     @Autowired(required = false)
     private ai.kompile.app.monitor.service.MonitorService monitorService;
+
+    @Autowired(required = false)
+    private ai.kompile.app.subprocess.SubprocessRegistry subprocessRegistry;
+
+    @Autowired(required = false)
+    private ai.kompile.app.services.scheduler.ResourceAwareJobScheduler resourceScheduler;
+
+    @Autowired(required = false)
+    private ai.kompile.app.services.SubprocessHeartbeatBroadcaster heartbeatBroadcaster;
 
     // Active subprocess tracking
     private final Map<String, SubprocessHandle> activeProcesses = new ConcurrentHashMap<>();
@@ -304,7 +307,7 @@ public class SubprocessIngestLauncher {
             // Build subprocess args
             String callbackBaseUrl = serverPortService != null
                     ? serverPortService.getBaseUrl()
-                    : "http://localhost:8080";
+                    : KompileServerConstants.DEFAULT_APP_URL;
 
             // Get model source configuration from AnseriniEncoderFactory (inherits from
             // parent)
@@ -346,6 +349,9 @@ public class SubprocessIngestLauncher {
             int gpuMemoryKillThresholdPercent = subprocessConfigService != null
                     ? subprocessConfigService.getGpuMemoryKillThresholdPercent()
                     : SubprocessArgs.DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
+            int gpuSoftLimitPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getGpuSoftLimitPercent()
+                    : 0;
 
             // Get off-heap memory thresholds from SubprocessConfigService (or use defaults)
             int offHeapThresholdPercent = subprocessConfigService != null
@@ -427,6 +433,7 @@ public class SubprocessIngestLauncher {
                     .gpuMemoryThresholdPercent(gpuMemoryThresholdPercent)
                     .gpuMemoryCriticalPercent(gpuMemoryCriticalPercent)
                     .gpuMemoryKillThresholdPercent(gpuMemoryKillThresholdPercent)
+                    .gpuSoftLimitPercent(gpuSoftLimitPercent)
                     .offHeapThresholdPercent(offHeapThresholdPercent)
                     .offHeapCriticalPercent(offHeapCriticalPercent)
                     .offHeapKillThresholdPercent(offHeapKillThresholdPercent)
@@ -440,6 +447,16 @@ public class SubprocessIngestLauncher {
             // This ensures the UI can immediately fetch the ND4J environment snapshot for
             // subprocess mode.
             createJobHistoryAndLogQueued(taskId, fileName, filePath, nd4jConfigJson);
+
+            // Record checkpoint path in job history so the job can be resumed later
+            if (jobHistoryService != null) {
+                try {
+                    jobHistoryService.recordCheckpointPath(taskId, checkpointPath.toString(),
+                            ai.kompile.app.ingest.domain.IngestEvent.IngestPhase.EMBEDDING);
+                } catch (Exception e) {
+                    logger.debug("Failed to record checkpoint path for {}: {}", taskId, e.getMessage());
+                }
+            }
 
             // Write args to temp file
             Path argsFile = args.writeToTempFile();
@@ -468,7 +485,7 @@ public class SubprocessIngestLauncher {
             }
 
             // === GPU LIFECYCLE: Acquire GPU resources for this ingest job ===
-            if (modelLifecycleManager != null) {
+            if (modelLifecycleManager != null && !modelLifecycleManager.hasJobGpuHold(taskId)) {
                 try {
                     modelLifecycleManager.acquireGpuForIngest(taskId, fileName);
                     logger.info("[ingest-{}] GPU resources acquired for ingest job", taskId);
@@ -477,10 +494,17 @@ public class SubprocessIngestLauncher {
                             taskId, e.getMessage());
                     // Don't fail the ingest — it may be able to run on CPU or with reduced GPU
                 }
+            } else if (modelLifecycleManager != null) {
+                logger.info("[ingest-{}] GPU already held by scheduler, skipping launcher acquire", taskId);
             }
 
             Process process = processBuilder.start();
             logger.info("Started subprocess with PID: {}", process.pid());
+
+            // Register with centralized subprocess registry for orphan protection
+            if (subprocessRegistry != null) {
+                subprocessRegistry.register("ingest-" + taskId, process, "ingest");
+            }
 
             // Phase-2 log aggregation: open central JSON-lines writer
             try {
@@ -927,7 +951,7 @@ public class SubprocessIngestLauncher {
                                 classpathEntries.add(path);
                             }
                         } catch (Exception e) {
-                            // Ignore
+                            logger.debug("Error converting classpath URL to path: {}", e.getMessage());
                         }
                     }
                 }
@@ -1252,6 +1276,18 @@ public class SubprocessIngestLauncher {
                         handle.getTaskId(), transition.fromPhase(), transition.toPhase());
                 // Forward phase transition to UI
                 forwardPhaseTransition(handle, transition);
+                // Broadcast phase transition with duration to WebSocket
+                if (heartbeatBroadcaster != null) {
+                    heartbeatBroadcaster.broadcastPhaseTransition(handle.getTaskId(), "ingest",
+                            transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
+                }
+                // Forward phase transition to scheduler for GPU yield/reacquire
+                if (resourceScheduler != null) {
+                    var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.INGEST;
+                    boolean requiresGpu = profile.phaseRequiresGpu(transition.toPhase());
+                    long gpuMem = profile.gpuMemoryForPhase(transition.toPhase());
+                    resourceScheduler.reportPhaseTransition(handle.getTaskId(), transition.toPhase(), requiresGpu, gpuMem);
+                }
             } else if (message instanceof SubprocessMessage.Heartbeat heartbeat) {
                 handle.updateMemoryFromHeartbeat(heartbeat);
                 logger.debug("Task {} heartbeat: uptime={}ms, heap={}%, offHeap={}%, gpu={}%",
@@ -1259,6 +1295,10 @@ public class SubprocessIngestLauncher {
                         String.format("%.1f", heartbeat.memoryUsagePercent()),
                         String.format("%.1f", heartbeat.offHeapUsagePercent()),
                         String.format("%.1f", heartbeat.gpuUsagePercent()));
+                // Broadcast heartbeat memory data to WebSocket
+                if (heartbeatBroadcaster != null) {
+                    heartbeatBroadcaster.broadcastHeartbeat(handle.getTaskId(), "ingest", heartbeat);
+                }
             } else if (message instanceof SubprocessMessage.Completed completed) {
                 logger.info("Task {} completed: {} docs, {} chunks indexed",
                         handle.getTaskId(), completed.documentsLoaded(), completed.documentsIndexed());
@@ -1594,7 +1634,7 @@ public class SubprocessIngestLauncher {
                         Integer.parseInt(matcher.group(2))
                 };
             } catch (NumberFormatException e) {
-                // Ignore
+                logger.debug("Error parsing batch numbers from step string '{}': {}", currentStep, e.getMessage());
             }
         }
         return new int[] { 0, 0 };
@@ -2451,6 +2491,11 @@ public class SubprocessIngestLauncher {
         // Remove from active processes
         activeProcesses.remove(handle.getTaskId());
 
+        // Deregister from centralized subprocess registry
+        if (subprocessRegistry != null) {
+            subprocessRegistry.deregister("ingest-" + handle.getTaskId());
+        }
+
         // Remove from warned task IDs
         warnedTaskIds.remove(handle.getTaskId());
 
@@ -2695,7 +2740,7 @@ public class SubprocessIngestLauncher {
     /**
      * Scheduled task to check for stale subprocesses.
      */
-    @Scheduled(fixedRateString = "${kompile.ingest.subprocess.stale-check-interval-ms:30000}")
+    @Scheduled(fixedRate = 30000)
     public void checkStaleProcesses() {
         int staleSeconds = getEffectiveStaleThresholdSeconds();
         Duration staleThreshold = Duration.ofSeconds(staleSeconds);

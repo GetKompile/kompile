@@ -145,8 +145,8 @@ export class KGEmbeddingsComponent implements OnInit, OnDestroy {
   // Graph Building Configuration
   graphBuildingConfig: GraphBuildingConfig = { ...DEFAULT_GRAPH_BUILDING_CONFIG };
   availableEntityTypes = AVAILABLE_ENTITY_TYPES;
-  availableLlmProviders: string[] = ['openai', 'anthropic', 'google'];
-  availableLlmModels: string[] = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'];
+  availableLlmProviders: string[] = [];
+  availableLlmModels: string[] = [];
   isSavingGraphBuilding = false;
   isLoadingGraphBuilding = false;
 
@@ -668,31 +668,36 @@ export class KGEmbeddingsComponent implements OnInit, OnDestroy {
           if (providers && providers.length > 0) {
             this.availableLlmProviders = providers;
           }
+          // Load models for the currently selected provider
+          if (this.graphBuildingConfig.modelProvider) {
+            this.onLlmProviderChange();
+          }
           this.cdr.detectChanges();
         },
         error: (err) => {
-          console.log('Using default LLM providers:', err.message);
+          console.debug('Using default LLM providers:', err.message);
         }
       });
   }
 
   onLlmProviderChange(): void {
     // Load models for the selected provider
+    this.availableLlmModels = [];
     this.kgService.getLlmModels(this.graphBuildingConfig.modelProvider)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (models) => {
-          if (models && models.length > 0) {
-            this.availableLlmModels = models;
-            // Reset to first model if current not available
-            if (!models.includes(this.graphBuildingConfig.modelName)) {
-              this.graphBuildingConfig.modelName = models[0];
-            }
+          this.availableLlmModels = models || [];
+          // Reset to first model if current not in the list
+          if (this.availableLlmModels.length > 0 && !this.availableLlmModels.includes(this.graphBuildingConfig.modelName)) {
+            this.graphBuildingConfig.modelName = this.availableLlmModels[0];
           }
           this.cdr.detectChanges();
         },
         error: (err) => {
-          console.log('Using default models for provider:', err.message);
+          this.availableLlmModels = [];
+          this.cdr.detectChanges();
+          console.debug('Using free-text model input for provider:', err.message);
         }
       });
   }

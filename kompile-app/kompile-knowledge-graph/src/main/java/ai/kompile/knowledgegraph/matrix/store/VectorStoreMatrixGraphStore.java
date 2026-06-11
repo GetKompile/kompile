@@ -469,6 +469,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         metadata.put("capacity", graph.getCurrentCapacity());
         metadata.put("embeddingDimension", graph.getEmbeddingDimension());
         metadata.put("type", "graph_metadata");
+        metadata.values().removeIf(Objects::isNull);
 
         Document doc = new Document(docId, objectMapper.writeValueAsString(metadata), metadata);
         vectorStore.add(List.of(doc));
@@ -509,6 +510,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         metadata.put("createdAt", node.getCreatedAt());
         metadata.put("updatedAt", node.getUpdatedAt());
         metadata.put("type", "graph_node");
+        metadata.values().removeIf(Objects::isNull);
 
         if (node.getMetadata() != null) {
             metadata.put("nodeMetadata", node.getMetadata());

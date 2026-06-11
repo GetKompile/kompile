@@ -41,7 +41,7 @@ public class HuggingFaceDownloader implements DownloadService {
     private static final String BASE_URL = "https://huggingface.co";
     private static final int BUFFER_SIZE = 8192;
     private static final int CONNECTION_TIMEOUT = 30000;
-    private static final int READ_TIMEOUT = 60000;
+    private static final int READ_TIMEOUT = 600000; // 10 minutes — large model files (e.g. 2.3GB model.onnx_data)
 
     @Override
     public String getSourceName() {

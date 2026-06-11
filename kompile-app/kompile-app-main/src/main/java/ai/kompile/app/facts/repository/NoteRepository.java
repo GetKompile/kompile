@@ -21,6 +21,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
+import java.time.Instant;
 import java.util.List;
 
 @Repository
@@ -43,4 +44,7 @@ public interface NoteRepository extends JpaRepository<Note, Long> {
     List<Note> searchByText(Long factSheetId, String query);
 
     long countByFactSheetId(Long factSheetId);
+
+    /** Find notes for a FactSheet updated after a given timestamp. */
+    List<Note> findByFactSheetIdAndUpdatedAtAfter(Long factSheetId, Instant since);
 }

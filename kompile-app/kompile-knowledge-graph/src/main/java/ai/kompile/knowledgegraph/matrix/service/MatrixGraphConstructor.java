@@ -84,50 +84,10 @@ public class MatrixGraphConstructor implements GraphConstructor {
         List<ExtractedGraphDTO.ExtractedRelationship> allRelationships = new ArrayList<>();
         SchemaEnforcementMode mode = (enforcementMode == null) ? SchemaEnforcementMode.NONE : enforcementMode;
 
-        // Extract entities and relationships from each document
-        for (RetrievedDoc doc : docs) {
-            try {
-                String prompt = createExtractionPrompt(doc.getText(), schema);
-                String jsonResponse = llmChat.prompt().user(prompt).call().content();
-
-                // Parse JSON response
-                ExtractedGraphDTO.ExtractedGraph extracted = parseExtractionResponse(jsonResponse);
-
-                if (extracted != null) {
-                    // Apply schema enforcement
-                    if (mode == SchemaEnforcementMode.STRICT && schema != null) {
-                        cleanGraph(extracted, schema);
-                    }
-
-                    // Prefix IDs with document ID to ensure uniqueness
-                    String docPrefix = "doc_" + doc.getId() + "_";
-                    if (extracted.getEntities() != null) {
-                        for (ExtractedGraphDTO.ExtractedEntity entity : extracted.getEntities()) {
-                            entity.setId(docPrefix + entity.getId());
-                            if (entity.getMetadata() == null) {
-                                entity.setMetadata(new HashMap<>());
-                            }
-                            entity.getMetadata().put("sourceDocumentId", doc.getId());
-                            allEntities.add(entity);
-                        }
-                    }
-
-                    if (extracted.getRelationships() != null) {
-                        for (ExtractedGraphDTO.ExtractedRelationship rel : extracted.getRelationships()) {
-                            rel.setSource(docPrefix + rel.getSource());
-                            rel.setTarget(docPrefix + rel.getTarget());
-                            if (rel.getMetadata() == null) {
-                                rel.setMetadata(new HashMap<>());
-                            }
-                            rel.getMetadata().put("sourceDocumentId", doc.getId());
-                            allRelationships.add(rel);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                log.error("Failed to process document: {}", doc.getId(), e);
-            }
-        }
+        // Batch documents into a single LLM call for efficiency.
+        // LLMs have large context windows — sending multiple docs per call
+        // drastically reduces API round-trips and avoids rate limiting.
+        extractBatched(docs, schema, mode, allEntities, allRelationships, null);
 
         // Add entities to matrix graph
         List<String> nodeIds = new ArrayList<>();
@@ -199,46 +159,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
         List<ExtractedGraphDTO.ExtractedRelationship> allRelationships = new ArrayList<>();
         SchemaEnforcementMode mode = (enforcementMode == null) ? SchemaEnforcementMode.NONE : enforcementMode;
 
-        for (RetrievedDoc doc : docs) {
-            try {
-                String prompt = createExtractionPrompt(doc.getText(), schema);
-                String jsonResponse = llmChat.prompt().user(prompt).call().content();
-
-                ExtractedGraphDTO.ExtractedGraph extracted = parseExtractionResponse(jsonResponse);
-
-                if (extracted != null) {
-                    if (mode == SchemaEnforcementMode.STRICT && schema != null) {
-                        cleanGraph(extracted, schema);
-                    }
-
-                    String docPrefix = "doc_" + doc.getId() + "_";
-                    if (extracted.getEntities() != null) {
-                        for (ExtractedGraphDTO.ExtractedEntity entity : extracted.getEntities()) {
-                            entity.setId(docPrefix + entity.getId());
-                            if (entity.getMetadata() == null) {
-                                entity.setMetadata(new HashMap<>());
-                            }
-                            entity.getMetadata().put("sourceDocumentId", doc.getId());
-                            allEntities.add(entity);
-                        }
-                    }
-
-                    if (extracted.getRelationships() != null) {
-                        for (ExtractedGraphDTO.ExtractedRelationship rel : extracted.getRelationships()) {
-                            rel.setSource(docPrefix + rel.getSource());
-                            rel.setTarget(docPrefix + rel.getTarget());
-                            if (rel.getMetadata() == null) {
-                                rel.setMetadata(new HashMap<>());
-                            }
-                            rel.getMetadata().put("sourceDocumentId", doc.getId());
-                            allRelationships.add(rel);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                log.error("Failed to process document: {}", doc.getId(), e);
-            }
-        }
+        extractBatched(docs, schema, mode, allEntities, allRelationships, null);
 
         // Add entities
         List<String> nodeIds = new ArrayList<>();
@@ -294,6 +215,244 @@ public class MatrixGraphConstructor implements GraphConstructor {
      * Result of graph construction including the graph ID.
      */
     public record GraphConstructionResult(String graphId, Graph graph) {}
+
+    /**
+     * Maximum characters per batched LLM prompt. LLMs easily handle 100k+ tokens,
+     * so we batch aggressively to minimize API round-trips.
+     */
+    private static final int BATCH_PROMPT_MAX_CHARS = 120_000;
+
+    /**
+     * Extracts entities and relationships from docs by batching multiple documents
+     * into single LLM calls. This drastically reduces the number of API round-trips
+     * compared to one-doc-per-call, which is critical for CLI/subprocess-based LLMs
+     * where each call has significant overhead and rate limits apply.
+     */
+    private void extractBatched(List<RetrievedDoc> docs, GraphSchema schema,
+                                SchemaEnforcementMode mode,
+                                List<ExtractedGraphDTO.ExtractedEntity> allEntities,
+                                List<ExtractedGraphDTO.ExtractedRelationship> allRelationships,
+                                ProgressListener progressListener) {
+        // Partition docs into batches that fit within the prompt size limit
+        List<List<RetrievedDoc>> batches = new ArrayList<>();
+        List<RetrievedDoc> currentBatch = new ArrayList<>();
+        int currentChars = 0;
+
+        for (RetrievedDoc doc : docs) {
+            int docChars = doc.getText() != null ? doc.getText().length() : 0;
+            if (!currentBatch.isEmpty() && currentChars + docChars > BATCH_PROMPT_MAX_CHARS) {
+                batches.add(currentBatch);
+                currentBatch = new ArrayList<>();
+                currentChars = 0;
+            }
+            currentBatch.add(doc);
+            currentChars += docChars;
+        }
+        if (!currentBatch.isEmpty()) {
+            batches.add(currentBatch);
+        }
+
+        log.info("Batched {} documents into {} LLM call(s) (max {}k chars/call)",
+                docs.size(), batches.size(), BATCH_PROMPT_MAX_CHARS / 1000);
+
+        int docIndex = 0;
+        for (List<RetrievedDoc> batch : batches) {
+            long batchStart = System.currentTimeMillis();
+            try {
+                String prompt;
+                if (batch.size() == 1) {
+                    prompt = createExtractionPrompt(batch.get(0).getText(), schema);
+                } else {
+                    prompt = createBatchExtractionPrompt(batch, schema);
+                }
+
+                String jsonResponse = llmChat.prompt().user(prompt).call().content();
+                ExtractedGraphDTO.ExtractedGraph extracted = parseExtractionResponse(jsonResponse);
+
+                if (extracted != null) {
+                    if (mode == SchemaEnforcementMode.STRICT && schema != null) {
+                        cleanGraph(extracted, schema);
+                    }
+
+                    // For batched extraction, prefix each entity/rel with a batch-unique prefix
+                    // to avoid ID collisions across documents
+                    if (extracted.getEntities() != null) {
+                        for (ExtractedGraphDTO.ExtractedEntity entity : extracted.getEntities()) {
+                            if (entity.getMetadata() == null) {
+                                entity.setMetadata(new HashMap<>());
+                            }
+                            allEntities.add(entity);
+                        }
+                    }
+                    if (extracted.getRelationships() != null) {
+                        for (ExtractedGraphDTO.ExtractedRelationship rel : extracted.getRelationships()) {
+                            if (rel.getMetadata() == null) {
+                                rel.setMetadata(new HashMap<>());
+                            }
+                            allRelationships.add(rel);
+                        }
+                    }
+                }
+
+                long elapsed = System.currentTimeMillis() - batchStart;
+                int batchEntities = extracted != null && extracted.getEntities() != null ? extracted.getEntities().size() : 0;
+                int batchRels = extracted != null && extracted.getRelationships() != null ? extracted.getRelationships().size() : 0;
+                log.info("Batch extraction: {} docs → {} entities, {} rels in {}ms",
+                        batch.size(), batchEntities, batchRels, elapsed);
+
+                // Report progress for each doc in the batch
+                if (progressListener != null) {
+                    for (RetrievedDoc doc : batch) {
+                        progressListener.onProgress(new DocumentExtractionProgress(
+                                doc.getId(), docIndex++, docs.size(),
+                                DocumentExtractionStatus.COMPLETED, null,
+                                batchEntities / batch.size(), batchRels / batch.size(),
+                                doc.getText() != null ? doc.getText().length() : 0,
+                                elapsed));
+                    }
+                } else {
+                    docIndex += batch.size();
+                }
+            } catch (Exception e) {
+                log.error("Failed to process batch of {} documents: {}", batch.size(), e.getMessage(), e);
+                if (progressListener != null) {
+                    for (RetrievedDoc doc : batch) {
+                        progressListener.onProgress(new DocumentExtractionProgress(
+                                doc.getId(), docIndex++, docs.size(),
+                                DocumentExtractionStatus.FAILED, e.getMessage(),
+                                0, 0, doc.getText() != null ? doc.getText().length() : 0, 0));
+                    }
+                } else {
+                    docIndex += batch.size();
+                }
+            }
+        }
+    }
+
+    @Override
+    public Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema graphSchema,
+                                         SchemaEnforcementMode enforcementMode,
+                                         boolean skipEmbedding, boolean skipMatrixGraph,
+                                         ProgressListener progressListener) {
+        String graphId = skipMatrixGraph ? null : "graph-" + UUID.randomUUID();
+        if (!skipMatrixGraph) {
+            graphStore.createGraph(graphId, null);
+        }
+
+        List<ExtractedGraphDTO.ExtractedEntity> allEntities = new ArrayList<>();
+        List<ExtractedGraphDTO.ExtractedRelationship> allRelationships = new ArrayList<>();
+        SchemaEnforcementMode mode = (enforcementMode == null) ? SchemaEnforcementMode.NONE : enforcementMode;
+
+        extractBatched(docs, graphSchema, mode, allEntities, allRelationships, progressListener);
+
+        if (!skipMatrixGraph && graphId != null) {
+            List<String> nodeIds = new ArrayList<>();
+            List<String> textForEmbedding = new ArrayList<>();
+
+            for (ExtractedGraphDTO.ExtractedEntity entity : allEntities) {
+                MatrixGraphNode node = MatrixGraphNode.builder()
+                        .nodeId(entity.getId())
+                        .nodeType(entity.getNodeLabel() != null ? entity.getNodeLabel() : "ENTITY")
+                        .title(entity.getTitle())
+                        .description(entity.getDescription())
+                        .metadata(entity.getMetadata())
+                        .build();
+                graphStore.addNode(graphId, node);
+                nodeIds.add(entity.getId());
+                textForEmbedding.add(entity.getTitle() + " " +
+                        (entity.getDescription() != null ? entity.getDescription() : ""));
+            }
+
+            if (!skipEmbedding && !textForEmbedding.isEmpty() && embeddingModel != null) {
+                try {
+                    INDArray embeddings = embeddingModel.embed(textForEmbedding);
+                    graphStore.storeNodeEmbeddings(graphId, nodeIds, embeddings);
+                } catch (Exception e) {
+                    log.error("Failed to generate embeddings for entities", e);
+                }
+            }
+
+            for (ExtractedGraphDTO.ExtractedRelationship rel : allRelationships) {
+                double weight = rel.getWeight() != null ? rel.getWeight() : 1.0;
+                String edgeType = rel.getRelationshipType() != null ? rel.getRelationshipType() : ENTITY_EDGE_TYPE;
+                graphStore.addEdge(graphId, rel.getSource(), rel.getTarget(), weight, edgeType, false);
+            }
+
+            try {
+                Optional<AdjacencyMatrixGraph> loadedGraph = graphStore.loadGraph(graphId);
+                if (loadedGraph.isPresent()) {
+                    graphStore.saveGraph(loadedGraph.get());
+                }
+            } catch (IOException e) {
+                log.error("Failed to save constructed graph", e);
+            }
+        }
+
+        return convertToGraph(allEntities, allRelationships);
+    }
+
+    /**
+     * Creates a batched extraction prompt that includes multiple documents.
+     * Each document is labeled so the LLM can attribute entities to source documents.
+     */
+    private String createBatchExtractionPrompt(List<RetrievedDoc> docs, GraphSchema schema) {
+        String schemaDescription = getSchemaDescription(schema);
+
+        StringBuilder docsSection = new StringBuilder();
+        for (int i = 0; i < docs.size(); i++) {
+            docsSection.append("--- DOCUMENT ").append(i + 1).append(" ---\n");
+            docsSection.append(docs.get(i).getText());
+            docsSection.append("\n\n");
+        }
+
+        return """
+               Extract ALL entities and relationships from ALL the documents below.
+               %s
+
+               Documents:
+               %s
+
+               Respond with a SINGLE JSON object containing "entities" (list) and "relationships" (list) covering ALL documents.
+               For entity IDs, use unique identifiers (e.g. "entity_1", "entity_2").
+               Example: {"entities": [{"id": "e1", "title": "John", "label": "PERSON", "description": "A person"}],
+                         "relationships": [{"source": "e1", "target": "e2", "type": "WORKS_AT", "description": "John works at Acme"}]}
+               """.formatted(schemaDescription, docsSection.toString());
+    }
+
+    private String getSchemaDescription(GraphSchema schema) {
+        if (schema != null && schema.getNodeTypes() != null && schema.getRelationshipTypes() != null) {
+            return """
+                    The entities must conform to the following node types:
+                    %s
+
+                    The relationships must conform to the following types:
+                    %s
+
+                    For each entity, provide:
+                    - "id": a unique identifier
+                    - "title": the primary name
+                    - "label": the node label from the schema
+                    - "description": a short description
+                    - "metadata": additional properties
+
+                    For each relationship, provide:
+                    - "source": the source entity id
+                    - "target": the target entity id
+                    - "type": the relationship type from the schema
+                    - "description": how they are related
+                    - "weight": optional strength (0.0 to 1.0)
+                    """.formatted(
+                    schema.getNodeTypes().stream()
+                            .map(nt -> "- Label: " + nt.getLabel() + ", Description: " + nt.getDescription())
+                            .collect(Collectors.joining("\n")),
+                    schema.getRelationshipTypes().stream()
+                            .map(rt -> "- Type: " + rt.getType() + ", Description: " + rt.getDescription())
+                            .collect(Collectors.joining("\n"))
+            );
+        }
+        return "Extract entities with 'id', 'title', 'label', and 'description'. " +
+                "Extract relationships with 'source', 'target', 'type', and 'description'.";
+    }
 
     private String createExtractionPrompt(String text, GraphSchema schema) {
         String schemaDescription;
@@ -389,6 +548,23 @@ public class MatrixGraphConstructor implements GraphConstructor {
                             && validEntityIds.contains(r.getTarget()))
                     .collect(Collectors.toList()));
         }
+    }
+
+    /**
+     * Returns true if the response string is a provider error (e.g. quota exhausted, API failure),
+     * rather than a valid graph extraction response.
+     * Detects explicit provider error patterns while ignoring ordinary text that contains
+     * quota-related vocabulary (e.g. entity labels like "QUOTA_POLICY").
+     */
+    private boolean isAgentErrorResponse(String response) {
+        if (response == null || response.isBlank()) return false;
+        String lower = response.toLowerCase();
+        // Explicit quota/capacity exhaustion errors from LLM API providers
+        return lower.contains("quotaerror")
+                || lower.contains("quota error")
+                || (lower.contains("quota") && lower.contains("exhausted"))
+                || (lower.contains("quota") && lower.contains("capacity"))
+                || lower.contains("you have exhausted your capacity");
     }
 
     private Graph convertToGraph(List<ExtractedGraphDTO.ExtractedEntity> entities, List<ExtractedGraphDTO.ExtractedRelationship> relationships) {

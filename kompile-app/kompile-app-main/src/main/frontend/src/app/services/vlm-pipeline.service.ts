@@ -32,6 +32,7 @@ import {
   CacheEntriesResponse,
   CacheEntryDetailResponse
 } from '../models/vlm-pipeline-models';
+import { backendUrl } from './base.service';
 
 /**
  * Angular service for VLM pipeline configuration API.
@@ -63,15 +64,7 @@ export class VlmPipelineService {
   public modelSets$ = this.modelSetsSubject.asObservable();
 
   constructor(private http: HttpClient) {
-    // Dynamic API URL based on current location
-    if (typeof window !== 'undefined' && window.location) {
-      const protocol = window.location.protocol;
-      const hostname = window.location.hostname;
-      const port = window.location.port;
-      this.baseUrl = `${protocol}//${hostname}${port ? ':' + port : ''}/api/vlm/config`;
-    } else {
-      this.baseUrl = '/api/vlm/config';
-    }
+    this.baseUrl = `${backendUrl}/vlm/config`;
   }
 
   // ==================== Pipeline Operations ====================

@@ -273,6 +273,24 @@ export interface InvokeLlmRequest {
   systemPrompt?: string;
 }
 
+export interface ConversationMessage {
+  id: number;
+  sessionId: number;
+  orchestratorInstanceId: string;
+  role: 'SYSTEM' | 'USER' | 'ASSISTANT' | 'TOOL_CALL' | 'TOOL_RESULT' | 'TASK_OUTPUT' | 'ERROR' | 'FEEDBACK';
+  content: string;
+  timestamp?: string;
+  sequenceNumber?: number;
+  tokenCount?: number;
+  taskInstanceId?: number;
+  toolName?: string;
+  toolInput?: string;
+  toolOutput?: string;
+  feedbackLoop?: boolean;
+  feedbackIteration?: number;
+  metadataJson?: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -450,6 +468,12 @@ export class OrchestratorService extends BaseService {
 
   getLlmProviders(instanceId: string): Observable<string[]> {
     return this.http.get<string[]>(`${this.backendUrl}/orchestrator/${instanceId}/llm/providers`);
+  }
+
+  getSessionConversation(instanceId: string, sessionId: number): Observable<ConversationMessage[]> {
+    return this.http.get<ConversationMessage[]>(
+      `${this.backendUrl}/orchestrator/${instanceId}/llm/sessions/${sessionId}/conversation`
+    );
   }
 
   registerLlmTrigger(instanceId: string, trigger: LlmTriggerConfig): Observable<any> {
@@ -1044,5 +1068,37 @@ export class OrchestratorService extends BaseService {
     return this.http.get<string[]>(
       `${this.backendUrl}/orchestrator/${instanceId}/rag/folders`
     );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // AGENT & SUBPROCESS LOGS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  getAgentLogRuns(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/agent-logs`);
+  }
+
+  getAgentLogRecords(processId: string, fromSeq?: number): Observable<any[]> {
+    let params = new HttpParams();
+    if (fromSeq !== undefined) params = params.set('fromSeq', fromSeq.toString());
+    return this.http.get<any[]>(`${this.backendUrl}/agent-logs/${processId}/records`, { params });
+  }
+
+  getAgentLogAggregate(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/agent-logs/aggregate`);
+  }
+
+  getSubprocessLogRuns(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/subprocess-logs`);
+  }
+
+  getSubprocessLogRecords(runId: string, fromSeq?: number): Observable<any[]> {
+    let params = new HttpParams();
+    if (fromSeq !== undefined) params = params.set('fromSeq', fromSeq.toString());
+    return this.http.get<any[]>(`${this.backendUrl}/subprocess-logs/${runId}/records`, { params });
+  }
+
+  getSubprocessLogAggregate(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/subprocess-logs/aggregate`);
   }
 }

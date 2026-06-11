@@ -30,6 +30,13 @@
   gap: 8px;
 }
 
+.last-refreshed {
+  font-size: 11px;
+  color: #9e9e9e;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 /* Error Banner */
 .error-banner {
   display: flex;

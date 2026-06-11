@@ -1491,6 +1491,7 @@
 .conversation-area {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px;
   background-color: #f8f9fa;
   display: flex;
@@ -1667,6 +1668,9 @@
   padding: 12px 16px;
   border-radius: 16px;
   word-wrap: break-word;
+  overflow-wrap: break-word;
+  overflow-x: hidden;
+  min-width: 0;
 }
 
 .user-message {
@@ -1750,7 +1754,10 @@
   margin: 0;
   white-space: pre-wrap;
   word-wrap: break-word;
+  overflow-wrap: break-word;
   font-family: inherit;
+  overflow-x: auto;
+  max-width: 100%;
 }
 
 /* Large message handling with CSS content-visibility (from campaign-builder) */
@@ -1873,6 +1880,61 @@
   color: #888;
   font-weight: 500;
   font-size: 0.9em;
+}
+
+.metric-value.metric-rag {
+  color: #1976d2;
+  font-weight: 600;
+}
+
+/* Query Info */
+.query-info-bar {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #f3f0ff;
+  border-radius: 6px;
+  font-size: 12px;
+  border: 1px solid #e0d8f5;
+}
+.query-info-toggle {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #5b4a9e;
+}
+.query-info-icon { font-size: 14px; }
+.query-info-label { font-weight: 600; }
+.query-info-intent {
+  color: #7c6bc4;
+  font-style: italic;
+}
+.query-info-chevron {
+  font-size: 10px;
+  margin-left: auto;
+}
+.query-info-detail {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #e0d8f5;
+}
+.query-info-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.query-info-field {
+  color: #7c6bc4;
+  font-weight: 600;
+  min-width: 70px;
+}
+.query-info-value {
+  color: #333;
+  word-break: break-word;
+}
+.query-info-rewritten {
+  color: #5b4a9e;
+  font-weight: 500;
 }
 
 /* Session Token Usage (Header) */
@@ -2310,8 +2372,11 @@
 .message-content pre {
   white-space: pre-wrap;
   word-wrap: break-word;
+  overflow-wrap: break-word;
   font-family: inherit;
   margin: 0;
+  overflow-x: auto;
+  max-width: 100%;
 }
 
 /* Loading Indicator */

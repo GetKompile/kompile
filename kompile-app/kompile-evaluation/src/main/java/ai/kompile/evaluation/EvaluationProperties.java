@@ -66,6 +66,26 @@ public class EvaluationProperties {
      */
     private EvaluatorConfig hallucination = new EvaluatorConfig();
 
+    /**
+     * Entity presence evaluation configuration.
+     */
+    private EvaluatorConfig entityPresence = new EvaluatorConfig();
+
+    /**
+     * Entity type accuracy evaluation configuration.
+     */
+    private EvaluatorConfig entityTypeAccuracy = new EvaluatorConfig();
+
+    /**
+     * Graph completeness evaluation configuration.
+     */
+    private EvaluatorConfig graphCompleteness = new EvaluatorConfig();
+
+    /**
+     * Relationship presence evaluation configuration.
+     */
+    private EvaluatorConfig relationshipPresence = new EvaluatorConfig();
+
     @Data
     public static class EvaluatorConfig {
         private boolean enabled = false;

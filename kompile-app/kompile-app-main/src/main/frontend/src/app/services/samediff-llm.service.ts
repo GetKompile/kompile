@@ -30,7 +30,7 @@ import {
   SameDiffLLMExecutionResult,
   SameDiffLLMStepSchema
 } from '../models/samediff-llm-models';
-import { environment } from '../../environments/environment';
+import { backendUrl } from './base.service';
 
 @Injectable({
   providedIn: 'root'
@@ -48,15 +48,7 @@ export class SameDiffLLMService {
   public modelSetsStatus$ = this.modelSetsStatusSubject.asObservable();
 
   constructor(private http: HttpClient) {
-    // Dynamic API URL based on current location
-    if (typeof window !== 'undefined' && window.location) {
-      const protocol = window.location.protocol;
-      const hostname = window.location.hostname;
-      const port = window.location.port;
-      this.baseUrl = `${protocol}//${hostname}${port ? ':' + port : ''}/api/samediff-llm`;
-    } else {
-      this.baseUrl = '/api/samediff-llm';
-    }
+    this.baseUrl = `${backendUrl}/samediff-llm`;
   }
 
   // ==================== Model Set Operations ====================

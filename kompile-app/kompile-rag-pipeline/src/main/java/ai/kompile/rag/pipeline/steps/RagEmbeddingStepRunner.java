@@ -39,7 +39,7 @@ public class RagEmbeddingStepRunner implements PipelineStepRunner {
         this.skipEmbedding = "none".equals(modelId) || modelId == null;
 
         if (!skipEmbedding) {
-            this.embeddingModel = context.get("embeddingModel", EmbeddingModel.class);
+            this.embeddingModel = context.get("embeddingModel", EmbeddingModel.class).orElse(null);
             if (this.embeddingModel == null) {
                 throw new IllegalStateException("EmbeddingModel not found in pipeline context.");
             }

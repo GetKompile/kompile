@@ -75,9 +75,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Service("kompilePipelineLanguageModel")
-// Legacy dummy-echo pipeline LanguageModel. Only registered when the user explicitly
-// opts in via kompile.langmodel.pipeline.enabled=true. The real on-demand SameDiff
-// LanguageModel (SameDiffLanguageModelImpl) is registered as @Primary by default.
 @ConditionalOnProperty(prefix = "kompile.langmodel.pipeline", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class KompilePipelineLanguageModelImpl implements LanguageModel {
 
@@ -204,8 +201,14 @@ public class KompilePipelineLanguageModelImpl implements LanguageModel {
         }
 
         Data currentPipelineInput = dataFactory.empty();
+        // Build originalInput from the current turn's prompt so pipeline steps have access
+        // to the unmodified user input via context.getOriginalInput().
+        Data originalInput = dataFactory.empty();
+        if (currentMessageForMainPipeline != null && currentMessageForMainPipeline.getText() != null) {
+            originalInput.put(this.promptInputName, currentMessageForMainPipeline.getText());
+        }
         Context pipelineContext = new DefaultContext(
-                dataFactory.empty(), // TODO: Set originalInput for context correctly (e.g. first message of conversation)
+                originalInput,
                 currentTurnExecutionId,
                 "ctx-" + currentTurnExecutionId + "-" + System.currentTimeMillis(),
                 null, this.metrics, this.profiler);

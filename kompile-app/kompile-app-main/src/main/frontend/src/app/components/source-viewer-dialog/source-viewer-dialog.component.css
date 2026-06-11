@@ -234,6 +234,50 @@
   color: #666;
 }
 
+.markdown-conversion-status {
+  margin: 16px;
+  margin-bottom: 8px;
+}
+
+.conversion-success,
+.conversion-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  flex-wrap: wrap;
+}
+
+.conversion-success {
+  background: #e8f5e9;
+  color: #1b5e20;
+}
+
+.conversion-secondary {
+  margin-top: 8px;
+}
+
+.conversion-message {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.conversion-action {
+  margin-left: auto;
+}
+
+.conversion-action mat-icon {
+  margin-right: 4px;
+}
+
+.conversion-error {
+  background: #ffebee;
+  color: #b71c1c;
+}
+
 /* Source Info Panel */
 .source-info-panel {
   margin: 16px;
@@ -310,6 +354,11 @@
 .source-type-badge.url {
   background: #fff3e0;
   color: #e65100;
+}
+
+.source-type-badge.markdown {
+  background: #f3e5f5;
+  color: #6a1b9a;
 }
 
 .source-url-value {

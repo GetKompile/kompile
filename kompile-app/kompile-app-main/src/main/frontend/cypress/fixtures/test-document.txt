@@ -1,0 +1,14 @@
+This is an end-to-end test document for the Kompile RAG application.
+
+It contains multiple paragraphs of text that can be used to verify
+document ingestion, chunking, embedding, and search functionality.
+
+The document covers several topics including:
+- Document loading and parsing
+- Text chunking with overlapping windows
+- Embedding generation using transformer models
+- Vector similarity search with cosine distance
+- Keyword search using BM25 ranking
+
+This content is specifically designed to be searchable by the e2e tests.
+Unique marker: KOMPILE_E2E_TEST_MARKER_2025

@@ -20,7 +20,7 @@ import { Observable } from 'rxjs';
 import { backendUrl } from './base.service';
 
 export type LogLevel = 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-export type LogSource = 'STDOUT' | 'STDERR' | 'SYSTEM' | 'APPLICATION';
+export type LogSource = 'STDOUT' | 'STDERR' | 'SYSTEM' | 'APPLICATION' | 'EMBEDDING';
 
 export interface JobLogEntry {
   id: number;

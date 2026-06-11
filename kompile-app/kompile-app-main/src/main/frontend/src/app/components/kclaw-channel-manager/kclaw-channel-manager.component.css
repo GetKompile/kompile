@@ -1,0 +1,79 @@
+.channel-manager {
+  padding: 16px;
+}
+
+.header-row {
+  margin-bottom: 16px;
+}
+
+.header-row h3 {
+  margin: 0;
+}
+
+.channel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.channel-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.channel-card mat-card-header {
+  margin-bottom: 8px;
+}
+
+.channel-card mat-card-content {
+  flex: 1;
+}
+
+.channel-card mat-card-actions {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 16px;
+}
+
+.config-card {
+  max-width: 600px;
+}
+
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.form-row mat-form-field {
+  flex: 1;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.channel-card mat-card-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.oauth-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.connected-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #4caf50;
+}

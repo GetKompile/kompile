@@ -176,6 +176,40 @@
         <button class="btn btn-primary" (click)="setViewMode('overview')">Start a Job</button>
       </div>
     </div>
+
+    <!-- Job Statistics Panel -->
+    <div class="job-statistics-panel" *ngIf="selectedJob && jobStatistics">
+      <h4>Job Statistics</h4>
+      <div class="stats-grid">
+        <div class="stat-item" *ngIf="jobStatistics.totalEntities !== undefined">
+          <span class="stat-val">{{ jobStatistics.totalEntities }}</span>
+          <span class="stat-lbl">Entities</span>
+        </div>
+        <div class="stat-item" *ngIf="jobStatistics.totalRelationships !== undefined">
+          <span class="stat-val">{{ jobStatistics.totalRelationships }}</span>
+          <span class="stat-lbl">Relationships</span>
+        </div>
+        <div class="stat-item" *ngIf="jobStatistics.chunksProcessed !== undefined">
+          <span class="stat-val">{{ jobStatistics.chunksProcessed }}</span>
+          <span class="stat-lbl">Chunks Processed</span>
+        </div>
+        <div class="stat-item" *ngIf="jobStatistics.avgConfidence !== undefined">
+          <span class="stat-val">{{ (jobStatistics.avgConfidence * 100).toFixed(0) }}%</span>
+          <span class="stat-lbl">Avg Confidence</span>
+        </div>
+        <div class="stat-item" *ngIf="jobStatistics.totalTokens !== undefined">
+          <span class="stat-val">{{ jobStatistics.totalTokens }}</span>
+          <span class="stat-lbl">Tokens Used</span>
+        </div>
+        <div class="stat-item" *ngIf="jobStatistics.totalLatencyMs !== undefined">
+          <span class="stat-val">{{ (jobStatistics.totalLatencyMs / 1000).toFixed(1) }}s</span>
+          <span class="stat-lbl">Total Latency</span>
+        </div>
+      </div>
+    </div>
+    <div class="job-statistics-panel loading" *ngIf="selectedJob && jobStatsLoading">
+      Loading statistics...
+    </div>
   </div>
 
   <!-- Proposals View -->

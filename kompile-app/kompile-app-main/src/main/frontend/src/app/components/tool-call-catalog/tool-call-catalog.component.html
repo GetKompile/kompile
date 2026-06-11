@@ -1,0 +1,433 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="tool-call-catalog">
+  <!-- Stats Cards -->
+  <div class="stats-row" *ngIf="stats">
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.totalToolCalls }}</div>
+      <div class="stat-label">Total Calls</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.sessionCount }}</div>
+      <div class="stat-label">Sessions</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.totalErrors }}</div>
+      <div class="stat-label">Errors</div>
+    </div>
+    <div class="stat-card" *ngIf="stats.byTool">
+      <div class="stat-value">{{ (stats.byTool | keyvalue).length }}</div>
+      <div class="stat-label">Unique Tools</div>
+    </div>
+    <div class="stat-card" *ngIf="stats.byProject">
+      <div class="stat-value">{{ (stats.byProject | keyvalue).length }}</div>
+      <div class="stat-label">Projects</div>
+    </div>
+  </div>
+
+  <!-- Search Bar + Sort + View Mode -->
+  <div class="search-section">
+    <mat-form-field class="search-field" appearance="outline">
+      <mat-label>Search tool calls</mat-label>
+      <input matInput
+             [(ngModel)]="searchQuery"
+             (keyup.enter)="onSearch()"
+             placeholder="Search by tool name, input, category, project...">
+      <mat-icon matSuffix (click)="onSearch()" style="cursor: pointer">search</mat-icon>
+    </mat-form-field>
+
+    <!-- Sort controls -->
+    <mat-form-field class="sort-field" appearance="outline">
+      <mat-label>Sort by</mat-label>
+      <mat-select [(ngModel)]="sortBy" (selectionChange)="onSortChange()">
+        <mat-option *ngFor="let opt of sortOptions" [value]="opt.value">{{ opt.label }}</mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <button mat-icon-button (click)="toggleSortDir()" matTooltip="Sort {{ sortDir === 'desc' ? 'ascending' : 'descending' }}">
+      <mat-icon>{{ sortDir === 'desc' ? 'arrow_downward' : 'arrow_upward' }}</mat-icon>
+    </button>
+
+    <button mat-stroked-button (click)="clearFilters()" *ngIf="hasActiveFilters()">
+      <mat-icon>clear</mat-icon> Clear Filters
+    </button>
+
+    <button mat-stroked-button [matMenuTriggerFor]="indexMenu" [disabled]="indexing"
+            matTooltip="Index tool calls from provider transcripts">
+      <mat-icon>{{ indexing ? 'hourglass_empty' : 'sync' }}</mat-icon>
+      {{ indexing ? 'Indexing...' : 'Index Transcripts' }}
+    </button>
+    <mat-menu #indexMenu="matMenu">
+      <button mat-menu-item (click)="indexTranscripts('all', false)">
+        <mat-icon>sync</mat-icon> Index All Providers
+      </button>
+      <button mat-menu-item (click)="indexTranscripts('claude-code', false)">
+        <mat-icon>smart_toy</mat-icon> Index Claude
+      </button>
+      <button mat-menu-item (click)="indexTranscripts('codex', false)">
+        <mat-icon>code</mat-icon> Index Codex
+      </button>
+      <button mat-menu-item (click)="indexTranscripts('qwen', false)">
+        <mat-icon>memory</mat-icon> Index Qwen
+      </button>
+      <button mat-menu-item (click)="indexTranscripts('opencode', false)">
+        <mat-icon>developer_board</mat-icon> Index OpenCode
+      </button>
+      <button mat-menu-item (click)="indexTranscripts('gemini', false)">
+        <mat-icon>auto_awesome</mat-icon> Index Gemini
+      </button>
+      <mat-divider></mat-divider>
+      <button mat-menu-item (click)="indexTranscripts('all', true)">
+        <mat-icon>restart_alt</mat-icon> Re-index All (force)
+      </button>
+    </mat-menu>
+
+    <button mat-icon-button [matMenuTriggerFor]="viewMenu" matTooltip="View mode">
+      <mat-icon>{{ viewMode === 'table' ? 'view_list' : viewMode === 'cards' ? 'grid_view' : 'account_tree' }}</mat-icon>
+    </button>
+    <mat-menu #viewMenu="matMenu">
+      <button mat-menu-item (click)="setViewMode('table')">
+        <mat-icon>view_list</mat-icon> Table
+      </button>
+      <button mat-menu-item (click)="setViewMode('cards')">
+        <mat-icon>grid_view</mat-icon> Cards
+      </button>
+      <button mat-menu-item (click)="setViewMode('grouped')">
+        <mat-icon>account_tree</mat-icon> Grouped
+      </button>
+    </mat-menu>
+  </div>
+
+  <!-- Group By selector (only in grouped mode) -->
+  <div class="groupby-section" *ngIf="viewMode === 'grouped'">
+    <span class="filter-label">Group by:</span>
+    <mat-chip-listbox>
+      <mat-chip-option *ngFor="let opt of groupByOptions"
+              [selected]="groupBy === opt.value"
+              (click)="groupBy = opt.value; onGroupByChange()">
+        {{ opt.label }}
+      </mat-chip-option>
+    </mat-chip-listbox>
+  </div>
+
+  <!-- Filter Chips -->
+  <div class="filter-section">
+    <!-- Tool filter -->
+    <div class="filter-group" *ngIf="filterOptions?.toolNames?.length">
+      <span class="filter-label">Tool:</span>
+      <mat-chip-listbox>
+        <mat-chip-option *ngFor="let tool of filterOptions!.toolNames.slice(0, 15)"
+                [selected]="selectedTool === tool"
+                (click)="setToolFilter(tool)">
+          {{ tool }}
+        </mat-chip-option>
+      </mat-chip-listbox>
+    </div>
+
+    <!-- Category filter -->
+    <div class="filter-group" *ngIf="filterOptions?.categories?.length">
+      <span class="filter-label">Category:</span>
+      <mat-chip-listbox>
+        <mat-chip-option *ngFor="let cat of filterOptions!.categories"
+                [selected]="selectedCategory === cat"
+                (click)="setCategoryFilter(cat)">
+          <mat-icon class="chip-icon">{{ getCategoryIcon(cat) }}</mat-icon>
+          {{ cat }}
+        </mat-chip-option>
+      </mat-chip-listbox>
+    </div>
+
+    <!-- Source filter -->
+    <div class="filter-group" *ngIf="filterOptions?.sources?.length">
+      <span class="filter-label">Source:</span>
+      <mat-chip-listbox>
+        <mat-chip-option *ngFor="let src of filterOptions!.sources"
+                [selected]="selectedSource === src"
+                (click)="setSourceFilter(src)">
+          <span class="source-dot" [style.background]="getSourceColor(src)"></span>
+          {{ src }}
+        </mat-chip-option>
+      </mat-chip-listbox>
+    </div>
+
+    <!-- Agent filter -->
+    <div class="filter-group" *ngIf="filterOptions?.agents?.length">
+      <span class="filter-label">Agent:</span>
+      <mat-chip-listbox>
+        <mat-chip-option *ngFor="let ag of filterOptions!.agents"
+                [selected]="selectedAgent === ag"
+                (click)="setAgentFilter(ag)">
+          {{ ag }}
+        </mat-chip-option>
+      </mat-chip-listbox>
+    </div>
+
+    <!-- Project filter -->
+    <div class="filter-group" *ngIf="filterOptions?.projects?.length">
+      <span class="filter-label">Project:</span>
+      <mat-chip-listbox>
+        <mat-chip-option *ngFor="let proj of filterOptions!.projects"
+                [selected]="selectedProject === proj"
+                (click)="setProjectFilter(proj)">
+          <mat-icon class="chip-icon">folder_open</mat-icon>
+          {{ getProjectShortName(proj) }}
+        </mat-chip-option>
+      </mat-chip-listbox>
+    </div>
+  </div>
+
+  <!-- Index result banner -->
+  <div class="index-result" *ngIf="indexResult">
+    <mat-icon>check_circle</mat-icon>
+    Indexed {{ indexResult['toolCallsIndexed'] }} tool call(s) from {{ indexResult['sessionsScanned'] }} session(s).
+    <span *ngIf="indexResult['errors'] > 0" class="index-errors">{{ indexResult['errors'] }} error(s)</span>
+    <button mat-icon-button (click)="indexResult = null" class="dismiss-btn">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading-bar" *ngIf="loading">
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+  </div>
+
+  <!-- Results count -->
+  <div class="results-header" *ngIf="!loading">
+    <span class="results-count">{{ totalCount }} tool call(s) found</span>
+    <span class="page-info" *ngIf="totalPages > 1 && viewMode !== 'grouped'">
+      Page {{ page + 1 }} of {{ totalPages }}
+    </span>
+    <span class="page-info" *ngIf="viewMode === 'grouped' && groupedResult">
+      {{ groupedResult.totalGroups }} group(s)
+    </span>
+  </div>
+
+  <!-- Table View -->
+  <div class="results-table" *ngIf="viewMode === 'table' && results.length > 0">
+    <table mat-table [dataSource]="results" class="full-width-table">
+      <!-- Timestamp Column -->
+      <ng-container matColumnDef="timestamp">
+        <th mat-header-cell *matHeaderCellDef>Time</th>
+        <td mat-cell *matCellDef="let row">{{ formatTimestamp(row.timestamp) }}</td>
+      </ng-container>
+
+      <!-- Tool Name Column -->
+      <ng-container matColumnDef="toolName">
+        <th mat-header-cell *matHeaderCellDef>Tool</th>
+        <td mat-cell *matCellDef="let row">
+          <span class="tool-name" (click)="setToolFilter(row.toolName)">
+            {{ row.toolName }}
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Category Column -->
+      <ng-container matColumnDef="category">
+        <th mat-header-cell *matHeaderCellDef>Category</th>
+        <td mat-cell *matCellDef="let row">
+          <span class="category-badge" (click)="setCategoryFilter(row.category)">
+            <mat-icon class="category-icon">{{ getCategoryIcon(row.category) }}</mat-icon>
+            {{ row.category }}
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Summary Column -->
+      <ng-container matColumnDef="summary">
+        <th mat-header-cell *matHeaderCellDef>Input Summary</th>
+        <td mat-cell *matCellDef="let row">
+          <span class="summary-text">{{ row.toolInputSummary }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Project Column -->
+      <ng-container matColumnDef="project">
+        <th mat-header-cell *matHeaderCellDef>Project</th>
+        <td mat-cell *matCellDef="let row">
+          <span class="project-badge" *ngIf="row.projectDirectory"
+                (click)="setProjectFilter(row.projectDirectory)"
+                [matTooltip]="row.projectDirectory">
+            {{ getProjectShortName(row.projectDirectory) }}
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Source Column -->
+      <ng-container matColumnDef="source">
+        <th mat-header-cell *matHeaderCellDef>Source</th>
+        <td mat-cell *matCellDef="let row">
+          <span class="source-badge" [style.border-color]="getSourceColor(row.source)">
+            {{ row.source }}
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Agent Column -->
+      <ng-container matColumnDef="agent">
+        <th mat-header-cell *matHeaderCellDef>Agent</th>
+        <td mat-cell *matCellDef="let row">{{ row.agentName }}</td>
+      </ng-container>
+
+      <!-- Status Column -->
+      <ng-container matColumnDef="status">
+        <th mat-header-cell *matHeaderCellDef>Status</th>
+        <td mat-cell *matCellDef="let row">
+          <mat-icon *ngIf="row.isError" class="error-icon">error</mat-icon>
+          <mat-icon *ngIf="!row.isError" class="success-icon">check_circle</mat-icon>
+        </td>
+      </ng-container>
+
+      <!-- Expand Column -->
+      <ng-container matColumnDef="expand">
+        <th mat-header-cell *matHeaderCellDef></th>
+        <td mat-cell *matCellDef="let row">
+          <button mat-icon-button (click)="toggleExpand(row.id)" matTooltip="Show full input">
+            <mat-icon>{{ expandedId === row.id ? 'expand_less' : 'expand_more' }}</mat-icon>
+          </button>
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="['timestamp', 'toolName', 'category', 'summary', 'project', 'source', 'agent', 'status', 'expand']"></tr>
+      <tr mat-row *matRowDef="let row; columns: ['timestamp', 'toolName', 'category', 'summary', 'project', 'source', 'agent', 'status', 'expand']"
+          [class.expanded-row]="expandedId === row.id"
+          [class.error-row]="row.isError"></tr>
+    </table>
+
+    <!-- Expanded detail row -->
+    <div *ngFor="let row of results">
+      <div class="expanded-detail" *ngIf="expandedId === row.id">
+        <div class="detail-header">
+          <strong>{{ row.toolName }}</strong>
+          <span class="detail-meta">
+            Session: {{ row.sessionId }} | ID: {{ row.id }}
+            <span *ngIf="row.projectDirectory"> | Project: {{ row.projectDirectory }}</span>
+          </span>
+        </div>
+        <div class="detail-body">
+          <pre class="tool-input-json">{{ row.toolInput | json }}</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card View -->
+  <div class="results-cards" *ngIf="viewMode === 'cards' && results.length > 0">
+    <mat-card *ngFor="let row of results" class="tool-call-card" [class.error-card]="row.isError">
+      <mat-card-header>
+        <mat-icon mat-card-avatar class="card-category-icon">{{ getCategoryIcon(row.category) }}</mat-icon>
+        <mat-card-title>{{ row.toolName }}</mat-card-title>
+        <mat-card-subtitle>
+          {{ formatTimestamp(row.timestamp) }}
+          <span class="source-dot" [style.background]="getSourceColor(row.source)"></span>
+          {{ row.source }} / {{ row.agentName }}
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <p class="card-summary">{{ row.toolInputSummary }}</p>
+        <div class="card-badges">
+          <span class="category-badge" (click)="setCategoryFilter(row.category)">{{ row.category }}</span>
+          <span class="project-badge" *ngIf="row.projectDirectory"
+                (click)="setProjectFilter(row.projectDirectory)"
+                [matTooltip]="row.projectDirectory">
+            {{ getProjectShortName(row.projectDirectory) }}
+          </span>
+          <span class="session-badge">{{ row.sessionId }}</span>
+          <mat-icon *ngIf="row.isError" class="error-icon">error</mat-icon>
+        </div>
+      </mat-card-content>
+      <mat-card-actions>
+        <button mat-button (click)="toggleExpand(row.id)">
+          {{ expandedId === row.id ? 'Hide Input' : 'Show Input' }}
+        </button>
+      </mat-card-actions>
+      <div class="card-expanded" *ngIf="expandedId === row.id">
+        <pre class="tool-input-json">{{ row.toolInput | json }}</pre>
+      </div>
+    </mat-card>
+  </div>
+
+  <!-- Grouped View -->
+  <div class="results-grouped" *ngIf="viewMode === 'grouped' && groupedResult">
+    <div class="group-section" *ngFor="let groupKey of getGroupKeys()">
+      <div class="group-header">
+        <mat-icon *ngIf="groupBy === 'category'" class="group-icon">{{ getCategoryIcon(groupKey) }}</mat-icon>
+        <mat-icon *ngIf="groupBy === 'project'" class="group-icon">folder_open</mat-icon>
+        <mat-icon *ngIf="groupBy === 'agent'" class="group-icon">smart_toy</mat-icon>
+        <mat-icon *ngIf="groupBy === 'tool'" class="group-icon">build</mat-icon>
+        <mat-icon *ngIf="groupBy === 'source'" class="group-icon">source</mat-icon>
+        <mat-icon *ngIf="groupBy === 'session'" class="group-icon">chat</mat-icon>
+        <span class="group-title">{{ groupBy === 'project' ? getProjectShortName(groupKey) : groupKey }}</span>
+        <span class="group-count">{{ getGroupCount(groupKey) }} call(s)</span>
+        <span class="group-full-path" *ngIf="groupBy === 'project'" matTooltip="{{ groupKey }}">{{ groupKey }}</span>
+      </div>
+      <div class="group-entries">
+        <div class="group-entry" *ngFor="let row of getGroupEntries(groupKey)"
+             [class.error-row]="row.isError">
+          <span class="entry-time">{{ formatTimestamp(row.timestamp) }}</span>
+          <span class="tool-name" (click)="setToolFilter(row.toolName)">{{ row.toolName }}</span>
+          <span class="summary-text">{{ row.toolInputSummary }}</span>
+          <span class="source-badge" [style.border-color]="getSourceColor(row.source)">{{ row.source }}</span>
+          <span class="entry-agent">{{ row.agentName }}</span>
+          <mat-icon *ngIf="row.isError" class="error-icon">error</mat-icon>
+          <button mat-icon-button (click)="toggleExpand(row.id)" class="entry-expand">
+            <mat-icon>{{ expandedId === row.id ? 'expand_less' : 'expand_more' }}</mat-icon>
+          </button>
+        </div>
+        <!-- Expanded detail inside group -->
+        <div *ngFor="let row of getGroupEntries(groupKey)">
+          <div class="expanded-detail" *ngIf="expandedId === row.id">
+            <div class="detail-header">
+              <strong>{{ row.toolName }}</strong>
+              <span class="detail-meta">
+                Session: {{ row.sessionId }} | ID: {{ row.id }}
+                <span *ngIf="row.projectDirectory"> | Project: {{ row.projectDirectory }}</span>
+              </span>
+            </div>
+            <div class="detail-body">
+              <pre class="tool-input-json">{{ row.toolInput | json }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty grouped state -->
+    <div class="empty-state" *ngIf="getGroupKeys().length === 0 && !loading">
+      <mat-icon class="empty-icon">search_off</mat-icon>
+      <p>No groups found.</p>
+    </div>
+  </div>
+
+  <!-- Empty state (table/cards) -->
+  <div class="empty-state" *ngIf="!loading && viewMode !== 'grouped' && results.length === 0">
+    <mat-icon class="empty-icon">search_off</mat-icon>
+    <p>No tool calls found.</p>
+    <p class="empty-hint" *ngIf="hasActiveFilters()">Try clearing filters or adjusting your search query.</p>
+    <p class="empty-hint" *ngIf="!hasActiveFilters()">Tool calls from passthrough and emulated passthrough sessions will appear here once indexed.</p>
+  </div>
+
+  <!-- Pagination (table/cards only) -->
+  <div class="pagination" *ngIf="totalPages > 1 && viewMode !== 'grouped'">
+    <button mat-button [disabled]="page === 0" (click)="prevPage()">
+      <mat-icon>chevron_left</mat-icon> Previous
+    </button>
+    <span class="page-indicator">{{ page + 1 }} / {{ totalPages }}</span>
+    <button mat-button [disabled]="page >= totalPages - 1" (click)="nextPage()">
+      Next <mat-icon>chevron_right</mat-icon>
+    </button>
+  </div>
+</div>

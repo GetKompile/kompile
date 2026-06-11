@@ -561,9 +561,10 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         return switch (type) {
             case SOURCE -> 0;
             case DOCUMENT -> 1;
-            case ENTITY -> 2;
-            case CUSTOM -> 3;
-            case SNIPPET -> 4;
+            case TABLE -> 2;
+            case ENTITY -> 3;
+            case CUSTOM -> 4;
+            case SNIPPET -> 5;
         };
     }
 

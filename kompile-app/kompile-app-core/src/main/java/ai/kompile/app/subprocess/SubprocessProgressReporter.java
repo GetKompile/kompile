@@ -135,6 +135,21 @@ public class SubprocessProgressReporter implements AutoCloseable {
     }
 
     /**
+     * Report that the subprocess is ready to accept work.
+     * Should be called once after model loading and initialization complete.
+     *
+     * @param subprocessType  e.g. "embedding", "vector-population", "ingest"
+     * @param modelId         model identifier if applicable (null otherwise)
+     * @param modelDimension  embedding dimension if applicable (null otherwise)
+     */
+    public void reportReady(String subprocessType, String modelId, Integer modelDimension) {
+        long startupTimeMs = System.currentTimeMillis() - startTimeMs;
+        send(SubprocessMessage.ready(taskId, startupTimeMs, subprocessType, modelId, modelDimension));
+        logger.info("Reported READY: type={}, model={}, dimension={}, startupTime={}ms",
+                subprocessType, modelId, modelDimension, startupTimeMs);
+    }
+
+    /**
      * Report a phase transition.
      *
      * @param fromPhase Previous phase (null if starting)

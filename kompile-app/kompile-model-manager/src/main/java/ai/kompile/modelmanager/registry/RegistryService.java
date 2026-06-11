@@ -19,6 +19,8 @@ package ai.kompile.modelmanager.registry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -52,13 +54,22 @@ public class RegistryService {
     private long lastModified = -1;
 
     public RegistryService() {
-        this(Paths.get(System.getProperty("user.home"), ".kompile", "models"));
+        this(defaultModelDir());
+    }
+
+    @Autowired
+    public RegistryService(@Value("${kompile.staging.models-dir:${kompile.staging.model-dir:#{systemProperties['user.home'] + '/.kompile/models'}}}") String modelDir) {
+        this(Paths.get(modelDir));
     }
 
     public RegistryService(Path modelDir) {
         this.modelDir = modelDir;
         this.objectMapper = createObjectMapper();
         ensureDirectoryExists();
+    }
+
+    private static Path defaultModelDir() {
+        return Paths.get(System.getProperty("user.home"), ".kompile", "models");
     }
 
     public Path getModelsDir() {

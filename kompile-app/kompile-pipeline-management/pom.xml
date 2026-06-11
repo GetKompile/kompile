@@ -28,6 +28,18 @@
             <artifactId>kompile-pipelines-framework-runtime</artifactId>
         </dependency>
 
+        <!-- Model Manager (LLM/VLM pipeline definitions) -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-manager</artifactId>
+        </dependency>
+        <!-- Pipeline Serving (pipeline definitions) -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipeline-serving</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Spring Boot -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

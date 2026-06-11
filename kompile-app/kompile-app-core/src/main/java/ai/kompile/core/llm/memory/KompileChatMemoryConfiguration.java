@@ -18,9 +18,6 @@ package ai.kompile.core.llm.memory;
 
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -28,55 +25,23 @@ import org.springframework.context.annotation.Configuration;
  * Auto-configuration for Kompile chat memory components.
  * This configuration class automatically sets up chat memory beans when they are not
  * already defined in the application context.
- * 
+ *
  * <p>By default, it provides an in-memory implementation with a message window strategy.
  * Users can override these beans to provide custom implementations for different
  * storage backends or memory strategies.</p>
- * 
+ *
+ * <p>Configuration is read from {@code ~/.kompile/config/chat-memory-config.json}
+ * via {@link ChatMemoryConfigService}.</p>
+ *
  * @author Kompile Inc.
  * @since 1.0.0
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(KompileChatMemoryConfiguration.ChatMemoryProperties.class)
-@ConditionalOnProperty(prefix = "kompile.chat.memory", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class KompileChatMemoryConfiguration {
 
     /**
-     * Configuration properties for chat memory.
-     */
-    @ConfigurationProperties(prefix = "kompile.chat.memory")
-    public static class ChatMemoryProperties {
-        
-        /**
-         * Maximum number of messages to keep in the message window.
-         */
-        private int maxMessages = MessageWindowKompileChatMemory.DEFAULT_MAX_MESSAGES;
-        
-        /**
-         * Whether to enable chat memory functionality.
-         */
-        private boolean enabled = true;
-
-        public int getMaxMessages() {
-            return maxMessages;
-        }
-
-        public void setMaxMessages(int maxMessages) {
-            this.maxMessages = maxMessages;
-        }
-
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-    }
-
-    /**
      * Provides an in-memory chat memory repository if none is already configured.
-     * 
+     *
      * @return the in-memory repository
      */
     @Bean
@@ -87,26 +52,27 @@ public class KompileChatMemoryConfiguration {
 
     /**
      * Provides a message window chat memory implementation if none is already configured.
-     * 
-     * @param repository the chat memory repository
-     * @param properties the configuration properties
+     * Configuration is sourced from {@link ChatMemoryConfigService}.
+     *
+     * @param repository    the chat memory repository
+     * @param configService the JSON-based chat memory config service
      * @return the message window chat memory
      */
     @Bean
     @ConditionalOnMissingBean
     public KompileChatMemory kompileChatMemory(
             KompileChatMemoryRepository repository,
-            ChatMemoryProperties properties) {
+            ChatMemoryConfigService configService) {
         return MessageWindowKompileChatMemory.builder()
                 .repository(repository)
-                .maxMessages(properties.getMaxMessages())
+                .maxMessages(configService.getMaxMessages())
                 .build();
     }
 
     /**
      * Provides a Spring AI ChatMemory adapter for interoperability.
      * This allows Kompile's chat memory to work with Spring AI's ChatClient and advisors.
-     * 
+     *
      * @param kompileChatMemory the Kompile chat memory implementation
      * @return the Spring AI ChatMemory adapter
      */

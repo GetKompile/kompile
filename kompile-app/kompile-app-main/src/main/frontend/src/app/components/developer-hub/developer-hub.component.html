@@ -36,24 +36,32 @@
       <div class="tab-content section-content">
         <mat-tab-group class="inner-tabs">
           <mat-tab label="RAG Tester">
-            <div class="inner-tab-content">
-              <app-rag-tester></app-rag-tester>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-rag-tester></app-rag-tester>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Contextual RAG">
-            <div class="inner-tab-content">
-              <app-contextual-rag-debug></app-contextual-rag-debug>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-contextual-rag-debug></app-contextual-rag-debug>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Chunking & Loading Test">
-            <div class="inner-tab-content">
-              <app-chunking-loader-test></app-chunking-loader-test>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-chunking-loader-test></app-chunking-loader-test>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Passthrough Chat">
-            <div class="inner-tab-content">
-              <app-passthrough-chat></app-passthrough-chat>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-passthrough-chat></app-passthrough-chat>
+              </div>
+            </ng-template>
           </mat-tab>
         </mat-tab-group>
       </div>
@@ -68,24 +76,39 @@
       <div class="tab-content section-content">
         <mat-tab-group class="inner-tabs">
           <mat-tab label="OCR Debug">
-            <div class="inner-tab-content">
-              <app-ocr-debug></app-ocr-debug>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-ocr-debug></app-ocr-debug>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="VLM Test">
-            <div class="inner-tab-content">
-              <app-vlm-test-workflow></app-vlm-test-workflow>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-vlm-test-workflow></app-vlm-test-workflow>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Eval Debugger">
-            <div class="inner-tab-content">
-              <app-eval-debugger></app-eval-debugger>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-eval-debugger></app-eval-debugger>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Evaluation Sets">
-            <div class="inner-tab-content">
-              <app-managed-eval></app-managed-eval>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-managed-eval></app-managed-eval>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Experiments">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-experiments></app-experiments>
+              </div>
+            </ng-template>
           </mat-tab>
         </mat-tab-group>
       </div>
@@ -100,39 +123,109 @@
       <div class="tab-content section-content">
         <mat-tab-group class="inner-tabs">
           <mat-tab label="Ingest History">
-            <div class="inner-tab-content">
-              <app-ingest-history></app-ingest-history>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-ingest-history></app-ingest-history>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Resumable Jobs">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-job-resume></app-job-resume>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Processing Settings">
-            <div class="inner-tab-content">
-              <app-processing-settings></app-processing-settings>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-processing-settings></app-processing-settings>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Subprocess Config">
-            <div class="inner-tab-content">
-              <app-subprocess-config></app-subprocess-config>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-subprocess-config></app-subprocess-config>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Model & Staging">
-            <div class="inner-tab-content">
-              <app-model-staging></app-model-staging>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-model-staging></app-model-staging>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="VLM Management">
-            <div class="inner-tab-content">
-              <app-vlm-management></app-vlm-management>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-vlm-management></app-vlm-management>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="GPU Management">
-            <div class="inner-tab-content">
-              <app-gpu-management></app-gpu-management>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-gpu-management></app-gpu-management>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Job Scheduler">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-scheduler-dashboard></app-scheduler-dashboard>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Model Admission">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-model-admission></app-model-admission>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Pipeline Schedules">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-pipeline-schedules></app-pipeline-schedules>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Monitors">
-            <div class="inner-tab-content">
-              <app-monitors-manager></app-monitors-manager>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-monitors-manager></app-monitors-manager>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Enforcer">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-enforcer-dashboard></app-enforcer-dashboard>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Project Judge">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-project-enforcer-manager></app-project-enforcer-manager>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Training History">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-training-history></app-training-history>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Model Warmup &amp; Cache">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-model-warmup-cache></app-model-warmup-cache>
+              </div>
+            </ng-template>
           </mat-tab>
         </mat-tab-group>
       </div>
@@ -158,44 +251,81 @@
       <div class="tab-content section-content">
         <mat-tab-group class="inner-tabs" #systemInnerTabs>
           <mat-tab label="ND4J Environment">
-            <div class="inner-tab-content">
-              <app-nd4j-environment></app-nd4j-environment>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-nd4j-environment></app-nd4j-environment>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="ND4J Framework">
-            <div class="inner-tab-content">
-              <app-nd4j-framework></app-nd4j-framework>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-nd4j-framework></app-nd4j-framework>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Op Timing">
-            <div class="inner-tab-content">
-              <app-op-timing></app-op-timing>
-            </div>
-          </mat-tab>
-          <mat-tab label="Embedding Subprocess">
-            <div class="inner-tab-content">
-              <app-subprocess-logs logSource="embedding" height="500px" [maxLogs]="1000"></app-subprocess-logs>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-op-timing></app-op-timing>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Benchmark Runner">
-            <div class="inner-tab-content">
-              <app-benchmark-runner></app-benchmark-runner>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-benchmark-runner></app-benchmark-runner>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="System Diagnostics">
-            <div class="inner-tab-content">
-              <app-system-diagnostics></app-system-diagnostics>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-system-diagnostics></app-system-diagnostics>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="KV Cache">
-            <div class="inner-tab-content">
-              <app-kvcache-dashboard></app-kvcache-dashboard>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-kvcache-dashboard></app-kvcache-dashboard>
+              </div>
+            </ng-template>
           </mat-tab>
           <mat-tab label="Tool Permissions">
-            <div class="inner-tab-content">
-              <app-tool-permissions></app-tool-permissions>
-            </div>
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-tool-permissions></app-tool-permissions>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Model Scheduler">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-model-scheduler-panel></app-model-scheduler-panel>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Memory &amp; Watchdog">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-memory-watchdog></app-memory-watchdog>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="NDArray Lifecycle">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-lifecycle-tracking></app-lifecycle-tracking>
+              </div>
+            </ng-template>
+          </mat-tab>
+          <mat-tab label="Auto Configure">
+            <ng-template matTabContent>
+              <div class="inner-tab-content">
+                <app-auto-configure></app-auto-configure>
+              </div>
+            </ng-template>
           </mat-tab>
         </mat-tab-group>
       </div>

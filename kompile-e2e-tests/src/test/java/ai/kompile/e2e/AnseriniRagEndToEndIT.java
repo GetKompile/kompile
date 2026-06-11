@@ -8,7 +8,7 @@ import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.app.rag.RagServiceImpl;
 import ai.kompile.anserini.AnseriniDocumentRetrieverImpl;
-import ai.kompile.anserini.config.AnseriniConfig;
+import ai.kompile.anserini.config.AnseriniConfigService;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.e2e.fixtures.InMemoryEmbeddingModel;
 import ai.kompile.e2e.fixtures.SameDiffEncoderEmbeddingModel;
@@ -428,8 +428,7 @@ class AnseriniRagEndToEndIT {
             buildKeywordIndex(keywordIndexDir, createCorpusAsRetrievedDocs());
 
             // 2. Create real keyword retriever backed by SimpleSearcher
-            AnseriniConfig anseriniConfig = new AnseriniConfig();
-            anseriniConfig.setIndexPath(keywordIndexDir.toString());
+            AnseriniConfigService anseriniConfig = new AnseriniConfigService(keywordIndexDir.toString(), null);
 
             // Stub IndexerService that reports index available
             IndexerService stubIndexer = createStubIndexerService();
@@ -485,8 +484,7 @@ class AnseriniRagEndToEndIT {
         try {
             buildKeywordIndex(keywordIndexDir, createCorpusAsRetrievedDocs());
 
-            AnseriniConfig config = new AnseriniConfig();
-            config.setIndexPath(keywordIndexDir.toString());
+            AnseriniConfigService config = new AnseriniConfigService(keywordIndexDir.toString(), null);
 
             AnseriniDocumentRetrieverImpl keywordRetriever =
                     new AnseriniDocumentRetrieverImpl(config, List.of(createStubIndexerService()));
@@ -531,8 +529,7 @@ class AnseriniRagEndToEndIT {
             List<RetrievedDoc> corpusDocs = createCorpusAsRetrievedDocs();
             buildKeywordIndex(keywordIndexDir, corpusDocs);
 
-            AnseriniConfig config = new AnseriniConfig();
-            config.setIndexPath(keywordIndexDir.toString());
+            AnseriniConfigService config = new AnseriniConfigService(keywordIndexDir.toString(), null);
 
             AnseriniDocumentRetrieverImpl keywordRetriever =
                     new AnseriniDocumentRetrieverImpl(config, List.of(createStubIndexerService()));
@@ -577,8 +574,7 @@ class AnseriniRagEndToEndIT {
         try {
             buildKeywordIndex(keywordIndexDir, createCorpusAsRetrievedDocs());
 
-            AnseriniConfig config = new AnseriniConfig();
-            config.setIndexPath(keywordIndexDir.toString());
+            AnseriniConfigService config = new AnseriniConfigService(keywordIndexDir.toString(), null);
 
             AnseriniDocumentRetrieverImpl keywordRetriever =
                     new AnseriniDocumentRetrieverImpl(config, List.of(createStubIndexerService()));
@@ -913,8 +909,7 @@ class AnseriniRagEndToEndIT {
             try {
                 buildKeywordIndex(kwDir, createCorpusAsRetrievedDocs());
 
-                AnseriniConfig config = new AnseriniConfig();
-                config.setIndexPath(kwDir.toString());
+                AnseriniConfigService config = new AnseriniConfigService(kwDir.toString(), null);
 
                 AnseriniDocumentRetrieverImpl kwRetriever =
                         new AnseriniDocumentRetrieverImpl(config, List.of(createStubIndexerService()));

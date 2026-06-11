@@ -34,6 +34,13 @@
         Runs separately from the main RAG app to keep it lightweight and GraalVM-compatible.</description>
 
     <dependencies>
+        <!-- Core interfaces and shared types -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Spring Boot Web for REST API -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -312,7 +319,7 @@
                                 </goals>
                                 <phase>prepare-package</phase>
                                 <configuration>
-                                    <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
+                                    <outputDirectory>${project.build.outputDirectory}/static/model-staging</outputDirectory>
                                     <resources>
                                         <resource>
                                             <directory>src/main/frontend/dist/model-staging-frontend/browser</directory>
@@ -328,7 +335,7 @@
                                 </goals>
                                 <phase>prepare-package</phase>
                                 <configuration>
-                                    <outputDirectory>${project.basedir}/src/main/resources/static</outputDirectory>
+                                    <outputDirectory>${project.basedir}/src/main/resources/static/model-staging</outputDirectory>
                                     <resources>
                                         <resource>
                                             <directory>src/main/frontend/dist/model-staging-frontend/browser</directory>

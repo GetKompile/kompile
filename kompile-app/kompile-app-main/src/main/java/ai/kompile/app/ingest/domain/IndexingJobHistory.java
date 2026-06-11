@@ -413,6 +413,34 @@ public class IndexingJobHistory {
 
     // ===================== METADATA =====================
 
+    // ===================== CHECKPOINT / RESUME =====================
+
+    /**
+     * Path to the checkpoint file for resumable jobs.
+     */
+    @Column(length = 1024)
+    private String checkpointPath;
+
+    /**
+     * The phase from which this job can be resumed.
+     */
+    @Column(length = 32)
+    @Enumerated(EnumType.STRING)
+    private IngestEvent.IngestPhase resumeFromPhase;
+
+    /**
+     * Whether this job is resumable.
+     */
+    @Column
+    @Builder.Default
+    private boolean resumable = false;
+
+    /**
+     * If this job was resumed from another, the original task ID.
+     */
+    @Column(length = 64)
+    private String resumedFromTaskId;
+
     /**
      * Additional details as JSON (extensible).
      */
@@ -588,6 +616,31 @@ public class IndexingJobHistory {
         this.errorMessage = String.format("Job killed: memory usage %.1f%% exceeded threshold", memoryPercent);
         this.memoryUsagePercentAtEnd = memoryPercent;
         finalizeJob();
+    }
+
+    /**
+     * Pause the job at the given phase and record the checkpoint path.
+     * The job status is set to PAUSED and the resumeFromPhase is set for later resume.
+     */
+    public void markPaused(IngestEvent.IngestPhase currentPhase, String checkpointPath) {
+        this.status = JobStatus.PAUSED;
+        this.lastPhase = currentPhase;
+        this.resumeFromPhase = currentPhase;
+        this.checkpointPath = checkpointPath;
+    }
+
+    /**
+     * Returns true if this job can be resumed from a checkpoint.
+     * A job is resumable if it is in a terminal or paused state and has a checkpoint path.
+     */
+    public boolean isResumable() {
+        if (this.checkpointPath == null || this.checkpointPath.isBlank()) {
+            return false;
+        }
+        return this.status == JobStatus.FAILED
+                || this.status == JobStatus.MEMORY_KILLED
+                || this.status == JobStatus.CANCELLED
+                || this.status == JobStatus.PAUSED;
     }
 
     /**

@@ -1,0 +1,1254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Workflow Designer & Agent Dashboard — Northstar Goods FP&A</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f5f5f5;
+    --surface-sunken: #ededed;
+    --text: #1a1a1a;
+    --text-secondary: #5a5a5a;
+    --text-tertiary: #858585;
+    --border: rgba(0,0,0,0.12);
+    --border-strong: rgba(0,0,0,0.25);
+    --accent: #DC143C;
+    --accent-bg: #FCE5EA;
+
+    --gray-50: #F1EFE8; --gray-600: #5F5E5A; --gray-800: #444441;
+    --blue-50: #E6F1FB; --blue-600: #185FA5; --blue-800: #0C447C;
+    --amber-50: #FAEEDA; --amber-600: #854F0B; --amber-800: #633806;
+    --green-50: #EAF3DE; --green-600: #3B6D11; --green-800: #27500A;
+    --purple-50: #EEEDFE; --purple-600: #534AB7; --purple-800: #3C3489;
+    --coral-50: #FAECE7; --coral-600: #993C1D; --coral-800: #712B13;
+    --teal-50: #E1F5EE; --teal-600: #0F6E56; --teal-800: #085041;
+    --red-50: #FBE9E7; --red-600: #B43124; --red-800: #821E13;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --surface: #1a1a1a;
+      --surface-hover: #262626;
+      --surface-sunken: #0d0d0d;
+      --text: #f5f5f5;
+      --text-secondary: #a8a8a8;
+      --text-tertiary: #707070;
+      --border: rgba(255,255,255,0.12);
+      --border-strong: rgba(255,255,255,0.25);
+      --accent: #F08197;
+      --accent-bg: rgba(220,20,60,0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 28px 0;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  .header-inner { max-width: 1500px; margin: 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: end; }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .logo-mark {
+    width: 22px; height: 22px; border-radius: 5px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--purple-600) 100%);
+    flex-shrink: 0;
+  }
+  .logo-text { font-size: 12px; color: var(--text-tertiary); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+  .logo-slash {
+    font-family: inherit;
+    font-weight: 800;
+    color: var(--accent);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+  .logo-wordmark {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: -4px;
+  }
+  .logo-divider { color: var(--text-tertiary); margin: 0 4px; font-size: 12px; }
+  .logo-context {
+    font-size: 12px; color: var(--text-tertiary);
+    font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin: 0; }
+  .sub { font-size: 13px; color: var(--text-secondary); margin: 2px 0 14px; }
+
+  .tabs { display: flex; gap: 2px; }
+  .tab {
+    padding: 10px 18px; background: transparent;
+    border: none; border-bottom: 2px solid transparent;
+    font: inherit; font-size: 14px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-weight: 500;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  main { max-width: 1500px; margin: 0 auto; padding: 24px 28px; }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* ---------- DESIGNER ---------- */
+  .designer-wrap {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 16px;
+    height: calc(100vh - 200px);
+    min-height: 720px;
+  }
+  @media (max-width: 1100px) {
+    .designer-wrap { grid-template-columns: 1fr; height: auto; }
+  }
+
+  .canvas-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .canvas-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-sunken);
+    font-size: 13px;
+  }
+  .toolbar-spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 12px;
+    font-size: 12px; font-weight: 500;
+  }
+  .pill.draft { background: var(--amber-50); color: var(--amber-800); }
+  .pill.review { background: var(--blue-50); color: var(--blue-800); }
+  .pill.live { background: var(--green-50); color: var(--green-800); }
+  .pill::before {
+    content: '';
+    width: 6px; height: 6px; border-radius: 50%;
+  }
+  .pill.draft::before { background: var(--amber-600); }
+  .pill.review::before { background: var(--blue-600); }
+  .pill.live::before { background: var(--green-600); }
+
+  .btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--surface-hover); }
+  .btn.primary { background: var(--accent); color: white; border-color: var(--accent); }
+  @media (prefers-color-scheme: dark) { .btn.primary { color: #0C1F3A; } }
+  .btn.primary:hover { opacity: 0.9; background: var(--accent); }
+
+  .canvas {
+    flex: 1;
+    overflow: auto;
+    background: var(--bg);
+    background-image:
+      radial-gradient(circle, var(--border) 0.5px, transparent 0.5px),
+      radial-gradient(circle, var(--border) 0.5px, transparent 0.5px);
+    background-size: 20px 20px;
+    background-position: 0 0, 10px 10px;
+    position: relative;
+    padding: 24px;
+  }
+  .canvas svg { display: block; }
+
+  /* Workflow node */
+  .wf-node {
+    cursor: pointer;
+  }
+  .wf-node rect.body { fill: var(--surface); stroke: var(--border); stroke-width: 1; rx: 8; }
+  .wf-node:hover rect.body { stroke: var(--accent); stroke-width: 1.5; }
+  .wf-node.selected rect.body { stroke: var(--accent); stroke-width: 2; }
+  .wf-node text.title { font-size: 12.5px; font-weight: 500; fill: var(--text); }
+  .wf-node text.sub { font-size: 11px; fill: var(--text-secondary); }
+  .wf-node text.id { font-size: 10px; fill: var(--text-tertiary); letter-spacing: 0.05em; text-transform: uppercase; }
+  .wf-node circle.dot { stroke-width: 0; }
+
+  .wf-node.t-auto rect.body { background: var(--surface); }
+  .wf-node.t-auto rect.tag { fill: var(--green-50); stroke: var(--green-600); stroke-width: 0; }
+  .wf-node.t-auto text.tag { fill: var(--green-800); font-size: 10px; font-weight: 500; }
+
+  .wf-node.t-approve rect.tag { fill: var(--amber-50); stroke: var(--amber-600); stroke-width: 0; }
+  .wf-node.t-approve text.tag { fill: var(--amber-800); font-size: 10px; font-weight: 500; }
+
+  .wf-node.t-human rect.tag { fill: var(--purple-50); stroke: var(--purple-600); stroke-width: 0; }
+  .wf-node.t-human text.tag { fill: var(--purple-800); font-size: 10px; font-weight: 500; }
+
+  .wf-node.t-control rect.tag { fill: var(--coral-50); stroke: var(--coral-600); stroke-width: 0; }
+  .wf-node.t-control text.tag { fill: var(--coral-800); font-size: 10px; font-weight: 500; }
+
+  .wf-arrow { stroke: var(--text-secondary); fill: none; stroke-width: 1.2; }
+  .wf-arrow.exception { stroke: var(--coral-600); stroke-dasharray: 4 3; }
+
+  .wf-lane-label {
+    font-size: 11px;
+    fill: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .wf-lane-divider { stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 4 4; }
+
+  /* Right panel */
+  .properties {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: auto;
+    padding: 20px 22px;
+    font-size: 13.5px;
+  }
+  .prop-section { margin-bottom: 20px; }
+  .prop-section h4 {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin: 0 0 8px;
+    font-weight: 500;
+  }
+  .prop-step-id {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+  .prop-step-title { font-size: 17px; font-weight: 500; margin: 0 0 4px; }
+  .prop-step-sub { color: var(--text-secondary); margin: 0 0 16px; font-size: 13px; }
+
+  .prop-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .prop-row:last-of-type { border-bottom: none; }
+  .prop-row .lbl { color: var(--text-tertiary); }
+  .prop-row .val { color: var(--text); }
+  .prop-row code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--text-secondary); }
+
+  .seg {
+    display: inline-flex;
+    background: var(--surface-sunken);
+    border-radius: 6px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .seg button {
+    background: transparent;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 12px;
+  }
+  .seg button.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+
+  .evidence-mini { margin-top: 6px; font-size: 12.5px; color: var(--text-secondary); }
+  .ev-tag {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 7px; border-radius: 4px;
+    font-size: 11.5px; font-weight: 500;
+    margin-right: 4px;
+    border: 1px solid;
+  }
+  .ev-tag.doc { background: var(--blue-50); color: var(--blue-800); border-color: rgba(24,95,165,0.2); }
+  .ev-tag.xls { background: var(--green-50); color: var(--green-800); border-color: rgba(59,109,17,0.2); }
+  .ev-tag.rec { background: var(--coral-50); color: var(--coral-800); border-color: rgba(153,60,29,0.2); }
+  .ev-tag.int { background: var(--purple-50); color: var(--purple-800); border-color: rgba(83,74,183,0.2); }
+
+  .review-banner {
+    background: var(--blue-50);
+    border: 1px solid rgba(24,95,165,0.2);
+    color: var(--blue-800);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 16px;
+    align-items: center;
+  }
+  @media (prefers-color-scheme: dark) {
+    .review-banner { background: rgba(133,183,235,0.10); color: #BEDDF6; }
+  }
+  .review-banner strong { font-weight: 600; }
+
+  /* ---------- DASHBOARD ---------- */
+  .dash-grid {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  @media (max-width: 1100px) {
+    .dash-grid { grid-template-columns: 1fr; }
+  }
+
+  .dash-hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 24px;
+  }
+  .dash-hero-head {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 16px;
+    align-items: start;
+    margin-bottom: 18px;
+  }
+  .dash-run-id { font-size: 12px; color: var(--text-tertiary); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px; }
+  .dash-run-title { font-size: 18px; font-weight: 500; margin: 0; }
+  .dash-run-meta { font-size: 12.5px; color: var(--text-secondary); margin-top: 6px; }
+
+  .dash-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 16px;
+    background: var(--green-50);
+    color: var(--green-800);
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  .dash-status::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green-600);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .kpi {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .kpi-num { font-size: 22px; font-weight: 500; line-height: 1.1; }
+  .kpi-lbl { font-size: 11px; color: var(--text-tertiary); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .kpi-trend { font-size: 11.5px; color: var(--green-800); margin-top: 4px; }
+  @media (prefers-color-scheme: dark) { .kpi-trend { color: #B7E07A; } }
+
+  /* SLA bar */
+  .sla {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+  }
+  .sla-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; margin-bottom: 6px; }
+  .sla-bar { height: 6px; background: var(--border); border-radius: 3px; position: relative; overflow: visible; }
+  .sla-fill { height: 100%; background: var(--green-600); border-radius: 3px; }
+  .sla-target { position: absolute; top: -4px; height: 14px; width: 2px; background: var(--text-secondary); }
+  .sla-mark {
+    font-size: 10.5px; color: var(--text-tertiary);
+    position: absolute; top: -22px; transform: translateX(-50%);
+  }
+
+  /* Step timeline */
+  .timeline-steps {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 22px;
+  }
+  .timeline-steps h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
+  .timeline-steps p.lead { margin: 0 0 14px; font-size: 12.5px; color: var(--text-secondary); }
+
+  .ts-row {
+    display: grid;
+    grid-template-columns: 22px 80px 1fr 110px 90px;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 0;
+    font-size: 12.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ts-row:last-child { border-bottom: none; }
+  .ts-icon {
+    width: 18px; height: 18px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 500;
+  }
+  .ts-icon.done { background: var(--green-600); color: white; }
+  .ts-icon.live { background: var(--accent); color: white; animation: pulse 1.6s ease-in-out infinite; }
+  .ts-icon.wait { background: var(--surface-sunken); color: var(--text-tertiary); border: 1px dashed var(--border-strong); }
+  .ts-icon.flag { background: var(--amber-600); color: white; }
+  @media (prefers-color-scheme: dark) { .ts-icon.live { color: #0C1F3A; } }
+  .ts-id { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--text-tertiary); }
+  .ts-name { color: var(--text); }
+  .ts-name .sub { color: var(--text-secondary); font-size: 11.5px; margin-left: 6px; }
+  .ts-actor { font-size: 11px; padding: 2px 8px; border-radius: 4px; text-align: center; }
+  .ts-actor.agent { background: var(--blue-50); color: var(--blue-800); }
+  .ts-actor.human { background: var(--purple-50); color: var(--purple-800); }
+  .ts-actor.system { background: var(--gray-50); color: var(--gray-800); }
+  .ts-time { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--text-secondary); text-align: right; }
+
+  /* Right column — exceptions + activity */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .panel h3 { margin: 0 0 4px; font-size: 14px; font-weight: 500; }
+  .panel p.lead { margin: 0 0 12px; font-size: 12px; color: var(--text-secondary); }
+
+  .ex-item {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: start;
+  }
+  .ex-item:last-child { margin-bottom: 0; }
+  .ex-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-top: 6px;
+  }
+  .ex-dot.med { background: var(--amber-600); }
+  .ex-dot.high { background: var(--coral-600); }
+  .ex-name { font-size: 13px; font-weight: 500; margin-bottom: 2px; }
+  .ex-detail { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  .ex-actions { display: flex; gap: 6px; }
+  .ex-btn {
+    font-size: 11.5px; padding: 4px 10px; border-radius: 4px;
+    border: 1px solid var(--border); background: var(--surface);
+    cursor: pointer; color: var(--text); font: inherit;
+  }
+  .ex-btn:hover { background: var(--surface-hover); }
+  .ex-btn.primary { background: var(--accent-bg); color: var(--accent); border-color: transparent; }
+
+  .activity-row {
+    display: grid;
+    grid-template-columns: 50px 1fr;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .activity-row:last-child { border-bottom: none; }
+  .activity-time { font-family: ui-monospace, Menlo, monospace; color: var(--text-tertiary); font-size: 10.5px; }
+  .activity-msg { color: var(--text-secondary); line-height: 1.45; }
+  .activity-msg .ag {
+    font-weight: 500; color: var(--accent);
+  }
+  .activity-msg code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px;
+    background: var(--surface-sunken);
+    padding: 1px 5px; border-radius: 3px;
+  }
+
+  /* Audit log */
+  .audit-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-top: 16px;
+  }
+  .audit-card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
+  .audit-card p.lead { margin: 0 0 14px; font-size: 12.5px; color: var(--text-secondary); }
+  .audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .audit-table th {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+  }
+  .audit-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+    vertical-align: top;
+  }
+  .audit-table tr:last-child td { border-bottom: none; }
+  .audit-table .actor { font-weight: 500; color: var(--text); }
+  .audit-table code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px;
+    background: var(--surface-sunken);
+    padding: 1px 5px; border-radius: 3px;
+  }
+
+  footer {
+    max-width: 1500px;
+    margin: 0 auto;
+    padding: 24px 28px 48px;
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div>
+      <div class="logo-row">
+          <span class="logo-slash">//</span>
+      <span class="logo-wordmark">PROSSIMO</span>
+      <span class="logo-divider">·</span>
+      <span class="logo-context">Workflow Designer + Run Dashboard</span>
+      </div>
+      <h1>Northstar Goods — 3-Month P&amp;L Projection</h1>
+      <p class="sub">Review &amp; approve the proposed workflow, then watch agents execute it. The designer is the human-in-the-loop checkpoint between discovery and production.</p>
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-view="designer" role="tab">Workflow Designer</button>
+        <button class="tab" data-view="dashboard" role="tab">Agent Run Dashboard</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ========== DESIGNER ========== -->
+<section class="view active" id="view-designer">
+
+  <div class="review-banner">
+    <div>
+      <strong>Workflow draft v0.4 — ready for human review.</strong> Synthesized from process discovery. 14 steps · 9 fully automatable · 3 require approval · 2 stay human. <strong>Pilot scope</strong> covers steps 1.1–2.3 only; steps 3+ are mapped but not yet activated.
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn">Run dry-run</button>
+      <button class="btn primary">Approve &amp; deploy</button>
+    </div>
+  </div>
+
+  <div class="designer-wrap">
+
+    <div class="canvas-card">
+      <div class="canvas-toolbar">
+        <span class="pill review">In review</span>
+        <span style="color: var(--text-tertiary); font-size: 12.5px;">v0.4 · last edited by M. Chen · 09:42 May 7</span>
+        <div class="toolbar-spacer"></div>
+        <span class="seg">
+          <button class="active">Layout</button>
+          <button>Triggers</button>
+          <button>Errors</button>
+          <button>Roles</button>
+        </span>
+        <button class="btn">+ Add step</button>
+      </div>
+
+      <div class="canvas">
+        <svg viewBox="0 0 1200 720" xmlns="http://www.w3.org/2000/svg" style="width: 100%; min-height: 700px;">
+          <!-- Lane labels -->
+          <text x="20" y="30" class="wf-lane-label">Phase 1 · Inputs &amp; intake</text>
+          <text x="20" y="200" class="wf-lane-label">Phase 2 · Validate &amp; reconcile</text>
+          <text x="20" y="370" class="wf-lane-label">Phase 3 · Project &amp; consolidate</text>
+          <text x="20" y="540" class="wf-lane-label">Phase 4 · Review &amp; publish</text>
+
+          <line x1="0" y1="178" x2="1200" y2="178" class="wf-lane-divider"/>
+          <line x1="0" y1="348" x2="1200" y2="348" class="wf-lane-divider"/>
+          <line x1="0" y1="518" x2="1200" y2="518" class="wf-lane-divider"/>
+
+          <defs>
+            <marker id="wf-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 Z" fill="var(--text-secondary)"/>
+            </marker>
+            <marker id="wf-arr-ex" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0,0 L10,5 L0,10 Z" fill="var(--coral-600)"/>
+            </marker>
+          </defs>
+
+          <!-- Phase 1 nodes -->
+          <g class="wf-node t-auto" data-step="1.1" transform="translate(40, 50)">
+            <rect class="body" width="180" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 1.1 · auto</text>
+            <rect class="tag" x="124" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="146" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">Pull NetSuite TB</text>
+            <text class="sub" x="14" y="66">Saved search export</text>
+            <text class="sub" x="14" y="82" fill="var(--green-800)">conf 0.97 · 4 sources</text>
+          </g>
+
+          <g class="wf-node t-auto" data-step="1.2" transform="translate(240, 50)">
+            <rect class="body" width="180" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 1.2 · auto</text>
+            <rect class="tag" x="124" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="146" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">Pull Shopify + Amazon</text>
+            <text class="sub" x="14" y="66">SP-API + Admin API</text>
+            <text class="sub" x="14" y="82" fill="var(--green-800)">conf 0.95 · 3 sources</text>
+          </g>
+
+          <g class="wf-node t-auto" data-step="1.3" transform="translate(440, 50)">
+            <rect class="body" width="180" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 1.3 · auto</text>
+            <rect class="tag" x="124" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="146" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">Pull FX forward curve</text>
+            <text class="sub" x="14" y="66">Treasury · ECB cross-check</text>
+            <text class="sub" x="14" y="82" fill="var(--green-800)">conf 0.98 · 4 sources</text>
+          </g>
+
+          <g class="wf-node t-auto" data-step="1.4" transform="translate(640, 50)">
+            <rect class="body" width="180" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 1.4 · auto + watcher</text>
+            <rect class="tag" x="124" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="146" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">Receive 3 forecasts</text>
+            <text class="sub" x="14" y="66">Folder watcher · self-heal</text>
+            <text class="sub" x="14" y="82" fill="var(--green-800)">conf 0.94 · 4 sources</text>
+          </g>
+
+          <g class="wf-node t-auto" data-step="1.5" transform="translate(840, 50)">
+            <rect class="body" width="180" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 1.5 · auto</text>
+            <rect class="tag" x="124" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="146" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">Workday + Salesforce</text>
+            <text class="sub" x="14" y="66">Roster · pipeline snapshot</text>
+            <text class="sub" x="14" y="82" fill="var(--green-800)">conf 0.96 · 3 sources</text>
+          </g>
+
+          <!-- Phase 2 -->
+          <g class="wf-node t-approve" data-step="2.1" transform="translate(140, 220)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 2.1 · auto + HITL</text>
+            <rect class="tag" x="148" y="10" width="60" height="18" rx="4"/>
+            <text class="tag" x="178" y="22.5" text-anchor="middle">APPROVE</text>
+            <text class="title" x="14" y="48">Validate + triage variances</text>
+            <text class="sub" x="14" y="66">Auto-fix 4 known patterns</text>
+            <text class="sub" x="14" y="82" fill="var(--amber-800)">unknown variances → human</text>
+          </g>
+
+          <g class="wf-node t-control" data-step="2.2" transform="translate(420, 220)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 2.2 · control</text>
+            <rect class="tag" x="148" y="10" width="60" height="18" rx="4"/>
+            <text class="tag" x="178" y="22.5" text-anchor="middle">CONTROL</text>
+            <text class="title" x="14" y="48">Pipeline reconciliation</text>
+            <text class="sub" x="14" y="66">Coverage band 1.4×–2.2×</text>
+            <text class="sub" x="14" y="82" fill="var(--amber-800)">conf 0.78 · gap on band</text>
+          </g>
+
+          <g class="wf-node t-auto" data-step="2.3" transform="translate(700, 220)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 2.3 · auto</text>
+            <rect class="tag" x="164" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="186" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">FX-translate to USD</text>
+            <text class="sub" x="14" y="66">Forward curve + hedges</text>
+            <text class="sub" x="14" y="82" fill="var(--green-800)">conf 0.99 · all sources</text>
+          </g>
+
+          <g class="wf-node t-control" data-step="2.4" transform="translate(980, 220)">
+            <rect class="body" width="200" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Gate · controls</text>
+            <rect class="tag" x="144" y="10" width="60" height="18" rx="4"/>
+            <text class="tag" x="174" y="22.5" text-anchor="middle">CONTROL</text>
+            <text class="title" x="14" y="48">Phase 1–2 controls fired</text>
+            <text class="sub" x="14" y="66">C-01..C-04 must pass</text>
+            <text class="sub" x="14" y="82" fill="var(--coral-800)">stop on failure</text>
+          </g>
+
+          <!-- Phase 3 -->
+          <g class="wf-node t-auto" data-step="3.1" transform="translate(140, 390)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 3.1 · auto (planned)</text>
+            <rect class="tag" x="164" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="186" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">Project COGS</text>
+            <text class="sub" x="14" y="66">Std cost × volumes</text>
+            <text class="sub" x="14" y="82" fill="var(--text-tertiary)">post-pilot scope</text>
+          </g>
+
+          <g class="wf-node t-approve" data-step="3.2" transform="translate(420, 390)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 3.2 · auto + HITL</text>
+            <rect class="tag" x="148" y="10" width="60" height="18" rx="4"/>
+            <text class="tag" x="178" y="22.5" text-anchor="middle">APPROVE</text>
+            <text class="title" x="14" y="48">Roll-forward OpEx</text>
+            <text class="sub" x="14" y="66">+ headcount comp</text>
+            <text class="sub" x="14" y="82" fill="var(--amber-800)">attrition rule unresolved</text>
+          </g>
+
+          <g class="wf-node t-human" data-step="3.3" transform="translate(700, 390)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 3.3 · human</text>
+            <rect class="tag" x="156" y="10" width="50" height="18" rx="4"/>
+            <text class="tag" x="181" y="22.5" text-anchor="middle">HUMAN</text>
+            <text class="title" x="14" y="48">IC eliminations</text>
+            <text class="sub" x="14" y="66">Manual override pattern</text>
+            <text class="sub" x="14" y="82" fill="var(--purple-800)">L. Okafor (Controller)</text>
+          </g>
+
+          <g class="wf-node t-auto" data-step="3.4" transform="translate(980, 390)">
+            <rect class="body" width="200" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 3.4 · auto</text>
+            <rect class="tag" x="144" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="166" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">Consolidate group</text>
+            <text class="sub" x="14" y="66">Sum entities · 3-mo view</text>
+            <text class="sub" x="14" y="82" fill="var(--green-800)">conf 0.92</text>
+          </g>
+
+          <!-- Phase 4 -->
+          <g class="wf-node t-auto" data-step="4.1" transform="translate(140, 560)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 4.1 · auto-draft</text>
+            <rect class="tag" x="148" y="10" width="60" height="18" rx="4"/>
+            <text class="tag" x="178" y="22.5" text-anchor="middle">APPROVE</text>
+            <text class="title" x="14" y="48">Variance commentary</text>
+            <text class="sub" x="14" y="66">Drafted, human-edited</text>
+            <text class="sub" x="14" y="82" fill="var(--amber-800)">conf 0.85 · house-style match</text>
+          </g>
+
+          <g class="wf-node t-human" data-step="4.2" transform="translate(420, 560)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 4.2 · human</text>
+            <rect class="tag" x="156" y="10" width="50" height="18" rx="4"/>
+            <text class="tag" x="181" y="22.5" text-anchor="middle">HUMAN</text>
+            <text class="title" x="14" y="48">Controller + CFO sign-off</text>
+            <text class="sub" x="14" y="66">Two-stage approval</text>
+            <text class="sub" x="14" y="82" fill="var(--purple-800)">always human</text>
+          </g>
+
+          <g class="wf-node t-auto" data-step="4.3" transform="translate(700, 560)">
+            <rect class="body" width="220" height="100" rx="10"/>
+            <text class="id" x="14" y="22">Step 4.3 · auto</text>
+            <rect class="tag" x="164" y="10" width="44" height="18" rx="4"/>
+            <text class="tag" x="186" y="22.5" text-anchor="middle">AUTO</text>
+            <text class="title" x="14" y="48">Publish + archive</text>
+            <text class="sub" x="14" y="66">Looker · S3 · audit log</text>
+            <text class="sub" x="14" y="82" fill="var(--green-800)">conf 0.97</text>
+          </g>
+
+          <!-- Arrows: Phase 1 -> Phase 2 -->
+          <path class="wf-arrow" d="M 130,150 L 200,220" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 330,150 L 250,220" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 530,150 L 810,220" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 730,150 L 250,220" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 930,150 L 530,220" marker-end="url(#wf-arr)"/>
+
+          <path class="wf-arrow" d="M 360,270 L 420,270" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 640,270 L 700,270" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 920,270 L 980,270" marker-end="url(#wf-arr)"/>
+
+          <!-- Exception arrows -->
+          <path class="wf-arrow exception" d="M 250,320 L 250,360 Q 250,380 280,388" marker-end="url(#wf-arr-ex)"/>
+          <text x="190" y="378" font-size="10" fill="var(--coral-800)">unknown variance</text>
+
+          <path class="wf-arrow" d="M 1080,320 L 1080,360 L 250,388" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 1080,320 L 1080,360 L 530,388" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 1080,320 L 1080,360 L 1080,388" marker-end="url(#wf-arr)"/>
+
+          <!-- Phase 3 internal -->
+          <path class="wf-arrow" d="M 360,440 L 420,440" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 640,440 L 700,440" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 920,440 L 980,440" marker-end="url(#wf-arr)"/>
+
+          <!-- P3 -> P4 -->
+          <path class="wf-arrow" d="M 1080,490 L 1080,540 L 250,558" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 250,610 L 420,610" marker-end="url(#wf-arr)"/>
+          <path class="wf-arrow" d="M 640,610 L 700,610" marker-end="url(#wf-arr)"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Right column: properties of selected node -->
+    <div class="properties" id="prop-panel">
+      <div class="prop-step-id">Step 2.1</div>
+      <h2 class="prop-step-title">Validate + triage variances</h2>
+      <p class="prop-step-sub">Auto-correct known variance patterns; escalate the rest to a human.</p>
+
+      <div class="prop-section">
+        <h4>Behavior</h4>
+        <div class="prop-row"><span class="lbl">Type</span><span class="val">
+          <span class="seg" style="margin-top: -2px;">
+            <button>Auto</button>
+            <button class="active">Auto + approve</button>
+            <button>Human</button>
+          </span>
+        </span></div>
+        <div class="prop-row"><span class="lbl">Trigger</span><span class="val">On Step 1.4 emit · forecast workbook detected</span></div>
+        <div class="prop-row"><span class="lbl">Inputs</span><span class="val">Forecast workbook, template definition, channel taxonomy, master calendar, currency tags</span></div>
+        <div class="prop-row"><span class="lbl">Outputs</span><span class="val">Validated workbook, Adjustments tab populated, variance log</span></div>
+        <div class="prop-row"><span class="lbl">SLA</span><span class="val">15 min after submission · 4h hard cap</span></div>
+      </div>
+
+      <div class="prop-section">
+        <h4>Triage rules</h4>
+        <div class="prop-row"><span class="lbl">Miscoded SKU</span><span class="val">→ auto-correct in Adjustments tab</span></div>
+        <div class="prop-row"><span class="lbl">Channel mismatch</span><span class="val">→ <strong>always escalate</strong> (M. Chen)</span></div>
+        <div class="prop-row"><span class="lbl">Currency tag</span><span class="val">→ auto-correct, notify regional lead</span></div>
+        <div class="prop-row"><span class="lbl">Calendar shift</span><span class="val">→ auto-correct using master calendar</span></div>
+        <div class="prop-row"><span class="lbl">Other / unknown</span><span class="val">→ escalate to corporate analyst</span></div>
+      </div>
+
+      <div class="prop-section">
+        <h4>Approval policy</h4>
+        <div class="prop-row"><span class="lbl">Approver</span><span class="val">J. Park (primary), M. Chen (delegated)</span></div>
+        <div class="prop-row"><span class="lbl">Auto-fix budget</span><span class="val">Up to 4 corrections / workbook · larger sets escalate</span></div>
+        <div class="prop-row"><span class="lbl">$ threshold</span><span class="val">Auto-correct only if Δ &lt; $25,000</span></div>
+      </div>
+
+      <div class="prop-section">
+        <h4>Confidence &amp; evidence</h4>
+        <div class="prop-row"><span class="lbl">Confidence</span><span class="val">0.91 · high</span></div>
+        <div class="prop-row" style="border: none; padding-bottom: 0;"><span class="lbl">Sourced from</span><span class="val">
+          <div class="evidence-mini">
+            <span class="ev-tag doc">SOP §3.2</span>
+            <span class="ev-tag xls">Run_Consolidate macro</span>
+            <span class="ev-tag rec">Mar26 0:42:13</span>
+            <span class="ev-tag int">J. Park t.23</span>
+            <span class="ev-tag int">M. Chen t.11</span>
+          </div>
+        </span></div>
+      </div>
+
+      <div class="prop-section">
+        <h4>Errors &amp; escalation</h4>
+        <div class="prop-row"><span class="lbl">On failure</span><span class="val">Pause, snapshot state, page on-call analyst</span></div>
+        <div class="prop-row"><span class="lbl">Retry policy</span><span class="val">3× with backoff · then escalate</span></div>
+        <div class="prop-row"><span class="lbl">Audit</span><span class="val">Every correction emits before/after + evidence + approver</span></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ========== DASHBOARD ========== -->
+<section class="view" id="view-dashboard">
+
+  <div class="dash-grid">
+
+    <div>
+      <div class="dash-hero">
+        <div class="dash-hero-head">
+          <div>
+            <div class="dash-run-id">Run #142</div>
+            <h2 class="dash-run-title">May 2026 close · 3-month projection (Jun–Aug)</h2>
+            <div class="dash-run-meta">Started May 4 · projected complete May 13 09:30 · BD+8 (vs. BD+10 historical)</div>
+          </div>
+          <div class="dash-status">Running</div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi">
+            <div class="kpi-num">8 / 14</div>
+            <div class="kpi-lbl">Steps complete</div>
+            <div class="kpi-trend">on track</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-num">12 / 14</div>
+            <div class="kpi-lbl">Variances auto-fixed</div>
+            <div class="kpi-trend">2 escalated</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-num">7 / 7</div>
+            <div class="kpi-lbl">Controls passing</div>
+            <div class="kpi-trend">last: C-04 FX</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-num">−2.7 d</div>
+            <div class="kpi-lbl">Cycle time vs. baseline</div>
+            <div class="kpi-trend">faster</div>
+          </div>
+        </div>
+
+        <div class="sla">
+          <div class="sla-row">
+            <span style="color: var(--text-secondary);">SLA · close by BD+10 (May 14)</span>
+            <span style="color: var(--text-secondary); font-family: ui-monospace, monospace;">currently BD+7</span>
+          </div>
+          <div class="sla-bar">
+            <div class="sla-fill" style="width: 70%;"></div>
+            <div class="sla-target" style="left: 100%;"></div>
+            <div class="sla-mark" style="left: 100%;">BD+10</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="timeline-steps" style="margin-top: 14px;">
+        <h3>Step-by-step run log</h3>
+        <p class="lead">Live view of agents executing the deployed workflow. Click any step in the deployed view for full audit trail.</p>
+
+        <div class="ts-row">
+          <div class="ts-icon done">✓</div>
+          <div class="ts-id">1.1</div>
+          <div class="ts-name">Pull NetSuite TB <span class="sub">142,318 rows · TB ties to 0.00</span></div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">May 4 · 02:14</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon done">✓</div>
+          <div class="ts-id">1.2</div>
+          <div class="ts-name">Pull Shopify + Amazon <span class="sub">28,401 orders · 14 settlements</span></div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">May 4 · 02:18</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon done">✓</div>
+          <div class="ts-id">1.3</div>
+          <div class="ts-name">Pull FX forward curve <span class="sub">5 currencies · ECB cross-check OK</span></div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">May 4 · 02:21</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon done">✓</div>
+          <div class="ts-id">1.4</div>
+          <div class="ts-name">Receive 3 forecasts <span class="sub">AMER 17:42 · EMEA 18:11 · APAC 22:03</span></div>
+          <div class="ts-actor system">System</div>
+          <div class="ts-time">May 5 · 22:03</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon done">✓</div>
+          <div class="ts-id">1.5</div>
+          <div class="ts-name">Workday + Salesforce <span class="sub">Roster 412 FTE · pipeline $48M qualified</span></div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">May 6 · 06:00</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon flag">!</div>
+          <div class="ts-id">2.1</div>
+          <div class="ts-name">Validate + triage variances <span class="sub">12 auto-fixed · 2 escalated</span></div>
+          <div class="ts-actor agent">Agent + HITL</div>
+          <div class="ts-time">May 6 · 09:14</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon done">✓</div>
+          <div class="ts-id">2.2</div>
+          <div class="ts-name">Pipeline reconciliation <span class="sub">AMER 1.7× · EMEA 1.5× · APAC 1.9×</span></div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">May 6 · 11:08</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon live">…</div>
+          <div class="ts-id">2.3</div>
+          <div class="ts-name">FX-translate to USD <span class="sub">5,247 rows · 4,108 done</span></div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">May 6 · 11:42</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon wait">○</div>
+          <div class="ts-id">3.1</div>
+          <div class="ts-name">Project COGS <span class="sub">queued · post-pilot scope</span></div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">— pending</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon wait">○</div>
+          <div class="ts-id">3.2</div>
+          <div class="ts-name">Roll-forward OpEx <span class="sub">+ headcount</span></div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">— pending</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon wait">○</div>
+          <div class="ts-id">3.3</div>
+          <div class="ts-name">IC eliminations <span class="sub">Controller · L. Okafor</span></div>
+          <div class="ts-actor human">Human</div>
+          <div class="ts-time">— pending</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon wait">○</div>
+          <div class="ts-id">4.1</div>
+          <div class="ts-name">Variance commentary <span class="sub">drafted, awaiting CFO edits</span></div>
+          <div class="ts-actor agent">Agent + HITL</div>
+          <div class="ts-time">— pending</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon wait">○</div>
+          <div class="ts-id">4.2</div>
+          <div class="ts-name">Controller + CFO sign-off</div>
+          <div class="ts-actor human">Human</div>
+          <div class="ts-time">— pending</div>
+        </div>
+        <div class="ts-row">
+          <div class="ts-icon wait">○</div>
+          <div class="ts-id">4.3</div>
+          <div class="ts-name">Publish + archive</div>
+          <div class="ts-actor agent">Agent</div>
+          <div class="ts-time">— pending</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h3>Exception queue (2)</h3>
+        <p class="lead">Items needing human review. Routed to the right person automatically.</p>
+
+        <div class="ex-item">
+          <div class="ex-dot high"></div>
+          <div>
+            <div class="ex-name">APAC · channel mismatch</div>
+            <div class="ex-detail">Wholesale revenue line tagged as DTC in 3 SKUs (¥6.4M, ~$43k). Auto-correctable, but channel mismatches always escalate per M. Chen.</div>
+            <div class="ex-actions">
+              <button class="ex-btn primary">Review &amp; approve</button>
+              <button class="ex-btn">Send back</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="ex-item">
+          <div class="ex-dot med"></div>
+          <div>
+            <div class="ex-name">EMEA · pipeline coverage band</div>
+            <div class="ex-detail">Coverage 1.5× — within band, but at the low end. Suggested commentary drafted for review.</div>
+            <div class="ex-actions">
+              <button class="ex-btn primary">Approve commentary</button>
+              <button class="ex-btn">Edit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Live activity</h3>
+        <p class="lead">Agent and human actions in the past hour.</p>
+
+        <div class="activity-row">
+          <span class="activity-time">11:48</span>
+          <span class="activity-msg"><span class="ag">FX agent</span> applied forward rate <code>EUR=1.0832</code> to 1,247 rows · 0 mismatches</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-time">11:42</span>
+          <span class="activity-msg"><span class="ag">FX agent</span> started Step 2.3 · processing 5,247 rows</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-time">11:14</span>
+          <span class="activity-msg"><span class="ag">Triage agent</span> escalated APAC channel mismatch to M. Chen via Slack</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-time">11:08</span>
+          <span class="activity-msg"><span class="ag">Pipeline agent</span> all 3 regions in band · C-03 passed</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-time">10:54</span>
+          <span class="activity-msg"><span class="ag">M. Chen</span> approved Step 2.1 batch · 12 corrections accepted</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-time">10:31</span>
+          <span class="activity-msg"><span class="ag">Triage agent</span> auto-fixed 8 miscoded SKUs in AMER workbook</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-time">09:14</span>
+          <span class="activity-msg"><span class="ag">Triage agent</span> started Step 2.1 · 14 variances detected</span>
+        </div>
+        <div class="activity-row">
+          <span class="activity-time">06:00</span>
+          <span class="activity-msg"><span class="ag">Ingest agent</span> Workday + Salesforce extracts complete</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Controls status</h3>
+        <p class="lead">7 controls — 5 fired, 5 passed.</p>
+        <div style="font-size: 12.5px;">
+          <div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);">
+            <span>C-01 · TB ties</span><span style="color: var(--green-800);">✓ pass</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);">
+            <span>C-02 · Regional totals</span><span style="color: var(--green-800);">✓ pass (3/3)</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);">
+            <span>C-03 · Pipeline coverage</span><span style="color: var(--green-800);">✓ pass</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);">
+            <span>C-04 · FX consistency</span><span style="color: var(--accent);">… running</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);">
+            <span>C-05 · GM band</span><span style="color: var(--text-tertiary);">○ pending</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border);">
+            <span>C-06 · IC eliminations</span><span style="color: var(--text-tertiary);">○ pending</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; padding: 6px 0;">
+            <span>C-07 · Variance threshold</span><span style="color: var(--text-tertiary);">○ pending</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="audit-card">
+    <h3>Audit log · last 6 events</h3>
+    <p class="lead">Every action — agent or human — is captured with input/output hashes, the source evidence the agent relied on, and the approver. SOX-relevant entries are flagged.</p>
+
+    <table class="audit-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Step</th>
+          <th>Action</th>
+          <th>Actor</th>
+          <th>Inputs / outputs</th>
+          <th>Evidence relied on</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>11:48:02</td>
+          <td>2.3</td>
+          <td>Applied forward rate to 1,247 rows</td>
+          <td class="actor">FX agent</td>
+          <td><code>in: forecast_emea_apr26.xlsx</code> <code>fx_forward_apr26.csv</code> → <code>out: emea_usd_translated.parquet</code></td>
+          <td>FX Policy §2 · macro <code>FXLookup()</code> · interview L. Okafor t.7</td>
+        </tr>
+        <tr>
+          <td>11:14:29</td>
+          <td>2.1</td>
+          <td>Escalated APAC channel mismatch</td>
+          <td class="actor">Triage agent</td>
+          <td><code>variance: ¥6.4M / $43k · 3 SKUs</code> → assigned M. Chen, SLA 4h</td>
+          <td>SOP §3.2 · interview M. Chen t.11 ("always escalate")</td>
+        </tr>
+        <tr>
+          <td>10:54:11</td>
+          <td>2.1</td>
+          <td>Approved 12 auto-corrections</td>
+          <td class="actor">M. Chen (human)</td>
+          <td><code>batch_id: 2026-05-06.amer.b1</code> 8 SKU + 3 ccy + 1 cal</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>10:31:48</td>
+          <td>2.1</td>
+          <td>Auto-fixed 8 miscoded SKUs</td>
+          <td class="actor">Triage agent</td>
+          <td><code>before/after: see batch 2026-05-06.amer.b1</code></td>
+          <td>Pattern library · J. Park t.23 · screen-rec 0:42:13</td>
+        </tr>
+        <tr>
+          <td>06:00:14</td>
+          <td>1.5</td>
+          <td>Pulled Workday roster</td>
+          <td class="actor">Ingest agent</td>
+          <td><code>workday_roster_apr26.csv</code> 412 rows · sha256 0xb47…</td>
+          <td>SOP §1.5 · macro <code>WD_Pull()</code></td>
+        </tr>
+        <tr>
+          <td>02:14:02</td>
+          <td>1.1</td>
+          <td>Pulled NetSuite trial balance · TB ties 0.00</td>
+          <td class="actor">Ingest agent</td>
+          <td><code>tb_apr26_detail.csv</code> 142,318 rows · sha256 0x9c2…</td>
+          <td>SOP §1.1 · saved search hash 0x71b…</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+    <span style="font-weight: 800; color: var(--accent); font-size: 16px; letter-spacing: -0.02em;">//</span>
+    <strong style="color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; margin-left: -2px;">PROSSIMO</strong>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>Workflow Designer + Run Dashboard</span>
+  </div>
+  Pilot scope: Phases 1–2 plus FX. Full pipeline mapped, post-pilot expansion gated on confidence and audit results.<br>
+  <span style="color: var(--text-tertiary);">© 2026 ProssimoTech · Tokyo · <a href="https://www.linkedin.com/company/prossimo-tech/" style="color: var(--accent); text-decoration: none;">LinkedIn</a> · info@prossimotech.com</span>
+</footer>
+
+<script>
+  // Tab switching
+  const tabs = document.querySelectorAll('.tab');
+  const views = document.querySelectorAll('.view');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      views.forEach(v => v.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('view-' + tab.dataset.view).classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+
+  // Node selection in designer
+  const nodes = document.querySelectorAll('.wf-node');
+  nodes.forEach(n => {
+    n.addEventListener('click', () => {
+      nodes.forEach(x => x.classList.remove('selected'));
+      n.classList.add('selected');
+      // For a richer demo, properties would update dynamically. Static for now.
+      document.getElementById('prop-panel').scrollTop = 0;
+    });
+  });
+  // Default selection
+  document.querySelector('.wf-node[data-step="2.1"]')?.classList.add('selected');
+
+  // Segmented control (purely visual)
+  document.querySelectorAll('.seg').forEach(seg => {
+    seg.querySelectorAll('button').forEach(b => {
+      b.addEventListener('click', () => {
+        seg.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+      });
+    });
+  });
+</script>
+
+</body>
+</html>

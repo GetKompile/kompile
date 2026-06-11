@@ -27,13 +27,15 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
 /**
  * REST controller for OAuth connection management.
  */
-@RestController
+@RestController("oauthConnectionController")
 @RequestMapping("/api/oauth")
 public class OAuthController {
 
@@ -128,9 +130,9 @@ public class OAuthController {
 
         if (error != null) {
             log.warn("OAuth callback error for {}: {} - {}", providerId, error, errorDescription);
-            String redirectUrl = frontendUrl + "/connections?error=" + error +
-                    (errorDescription != null ? "&error_description=" + errorDescription : "") +
-                    "&provider=" + providerId;
+            String redirectUrl = frontendUrl + "/connections?error=" + URLEncoder.encode(error, StandardCharsets.UTF_8) +
+                    (errorDescription != null ? "&error_description=" + URLEncoder.encode(errorDescription, StandardCharsets.UTF_8) : "") +
+                    "&provider=" + URLEncoder.encode(providerId, StandardCharsets.UTF_8);
             return ResponseEntity.status(HttpStatus.FOUND)
                     .location(URI.create(redirectUrl))
                     .build();
@@ -161,7 +163,8 @@ public class OAuthController {
         } catch (Exception e) {
             log.error("OAuth callback failed for {}: {}", providerId, e.getMessage());
             String errorUrl = frontendUrl + "/connections?error=token_exchange_failed" +
-                    "&error_description=" + e.getMessage() + "&provider=" + providerId;
+                    "&error_description=" + URLEncoder.encode(e.getMessage(), StandardCharsets.UTF_8) +
+                    "&provider=" + URLEncoder.encode(providerId, StandardCharsets.UTF_8);
             return ResponseEntity.status(HttpStatus.FOUND)
                     .location(URI.create(errorUrl))
                     .build();

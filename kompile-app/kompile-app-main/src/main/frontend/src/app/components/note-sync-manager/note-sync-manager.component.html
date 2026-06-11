@@ -1,0 +1,198 @@
+<div class="sync-manager">
+  <!-- Header -->
+  <div class="sync-header">
+    <div class="header-left">
+      <h3>Note Sync</h3>
+      <span class="conn-count" *ngIf="connections.length">{{ connections.length }} connection(s)</span>
+    </div>
+    <div class="header-actions">
+      <button mat-raised-button color="primary" (click)="openCreateDialog()" [disabled]="!factSheetId">
+        <mat-icon>add_link</mat-icon> New Connection
+      </button>
+    </div>
+  </div>
+
+  <!-- Live sync progress from WebSocket -->
+  <div class="live-sync-bar" *ngIf="liveSyncStatus">
+    <mat-icon>sync</mat-icon>
+    <span>Sync {{ liveSyncStatus.status }}: {{ liveSyncStatus.pushed || 0 }} pushed, {{ liveSyncStatus.pulled || 0 }} pulled</span>
+    <span *ngIf="liveSyncStatus.conflicts" class="sync-conflicts">{{ liveSyncStatus.conflicts }} conflicts</span>
+    <span *ngIf="liveSyncStatus.errors" class="sync-errors">{{ liveSyncStatus.errors }} errors</span>
+    <span *ngIf="liveSyncStatus.skipped" class="sync-skipped">{{ liveSyncStatus.skipped }} skipped</span>
+  </div>
+
+  <div *ngIf="!factSheetId" class="empty-state">
+    <mat-icon>sync</mat-icon>
+    <p>Select a Fact Sheet to manage sync connections</p>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="isLoading" class="loading-container">
+    <mat-spinner diameter="32"></mat-spinner>
+  </div>
+
+  <!-- Connections List -->
+  <div *ngIf="factSheetId && !isLoading" class="connections-list">
+    <div *ngIf="connections.length === 0" class="empty-state">
+      <mat-icon>sync_disabled</mat-icon>
+      <p>No sync connections configured</p>
+      <p class="hint">Create a connection to sync notes with Notion or Obsidian</p>
+    </div>
+
+    <mat-card *ngFor="let conn of connections" class="connection-card">
+      <div class="connection-row">
+        <!-- Provider Icon & Info -->
+        <div class="connection-info">
+          <mat-icon class="provider-icon" [class.notion]="conn.provider === 'NOTION'"
+                    [class.obsidian]="conn.provider === 'OBSIDIAN'">
+            {{ getProviderIcon(conn.provider) }}
+          </mat-icon>
+          <div class="connection-details">
+            <div class="connection-name">
+              <strong>{{ conn.provider }}</strong>
+              <span class="scope">{{ conn.externalScope }}</span>
+            </div>
+            <div class="connection-meta">
+              <span class="direction-badge">{{ getDirectionLabel(conn.direction) }}</span>
+              <span *ngIf="conn.pollCron" class="cron-badge" matTooltip="Poll schedule">
+                <mat-icon class="tiny-icon">schedule</mat-icon>{{ conn.pollCron }}
+              </span>
+              <span class="auth-badge" [ngClass]="getAuthStatusClass(conn.authStatus)"
+                    [matTooltip]="conn.authStatusMessage || getAuthModeLabel(conn)">
+                <mat-icon class="tiny-icon">{{ getAuthStatusIcon(conn.authStatus) }}</mat-icon>
+                {{ getAuthModeLabel(conn) }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Status -->
+        <div class="connection-status">
+          <div class="status-chip" [ngClass]="'status-' + conn.lastSyncStatus.toLowerCase()">
+            <mat-icon class="status-icon">{{ getStatusIcon(conn.lastSyncStatus) }}</mat-icon>
+            <span>{{ conn.lastSyncStatus }}</span>
+          </div>
+          <span class="last-sync-time">{{ formatDate(conn.lastSyncAt) }}</span>
+        </div>
+
+        <!-- Actions -->
+        <div class="connection-actions">
+          <mat-slide-toggle [checked]="conn.enabled" (change)="toggleConnection(conn)"
+                            matTooltip="Enable/Disable">
+          </mat-slide-toggle>
+
+          <button mat-icon-button color="primary" (click)="triggerSync(conn)"
+                  [disabled]="!conn.enabled || isSyncing(conn.id)"
+                  matTooltip="Sync now">
+            <mat-spinner *ngIf="isSyncing(conn.id)" diameter="20"></mat-spinner>
+            <mat-icon *ngIf="!isSyncing(conn.id)">sync</mat-icon>
+          </button>
+
+          <button mat-icon-button (click)="testAuth(conn)"
+                  [disabled]="isTestingAuth(conn.id)"
+                  matTooltip="Test auth and access">
+            <mat-spinner *ngIf="isTestingAuth(conn.id)" diameter="20"></mat-spinner>
+            <mat-icon *ngIf="!isTestingAuth(conn.id)">vpn_key</mat-icon>
+          </button>
+
+          <button mat-icon-button (click)="toggleRecords(conn)"
+                  matTooltip="View sync records">
+            <mat-icon>{{ expandedConnectionId === conn.id ? 'expand_less' : 'expand_more' }}</mat-icon>
+          </button>
+
+          <button mat-icon-button [matMenuTriggerFor]="connMenu">
+            <mat-icon>more_vert</mat-icon>
+          </button>
+          <mat-menu #connMenu="matMenu">
+            <button mat-menu-item (click)="openEditDialog(conn)">
+              <mat-icon>edit</mat-icon> Edit
+            </button>
+            <button mat-menu-item (click)="deleteConnection(conn)">
+              <mat-icon color="warn">delete</mat-icon> Delete
+            </button>
+          </mat-menu>
+        </div>
+      </div>
+
+      <!-- Error message -->
+      <div *ngIf="conn.lastSyncError" class="sync-error">
+        <mat-icon>error_outline</mat-icon>
+        <span>{{ conn.lastSyncError }}</span>
+      </div>
+
+      <div *ngIf="conn.authStatus === 'INVALID' || conn.authStatus === 'MISSING'" class="sync-error auth-error">
+        <mat-icon>key_off</mat-icon>
+        <span>{{ conn.authStatusMessage || 'Authentication is not configured correctly.' }}</span>
+      </div>
+
+      <!-- Sync progress bar (when syncing) -->
+      <mat-progress-bar *ngIf="isSyncing(conn.id)" mode="indeterminate" class="sync-progress">
+      </mat-progress-bar>
+
+      <!-- Expanded Records -->
+      <div *ngIf="expandedConnectionId === conn.id" class="records-panel">
+        <mat-divider></mat-divider>
+        <h4 class="records-title">Sync Records</h4>
+
+        <div *ngIf="isLoadingRecords" class="loading-container small">
+          <mat-spinner diameter="24"></mat-spinner>
+        </div>
+
+        <div *ngIf="!isLoadingRecords && syncRecords.length === 0" class="empty-records">
+          No sync records yet
+        </div>
+
+        <table *ngIf="!isLoadingRecords && syncRecords.length > 0" mat-table [dataSource]="syncRecords"
+               class="records-table">
+          <ng-container matColumnDef="noteId">
+            <th mat-header-cell *matHeaderCellDef>Note ID</th>
+            <td mat-cell *matCellDef="let r">{{ r.noteId }}</td>
+          </ng-container>
+
+          <ng-container matColumnDef="externalId">
+            <th mat-header-cell *matHeaderCellDef>External ID</th>
+            <td mat-cell *matCellDef="let r" class="external-id">{{ r.externalId | slice:0:16 }}...</td>
+          </ng-container>
+
+          <ng-container matColumnDef="status">
+            <th mat-header-cell *matHeaderCellDef>Status</th>
+            <td mat-cell *matCellDef="let r">
+              <span class="record-status" [ngClass]="'status-' + r.status.toLowerCase()">
+                {{ r.status }}
+              </span>
+            </td>
+          </ng-container>
+
+          <ng-container matColumnDef="lastSyncAt">
+            <th mat-header-cell *matHeaderCellDef>Last Sync</th>
+            <td mat-cell *matCellDef="let r">{{ formatDate(r.lastSyncAt) }}</td>
+          </ng-container>
+
+          <ng-container matColumnDef="actions">
+            <th mat-header-cell *matHeaderCellDef></th>
+            <td mat-cell *matCellDef="let r">
+              <button *ngIf="r.status === 'CONFLICT'" mat-icon-button
+                      [matMenuTriggerFor]="resolveMenu" matTooltip="Resolve conflict">
+                <mat-icon color="accent">gavel</mat-icon>
+              </button>
+              <mat-menu #resolveMenu="matMenu">
+                <button mat-menu-item (click)="resolveConflict(conn.id, r.id, 'KEEP_KOMPILE')">
+                  Keep Kompile version
+                </button>
+                <button mat-menu-item (click)="resolveConflict(conn.id, r.id, 'KEEP_EXTERNAL')">
+                  Keep external version
+                </button>
+                <button mat-menu-item (click)="resolveConflict(conn.id, r.id, 'KEEP_BOTH')">
+                  Keep both
+                </button>
+              </mat-menu>
+            </td>
+          </ng-container>
+
+          <tr mat-header-row *matHeaderRowDef="['noteId', 'externalId', 'status', 'lastSyncAt', 'actions']"></tr>
+          <tr mat-row *matRowDef="let row; columns: ['noteId', 'externalId', 'status', 'lastSyncAt', 'actions']"></tr>
+        </table>
+      </div>
+    </mat-card>
+  </div>
+</div>

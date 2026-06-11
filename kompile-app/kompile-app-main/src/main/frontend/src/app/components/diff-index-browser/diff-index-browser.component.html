@@ -1,0 +1,333 @@
+<div class="diff-index-browser">
+  <div class="browser-header">
+    <h2>Diff Index Browser</h2>
+    <p class="subtitle">File changes extracted from CLI coding conversations</p>
+    <div class="header-actions">
+      <button mat-raised-button color="primary" (click)="triggerReindex()" [disabled]="reindexing">
+        <mat-icon>sync</mat-icon>
+        {{ reindexing ? 'Indexing...' : 'Reindex All Sources' }}
+      </button>
+    </div>
+  </div>
+
+  <mat-progress-bar *ngIf="reindexing" mode="indeterminate" class="reindex-bar"></mat-progress-bar>
+
+  <!-- Stats summary -->
+  <div class="stats-bar" *ngIf="stats">
+    <div class="stat-chip">
+      <mat-icon>library_books</mat-icon>
+      <span>{{ formatNumber(stats.totalEntries) }} diffs</span>
+    </div>
+    <div class="stat-chip">
+      <mat-icon>insert_drive_file</mat-icon>
+      <span>{{ formatNumber(stats.uniqueFiles) }} files</span>
+    </div>
+    <div class="stat-chip">
+      <mat-icon>folder</mat-icon>
+      <span>{{ formatNumber(stats.uniqueProjects) }} projects</span>
+    </div>
+    <div class="stat-chip added">
+      <mat-icon>add</mat-icon>
+      <span>{{ formatNumber(stats.totalLinesAdded) }} added</span>
+    </div>
+    <div class="stat-chip removed">
+      <mat-icon>remove</mat-icon>
+      <span>{{ formatNumber(stats.totalLinesRemoved) }} removed</span>
+    </div>
+  </div>
+
+  <mat-tab-group [(selectedIndex)]="activeTab">
+
+    <!-- Search Tab -->
+    <mat-tab label="Search">
+      <div class="tab-content">
+        <!-- Search filters -->
+        <div class="search-form">
+          <mat-form-field appearance="outline" class="search-field">
+            <mat-label>Content Search</mat-label>
+            <input matInput [(ngModel)]="searchParams.contentQuery"
+                   (keyup.enter)="doSearch()" placeholder="Search within diffs...">
+            <mat-icon matSuffix>search</mat-icon>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="filter-field">
+            <mat-label>File Path</mat-label>
+            <input matInput [(ngModel)]="searchParams.filePath"
+                   (keyup.enter)="doSearch()" placeholder="e.g. src/main/java">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="filter-field">
+            <mat-label>Agent</mat-label>
+            <mat-select [(ngModel)]="searchParams.agent" (selectionChange)="doSearch()">
+              <mat-option [value]="undefined">All Agents</mat-option>
+              <mat-option *ngFor="let a of availableAgents" [value]="a">
+                {{ a }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="filter-field">
+            <mat-label>Source</mat-label>
+            <mat-select [(ngModel)]="searchParams.source" (selectionChange)="doSearch()">
+              <mat-option [value]="undefined">All Sources</mat-option>
+              <mat-option *ngFor="let s of availableSources" [value]="s">
+                {{ s }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="filter-field">
+            <mat-label>Project</mat-label>
+            <input matInput [(ngModel)]="searchParams.projectDirectory"
+                   (keyup.enter)="doSearch()" placeholder="Project name or path">
+          </mat-form-field>
+
+          <div class="search-actions">
+            <button mat-raised-button color="primary" (click)="doSearch()">
+              <mat-icon>search</mat-icon> Search
+            </button>
+            <button mat-button (click)="clearSearch()">
+              <mat-icon>clear</mat-icon> Clear
+            </button>
+          </div>
+        </div>
+
+        <!-- Results -->
+        <div class="results-section">
+          <div class="results-header">
+            <span class="results-count">{{ searchResults.length }} results</span>
+          </div>
+
+          <mat-progress-bar *ngIf="loading" mode="indeterminate"></mat-progress-bar>
+
+          <div class="results-list" *ngIf="searchResults.length > 0">
+            <div class="diff-entry-card" *ngFor="let entry of searchResults"
+                 [class.selected]="selectedEntry?.id === entry.id"
+                 (click)="selectEntry(entry)">
+              <div class="entry-left">
+                <mat-icon [style.color]="getDiffTypeColor(entry.diffType)"
+                          [matTooltip]="entry.diffType">
+                  {{ getDiffTypeIcon(entry.diffType) }}
+                </mat-icon>
+              </div>
+              <div class="entry-main">
+                <div class="entry-file">
+                  <span class="file-name">{{ getFileName(entry.filePath) }}</span>
+                  <span class="file-dir">{{ getDirectory(entry.filePath) }}</span>
+                </div>
+                <div class="entry-meta">
+                  <span class="meta-agent" [matTooltip]="'Agent: ' + entry.agent">
+                    <mat-icon class="small-icon">{{ getAgentIcon(entry.agent) }}</mat-icon>
+                    {{ entry.agent }}
+                  </span>
+                  <span class="meta-project" *ngIf="entry.projectDirectory"
+                        [matTooltip]="entry.projectDirectory">
+                    <mat-icon class="small-icon">folder</mat-icon>
+                    {{ getProjectName(entry.projectDirectory) }}
+                  </span>
+                  <span class="meta-tool">{{ entry.toolName }}</span>
+                  <span class="meta-time">{{ formatDate(entry.timestamp) }}</span>
+                </div>
+              </div>
+              <div class="entry-stats">
+                <span class="lines-added" *ngIf="entry.linesAdded > 0">+{{ entry.linesAdded }}</span>
+                <span class="lines-removed" *ngIf="entry.linesRemoved > 0">-{{ entry.linesRemoved }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="empty-state" *ngIf="searchResults.length === 0 && !loading">
+            <mat-icon>search_off</mat-icon>
+            <h3>No Diffs Found</h3>
+            <p>Try adjusting your search filters or click "Reindex All Sources" to scan CLI transcripts.</p>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Projects Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        Projects
+        <span class="badge" *ngIf="projects.length > 0">{{ projects.length }}</span>
+      </ng-template>
+      <div class="tab-content">
+        <div class="projects-grid" *ngIf="projects.length > 0">
+          <mat-card *ngFor="let project of projects" class="project-card"
+                    (click)="filterByProject(project.projectDirectory)">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>folder</mat-icon>
+              <mat-card-title>{{ project.projectName }}</mat-card-title>
+              <mat-card-subtitle>{{ project.projectDirectory }}</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="project-stats">
+                <div class="pstat">
+                  <span class="pstat-value">{{ project.entryCount }}</span>
+                  <span class="pstat-label">diffs</span>
+                </div>
+                <div class="pstat">
+                  <span class="pstat-value">{{ project.fileCount }}</span>
+                  <span class="pstat-label">files</span>
+                </div>
+                <div class="pstat added">
+                  <span class="pstat-value">+{{ project.totalLinesAdded }}</span>
+                  <span class="pstat-label">added</span>
+                </div>
+                <div class="pstat removed">
+                  <span class="pstat-value">-{{ project.totalLinesRemoved }}</span>
+                  <span class="pstat-label">removed</span>
+                </div>
+              </div>
+              <div class="project-agents">
+                <mat-chip-set>
+                  <mat-chip *ngFor="let agent of project.agents">
+                    <mat-icon class="small-icon">{{ getAgentIcon(agent) }}</mat-icon>
+                    {{ agent }}
+                  </mat-chip>
+                </mat-chip-set>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <div class="empty-state" *ngIf="projects.length === 0">
+          <mat-icon>folder_off</mat-icon>
+          <h3>No Projects Indexed</h3>
+          <p>Reindex to discover projects from CLI conversations.</p>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Agents Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        Agents
+        <span class="badge" *ngIf="agents.length > 0">{{ agents.length }}</span>
+      </ng-template>
+      <div class="tab-content">
+        <div class="agents-grid" *ngIf="agents.length > 0">
+          <mat-card *ngFor="let agent of agents" class="agent-card"
+                    (click)="filterByAgent(agent.agent)">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>{{ getAgentIcon(agent.agent) }}</mat-icon>
+              <mat-card-title>{{ agent.agent }}</mat-card-title>
+              <mat-card-subtitle>{{ agent.projectCount }} projects</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="project-stats">
+                <div class="pstat">
+                  <span class="pstat-value">{{ agent.entryCount }}</span>
+                  <span class="pstat-label">diffs</span>
+                </div>
+                <div class="pstat">
+                  <span class="pstat-value">{{ agent.fileCount }}</span>
+                  <span class="pstat-label">files</span>
+                </div>
+                <div class="pstat added">
+                  <span class="pstat-value">+{{ agent.totalLinesAdded }}</span>
+                  <span class="pstat-label">added</span>
+                </div>
+                <div class="pstat removed">
+                  <span class="pstat-value">-{{ agent.totalLinesRemoved }}</span>
+                  <span class="pstat-label">removed</span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <div class="empty-state" *ngIf="agents.length === 0">
+          <mat-icon>person_off</mat-icon>
+          <h3>No Agents Found</h3>
+          <p>Reindex to discover agents from CLI conversations.</p>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+
+  <!-- Detail Panel -->
+  <div class="detail-overlay" *ngIf="selectedEntry" (click)="closeDetail()">
+    <div class="detail-panel" (click)="$event.stopPropagation()">
+      <div class="detail-header">
+        <div class="detail-title">
+          <mat-icon [style.color]="getDiffTypeColor(selectedEntry.diffType)">
+            {{ getDiffTypeIcon(selectedEntry.diffType) }}
+          </mat-icon>
+          <h3>{{ selectedEntry.filePath }}</h3>
+        </div>
+        <button mat-icon-button (click)="closeDetail()">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <div class="detail-meta">
+        <div class="meta-row">
+          <span class="meta-label">Agent:</span>
+          <span>
+            <mat-icon class="small-icon">{{ getAgentIcon(selectedEntry.agent) }}</mat-icon>
+            {{ selectedEntry.agent }}
+          </span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Source:</span>
+          <span>{{ selectedEntry.source }}</span>
+        </div>
+        <div class="meta-row" *ngIf="selectedEntry.projectDirectory">
+          <span class="meta-label">Project:</span>
+          <span>{{ selectedEntry.projectDirectory }}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Tool:</span>
+          <span>{{ selectedEntry.toolName }}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Type:</span>
+          <span>{{ selectedEntry.diffType }}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Time:</span>
+          <span>{{ formatDate(selectedEntry.timestamp) }}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Changes:</span>
+          <span>
+            <span class="lines-added" *ngIf="selectedEntry.linesAdded > 0">+{{ selectedEntry.linesAdded }}</span>
+            <span class="lines-removed" *ngIf="selectedEntry.linesRemoved > 0">-{{ selectedEntry.linesRemoved }}</span>
+          </span>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Unified Diff View -->
+      <div class="diff-view" *ngIf="selectedEntry.unifiedDiff">
+        <h4>Unified Diff</h4>
+        <pre class="diff-content"><ng-container *ngFor="let line of selectedEntry.unifiedDiff.split('\n')"><span
+          [class.diff-add]="line.startsWith('+') && !line.startsWith('+++')"
+          [class.diff-remove]="line.startsWith('-') && !line.startsWith('---')"
+          [class.diff-header]="line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')"
+          >{{ line }}
+</span></ng-container></pre>
+      </div>
+
+      <!-- Old/New String View (for edits without unified diff) -->
+      <div class="content-view" *ngIf="!selectedEntry.unifiedDiff && selectedEntry.oldString">
+        <h4>Old Content</h4>
+        <pre class="content-block removed-block">{{ selectedEntry.oldString }}</pre>
+      </div>
+      <div class="content-view" *ngIf="!selectedEntry.unifiedDiff && selectedEntry.newString">
+        <h4>New Content</h4>
+        <pre class="content-block added-block">{{ selectedEntry.newString }}</pre>
+      </div>
+
+      <!-- Write-only view -->
+      <div class="content-view" *ngIf="!selectedEntry.unifiedDiff && !selectedEntry.oldString && selectedEntry.newString">
+        <h4>File Content</h4>
+        <pre class="content-block">{{ selectedEntry.newString }}</pre>
+      </div>
+    </div>
+  </div>
+</div>

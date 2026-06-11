@@ -209,4 +209,21 @@ export class GraphExtractionService extends BaseService {
     console.error('GraphExtractionService Error:', errorMessage);
     return throwError(() => new Error(errorMessage));
   }
+
+  // ==================== Schema Presets ====================
+
+  getSchemaPresets(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}${this.apiPath}/schema-presets`)
+      .pipe(catchError(this.handleError));
+  }
+
+  getSchemaPreset(presetId: string): Observable<any> {
+    return this.http.get(`${this.backendUrl}${this.apiPath}/schema-presets/${presetId}`)
+      .pipe(catchError(this.handleError));
+  }
+
+  applySchemaPreset(presetId: string): Observable<any> {
+    return this.http.post(`${this.backendUrl}${this.apiPath}/schema-presets/${presetId}/apply`, {})
+      .pipe(catchError(this.handleError));
+  }
 }

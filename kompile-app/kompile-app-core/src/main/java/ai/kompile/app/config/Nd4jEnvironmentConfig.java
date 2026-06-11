@@ -163,7 +163,18 @@ public record Nd4jEnvironmentConfig(
         @JsonProperty("dspGraphMetadataSafetyMb") Integer dspGraphMetadataSafetyMb,     // ND4J_DSP_GRAPH_METADATA_SAFETY_MB
         @JsonProperty("dspProactiveEvictBeforeCapture") Boolean dspProactiveEvictBeforeCapture, // ND4J_DSP_PROACTIVE_EVICT
         @JsonProperty("dspLruEviction") Boolean dspLruEviction,                         // ND4J_DSP_LRU_EVICTION
-        @JsonProperty("dspCaptureWorkspaceMb") Integer dspCaptureWorkspaceMb            // ND4J_DSP_CAPTURE_WORKSPACE_MB
+        @JsonProperty("dspCaptureWorkspaceMb") Integer dspCaptureWorkspaceMb,            // ND4J_DSP_CAPTURE_WORKSPACE_MB
+
+        // Triton performance optimization fields (from BenchmarkConfig.optimal())
+        @JsonProperty("tritonSectionFusion") Boolean tritonSectionFusion,             // env.setTritonSectionFusion()
+        @JsonProperty("tritonGraphCapture") Boolean tritonGraphCapture,               // env.setTritonGraphCapture()
+        @JsonProperty("tritonCompileAll") Boolean tritonCompileAll,                   // env.setTritonCompileAll()
+        @JsonProperty("cublasTf32") Boolean cublasTf32,                               // env.setCublasTf32Enabled() (cuBLAS-level TF32, separate from Triton TF32)
+        @JsonProperty("tritonConsolidatedArgTable") Boolean tritonConsolidatedArgTable, // env.setTritonConsolidatedArgTable()
+        @JsonProperty("tritonArgDirtyTracking") Boolean tritonArgDirtyTracking,       // env.setTritonArgDirtyTracking()
+        @JsonProperty("tritonMergedCaptureThroughViews") Boolean tritonMergedCaptureThroughViews, // env.setTritonMergedCaptureThroughViews()
+        @JsonProperty("dspBatchedGemm") Boolean dspBatchedGemm,                       // env.setDspBatchedGemm()
+        @JsonProperty("dspFreezeMergeSegments") Boolean dspFreezeMergeSegments         // env.setDspFreezeMergeSegments()
 ) {
 
     /**
@@ -264,7 +275,7 @@ public record Nd4jEnvironmentConfig(
                 false,  // dspNoAttnOverride - attention override ON by default
                 false,  // dspNoDirect - direct mode ON by default
                 false,  // tritonSkipKernels - triton kernels ON by default
-                false,  // tritonTf32 - TF32 precision OFF by default
+                true,   // tritonTf32 - TF32 precision ON by default (matches BenchmarkConfig.optimal())
                 false,  // cublasDisableWorkspace - workspace capture ON by default
                 null,   // dspDiagnostics - no diagnostics by default
                 false,  // opTiming - op timing OFF by default
@@ -275,8 +286,104 @@ public record Nd4jEnvironmentConfig(
                 null,   // dspGraphMetadataSafetyMb - use native default (16)
                 null,   // dspProactiveEvictBeforeCapture - use native default (true)
                 null,   // dspLruEviction - use native default (true)
-                null    // dspCaptureWorkspaceMb - use native default (128)
+                null,   // dspCaptureWorkspaceMb - use native default (128)
+                // Triton performance optimizations (matching BenchmarkConfig.optimal())
+                true,   // tritonSectionFusion - fuse sections for fewer kernel launches
+                true,   // tritonGraphCapture - CUDA graph capture for decode plans
+                true,   // tritonCompileAll - compile all ops through Triton
+                true,   // cublasTf32 - enable cuBLAS TF32 for matmul performance
+                true,   // tritonConsolidatedArgTable - single arg table per plan
+                true,   // tritonArgDirtyTracking - only update changed args
+                true,   // tritonMergedCaptureThroughViews - capture through view ops
+                true,   // dspBatchedGemm - batch small GEMMs together
+                true    // dspFreezeMergeSegments - merge segments during freeze
         );
+    }
+
+    /**
+     * Applies the performance-critical optimization flags from this config to the ND4J environment.
+     * Call this before any SameDiff/VLM model usage to ensure optimal decode performance.
+     *
+     * <p>On CUDA, this first calls {@link org.nd4j.linalg.factory.Environment#applyOptimalLLMConfig()}
+     * which is the single source of truth for optimal Triton/DSP/CUDA settings (matching
+     * {@code BenchmarkConfig.optimal()} from samediff-llm). It resets all flags to clean state,
+     * then applies: tritonIncludeTypes, sectionFusion, graphCapture, compileAll, cuBLAS TF32,
+     * consolidated arg table, dirty tracking, numWarps=4, numStages=1, captureMinExec=1,
+     * batchedGemm, and all segment fusion flags.</p>
+     *
+     * <p>After the optimal baseline, any non-null overrides from this config record are applied
+     * on top, enabling per-field regression recovery via the JSON config file.</p>
+     *
+     * <p>This is a lightweight alternative to the full {@code Nd4jEnvironmentConfigService}
+     * for contexts where Spring is not available (tests, CLI tools, subprocesses).</p>
+     *
+     * <p>Usage: {@code Nd4jEnvironmentConfig.defaults().applyOptimizations();}</p>
+     */
+    public void applyOptimizations() {
+        var env = org.nd4j.linalg.factory.Nd4j.getEnvironment();
+        boolean isCuda = !env.isCPU();
+
+        // System properties for DSP/optimizer settings (apply on both CPU and CUDA)
+        if (optimizerEnabled() != null)
+            System.setProperty(ND4JSystemProperties.OPTIMIZER_ENABLED, optimizerEnabled().toString());
+        if (optimizerFp16() != null)
+            System.setProperty(ND4JSystemProperties.OPTIMIZER_FP16, optimizerFp16().toString());
+        if (dspNoFreeze() != null)
+            System.setProperty(ND4JSystemProperties.DSP_NO_FREEZE, dspNoFreeze().toString());
+        if (tritonSkipKernels() != null)
+            System.setProperty(ND4JSystemProperties.TRITON_SKIP_KERNELS, tritonSkipKernels().toString());
+        if (tritonTf32() != null)
+            System.setProperty(ND4JSystemProperties.TRITON_TF32, tritonTf32().toString());
+
+        if (!isCuda) return;
+
+        // Apply the full optimal LLM configuration from DL4J Environment.
+        // This is the single source of truth — it resets ALL Triton/DSP flags to clean state,
+        // then applies BenchmarkConfig.optimal() settings including:
+        //   - tritonIncludeTypes("CONST_GEN,GATHER,GATHER_ND,CONCAT,SPLIT,SPLIT_V,STACK,STRIDED_SLICE,NORMALIZATION,ATTENTION,REDUCTION")
+        //   - tritonSectionFusion, tritonGraphCapture, tritonCompileAll
+        //   - tritonConsolidatedArgTable, tritonArgDirtyTracking
+        //   - tritonAllowFallbackCapture, tritonMergedCaptureThroughViews
+        //   - tritonNumWarps=4, tritonNumStages=1, tritonCaptureMinExec=1
+        //   - cublasTf32, tritonTf32Enabled
+        //   - dspBatchedGemm, segment fusion flags
+        env.applyOptimalLLMConfig();
+
+        // Apply user overrides from this config record on top of the optimal baseline.
+        // This enables per-field regression recovery via the JSON config file.
+        if (tritonSectionFusion() != null && !tritonSectionFusion()) {
+            env.setTritonSectionFusion(false);
+        }
+        if (tritonGraphCapture() != null && !tritonGraphCapture()) {
+            env.setTritonGraphCapture(false);
+        }
+        if (tritonCompileAll() != null && !tritonCompileAll()) {
+            env.setTritonCompileAll(false);
+        }
+        if (cublasTf32() != null && !cublasTf32()) {
+            env.setCublasTf32Enabled(false);
+        }
+        if (tritonConsolidatedArgTable() != null && !tritonConsolidatedArgTable()) {
+            env.setTritonConsolidatedArgTable(false);
+        }
+        if (tritonArgDirtyTracking() != null && !tritonArgDirtyTracking()) {
+            env.setTritonArgDirtyTracking(false);
+        }
+        if (tritonMergedCaptureThroughViews() != null && !tritonMergedCaptureThroughViews()) {
+            env.setTritonMergedCaptureThroughViews(false);
+        }
+        if (dspBatchedGemm() != null && !dspBatchedGemm()) {
+            env.setDspBatchedGemm(false);
+        }
+        if (dspFreezeMergeSegments() != null && !dspFreezeMergeSegments()) {
+            env.setDspFreezeMergeSegments(false);
+        }
+        // Triton compiler tuning overrides
+        if (tritonNumWarps() != null) env.setTritonNumWarps(tritonNumWarps());
+        if (tritonNumStages() != null) env.setTritonNumStages(tritonNumStages());
+        if (tritonNumCTAs() != null) env.setTritonNumCTAs(tritonNumCTAs());
+        if (tritonBuildThreads() != null) env.setTritonBuildThreads(tritonBuildThreads());
+        if (tritonEnableFpFusion() != null) env.setTritonEnableFpFusion(tritonEnableFpFusion());
     }
 
     /**
@@ -396,6 +503,16 @@ public record Nd4jEnvironmentConfig(
                 .dspProactiveEvictBeforeCapture(getBoolEnv("ND4J_DSP_PROACTIVE_EVICT"))
                 .dspLruEviction(getBoolEnv("ND4J_DSP_LRU_EVICTION"))
                 .dspCaptureWorkspaceMb(getIntEnv("ND4J_DSP_CAPTURE_WORKSPACE_MB"))
+                // Triton performance optimizations - capture from env object
+                .tritonSectionFusion(isCuda ? env.tritonSectionFusion() : null)
+                .tritonGraphCapture(isCuda ? env.tritonGraphCapture() : null)
+                .tritonCompileAll(isCuda ? env.tritonCompileAll() : null)
+                .cublasTf32(isCuda ? env.cublasTf32Enabled() : null)
+                .tritonConsolidatedArgTable(isCuda ? env.tritonConsolidatedArgTable() : null)
+                .tritonArgDirtyTracking(isCuda ? env.tritonArgDirtyTracking() : null)
+                .tritonMergedCaptureThroughViews(isCuda ? env.tritonMergedCaptureThroughViews() : null)
+                .dspBatchedGemm(isCuda ? env.dspBatchedGemm() : null)
+                .dspFreezeMergeSegments(isCuda ? env.dspFreezeMergeSegments() : null)
                 .build();
     }
 
@@ -531,7 +648,17 @@ public record Nd4jEnvironmentConfig(
                 other.dspGraphMetadataSafetyMb() != null ? other.dspGraphMetadataSafetyMb() : this.dspGraphMetadataSafetyMb(),
                 other.dspProactiveEvictBeforeCapture() != null ? other.dspProactiveEvictBeforeCapture() : this.dspProactiveEvictBeforeCapture(),
                 other.dspLruEviction() != null ? other.dspLruEviction() : this.dspLruEviction(),
-                other.dspCaptureWorkspaceMb() != null ? other.dspCaptureWorkspaceMb() : this.dspCaptureWorkspaceMb()
+                other.dspCaptureWorkspaceMb() != null ? other.dspCaptureWorkspaceMb() : this.dspCaptureWorkspaceMb(),
+                // Triton performance optimizations
+                other.tritonSectionFusion() != null ? other.tritonSectionFusion() : this.tritonSectionFusion(),
+                other.tritonGraphCapture() != null ? other.tritonGraphCapture() : this.tritonGraphCapture(),
+                other.tritonCompileAll() != null ? other.tritonCompileAll() : this.tritonCompileAll(),
+                other.cublasTf32() != null ? other.cublasTf32() : this.cublasTf32(),
+                other.tritonConsolidatedArgTable() != null ? other.tritonConsolidatedArgTable() : this.tritonConsolidatedArgTable(),
+                other.tritonArgDirtyTracking() != null ? other.tritonArgDirtyTracking() : this.tritonArgDirtyTracking(),
+                other.tritonMergedCaptureThroughViews() != null ? other.tritonMergedCaptureThroughViews() : this.tritonMergedCaptureThroughViews(),
+                other.dspBatchedGemm() != null ? other.dspBatchedGemm() : this.dspBatchedGemm(),
+                other.dspFreezeMergeSegments() != null ? other.dspFreezeMergeSegments() : this.dspFreezeMergeSegments()
         );
     }
 
@@ -647,6 +774,16 @@ public record Nd4jEnvironmentConfig(
         private Boolean dspProactiveEvictBeforeCapture;
         private Boolean dspLruEviction;
         private Integer dspCaptureWorkspaceMb;
+        // Triton performance optimization fields
+        private Boolean tritonSectionFusion;
+        private Boolean tritonGraphCapture;
+        private Boolean tritonCompileAll;
+        private Boolean cublasTf32;
+        private Boolean tritonConsolidatedArgTable;
+        private Boolean tritonArgDirtyTracking;
+        private Boolean tritonMergedCaptureThroughViews;
+        private Boolean dspBatchedGemm;
+        private Boolean dspFreezeMergeSegments;
 
         public Builder maxThreads(Integer maxThreads) { this.maxThreads = maxThreads; return this; }
         public Builder maxMasterThreads(Integer maxMasterThreads) { this.maxMasterThreads = maxMasterThreads; return this; }
@@ -752,6 +889,16 @@ public record Nd4jEnvironmentConfig(
         public Builder dspProactiveEvictBeforeCapture(Boolean dspProactiveEvictBeforeCapture) { this.dspProactiveEvictBeforeCapture = dspProactiveEvictBeforeCapture; return this; }
         public Builder dspLruEviction(Boolean dspLruEviction) { this.dspLruEviction = dspLruEviction; return this; }
         public Builder dspCaptureWorkspaceMb(Integer dspCaptureWorkspaceMb) { this.dspCaptureWorkspaceMb = dspCaptureWorkspaceMb; return this; }
+        // Triton performance optimization builder methods
+        public Builder tritonSectionFusion(Boolean tritonSectionFusion) { this.tritonSectionFusion = tritonSectionFusion; return this; }
+        public Builder tritonGraphCapture(Boolean tritonGraphCapture) { this.tritonGraphCapture = tritonGraphCapture; return this; }
+        public Builder tritonCompileAll(Boolean tritonCompileAll) { this.tritonCompileAll = tritonCompileAll; return this; }
+        public Builder cublasTf32(Boolean cublasTf32) { this.cublasTf32 = cublasTf32; return this; }
+        public Builder tritonConsolidatedArgTable(Boolean tritonConsolidatedArgTable) { this.tritonConsolidatedArgTable = tritonConsolidatedArgTable; return this; }
+        public Builder tritonArgDirtyTracking(Boolean tritonArgDirtyTracking) { this.tritonArgDirtyTracking = tritonArgDirtyTracking; return this; }
+        public Builder tritonMergedCaptureThroughViews(Boolean tritonMergedCaptureThroughViews) { this.tritonMergedCaptureThroughViews = tritonMergedCaptureThroughViews; return this; }
+        public Builder dspBatchedGemm(Boolean dspBatchedGemm) { this.dspBatchedGemm = dspBatchedGemm; return this; }
+        public Builder dspFreezeMergeSegments(Boolean dspFreezeMergeSegments) { this.dspFreezeMergeSegments = dspFreezeMergeSegments; return this; }
 
         public Nd4jEnvironmentConfig build() {
             return new Nd4jEnvironmentConfig(
@@ -786,7 +933,11 @@ public record Nd4jEnvironmentConfig(
                     // CUDA graph capture OOM retry
                     dspCaptureOomMaxRetries, dspCaptureOomRetryInterval,
                     dspCublasWorkspaceMb, dspGraphMetadataSafetyMb,
-                    dspProactiveEvictBeforeCapture, dspLruEviction, dspCaptureWorkspaceMb
+                    dspProactiveEvictBeforeCapture, dspLruEviction, dspCaptureWorkspaceMb,
+                    // Triton performance optimizations
+                    tritonSectionFusion, tritonGraphCapture, tritonCompileAll, cublasTf32,
+                    tritonConsolidatedArgTable, tritonArgDirtyTracking, tritonMergedCaptureThroughViews,
+                    dspBatchedGemm, dspFreezeMergeSegments
             );
         }
     }

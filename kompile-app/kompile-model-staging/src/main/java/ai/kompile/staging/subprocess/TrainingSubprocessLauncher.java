@@ -21,13 +21,15 @@ import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.staging.domain.TrainingJobHistory;
 import ai.kompile.staging.service.TrainingJobHistoryService;
 import ai.kompile.staging.web.dto.TrainingConfigRequest;
-import ai.kompile.staging.web.dto.TrainingJobStatus;
+import ai.kompile.core.staging.TrainingJobStatus;
 import ai.kompile.staging.web.dto.TrainingLogEntry;
 import ai.kompile.staging.web.dto.TrainingMetricsSnapshot;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -51,12 +53,15 @@ import java.util.concurrent.atomic.AtomicLong;
 @Service
 @ConditionalOnClass(name = "ai.kompile.staging.catalog.CatalogService")
 @ConditionalOnProperty(name = "kompile.training.subprocess.enabled", havingValue = "true", matchIfMissing = false)
-public class TrainingSubprocessLauncher {
+public class TrainingSubprocessLauncher implements ai.kompile.core.staging.TrainingSubprocessLauncherApi {
 
     private static final Logger log = LoggerFactory.getLogger(TrainingSubprocessLauncher.class);
 
     private final ObjectMapper objectMapper;
     private final TrainingJobHistoryService historyService;
+
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
 
     @Value("${kompile.staging.models-dir:#{systemProperties['user.home'] + '/.kompile/models'}}")
     private String modelsDir;
@@ -551,6 +556,11 @@ public class TrainingSubprocessLauncher {
 
     private void handlePhaseTransition(String jobId, TrainingSubprocessMessage.PhaseTransition pt) {
         log.debug("Training phase transition: jobId={}, {} -> {}", jobId, pt.fromPhase(), pt.toPhase());
+        // Publish event for scheduler bridge to forward to ResourceAwareJobScheduler
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new ai.kompile.core.staging.TrainingPhaseTransitionEvent(
+                    this, jobId, pt.fromPhase(), pt.toPhase()));
+        }
     }
 
     private void updateJobStatus(String jobId, String status) {

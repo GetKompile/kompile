@@ -27,9 +27,14 @@ import {
   Workflow,
   WorkflowStep,
   CreateOrchestratorRequest,
-  StartWorkflowRequest
+  StartWorkflowRequest,
+  ExecuteTaskRequest,
+  StateTransitionRequest,
+  InvokeLlmRequest,
+  LlmSession,
+  LlmTriggerConfig
 } from '../../services/orchestrator.service';
-import { TaskDefinition } from '../../models/orchestrator-models';
+import { TaskDefinition, StateDefinition } from '../../models/orchestrator-models';
 import { AgentService } from '../../services/agent.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { AgentProvider, FactSheet } from '../../models/api-models';
@@ -63,7 +68,7 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
   activeSubTab: 'instances' | 'orchestrator-detail' | 'react-agent' | 'create' = 'instances';
 
   // Orchestrator detail sub-tab navigation (when viewing a specific orchestrator)
-  orchestratorDetailTab: 'overview' | 'tasks' | 'definitions' | 'workflows' | 'state-machine' | 'classifiers' | 'audit' = 'overview';
+  orchestratorDetailTab: 'overview' | 'tasks' | 'definitions' | 'workflows' | 'llm' | 'state-machine' | 'classifiers' | 'audit' | 'logs' = 'overview';
 
   // Orchestrator instances
   orchestrators: OrchestratorInstance[] = [];
@@ -122,6 +127,11 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
   commandToExecute = '';
   executingCommand = false;
 
+  // Execute Task (named definitions)
+  selectedExecuteTaskId = '';
+  executeTaskVariables: { key: string; value: string }[] = [];
+  executingTask = false;
+
   // UI state for expandable sections
   expandedTaskOutputs: Set<number> = new Set();
   expandedStepAnalysis: Set<number> = new Set();
@@ -129,9 +139,56 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
 
   // Selected LLM session for viewing
   selectedLlmSession: any = null;
+  conversationMessages: any[] = [];
+  loadingConversation = false;
+
+  // Process logs
+  agentLogRuns: any[] = [];
+  subprocessLogRuns: any[] = [];
+  logRecords: any[] = [];
+  expandedLogRun: string | null = null;
 
   // Task definition editor
   selectedTaskDefinition: TaskDefinition | null = null;
+  taskDefinitions: TaskDefinition[] = [];
+  loadingDefinitions = false;
+  showDefinitionEditor = false;
+
+  // Orchestrator context
+  orchestratorContext: Record<string, any> = {};
+  editingContext = false;
+  contextEditJson = '';
+
+  // State transition
+  availableStates: StateDefinition[] = [];
+  selectedTransitionTarget = '';
+  transitioning = false;
+
+  // LLM sessions management
+  llmSessions: LlmSession[] = [];
+  activeLlmSessions: LlmSession[] = [];
+  llmProviders: string[] = [];
+  llmPrompt = '';
+  llmSystemPrompt = '';
+  selectedLlmProvider = '';
+  invokingLlm = false;
+  loadingLlmSessions = false;
+
+  // LLM triggers
+  llmTriggers: LlmTriggerConfig[] = [];
+  loadingTriggers = false;
+  showTriggerForm = false;
+  newTriggerName = '';
+  newTriggerType: string = 'ON_STATE_ENTER';
+  newTriggerPrompt = '';
+  newTriggerAutoExecute = true;
+  triggerTypes = ['ON_STATE_ENTER', 'ON_STATE_EXIT', 'ON_TASK_COMPLETE', 'ON_TASK_FAILURE', 'ON_ERROR', 'PERIODIC', 'MANUAL'];
+
+  // Success message (replaces browser alert())
+  successMessage: string | null = null;
+
+  // Utility
+  objectKeys = Object.keys;
 
   private destroy$ = new Subject<void>();
 
@@ -220,6 +277,7 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
     this.selectedOrchestrator = orchestrator;
     this.loadTasks();
     this.loadWorkflows();
+    this.loadOrchestratorContext();
   }
 
   selectAndOpenOrchestrator(orchestrator: OrchestratorInstance): void {
@@ -228,6 +286,189 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
     this.orchestratorDetailTab = 'overview';
     this.loadTasks();
     this.loadWorkflows();
+    this.loadOrchestratorContext();
+  }
+
+  loadOrchestratorContext(): void {
+    if (!this.selectedOrchestrator) return;
+    this.orchestratorService.getContext(this.selectedOrchestrator.instanceId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (ctx) => { this.orchestratorContext = ctx || {}; },
+        error: () => { this.orchestratorContext = {}; }
+      });
+    // Also load available states for the transition dropdown
+    this.orchestratorService.getStates(this.selectedOrchestrator.instanceId, true)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (states) => { this.availableStates = states || []; },
+        error: () => { this.availableStates = []; }
+      });
+  }
+
+  // ==================== State Transition ====================
+
+  transitionToState(): void {
+    if (!this.selectedOrchestrator || !this.selectedTransitionTarget) return;
+    this.transitioning = true;
+    const request: StateTransitionRequest = { targetStateId: this.selectedTransitionTarget };
+    this.orchestratorService.transitionTo(this.selectedOrchestrator.instanceId, request)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.transitioning = false;
+          this.selectedTransitionTarget = '';
+          this.showSuccess('State transition completed');
+          this.loadOrchestrators();
+          this.loadOrchestratorContext();
+        },
+        error: (err) => {
+          this.transitioning = false;
+          this.error = 'State transition failed: ' + (err.error?.message || err.message);
+        }
+      });
+  }
+
+  // ==================== Context Editing ====================
+
+  startEditContext(): void {
+    this.editingContext = true;
+    this.contextEditJson = JSON.stringify(this.orchestratorContext, null, 2);
+  }
+
+  cancelEditContext(): void {
+    this.editingContext = false;
+  }
+
+  saveContext(): void {
+    if (!this.selectedOrchestrator) return;
+    try {
+      const parsed = JSON.parse(this.contextEditJson);
+      this.orchestratorService.updateContext(this.selectedOrchestrator.instanceId, parsed)
+        .pipe(takeUntil(this.destroy$))
+        .subscribe({
+          next: () => {
+            this.editingContext = false;
+            this.orchestratorContext = parsed;
+            this.showSuccess('Context updated');
+          },
+          error: (err) => {
+            this.error = 'Failed to update context: ' + (err.error?.message || err.message);
+          }
+        });
+    } catch {
+      this.error = 'Invalid JSON in context editor';
+    }
+  }
+
+  // ==================== LLM Sessions ====================
+
+  loadLlmSessions(): void {
+    if (!this.selectedOrchestrator) return;
+    this.loadingLlmSessions = true;
+    const id = this.selectedOrchestrator.instanceId;
+    forkJoin({
+      active: this.orchestratorService.getActiveLlmSessions(id),
+      history: this.orchestratorService.getLlmSessionHistory(id),
+      providers: this.orchestratorService.getLlmProviders(id)
+    }).pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: ({ active, history, providers }) => {
+          this.activeLlmSessions = active || [];
+          this.llmSessions = history || [];
+          this.llmProviders = providers || [];
+          this.loadingLlmSessions = false;
+        },
+        error: () => { this.loadingLlmSessions = false; }
+      });
+  }
+
+  invokeLlmSession(): void {
+    if (!this.selectedOrchestrator || !this.llmPrompt.trim()) return;
+    this.invokingLlm = true;
+    const request: InvokeLlmRequest = {
+      prompt: this.llmPrompt.trim(),
+      providerId: this.selectedLlmProvider || undefined,
+      systemPrompt: this.llmSystemPrompt.trim() || undefined
+    };
+    this.orchestratorService.invokeLlm(this.selectedOrchestrator.instanceId, request)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (session) => {
+          this.invokingLlm = false;
+          this.llmPrompt = '';
+          this.llmSystemPrompt = '';
+          this.loadLlmSessions();
+          this.viewLlmSession(session.id);
+        },
+        error: (err) => {
+          this.invokingLlm = false;
+          this.error = 'Failed to invoke LLM: ' + (err.error?.message || err.message);
+        }
+      });
+  }
+
+  cancelLlmSessionById(sessionId: number): void {
+    if (!this.selectedOrchestrator) return;
+    this.orchestratorService.cancelLlmSession(this.selectedOrchestrator.instanceId, sessionId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => this.loadLlmSessions(),
+        error: (err) => {
+          this.error = 'Failed to cancel LLM session: ' + (err.error?.message || err.message);
+        }
+      });
+  }
+
+  // ==================== LLM Triggers ====================
+
+  loadLlmTriggers(): void {
+    if (!this.selectedOrchestrator) return;
+    this.loadingTriggers = true;
+    this.orchestratorService.getLlmTriggers(this.selectedOrchestrator.instanceId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (triggers) => {
+          this.llmTriggers = triggers || [];
+          this.loadingTriggers = false;
+        },
+        error: () => { this.loadingTriggers = false; }
+      });
+  }
+
+  showNewTriggerForm(): void {
+    this.showTriggerForm = true;
+    this.newTriggerName = '';
+    this.newTriggerType = 'ON_STATE_ENTER';
+    this.newTriggerPrompt = '';
+    this.newTriggerAutoExecute = true;
+  }
+
+  cancelTriggerForm(): void {
+    this.showTriggerForm = false;
+  }
+
+  saveTrigger(): void {
+    if (!this.selectedOrchestrator || !this.newTriggerName.trim()) return;
+    const trigger: LlmTriggerConfig = {
+      triggerId: 'trigger-' + Date.now(),
+      name: this.newTriggerName.trim(),
+      triggerType: this.newTriggerType as any,
+      promptTemplate: this.newTriggerPrompt.trim() || undefined,
+      autoExecute: this.newTriggerAutoExecute
+    };
+    this.orchestratorService.registerLlmTrigger(this.selectedOrchestrator.instanceId, trigger)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.showTriggerForm = false;
+          this.loadLlmTriggers();
+          this.showSuccess('Trigger created');
+        },
+        error: (err) => {
+          this.error = 'Failed to create trigger: ' + (err.error?.message || err.message);
+        }
+      });
   }
 
   startOrchestrator(orchestrator: OrchestratorInstance): void {
@@ -312,7 +553,7 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
       .subscribe({
         next: () => {
           this.error = null;
-          alert('Snapshot created successfully');
+          this.showSuccess('Snapshot created successfully');
         },
         error: (err) => {
           this.error = 'Failed to create snapshot: ' + (err.error?.message || err.message);
@@ -326,12 +567,17 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
       .subscribe({
         next: () => {
           this.loadOrchestrators();
-          alert('Recovery initiated');
+          this.showSuccess('Recovery initiated');
         },
         error: (err) => {
           this.error = 'Failed to recover orchestrator: ' + (err.error?.message || err.message);
         }
       });
+  }
+
+  private showSuccess(message: string): void {
+    this.successMessage = message;
+    setTimeout(() => { this.successMessage = null; }, 5000);
   }
 
   createOrchestrator(): void {
@@ -420,6 +666,11 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
     this.loadingTasks = true;
     const instanceId = this.selectedOrchestrator.instanceId;
 
+    // Also load task definitions for the execute-task dropdown
+    if (this.taskDefinitions.length === 0) {
+      this.loadTaskDefinitions();
+    }
+
     this.orchestratorService.getTaskHistory(instanceId)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
@@ -460,6 +711,43 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
           this.error = 'Failed to execute command: ' + (err.error?.message || err.message);
         }
       });
+  }
+
+  executeNamedTask(): void {
+    if (!this.selectedOrchestrator || !this.selectedExecuteTaskId) return;
+    this.executingTask = true;
+    const variables: Record<string, any> = {};
+    for (const v of this.executeTaskVariables) {
+      if (v.key.trim()) {
+        variables[v.key.trim()] = v.value;
+      }
+    }
+    const request: ExecuteTaskRequest = {
+      taskDefinitionId: this.selectedExecuteTaskId,
+      variables: Object.keys(variables).length > 0 ? variables : undefined
+    };
+    this.orchestratorService.executeTask(this.selectedOrchestrator.instanceId, request)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.executingTask = false;
+          this.selectedExecuteTaskId = '';
+          this.executeTaskVariables = [];
+          this.loadTasks();
+        },
+        error: (err) => {
+          this.executingTask = false;
+          this.error = 'Failed to execute task: ' + (err.error?.message || err.message);
+        }
+      });
+  }
+
+  addTaskVariable(): void {
+    this.executeTaskVariables.push({ key: '', value: '' });
+  }
+
+  removeTaskVariable(index: number): void {
+    this.executeTaskVariables.splice(index, 1);
   }
 
   cancelTask(task: TaskInstance): void {
@@ -596,19 +884,32 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
   rejectStep(step: WorkflowStep): void {
     if (!this.selectedOrchestrator || !this.selectedWorkflow) return;
 
-    const feedback = prompt('Enter feedback for rejection:');
-    if (feedback === null) return;
-
-    this.orchestratorService.rejectWorkflowStep(this.selectedOrchestrator.instanceId, this.selectedWorkflow.id, step.stepNumber, feedback)
+    const dialogData: ConfirmDialogData = {
+      title: 'Reject Workflow Step',
+      message: `Provide feedback for rejecting step #${step.stepNumber}:`,
+      confirmText: 'Reject',
+      confirmColor: 'warn',
+      icon: 'cancel',
+      inputPlaceholder: 'Enter rejection feedback...'
+    };
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
       .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: () => {
-          this.loadWorkflowSteps();
-          this.loadWorkflows();
-        },
-        error: (err) => {
-          this.error = 'Failed to reject step: ' + (err.error?.message || err.message);
-        }
+      .subscribe((feedback: string | false) => {
+        if (feedback === false || feedback === undefined) return;
+        this.orchestratorService.rejectWorkflowStep(
+          this.selectedOrchestrator!.instanceId, this.selectedWorkflow!.id, step.stepNumber, feedback || ''
+        )
+          .pipe(takeUntil(this.destroy$))
+          .subscribe({
+            next: () => {
+              this.loadWorkflowSteps();
+              this.loadWorkflows();
+            },
+            error: (err) => {
+              this.error = 'Failed to reject step: ' + (err.error?.message || err.message);
+            }
+          });
       });
   }
 
@@ -707,18 +1008,81 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
 
   viewLlmSession(sessionId: number): void {
     if (!this.selectedOrchestrator) return;
-    this.orchestratorService.getLlmSession(this.selectedOrchestrator.instanceId, sessionId)
+    const instanceId = this.selectedOrchestrator.instanceId;
+    this.loadingConversation = true;
+    this.conversationMessages = [];
+    this.orchestratorService.getLlmSession(instanceId, sessionId)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
-        next: (session) => {
+        next: (session: any) => {
           this.selectedLlmSession = session;
-          // Could open a dialog or switch to a session view
-          alert(`LLM Session #${sessionId}\n\nPrompt: ${session.initialPrompt}\n\nOutput: ${session.output || 'No output yet'}`);
+          // Also load conversation messages from dedicated endpoint
+          this.orchestratorService.getSessionConversation(instanceId, sessionId)
+            .pipe(takeUntil(this.destroy$))
+            .subscribe({
+              next: (messages: any[]) => {
+                this.conversationMessages = messages || [];
+                this.loadingConversation = false;
+              },
+              error: () => {
+                this.loadingConversation = false;
+              }
+            });
         },
-        error: (err) => {
+        error: (err: any) => {
+          this.loadingConversation = false;
           this.error = 'Failed to load LLM session: ' + (err.error?.message || err.message);
         }
       });
+  }
+
+  closeLlmSession(): void {
+    this.selectedLlmSession = null;
+    this.conversationMessages = [];
+  }
+
+  formatTaskDuration(startTime: string | Date, endTime: string | Date): string {
+    const start = new Date(startTime).getTime();
+    const end = new Date(endTime).getTime();
+    const ms = end - start;
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    const mins = Math.floor(ms / 60000);
+    const secs = ((ms % 60000) / 1000).toFixed(0);
+    return `${mins}m ${secs}s`;
+  }
+
+  loadLogRuns(): void {
+    this.orchestratorService.getAgentLogRuns()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (runs: any[]) => this.agentLogRuns = runs || [],
+        error: () => this.agentLogRuns = []
+      });
+    this.orchestratorService.getSubprocessLogRuns()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (runs: any[]) => this.subprocessLogRuns = runs || [],
+        error: () => this.subprocessLogRuns = []
+      });
+  }
+
+  toggleLogRun(type: string, run: any): void {
+    const key = type === 'agent' ? `agent-${run.processId}` : `subprocess-${run.runId}`;
+    if (this.expandedLogRun === key) {
+      this.expandedLogRun = null;
+      this.logRecords = [];
+      return;
+    }
+    this.expandedLogRun = key;
+    this.logRecords = [];
+    const obs = type === 'agent'
+      ? this.orchestratorService.getAgentLogRecords(run.processId)
+      : this.orchestratorService.getSubprocessLogRecords(run.runId);
+    obs.pipe(takeUntil(this.destroy$)).subscribe({
+      next: (records: any[]) => this.logRecords = records || [],
+      error: () => this.logRecords = []
+    });
   }
 
   viewTaskDetails(taskId: number): void {
@@ -789,17 +1153,80 @@ export class OrchestratorHubComponent implements OnInit, OnDestroy {
 
   onTaskDefinitionSaved(taskDefinition: TaskDefinition): void {
     this.selectedTaskDefinition = null;
-    // Could show a success message or refresh task list
+    this.showDefinitionEditor = false;
+    this.loadTaskDefinitions();
   }
 
   onTaskDefinitionCancelled(): void {
     this.selectedTaskDefinition = null;
+    this.showDefinitionEditor = false;
   }
 
   editTaskDefinition(taskDefinition: TaskDefinition): void {
     this.selectedTaskDefinition = taskDefinition;
-    this.activeSubTab = 'orchestrator-detail';
-    this.orchestratorDetailTab = 'definitions';
+    this.showDefinitionEditor = true;
+  }
+
+  loadTaskDefinitions(): void {
+    if (!this.selectedOrchestrator) return;
+    this.loadingDefinitions = true;
+    this.orchestratorService.getEnhancedTaskDefinitions(this.selectedOrchestrator.instanceId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (defs: TaskDefinition[]) => {
+          this.taskDefinitions = defs;
+          this.loadingDefinitions = false;
+        },
+        error: () => {
+          this.loadingDefinitions = false;
+        }
+      });
+  }
+
+  createNewTaskDefinition(): void {
+    this.selectedTaskDefinition = null;
+    this.showDefinitionEditor = true;
+  }
+
+  deleteTaskDefinition(def: TaskDefinition): void {
+    if (!this.selectedOrchestrator) return;
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Task Definition',
+      message: `Are you sure you want to delete "${def.name || def.taskId}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe((confirmed: boolean) => {
+        if (confirmed && this.selectedOrchestrator) {
+          this.orchestratorService.deleteEnhancedTaskDefinition(this.selectedOrchestrator.instanceId, def.taskId)
+            .pipe(takeUntil(this.destroy$))
+            .subscribe({
+              next: () => this.loadTaskDefinitions(),
+              error: (err: any) => {
+                this.error = 'Failed to delete task definition: ' + (err.error?.message || err.message);
+              }
+            });
+        }
+      });
+  }
+
+  testTaskDefinition(def: TaskDefinition): void {
+    if (!this.selectedOrchestrator) return;
+    this.orchestratorService.testTaskDefinition(this.selectedOrchestrator.instanceId, def.taskId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.loadTasks();
+          this.orchestratorDetailTab = 'tasks';
+        },
+        error: (err: any) => {
+          this.error = 'Failed to test task: ' + (err.error?.message || err.message);
+        }
+      });
   }
 
   // ==================== Workflow Builder Methods ====================

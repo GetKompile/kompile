@@ -120,6 +120,12 @@ public class ModelWarmupService {
             long latency = warmable.warmup(config.getIterations(), config.getWarmupText());
             long totalMs = System.currentTimeMillis() - startMs;
 
+            // Trim GPU memory pools after warmup to release reserved-but-unused memory.
+            // Warmup runs inference passes that allocate DSP intermediates; the CUDA memory pool
+            // retains this memory as "reserved" even after the tensors are freed. Without trimming,
+            // other services see inflated GPU usage and resource gates may block.
+            trimGpuMemoryPools(serviceType);
+
             WarmupResult result = new WarmupResult(serviceType, true, latency, config.getIterations(),
                     Instant.now(), null);
             warmupResults.put(serviceType, result);
@@ -193,5 +199,27 @@ public class ModelWarmupService {
             }
         }
         return warmable;
+    }
+
+    /**
+     * Trim GPU memory pools on all devices to release reserved-but-unused memory after warmup.
+     * This is a best-effort operation; silently skips if running on CPU backend.
+     */
+    private void trimGpuMemoryPools(String reason) {
+        try {
+            var nd4j = org.nd4j.linalg.factory.Nd4j.class;
+            var getNativeOps = nd4j.getMethod("getNativeOps");
+            var nativeOps = getNativeOps.invoke(null);
+            var getAffinityManager = nd4j.getMethod("getAffinityManager");
+            var affinityManager = getAffinityManager.invoke(null);
+            int numDevices = (int) affinityManager.getClass().getMethod("getNumberOfDevices").invoke(affinityManager);
+            var trimMemoryPool = nativeOps.getClass().getMethod("trimMemoryPool", int.class);
+            for (int d = 0; d < numDevices; d++) {
+                trimMemoryPool.invoke(nativeOps, d);
+            }
+            log.info("Trimmed GPU memory pools on {} device(s) (reason: {})", numDevices, reason);
+        } catch (Exception e) {
+            log.debug("Could not trim GPU memory pools (CPU backend?): {}", e.getMessage());
+        }
     }
 }

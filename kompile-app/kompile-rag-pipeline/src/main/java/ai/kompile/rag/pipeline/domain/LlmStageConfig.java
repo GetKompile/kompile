@@ -18,7 +18,7 @@ public class LlmStageConfig {
     }
 
     @Builder.Default
-    private LlmProvider provider = LlmProvider.OPENAI;
+    private LlmProvider provider = null;
     /** Model name, e.g. "gpt-4", "claude-3-5-sonnet", "smollm-135m-instruct" */
     private String model;
     /** System prompt prepended to context */

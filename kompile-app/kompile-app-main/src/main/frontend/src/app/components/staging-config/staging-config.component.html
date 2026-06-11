@@ -46,6 +46,16 @@
               {{ activeFactSheet.name }}
             </span>
           </div>
+          <div class="app-embedding-status" *ngIf="currentEmbeddingModel">
+            <span class="usage-item">
+              <mat-icon>model_training</mat-icon>
+              {{ currentEmbeddingModel }}
+            </span>
+            <span class="usage-item" *ngIf="embeddingOptimalBatchSize">
+              <mat-icon>tune</mat-icon>
+              Batch: {{ embeddingOptimalBatchSize }}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -189,6 +199,26 @@
         Refresh Status
       </button>
     </mat-card-actions>
+  </mat-card>
+
+  <!-- LLM Serving Status -->
+  <mat-card class="llm-serving-card" *ngIf="llmServingStatus">
+    <mat-card-content>
+      <div class="llm-serving-row">
+        <mat-icon [class.text-success]="llmServingStatus.available" [class.text-warn]="!llmServingStatus.available">
+          {{ llmServingStatus.available ? 'check_circle' : 'cancel' }}
+        </mat-icon>
+        <div class="llm-serving-info">
+          <span class="llm-serving-label">LLM Serving</span>
+          <span class="llm-serving-detail">
+            {{ llmServingStatus.available ? 'Running' : 'Not Available' }}
+            <span *ngIf="llmServingStatus.provider"> &middot; {{ llmServingStatus.provider }}</span>
+            <span *ngIf="llmServingStatus.model"> &middot; {{ llmServingStatus.model }}</span>
+            <span *ngIf="llmServingStatus.type"> &middot; {{ llmServingStatus.type }}</span>
+          </span>
+        </div>
+      </div>
+    </mat-card-content>
   </mat-card>
 
   <!-- Tabs -->
@@ -591,7 +621,7 @@
                   <span class="model-meta">
                     <mat-chip class="status-chip staged">STAGED</mat-chip>
                     <span *ngIf="model.type">{{ getModelTypeLabel(model.type) }}</span>
-                    <span *ngIf="model.metadata?.embeddingDim">{{ model.metadata.embeddingDim }}d</span>
+                    <span *ngIf="model.metadata?.embeddingDim">{{ model.metadata?.embeddingDim }}d</span>
                   </span>
                 </div>
                 <div class="model-item-actions">
@@ -641,7 +671,7 @@
                     <span class="model-name">{{ model.modelId }}</span>
                     <span class="model-meta">
                       <mat-chip class="type-chip">{{ getModelTypeLabel(model.type) }}</mat-chip>
-                      <span *ngIf="model.metadata?.embeddingDim">{{ model.metadata.embeddingDim }}d</span>
+                      <span *ngIf="model.metadata?.embeddingDim">{{ model.metadata?.embeddingDim }}d</span>
                     </span>
                   </div>
                   <div class="model-item-actions">
@@ -657,6 +687,11 @@
                       <div class="download-status">
                         <mat-spinner diameter="16"></mat-spinner>
                         <span class="status-text">{{ downloadStatus }}</span>
+                      </div>
+                      <div class="loading-phase-detail" *ngIf="embeddingLoadingPhase">
+                        <span class="phase-label">{{ embeddingLoadingPhase }}</span>
+                        <span class="phase-msg" *ngIf="embeddingLoadingMessage">{{ embeddingLoadingMessage }}</span>
+                        <span class="phase-elapsed" *ngIf="embeddingLoadingElapsedMs > 0">{{ (embeddingLoadingElapsedMs / 1000).toFixed(1) }}s</span>
                       </div>
                       <mat-progress-bar mode="indeterminate" color="primary"></mat-progress-bar>
                       <button mat-icon-button color="warn" (click)="cancelDownload()" matTooltip="Cancel download">
@@ -699,7 +734,7 @@
                 <span class="status-label">Currently Loaded:</span>
                 <mat-chip color="accent" selected>{{ currentEmbeddingModel || 'Unknown' }}</mat-chip>
                 <span class="dimensions-badge" *ngIf="embeddingModelStatus?.dimensions">
-                  {{ embeddingModelStatus.dimensions }}d
+                  {{ embeddingModelStatus?.dimensions }}d
                 </span>
               </div>
             </div>
@@ -724,6 +759,8 @@
                   <div class="download-progress-inline" *ngIf="downloadingModel === getActiveModelForType(type)">
                     <mat-spinner diameter="18"></mat-spinner>
                     <span class="status-text">{{ downloadStatus }}</span>
+                    <span class="phase-label" *ngIf="embeddingLoadingPhase">{{ embeddingLoadingPhase }}</span>
+                    <span class="phase-elapsed" *ngIf="embeddingLoadingElapsedMs > 0">{{ (embeddingLoadingElapsedMs / 1000).toFixed(1) }}s</span>
                     <button mat-icon-button color="warn" (click)="cancelDownload()" matTooltip="Cancel">
                       <mat-icon>cancel</mat-icon>
                     </button>

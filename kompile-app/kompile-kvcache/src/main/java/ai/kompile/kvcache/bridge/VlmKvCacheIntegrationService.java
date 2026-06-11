@@ -25,9 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.eclipse.deeplearning4j.llm.generation.KvCacheManager;
 import org.eclipse.deeplearning4j.llm.generation.KvCacheStrategy;
 import org.eclipse.deeplearning4j.llm.generation.ModelIOConfig;
-import org.eclipse.deeplearning4j.llm.generation.QuantizedKvCacheManager;
-import org.eclipse.deeplearning4j.llm.generation.StaticKvCacheManager;
-import org.eclipse.deeplearning4j.llm.generation.TurboQuantKvCacheManager;
+import org.eclipse.deeplearning4j.llm.generation.UnifiedKvCacheManager;
 
 import jakarta.annotation.PreDestroy;
 import java.util.concurrent.ConcurrentHashMap;
@@ -185,24 +183,8 @@ public class VlmKvCacheIntegrationService {
      * @return a new KvCacheManager instance
      */
     private KvCacheManager createInnerKvCacheManager(KvCacheStrategy strategy) {
-        switch (strategy) {
-            case QUANTIZED:
-                log.info("Creating QuantizedKvCacheManager (INT8, reduces KV memory by ~4x)");
-                return new QuantizedKvCacheManager();
-            case TURBOQUANT:
-                int bits = properties.getTurboQuantBits();
-                log.info("Creating TurboQuantKvCacheManager ({}-bit, ~{}x compression with asymmetric attention)",
-                        bits, Math.round(16.0 / bits));
-                return new TurboQuantKvCacheManager(bits, ModelIOConfig.builder().build());
-            case PAGED:
-                // Paged KV cache is not yet a KvCacheManager implementation; fall back to static.
-                log.info("Paged KV cache strategy requested but no KvCacheManager impl available; falling back to STATIC");
-                return new StaticKvCacheManager();
-            case STATIC:
-            default:
-                log.info("Creating StaticKvCacheManager (dense pre-allocated buffers)");
-                return new StaticKvCacheManager();
-        }
+        log.info("Creating UnifiedKvCacheManager with strategy={}", strategy);
+        return new UnifiedKvCacheManager(strategy, ModelIOConfig.builder().build());
     }
 
     /**

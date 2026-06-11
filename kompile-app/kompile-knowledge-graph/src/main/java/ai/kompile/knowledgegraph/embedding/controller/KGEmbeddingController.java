@@ -31,6 +31,8 @@ import ai.kompile.knowledgegraph.embedding.impl.TransEModel;
 import ai.kompile.knowledgegraph.embedding.service.KGEmbeddingJobService;
 import ai.kompile.knowledgegraph.embedding.service.KGEmbeddingStorageService;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.orchestrator.api.LlmIntegrationService;
+import ai.kompile.orchestrator.api.LlmProvider;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

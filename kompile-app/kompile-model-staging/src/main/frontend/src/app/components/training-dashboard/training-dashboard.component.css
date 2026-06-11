@@ -12,3 +12,18 @@
 .status-pending mat-icon { color: #ff9800; }
 .status-error mat-icon { color: #f44336; }
 .progress-text { font-size: 0.75rem; color: rgba(0,0,0,0.6); }
+.expanded { background: rgba(25, 118, 210, 0.04); }
+.expanded-detail { padding: 12px 16px; border-top: 1px solid rgba(0,0,0,0.08); }
+.detail-section { margin-bottom: 12px; }
+.detail-section h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.log-feed { max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 11px; background: #1e1e1e; color: #d4d4d4; padding: 8px; border-radius: 4px; }
+.log-entry { display: flex; gap: 8px; padding: 1px 0; }
+.log-step { color: #569cd6; min-width: 60px; }
+.log-level { min-width: 40px; font-weight: bold; }
+.log-entry.log-error .log-level { color: #f44747; }
+.log-entry.log-warn .log-level { color: #ce9178; }
+.log-msg { flex: 1; }
+.log-loss { color: #b5cea8; }
+.metrics-row { display: flex; flex-wrap: wrap; gap: 16px; }
+.metric { font-size: 13px; }
+.connecting-msg { font-size: 12px; color: rgba(0,0,0,0.5); font-style: italic; }

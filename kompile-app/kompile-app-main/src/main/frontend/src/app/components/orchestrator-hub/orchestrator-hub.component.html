@@ -26,6 +26,12 @@
     <button class="close-btn" (click)="clearError()">x</button>
   </div>
 
+  <!-- Success Banner -->
+  <div *ngIf="successMessage" class="success-banner">
+    <span>{{ successMessage }}</span>
+    <button class="close-btn" (click)="successMessage = null">x</button>
+  </div>
+
   <!-- Main Navigation Tabs (only top-level items) -->
   <div class="sub-tabs">
     <button
@@ -180,7 +186,7 @@
         <button
           class="orch-sub-tab"
           [class.active]="orchestratorDetailTab === 'definitions'"
-          (click)="orchestratorDetailTab = 'definitions'">
+          (click)="orchestratorDetailTab = 'definitions'; loadTaskDefinitions()">
           Task Definitions
         </button>
         <button
@@ -188,6 +194,12 @@
           [class.active]="orchestratorDetailTab === 'workflows'"
           (click)="orchestratorDetailTab = 'workflows'">
           Workflows
+        </button>
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'llm'"
+          (click)="orchestratorDetailTab = 'llm'; loadLlmSessions(); loadLlmTriggers()">
+          LLM
         </button>
         <button
           class="orch-sub-tab"
@@ -206,6 +218,12 @@
           [class.active]="orchestratorDetailTab === 'audit'"
           (click)="orchestratorDetailTab = 'audit'">
           Audit Log
+        </button>
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'logs'"
+          (click)="orchestratorDetailTab = 'logs'; loadLogRuns()">
+          Process Logs
         </button>
       </div>
 
@@ -265,6 +283,64 @@
             </div>
           </div>
 
+          <!-- State Transition -->
+          <div *ngIf="availableStates.length > 0" class="overview-section">
+            <h4>Transition State</h4>
+            <div class="state-transition-row">
+              <span class="current-state-label">Current: <strong>{{ selectedOrchestrator.currentStateId || 'None' }}</strong></span>
+              <select [(ngModel)]="selectedTransitionTarget" [ngModelOptions]="{standalone: true}" class="task-select">
+                <option value="">Select target state...</option>
+                <option *ngFor="let state of availableStates"
+                        [value]="state.stateId"
+                        [disabled]="state.stateId === selectedOrchestrator.currentStateId">
+                  {{ state.name || state.stateId }} ({{ state.category }})
+                </option>
+              </select>
+              <button class="btn btn-primary btn-sm" [disabled]="!selectedTransitionTarget || transitioning" (click)="transitionToState()">
+                {{ transitioning ? 'Transitioning...' : 'Transition' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Working Directory -->
+          <div *ngIf="selectedOrchestrator.workingDirectory" class="overview-section">
+            <h4>Working Directory</h4>
+            <code class="overview-path">{{ selectedOrchestrator.workingDirectory }}</code>
+          </div>
+
+          <!-- Tags -->
+          <div *ngIf="selectedOrchestrator.tags" class="overview-section">
+            <h4>Tags</h4>
+            <div class="overview-tags">
+              <span *ngFor="let tag of selectedOrchestrator.tags.split(',')" class="tag-chip">{{ tag.trim() }}</span>
+            </div>
+          </div>
+
+          <!-- Context -->
+          <div class="overview-section">
+            <div class="context-header">
+              <h4>Context</h4>
+              <button *ngIf="!editingContext" class="btn btn-sm btn-secondary" (click)="startEditContext()">Edit</button>
+              <div *ngIf="editingContext" class="context-edit-actions">
+                <button class="btn btn-sm btn-primary" (click)="saveContext()">Save</button>
+                <button class="btn btn-sm btn-secondary" (click)="cancelEditContext()">Cancel</button>
+              </div>
+            </div>
+            <div *ngIf="!editingContext">
+              <div *ngIf="objectKeys(orchestratorContext).length > 0" class="context-grid">
+                <div *ngFor="let key of objectKeys(orchestratorContext)" class="context-row">
+                  <span class="context-key">{{ key }}</span>
+                  <span class="context-value">{{ orchestratorContext[key] | json }}</span>
+                </div>
+              </div>
+              <p *ngIf="objectKeys(orchestratorContext).length === 0" class="empty-state-inline">No context set. Click Edit to add key-value pairs.</p>
+            </div>
+            <div *ngIf="editingContext">
+              <textarea [(ngModel)]="contextEditJson" [ngModelOptions]="{standalone: true}"
+                        rows="8" class="context-edit-textarea"></textarea>
+            </div>
+          </div>
+
           <!-- Error Message if any -->
           <div *ngIf="selectedOrchestrator.errorMessage" class="orchestrator-error">
             <h4>⚠ Error</h4>
@@ -289,6 +365,34 @@
                 (click)="executeCommand()">
                 {{ executingCommand ? 'Executing...' : 'Execute' }}
               </button>
+            </div>
+          </div>
+
+          <!-- Execute Named Task -->
+          <div *ngIf="taskDefinitions.length > 0" class="command-section" style="margin-top: 12px;">
+            <h4>Execute Task Definition</h4>
+            <div class="execute-task-row">
+              <select [(ngModel)]="selectedExecuteTaskId" [ngModelOptions]="{standalone: true}" class="task-select">
+                <option value="">Select a task definition...</option>
+                <option *ngFor="let def of taskDefinitions" [value]="def.taskId">
+                  {{ def.name || def.taskId }} ({{ def.taskType || 'SHELL' }})
+                </option>
+              </select>
+              <button class="btn btn-primary" [disabled]="!selectedExecuteTaskId || executingTask" (click)="executeNamedTask()">
+                {{ executingTask ? 'Executing...' : 'Execute' }}
+              </button>
+            </div>
+            <!-- Variables -->
+            <div *ngIf="selectedExecuteTaskId" class="task-variables-section">
+              <div class="task-var-header">
+                <span>Variables</span>
+                <button class="btn btn-sm btn-secondary" (click)="addTaskVariable()">+ Add Variable</button>
+              </div>
+              <div *ngFor="let v of executeTaskVariables; let i = index" class="task-var-row">
+                <input type="text" [(ngModel)]="v.key" [ngModelOptions]="{standalone: true}" placeholder="Key" class="task-var-input">
+                <input type="text" [(ngModel)]="v.value" [ngModelOptions]="{standalone: true}" placeholder="Value" class="task-var-input">
+                <button class="btn btn-sm btn-danger" (click)="removeTaskVariable(i)">x</button>
+              </div>
             </div>
           </div>
 
@@ -340,7 +444,10 @@
                   <span *ngIf="task.taskDefinitionId">Definition: {{ task.taskDefinitionId }}</span>
                   <span *ngIf="task.startTime">Started: {{ task.startTime | date:'medium' }}</span>
                   <span *ngIf="task.endTime">Completed: {{ task.endTime | date:'medium' }}</span>
-                  <span *ngIf="task.retryAttempt && task.retryAttempt > 0">Retry #{{ task.retryAttempt }}</span>
+                  <span *ngIf="task.startTime && task.endTime" class="task-duration">
+                    Duration: {{ formatTaskDuration(task.startTime, task.endTime) }}
+                  </span>
+                  <span *ngIf="task.retryAttempt && task.retryAttempt > 0" class="retry-badge">Retry #{{ task.retryAttempt }}</span>
                 </div>
 
                 <!-- Command -->
@@ -386,12 +493,60 @@
 
         <!-- Task Definitions Sub-Tab -->
         <div *ngIf="orchestratorDetailTab === 'definitions'" class="orch-detail-panel full-height-panel">
-          <app-task-definition-editor
-            [instanceId]="selectedOrchestrator.instanceId"
-            [taskDefinition]="selectedTaskDefinition"
-            (saved)="onTaskDefinitionSaved($event)"
-            (cancelled)="onTaskDefinitionCancelled()">
-          </app-task-definition-editor>
+
+          <!-- Editor View -->
+          <div *ngIf="showDefinitionEditor">
+            <div class="def-editor-header">
+              <button class="btn btn-sm btn-secondary" (click)="onTaskDefinitionCancelled()">
+                &larr; Back to List
+              </button>
+              <span class="def-editor-title">{{ selectedTaskDefinition ? 'Edit' : 'New' }} Task Definition</span>
+            </div>
+            <app-task-definition-editor
+              [instanceId]="selectedOrchestrator.instanceId"
+              [taskDefinition]="selectedTaskDefinition"
+              (saved)="onTaskDefinitionSaved($event)"
+              (cancelled)="onTaskDefinitionCancelled()">
+            </app-task-definition-editor>
+          </div>
+
+          <!-- List View -->
+          <div *ngIf="!showDefinitionEditor">
+            <div class="panel-header">
+              <h3>Task Definitions</h3>
+              <button class="btn btn-primary btn-sm" (click)="createNewTaskDefinition()">+ New Definition</button>
+            </div>
+
+            <div *ngIf="loadingDefinitions" class="loading">Loading task definitions...</div>
+
+            <div *ngIf="!loadingDefinitions && taskDefinitions.length === 0" class="empty-state">
+              <p>No task definitions yet.</p>
+              <p style="font-size: 13px; color: #9ca3af;">Create task definitions to automate shell commands, HTTP requests, LLM queries, and more.</p>
+            </div>
+
+            <div *ngIf="!loadingDefinitions && taskDefinitions.length > 0" class="task-def-list">
+              <div *ngFor="let def of taskDefinitions" class="task-def-card">
+                <div class="task-def-header">
+                  <span class="task-def-name">{{ def.name || def.taskId }}</span>
+                  <span class="task-type-badge">{{ def.taskType || 'SHELL' }}</span>
+                  <span *ngIf="def.enableRag" class="task-rag-badge">RAG</span>
+                  <span *ngIf="def.enableTools" class="task-tools-badge">Tools</span>
+                </div>
+                <div *ngIf="def.description" class="task-def-desc">{{ def.description }}</div>
+                <div class="task-def-meta">
+                  <span *ngIf="def.command" class="task-def-cmd">{{ def.command | slice:0:60 }}{{ (def.command?.length || 0) > 60 ? '...' : '' }}</span>
+                  <span *ngIf="def.agentName">Agent: {{ def.agentName }}</span>
+                  <span *ngIf="def.timeoutSeconds">Timeout: {{ def.timeoutSeconds }}s</span>
+                  <span *ngIf="def.retryCount">Retries: {{ def.retryCount }}</span>
+                </div>
+                <div class="task-def-actions">
+                  <button class="btn btn-sm btn-secondary" (click)="editTaskDefinition(def)">Edit</button>
+                  <button class="btn btn-sm btn-primary" (click)="testTaskDefinition(def)">Test</button>
+                  <button class="btn btn-sm btn-danger" (click)="deleteTaskDefinition(def)">Delete</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Workflows Sub-Tab -->
@@ -874,6 +1029,147 @@
           </div>
         </div>
 
+        <!-- LLM Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'llm'" class="orch-detail-panel">
+
+          <!-- Invoke LLM -->
+          <div class="command-section">
+            <h4>Invoke LLM</h4>
+            <div *ngIf="llmProviders.length > 0" class="llm-provider-select">
+              <label>Provider:</label>
+              <select [(ngModel)]="selectedLlmProvider" [ngModelOptions]="{standalone: true}" class="task-select" style="max-width: 200px;">
+                <option value="">Default</option>
+                <option *ngFor="let p of llmProviders" [value]="p">{{ p }}</option>
+              </select>
+            </div>
+            <textarea [(ngModel)]="llmSystemPrompt" [ngModelOptions]="{standalone: true}"
+                      placeholder="System prompt (optional)" rows="2" class="llm-invoke-textarea"></textarea>
+            <textarea [(ngModel)]="llmPrompt" [ngModelOptions]="{standalone: true}"
+                      placeholder="Enter prompt..." rows="3" class="llm-invoke-textarea"></textarea>
+            <button class="btn btn-primary" [disabled]="!llmPrompt.trim() || invokingLlm" (click)="invokeLlmSession()">
+              {{ invokingLlm ? 'Invoking...' : 'Invoke LLM' }}
+            </button>
+          </div>
+
+          <!-- Active LLM Sessions -->
+          <div *ngIf="activeLlmSessions.length > 0" class="task-section">
+            <h4>Active Sessions ({{ activeLlmSessions.length }})</h4>
+            <div class="task-list">
+              <div *ngFor="let session of activeLlmSessions" class="task-card running">
+                <div class="task-header">
+                  <span class="task-id">#{{ session.id }}</span>
+                  <span class="status-badge" [ngClass]="getStatusClass(session.status)">{{ session.status }}</span>
+                  <span *ngIf="session.providerId" class="llm-provider">{{ session.providerId }}</span>
+                </div>
+                <div class="task-meta">
+                  <span *ngIf="session.startTime">Started: {{ session.startTime | date:'medium' }}</span>
+                  <span *ngIf="session.inputTokens">{{ session.inputTokens }} in / {{ session.outputTokens || 0 }} out tokens</span>
+                </div>
+                <div class="task-actions">
+                  <button class="btn btn-sm btn-secondary" (click)="viewLlmSession(session.id)">View</button>
+                  <button class="btn btn-sm btn-danger" (click)="cancelLlmSessionById(session.id)">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- LLM Session History -->
+          <div class="task-section">
+            <h4>Session History</h4>
+            <div *ngIf="loadingLlmSessions" class="loading">Loading sessions...</div>
+            <div *ngIf="!loadingLlmSessions && llmSessions.length === 0" class="empty-state">
+              <p>No LLM sessions yet.</p>
+            </div>
+            <div *ngIf="!loadingLlmSessions && llmSessions.length > 0" class="task-list">
+              <div *ngFor="let session of llmSessions" class="task-card"
+                   [class.task-failed]="session.status === 'FAILED' || session.status === 'TIMEOUT'">
+                <div class="task-header">
+                  <span class="task-id">#{{ session.id }}</span>
+                  <span class="status-badge" [ngClass]="getStatusClass(session.status)">{{ session.status }}</span>
+                  <span *ngIf="session.providerId" class="llm-provider">{{ session.providerId }}</span>
+                  <span *ngIf="session.inputTokens || session.outputTokens" class="llm-tokens">
+                    {{ session.inputTokens || 0 }} / {{ session.outputTokens || 0 }} tokens
+                  </span>
+                </div>
+                <div *ngIf="session.initialPrompt" class="task-command">
+                  <label>Prompt:</label>
+                  <code>{{ session.initialPrompt | slice:0:100 }}{{ (session.initialPrompt?.length || 0) > 100 ? '...' : '' }}</code>
+                </div>
+                <div class="task-meta">
+                  <span *ngIf="session.startTime">Started: {{ session.startTime | date:'medium' }}</span>
+                  <span *ngIf="session.endTime">Ended: {{ session.endTime | date:'medium' }}</span>
+                </div>
+                <div *ngIf="session.errorMessage" class="task-error-section">
+                  <div class="error-header">
+                    <span class="error-icon">⚠</span>
+                    <span class="error-label">Error</span>
+                  </div>
+                  <pre class="error-content">{{ session.errorMessage }}</pre>
+                </div>
+                <div class="task-actions">
+                  <button class="btn btn-sm btn-secondary" (click)="viewLlmSession(session.id)">View Details</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- LLM Triggers -->
+          <div class="task-section">
+            <div class="panel-header">
+              <h4>LLM Triggers</h4>
+              <button class="btn btn-sm btn-primary" (click)="showNewTriggerForm()">+ New Trigger</button>
+            </div>
+
+            <!-- Trigger Form -->
+            <div *ngIf="showTriggerForm" class="trigger-form">
+              <div class="form-group">
+                <label>Name</label>
+                <input type="text" [(ngModel)]="newTriggerName" [ngModelOptions]="{standalone: true}" placeholder="Trigger name">
+              </div>
+              <div class="form-group">
+                <label>Type</label>
+                <select [(ngModel)]="newTriggerType" [ngModelOptions]="{standalone: true}" class="task-select">
+                  <option *ngFor="let t of triggerTypes" [value]="t">{{ t }}</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Prompt Template</label>
+                <textarea [(ngModel)]="newTriggerPrompt" [ngModelOptions]="{standalone: true}"
+                          placeholder="LLM prompt to execute when triggered..." rows="3"></textarea>
+              </div>
+              <div class="form-group inline">
+                <label>
+                  <input type="checkbox" [(ngModel)]="newTriggerAutoExecute" [ngModelOptions]="{standalone: true}">
+                  Auto-execute
+                </label>
+              </div>
+              <div class="trigger-form-actions">
+                <button class="btn btn-primary btn-sm" [disabled]="!newTriggerName.trim()" (click)="saveTrigger()">Save Trigger</button>
+                <button class="btn btn-secondary btn-sm" (click)="cancelTriggerForm()">Cancel</button>
+              </div>
+            </div>
+
+            <div *ngIf="loadingTriggers" class="loading">Loading triggers...</div>
+            <div *ngIf="!loadingTriggers && llmTriggers.length === 0 && !showTriggerForm" class="empty-state">
+              <p>No LLM triggers configured.</p>
+              <p style="font-size: 13px; color: #9ca3af;">Triggers automatically invoke LLM on state changes, task events, or errors.</p>
+            </div>
+            <div *ngIf="!loadingTriggers && llmTriggers.length > 0" class="task-list">
+              <div *ngFor="let trigger of llmTriggers" class="task-def-card">
+                <div class="task-def-header">
+                  <span class="task-def-name">{{ trigger.name }}</span>
+                  <span class="task-type-badge">{{ trigger.triggerType }}</span>
+                  <span *ngIf="trigger.autoExecute" class="task-rag-badge">Auto</span>
+                  <span *ngIf="trigger.enabled === false" class="status-badge status-stopped">Disabled</span>
+                </div>
+                <div *ngIf="trigger.promptTemplate" class="task-def-desc">
+                  {{ trigger.promptTemplate | slice:0:80 }}{{ (trigger.promptTemplate?.length || 0) > 80 ? '...' : '' }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- State Machine Sub-Tab -->
         <div *ngIf="orchestratorDetailTab === 'state-machine'" class="orch-detail-panel full-height-panel">
           <app-state-machine-editor
@@ -893,6 +1189,54 @@
           <app-audit-log-viewer
             [instanceId]="selectedOrchestrator.instanceId">
           </app-audit-log-viewer>
+        </div>
+
+        <!-- Process Logs Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'logs'" class="orch-detail-panel">
+          <div class="panel-header">
+            <h3>Agent & Subprocess Logs</h3>
+            <button class="action-btn" (click)="loadLogRuns()">Refresh</button>
+          </div>
+
+          <div *ngIf="agentLogRuns.length > 0" class="log-section">
+            <h4>Agent Runs ({{ agentLogRuns.length }})</h4>
+            <div *ngFor="let run of agentLogRuns" class="log-run-card">
+              <div class="log-run-header" (click)="toggleLogRun('agent', run)">
+                <span class="log-run-agent">{{ run.agentName || run.processId }}</span>
+                <span class="log-run-time">{{ run.startTime ? (run.startTime | date:'short') : run.processId }}</span>
+                <span class="log-run-count" *ngIf="run.recordCount">{{ run.recordCount }} records</span>
+              </div>
+              <div *ngIf="expandedLogRun === 'agent-' + run.processId" class="log-run-records">
+                <div *ngFor="let rec of logRecords" class="log-record">
+                  <span class="log-level" [ngClass]="'log-' + (rec.level || 'info').toLowerCase()">{{ rec.level || 'INFO' }}</span>
+                  <span class="log-msg">{{ rec.message || rec.line }}</span>
+                </div>
+                <div *ngIf="logRecords.length === 0" class="log-empty">No records available</div>
+              </div>
+            </div>
+          </div>
+
+          <div *ngIf="subprocessLogRuns.length > 0" class="log-section">
+            <h4>Subprocess Runs ({{ subprocessLogRuns.length }})</h4>
+            <div *ngFor="let run of subprocessLogRuns" class="log-run-card">
+              <div class="log-run-header" (click)="toggleLogRun('subprocess', run)">
+                <span class="log-run-agent">{{ run.type || run.runId }}</span>
+                <span class="log-run-time">{{ run.startTime ? (run.startTime | date:'short') : run.runId }}</span>
+                <span class="log-run-count" *ngIf="run.recordCount">{{ run.recordCount }} records</span>
+              </div>
+              <div *ngIf="expandedLogRun === 'subprocess-' + run.runId" class="log-run-records">
+                <div *ngFor="let rec of logRecords" class="log-record">
+                  <span class="log-level" [ngClass]="'log-' + (rec.level || 'info').toLowerCase()">{{ rec.level || 'INFO' }}</span>
+                  <span class="log-msg">{{ rec.message || rec.line }}</span>
+                </div>
+                <div *ngIf="logRecords.length === 0" class="log-empty">No records available</div>
+              </div>
+            </div>
+          </div>
+
+          <div *ngIf="agentLogRuns.length === 0 && subprocessLogRuns.length === 0" class="empty-state">
+            No process log runs found.
+          </div>
         </div>
 
       </div>
@@ -1077,6 +1421,55 @@
             (click)="resetCreateForm(); activeSubTab = 'instances'">
             Cancel
           </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LLM Session Detail Overlay -->
+  <div *ngIf="selectedLlmSession" class="llm-session-overlay">
+    <div class="llm-session-panel">
+      <div class="llm-session-header">
+        <h3>LLM Session #{{ selectedLlmSession.id }}</h3>
+        <div class="llm-session-meta">
+          <span class="status-badge" [ngClass]="getStatusClass(selectedLlmSession.status)">{{ selectedLlmSession.status }}</span>
+          <span *ngIf="selectedLlmSession.providerId" class="llm-provider">{{ selectedLlmSession.providerId }}</span>
+          <span *ngIf="selectedLlmSession.inputTokens || selectedLlmSession.outputTokens" class="llm-tokens">
+            {{ selectedLlmSession.inputTokens || 0 }} in / {{ selectedLlmSession.outputTokens || 0 }} out tokens
+          </span>
+        </div>
+        <button class="action-btn" (click)="closeLlmSession()">Close</button>
+      </div>
+      <div class="llm-session-body">
+        <div class="llm-field" *ngIf="selectedLlmSession.initialPrompt">
+          <label>Initial Prompt</label>
+          <pre class="llm-content">{{ selectedLlmSession.initialPrompt }}</pre>
+        </div>
+        <div class="llm-field" *ngIf="selectedLlmSession.output">
+          <label>Output</label>
+          <pre class="llm-content">{{ selectedLlmSession.output }}</pre>
+        </div>
+        <!-- Conversation messages from dedicated endpoint -->
+        <div class="llm-field" *ngIf="loadingConversation">
+          <label>Conversation</label>
+          <p class="llm-empty">Loading conversation...</p>
+        </div>
+        <div class="llm-field" *ngIf="!loadingConversation && conversationMessages.length > 0">
+          <label>Conversation ({{ conversationMessages.length }} messages)</label>
+          <div *ngFor="let msg of conversationMessages" class="llm-message"
+               [ngClass]="'llm-msg-' + (msg.role?.toLowerCase() || 'system')">
+            <span class="llm-msg-role">{{ msg.role }}</span>
+            <span class="llm-msg-content">{{ msg.content }}</span>
+            <span *ngIf="msg.toolName" class="llm-msg-tool">{{ msg.toolName }}</span>
+            <span *ngIf="msg.tokenCount" class="llm-msg-tokens">{{ msg.tokenCount }} tokens</span>
+          </div>
+        </div>
+        <div *ngIf="selectedLlmSession.errorMessage" class="llm-field">
+          <label>Error</label>
+          <pre class="llm-content llm-error-content">{{ selectedLlmSession.errorMessage }}</pre>
+        </div>
+        <div *ngIf="!selectedLlmSession.initialPrompt && !selectedLlmSession.output && conversationMessages.length === 0 && !loadingConversation">
+          <p class="llm-empty">No session data available.</p>
         </div>
       </div>
     </div>

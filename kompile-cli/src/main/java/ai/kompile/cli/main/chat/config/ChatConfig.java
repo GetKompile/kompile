@@ -22,10 +22,16 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
+import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.agent.CliAgentRegistry;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -69,6 +75,9 @@ public class ChatConfig {
     @JsonProperty
     private String passthroughAgent = "claude"; // claude, codex, gemini, qwen, opencode
 
+    @JsonProperty
+    private boolean passthroughManaged = true; // true = kompile REPL wraps agent subprocess
+
     public ChatConfig() {}
 
     public ChatConfig(String provider, String apiKey, String model, String baseUrl) {
@@ -110,6 +119,9 @@ public class ChatConfig {
     public String getPassthroughAgent() { return passthroughAgent; }
     public void setPassthroughAgent(String passthroughAgent) { this.passthroughAgent = passthroughAgent; }
 
+    public boolean isPassthroughManaged() { return passthroughManaged; }
+    public void setPassthroughManaged(boolean passthroughManaged) { this.passthroughManaged = passthroughManaged; }
+
     /**
      * Resolve the actual API base URL for the configured provider.
      */
@@ -124,6 +136,8 @@ public class ChatConfig {
      * Check if this config has enough info to make LLM calls.
      */
     public boolean isValid() {
+        // Passthrough mode doesn't need provider/model/key - the agent handles its own auth
+        if ("passthrough".equals(chatMode)) return true;
         if (provider == null || provider.isBlank()) return false;
         // Kompile server mode doesn't need model or API key
         if ("kompile".equals(provider)) return true;
@@ -270,21 +284,22 @@ public class ChatConfig {
             "kompile", "anthropic", "openai", "gemini", "ollama", "openrouter", "deepseek", "groq"
     };
 
-    // Available passthrough agents
-    public static final Map<String, String> PASSTHROUGH_AGENTS = Map.ofEntries(
-            Map.entry("claude", "Claude Code (Anthropic)"),
-            Map.entry("codex", "OpenAI Codex (OpenAI)"),
-            Map.entry("gemini", "Gemini CLI (Google)"),
-            Map.entry("qwen", "Qwen Code (Alibaba)"),
-            Map.entry("opencode", "OpenCode (open source)")
-    );
+    // Available passthrough agents — derived from CliAgentRegistry (single source of truth).
+    // Computed lazily to avoid baking empty results into native image heap at build time.
+    public static Map<String, String> getPassthroughAgents() {
+        Map<String, String> agents = new LinkedHashMap<>();
+        for (AgentProvider p : CliAgentRegistry.loadAll()) {
+            agents.put(p.getCommand(), p.getDisplayName());
+        }
+        return agents;
+    }
 
-    public static final String[] PASSTHROUGH_AGENT_ORDER = {
-            "claude", "codex", "gemini", "qwen", "opencode"
-    };
+    public static List<String> getPassthroughAgentOrder() {
+        return new ArrayList<>(getPassthroughAgents().keySet());
+    }
 
     public static boolean isValidPassthroughAgent(String agent) {
-        return PASSTHROUGH_AGENTS.containsKey(agent.toLowerCase());
+        return getPassthroughAgents().containsKey(agent.toLowerCase());
     }
 
     @Override

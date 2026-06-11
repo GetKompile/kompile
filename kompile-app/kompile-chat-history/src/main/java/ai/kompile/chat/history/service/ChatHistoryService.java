@@ -186,8 +186,9 @@ public class ChatHistoryService {
 
         ChatMessage saved = messageRepository.save(message);
 
-        // Update session timestamp
+        // Update session timestamp and message count
         session.setUpdatedAt(LocalDateTime.now());
+        session.setMessageCount(session.getMessageCount() + 1);
         sessionRepository.save(session);
 
         log.debug("Added {} message to session: {}", role, sessionId);
@@ -217,14 +218,23 @@ public class ChatHistoryService {
      * Create a session with a given sessionId and source (for imports).
      */
     public ChatSession createSessionWithId(String sessionId, String title, String source) {
+        return createSessionWithId(sessionId, title, source, null);
+    }
+
+    /**
+     * Create a session with a given sessionId, source, and original timestamp (for imports).
+     * The originalTimestamp preserves when the CLI conversation actually occurred.
+     */
+    public ChatSession createSessionWithId(String sessionId, String title, String source, Long originalTimestampMillis) {
         ChatSession session = ChatSession.builder()
             .sessionId(sessionId)
             .title(title != null ? title : "Imported Chat")
             .source(source)
+            .originalTimestamp(originalTimestampMillis)
             .build();
 
         ChatSession saved = sessionRepository.save(session);
-        log.info("Created imported chat session: {} source: {}", sessionId, source);
+        log.info("Created imported chat session: {} source: {} originalTimestamp: {}", sessionId, source, originalTimestampMillis);
         return saved;
     }
 

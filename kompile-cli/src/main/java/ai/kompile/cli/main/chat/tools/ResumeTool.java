@@ -35,7 +35,9 @@ import org.jline.reader.UserInterruptException;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -85,6 +87,7 @@ public class ResumeTool implements CliTool {
     private final ConversationImportTool importTool;
     private final ConversationFormatter formatter;
     private final ConversationReader reader;
+    private final boolean mcpMode;
 
     // Current state
     private List<ConversationSummary> allConversations;
@@ -108,11 +111,25 @@ public class ResumeTool implements CliTool {
     private record LoadedConversation(List<ChatHistory.Turn> turns, String source, Path workingDirectory) {}
 
     /**
-     * Constructor initializes the Resume Tool with terminal and dependencies.
+     * Constructor for MCP / non-interactive mode.
+     * When {@code mcpMode} is true, NO terminal or line reader is created at all —
+     * this avoids grabbing the system TTY, intercepting Ctrl+C signals, or changing
+     * terminal attributes. Interactive browsing is disabled; search/resume/view/migrate
+     * return structured data as text output. A real system terminal is only created
+     * lazily if the 'browse' action is invoked.
+     *
+     * @param mcpMode true when running inside an MCP server (no interactive terminal needed)
      */
-    public ResumeTool() throws IOException {
-        this.terminal = TerminalBuilder.builder().system(true).build();
-        this.lineReader = LineReaderBuilder.builder().terminal(terminal).build();
+    public ResumeTool(boolean mcpMode) throws IOException {
+        this.mcpMode = mcpMode;
+        if (mcpMode) {
+            // No terminal, no line reader — avoid all TTY/signal interference
+            this.terminal = null;
+            this.lineReader = null;
+        } else {
+            this.terminal = TerminalBuilder.builder().system(true).build();
+            this.lineReader = LineReaderBuilder.builder().terminal(terminal).build();
+        }
         this.terminalRenderer = new TerminalRenderer(true);
         this.ascii = new AsciiRenderer(terminalRenderer);
         this.importTool = new ConversationImportTool();
@@ -123,11 +140,19 @@ public class ResumeTool implements CliTool {
     }
 
     /**
+     * Constructor initializes the Resume Tool with a full system terminal for interactive use.
+     */
+    public ResumeTool() throws IOException {
+        this(false);
+    }
+
+    /**
      * Package-private constructor for testing with injected dependencies.
      */
     ResumeTool(Terminal terminal, LineReader lineReader, AsciiRenderer ascii,
                ConversationImportTool importTool, ConversationFormatter formatter,
                ConversationReader reader) {
+        this.mcpMode = false;
         this.terminal = terminal;
         this.lineReader = lineReader;
         this.ascii = ascii;
@@ -244,10 +269,115 @@ public class ResumeTool implements CliTool {
     }
 
     /**
+     * Resolve a session ID from MCP action parameters.
+     * If the input is a number, treat it as a 1-based index into the filteredConversations
+     * list from the most recent search. If the list is empty (no prior search), attempt
+     * to load all conversations first so that numeric indices still work.
+     * If the input is not a number, treat it as a raw session ID or UUID.
+     * Returns null if the numeric index is out of range.
+     */
+    private String resolveSessionIdFromSearchResults(String input) {
+        String trimmed = input.trim();
+
+        // Ensure we have conversations loaded for partial matching
+        if (!conversationsLoaded) {
+            loadAllConversations();
+            searchQuery = "";
+            filterAgent = "";
+            filterSource = "";
+            applyFilters();
+        } else if (filteredConversations == null || filteredConversations.isEmpty()) {
+            // Conversations loaded but filtered to empty — reset filters
+            searchQuery = "";
+            filterAgent = "";
+            filterSource = "";
+            applyFilters();
+        }
+
+        // Try numeric index first (1-based)
+        try {
+            int index = Integer.parseInt(trimmed);
+            int zeroBasedIndex = index - 1;
+            if (zeroBasedIndex >= 0 && zeroBasedIndex < filteredConversations.size()) {
+                return filteredConversations.get(zeroBasedIndex).sessionId();
+            }
+            // Number but out of range — fall through to partial match
+            // (the number might be part of a session ID)
+        } catch (NumberFormatException e) {
+            // Not a number — continue to partial matching
+        }
+
+        // Partial string matching: check if input is a prefix or substring of any session ID
+        String lower = trimmed.toLowerCase();
+
+        // Exact match first
+        for (ConversationSummary convo : filteredConversations) {
+            if (convo.sessionId().equalsIgnoreCase(trimmed)) {
+                return convo.sessionId();
+            }
+        }
+
+        // Prefix match (e.g., first few chars of a UUID)
+        ConversationSummary prefixMatch = null;
+        int prefixCount = 0;
+        for (ConversationSummary convo : filteredConversations) {
+            if (convo.sessionId().toLowerCase().startsWith(lower)) {
+                prefixMatch = convo;
+                prefixCount++;
+            }
+        }
+        if (prefixCount == 1) {
+            return prefixMatch.sessionId();
+        }
+
+        // Substring match (e.g., partial UUID from the middle)
+        ConversationSummary substringMatch = null;
+        int substringCount = 0;
+        for (ConversationSummary convo : filteredConversations) {
+            if (convo.sessionId().toLowerCase().contains(lower)) {
+                substringMatch = convo;
+                substringCount++;
+            }
+        }
+        if (substringCount == 1) {
+            return substringMatch.sessionId();
+        }
+
+        // Also check allConversations in case filtered list is narrower
+        for (ConversationSummary convo : allConversations) {
+            if (convo.sessionId().equalsIgnoreCase(trimmed)) {
+                return convo.sessionId();
+            }
+        }
+        prefixMatch = null;
+        prefixCount = 0;
+        for (ConversationSummary convo : allConversations) {
+            if (convo.sessionId().toLowerCase().startsWith(lower)) {
+                prefixMatch = convo;
+                prefixCount++;
+            }
+        }
+        if (prefixCount == 1) {
+            return prefixMatch.sessionId();
+        }
+
+        // No match found — return the raw input so loadConversation can try
+        // external sources (claude-code, codex, etc.) with it directly
+        return trimmed;
+    }
+
+    /**
      * Run the interactive multi-tab browser.
+     * In MCP mode, upgrades to a real system terminal for interactive use.
      */
     public ToolResult runInteractiveBrowser() {
         try {
+            // In MCP mode, we started with no terminal — create one for interactive use
+            if (terminal == null || lineReader == null) {
+                this.terminal = TerminalBuilder.builder().system(true).build();
+                this.lineReader = LineReaderBuilder.builder().terminal(terminal).build();
+            }
+
             terminal.writer().print("\033[2J");
             terminal.writer().flush();
             // Small delay to let terminal settle after creation
@@ -288,14 +418,14 @@ public class ResumeTool implements CliTool {
                 for (String line : lines) {
                     line = line.trim();
                     if (line.isEmpty()) continue;
-                    if (line.equalsIgnoreCase("q") || line.equalsIgnoreCase("quit")) {
+                    if (line.equalsIgnoreCase("q") || line.equalsIgnoreCase("quit")
+                            || line.equalsIgnoreCase("back") || line.equalsIgnoreCase("b")
+                            || line.equalsIgnoreCase("menu") || line.equalsIgnoreCase("setup")) {
                         shouldQuit = true;
                         break;
                     }
                     processCommand(line);
                 }
-                // Render updated view BEFORE checking quit flag
-                renderMainView();
                 if (shouldQuit) {
                     // Clean up terminal state before exiting
                     terminal.writer().print("\033[2J");
@@ -462,12 +592,7 @@ public class ResumeTool implements CliTool {
                 case "b":
                 case "menu":
                 case "setup":
-                    terminal.writer().println();
-                    terminal.writer().println(GREEN + "  Returning to main menu..." + RESET);
-                    terminal.writer().println(DIM + "  Use: kompile chat (to start chat), kompile chat --setup (to reconfigure)" + RESET);
-                    terminal.writer().println();
-                    terminal.writer().flush();
-                    try { Thread.sleep(1000); } catch (InterruptedException e) {}
+                    // Handled as quit in the main loop
                     break;
                 case "":
                     break;
@@ -493,13 +618,25 @@ public class ResumeTool implements CliTool {
      * Load conversations from kompile and external sources.
      * When localOnly is true, only loads sessions associated with the current working directory.
      */
+    /**
+     * Set of external session IDs that have been harvested into kompile transcripts.
+     * These are excluded from external conversation listings to prevent duplicates.
+     */
+    private final Set<String> harvestedExternalIds = new HashSet<>();
+    private final Map<String, Path> sessionFilePaths = new HashMap<>();
+    private boolean conversationsLoaded = false;
+
     private void loadAllConversations() {
         allConversations.clear();
+        harvestedExternalIds.clear();
+        sessionFilePaths.clear();
 
         // Load kompile sessions (always loaded - these are local passthrough sessions)
         try {
             List<ChatHistory.ConversationSummary> kompileSessions = ChatHistory.listConversations();
             for (ChatHistory.ConversationSummary session : kompileSessions) {
+                // Collect harvested external session IDs for deduplication
+                harvestedExternalIds.addAll(session.harvestedSourceIds());
                 allConversations.add(new ConversationSummary(
                         session.sessionId(),
                         formatTitle(session.title()),
@@ -511,40 +648,116 @@ public class ResumeTool implements CliTool {
                 ));
             }
         } catch (Exception e) {
-            terminal.writer().println(YELLOW + "Warning: Could not load kompile sessions: " + e.getMessage() + RESET);
+            if (terminal != null) {
+                terminal.writer().println(YELLOW + "Warning: Could not load kompile sessions: " + e.getMessage() + RESET);
+            } else {
+                System.err.println("Warning: Could not load kompile sessions: " + e.getMessage());
+            }
         }
 
-        // Load external agent conversations
+        // Load external agent conversations (skipping harvested duplicates)
         loadExternalConversations("claude-code", "claude");
         loadExternalConversations("opencode", "opencode");
         loadExternalConversations("codex", "codex");
         loadExternalConversations("qwen", "qwen");
         loadExternalConversations("gemini", "gemini");
 
+        // Fallback dedup: for sessions that predate the [harvested:] marker,
+        // remove external sessions that overlap in time with a kompile passthrough session.
+        // A kompile passthrough session and its source JSONL will have very close modification times.
+        deduplicateByTimeProximity();
+
         // Sort by last modified (most recent first)
         allConversations.sort(Comparator.comparing(ConversationSummary::lastModifiedTimestamp).reversed());
+        conversationsLoaded = true;
+    }
+
+    /**
+     * Remove external agent sessions that are likely duplicates of kompile passthrough sessions.
+     * A kompile passthrough session harvests the agent's JSONL, so both appear with very close
+     * modification times and matching agents. This catches pre-[harvested:] sessions.
+     */
+    private void deduplicateByTimeProximity() {
+        // Collect kompile passthrough sessions with their timestamps
+        List<ConversationSummary> kompileSessions = allConversations.stream()
+                .filter(c -> "kompile".equals(c.source()) && c.sessionId().startsWith("passthrough-"))
+                .collect(Collectors.toList());
+        if (kompileSessions.isEmpty()) return;
+
+        // For each external session, check if it's within 2 minutes of a kompile passthrough
+        // session with a matching agent — if so, it's likely the same conversation
+        Set<String> toRemove = new HashSet<>();
+        for (ConversationSummary external : allConversations) {
+            if ("kompile".equals(external.source())) continue;
+            for (ConversationSummary kompile : kompileSessions) {
+                if (!kompile.agent().equals(external.agent())) continue;
+                long timeDiff = Math.abs(kompile.lastModifiedTimestamp() - external.lastModifiedTimestamp());
+                if (timeDiff < 120_000) { // 2 minutes
+                    toRemove.add(external.sessionId());
+                    break;
+                }
+            }
+        }
+        if (!toRemove.isEmpty()) {
+            allConversations.removeIf(c -> toRemove.contains(c.sessionId()) && !"kompile".equals(c.source()));
+        }
     }
 
     /**
      * Format a title - extract meaningful preview from content, truncate long titles.
+     * Returns empty string if no usable title can be derived (callers use sessionId as fallback).
      */
     private String formatTitle(String title) {
-        if (title == null || title.isEmpty()) return "(no title)";
+        if (title == null || title.isEmpty()) return "";
         // Clean up leading whitespace, markdown headers, etc.
         String cleaned = title.trim();
         if (cleaned.startsWith("# ")) {
             cleaned = cleaned.substring(2);
         }
+        // Strip XML/HTML tags (e.g. <command-message>loop</command-message> → loop)
+        if (cleaned.contains("<")) {
+            cleaned = cleaned.replaceAll("<[^>]+>", "").trim();
+        }
+        // If stripping tags left nothing, return empty
+        if (cleaned.isEmpty()) return "";
+        // For enforcer messages, extract the actual user prompt from after "## User Prompt"
+        if (cleaned.startsWith("Enforcer-Controlled Task") || cleaned.startsWith("Enforcer Correction")) {
+            int userPromptIdx = cleaned.indexOf("## User Prompt");
+            if (userPromptIdx >= 0) {
+                String afterHeader = cleaned.substring(userPromptIdx + "## User Prompt".length()).trim();
+                // Skip blank lines
+                if (!afterHeader.isEmpty()) {
+                    // Take the first non-empty line
+                    String[] lines = afterHeader.split("\\n");
+                    for (String line : lines) {
+                        String trimmed = line.trim();
+                        if (!trimmed.isEmpty() && !trimmed.startsWith("##") &&
+                                !trimmed.startsWith("Produce the response now")) {
+                            cleaned = trimmed;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        // Strip system-prompt prefixes that aren't useful as titles
+        if (cleaned.startsWith("[ENFORCER RULES]") || cleaned.startsWith("You are ")) {
+            // Take a shorter snippet for system prompts
+            int end = Math.min(cleaned.length(), 50);
+            int sentenceEnd = cleaned.indexOf('.', 0);
+            if (sentenceEnd > 0 && sentenceEnd < end) end = sentenceEnd;
+            cleaned = cleaned.substring(0, end).trim();
+        }
         // Take first line only for title
         int newlineIdx = cleaned.indexOf('\n');
         if (newlineIdx > 0) {
-            cleaned = cleaned.substring(0, newlineIdx);
+            cleaned = cleaned.substring(0, newlineIdx).trim();
         }
         // Truncate to 60 chars
         if (cleaned.length() > 60) {
             cleaned = cleaned.substring(0, 57) + "...";
         }
-        return cleaned.isEmpty() ? "(no title)" : cleaned;
+        return cleaned;
     }
 
     /**
@@ -602,8 +815,11 @@ public class ResumeTool implements CliTool {
                                 sessionFiles.filter(p -> p.toString().endsWith(".jsonl"))
                                     .forEach(p -> {
                                         String id = p.getFileName().toString().replace(".jsonl", "");
+                                        // Skip sessions already harvested into a kompile transcript
+                                        if (harvestedExternalIds.contains(id)) return;
                                         try {
                                             long lastMod = java.nio.file.Files.getLastModifiedTime(p).toMillis();
+                                            sessionFilePaths.put(id, p);
                                             allConversations.add(new ConversationSummary(
                                                     id,
                                                     "", // empty = lazy load on demand
@@ -634,8 +850,12 @@ public class ResumeTool implements CliTool {
                                     if (id == null || id.isBlank()) {
                                         return;
                                     }
+                                    // Skip sessions already harvested into a kompile transcript
+                                    String fileId = p.getFileName().toString().replace(".jsonl", "");
+                                    if (harvestedExternalIds.contains(id) || harvestedExternalIds.contains(fileId)) return;
                                     try {
                                         long lastMod = Files.getLastModifiedTime(p).toMillis();
+                                        sessionFilePaths.put(id, p);
                                         allConversations.add(new ConversationSummary(
                                                 id,
                                                 "",
@@ -683,8 +903,11 @@ public class ResumeTool implements CliTool {
                                                 return;
                                             }
                                             String id = p.getFileName().toString().replace(".json", "");
+                                            // Skip sessions already harvested into a kompile transcript
+                                            if (harvestedExternalIds.contains(id)) return;
                                             try {
                                                 long lastMod = Files.getLastModifiedTime(p).toMillis();
+                                                sessionFilePaths.put(id, p);
                                                 allConversations.add(new ConversationSummary(
                                                         id,
                                                         "",
@@ -730,8 +953,12 @@ public class ResumeTool implements CliTool {
                                                 if (id == null || id.isBlank()) {
                                                     return;
                                                 }
+                                                // Skip sessions already harvested into a kompile transcript
+                                                String fileId = p.getFileName().toString().replaceFirst("\\.(json|jsonl)$", "");
+                                                if (harvestedExternalIds.contains(id) || harvestedExternalIds.contains(fileId)) return;
                                                 try {
                                                     long lastMod = Files.getLastModifiedTime(p).toMillis();
+                                                    sessionFilePaths.put(id, p);
                                                     allConversations.add(new ConversationSummary(
                                                             id,
                                                             "",
@@ -757,87 +984,28 @@ public class ResumeTool implements CliTool {
 
     /**
      * Lazy-load title from file only when needed (e.g., when viewing or resuming).
+     * Uses cached file paths from enumeration for O(1) lookup instead of re-walking directories.
      * Returns the formatted title or falls back to the session ID.
      */
     private String loadTitleForConversation(String sessionId, String source) {
-        Path filePath = null;
-        String homeDir = System.getProperty("user.home");
-
         try {
-            switch (source) {
-                case "claude-code" -> {
-                    Path claudeDir = Paths.get(homeDir, ".claude", "projects");
-                    if (Files.isDirectory(claudeDir)) {
-                        try (java.util.stream.Stream<Path> projectDirs = Files.list(claudeDir)) {
-                            filePath = projectDirs
-                                .filter(Files::isDirectory)
-                                .flatMap(pd -> {
-                                    try { return Files.list(pd); } catch (IOException e) { return java.util.stream.Stream.empty(); }
-                                })
-                                .filter(p -> p.getFileName().toString().equals(sessionId + ".jsonl"))
-                                .findFirst().orElse(null);
-                        }
-                    }
-                }
-                case "codex" -> {
-                    Path codexDir = Paths.get(homeDir, ".codex");
-                    if (Files.isDirectory(codexDir)) {
-                        try (java.util.stream.Stream<Path> files = Files.walk(codexDir)) {
-                            filePath = files
-                                .filter(p -> p.getFileName().toString().contains(sessionId))
-                                .findFirst().orElse(null);
-                        }
-                    }
-                }
-                case "qwen" -> {
-                    Path qwenDir = Paths.get(homeDir, ".qwen", "projects");
-                    if (Files.isDirectory(qwenDir)) {
-                        try (java.util.stream.Stream<Path> projectDirs = Files.walk(qwenDir, 4)) {
-                            filePath = projectDirs
-                                .filter(p -> p.toString().endsWith("chats") && Files.isDirectory(p))
-                                .flatMap(cd -> {
-                                    try { return Files.list(cd); } catch (IOException e) { return java.util.stream.Stream.empty(); }
-                                })
-                                .filter(p -> p.getFileName().toString().equals(sessionId + ".jsonl"))
-                                .findFirst().orElse(null);
-                        }
-                    }
-                }
-                case "opencode" -> {
-                    Path sessionDir = Paths.get(homeDir, ".local", "share", "opencode", "storage", "session");
-                    if (Files.isDirectory(sessionDir)) {
-                        try (java.util.stream.Stream<Path> projectDirs = Files.list(sessionDir)) {
-                            filePath = projectDirs
-                                .filter(Files::isDirectory)
-                                .flatMap(pd -> {
-                                    try { return Files.list(pd); } catch (IOException e) { return java.util.stream.Stream.empty(); }
-                                })
-                                .filter(p -> p.getFileName().toString().equals(sessionId + ".json"))
-                                .findFirst().orElse(null);
-                        }
-                    }
-                }
-                case "gemini" -> {
-                    Path geminiDir = Paths.get(homeDir, ".gemini");
-                    if (Files.isDirectory(geminiDir)) {
-                        filePath = findGeminiSessionFile(geminiDir.resolve("tmp"), sessionId);
-                    }
-                }
-            }
-
+            Path filePath = sessionFilePaths.get(sessionId);
             if (filePath != null && Files.exists(filePath)) {
                 return extractFirstLineFromFile(filePath, source);
             }
         } catch (Exception ignored) {}
-        return "(" + source + " session)";
+        return ""; // empty = display code will fall back to sessionId
     }
 
     /**
      * Read the first user message from an external conversation file to use as a title.
+     * Streams line-by-line to avoid loading entire files into memory (sessions can be 100MB+).
+     * Stops scanning after MAX_SCAN_LINES since the first user message is always near the top.
      */
     private String extractFirstLineFromFile(Path filePath, String source) {
+        final int MAX_SCAN_LINES = 100;
         try {
-            // Gemini uses a single JSON object, not JSONL
+            // Gemini uses a single JSON object, not JSONL — stream-parse to find first user message
             if ("gemini".equals(source)) {
                 com.fasterxml.jackson.databind.JsonNode root = MAPPER.readTree(filePath.toFile());
                 com.fasterxml.jackson.databind.JsonNode messages = root.path("messages");
@@ -852,83 +1020,86 @@ public class ResumeTool implements CliTool {
                         }
                     }
                 }
-                return "(gemini session)";
+                return "";
             }
 
-            // All other agents use JSONL format (line-by-line JSON)
-            List<String> lines = Files.readAllLines(filePath, java.nio.charset.StandardCharsets.UTF_8);
-            for (String line : lines) {
-                if (line.isBlank()) continue;
-                try {
-                    com.fasterxml.jackson.databind.JsonNode node = MAPPER.readTree(line);
-                    
-                    // Claude Code format
-                    if ("claude-code".equals(source)) {
-                        String type = node.path("type").asText("");
-                        if ("user".equals(type)) {
-                            com.fasterxml.jackson.databind.JsonNode content = node.path("message").path("content");
-                            String text = "";
-                            if (content.isArray()) {
-                                // Extract first text block from content array
-                                for (com.fasterxml.jackson.databind.JsonNode block : content) {
-                                    text = block.path("text").asText("");
-                                    if (!text.isEmpty()) break;
-                                }
-                            } else if (content.isTextual()) {
-                                text = content.asText("");
-                            }
-                            if (!text.isEmpty()) {
-                                return formatTitle(text);
-                            }
+            // All other agents use JSONL — stream line-by-line, stop after finding first user message
+            try (java.io.BufferedReader reader = Files.newBufferedReader(filePath, java.nio.charset.StandardCharsets.UTF_8)) {
+                String line;
+                int linesRead = 0;
+                while ((line = reader.readLine()) != null && linesRead++ < MAX_SCAN_LINES) {
+                    if (line.isBlank()) continue;
+                    try {
+                        com.fasterxml.jackson.databind.JsonNode node = MAPPER.readTree(line);
+                        String extracted = extractUserText(node, source);
+                        if (extracted != null) {
+                            return formatTitle(extracted);
                         }
-                    }
-                    // Codex format
-                    else if ("codex".equals(source)) {
-                        String type = node.path("type").asText("");
-                        if ("response_item".equals(type)) {
-                            String role = node.path("payload").path("role").asText("");
-                            if ("user".equals(role)) {
-                                String text = node.path("payload").path("content").get(0).path("text").asText("");
-                                if (!text.isEmpty()) {
-                                    return formatTitle(text);
-                                }
-                            }
-                        }
-                    }
-                    // Qwen format
-                    else if ("qwen".equals(source)) {
-                        String type = node.path("type").asText("");
-                        if ("user".equals(type)) {
-                            String text = node.path("message").path("parts").get(0).path("text").asText("");
-                            if (!text.isEmpty()) {
-                                return formatTitle(text);
-                            }
-                        }
-                    }
-                    // OpenCode format
-                    else if ("opencode".equals(source)) {
-                        String role = node.path("role").asText("");
-                        if ("user".equals(role)) {
-                            String text = node.path("content").get(0).path("text").asText("");
-                            if (!text.isEmpty()) {
-                                return formatTitle(text);
-                            }
-                        }
-                    }
-                    // Gemini format
-                    else if ("gemini".equals(source)) {
-                        String type = node.path("type").asText("");
-                        if ("user".equals(type)) {
-                            String text = node.path("content").asText("");
-                            if (!text.isEmpty()) {
-                                return formatTitle(text);
-                            }
-                        }
-                    }
-                } catch (Exception ignored) {}
+                    } catch (Exception ignored) {}
+                }
             }
         } catch (Exception ignored) {}
-        return "(" + source + " session)";
+        return "";
+    }
+
+    /**
+     * Extract user message text from a JSONL node based on the agent source format.
+     * Returns the text if this node is a user message, null otherwise.
+     */
+    private String extractUserText(com.fasterxml.jackson.databind.JsonNode node, String source) {
+        switch (source) {
+            case "claude-code" -> {
+                if ("user".equals(node.path("type").asText(""))) {
+                    com.fasterxml.jackson.databind.JsonNode content = node.path("message").path("content");
+                    if (content.isArray()) {
+                        for (com.fasterxml.jackson.databind.JsonNode block : content) {
+                            String text = block.path("text").asText("");
+                            // Skip Claude Code internal commands — not real user content
+                            if (!text.isEmpty() && !text.startsWith("<local-command-")) return text;
+                        }
+                    } else if (content.isTextual()) {
+                        String text = content.asText("");
+                        if (!text.isEmpty() && !text.startsWith("<local-command-")) return text;
+                    }
+                }
+            }
+            case "codex" -> {
+                if ("response_item".equals(node.path("type").asText(""))) {
+                    if ("user".equals(node.path("payload").path("role").asText(""))) {
+                        com.fasterxml.jackson.databind.JsonNode arr = node.path("payload").path("content");
+                        if (arr.isArray() && arr.size() > 0) {
+                            String text = arr.get(0).path("text").asText("");
+                            if (!text.isEmpty()) return text;
+                        }
+                    }
+                }
+            }
+            case "qwen" -> {
+                if ("user".equals(node.path("type").asText(""))) {
+                    com.fasterxml.jackson.databind.JsonNode parts = node.path("message").path("parts");
+                    if (parts.isArray() && parts.size() > 0) {
+                        String text = parts.get(0).path("text").asText("");
+                        if (!text.isEmpty()) return text;
+                    }
+                }
+            }
+            case "opencode" -> {
+                if ("user".equals(node.path("role").asText(""))) {
+                    com.fasterxml.jackson.databind.JsonNode arr = node.path("content");
+                    if (arr.isArray() && arr.size() > 0) {
+                        String text = arr.get(0).path("text").asText("");
+                        if (!text.isEmpty()) return text;
+                    }
+                }
+            }
+            case "gemini" -> {
+                if ("user".equals(node.path("type").asText(""))) {
+                    String text = node.path("content").asText("");
+                    if (!text.isEmpty()) return text;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -943,6 +1114,55 @@ public class ResumeTool implements CliTool {
             filteredConversations = filteredConversations.stream()
                     .filter(c -> c.agent().toLowerCase().equals(agent))
                     .collect(Collectors.toList());
+        }
+
+        // If a search query is active, eagerly load titles for all tab-filtered conversations
+        // that still have an empty title (lazy-loaded placeholders). Without this, external
+        // conversations (claude-code, codex, qwen, gemini, opencode) would never match because
+        // their titles are "" until loadTitlesForVisiblePage() runs — which is too late.
+        // Uses parallel loading and O(1) index lookup for performance.
+        if (!searchQuery.isEmpty()) {
+            // Collect indices that need title loading
+            List<Integer> needTitles = new ArrayList<>();
+            for (int i = 0; i < filteredConversations.size(); i++) {
+                ConversationSummary convo = filteredConversations.get(i);
+                if (convo.title() != null && convo.title().isEmpty()) {
+                    needTitles.add(i);
+                }
+            }
+
+            if (!needTitles.isEmpty()) {
+                // Build O(1) index for allConversations persistence
+                Map<String, Integer> allConvoIndex = new HashMap<>();
+                for (int j = 0; j < allConversations.size(); j++) {
+                    allConvoIndex.put(allConversations.get(j).sessionId(), j);
+                }
+
+                // Load titles in parallel (file path lookup is O(1) via sessionFilePaths cache)
+                Map<Integer, String> loadedTitles = needTitles.parallelStream()
+                        .collect(Collectors.toConcurrentMap(
+                                i -> i,
+                                i -> {
+                                    ConversationSummary c = filteredConversations.get(i);
+                                    return loadTitleForConversation(c.sessionId(), c.source());
+                                }
+                        ));
+
+                // Apply loaded titles to both lists
+                for (Map.Entry<Integer, String> entry : loadedTitles.entrySet()) {
+                    int i = entry.getKey();
+                    ConversationSummary convo = filteredConversations.get(i);
+                    ConversationSummary updated = new ConversationSummary(
+                            convo.sessionId(), entry.getValue(), convo.started(),
+                            convo.agent(), convo.source(), convo.lastModified(),
+                            convo.lastModifiedTimestamp());
+                    filteredConversations.set(i, updated);
+                    Integer allIdx = allConvoIndex.get(convo.sessionId());
+                    if (allIdx != null) {
+                        allConversations.set(allIdx, updated);
+                    }
+                }
+            }
         }
 
         // Filter by search query
@@ -1032,7 +1252,7 @@ public class ResumeTool implements CliTool {
      * Render the main view with tabs and conversation list.
      */
     private void renderMainView() {
-        terminal.writer().print("\033[H"); // cursor home (no screen clear)
+        terminal.writer().print("\033[2J\033[H"); // clear screen + cursor home
         terminal.writer().println();
 
         // Header
@@ -1123,7 +1343,7 @@ public class ResumeTool implements CliTool {
             ConversationSummary convo = filteredConversations.get(i);
             int num = i - start + 1;
             String title = convo.title() != null && !convo.title().isEmpty() ? convo.title() :
-                    convo.sessionId();
+                    convo.agent() + " session " + convo.sessionId().substring(0, Math.min(8, convo.sessionId().length()));
             String titleDisplay = title.length() > 60 ? title.substring(0, 57) + "..." : title;
             String agentDisplay = convo.agent().length() > 14 ? convo.agent().substring(0, 14) : convo.agent();
             String dateDisplay = convo.lastModified() != null ? convo.lastModified() : "";
@@ -1142,17 +1362,34 @@ public class ResumeTool implements CliTool {
         int start = currentPage * PAGE_SIZE;
         int end = Math.min(start + PAGE_SIZE, filteredConversations.size());
 
+        // Collect page items needing titles
+        List<Integer> needTitles = new ArrayList<>();
         for (int i = start; i < end; i++) {
             ConversationSummary convo = filteredConversations.get(i);
-            // Only load titles for external conversations that don't have one
             if (convo.title() != null && convo.title().isEmpty()) {
-                String title = loadTitleForConversation(convo.sessionId(), convo.source());
-                // Update the conversation in the filtered list with the loaded title
-                ConversationSummary updated = new ConversationSummary(
-                        convo.sessionId(), title, convo.started(),
-                        convo.agent(), convo.source(), convo.lastModified(),
-                        convo.lastModifiedTimestamp());
-                filteredConversations.set(i, updated);
+                needTitles.add(i);
+            }
+        }
+        if (needTitles.isEmpty()) return;
+
+        // Build O(1) index for allConversations persistence
+        Map<String, Integer> allConvoIndex = new HashMap<>();
+        for (int j = 0; j < allConversations.size(); j++) {
+            allConvoIndex.put(allConversations.get(j).sessionId(), j);
+        }
+
+        // Load titles (small batch — up to PAGE_SIZE items)
+        for (int i : needTitles) {
+            ConversationSummary convo = filteredConversations.get(i);
+            String title = loadTitleForConversation(convo.sessionId(), convo.source());
+            ConversationSummary updated = new ConversationSummary(
+                    convo.sessionId(), title, convo.started(),
+                    convo.agent(), convo.source(), convo.lastModified(),
+                    convo.lastModifiedTimestamp());
+            filteredConversations.set(i, updated);
+            Integer allIdx = allConvoIndex.get(convo.sessionId());
+            if (allIdx != null) {
+                allConversations.set(allIdx, updated);
             }
         }
     }
@@ -1322,18 +1559,32 @@ public class ResumeTool implements CliTool {
             terminal.writer().println(DIM + "─".repeat(80) + RESET);
             terminal.writer().println();
 
-            // Try to load transcript
-            String transcript = loadTranscript(sessionId);
-            if (transcript != null && !transcript.isEmpty()) {
-                // Show first 50 lines
-                String[] lines = transcript.split("\n");
-                int showLines = Math.min(lines.length, 50);
-                for (int i = 0; i < showLines; i++) {
-                    terminal.writer().println(lines[i]);
-                }
-                if (lines.length > 50) {
+            // Try to load via the unified loader (supports kompile + all external sources)
+            LoadedConversation conversation = null;
+            try {
+                conversation = loadConversation(sessionId);
+            } catch (Exception ignored) {}
+
+            if (conversation != null && conversation.turns() != null && !conversation.turns().isEmpty()) {
+                // Format and display turns
+                int lineCount = 0;
+                int maxLines = 50;
+                for (ChatHistory.Turn turn : conversation.turns()) {
+                    if (lineCount >= maxLines) break;
+                    String roleColor = "user".equals(turn.role()) ? GREEN : CYAN;
+                    terminal.writer().println(roleColor + BOLD + turn.role().toUpperCase() + ":" + RESET);
+                    String[] contentLines = turn.content().split("\n");
+                    for (String line : contentLines) {
+                        if (lineCount >= maxLines) break;
+                        terminal.writer().println("  " + line);
+                        lineCount++;
+                    }
                     terminal.writer().println();
-                    terminal.writer().println(DIM + "... (" + (lines.length - 50) + " more lines)" + RESET);
+                    lineCount++;
+                }
+                if (lineCount >= maxLines) {
+                    terminal.writer().println();
+                    terminal.writer().println(DIM + "... (more content available, showing first " + maxLines + " lines)" + RESET);
                 }
             } else {
                 terminal.writer().println(YELLOW + "No transcript found for session: " + sessionId + RESET);
@@ -1344,26 +1595,6 @@ public class ResumeTool implements CliTool {
             lineReader.readLine();
         } catch (Exception e) {
             terminal.writer().println(RED + "Error viewing conversation: " + e.getMessage() + RESET);
-        }
-    }
-
-    /**
-     * Load transcript for a session.
-     */
-    private String loadTranscript(String sessionId) {
-        try {
-            // Try kompile transcript first
-            Path conversationsDir = Paths.get(System.getProperty("user.home"), ".kompile", "conversations");
-            Path transcriptPath = conversationsDir.resolve(sessionId + ".txt");
-            if (java.nio.file.Files.exists(transcriptPath)) {
-                return java.nio.file.Files.readString(transcriptPath);
-            }
-
-            // Try external sources (would need to check Claude, OpenCode, etc. directories)
-            // For now, return null if not found in kompile conversations
-            return null;
-        } catch (Exception e) {
-            return null;
         }
     }
 
@@ -1491,17 +1722,26 @@ public class ResumeTool implements CliTool {
             terminal.writer().println();
 
             if (choice.trim().equals("1")) {
-                // Option 1: Resume normally - use the agent selected in the menu
-                // If a targetUuid was provided (e.g. via "resume <id> <uuid>"), use it
+                // Option 1: Resume normally — same agent, use native resume directly
                 String agent = (selectedAgent != null && !selectedAgent.isBlank())
                         ? selectedAgent
                         : determineAgentFromSource(conversation.source());
-                if (targetUuid != null) {
-                    terminal.writer().println(CYAN + "Resuming with " + agent + " using session " + targetUuid + "..." + RESET);
+                String sourceAgent = determineAgentFromSource(conversation.source());
+
+                // Same agent → skip export, just launch with native resume flag
+                if (targetUuid == null && sourceAgent.equals(agent)) {
+                    terminal.writer().println(CYAN + "Resuming natively with " + agent + "..." + RESET);
+                    terminal.writer().flush();
+                    launchNativeResume(agent, sessionId, conversation.workingDirectory());
                 } else {
-                    terminal.writer().println(CYAN + "Resuming with " + agent + "..." + RESET);
+                    // Cross-agent or explicit UUID override → export needed
+                    if (targetUuid != null) {
+                        terminal.writer().println(CYAN + "Resuming with " + agent + " using session " + targetUuid + "..." + RESET);
+                    } else {
+                        terminal.writer().println(CYAN + "Exporting and resuming with " + agent + "..." + RESET);
+                    }
+                    launchAgentWithSession(conversation, agent, targetUuid);
                 }
-                launchAgentWithSession(conversation, agent, targetUuid);
                 return;
             }
 
@@ -1571,7 +1811,154 @@ public class ResumeTool implements CliTool {
     }
 
     /**
+     * Launch an agent with its native resume command — no export, no conversion.
+     * Used when resuming a conversation back into the same agent that created it.
+     * The session file already exists in the agent's native format.
+     */
+    private void launchNativeResume(String agent, String sessionId, Path workingDirectory) {
+        boolean terminalClosed = false;
+        java.nio.file.Path injectedSettingsFile = null;
+        try {
+            Path effectiveWorkDir = workingDirectory != null
+                    ? workingDirectory
+                    : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+
+            // Build the native resume command for this agent
+            List<String> agentCommand = new ArrayList<>();
+            switch (agent.toLowerCase()) {
+                case "claude", "claude-code" -> {
+                    agentCommand.add("claude");
+                    agentCommand.add("--resume");
+                    agentCommand.add(sessionId);
+                }
+                case "codex" -> {
+                    agentCommand.add("codex");
+                    agentCommand.add("resume");
+                    agentCommand.add("--all");
+                    agentCommand.add(sessionId);
+                    agentCommand.add("-C");
+                    agentCommand.add(effectiveWorkDir.toString());
+                }
+                case "qwen" -> {
+                    agentCommand.add("qwen");
+                    agentCommand.add("--resume");
+                    agentCommand.add(sessionId);
+                }
+                case "opencode" -> {
+                    agentCommand.add("opencode");
+                    agentCommand.add("-s");
+                    agentCommand.add(sessionId);
+                }
+                case "gemini" -> {
+                    // Gemini uses index-based resume, not session ID — fall through to export path
+                    terminal.writer().println(YELLOW + "Gemini requires index-based resume — exporting instead." + RESET);
+                    terminal.writer().flush();
+                    // launchAgentWithSession manages its own terminal lifecycle
+                    LoadedConversation conv = loadConversation(sessionId);
+                    launchAgentWithSession(conv, agent, null);
+                    return;
+                }
+                default -> {
+                    terminal.writer().println(RED + "Unknown agent for native resume: " + agent + RESET);
+                    terminal.writer().flush();
+                    return;
+                }
+            }
+
+            // Add permission bypass flags
+            ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
+                    agentCommand, agent, true, effectiveWorkDir);
+
+            // Inject MCP tools before launching — probe for running kompile-app (SSE),
+            // fall back to stdio if not found
+            String sseUrl = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
+            try {
+                injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                        effectiveWorkDir, agent, sseUrl);
+            } catch (Exception e) {
+                terminal.writer().println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
+            }
+
+            String mcpMode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
+            terminal.writer().println(DIM + "  MCP: " + mcpMode + RESET);
+            terminal.writer().println(DIM + "  Command: " + String.join(" ", agentCommand) + RESET);
+            terminal.writer().println();
+            terminal.writer().flush();
+
+            // Close terminal and launch agent
+            terminal.close();
+            terminalClosed = true;
+
+            ProcessBuilder pb = new ProcessBuilder(agentCommand);
+            pb.directory(effectiveWorkDir.toFile());
+            pb.inheritIO();
+            Process process = pb.start();
+
+            boolean interrupted = false;
+            int exitCode;
+            try {
+                exitCode = process.waitFor();
+            } catch (InterruptedException ie) {
+                // Ctrl+C hit the JVM thread — kill the subprocess
+                interrupted = true;
+                process.destroy();
+                try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                if (process.isAlive()) process.destroyForcibly();
+                exitCode = 130; // conventional SIGINT exit code
+                Thread.interrupted(); // clear interrupt flag
+            } finally {
+                // Always clean up MCP tools
+                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+            }
+
+            // Clean up terminal state after agent exits
+            System.out.print("\033[0m");
+            System.out.print("\033[?25h");
+            System.out.println();
+            System.out.println();
+            System.out.flush();
+
+            // Re-open terminal
+            Terminal newTerminal = TerminalBuilder.builder().system(true).build();
+            LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
+            this.terminal = newTerminal;
+            this.lineReader = newLineReader;
+            terminalClosed = false;
+
+            newTerminal.writer().println();
+            if (interrupted) {
+                newTerminal.writer().println(YELLOW + "Agent interrupted — returned to Kompile." + RESET);
+            } else {
+                newTerminal.writer().println(GREEN + "✓ Agent session completed (exit code: " + exitCode + ")" + RESET);
+            }
+            newTerminal.writer().println(DIM + "Press Enter to continue..." + RESET);
+            newTerminal.writer().flush();
+            try { newLineReader.readLine(); } catch (UserInterruptException | EndOfFileException ignored) {}
+        } catch (UserInterruptException e) {
+            // Ctrl+C before subprocess launched (during terminal input)
+            if (terminalClosed) {
+                restoreTerminalAfterLaunchFailure();
+            }
+        } catch (Exception e) {
+            // Clean up MCP tools on error path too
+            ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+
+            String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            boolean restored = !terminalClosed || restoreTerminalAfterLaunchFailure();
+            if (restored) {
+                terminal.writer().println(RED + "Error launching agent: " + errorMsg + RESET);
+                terminal.writer().println(DIM + "Press Enter to continue..." + RESET);
+                terminal.writer().flush();
+                try { lineReader.readLine(); } catch (Exception ignored) {}
+            } else {
+                System.err.println("Error launching agent: " + errorMsg);
+            }
+        }
+    }
+
+    /**
      * Export conversation and launch agent with native session resume.
+     * Used for cross-agent resume (source != target) where format conversion is needed.
      *
      * @param conversation the loaded conversation to resume
      * @param agent the target agent to launch
@@ -1580,6 +1967,7 @@ public class ResumeTool implements CliTool {
      */
     private void launchAgentWithSession(LoadedConversation conversation, String agent, String targetSessionId) {
         boolean terminalClosed = false;
+        java.nio.file.Path injectedSettingsFile = null;
         try {
             // Export to agent's native format
             ConversationExporter.ExportResult exportResult;
@@ -1606,14 +1994,15 @@ public class ResumeTool implements CliTool {
             terminal.writer().println();
             terminal.writer().flush();
 
-            // Inject MCP tools before launching — same as PassthroughCommand
+            // Inject MCP tools before launching — probe for running kompile-app (SSE),
+            // fall back to stdio if not found
             java.nio.file.Path agentWorkingDir = exportResult.getWorkingDirectory() != null
                     ? exportResult.getWorkingDirectory()
                     : java.nio.file.Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-            java.nio.file.Path injectedSettingsFile = null;
+            String sseUrl = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
             try {
                 injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
-                        agentWorkingDir, agent);
+                        agentWorkingDir, agent, sseUrl);
             } catch (Exception e) {
                 terminal.writer().println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
             }
@@ -1639,17 +2028,9 @@ public class ResumeTool implements CliTool {
                 }
             }
 
-            // Add permission bypass flags — same as PassthroughCommand
-            String name = agent.toLowerCase();
-            if (name.contains("claude")) {
-                agentCommand.add("--dangerously-skip-permissions");
-            } else if (name.contains("codex")) {
-                agentCommand.add("--full-auto");
-            } else if (name.contains("qwen")) {
-                agentCommand.add("--yolo");
-            } else if (name.contains("gemini")) {
-                agentCommand.add("--yolo");
-            }
+            // Add permission bypass flags via centralized overrides
+            ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
+                    agentCommand, agent, true, exportResult.getWorkingDirectory());
 
             ProcessBuilder pb = new ProcessBuilder(agentCommand);
             if (exportResult.getWorkingDirectory() != null) {
@@ -1657,10 +2038,23 @@ public class ResumeTool implements CliTool {
             }
             pb.inheritIO();
             Process process = pb.start();
-            int exitCode = process.waitFor();
 
-            // Clean up injected MCP tools
-            ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+            boolean interrupted = false;
+            int exitCode;
+            try {
+                exitCode = process.waitFor();
+            } catch (InterruptedException ie) {
+                // Ctrl+C hit the JVM thread — kill the subprocess
+                interrupted = true;
+                process.destroy();
+                try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                if (process.isAlive()) process.destroyForcibly();
+                exitCode = 130;
+                Thread.interrupted(); // clear interrupt flag
+            } finally {
+                // Always clean up MCP tools
+                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+            }
 
             // Clean up terminal state after agent exits
             System.out.print("\033[0m"); // reset colors
@@ -1672,23 +2066,30 @@ public class ResumeTool implements CliTool {
             // Re-open terminal after agent exits and restore state
             Terminal newTerminal = TerminalBuilder.builder().system(true).build();
             LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
-            
+
             // Update our terminal and lineReader references for continued use
             this.terminal = newTerminal;
             this.lineReader = newLineReader;
             terminalClosed = false;
 
             newTerminal.writer().println();
-            newTerminal.writer().println(GREEN + "✓ Agent session completed (exit code: " + exitCode + ")" + RESET);
+            if (interrupted) {
+                newTerminal.writer().println(YELLOW + "Agent interrupted — returned to Kompile." + RESET);
+            } else {
+                newTerminal.writer().println(GREEN + "✓ Agent session completed (exit code: " + exitCode + ")" + RESET);
+            }
             newTerminal.writer().println(DIM + "Press Enter to continue..." + RESET);
             newTerminal.writer().flush();
-            newLineReader.readLine();
+            try { newLineReader.readLine(); } catch (UserInterruptException | EndOfFileException ignored) {}
         } catch (UserInterruptException e) {
-            // User pressed Ctrl+C to quit the agent - exit cleanly
+            // Ctrl+C before subprocess launched (during terminal input)
             if (terminalClosed) {
                 restoreTerminalAfterLaunchFailure();
             }
         } catch (Exception e) {
+            // Clean up MCP tools on error path too
+            ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+
             String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             boolean restored = !terminalClosed || restoreTerminalAfterLaunchFailure();
             if (restored) {
@@ -1774,8 +2175,12 @@ public class ResumeTool implements CliTool {
     }
 
     private String readCodexSessionId(Path file) {
-        try {
-            for (String line : Files.readAllLines(file, java.nio.charset.StandardCharsets.UTF_8)) {
+        // Stream line-by-line instead of reading entire file (codex sessions can be 100MB+).
+        // session_meta is always near the top, so stop after a few lines.
+        try (BufferedReader br = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            int linesRead = 0;
+            while ((line = br.readLine()) != null && linesRead++ < 10) {
                 if (line.isBlank()) continue;
                 JsonNode node = MAPPER.readTree(line);
                 if ("session_meta".equals(node.path("type").asText(""))) {
@@ -1961,8 +2366,11 @@ public class ResumeTool implements CliTool {
             sessionFiles.filter(p -> p.toString().endsWith(".jsonl"))
                 .forEach(p -> {
                     String id = p.getFileName().toString().replace(".jsonl", "");
+                    // Skip sessions already harvested into a kompile transcript
+                    if (harvestedExternalIds.contains(id)) return;
                     try {
                         long lastMod = Files.getLastModifiedTime(p).toMillis();
+                        sessionFilePaths.put(id, p);
                         allConversations.add(new ConversationSummary(
                                 id,
                                 "",
@@ -1985,7 +2393,9 @@ public class ResumeTool implements CliTool {
         String agent = params.has("agent") ? params.get("agent").asText() : "";
         String source = params.has("source") ? params.get("source").asText() : "";
 
-        loadAllConversations();
+        if (!conversationsLoaded) {
+            loadAllConversations();
+        }
         searchQuery = query;
         filterAgent = agent;
         filterSource = source;
@@ -1994,9 +2404,12 @@ public class ResumeTool implements CliTool {
         ObjectMapper om = new ObjectMapper();
         ObjectNode result = om.createObjectNode();
         result.put("count", filteredConversations.size());
+        result.put("hint", "Use the 'index' number with resume/view/migrate actions as session_id (e.g. session_id='1')");
         var array = result.putArray("conversations");
-        for (ConversationSummary convo : filteredConversations) {
+        for (int i = 0; i < filteredConversations.size(); i++) {
+            ConversationSummary convo = filteredConversations.get(i);
             ObjectNode convoNode = array.addObject();
+            convoNode.put("index", i + 1); // 1-based index for easy reference
             convoNode.put("session_id", convo.sessionId());
             convoNode.put("title", convo.title());
             convoNode.put("agent", convo.agent());
@@ -2011,11 +2424,19 @@ public class ResumeTool implements CliTool {
      * Run migration with parameters.
      */
     private ToolResult runMigrate(JsonNode params) {
-        String sessionId = params.has("session_id") ? params.get("session_id").asText() : "";
+        String sessionIdInput = params.has("session_id") ? params.get("session_id").asText() : "";
         String format = params.has("output_format") ? params.get("output_format").asText() : "kompile";
 
-        if (sessionId.isEmpty()) {
+        if (sessionIdInput.isEmpty()) {
             return ToolResult.error("session_id is required for migrate action");
+        }
+
+        // Resolve numeric index to actual session ID from previous search results
+        String sessionId = resolveSessionIdFromSearchResults(sessionIdInput);
+        if (sessionId == null) {
+            return ToolResult.error("Invalid session reference '" + sessionIdInput +
+                    "'. If using a numeric index, run a search first to populate results. " +
+                    "Otherwise, provide the full session UUID.");
         }
 
         try {
@@ -2049,12 +2470,20 @@ public class ResumeTool implements CliTool {
      * so the calling agent can incorporate it into its context.
      */
     private ToolResult runResume(JsonNode params) {
-        String sessionId = params.has("session_id") ? params.get("session_id").asText() : "";
+        String sessionIdInput = params.has("session_id") ? params.get("session_id").asText() : "";
         String agent = params.has("target_agent") ? params.get("target_agent").asText() : "claude";
         String targetSessionId = params.has("target_session_id") ? params.get("target_session_id").asText() : null;
 
-        if (sessionId.isEmpty()) {
+        if (sessionIdInput.isEmpty()) {
             return ToolResult.error("session_id is required for resume action");
+        }
+
+        // Resolve numeric index to actual session ID from previous search results
+        String sessionId = resolveSessionIdFromSearchResults(sessionIdInput);
+        if (sessionId == null) {
+            return ToolResult.error("Invalid session reference '" + sessionIdInput +
+                    "'. If using a numeric index, run a search first to populate results. " +
+                    "Otherwise, provide the full session UUID.");
         }
 
         try {
@@ -2093,10 +2522,18 @@ public class ResumeTool implements CliTool {
      * Run view with parameters.
      */
     private ToolResult runView(JsonNode params) {
-        String sessionId = params.has("session_id") ? params.get("session_id").asText() : "";
+        String sessionIdInput = params.has("session_id") ? params.get("session_id").asText() : "";
 
-        if (sessionId.isEmpty()) {
+        if (sessionIdInput.isEmpty()) {
             return ToolResult.error("session_id is required for view action");
+        }
+
+        // Resolve numeric index to actual session ID from previous search results
+        String sessionId = resolveSessionIdFromSearchResults(sessionIdInput);
+        if (sessionId == null) {
+            return ToolResult.error("Invalid session reference '" + sessionIdInput +
+                    "'. If using a numeric index, run a search first to populate results. " +
+                    "Otherwise, provide the full session UUID.");
         }
 
         try {
@@ -2124,7 +2561,7 @@ public class ResumeTool implements CliTool {
         terminal.writer().println();
         terminal.writer().println("Commands:");
         terminal.writer().println("  " + GREEN + "<1-9>" + RESET + "                      Switch to agent tab (quick select)");
-        terminal.writer().println("  " + GREEN + "tab <n>" + RESET + "                      Switch to agent tab (0-based index)");
+        terminal.writer().println("  " + GREEN + "tab <n>" + RESET + "                      Switch to agent tab (1-based number)");
         terminal.writer().println("  " + GREEN + "search <query>" + RESET + "                Search conversations by keyword");
         terminal.writer().println("  " + GREEN + "filter agent=<name>" + RESET + "          Filter by agent name");
         terminal.writer().println("  " + GREEN + "filter source=<name>" + RESET + "          Filter by source (kompile, claude-code, etc.)");

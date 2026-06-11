@@ -24,6 +24,7 @@ import java.util.concurrent.Callable;
         BuildAppCommand.class,
         NativeImageBuilder.class,
         PomGenerator.class,
+        PipelineCommandGenerator.class,
         CloneBuildComponents.class,
         GenerateDl4jBuild.class,
         BuildNd4jBackend.class,

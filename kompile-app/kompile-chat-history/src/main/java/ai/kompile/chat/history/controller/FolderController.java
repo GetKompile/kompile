@@ -299,6 +299,7 @@ public class FolderController {
         log.debug("Getting sessions for folder: {}", folderId);
         try {
             List<ChatSession> sessions = folderService.getFolderSessions(folderId);
+
             List<ChatSessionDto> dtos = sessions.stream()
                 .map(s -> ChatSessionDto.fromEntity(s, false))
                 .collect(Collectors.toList());

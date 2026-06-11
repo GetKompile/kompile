@@ -146,6 +146,15 @@ public class CrossIndexTrackingService {
      */
     public IndexedPassage registerPassage(IndexedDocument document, String chunkId,
                                            int chunkIndex, String content) {
+        return registerPassage(document, chunkId, chunkIndex, content, null);
+    }
+
+    /**
+     * Register a new passage for tracking with metadata (content type, table info, etc.).
+     */
+    public IndexedPassage registerPassage(IndexedDocument document, String chunkId,
+                                           int chunkIndex, String content,
+                                           java.util.Map<String, Object> metadata) {
         // Check if passage already exists
         Optional<IndexedPassage> existing = passageRepository.findByChunkId(chunkId);
         if (existing.isPresent()) {
@@ -156,8 +165,26 @@ public class CrossIndexTrackingService {
         String contentPreview = content != null && content.length() > 500 ?
                 content.substring(0, 500) : content;
 
+        // Extract content type and full content from metadata
+        String contentType = null;
+        String fullContent = null;
+        if (metadata != null) {
+            Object ct = metadata.get("content_type");
+            if (ct instanceof String) {
+                contentType = (String) ct;
+            }
+            Object ftc = metadata.get("full_table_content");
+            if (ftc instanceof String) {
+                fullContent = (String) ftc;
+            }
+            // For table content, if no explicit full_table_content, store the raw content
+            if ("table".equals(contentType) && fullContent == null) {
+                fullContent = content;
+            }
+        }
+
         IndexedPassage passage = IndexedPassage.create(document, chunkId, chunkIndex,
-                contentHash, contentPreview);
+                contentHash, contentPreview, contentType, fullContent, metadata);
         return passageRepository.save(passage);
     }
 
@@ -185,7 +212,8 @@ public class CrossIndexTrackingService {
                 chunkIndex = i;
             }
 
-            IndexedPassage passage = registerPassage(document, chunkId, chunkIndex, content);
+            IndexedPassage passage = registerPassage(document, chunkId, chunkIndex, content,
+                    chunk.getMetadata());
             registered.add(passage);
         }
 
@@ -453,7 +481,7 @@ public class CrossIndexTrackingService {
                 passagesMissingFromVector,
                 passagesMissingFromGraph,
                 Instant.now(),
-                true // TODO: Get from configuration
+                true // TODO: Wire from PipelineConfigService.getAutoSyncEnabled() once pipeline-config.json exposes this setting
         );
     }
 

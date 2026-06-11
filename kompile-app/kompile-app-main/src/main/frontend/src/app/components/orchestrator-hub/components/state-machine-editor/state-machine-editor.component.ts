@@ -517,6 +517,33 @@ export class StateMachineEditorComponent implements OnInit, OnDestroy, AfterView
   }
 
   // Import/Export
+  importConfig(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (!input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const config: StateMachineConfig = JSON.parse(reader.result as string);
+        this.orchestratorService.importStateMachineConfig(this.instanceId, config)
+          .pipe(takeUntil(this.destroy$))
+          .subscribe({
+            next: () => {
+              this.loadStateMachine();
+            },
+            error: (err) => {
+              this.error = 'Failed to import: ' + (err.error?.message || err.message);
+            }
+          });
+      } catch (e) {
+        this.error = 'Invalid JSON file';
+      }
+      // Reset input so the same file can be re-imported
+      input.value = '';
+    };
+    reader.readAsText(file);
+  }
+
   exportConfig(): void {
     this.orchestratorService.exportStateMachineConfig(this.instanceId)
       .pipe(takeUntil(this.destroy$))

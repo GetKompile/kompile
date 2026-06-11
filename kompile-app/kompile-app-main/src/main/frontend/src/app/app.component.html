@@ -78,6 +78,9 @@
     <a mat-tab-link (click)="activeTab = 'unifiedChat'" [active]="activeTab === 'unifiedChat'">
       Chat
     </a>
+    <a mat-tab-link (click)="activeTab = 'project'" [active]="activeTab === 'project'">
+      Project
+    </a>
     <a mat-tab-link (click)="activeTab = 'sources'" [active]="activeTab === 'sources'" class="fact-sheets-tab">
       Fact Sheets
       <span class="active-jobs-badge" *ngIf="activeJobsCount > 0" [title]="getActiveJobsSummary()">
@@ -91,30 +94,37 @@
     <a mat-tab-link (click)="activeTab = 'developer'" [active]="activeTab === 'developer'">
       Developer
     </a>
-    <a mat-tab-link (click)="activeTab = 'openclaw'" [active]="activeTab === 'openclaw'">
-      OpenClaw
+    <a mat-tab-link (click)="activeTab = 'kclaw'" [active]="activeTab === 'kclaw'">
+      KClaw
     </a>
   </nav>
   <mat-tab-nav-panel #tabPanel></mat-tab-nav-panel>
 
-  <main>
-    <div *ngIf="activeTab === 'unifiedChat'">
-      <app-unified-chat></app-unified-chat>
-    </div>
-    <div *ngIf="activeTab === 'sources'">
-      <app-fact-sheet-manager (openModelStaging)="openModelStaging()"></app-fact-sheet-manager>
-    </div>
-    <div *ngIf="activeTab === 'tools'">
-      <app-tools-hub></app-tools-hub>
-    </div>
-    <div *ngIf="activeTab === 'developer'">
-      <app-developer-hub></app-developer-hub>
-    </div>
-    <div *ngIf="activeTab === 'openclaw'">
-      <app-openclaw-hub></app-openclaw-hub>
-    </div>
+  <div class="content-with-explorer">
+    <!-- Project Explorer Sidebar -->
+    <app-project-explorer (navigateToTab)="handleBannerNavigation($event)"></app-project-explorer>
 
-  </main>
+    <main>
+      <div *ngIf="activeTab === 'unifiedChat'">
+        <app-unified-chat></app-unified-chat>
+      </div>
+      <div *ngIf="activeTab === 'project'">
+        <app-project-manager></app-project-manager>
+      </div>
+      <div *ngIf="activeTab === 'sources'">
+        <app-fact-sheet-manager (openModelStaging)="openModelStaging()"></app-fact-sheet-manager>
+      </div>
+      <div *ngIf="activeTab === 'tools'">
+        <app-tools-hub></app-tools-hub>
+      </div>
+      <div *ngIf="activeTab === 'developer'">
+        <app-developer-hub></app-developer-hub>
+      </div>
+      <div *ngIf="activeTab === 'kclaw'">
+        <app-kclaw-hub></app-kclaw-hub>
+      </div>
+    </main>
+  </div>
 
   <footer>
     <p>{{ title }}</p>

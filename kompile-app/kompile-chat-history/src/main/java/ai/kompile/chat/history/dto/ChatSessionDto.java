@@ -41,8 +41,10 @@ public class ChatSessionDto {
     private LocalDateTime updatedAt;
     private String userId;
     private String source;
+    private String codeProjectId;
     private List<ChatMessageDto> messages;
     private int messageCount;
+    private Long originalTimestamp;
 
     public static ChatSessionDto fromEntity(ChatSession session, boolean includeMessages) {
         ChatSessionDtoBuilder builder = ChatSessionDto.builder()
@@ -53,7 +55,8 @@ public class ChatSessionDto {
             .updatedAt(session.getUpdatedAt())
             .userId(session.getUserId())
             .source(session.getSource())
-            .messageCount(session.getMessages().size());
+            .messageCount(session.getMessageCount())
+            .originalTimestamp(session.getOriginalTimestamp());
 
         if (includeMessages) {
             builder.messages(session.getMessages().stream()

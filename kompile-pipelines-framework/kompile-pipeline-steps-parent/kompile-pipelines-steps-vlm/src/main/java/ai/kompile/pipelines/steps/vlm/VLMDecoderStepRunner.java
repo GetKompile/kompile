@@ -83,7 +83,7 @@ public class VLMDecoderStepRunner implements PipelineStepRunner {
 
     // Auto-discovered I/O config from ModelIOConfig
     private ModelIOConfig ioConfig;
-    private DecoderUtils.KVCacheNames kvCacheNames;
+    private ModelIOConfig.KVCacheNames kvCacheNames;
     private String logitsOutputName;
 
     @Override

@@ -272,6 +272,10 @@ public class ModelInitSubprocessMain {
                 reporter.reportLog("WARN", "Model validation skipped (skipValidation=true)");
             }
 
+            // Trim GPU memory pools after model creation and validation to release
+            // reserved-but-unused memory from DSP plan compilation and test embeddings.
+            trimGpuMemoryPools("post-model-init-validation");
+
             // Phase 6: Complete
             reporter.reportPhaseTransition(ModelInitMessage.Phase.COMPLETE);
 
@@ -454,6 +458,22 @@ public class ModelInitSubprocessMain {
 
         } catch (Exception e) {
             logger.warn("Error applying ND4J config: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Trim CUDA memory pools on all devices to release reserved-but-unused GPU memory.
+     */
+    private static void trimGpuMemoryPools(String reason) {
+        try {
+            var nativeOps = Nd4j.getNativeOps();
+            int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+            for (int d = 0; d < numDevices; d++) {
+                nativeOps.trimMemoryPool(d);
+            }
+            logger.info("Trimmed GPU memory pools on {} device(s) (reason: {})", numDevices, reason);
+        } catch (Exception e) {
+            logger.debug("Could not trim GPU memory pools (CPU backend?): {}", e.getMessage());
         }
     }
 

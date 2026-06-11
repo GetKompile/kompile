@@ -37,6 +37,15 @@ public interface GraphEdgeComputationService {
     void computeEmbeddingSimilarityEdges(double minSimilarity, int maxEdgesPerNode);
 
     /**
+     * Compute embedding similarity edges scoped to a fact sheet
+     *
+     * @param factSheetId Fact sheet scope (null for global)
+     * @param minSimilarity Minimum similarity threshold (0.0 to 1.0)
+     * @param maxEdgesPerNode Maximum edges to create per node
+     */
+    void computeEmbeddingSimilarityEdges(Long factSheetId, double minSimilarity, int maxEdgesPerNode);
+
+    /**
      * Compute embedding similarity edges for a specific node
      *
      * @param nodeId Node UUID
@@ -62,6 +71,14 @@ public interface GraphEdgeComputationService {
      * @param minSharedEntities Minimum number of shared entities to create an edge
      */
     void computeSharedEntityEdges(int minSharedEntities);
+
+    /**
+     * Compute shared entity edges scoped to a fact sheet
+     *
+     * @param factSheetId Fact sheet scope (null for global)
+     * @param minSharedEntities Minimum number of shared entities to create an edge
+     */
+    void computeSharedEntityEdges(Long factSheetId, int minSharedEntities);
 
     /**
      * Extract entities from a node's content

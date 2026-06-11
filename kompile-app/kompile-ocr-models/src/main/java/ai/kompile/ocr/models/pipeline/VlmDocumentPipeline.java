@@ -33,11 +33,18 @@ import ai.kompile.kvcache.bridge.VlmKvCacheIntegrationService;
 import ai.kompile.ocr.structured.StructuredTable;
 import ai.kompile.ocr.structured.TableCell;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDResources;
+import org.apache.pdfbox.pdmodel.graphics.PDXObject;
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
 import org.eclipse.deeplearning4j.llm.generation.KvCacheStrategy;
 import org.eclipse.deeplearning4j.llm.generation.SamplingConfig;
+import org.eclipse.deeplearning4j.model.benchmark.BenchmarkConfig;
+import org.eclipse.deeplearning4j.model.benchmark.BenchmarkConfigApplier;
 import org.eclipse.deeplearning4j.vlm.model.VisionEncoderIOConfig;
 import org.eclipse.deeplearning4j.vlm.model.VisionLanguageModel;
 import org.eclipse.deeplearning4j.vlm.model.patching.SameDiffGraphPatch;
@@ -55,8 +62,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
+import java.awt.Color;
+import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
 import java.util.function.Consumer;
@@ -302,9 +312,13 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 }
             }
 
-            logger.info("VLM generation: {} tokens in {}ms ({} tok/s), prompt {} tokens, model {}",
+            double effectiveTokensPerSecond = effectiveTokensPerSecond(genResult);
+            String throughputLabel = throughputLabel(genResult);
+
+            logger.info("VLM generation: {} tokens in {}ms (overall={} tok/s, {}={} tok/s), prompt {} tokens, model {}",
                     generatedTokens, generateTime,
-                    String.format("%.1f", tokensPerSecond),
+                    String.format("%.1f", tokensPerSecond), throughputLabel,
+                    String.format("%.1f", effectiveTokensPerSecond),
                     promptTokens, modelId);
 
             audit.addModelResult(ModelResult.success(
@@ -378,6 +392,19 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 complexity = DocumentComplexity.MIXED;
             }
 
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("vlmModel", modelId);
+            metadata.put("outputFormat", config.getVlmOutputFormat().name());
+            metadata.put("rawOutput", generatedText);
+            metadata.put("generatedTokens", generatedTokens);
+            metadata.put("promptTokens", promptTokens);
+            metadata.put("tokensPerSecond", Math.round(tokensPerSecond * 100.0) / 100.0);
+            metadata.put("effectiveTokensPerSecond", Math.round(effectiveTokensPerSecond * 100.0) / 100.0);
+            metadata.put("throughputLabel", throughputLabel);
+            metadata.put("steadyStateTokensPerSecond", Math.round(genResult.getSteadyStateTokensPerSecond() * 100.0) / 100.0);
+            metadata.put("lateSteadyStateTokensPerSecond", Math.round(genResult.getLateSteadyStateTokensPerSecond() * 100.0) / 100.0);
+            metadata.put("generateTimeMs", generateTime);
+
             return ParsedDocument.builder()
                     .id(UUID.randomUUID().toString())
                     .sourceId(config.getSourceId())
@@ -389,15 +416,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     .auditTrail(config.isIncludeAuditTrail() ? audit : null)
                     .success(true)
                     .processingTimeMs(totalTime)
-                    .metadata(Map.of(
-                            "vlmModel", modelId,
-                            "outputFormat", config.getVlmOutputFormat().name(),
-                            "rawOutput", generatedText,
-                            "generatedTokens", generatedTokens,
-                            "promptTokens", promptTokens,
-                            "tokensPerSecond", Math.round(tokensPerSecond * 100.0) / 100.0,
-                            "generateTimeMs", generateTime
-                    ))
+                    .metadata(metadata)
                     .build();
 
         } catch (Exception e) {
@@ -448,10 +467,6 @@ public class VlmDocumentPipeline implements OcrPipeline {
             PDFRenderer renderer = new PDFRenderer(document);
             int totalPages = document.getNumberOfPages();
 
-            if (progressCallback != null) {
-                progressCallback.accept(PipelineProgress.starting(totalPages));
-            }
-
             List<Integer> pagesToProcess = config.parsePageRange(totalPages);
             if (pagesToProcess == null) {
                 pagesToProcess = new ArrayList<>();
@@ -464,6 +479,13 @@ public class VlmDocumentPipeline implements OcrPipeline {
             if (config.getMaxPages() > 0 && pagesToProcess.size() > config.getMaxPages()) {
                 pagesToProcess = pagesToProcess.subList(0, config.getMaxPages());
                 logger.info("Limiting processing to {} pages (maxPages={})", pagesToProcess.size(), config.getMaxPages());
+            }
+
+            // Use effective page count (after range/maxPages filtering) for progress reporting
+            int effectiveTotalPages = pagesToProcess.size();
+
+            if (progressCallback != null) {
+                progressCallback.accept(PipelineProgress.starting(effectiveTotalPages));
             }
 
             int pageBatchSize = Math.max(1, config.getPageBatchSize());
@@ -501,20 +523,21 @@ public class VlmDocumentPipeline implements OcrPipeline {
             for (int i = 0; i < pagesToProcess.size(); i++) {
                 int pageNum = pagesToProcess.get(i);
 
+                int progressPage = i + 1; // 1-based iteration index for progress display
                 try {
                     if (progressCallback != null) {
-                        progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages, "Rendering page"));
+                        progressCallback.accept(PipelineProgress.vlmStep(progressPage, effectiveTotalPages, "Rendering page"));
                     }
 
-                    BufferedImage pageImage = renderer.renderImageWithDPI(pageNum - 1, config.getPdfRenderDpi());
-                    ImageTiler.SplitImageResult splitResult = ImageTiler.splitImageForVLM(pageImage, tileSize);
+                    BufferedImage pageImage = renderPageSafe(renderer, document, pageNum - 1, config.getPdfRenderDpi());
+                    ImageTiler.SplitImageResult splitResult = ImageTiler.splitImageForVLM(pageImage, tileSize, config.getMaxTiles());
                     pageImage = null; // Allow GC of rendered image
 
                     logger.debug("Page {}: split into {} tiles ({}x{} grid)",
                             pageNum, splitResult.getTileCount(), splitResult.numCols, splitResult.numRows);
 
                     if (progressCallback != null) {
-                        progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages,
+                        progressCallback.accept(PipelineProgress.vlmStep(progressPage, effectiveTotalPages,
                                 "Generating tokens (" + splitResult.getTileCount() + " tiles)"));
                     }
 
@@ -563,12 +586,16 @@ public class VlmDocumentPipeline implements OcrPipeline {
                         tokensPerSecond = genResult.getTokensPerSecond();
                     }
 
-                    logger.info("Page {}/{}: {} tokens in {}ms ({} tok/s), model {}",
-                            pageNum, totalPages, generatedTokens, generateTimeMs,
-                            String.format("%.1f", tokensPerSecond), modelId);
+                    double effectiveTokensPerSecond = effectiveTokensPerSecond(genResult);
+                    String throughputLabel = throughputLabel(genResult);
+
+                    logger.info("Page {}/{}: {} tokens in {}ms (overall={} tok/s, {}={} tok/s), model {}",
+                            progressPage, effectiveTotalPages, generatedTokens, generateTimeMs,
+                            String.format("%.1f", tokensPerSecond), throughputLabel,
+                            String.format("%.1f", effectiveTokensPerSecond), modelId);
 
                     if (progressCallback != null) {
-                        progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages, "Parsing output"));
+                        progressCallback.accept(PipelineProgress.vlmStep(progressPage, effectiveTotalPages, "Parsing output"));
                     }
 
                     String plainText;
@@ -623,11 +650,26 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     int tileCount = pageGenResults[0].getGeneratedTokenCount() > 0 ?
                             (int) Math.ceil(generatedTokens / 64.0) : 0;
 
+                    Map<String, Object> pageMetadata = new LinkedHashMap<>();
+                    pageMetadata.put("vlmModel", modelId);
+                    pageMetadata.put("outputFormat", config.getVlmOutputFormat().name());
+                    pageMetadata.put("rawOutput", generatedText);
+                    pageMetadata.put("generatedTokens", generatedTokens);
+                    pageMetadata.put("promptTokens", promptTokens);
+                    pageMetadata.put("tokensPerSecond", Math.round(tokensPerSecond * 100.0) / 100.0);
+                    pageMetadata.put("effectiveTokensPerSecond", Math.round(effectiveTokensPerSecond * 100.0) / 100.0);
+                    pageMetadata.put("throughputLabel", throughputLabel);
+                    pageMetadata.put("steadyStateTokensPerSecond", Math.round(genResult.getSteadyStateTokensPerSecond() * 100.0) / 100.0);
+                    pageMetadata.put("lateSteadyStateTokensPerSecond", Math.round(genResult.getLateSteadyStateTokensPerSecond() * 100.0) / 100.0);
+                    pageMetadata.put("generateTimeMs", generateTimeMs);
+                    pageMetadata.put("tiledProcessing", true);
+                    pageMetadata.put("tileCount", tileCount);
+
                     ParsedDocument pageResult = ParsedDocument.builder()
                             .id(UUID.randomUUID().toString())
                             .sourceId(pdfFile.getAbsolutePath())
                             .pageNumber(pageNum)
-                            .totalPages(totalPages)
+                            .totalPages(effectiveTotalPages)
                             .documentType(DocumentType.SCANNED)
                             .complexity(complexity)
                             .text(plainText)
@@ -635,17 +677,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                             .auditTrail(config.isIncludeAuditTrail() ? audit : null)
                             .success(true)
                             .processingTimeMs(generateTimeMs)
-                            .metadata(Map.of(
-                                    "vlmModel", modelId,
-                                    "outputFormat", config.getVlmOutputFormat().name(),
-                                    "rawOutput", generatedText,
-                                    "generatedTokens", generatedTokens,
-                                    "promptTokens", promptTokens,
-                                    "tokensPerSecond", Math.round(tokensPerSecond * 100.0) / 100.0,
-                                    "generateTimeMs", generateTimeMs,
-                                    "tiledProcessing", true,
-                                    "tileCount", tileCount
-                            ))
+                            .metadata(pageMetadata)
                             .build();
 
                     results.add(pageResult);
@@ -653,13 +685,13 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     if (progressCallback != null) {
                         String vlmModelName = config.getVlmModelId() != null ? config.getVlmModelId() : modelId;
                         progressCallback.accept(PipelineProgress.vlmPageCompleted(
-                                pageNum, totalPages, generatedTokens, promptTokens,
+                                progressPage, effectiveTotalPages, generatedTokens, promptTokens,
                                 tokensPerSecond, generateTimeMs, vlmModelName));
                     }
                 } catch (Exception pageEx) {
                     failedPages++;
                     logger.error("Page {}/{} failed: {}. Continuing with remaining pages.",
-                            pageNum, totalPages, pageEx.getMessage(), pageEx);
+                            progressPage, effectiveTotalPages, pageEx.getMessage(), pageEx);
 
                     // Reset sessions to free GPU memory from the failed page
                     try {
@@ -673,7 +705,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                             .id(UUID.randomUUID().toString())
                             .sourceId(pdfFile.getAbsolutePath())
                             .pageNumber(pageNum)
-                            .totalPages(totalPages)
+                            .totalPages(effectiveTotalPages)
                             .documentType(DocumentType.SCANNED)
                             .complexity(DocumentComplexity.SIMPLE)
                             .text("")
@@ -689,7 +721,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     results.add(failedResult);
 
                     if (progressCallback != null) {
-                        progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages,
+                        progressCallback.accept(PipelineProgress.vlmStep(progressPage, effectiveTotalPages,
                                 "Page failed: " + pageEx.getMessage()));
                     }
                 }
@@ -715,7 +747,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
             }
 
             if (progressCallback != null) {
-                progressCallback.accept(PipelineProgress.completed(totalPages));
+                progressCallback.accept(PipelineProgress.completed(effectiveTotalPages));
             }
 
         } catch (Exception e) {
@@ -899,6 +931,13 @@ public class VlmDocumentPipeline implements OcrPipeline {
             maxKvLen = autoDetectMaxKvLen();
         }
 
+        // Skip rebuild if strategy and maxKvLen already match — rebuilding creates a new
+        // VisionLanguageModel which triggers DSP re-compilation, leaking GPU memory.
+        if (vlm.getKvCacheStrategy() == strategy && vlm.getMaxKvLen() == maxKvLen) {
+            logger.debug("KV cache config unchanged (strategy={}, maxKvLen={}), skipping rebuild", strategy, maxKvLen);
+            return;
+        }
+
         // Try to create a persistent managed KV cache via kompile's integration service.
         // This makes the cache visible in the KV cache browser UI with live statistics.
         org.eclipse.deeplearning4j.llm.generation.KvCacheManager externalKvCacheManager = null;
@@ -921,6 +960,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
         logger.info("Applying KV cache config: strategy={}, maxKvLen={}, managed={}",
                 strategy, maxKvLen, externalKvCacheManager != null);
 
+        BenchmarkConfig existingBenchmarkConfig = vlm.getBenchmarkConfig();
         var builder = VisionLanguageModel.builder()
                 .visionEncoder(vlm.getVisionEncoder())
                 .decoder(vlm.getDecoder())
@@ -937,6 +977,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
         }
 
         this.vlm = builder.build();
+        this.vlm.setBenchmarkConfig(existingBenchmarkConfig);
     }
 
     /**
@@ -1102,7 +1143,8 @@ public class VlmDocumentPipeline implements OcrPipeline {
         String normalizedId = vlmModelId.toLowerCase().replace("_", "-");
 
         if (hasSdzDecoder) {
-            // Prefer SDZ when available - these are already imported/optimized and known to work
+            // Prefer SDZ when available - these are already imported and known to work.
+            // MultiPartModelLoader applies the agnostic SameDiff optimized-SDZ cache.
             logger.info("Loading VLM from SDZ files in: {}", modelDirectory);
             if (normalizedId.contains("smoldocling")) {
                 this.vlm = VisionLanguageModel.loadSmolDocling(modelDirectory, ioConfig);
@@ -1149,8 +1191,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 this.vlm = VisionLanguageModel.fromOnnx(visionEncoder, decoder, embedTokens, tokenizerJson, ioConfig);
             }
 
-            // VisionLanguageModel.fromOnnx() hardcodes defaultPreprocessor() (CLIP 224x224).
-            // Override with the correct preprocessor based on model type or preprocessor_config.json.
+            // Override with the correct preprocessor from the model's preprocessor_config.json.
             VLMImagePreprocessor correctPreprocessor = resolveOnnxPreprocessor(normalizedId, modelDirectory);
             if (correctPreprocessor != null) {
                 logger.info("Overriding ONNX default preprocessor with model-specific preprocessor (target: {}x{})",
@@ -1172,15 +1213,16 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
         logger.info("VLM auto-detected format: {}", hasSdzDecoder ? "SDZ" : hasOnnxDecoder ? "ONNX" : "fallback");
 
-        // Compile with Triton MAX_AUTOTUNE if available (compiles optimized GPU kernels)
-        try {
-            if (org.nd4j.nativeblas.NativeOpsHolder.getInstance().getDeviceNativeOps().isTritonAvailable()) {
-                logger.info("Triton available — compiling VLM sub-models with MAX_AUTOTUNE...");
-                this.vlm.compileWithTriton();
-            }
-        } catch (Exception e) {
-            logger.warn("Triton compilation check failed: {}", e.getMessage());
-        }
+        // Use the same source-of-truth optimization config as the DL4J VLM benchmark.
+        // Apply environment flags now; decoder/embed_tokens compile is deferred until
+        // GenerationPipeline has been constructed so the ordering matches platform-tests.
+        BenchmarkConfig optimalConfig = BenchmarkConfig.optimal();
+        logger.info("Applying VLM benchmark config: {}", optimalConfig.getName());
+        BenchmarkConfigApplier.apply(optimalConfig);
+
+        this.vlm.setBenchmarkConfig(optimalConfig);
+        logger.info("Deferred BenchmarkConfig.{} decoder/embed_tokens compile until GenerationPipeline creation",
+                optimalConfig.getName());
     }
 
     /**
@@ -1210,22 +1252,13 @@ public class VlmDocumentPipeline implements OcrPipeline {
      * Checks: 1) known model types, 2) preprocessor_config.json in model directory.
      */
     private VLMImagePreprocessor resolveOnnxPreprocessor(String normalizedId, File modelDirectory) {
-        // Known model-specific preprocessors
-        if (normalizedId.contains("smoldocling")) {
-            logger.info("Using SmolDocling preprocessor (512x512) for model: {}", normalizedId);
-            return VLMImagePreprocessor.forSmolDocling();
-        }
-
-        // Try loading from preprocessor_config.json
-        File configFile = new File(modelDirectory, "preprocessor_config.json");
-        if (configFile.exists()) {
-            try {
-                VLMImagePreprocessor loaded = VLMImagePreprocessor.fromConfig(configFile);
-                logger.info("Loaded preprocessor from {}", configFile.getAbsolutePath());
-                return loaded;
-            } catch (Exception e) {
-                logger.warn("Failed to load preprocessor_config.json: {}", e.getMessage());
-            }
+        // Load from preprocessor_config.json or processor_config.json in model directory
+        try {
+            VLMImagePreprocessor loaded = VLMImagePreprocessor.fromModelDirectory(modelDirectory);
+            logger.info("Loaded preprocessor from model directory: {}", modelDirectory.getAbsolutePath());
+            return loaded;
+        } catch (Exception e) {
+            logger.warn("Failed to load preprocessor config from {}: {}", modelDirectory, e.getMessage());
         }
 
         // Also try processor_config.json (alternative naming)
@@ -1545,26 +1578,21 @@ public class VlmDocumentPipeline implements OcrPipeline {
             }
         }
 
-        // 2. Try preprocessor_config.json in model directory
+        // 2. Load from preprocessor_config.json / processor_config.json in model directory
         if (modelDirectory != null) {
-            File configFile = new File(modelDirectory, "preprocessor_config.json");
-            if (configFile.exists()) {
-                try {
-                    VLMImagePreprocessor fromConfig = VLMImagePreprocessor.fromConfig(configFile);
-                    if (fromConfig != null) {
-                        logger.info("Loaded image preprocessor from {}", configFile.getAbsolutePath());
-                        return fromConfig;
-                    }
-                } catch (Exception e) {
-                    logger.warn("Failed to load preprocessor_config.json: {}", e.getMessage());
-                }
+            try {
+                VLMImagePreprocessor fromConfig = VLMImagePreprocessor.fromModelDirectory(modelDirectory);
+                logger.info("Loaded image preprocessor from model directory: {}", modelDirectory.getAbsolutePath());
+                return fromConfig;
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                        "No preprocessor config found for model '" + modelId + "' in " + modelDirectory +
+                        ". Every VLM model must ship a preprocessor_config.json file.", e);
             }
         }
 
-        // 3. Fallback to SmolDocling defaults
-        logger.warn("No preprocessor config found for model '{}'; using SmolDocling defaults. " +
-                "Consider adding preprocessor_config.json to the model directory.", modelId);
-        return VLMImagePreprocessor.forSmolDocling();
+        throw new IllegalStateException(
+                "Cannot resolve image preprocessor: no VLM model loaded and no model directory available for model '" + modelId + "'");
     }
 
     // ==================== SamplingConfig Builder ====================
@@ -1603,6 +1631,32 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 .doSample(config.isDoSample())
                 .maxNewTokens(config.getMaxNewTokens())
                 .build();
+    }
+
+    private double effectiveTokensPerSecond(GenerationResult result) {
+        if (result.getLateSteadyStateTokensPerSecond() > 0) {
+            return result.getLateSteadyStateTokensPerSecond();
+        }
+        if (result.getSteadyStateTokensPerSecond() > 0) {
+            return result.getSteadyStateTokensPerSecond();
+        }
+        if (result.getDecodeTokensPerSecond() > 0) {
+            return result.getDecodeTokensPerSecond();
+        }
+        return result.getTokensPerSecond();
+    }
+
+    private String throughputLabel(GenerationResult result) {
+        if (result.getLateSteadyStateTokensPerSecond() > 0) {
+            return "lateSteady";
+        }
+        if (result.getSteadyStateTokensPerSecond() > 0) {
+            return "steady";
+        }
+        if (result.getDecodeTokensPerSecond() > 0) {
+            return "decode";
+        }
+        return "overall";
     }
 
     // ==================== Helper Methods ====================
@@ -1729,5 +1783,88 @@ public class VlmDocumentPipeline implements OcrPipeline {
      */
     public void setDocTagsParser(DocTagsParser parser) {
         this.docTagsParser = parser;
+    }
+
+    /**
+     * Render a PDF page to a BufferedImage, with fallback for corrupt font dictionaries.
+     *
+     * <p>Some scanned/image-based PDFs (e.g., D&D Monster Manual) have corrupt font
+     * metadata that causes {@link PDFRenderer#renderImageWithDPI} to throw
+     * {@code IOException: Missing descendant font dictionary}. The actual page content
+     * is raster images embedded as XObjects — the fonts are irrelevant.</p>
+     *
+     * <p>When standard rendering fails, this method extracts embedded images directly
+     * from the page's XObject resources and composites them onto a white canvas sized
+     * to the page's media box at the requested DPI.</p>
+     *
+     * @param renderer the PDF renderer (used for the fast path)
+     * @param document the PDF document (used for fallback extraction)
+     * @param pageIndex 0-based page index
+     * @param dpi rendering DPI
+     * @return the rendered page image
+     * @throws IOException if both rendering and fallback extraction fail
+     */
+    private BufferedImage renderPageSafe(PDFRenderer renderer, PDDocument document,
+                                         int pageIndex, float dpi) throws IOException {
+        try {
+            return renderer.renderImageWithDPI(pageIndex, dpi);
+        } catch (IOException e) {
+            logger.warn("Page {} standard rendering failed ({}), attempting embedded image extraction",
+                    pageIndex + 1, e.getMessage());
+            return extractEmbeddedPageImage(document, pageIndex, dpi);
+        }
+    }
+
+    /**
+     * Extract embedded images from a PDF page's XObject resources and composite them
+     * onto a single BufferedImage. This is the fallback path for pages with corrupt
+     * font dictionaries where standard rendering fails.
+     */
+    private BufferedImage extractEmbeddedPageImage(PDDocument document, int pageIndex,
+                                                    float dpi) throws IOException {
+        PDPage page = document.getPage(pageIndex);
+        PDResources resources = page.getResources();
+        if (resources == null) {
+            throw new IOException("Page " + (pageIndex + 1) + " has no resources for image extraction");
+        }
+
+        // Collect all embedded images from XObjects
+        List<BufferedImage> images = new ArrayList<>();
+        for (COSName name : resources.getXObjectNames()) {
+            PDXObject xobj = resources.getXObject(name);
+            if (xobj instanceof PDImageXObject) {
+                images.add(((PDImageXObject) xobj).getImage());
+            }
+        }
+
+        if (images.isEmpty()) {
+            throw new IOException("Page " + (pageIndex + 1) + " has no embedded images to extract");
+        }
+
+        // Single image — return directly (most common case for scanned pages)
+        if (images.size() == 1) {
+            logger.info("Page {}: extracted 1 embedded image ({}x{})",
+                    pageIndex + 1, images.get(0).getWidth(), images.get(0).getHeight());
+            return images.get(0);
+        }
+
+        // Multiple images — composite onto a canvas sized to the page media box
+        float scale = dpi / 72f;
+        int canvasWidth = Math.round(page.getMediaBox().getWidth() * scale);
+        int canvasHeight = Math.round(page.getMediaBox().getHeight() * scale);
+        BufferedImage canvas = new BufferedImage(canvasWidth, canvasHeight, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = canvas.createGraphics();
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, canvasWidth, canvasHeight);
+
+        // Draw all images scaled to fill the canvas (best effort for multi-image pages)
+        for (BufferedImage img : images) {
+            g.drawImage(img, 0, 0, canvasWidth, canvasHeight, null);
+        }
+        g.dispose();
+
+        logger.info("Page {}: composited {} embedded images onto {}x{} canvas",
+                pageIndex + 1, images.size(), canvasWidth, canvasHeight);
+        return canvas;
     }
 }

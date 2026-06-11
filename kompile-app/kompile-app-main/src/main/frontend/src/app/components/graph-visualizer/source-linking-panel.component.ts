@@ -390,8 +390,8 @@ export class SourceLinkingPanelComponent implements OnInit, OnDestroy {
 
   loading = false;
   connectivity: any = null;
-  sourceLinks: SourceLink[] = [];
-  mostConnected: ConnectedSource[] = [];
+  sourceLinks: any[] = [];
+  mostConnected: any[] = [];
   isolatedSources: string[] = [];
 
   constructor(
@@ -486,7 +486,7 @@ export class SourceLinkingPanelComponent implements OnInit, OnDestroy {
     this.autoLinkSources();
   }
 
-  removeLink(link: SourceLink): void {
+  removeLink(link: any): void {
     if (!this.factSheetId) return;
 
     this.graphService.removeSourceLink(this.factSheetId, link.sourceId1, link.sourceId2)

@@ -61,13 +61,13 @@ public class ContextualRagConfig {
 
     /**
      * The LLM provider to use for chunk contextualization.
-     * Options: openai, anthropic, gemini, ollama
+     * Uses "default" for the active provider, or any registered provider ID.
      */
     private String llmProvider;
 
     /**
      * The specific model to use for contextualization.
-     * Examples: gpt-4o-mini, claude-3-haiku, gemini-1.5-flash
+     * If null, uses the provider's default model.
      */
     private String llmModel;
 
@@ -214,8 +214,8 @@ public class ContextualRagConfig {
         return ContextualRagConfig.builder()
                 // Chunk contextualization - disabled by default (opt-in feature)
                 .enabled(false)
-                .llmProvider("openai")
-                .llmModel("gpt-4o-mini")
+                .llmProvider("default")
+                .llmModel(null)
                 .temperature(0.1)
                 .maxContextTokens(150)
                 // Prompt configuration

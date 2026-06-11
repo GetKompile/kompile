@@ -376,7 +376,7 @@
             <div class="config-row">
               <mat-icon>straighten</mat-icon>
               <span class="config-label">Max Length</span>
-              <span class="config-value">{{ model.tokenizer?.max_length || 512 }} tokens</span>
+              <span class="config-value">{{ model.tokenizer?.max_length ? model.tokenizer.max_length + ' tokens' : 'Not set' }}</span>
             </div>
 
             <div class="config-row" *ngIf="model.tokenizer?.padding">

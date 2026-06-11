@@ -55,6 +55,20 @@ model_catalog:
         max_sequence_length: 512
         description: "BGE Large English v1.5 - High-quality encoder"
 
+    - id: bge-m3
+      source: huggingface
+      repo: BAAI/bge-m3
+      format: onnx
+      files:
+        model: onnx/model.onnx
+        model_data: onnx/model.onnx_data
+        vocab: onnx/tokenizer.json
+      metadata:
+        embedding_dim: 1024
+        max_sequence_length: 8192
+        description: "BGE-M3 Multilingual dense embedding model - supports 100+ languages"
+        multilingual: true
+
     - id: arctic-embed-l
       source: huggingface
       repo: Snowflake/arctic-embed-l

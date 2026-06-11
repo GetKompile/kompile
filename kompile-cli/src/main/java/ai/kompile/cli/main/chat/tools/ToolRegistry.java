@@ -31,9 +31,25 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ToolRegistry {
     private final Map<String, CliTool> tools = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
+    private volatile ai.kompile.cli.main.chat.agent.SubagentRunner subagentRunner;
 
     public ToolRegistry(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
+    }
+
+    /**
+     * Set the subagent runner used by the task tool.
+     * Allows external callers (e.g. StatusBar) to attach lifecycle listeners.
+     */
+    public void setSubagentRunner(ai.kompile.cli.main.chat.agent.SubagentRunner runner) {
+        this.subagentRunner = runner;
+    }
+
+    /**
+     * Get the subagent runner, if set.
+     */
+    public ai.kompile.cli.main.chat.agent.SubagentRunner getSubagentRunner() {
+        return subagentRunner;
     }
 
     public void register(CliTool tool) {

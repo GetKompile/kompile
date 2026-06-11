@@ -17,6 +17,7 @@
 package ai.kompile.staging.training;
 
 import ai.kompile.staging.web.dto.*;
+import ai.kompile.core.staging.TrainingJobStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.TrainingConfig;

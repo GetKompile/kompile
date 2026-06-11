@@ -1,0 +1,102 @@
+<div class="memory-watchdog">
+  <div class="section-header">
+    <h3><mat-icon>monitor_heart</mat-icon> Memory Pools &amp; Watchdog</h3>
+    <button mat-icon-button (click)="loadAll()" matTooltip="Refresh"><mat-icon>refresh</mat-icon></button>
+  </div>
+
+  <div *ngIf="error" class="error-bar"><mat-icon>error</mat-icon> {{ error }}</div>
+  <div *ngIf="message" class="success-bar"><mat-icon>check_circle</mat-icon> {{ message }}</div>
+  <div *ngIf="loading" class="loading"><mat-spinner diameter="36"></mat-spinner></div>
+
+  <ng-container *ngIf="!loading && watchdogStatus">
+    <!-- Watchdog Status -->
+    <div class="watchdog-card" [ngClass]="getPressureClass()">
+      <div class="watchdog-header">
+        <div class="watchdog-title">
+          <mat-icon>{{ watchdogStatus.memoryPressureDetected ? 'warning' : 'check_circle' }}</mat-icon>
+          <span>Memory Watchdog</span>
+          <span class="watchdog-badge" [class.enabled]="watchdogStatus.enabled">
+            {{ watchdogStatus.enabled ? 'Enabled' : 'Disabled' }}
+          </span>
+        </div>
+        <mat-slide-toggle [checked]="watchdogStatus.enabled" (change)="toggleWatchdog()"></mat-slide-toggle>
+      </div>
+
+      <div class="watchdog-grid">
+        <div class="wd-stat">
+          <span class="wd-label">Memory Usage</span>
+          <span class="wd-value">{{ watchdogStatus.currentMemoryUsagePercent.toFixed(1) }}%</span>
+          <mat-progress-bar mode="determinate" [value]="watchdogStatus.currentMemoryUsagePercent"
+                            [color]="watchdogStatus.memoryPressureDetected ? 'warn' : 'primary'"></mat-progress-bar>
+        </div>
+        <div class="wd-stat">
+          <span class="wd-label">Threshold</span>
+          <span class="wd-value">{{ watchdogStatus.memoryThresholdPercent }}%</span>
+        </div>
+        <div class="wd-stat">
+          <span class="wd-label">Critical</span>
+          <span class="wd-value">{{ watchdogStatus.memoryCriticalPercent }}%</span>
+        </div>
+        <div class="wd-stat">
+          <span class="wd-label">Running Jobs</span>
+          <span class="wd-value">{{ watchdogStatus.runningJobCount }}</span>
+        </div>
+        <div class="wd-stat">
+          <span class="wd-label">Jobs Marked for Stop</span>
+          <span class="wd-value" [class.warn-value]="watchdogStatus.jobsMarkedForStopCount > 0">
+            {{ watchdogStatus.jobsMarkedForStopCount }}
+          </span>
+        </div>
+        <div class="wd-stat">
+          <span class="wd-label">Consecutive High Checks</span>
+          <span class="wd-value" [class.warn-value]="watchdogStatus.consecutiveHighMemoryChecks > 3">
+            {{ watchdogStatus.consecutiveHighMemoryChecks }}
+          </span>
+        </div>
+        <div class="wd-stat">
+          <span class="wd-label">Check Interval</span>
+          <span class="wd-value">{{ watchdogStatus.checkIntervalMs }}ms</span>
+        </div>
+        <div class="wd-stat" *ngIf="watchdogStatus.lastMemoryPressureTime">
+          <span class="wd-label">Last Pressure Event</span>
+          <span class="wd-value">{{ watchdogStatus.lastMemoryPressureTime }}</span>
+        </div>
+      </div>
+
+      <!-- Running Jobs -->
+      <div class="running-jobs" *ngIf="(watchdogStatus?.runningJobs?.length || 0) > 0">
+        <h4>Running Jobs</h4>
+        <div class="job-row" *ngFor="let job of watchdogStatus.runningJobs">
+          <span class="job-task">{{ job.taskId }}</span>
+          <span class="job-file">{{ job.fileName }}</span>
+          <span class="job-badge" [class.marked-stop]="job.markedForStop">
+            {{ job.markedForStop ? 'MARKED FOR STOP' : 'Running' }}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Memory Pool Status -->
+    <div class="pool-section" *ngIf="poolStatus">
+      <h4><mat-icon>layers</mat-icon> Memory Pool Status</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getPoolKeys()">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(poolStatus[key]) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pool Config -->
+    <div class="pool-section" *ngIf="poolConfig">
+      <h4><mat-icon>settings</mat-icon> Pool Configuration</h4>
+      <div class="kv-grid">
+        <div class="kv-row" *ngFor="let key of getPoolConfigKeys()">
+          <span class="kv-key">{{ key }}</span>
+          <span class="kv-value">{{ formatValue(poolConfig[key]) }}</span>
+        </div>
+      </div>
+      <button mat-button color="primary" (click)="resetPoolConfig()">Reset to Defaults</button>
+    </div>
+  </ng-container>
+</div>

@@ -45,6 +45,7 @@ public class DirectLlmClient {
     private final ObjectMapper objectMapper;
     private final List<ObjectNode> conversationHistory;
     private volatile AtomicBoolean cancelSignal;
+    private volatile java.util.function.Consumer<String> outputConsumer;
 
     public DirectLlmClient(ChatConfig config, ObjectMapper objectMapper) {
         this.config = config;
@@ -62,9 +63,39 @@ public class DirectLlmClient {
         this.cancelSignal = cancelSignal;
     }
 
-    private boolean isCancelled() {
+    protected boolean isCancelled() {
         AtomicBoolean signal = this.cancelSignal;
         return signal != null && signal.get();
+    }
+
+    /**
+     * Sets a consumer that receives all streamed output text.
+     */
+    public void setOutputConsumer(java.util.function.Consumer<String> consumer) {
+        this.outputConsumer = consumer;
+    }
+
+    /**
+     * Returns the currently installed streamed-output consumer, if any.
+     */
+    public java.util.function.Consumer<String> getOutputConsumer() {
+        return outputConsumer;
+    }
+
+    /**
+     * Print a streaming text chunk to the terminal.
+     * Subclasses may override to intercept/redirect streaming output.
+     */
+    protected void printStreamingChunk(String chunk) {
+        if (chunk != null) {
+            java.util.function.Consumer<String> consumer = this.outputConsumer;
+            if (consumer != null) {
+                consumer.accept(chunk);
+            } else {
+                System.out.print(chunk);
+                System.out.flush();
+            }
+        }
     }
 
     /**
@@ -74,6 +105,17 @@ public class DirectLlmClient {
     public StreamResult streamChat(String userMessage, String systemPrompt,
                                     ArrayNode toolDefs, List<ToolCallResultInput> toolResults) {
         return streamChat(userMessage, systemPrompt, toolDefs, toolResults, null);
+    }
+
+    /**
+     * Stream a chat completion turn with optional model override and attachments.
+     * Attachments are ignored in the base implementation; subclasses may override.
+     */
+    public StreamResult streamChat(String userMessage, String systemPrompt,
+                                    ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
+                                    String modelOverride, List<AttachmentInput> attachments) {
+        // Base implementation ignores attachments
+        return streamChat(userMessage, systemPrompt, toolDefs, toolResults, modelOverride);
     }
 
     /**
@@ -332,8 +374,7 @@ public class DirectLlmClient {
                     // Text content
                     String content = delta.path("content").asText(null);
                     if (content != null) {
-                        System.out.print(content);
-                        System.out.flush();
+                        printStreamingChunk(content);
                         result.text += content;
                     }
 
@@ -614,8 +655,7 @@ public class DirectLlmClient {
 
                             if ("text_delta".equals(deltaType)) {
                                 String text = delta.path("text").asText("");
-                                System.out.print(text);
-                                System.out.flush();
+                                printStreamingChunk(text);
                                 result.text += text;
                             } else if ("input_json_delta".equals(deltaType)) {
                                 String partial = delta.path("partial_json").asText("");
@@ -699,6 +739,9 @@ public class DirectLlmClient {
         public long outputTokens = 0;
         public long cacheReadTokens = 0;
         public long cacheCreationTokens = 0;
+        // Enforcer monitor fields
+        public boolean monitorInterrupted = false;
+        public String correctionPrompt = null;
     }
 
     public static class ToolCallOutput {
@@ -718,6 +761,15 @@ public class DirectLlmClient {
             this.name = name;
             this.output = output;
             this.isError = isError;
+        }
+    }
+
+    /**
+     * An attachment (file, image, etc.) to include with a chat message.
+     */
+    public record AttachmentInput(String path, String mimeType, boolean isImage, String base64Data, String textContent) {
+        public AttachmentInput(String path, String mimeType) {
+            this(path, mimeType, false, null, null);
         }
     }
 

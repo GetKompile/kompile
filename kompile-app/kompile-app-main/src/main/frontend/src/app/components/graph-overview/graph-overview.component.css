@@ -1,0 +1,324 @@
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+.graph-overview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-body, #f8f9fa);
+}
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+.overview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-surface);
+}
+
+.search-field {
+  flex: 1;
+  margin-bottom: -1.25em;
+}
+
+.create-btn mat-icon {
+  margin-right: 6px;
+}
+
+/* ── Create Form ────────────────────────────────────────────────────────── */
+.create-form-panel {
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+  padding: 16px;
+}
+
+.form-title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.full-width {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.form-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ── Loading ────────────────────────────────────────────────────────────── */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px;
+  color: var(--text-tertiary);
+}
+
+/* ── Content Area ───────────────────────────────────────────────────────── */
+.content-area {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Tree ───────────────────────────────────────────────────────────────── */
+.tree-area {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+
+.graph-tree {
+  background: transparent;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  min-height: 44px;
+}
+
+.tree-row:hover {
+  background: var(--bg-card-secondary);
+}
+
+.tree-row.selected {
+  background: var(--bg-selected);
+}
+
+.toggle-btn {
+  width: 28px;
+  height: 28px;
+  line-height: 28px;
+  flex-shrink: 0;
+}
+
+.leaf-icon {
+  color: #ccc;
+  font-size: 14px;
+}
+
+.graph-icon {
+  color: #667eea;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.graph-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stat-chip {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.stat-chip.nodes  { background: #e8f5e9; color: var(--accent-green); }
+.stat-chip.edges  { background: var(--bg-selected); color: var(--color-primary); }
+.stat-chip.children { background: #f3e5f5; color: #6a1b9a; }
+
+.type-badge {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: #fff3e0;
+  color: #e65100;
+  font-weight: 600;
+}
+
+.row-actions {
+  display: flex;
+  gap: 0;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.tree-row:hover .row-actions {
+  opacity: 1;
+}
+
+.nested-nodes {
+  padding-left: 24px;
+}
+
+/* ── Move inline form ───────────────────────────────────────────────────── */
+.move-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 56px;
+  background: var(--bg-card-secondary);
+  border-top: 1px dashed var(--border-color);
+}
+
+.move-field {
+  flex: 1;
+  margin-bottom: -1.25em;
+}
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px;
+  color: var(--text-secondary);
+}
+
+.empty-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 12px;
+  color: #ccc;
+}
+
+/* ── Detail Panel ───────────────────────────────────────────────────────── */
+.detail-panel {
+  width: 320px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+}
+
+.detail-icon {
+  color: #667eea;
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.detail-header h3 {
+  flex: 1;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.detail-body {
+  padding: 16px;
+  flex: 1;
+}
+
+.detail-row {
+  margin-bottom: 14px;
+}
+
+.detail-row label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.detail-row p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.mono {
+  font-family: monospace;
+  font-size: 12px;
+  background: var(--bg-card-secondary);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.stats-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--bg-card-secondary);
+  border-radius: 8px;
+  padding: 10px 6px;
+  border: 1px solid var(--border-color);
+}
+
+.stat-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.stat-lbl {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.detail-actions {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.detail-actions button {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.detail-actions button mat-icon {
+  margin-right: 8px;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 700px) {
+  .detail-panel {
+    display: none;
+  }
+
+  .form-row-2 {
+    grid-template-columns: 1fr;
+  }
+}

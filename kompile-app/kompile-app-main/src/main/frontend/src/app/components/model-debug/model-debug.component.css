@@ -3977,6 +3977,21 @@ code.detail-value {
   color: #ff9800;
 }
 
+.init-status-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.detail-value.monospace {
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.detail-value.error-text {
+  color: #ef5350;
+}
+
 /* Reranker types */
 .reranker-types {
   margin-top: 8px;

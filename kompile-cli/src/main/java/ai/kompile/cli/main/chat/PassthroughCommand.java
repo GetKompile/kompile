@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
@@ -108,6 +109,9 @@ public class PassthroughCommand implements Callable<Integer> {
                 String agentBinary = resolveAgent(agent);
                 if (agentBinary == null) {
                     System.err.println("Agent '" + agent + "' not found on PATH.");
+                    System.err.println("Supported agents: " + String.join(", ",
+                            ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder()));
+                    System.err.println("Install the agent and make sure it is on your PATH.");
                     return 1;
                 }
 
@@ -160,6 +164,25 @@ public class PassthroughCommand implements Callable<Integer> {
                         System.out.println(GREEN + "Skills installed (" + installed + " into " + agent + " native commands)" + RESET);
                     }
                 }
+                // Auto-inject enforcer rules into agent system prompt if config exists
+                Path enforcerRulesFile = null;
+                ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
+                        ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(Path.of(workingDir).toAbsolutePath());
+                if (enforcerConfig != null && enforcerConfig.isKeywordMode()) {
+                    try {
+                        String rulesText = enforcerConfig.buildRulesText(Path.of(workingDir).toAbsolutePath());
+                        if (rulesText != null && !rulesText.isBlank()) {
+                            enforcerRulesFile = injectEnforcerRules(Path.of(workingDir).toAbsolutePath(), rulesText);
+                            if (enforcerRulesFile != null) {
+                                System.out.println(GREEN + "Enforcer active" + RESET
+                                        + DIM + " (keyword mode, "
+                                        + rulesText.split("\n").length + " rules)" + RESET);
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Don't block on enforcer init failure
+                    }
+                }
                 System.out.println();
 
                 // Set up transcript and metrics
@@ -195,7 +218,15 @@ public class PassthroughCommand implements Callable<Integer> {
                     }
 
                     Process process = pb.start();
-                    lastExitCode = process.waitFor();
+                    try {
+                        lastExitCode = process.waitFor();
+                    } catch (InterruptedException ie) {
+                        process.destroy();
+                        try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                        if (process.isAlive()) process.destroyForcibly();
+                        lastExitCode = 130;
+                        Thread.interrupted();
+                    }
                 } catch (Exception e) {
                     System.err.println("Error running agent: " + e.getMessage());
                     lastExitCode = 1;
@@ -209,6 +240,13 @@ public class PassthroughCommand implements Callable<Integer> {
                     // Restore instruction files modified by skills injection
                     if (skillsInjection != null) {
                         skillsInjection.cleanup();
+                    }
+                    // Remove injected enforcer rules from CLAUDE.md, AGENTS.md, and the standalone file
+                    if (enforcerRulesFile != null) {
+                        try { java.nio.file.Files.deleteIfExists(enforcerRulesFile); } catch (Exception ignored) {}
+                        Path projDir = Path.of(workingDir).toAbsolutePath();
+                        stripEnforcerBlock(projDir.resolve("CLAUDE.md"));
+                        stripEnforcerBlock(projDir.resolve("AGENTS.md"));
                     }
                 }
 
@@ -350,13 +388,15 @@ public class PassthroughCommand implements Callable<Integer> {
         System.out.println(CYAN + "╰────────────────────────────────────────────────╯" + RESET);
         System.out.println();
 
-        // Log summary to transcript
-        history.logSystem("Session ended — " + metrics.formatDuration(duration) +
-                ", " + metrics.getTotalTurns() + " turns" +
-                (metrics.hasActualTokenCounts() ?
-                        ", " + formatNumber(metrics.getTotalTokens()) + " tokens" :
-                        ", ~" + formatNumber(metrics.getEstimatedInputTokens() + metrics.getEstimatedOutputTokens()) + " est. tokens") +
-                (metrics.getTotalToolCalls() > 0 ? ", " + metrics.getTotalToolCalls() + " tool calls" : ""));
+        // Log summary to transcript (only if there was actual conversation content)
+        if (metrics.getTotalTurns() > 0) {
+            history.logSystem("Session ended — " + metrics.formatDuration(duration) +
+                    ", " + metrics.getTotalTurns() + " turns" +
+                    (metrics.hasActualTokenCounts() ?
+                            ", " + formatNumber(metrics.getTotalTokens()) + " tokens" :
+                            ", ~" + formatNumber(metrics.getEstimatedInputTokens() + metrics.getEstimatedOutputTokens()) + " est. tokens") +
+                    (metrics.getTotalToolCalls() > 0 ? ", " + metrics.getTotalToolCalls() + " tool calls" : ""));
+        }
     }
 
     // ── Transcript harvesting ──────────────────────────────────────────────
@@ -406,6 +446,10 @@ public class PassthroughCommand implements Callable<Integer> {
             System.err.println(YELLOW + "Warning: Could not harvest Claude transcript - no JSONL session file found in: " + projectDir + RESET);
             return;
         }
+
+        // Record which external session we're harvesting so the resume tool can deduplicate
+        String externalSessionId = jsonlFile.getName().replace(".jsonl", "");
+        history.logHarvestedSource(externalSessionId);
 
         parseClaudeJsonl(jsonlFile, history, metrics);
     }
@@ -536,6 +580,9 @@ public class PassthroughCommand implements Callable<Integer> {
         // Find the newest .jsonl modified during our session
         File jsonlFile = findNewestJsonlRecursive(sessionsDir, sessionStart);
         if (jsonlFile == null) return;
+
+        String externalSessionId = jsonlFile.getName().replace(".jsonl", "");
+        history.logHarvestedSource(externalSessionId);
 
         parseCodexJsonl(jsonlFile, history, metrics);
     }
@@ -674,6 +721,9 @@ public class PassthroughCommand implements Callable<Integer> {
 
         File jsonlFile = findNewestJsonl(chatsDir, sessionStart);
         if (jsonlFile == null) return;
+
+        String externalSessionId = jsonlFile.getName().replace(".jsonl", "");
+        history.logHarvestedSource(externalSessionId);
 
         parseQwenJsonl(jsonlFile, history, metrics);
     }
@@ -854,6 +904,8 @@ public class PassthroughCommand implements Callable<Integer> {
                 return;
             }
 
+            history.logHarvestedSource(openCodeSessionId);
+
             // Read all messages for this session, ordered by creation time
             try (java.sql.PreparedStatement stmt = conn.prepareStatement(
                     "SELECT role, data FROM message WHERE session_id = ? ORDER BY time_created ASC")) {
@@ -976,6 +1028,8 @@ public class PassthroughCommand implements Callable<Integer> {
                 history.logSystem("Gemini session - no JSONL logs found in .gemini directory.");
                 return;
             }
+            String externalSessionId = jsonlFile.getName().replaceFirst("\\.(jsonl|json)$", "");
+            history.logHarvestedSource(externalSessionId);
             parseGeminiJsonl(jsonlFile, history, metrics);
             return;
         }
@@ -986,6 +1040,8 @@ public class PassthroughCommand implements Callable<Integer> {
             return;
         }
 
+        String externalSessionId = jsonlFile.getName().replaceFirst("\\.(jsonl|json)$", "");
+        history.logHarvestedSource(externalSessionId);
         parseGeminiJsonl(jsonlFile, history, metrics);
     }
 
@@ -1358,29 +1414,86 @@ public class PassthroughCommand implements Callable<Integer> {
 
     // ── Agent resolution & command building ─────────────────────────────────
 
-    private String resolveAgent(String name) {
-        String binary = switch (name.toLowerCase()) {
-            case "claude", "claude-code" -> "claude";
-            case "codex" -> "codex";
-            case "gemini" -> "gemini";
-            case "qwen", "qwen-code" -> "qwen";
-            case "opencode", "open-code" -> "opencode";
-            default -> name;
-        };
+    /**
+     * Inject enforcer rules into both CLAUDE.md and AGENTS.md so the passthrough agent
+     * sees and follows them regardless of which instruction file it reads.
+     * Returns the path to the standalone enforcer rules file (for cleanup), or null if injection failed.
+     */
+    private Path injectEnforcerRules(Path projectDir, String rulesText) {
+        Path enforcerMd = projectDir.resolve(".kompile").resolve("enforcer-rules-injected.md");
+        try {
+            java.nio.file.Files.createDirectories(enforcerMd.getParent());
+            StringBuilder content = new StringBuilder();
+            content.append("\n\n# Kompile Enforcer Rules (AUTO-INJECTED — DO NOT EDIT)\n\n");
+            content.append("You MUST follow these rules. Violations will be detected and blocked.\n");
+            content.append("If a rule makes your task impossible, say so — do NOT violate the rule.\n\n");
+            content.append("```\n");
+            content.append(rulesText);
+            content.append("\n```\n\n");
+            content.append("ALL issues you encounter (compilation errors, test failures, bugs) are YOUR\n");
+            content.append("responsibility to fix regardless of their origin. Never say something is a\n");
+            content.append("\"pre-existing issue\" or \"already broken\" or \"environmental\" — investigate and fix it.\n");
+            java.nio.file.Files.writeString(enforcerMd, content.toString());
 
-        String path = System.getenv("PATH");
-        if (path != null) {
-            for (String dir : path.split(File.pathSeparator)) {
-                File candidate = new File(dir, binary);
-                if (candidate.canExecute()) return candidate.getAbsolutePath();
-                // Windows: try common extensions
-                for (String ext : new String[]{".exe", ".cmd", ".bat"}) {
-                    File candidateExt = new File(dir, binary + ext);
-                    if (candidateExt.canExecute()) return candidateExt.getAbsolutePath();
+            String enforcerBlock = "\n\n<!-- kompile-enforcer-start -->\n"
+                    + java.nio.file.Files.readString(enforcerMd)
+                    + "\n<!-- kompile-enforcer-end -->\n";
+
+            // Inject into CLAUDE.md
+            Path claudeMd = projectDir.resolve("CLAUDE.md");
+            appendEnforcerBlock(claudeMd, enforcerBlock);
+
+            // Inject into AGENTS.md
+            Path agentsMd = projectDir.resolve("AGENTS.md");
+            appendEnforcerBlock(agentsMd, enforcerBlock);
+
+            return enforcerMd;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void appendEnforcerBlock(Path file, String enforcerBlock) {
+        try {
+            if (java.nio.file.Files.exists(file)) {
+                String existing = java.nio.file.Files.readString(file);
+                if (!existing.contains("<!-- kompile-enforcer-start -->")) {
+                    java.nio.file.Files.writeString(file, existing + enforcerBlock);
+                }
+            } else {
+                // Create the file with just the enforcer block
+                java.nio.file.Files.writeString(file, enforcerBlock.strip() + "\n");
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void stripEnforcerBlock(Path file) {
+        try {
+            if (!java.nio.file.Files.exists(file)) return;
+            String content = java.nio.file.Files.readString(file);
+            int start = content.indexOf("<!-- kompile-enforcer-start -->");
+            int end = content.indexOf("<!-- kompile-enforcer-end -->");
+            if (start >= 0 && end >= 0) {
+                String endTag = "<!-- kompile-enforcer-end -->";
+                int endIdx = end + endTag.length();
+                // Also consume trailing newline
+                if (endIdx < content.length() && content.charAt(endIdx) == '\n') endIdx++;
+                String cleaned = content.substring(0, start) + content.substring(endIdx);
+                cleaned = cleaned.stripTrailing() + "\n";
+                java.nio.file.Files.writeString(file, cleaned);
+            }
+            // If the file is now empty (we created it), remove it
+            if (java.nio.file.Files.exists(file)) {
+                String remaining = java.nio.file.Files.readString(file).strip();
+                if (remaining.isEmpty()) {
+                    java.nio.file.Files.deleteIfExists(file);
                 }
             }
-        }
-        return null;
+        } catch (Exception ignored) {}
+    }
+
+    private String resolveAgent(String name) {
+        return SubprocessAgentRunner.resolveAgentBinary(name);
     }
 
     private List<String> buildCommand(String binary) {

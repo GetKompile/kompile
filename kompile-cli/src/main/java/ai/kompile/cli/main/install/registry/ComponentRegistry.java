@@ -67,7 +67,7 @@ public class ComponentRegistry {
                 .name("Kompile Model Staging")
                 .description("Model lifecycle management service")
                 .type("staging")
-                .defaultPort(8081)
+                .defaultPort(8090)
                 .mainClass("ai.kompile.modelstaging.MainApplication")
                 .artifactId("kompile-model-staging")
                 .groupId("ai.kompile")
@@ -146,7 +146,7 @@ public class ComponentRegistry {
     private String buildGitHubReleaseUrl(String componentId, String platform) {
         String tagName = "v" + version;
         String fileName = componentId + "-" + version + "-" + platform + ".tar.gz";
-        return String.format(GITHUB_RELEASES_BASE + "%s/%s/%s", githubRepo, tagName, fileName);
+        return String.format(GITHUB_RELEASES_BASE + "%s/%s", githubRepo, tagName, fileName);
     }
 
     /**
@@ -176,11 +176,69 @@ public class ComponentRegistry {
     }
 
     /**
+     * Get the JAR path from a distribution-style install (lib/ directory).
+     * Returns null if no matching JAR is found.
+     */
+    public File getDistributionJarPath(String componentId) {
+        File libDir = new File(installBaseDir, "lib");
+        if (!libDir.isDirectory()) return null;
+        File[] jars = libDir.listFiles((dir, name) ->
+                name.startsWith(componentId) && name.endsWith(".jar"));
+        if (jars != null && jars.length > 0) {
+            return jars[0];
+        }
+        return null;
+    }
+
+    /**
      * Check if a component is installed
      */
     public boolean isInstalled(String componentId) {
-        File jarPath = getJarPath(componentId);
-        return jarPath.exists();
+        return findInstalledJar(componentId) != null;
+    }
+
+    /**
+     * Find the installed JAR or native executable for a component.
+     * Searches multiple locations and naming conventions:
+     *   1. Distribution install at ~/.kompile/lib/
+     *   2. Canonical name at ~/.kompile/components/<id>/<version>/<id>-<version>.jar
+     *   3. Exec JAR at ~/.kompile/components/<id>/<version>/<id>-<version>-exec.jar
+     *   4. Any matching JAR in the latest version directory
+     *   5. Native executable at ~/.kompile/components/<id>/<id>
+     */
+    public File findInstalledJar(String componentId) {
+        // 1. Distribution install
+        File distJar = getDistributionJarPath(componentId);
+        if (distJar != null && distJar.isFile()) return distJar;
+
+        // 2. Canonical name
+        File canonicalJar = getJarPath(componentId);
+        if (canonicalJar.isFile()) return canonicalJar;
+
+        // 3. Exec JAR in canonical version dir
+        File installDir = getInstallDirectory(componentId);
+        File execJar = new File(installDir, componentId + "-" + version + "-exec.jar");
+        if (execJar.isFile()) return execJar;
+
+        // 4. Any matching JAR in any version dir (newest first)
+        File componentDir = new File(installBaseDir, "components/" + componentId);
+        if (componentDir.isDirectory()) {
+            File[] versionDirs = componentDir.listFiles(File::isDirectory);
+            if (versionDirs != null && versionDirs.length > 0) {
+                java.util.Arrays.sort(versionDirs, (a, b) -> b.getName().compareTo(a.getName()));
+                for (File versionDir : versionDirs) {
+                    File[] jars = versionDir.listFiles(
+                            (dir, name) -> name.startsWith(componentId) && name.endsWith(".jar"));
+                    if (jars != null && jars.length > 0) return jars[0];
+                }
+            }
+
+            // 5. Native executable at component root
+            File nativeExe = new File(componentDir, componentId);
+            if (nativeExe.isFile() && nativeExe.canExecute()) return nativeExe;
+        }
+
+        return null;
     }
 
     // Getters and setters

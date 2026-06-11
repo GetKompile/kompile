@@ -18,16 +18,39 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.mcp.InstanceDiscovery;
 import ai.kompile.cli.common.mcp.McpSseClient;
+import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SetupWizard;
+import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.enforcer.*;
+import ai.kompile.cli.main.chat.harness.HarnessConfig;
+import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
-import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
+import ai.kompile.cli.main.chat.skill.SkillConfig;
+import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.main.chat.skill.SkillsInjection;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.jline.reader.EndOfFileException;
+import org.jline.reader.LineReader;
+import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.UserInterruptException;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
 import picocli.CommandLine;
 
+import java.io.IOError;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -48,7 +71,7 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--session-id"}, description = "Chat session ID (generated if not provided)")
     private String sessionId;
 
-    @CommandLine.Option(names = {"--agent"}, description = "Agent name for chat sessions (standard mode) or passthrough agent name (passthrough mode)", defaultValue = "claude")
+    @CommandLine.Option(names = {"--agent"}, description = "Agent name for chat sessions (standard mode) or passthrough agent name (passthrough mode)")
     private String agentName;
 
     @CommandLine.Option(names = {"--rag"}, negatable = true, description = "Enable RAG for chat (default: true)", defaultValue = "true")
@@ -80,6 +103,21 @@ public class ChatCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--roles"}, description = "Show role selection menu before starting chat", defaultValue = "false")
     private boolean showRoleMenu;
+
+    @CommandLine.Option(names = {"--rules"}, description = "Inline enforcer rules for real-time judge monitoring in managed passthrough")
+    private String enforcerRules;
+
+    @CommandLine.Option(names = {"--rule-file"}, description = "Path to file containing enforcer rules for real-time judge monitoring")
+    private String enforcerRuleFile;
+
+    @CommandLine.Option(names = {"--max-reprompts"}, description = "Maximum auto-reprompts on enforcer violations (default: 2)", defaultValue = "2")
+    private int maxReprompts;
+
+    @CommandLine.Option(names = {"--judge-provider"}, description = "Judge LLM provider for real-time enforcement (e.g. anthropic, openai)")
+    private String judgeProvider;
+
+    @CommandLine.Option(names = {"--judge-model"}, description = "Judge LLM model for real-time enforcement")
+    private String judgeModel;
 
     @Override
     public Integer call() {
@@ -122,39 +160,146 @@ public class ChatCommand implements Callable<Integer> {
             sessionId = "cli-" + UUID.randomUUID().toString().substring(0, 8);
         }
 
-        // Load config to determine chat mode
+        // Check if explicit action flags are given (skip wizard if so)
+        boolean hasExplicitAction = isResume || (mode != null && !mode.isBlank())
+                || (url != null && !url.isBlank()) || port != null || forceLocal;
+
+        // Load provider credentials/settings, but do not treat saved chat mode/agent as
+        // a default session intent. Chat is task-specific and should ask unless the
+        // user provided explicit mode/agent flags in this invocation.
         ChatConfig config = ChatConfig.loadOrFromEnv();
-        String chatMode = config != null ? config.getChatMode() : "standard";
+        boolean configSelectedInThisRun = false;
 
-        // Allow --mode CLI flag to override config
-        if (mode != null && !mode.isBlank()) {
-            chatMode = mode.toLowerCase();
-        }
-
-        // If passthrough mode, delegate to PassthroughCommand
-        if ("passthrough".equals(chatMode) && config != null) {
-            // Allow --agent flag to override config's agent
-            String agent = agentName != null && !agentName.isBlank() ? agentName : config.getPassthroughAgent();
-            System.out.println("Starting passthrough mode with agent: " + agent);
-            return runPassthroughMode(agent, isResume);
-        }
-
-        // Try to find a server (unless --local is set)
-        String targetUrl = forceLocal ? null : resolveUrl();
-
-        // If no server found via discovery, check if config points to a kompile instance
-        if (targetUrl == null && !forceLocal) {
-            if (config != null && config.isKompileServer()) {
-                targetUrl = config.resolveBaseUrl();
+        if (!hasExplicitAction || runSetup || config == null) {
+            config = SetupWizard.run();
+            configSelectedInThisRun = true;
+            if (config == null) {
+                System.err.println("Setup cancelled.");
+                return 1;
             }
         }
 
+        // Override chat mode from --mode flag
+        if (mode != null && !mode.isBlank()) {
+            config.setChatMode(mode.toLowerCase());
+        }
+
+        return routeFromConfig(config, isResume, resolvedRole, configSelectedInThisRun);
+    }
+
+    /**
+     * Route to the correct chat mode based on the resolved config.
+     * Dispatches between passthrough (managed/direct), server, and local LLM modes.
+     */
+    private int routeFromConfig(ChatConfig config, boolean isResume, String resolvedRole,
+                                boolean configSelectedInThisRun) {
+        String chatMode = config.getChatMode();
+
+        // Resume mode: wizard already launched ResumeTool, nothing else to do
+        if ("resume".equals(chatMode)) {
+            return 0;
+        }
+
+        if ("passthrough".equals(chatMode)) {
+            String agent = effectivePassthroughAgent(config, configSelectedInThisRun);
+            if (agent == null || agent.isBlank()) {
+                System.err.println("Passthrough mode requires an agent.");
+                return 1;
+            }
+            System.out.println("Starting passthrough mode with agent: " + agent);
+
+            // Auto-escalate to managed mode when enforcer config exists (real-time blocking)
+            boolean managed = config.isPassthroughManaged();
+            if (!managed) {
+                Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+                ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
+                        ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
+                if (enforcerConfig != null && enforcerConfig.isKeywordMode()) {
+                    managed = true;
+                }
+            }
+
+            if (managed) {
+                return runManagedPassthroughMode(agent, isResume);
+            } else {
+                return runDirectPassthroughMode(agent, isResume);
+            }
+        }
+
+        // Server mode only when explicitly requested via --url or --port
+        String targetUrl = resolveExplicitUrl();
         if (targetUrl != null) {
-            // Server mode
             return runServerMode(targetUrl, isResume, resolvedRole);
-        } else {
-            // Local mode - direct LLM
-            return runLocalMode(isResume, resolvedRole);
+        }
+
+        // If config has kompile provider, use its URL when explicit
+        if (config.isKompileServer()) {
+            String serverUrl = resolveExplicitUrl();
+            if (serverUrl != null) {
+                return runServerMode(serverUrl, isResume, resolvedRole);
+            }
+            System.err.println("Config has kompile provider but no --url/--port given.");
+            System.err.println("Use: kompile chat --url http://localhost:8080");
+            System.err.println("Or reconfigure with: kompile chat --setup");
+            return 1;
+        }
+
+        // Local mode - direct LLM API calls
+        return runLocalLlmMode(config, isResume, resolvedRole);
+    }
+
+    /**
+     * Resolve the passthrough agent. Saved config is only honored when the
+     * current run just selected it via the setup wizard; otherwise the user must
+     * pass --agent or choose one interactively.
+     */
+    private String effectivePassthroughAgent(ChatConfig config, boolean configSelectedInThisRun) {
+        if (agentName != null && !agentName.isBlank()) {
+            return agentName;
+        }
+        if (configSelectedInThisRun) {
+            String configAgent = config.getPassthroughAgent();
+            if (configAgent != null && !configAgent.isBlank()) return configAgent;
+        }
+        return promptForPassthroughAgent();
+    }
+
+    private String promptForPassthroughAgent() {
+        try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
+            LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+            List<String> agents = new java.util.ArrayList<>();
+            for (String candidate : ChatConfig.getPassthroughAgentOrder()) {
+                if (SubprocessAgentRunner.resolveAgentBinary(candidate) != null) {
+                    agents.add(candidate);
+                }
+            }
+            if (agents.isEmpty()) {
+                List<String> supported = ChatConfig.getPassthroughAgentOrder();
+                System.err.println("No supported CLI agents found on PATH.");
+                System.err.println("Supported agents: " + String.join(", ", supported));
+                System.err.println("Install one and make sure it is on your PATH.");
+                return null;
+            }
+            System.out.println("Select passthrough agent:");
+            for (int i = 0; i < agents.size(); i++) {
+                System.out.printf("  %d  %s%n", i + 1, agents.get(i));
+            }
+            while (true) {
+                String input = reader.readLine("  Choice (1-" + agents.size() + ", q to cancel): ");
+                if (input == null || input.trim().equalsIgnoreCase("q")) return null;
+                try {
+                    int choice = Integer.parseInt(input.trim());
+                    if (choice >= 1 && choice <= agents.size()) return agents.get(choice - 1);
+                } catch (NumberFormatException ignored) {
+                    for (String agent : agents) {
+                        if (agent.contains(input.trim().toLowerCase(Locale.ROOT))) return agent;
+                    }
+                }
+                System.out.println("Enter a valid agent number or name.");
+            }
+        } catch (Exception e) {
+            System.err.println("Could not select passthrough agent: " + e.getMessage());
+            return null;
         }
     }
 
@@ -195,56 +340,10 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     /**
-     * Local mode: direct LLM API calls without a server.
-     * Runs setup wizard if no configuration exists.
+     * Local LLM mode: direct API calls without a server.
+     * Config is already resolved by the caller (call() or routeFromConfig()).
      */
-    private int runLocalMode(boolean isResume, String assignedRole) {
-        // Load or create LLM configuration
-        ChatConfig config = ChatConfig.loadOrFromEnv();
-
-        if (config == null) {
-            // No config found - run setup wizard
-            if (!forceLocal) {
-                System.out.println("No running kompile-app instance found.");
-                System.out.println("Starting setup...");
-                System.out.println();
-            }
-
-            config = SetupWizard.run();
-            if (config == null) {
-                System.err.println("Setup cancelled.");
-                return 1;
-            }
-            
-            // Check if user selected resume mode (wizard launched resume tool which already completed)
-            if ("resume".equals(config.getChatMode())) {
-                return 0; // Resume tool already finished
-            }
-
-            // Check if user selected passthrough mode in wizard
-            if ("passthrough".equals(config.getChatMode())) {
-                String agent = config.getPassthroughAgent();
-                System.out.println("Starting passthrough mode with agent: " + agent);
-                return runPassthroughMode(agent, isResume);
-            }
-        } else {
-            if (!forceLocal) {
-                System.out.println("No running kompile-app instance found. Using local mode.");
-            }
-
-            // Check if config has passthrough mode
-            if ("passthrough".equals(config.getChatMode())) {
-                String agent = config.getPassthroughAgent();
-                System.out.println("Starting passthrough mode with agent: " + agent);
-                return runPassthroughMode(agent, isResume);
-            }
-        }
-
-        // If user selected kompile provider, redirect to server mode
-        if (config.isKompileServer()) {
-            return runServerMode(config.resolveBaseUrl(), isResume, assignedRole);
-        }
-
+    private int runLocalLlmMode(ChatConfig config, boolean isResume, String assignedRole) {
         if (isResume) {
             System.out.println("Resuming conversation: " + sessionId);
         } else {
@@ -276,23 +375,336 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     /**
-     * Passthrough mode: delegate to external CLI agent (Claude Code, Codex, etc.)
+     * Managed passthrough mode: kompile REPL wraps the agent subprocess via SubprocessAgentRunner.
+     * Provides hooks, MCP tool injection, system prompt, skills, memory, and metrics tracking.
+     * When --rules or --rule-file is set, enables real-time judge monitoring and interruption.
      */
-    private int runPassthroughMode(String agent, boolean isResume) {
+    private int runManagedPassthroughMode(String agent, boolean isResume) {
+        boolean hasEnforcerRules = (enforcerRules != null && !enforcerRules.isBlank())
+                || (enforcerRuleFile != null && !enforcerRuleFile.isBlank());
+
+        // Also check for per-project enforcer config
+        if (!hasEnforcerRules) {
+            Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+            ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
+                    ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
+            if (enforcerConfig != null && enforcerConfig.isKeywordMode()) {
+                hasEnforcerRules = true;
+            }
+        }
+
+        if (hasEnforcerRules) {
+            return runEnforcedPassthroughMode(agent);
+        }
+
+        // If resuming, delegate to ResumeCommand
+        if (isResume && resumeSessionId != null && !resumeSessionId.isBlank()) {
+            return new CommandLine(new ResumeCommand())
+                    .execute("--session-id", resumeSessionId, "--agent", agent);
+        }
+
         try {
-            PassthroughCommand passthrough = new PassthroughCommand();
-            // Set fields via reflection or direct access since we're in same package
+            // Delegate to EmulatedPassthroughCommand — the single REPL implementation
+            // that has full slash-command completion, auto-trigger, MCP tools, etc.
+            EmulatedPassthroughCommand passthrough = new EmulatedPassthroughCommand();
             passthrough.agent = agent;
             passthrough.workingDir = ".";
             passthrough.skipPermissions = true;
             passthrough.injectTools = true;
             passthrough.kompileUrl = "";
             passthrough.mcpPort = 0;
+            passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
+            return passthrough.call();
+        } catch (Exception | IOError e) {
+            // IOError can be thrown by JLine when stty fails during
+            // terminal shutdown (e.g. thread interrupted in native image).
+            System.err.println("Error in managed passthrough: " + e.getMessage());
+            e.printStackTrace();
+            return 1;
+        }
+    }
+
+    /**
+     * Direct passthrough mode: agent owns the terminal with full native experience.
+     * Kompile injects MCP tools, system prompt, and skills but then hands off control.
+     */
+    private int runDirectPassthroughMode(String agent, boolean isResume) {
+        // If resuming, delegate to ResumeCommand
+        if (isResume && resumeSessionId != null && !resumeSessionId.isBlank()) {
+            return new CommandLine(new ResumeCommand())
+                    .execute("--session-id", resumeSessionId, "--agent", agent);
+        }
+
+        try {
+            PassthroughCommand passthrough = new PassthroughCommand();
+            passthrough.agent = agent;
+            passthrough.workingDir = ".";
+            passthrough.skipPermissions = true;
+            passthrough.injectTools = true;
+            passthrough.kompileUrl = "";
+            passthrough.mcpPort = 0;
+            // Inject system prompt so Codex/OpenCode get AGENTS.md
+            passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
             return passthrough.call();
         } catch (Exception e) {
             System.err.println("Error running passthrough mode: " + e.getMessage());
             return 1;
         }
+    }
+
+    /**
+     * Enforced passthrough: kompile controls the agent subprocess via
+     * SubprocessAgentRunner, with a background judge that can score output
+     * in real time and interrupt on policy violations.
+     */
+    private int runEnforcedPassthroughMode(String agent) {
+        ObjectMapper objectMapper = new ObjectMapper();
+        Path wd = Path.of(".").toAbsolutePath().normalize();
+
+        try (Terminal terminal = ChatCompleter.buildSystemTerminal()) {
+            LineReader reader = LineReaderBuilder.builder()
+                    .terminal(terminal)
+                    .completer(new ChatCompleter(() -> null))
+                    .build();
+            ChatCompleter.enableAutoTrigger(reader);
+            TerminalRenderer renderer = new TerminalRenderer();
+            AsciiRenderer ascii = new AsciiRenderer(renderer);
+
+            // Resolve enforcer rules — check CLI flags first, then project config
+            String rules = EnforcerPolicy.resolveRules(enforcerRules, enforcerRuleFile, wd);
+            boolean useKeywordMode = false;
+            int effectiveMaxReprompts = maxReprompts;
+            ai.kompile.cli.main.chat.enforcer.EnforcerConfig projectEnforcerConfig = null;
+
+            if (rules == null || rules.isBlank()) {
+                // Try project config
+                projectEnforcerConfig = ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
+                if (projectEnforcerConfig != null) {
+                    try {
+                        rules = projectEnforcerConfig.buildRulesText(wd);
+                        useKeywordMode = projectEnforcerConfig.isKeywordMode();
+                        effectiveMaxReprompts = projectEnforcerConfig.getMaxCorrections();
+                    } catch (Exception e) {
+                        rules = null;
+                    }
+                }
+            }
+
+            if (rules == null || rules.isBlank()) {
+                // Prompt for rules interactively
+                System.out.println();
+                System.out.println("Enter enforcer rules (finish with a single '.' line):");
+                StringBuilder sb = new StringBuilder();
+                while (true) {
+                    String line = reader.readLine("rules> ");
+                    if (line == null || ".".equals(line.trim())) break;
+                    sb.append(line).append('\n');
+                }
+                rules = sb.toString().trim();
+                if (rules.isBlank()) {
+                    System.err.println("Enforcer rules are required (--rules or --rule-file).");
+                    return 1;
+                }
+            }
+
+            EnforcerPolicy policy = new EnforcerPolicy(rules, effectiveMaxReprompts, false);
+            HarnessConfig harnessConfig = HarnessConfig.load(objectMapper);
+
+            // Choose evaluator: keyword mode (no LLM) or full LLM judge
+            EnforcerEvaluator evaluator;
+            EnforcerJudge judge = null;
+            if (useKeywordMode) {
+                KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, projectEnforcerConfig);
+                if (!kwEval.isAvailable()) {
+                    System.err.println("No keyword rules parsed. Use BAN:/STOP: prefixes.");
+                    return 1;
+                }
+                evaluator = kwEval;
+            } else {
+                if (judgeProvider != null && !judgeProvider.isBlank()) {
+                    harnessConfig.setJudgeProvider(judgeProvider);
+                }
+                if (judgeModel != null && !judgeModel.isBlank()) {
+                    harnessConfig.setJudgeModel(judgeModel);
+                }
+                judge = new EnforcerJudge(harnessConfig, objectMapper);
+                if (!judge.isAvailable()) {
+                    System.err.println("No enforcer judge backend available.");
+                    System.err.println("Configure ~/.kompile/harness-config.json or pass --judge-provider/--judge-model.");
+                    System.err.println("Tip: use keyword-mode in your enforcer config for simple rules without an LLM.");
+                    return 1;
+                }
+                evaluator = judge;
+            }
+
+            EnforcerService service = new EnforcerService(evaluator);
+            EnforcerRuntimePolicy runtimePolicy = EnforcerRuntimePolicy.create(wd, policy, harnessConfig, objectMapper);
+            EnforcerConversationWindow conversationWindow =
+                    new EnforcerConversationWindow(runtimePolicy.getContextFile(), objectMapper);
+
+            // Build the agent runner (emulated mode — we control the subprocess)
+            SubprocessAgentRunner runner = new SubprocessAgentRunner(
+                    agent, wd.toString(), true, true, "", 0,
+                    null, renderer, ascii);
+            runner.setExtraEnvironment(runtimePolicy.toEnvironment());
+            runner.setInputProvider(prompt -> {
+                try {
+                    return reader.readLine(prompt);
+                } catch (Exception e) {
+                    return null;
+                }
+            });
+
+            String sessionId = runtimePolicy.getSessionId();
+            ChatHistory history = new ChatHistory(sessionId);
+            ChatSessionMetrics metrics = new ChatSessionMetrics(sessionId);
+            metrics.setAgentName(agent + " (enforced)");
+            Instant started = Instant.now();
+
+            history.open(rules, agent + " (enforced-passthrough)", false);
+            runner.injectMcpTools();
+            runner.injectSkills();
+
+            try {
+                // Print welcome banner
+                String body = "Agent:     " + agent + "\n"
+                        + "Judge:     " + evaluator.describe() + "\n"
+                        + "Retries:   " + effectiveMaxReprompts + "\n\n"
+                        + "Passthrough mode with real-time enforcement.\n"
+                        + "The judge monitors output as it streams and can interrupt on violations.\n\n"
+                        + "Commands: /help, /rules, /status, /quit";
+                System.out.println(ascii.panel("Kompile Enforced Passthrough", body));
+
+                // Main REPL loop
+                while (true) {
+                    String line;
+                    try {
+                        line = reader.readLine(buildEnforcedPrompt(agent));
+                    } catch (UserInterruptException | EndOfFileException e) {
+                        break;
+                    }
+
+                    if (line == null || line.isBlank()) continue;
+                    String trimmed = line.trim();
+
+                    if (trimmed.startsWith("/")) {
+                        if (trimmed.equalsIgnoreCase("/quit") || trimmed.equalsIgnoreCase("/exit")) break;
+                        if (trimmed.equalsIgnoreCase("/rules")) {
+                            System.out.println(ascii.panel("Enforcer Rules", policy.getRules()));
+                            continue;
+                        }
+                        if (trimmed.equalsIgnoreCase("/status")) {
+                            System.out.println(ascii.panel("Status",
+                                    "Agent: " + agent + "\nJudge: " + evaluator.describe()
+                                            + "\nRetries: " + effectiveMaxReprompts));
+                            continue;
+                        }
+                        if (trimmed.equalsIgnoreCase("/help")) {
+                            System.out.println(ascii.panel("Help",
+                                    "/rules   Show enforcer rules\n"
+                                            + "/status  Show judge and agent info\n"
+                                            + "/quit    Exit"));
+                            continue;
+                        }
+                        // Pass other slash commands through to the agent
+                    }
+
+                    // Run enforced turn: agent subprocess + real-time judge monitoring
+                    System.out.println();
+
+                    if (conversationWindow != null) {
+                        conversationWindow.addUserMessage(trimmed);
+                    }
+
+                    SubprocessAgentRunner.RealtimeMonitor rtMonitor;
+                    if (useKeywordMode) {
+                        KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, projectEnforcerConfig);
+                        rtMonitor = new KeywordRealtimeMonitor(kwEval, policy, conversationWindow);
+                    } else {
+                        rtMonitor = new EnforcerRealtimeMonitor(judge, policy, trimmed, conversationWindow);
+                    }
+                    runner.setRealtimeMonitor(rtMonitor);
+                    int[] attemptCounter = {0};
+
+                    EnforcerResult result;
+                    try {
+                        result = service.enforce(trimmed, policy,
+                                conversationWindow != null ? conversationWindow::snapshot : null,
+                                agentPrompt -> {
+                                    attemptCounter[0]++;
+                                    if (attemptCounter[0] > 1) {
+                                        System.out.println(renderer.yellow(
+                                                "[enforcer] violation detected, sending correction (attempt "
+                                                        + attemptCounter[0] + ")"));
+                                    }
+                                    String output = runner.runMessage(agentPrompt, history, metrics);
+                                    if (conversationWindow != null) {
+                                        conversationWindow.finishAssistantMessage(output);
+                                    }
+                                    return output;
+                                });
+                    } finally {
+                        runner.setRealtimeMonitor(null);
+                        if (rtMonitor instanceof AutoCloseable closeable) {
+                            try { closeable.close(); } catch (Exception ignored) {}
+                        }
+                    }
+
+                    // Print enforcement result
+                    if (result != null) {
+                        switch (result.getStatus()) {
+                            case ACCEPTED -> {
+                                if (result.getAttempts().size() > 1) {
+                                    System.out.println(renderer.dim("[enforcer] accepted after "
+                                            + result.getAttempts().size() + " attempts"));
+                                }
+                            }
+                            case BLOCKED -> {
+                                System.out.println(renderer.yellow("[enforcer] blocked: " + result.getMessage()));
+                                var attempts = result.getAttempts();
+                                if (!attempts.isEmpty() && attempts.get(attempts.size() - 1).decision() != null) {
+                                    for (String v : attempts.get(attempts.size() - 1).decision().getViolations()) {
+                                        System.out.println(renderer.yellow("  - " + v));
+                                    }
+                                }
+                            }
+                            case UNAVAILABLE, ERROR ->
+                                    System.out.println(renderer.red("[enforcer] " + result.getMessage()));
+                        }
+                    }
+
+                    if (result != null && !result.isAccepted()) {
+                        history.logSystem("Enforcer " + result.getStatus() + ": " + result.getMessage());
+                    }
+                }
+            } finally {
+                runner.setRealtimeMonitor(null);
+                runner.cleanup();
+                runtimePolicy.cleanup();
+                history.close();
+                renderer.resetTerminalTitle();
+                System.out.println();
+                System.out.println(renderer.dim("Enforced passthrough session " + sessionId
+                        + " ended after " + formatDuration(Duration.between(started, Instant.now()))
+                        + ". Transcript: " + history.getTranscriptFile()));
+                judge.close();
+            }
+
+            return 0;
+        } catch (Exception e) {
+            System.err.println("Error in enforced passthrough: " + e.getMessage());
+            return 1;
+        }
+    }
+
+    private static String buildEnforcedPrompt(String agent) {
+        return "\033[36mkompile \033[0m\033[2m[" + agent + "]\033[0m\033[36m> \033[0m";
+    }
+
+    private static String formatDuration(Duration d) {
+        long s = d.toSeconds();
+        if (s < 60) return s + "s";
+        return (s / 60) + "m " + (s % 60) + "s";
     }
 
     private int listSavedConversations() {
@@ -344,12 +756,24 @@ public class ChatCommand implements Callable<Integer> {
         System.out.println("(server session is fresh; local transcript preserved for reference)");
     }
 
-    private String resolveUrl() {
+    /**
+     * Resolve URL only from explicit --url or --port flags.
+     * Never auto-discovers — server mode is opt-in.
+     */
+    private String resolveExplicitUrl() {
         if (url != null && !url.isBlank()) {
             return url;
         }
         if (port != null) {
             return "http://localhost:" + port;
+        }
+        return null;
+    }
+
+    private String resolveUrl() {
+        String explicit = resolveExplicitUrl();
+        if (explicit != null) {
+            return explicit;
         }
         return InstanceDiscovery.discover();
     }

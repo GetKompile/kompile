@@ -19,6 +19,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable, BehaviorSubject, throwError, TimeoutError } from 'rxjs';
 import { tap, timeout, catchError } from 'rxjs/operators';
 import { ModelRegistryService } from './model-registry.service';
+import { backendUrl } from './base.service';
 
 /**
  * Staging service configuration.
@@ -138,20 +139,14 @@ export class StagingConfigService {
   configs$ = this.configsSubject.asObservable();
   activeConfig$ = this.activeConfigSubject.asObservable();
   loading$ = this.loadingSubject.asObservable();
+  private llmStatusSubject = new BehaviorSubject<any>(null);
+  llmStatus$ = this.llmStatusSubject.asObservable();
 
   constructor(
     private http: HttpClient,
     private modelRegistryService: ModelRegistryService
   ) {
-    // Dynamic API URL based on current location
-    if (typeof window !== 'undefined' && window.location) {
-      const protocol = window.location.protocol;
-      const hostname = window.location.hostname;
-      const port = window.location.port;
-      this.baseUrl = `${protocol}//${hostname}${port ? ':' + port : ''}/api/staging-config`;
-    } else {
-      this.baseUrl = '/api/staging-config';
-    }
+    this.baseUrl = `${backendUrl}/staging-config`;
   }
 
   /**
@@ -604,6 +599,16 @@ export class StagingConfigService {
     return this.http.post<OptimizeResult>(`${this.baseUrl}/registry/model/${modelId}/optimize`, {}).pipe(
       tap(() => {
         this.modelRegistryService.notifyStagingApplied();
+      })
+    );
+  }
+
+  getLlmServingStatus(): Observable<any> {
+    return this.http.get<any>(`${backendUrl}/llm/status`).pipe(
+      tap(status => this.llmStatusSubject.next(status)),
+      catchError(err => {
+        this.llmStatusSubject.next(null);
+        return throwError(() => err);
       })
     );
   }

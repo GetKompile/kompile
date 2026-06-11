@@ -33,7 +33,8 @@ import {
   createUserMessage,
   createAssistantMessage,
   createNewSession,
-  ChatHistoryEntry
+  ChatHistoryEntry,
+  MessageAttachment
 } from '../models/api-models';
 
 /**
@@ -188,6 +189,8 @@ export class LocalAgentChatService extends BaseService {
       folderId?: string;
       // Timeout (0 = no timeout, default 300 = 5 minutes)
       timeoutSeconds?: number;
+      // Inline attachments (images, text files)
+      attachments?: MessageAttachment[];
     } = {}
   ): Promise<void> {
     // Create and store user message
@@ -235,13 +238,21 @@ export class LocalAgentChatService extends BaseService {
       // Folder context injection
       folderId: options.folderId,
       // Timeout configuration (0 = no timeout)
-      timeoutSeconds: options.timeoutSeconds ?? 300
+      timeoutSeconds: options.timeoutSeconds ?? 300,
+      // Attachments
+      attachments: options.attachments
     };
 
-    console.log('[LocalAgentChat] Sending request with RAG enabled:', request.enableRag, 'timeout:', request.timeoutSeconds, 's');
+    console.debug('[LocalAgentChat] Sending request with RAG enabled:', request.enableRag, 'timeout:', request.timeoutSeconds, 's',
+      'attachments:', request.attachments?.length ?? 0);
 
-    // Start streaming
-    await this.streamWithFetch(session, request);
+    // Start streaming — use multipart endpoint when file attachments are present
+    const hasFileAttachments = options.attachments?.some(a => a.isImage && a.base64Data);
+    if (hasFileAttachments) {
+      await this.streamWithMultipart(session, request);
+    } else {
+      await this.streamWithFetch(session, request);
+    }
   }
 
   /**
@@ -258,11 +269,90 @@ export class LocalAgentChatService extends BaseService {
   }
 
   /**
+   * Stream response using multipart form upload (for file/image attachments).
+   * Sends the request JSON + attachments as FormData to the stream-with-files endpoint.
+   */
+  private async streamWithMultipart(session: LocalAgentSession, request: LocalAgentChatRequest): Promise<void> {
+    try {
+      console.debug('[LocalAgentChat] Starting multipart stream request with', request.attachments?.length, 'attachments');
+
+      this.currentAbortController = new AbortController();
+      this.currentProcessId = null;
+
+      // Build FormData with the request JSON and any attachments
+      const formData = new FormData();
+
+      // Strip previewUrl and base64Data from request JSON (files go as multipart parts)
+      const requestCopy = { ...request };
+      delete requestCopy.attachments;
+      formData.append('request', new Blob([JSON.stringify(requestCopy)], { type: 'application/json' }));
+
+      // Add image files as multipart parts, text attachments go inline in the request
+      const textAttachments: MessageAttachment[] = [];
+      if (request.attachments) {
+        for (const att of request.attachments) {
+          if (att.isImage && att.base64Data) {
+            // Convert base64 back to binary for multipart upload
+            const byteString = atob(att.base64Data);
+            const ab = new ArrayBuffer(byteString.length);
+            const ia = new Uint8Array(ab);
+            for (let i = 0; i < byteString.length; i++) {
+              ia[i] = byteString.charCodeAt(i);
+            }
+            const blob = new Blob([ab], { type: att.mimeType });
+            formData.append('files', blob, att.filename);
+          } else if (att.textContent) {
+            textAttachments.push(att);
+          }
+        }
+      }
+
+      // Re-add text attachments to the request (they're small enough for JSON)
+      if (textAttachments.length > 0) {
+        // formData.get('request') returns a Blob, not a string — read it back as text first
+        const requestBlob = formData.get('request') as Blob;
+        const requestText = await requestBlob.text();
+        const updatedRequest = JSON.parse(requestText);
+        updatedRequest.attachments = textAttachments;
+        formData.set('request', new Blob([JSON.stringify(updatedRequest)], { type: 'application/json' }));
+      }
+
+      const response = await fetch(`${this.backendUrl}/agents/chat/stream-with-files`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'text/event-stream'
+        },
+        body: formData,
+        signal: this.currentAbortController.signal
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      // Redirect to the shared SSE processing logic by wrapping as a "fake" JSON request
+      // The stream-with-files endpoint returns the same SSE format as /stream
+      // So we can reuse the exact same reader loop
+      await this.readSseStream(session, response);
+
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        console.debug('[LocalAgentChat] Multipart request aborted');
+      } else {
+        console.error('[LocalAgentChat] Multipart streaming error:', error);
+        this.streamingError$.next(error.message || 'Unknown error');
+        this.finalizeStreaming(session);
+      }
+    }
+  }
+
+  /**
    * Stream response using fetch API (SSE).
    */
   private async streamWithFetch(session: LocalAgentSession, request: LocalAgentChatRequest): Promise<void> {
     try {
-      console.log('[LocalAgentChat] Starting stream request');
+      console.debug('[LocalAgentChat] Starting stream request');
 
       // Create AbortController for cancellation support
       this.currentAbortController = new AbortController();
@@ -278,13 +368,32 @@ export class LocalAgentChatService extends BaseService {
         signal: this.currentAbortController.signal
       });
 
-      console.log('[LocalAgentChat] Response status:', response.status);
+      console.debug('[LocalAgentChat] Response status:', response.status);
 
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
+      await this.readSseStream(session, response);
+
+    } catch (error: any) {
+      // Handle AbortError gracefully (user cancelled)
+      if (error.name === 'AbortError') {
+        // The cancelStreaming method already handled the UI update
+        console.debug('[LocalAgentChat] Request aborted by user');
+      } else {
+        console.error('[LocalAgentChat] Streaming error:', error);
+        this.streamingError$.next(error.message || 'Unknown error');
+        this.finalizeStreaming(session);
+      }
+    }
+  }
+
+  /**
+   * Read and process an SSE response stream. Shared by both JSON and multipart endpoints.
+   */
+  private async readSseStream(session: LocalAgentSession, response: Response): Promise<void> {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
 
@@ -320,7 +429,7 @@ export class LocalAgentChatService extends BaseService {
                 // Capture processId from start event for cancellation
                 if (parsed.processId) {
                   this.currentProcessId = parsed.processId;
-                  console.log('[LocalAgentChat] Process started:', this.currentProcessId);
+                  console.debug('[LocalAgentChat] Process started:', this.currentProcessId);
                 }
                 break;
 
@@ -333,7 +442,7 @@ export class LocalAgentChatService extends BaseService {
 
               case 'cancelled':
                 // Process was cancelled by user
-                console.log('[LocalAgentChat] Process cancelled:', parsed);
+                console.debug('[LocalAgentChat] Process cancelled:', parsed);
                 if (this.currentStreamingMessage) {
                   this.currentStreamingMessage.streaming = false;
                   this.currentStreamingMessage.content = this.getCurrentContent() + '\n\n[Stopped]';
@@ -343,10 +452,11 @@ export class LocalAgentChatService extends BaseService {
                 this.isStreaming$.next(false);
                 this.currentStreamingMessage = null;
                 this.currentProcessId = null;
+                currentEventType = 'message'; // Reset before returning
                 return; // Exit early
 
               case 'tool_use':
-                console.log('[LocalAgentChat] Tool use:', parsed);
+                console.debug('[LocalAgentChat] Tool use:', parsed);
                 this.toolUse$.next(parsed as ToolUseEvent);
                 if (this.currentStreamingMessage) {
                   if (!this.currentStreamingMessage.toolUses) {
@@ -357,7 +467,7 @@ export class LocalAgentChatService extends BaseService {
                 break;
 
               case 'result':
-                console.log('[LocalAgentChat] Result:', parsed);
+                console.debug('[LocalAgentChat] Result:', parsed);
                 this.result$.next(parsed as ResultEvent);
                 if (this.currentStreamingMessage) {
                   this.currentStreamingMessage.tokenCount = parsed.numTurns;
@@ -365,7 +475,7 @@ export class LocalAgentChatService extends BaseService {
                 break;
 
               case 'files_modified':
-                console.log('[LocalAgentChat] Files modified:', parsed);
+                console.debug('[LocalAgentChat] Files modified:', parsed);
                 this.filesModified$.next(parsed as string[]);
                 if (this.currentStreamingMessage) {
                   this.currentStreamingMessage.modifiedFiles = parsed;
@@ -373,7 +483,7 @@ export class LocalAgentChatService extends BaseService {
                 break;
 
               case 'sources':
-                console.log('[LocalAgentChat] Sources received:', parsed);
+                console.debug('[LocalAgentChat] Sources received:', parsed);
                 const sources = parsed as RetrievedSource[];
                 this.sources$.next(sources);
                 if (this.currentStreamingMessage) {
@@ -381,8 +491,22 @@ export class LocalAgentChatService extends BaseService {
                 }
                 break;
 
+              case 'rag_metrics':
+                console.debug('[LocalAgentChat] RAG metrics received:', parsed);
+                if (this.currentStreamingMessage) {
+                  this.currentStreamingMessage.ragMetrics = parsed as { retrievalMs: number; documentsRetrieved: number };
+                }
+                break;
+
+              case 'query_info':
+                console.debug('[LocalAgentChat] Query info received:', parsed);
+                if (this.currentStreamingMessage) {
+                  this.currentStreamingMessage.queryInfo = parsed as { originalQuery: string; rewrittenQuery: string; wasRewritten: boolean; intent?: string };
+                }
+                break;
+
               case 'stats':
-                console.log('[LocalAgentChat] Stats received:', parsed);
+                console.debug('[LocalAgentChat] Stats received:', parsed);
                 const stats = parsed as ChatStats;
                 this.chatStats$.next(stats);
                 if (this.currentStreamingMessage && stats.tokenMetrics) {
@@ -391,7 +515,7 @@ export class LocalAgentChatService extends BaseService {
                 break;
 
               case 'complete':
-                console.log('[LocalAgentChat] Complete message received');
+                console.debug('[LocalAgentChat] Complete message received');
                 this.handleStreamComplete(session, parsed);
                 break;
 
@@ -449,22 +573,6 @@ export class LocalAgentChatService extends BaseService {
 
       // Finalize streaming
       this.finalizeStreaming(session);
-
-    } catch (error: any) {
-      // Handle AbortError gracefully (user cancelled)
-      if (error.name === 'AbortError') {
-        console.log('[LocalAgentChat] Stream aborted by user');
-        // Don't call handleStreamError for user-initiated cancellation
-        // The cancelStreaming method already handled the UI update
-        return;
-      }
-
-      console.error('[LocalAgentChat] Stream error:', error);
-      this.handleStreamError(session, error.message);
-    } finally {
-      // Clean up abort controller
-      this.currentAbortController = null;
-    }
   }
 
   /**
@@ -520,9 +628,11 @@ export class LocalAgentChatService extends BaseService {
 
       this.storageService.updateSession(session);
       this.streamingComplete$.next(this.currentStreamingMessage);
+
+      // Only emit final content if stream wasn't already completed via a 'complete' event
+      this.streamingContent$.next(this.getCurrentContent());
     }
 
-    this.streamingContent$.next(this.getCurrentContent());
     this.isStreaming$.next(false);
     this.currentStreamingMessage = null;
     this.currentProcessId = null;
@@ -534,18 +644,18 @@ export class LocalAgentChatService extends BaseService {
    * Aborts the fetch request and sends cancel signal to backend.
    */
   cancelStreaming(): void {
-    console.log('[LocalAgentChat] Cancel streaming requested');
+    console.debug('[LocalAgentChat] Cancel streaming requested');
 
     // Abort the fetch request
     if (this.currentAbortController) {
-      console.log('[LocalAgentChat] Aborting fetch request');
+      console.debug('[LocalAgentChat] Aborting fetch request');
       this.currentAbortController.abort();
       this.currentAbortController = null;
     }
 
     // Call backend to kill the process
     if (this.currentProcessId) {
-      console.log('[LocalAgentChat] Sending cancel request to backend for process:', this.currentProcessId);
+      console.debug('[LocalAgentChat] Sending cancel request to backend for process:', this.currentProcessId);
       this.cancelBackendProcess(this.currentProcessId);
     }
 
@@ -559,6 +669,7 @@ export class LocalAgentChatService extends BaseService {
     this.isStreaming$.next(false);
     this.currentStreamingMessage = null;
     this.currentProcessId = null;
+    this.resetContentBuffer();
   }
 
   /**
@@ -573,7 +684,7 @@ export class LocalAgentChatService extends BaseService {
     })
     .then(response => response.json())
     .then(result => {
-      console.log('[LocalAgentChat] Backend cancel result:', result);
+      console.debug('[LocalAgentChat] Backend cancel result:', result);
     })
     .catch(error => {
       console.error('[LocalAgentChat] Failed to cancel backend process:', error);

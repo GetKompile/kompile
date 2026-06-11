@@ -16,7 +16,7 @@
 
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, Subject } from 'rxjs';
+import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import { BaseService } from './base.service';
 import { PassthroughMessage, PassthroughOptions } from '../models/api-models';
 
@@ -190,5 +190,17 @@ export class PassthroughChatService extends BaseService {
   clearMessages(): void {
     this.messages$.next([]);
     this.streamingContent$.next('');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SESSION MANAGEMENT
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  listSessions(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/agents/passthrough/sessions`);
+  }
+
+  getSessionStatus(sessionId: string): Observable<any> {
+    return this.http.get<any>(`${this.backendUrl}/agents/passthrough/status/${encodeURIComponent(sessionId)}`);
   }
 }

@@ -102,6 +102,27 @@ public class BuildAppCommand implements Callable<Integer> {
             defaultValue = "false")
     private boolean skipMavenBuild;
 
+    @Option(names = {"--container"}, description = "Build container image using Google Jib (no Docker daemon required for registry push)",
+            defaultValue = "false", negatable = true)
+    private boolean buildContainer;
+
+    @Option(names = {"--containerImage"}, description = "Full container image name (e.g., myregistry.io/myapp). Default: kompile/<configName>")
+    private String containerImageName;
+
+    @Option(names = {"--containerBaseImage"}, description = "Base image for container. Default: eclipse-temurin:17-jre",
+            defaultValue = "eclipse-temurin:17-jre")
+    private String containerBaseImage;
+
+    @Option(names = {"--containerRegistry"}, description = "Container registry prefix (e.g., gcr.io/my-project, docker.io/myuser)")
+    private String containerRegistry;
+
+    @Option(names = {"--containerPorts"}, description = "Ports to expose in container (comma-separated)", split = ",",
+            defaultValue = "8080")
+    private List<String> containerPorts;
+
+    @Option(names = {"--containerJvmFlags"}, description = "Additional JVM flags for container runtime (comma-separated)", split = ",")
+    private List<String> containerJvmFlags;
+
     @Option(names = {"--javacppPlatform"}, description = "JavaCPP platform (e.g., linux-x86_64)")
     private String javacppPlatform = "linux-x86_64";
 
@@ -247,6 +268,12 @@ public class BuildAppCommand implements Callable<Integer> {
                 .modelSourceType(modelSourceType)
                 .registryUrls(registryUrls)
                 .archiveOnly(archiveOnly)
+                .buildContainer(buildContainer)
+                .containerImageName(containerImageName)
+                .containerBaseImage(containerBaseImage)
+                .containerRegistry(containerRegistry)
+                .containerPorts(containerPorts)
+                .containerJvmFlags(containerJvmFlags)
                 .build();
 
         // 4. Setup directories
@@ -445,8 +472,9 @@ public class BuildAppCommand implements Callable<Integer> {
         if (skipTests) sysProps.setProperty("skipTests", "true");
         request.setProperties(sysProps);
 
+        List<String> profiles = new ArrayList<>();
         if (buildNative) {
-            request.setProfiles(List.of("native"));
+            profiles.add("native");
             File effectiveGraalVm = (graalVmHome != null && graalVmHome.exists()) ? graalVmHome : Info.graalvmDirectory();
             if (effectiveGraalVm != null && effectiveGraalVm.exists()) {
                 System.out.println("Using GraalVM: " + effectiveGraalVm.getAbsolutePath());
@@ -455,6 +483,12 @@ public class BuildAppCommand implements Callable<Integer> {
                 System.err.println("GraalVM not found. Native build requires --graalVmHome or 'kompile install graalvm'.");
                 return 1;
             }
+        }
+        if (buildContainer) {
+            profiles.add("container");
+        }
+        if (!profiles.isEmpty()) {
+            request.setProfiles(profiles);
         }
 
         Invoker invoker = new DefaultInvoker();
@@ -474,6 +508,7 @@ public class BuildAppCommand implements Callable<Integer> {
         System.out.println("  Directory: " + projectBuildDir.getAbsolutePath());
         System.out.println("  Goals: " + goals);
         if (buildNative) System.out.println("  Native Profile: Activated");
+        if (buildContainer) System.out.println("  Container Profile: Activated (Jib)");
         if (skipTests) System.out.println("  Tests: SKIPPED");
 
         InvocationResult result = invoker.execute(request);
@@ -494,7 +529,14 @@ public class BuildAppCommand implements Callable<Integer> {
             if (exe.exists()) {
                 System.out.println("  Native executable: " + exe.getAbsolutePath());
             }
-        } else {
+        }
+        if (buildContainer) {
+            String image = resolveContainerImageName();
+            System.out.println("  Container image: " + image);
+            System.out.println("  Run: docker run --rm -p 8080:8080 " + image);
+            System.out.println("  Push to registry: mvn package -Pcontainer-push (in " + projectBuildDir.getAbsolutePath() + ")");
+        }
+        if (!buildNative && !buildContainer) {
             String jarName = configName + "-" + instanceVersion + ".jar";
             File jar = new File(targetDir, jarName);
             if (jar.exists()) {
@@ -503,6 +545,18 @@ public class BuildAppCommand implements Callable<Integer> {
             }
         }
         return 0;
+    }
+
+    private String resolveContainerImageName() {
+        if (containerImageName != null && !containerImageName.isBlank()) {
+            return containerImageName;
+        }
+        if (containerRegistry != null && !containerRegistry.isBlank()) {
+            String reg = containerRegistry.endsWith("/")
+                    ? containerRegistry.substring(0, containerRegistry.length() - 1) : containerRegistry;
+            return reg + "/" + configName;
+        }
+        return "kompile/" + configName;
     }
 
     private void printEnabledModules(ModuleSelection modules) {

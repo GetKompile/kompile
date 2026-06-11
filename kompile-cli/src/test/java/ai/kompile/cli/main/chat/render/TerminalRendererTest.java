@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -159,35 +160,54 @@ class TerminalRendererTest {
     @Test
     void testRenderToolCallStart() {
         String output = renderer.renderToolCallStart("todowrite", "Add new task");
-        assertTrue(output.contains("todowrite"));
+        assertTrue(output.contains("Todowrite"));
         assertTrue(output.contains("Add new task"));
     }
 
     @Test
     void testRenderToolCallStartExitPlanMode() {
         String output = renderer.renderToolCallStart("exit_plan_mode", "Plan ready");
-        assertTrue(output.contains("exit_plan_mode"));
+        assertTrue(output.contains("Exit Plan Mode"));
+    }
+
+    @Test
+    void testRenderToolCallStartMcpPrefix() {
+        // MCP-prefixed tool names should be cleaned up for display
+        String output = renderer.renderToolCallStart("mcp__kompile__read",
+                "{\"file_path\":\"src/app/foo.ts\"}");
+        assertTrue(output.contains("Read"), "Should display 'Read' not 'mcp__kompile__read'");
+        assertTrue(output.contains("src/app/foo.ts"), "Should extract file_path from JSON");
+        assertFalse(output.contains("mcp__"), "Should not contain MCP prefix");
+        assertFalse(output.contains("file_path"), "Should not show JSON key name");
+    }
+
+    @Test
+    void testRenderToolCallStartGlobPattern() {
+        String output = renderer.renderToolCallStart("mcp__kompile__glob",
+                "{\"pattern\":\"**/*.java\"}");
+        assertTrue(output.contains("Glob"));
+        assertTrue(output.contains("**/*.java"));
     }
 
     @Test
     void testRenderToolCallComplete() {
         ToolResult result = ToolResult.success("Added task #1: Implement feature");
         String output = renderer.renderToolCallComplete("todowrite", result);
-        assertTrue(output.contains("todowrite"));
+        assertTrue(output.contains("Todowrite"));
     }
 
     @Test
     void testRenderToolCallCompleteError() {
         ToolResult result = ToolResult.error("subject is required");
         String output = renderer.renderToolCallComplete("todowrite", result);
-        assertTrue(output.contains("todowrite"));
+        assertTrue(output.contains("Todowrite"));
         assertTrue(output.contains("subject is required"));
     }
 
     @Test
     void testRenderToolCallDenied() {
         String output = renderer.renderToolCallDenied("bash", "Destructive command");
-        assertTrue(output.contains("bash"));
+        assertTrue(output.contains("Bash"));
         assertTrue(output.contains("denied"));
     }
 
@@ -211,10 +231,45 @@ class TerminalRendererTest {
     void testRenderContextGroup() {
         Map<String, Integer> counts = Map.of("read", 3, "grep", 2);
         String output = renderer.renderContextGroup(counts);
-        assertTrue(output.contains("3"));
-        assertTrue(output.contains("read"));
-        assertTrue(output.contains("2"));
-        assertTrue(output.contains("grep"));
+        assertTrue(output.contains("5 calls"));
+        assertTrue(output.contains("3 Read"));
+        assertTrue(output.contains("2 Grep"));
+    }
+
+    @Test
+    void renderContextGroupAggregatesNormalizedToolNames() {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        counts.put("read", 2);
+        counts.put("mcp__kompile__read", 3);
+        counts.put("Read", 1);
+
+        String output = renderer.renderContextGroup(counts);
+
+        assertTrue(output.contains("6 calls"));
+        assertTrue(output.contains("6 Reads"));
+        assertFalse(output.contains("Mcp"));
+    }
+
+    @Test
+    void renderContextGroupRollsUpOverflowBuckets() {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        counts.put("read", 8);
+        counts.put("grep", 7);
+        counts.put("glob", 6);
+        counts.put("list", 5);
+        counts.put("webfetch", 4);
+        counts.put("todoread", 3);
+
+        String output = renderer.renderContextGroup(counts);
+
+        assertTrue(output.contains("33 calls"));
+        assertTrue(output.contains("8 Reads"));
+        assertTrue(output.contains("7 Greps"));
+        assertTrue(output.contains("6 Globs"));
+        assertTrue(output.contains("5 Lists"));
+        assertTrue(output.contains("+7 more across 2 tools"));
+        assertFalse(output.contains("Webfetch"));
+        assertFalse(output.contains("Todoread"));
     }
 
     @Test
@@ -267,5 +322,87 @@ class TerminalRendererTest {
     @Test
     void testTruncatePreviewNull() {
         assertEquals("", TerminalRenderer.truncatePreview(null, 100));
+    }
+
+    // ========================================================================
+    // Tool name & input prettification
+    // ========================================================================
+
+    @Test
+    void testPrettifyToolNameMcpPrefix() {
+        assertEquals("Read", TerminalRenderer.prettifyToolName("mcp__kompile__read"));
+        assertEquals("Glob", TerminalRenderer.prettifyToolName("mcp__kompile__glob"));
+        assertEquals("Grep", TerminalRenderer.prettifyToolName("mcp__kompile__grep"));
+        assertEquals("Bash", TerminalRenderer.prettifyToolName("mcp__kompile__bash"));
+        assertEquals("Edit", TerminalRenderer.prettifyToolName("mcp__kompile__edit"));
+        assertEquals("Write", TerminalRenderer.prettifyToolName("mcp__kompile__write"));
+    }
+
+    @Test
+    void testPrettifyToolNameUnderscores() {
+        assertEquals("Code Search", TerminalRenderer.prettifyToolName("code_search"));
+        assertEquals("Exit Plan Mode", TerminalRenderer.prettifyToolName("exit_plan_mode"));
+        assertEquals("Edit Coordinator", TerminalRenderer.prettifyToolName("edit_coordinator"));
+    }
+
+    @Test
+    void testPrettifyToolNameCamelCase() {
+        assertEquals("ToolSearch", TerminalRenderer.prettifyToolName("ToolSearch"));
+        assertEquals("AskUserQuestion", TerminalRenderer.prettifyToolName("AskUserQuestion"));
+    }
+
+    @Test
+    void testPrettifyToolNameSimple() {
+        assertEquals("Read", TerminalRenderer.prettifyToolName("read"));
+        assertEquals("Exec", TerminalRenderer.prettifyToolName("exec"));
+    }
+
+    @Test
+    void testStripMcpPrefix() {
+        assertEquals("read", TerminalRenderer.stripMcpPrefix("mcp__kompile__read"));
+        assertEquals("code_search", TerminalRenderer.stripMcpPrefix("mcp__kompile__code_search"));
+        assertEquals("read", TerminalRenderer.stripMcpPrefix("Read"));
+        assertEquals("toolsearch", TerminalRenderer.stripMcpPrefix("ToolSearch"));
+    }
+
+    @Test
+    void testPrettifyToolInputJsonFilePath() {
+        String input = "{\"file_path\":\"src/app/foo.ts\",\"limit\":100}";
+        String result = TerminalRenderer.prettifyToolInput("read", input, 80);
+        assertEquals("src/app/foo.ts", result);
+    }
+
+    @Test
+    void testPrettifyToolInputJsonPattern() {
+        String input = "{\"pattern\":\"**/*.java\"}";
+        String result = TerminalRenderer.prettifyToolInput("glob", input, 80);
+        assertEquals("**/*.java", result);
+    }
+
+    @Test
+    void testPrettifyToolInputJsonGrepWithPath() {
+        String input = "{\"pattern\":\"renderTool\",\"path\":\"src/\"}";
+        String result = TerminalRenderer.prettifyToolInput("grep", input, 80);
+        assertEquals("renderTool in src/", result);
+    }
+
+    @Test
+    void testPrettifyToolInputPlainText() {
+        String result = TerminalRenderer.prettifyToolInput("exec", "ls -la", 80);
+        assertEquals("ls -la", result);
+    }
+
+    @Test
+    void testPrettifyToolInputUnknownTool() {
+        String input = "{\"foo\":\"bar\",\"baz\":42}";
+        String result = TerminalRenderer.prettifyToolInput("unknown_tool", input, 80);
+        assertEquals("foo=bar, baz=42", result);
+    }
+
+    @Test
+    void testPrettifyToolInputEmpty() {
+        assertEquals("", TerminalRenderer.prettifyToolInput("read", "", 80));
+        assertEquals("", TerminalRenderer.prettifyToolInput("read", null, 80));
+        assertEquals("", TerminalRenderer.prettifyToolInput("read", "  ", 80));
     }
 }

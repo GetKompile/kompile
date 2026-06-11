@@ -24,6 +24,9 @@ import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.services.pipeline.ParallelIngestPipeline;
 import ai.kompile.app.services.pipeline.PipelineProgress;
 import ai.kompile.app.services.pipeline.PipelineResult;
+import ai.kompile.app.services.scheduler.JobResourceProfiles;
+import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
+import ai.kompile.app.services.scheduler.ScheduledJob;
 import ai.kompile.app.services.subprocess.VectorPopulationSubprocessLauncher;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
@@ -79,6 +82,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     private final VectorPopulationSubprocessLauncher subprocessLauncher;
     private final IngestProgressTracker ingestProgressTracker;
     private final IndexingJobHistoryService jobHistoryService;
+    private final ResourceAwareJobScheduler resourceScheduler;
 
     @Value("${kompile.vectorpopulation.subprocess.enabled:true}")
     private boolean subprocessModeEnabled;
@@ -118,6 +122,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             @Autowired(required = false) VectorPopulationSubprocessLauncher subprocessLauncher,
             @Autowired(required = false) IngestProgressTracker ingestProgressTracker,
             @Autowired(required = false) IndexingJobHistoryService jobHistoryService,
+            @Autowired(required = false) ResourceAwareJobScheduler resourceScheduler,
             IngestConfiguration ingestConfiguration) {
         this.messagingTemplate = messagingTemplate;
         this.documentLoaders = documentLoaders;
@@ -126,6 +131,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
         this.subprocessLauncher = subprocessLauncher;
         this.ingestProgressTracker = ingestProgressTracker;
         this.jobHistoryService = jobHistoryService;
+        this.resourceScheduler = resourceScheduler;
 
         // Select best indexer (prefer non-NoOp)
         IndexerService selected = null;
@@ -191,6 +197,42 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     }
 
     /**
+     * Submit a vector population job through the resource-aware scheduler.
+     * Falls back to direct async execution if the scheduler is unavailable.
+     */
+    public CompletableFuture<ScheduledJob.JobResult> scheduleVectorPopulation(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            taskId = UUID.randomUUID().toString();
+        }
+
+        if (resourceScheduler == null) {
+            logger.debug("No scheduler available, falling back to direct vector population");
+            final String finalTaskId = taskId;
+            populateVectorStoreAsync(finalTaskId);
+            return CompletableFuture.completedFuture(
+                    new ScheduledJob.JobResult(true, null, 0));
+        }
+
+        final String finalTaskId = taskId;
+        ScheduledJob job = ScheduledJob.builder()
+                .jobId(finalTaskId)
+                .jobType(JobResourceProfiles.VECTOR_POPULATION.serviceType())
+                .description("Vector Population: " + finalTaskId)
+                .resourceProfile(JobResourceProfiles.VECTOR_POPULATION)
+                .priority(30)
+                .executor(ctx -> {
+                    PopulationResult result = populateVectorStore(finalTaskId);
+                    if (!result.success()) {
+                        throw new RuntimeException("Vector population failed: " + result.errorMessage());
+                    }
+                })
+                .build();
+
+        logger.info("Submitting vector population job to scheduler: {}", finalTaskId);
+        return resourceScheduler.submit(job);
+    }
+
+    /**
      * Starts asynchronous vector store population from Lucene index.
      * Uses subprocess mode if enabled, otherwise runs in-process.
      *
@@ -206,6 +248,36 @@ public class VectorStorePopulationService implements org.springframework.beans.f
 
         // Use subprocess mode if enabled
         if (isSubprocessModeEnabled()) {
+            // === SCHEDULER INTEGRATION: Submit through scheduler for queuing, priority, and history ===
+            if (resourceScheduler != null) {
+                logger.info("Starting vector population via SCHEDULER for task: {}", finalTaskId);
+                ScheduledJob job = ScheduledJob.builder()
+                        .jobId(finalTaskId)
+                        .jobType("vectorPopulation")
+                        .description("Vector population: " + finalTaskId)
+                        .resourceProfile(JobResourceProfiles.VECTOR_POPULATION)
+                        .executor(ctx -> {
+                            try {
+                                PopulationResult result = populateVectorStoreViaSubprocess(finalTaskId).get();
+                                if (!result.success()) {
+                                    throw new RuntimeException("Vector population failed: " + result.errorMessage());
+                                }
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException("Vector population interrupted", e);
+                            } catch (ExecutionException e) {
+                                throw new RuntimeException("Vector population failed: " + e.getCause().getMessage(), e.getCause());
+                            }
+                        })
+                        .priority(40)
+                        .build();
+                // Broadcast QUEUED state so the UI shows the task immediately
+                broadcastProgress(finalTaskId, IngestPhase.QUEUED, 0, "Queued for processing",
+                        0, 0, 0, 0, 0.0);
+                return resourceScheduler.submit(job).thenApply(jr ->
+                        new PopulationResult(finalTaskId, jr.success(), 0, jr.durationMs(), jr.errorMessage()));
+            }
+
             logger.info("Starting vector population in SUBPROCESS mode for task: {}", finalTaskId);
             return populateVectorStoreViaSubprocess(finalTaskId);
         }
@@ -1049,6 +1121,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             case CONVERTING -> IngestEvent.IngestPhase.CONVERTING;
             case CHUNKING -> IngestEvent.IngestPhase.CHUNKING;
             case EXTRACTION -> IngestEvent.IngestPhase.EXTRACTION;
+            case GRAPH_EXTRACTION -> IngestEvent.IngestPhase.GRAPH_EXTRACTION;
             case INDEXING_AND_EMBEDDING -> IngestEvent.IngestPhase.INDEXING_AND_EMBEDDING;
             case EMBEDDING -> IngestEvent.IngestPhase.EMBEDDING;
             case INDEXING -> IngestEvent.IngestPhase.INDEXING;

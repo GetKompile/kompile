@@ -47,6 +47,7 @@ public class PomModelBuilder {
     public static final String DEFAULT_POSTGRES_VERSION = "42.7.5";
     public static final String DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION = "0.10.6";
     public static final String DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION = "3.6.0";
+    public static final String DEFAULT_JIB_MAVEN_PLUGIN_VERSION = "3.4.4";
     public static final String DEFAULT_JAKARTA_MAIL_VERSION = "2.1.3";
     public static final String DEFAULT_EMBEDDED_POSTGRES_VERSION = "2.0.7";
     public static final String CORE_APP_MAIN_CLASS_FQCN = "ai.kompile.app.MainApplication";
@@ -84,6 +85,11 @@ public class PomModelBuilder {
         if (config.isBuildNative()) {
             NativeProfileBuilder nativeBuilder = new NativeProfileBuilder(model);
             nativeBuilder.addNativeProfile(resolveMainClass());
+        }
+
+        if (config.isBuildContainer()) {
+            ContainerProfileBuilder containerBuilder = new ContainerProfileBuilder(model, config);
+            containerBuilder.addContainerProfile(resolveMainClass());
         }
 
         addSpringRepositories();
@@ -130,6 +136,9 @@ public class PomModelBuilder {
         props.setProperty("postgres.version", DEFAULT_POSTGRES_VERSION);
         props.setProperty("native-maven-plugin.version", DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION);
         props.setProperty("build-helper-maven-plugin.version", DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION);
+        if (config.isBuildContainer()) {
+            props.setProperty("jib-maven-plugin.version", DEFAULT_JIB_MAVEN_PLUGIN_VERSION);
+        }
         boolean isLite = config.getModules().has("app-lite") && !config.getModules().has("app-main");
         props.setProperty("native.image.name", config.getConfigName() + (isLite ? "-lite" : "-native"));
         props.setProperty("embedded-postgres.version", DEFAULT_EMBEDDED_POSTGRES_VERSION);

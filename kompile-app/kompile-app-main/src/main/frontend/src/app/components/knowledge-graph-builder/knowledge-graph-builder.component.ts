@@ -76,6 +76,10 @@ export class KnowledgeGraphBuilderComponent implements OnInit, OnDestroy {
   proposalsPageSize = 20;
   proposalsTotalElements = 0;
 
+  // Job statistics
+  jobStatistics: any = null;
+  jobStatsLoading = false;
+
   // Extraction logs
   extractionLogs: ExtractionLog[] = [];
   selectedLog: ExtractionLog | null = null;
@@ -284,10 +288,27 @@ export class KnowledgeGraphBuilderComponent implements OnInit, OnDestroy {
   selectJob(job: ExtractionJob): void {
     this.selectedJob = job;
     this.loadProposals();
+    this.loadJobStatistics(job.jobId);
     if (job.builderType?.toLowerCase().includes('llm')) {
       this.loadExtractionLogs();
     }
     this.cdr.markForCheck();
+  }
+
+  loadJobStatistics(jobId: string): void {
+    this.jobStatsLoading = true;
+    this.jobStatistics = null;
+    this.builderService.getJobStatistics(jobId).subscribe({
+      next: (stats: any) => {
+        this.jobStatistics = stats;
+        this.jobStatsLoading = false;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.jobStatsLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
   }
 
   cancelJob(job: ExtractionJob): void {

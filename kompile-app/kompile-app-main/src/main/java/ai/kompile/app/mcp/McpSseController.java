@@ -51,7 +51,7 @@ import java.util.stream.Collectors;
  * - "endpoint" event: Contains the URL where the client should POST messages (SSE transport only)
  * - "message" event: Contains JSON-RPC responses and notifications
  */
-@RestController
+@RestController("appMcpSseController")
 @RequestMapping("/mcp")
 @ConditionalOnBean(SpringMvcSseServerTransport.class)
 public class McpSseController {

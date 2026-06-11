@@ -57,20 +57,20 @@ public class SimpleInMemoryGraphRagService implements GraphRagService {
     @Override
     public GraphRagResult answerQuery(GraphRagQuery query) {
         if (query == null) {
-            return new GraphRagResult(
-                    "Error: Query cannot be null.",
-                    ""
-            );
+            return GraphRagResult.builder()
+                    .answer("Error: Query cannot be null.")
+                    .formattedContext("")
+                    .build();
         }
 
         // Use provided graph or fall back to stored graph
         Graph graph = query.getGraph() != null ? query.getGraph() : storedGraph;
 
         if (graph == null || graph.getEntities() == null || graph.getEntities().isEmpty()) {
-            return new GraphRagResult(
-                    "I don't have any knowledge graph data to answer your question.",
-                    ""
-            );
+            return GraphRagResult.builder()
+                    .answer("I don't have any knowledge graph data to answer your question.")
+                    .formattedContext("")
+                    .build();
         }
 
         // Determine search type (default to LOCAL if null)
@@ -90,7 +90,7 @@ public class SimpleInMemoryGraphRagService implements GraphRagService {
         // Generate answer based on context
         String answer = generateAnswer(query.getQuery(), context, graph);
 
-        return new GraphRagResult(answer, context);
+        return GraphRagResult.builder().answer(answer).formattedContext(context).build();
     }
 
     /**

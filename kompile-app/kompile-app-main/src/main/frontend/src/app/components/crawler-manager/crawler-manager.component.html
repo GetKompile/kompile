@@ -1,0 +1,180 @@
+<div class="crawler-manager">
+  <!-- Error banner -->
+  <div *ngIf="errorMessage" class="error-banner">
+    <mat-icon>error</mat-icon>
+    <span>{{ errorMessage }}</span>
+    <button mat-icon-button (click)="errorMessage = null"><mat-icon>close</mat-icon></button>
+  </div>
+
+  <!-- Start crawl form -->
+  <mat-card class="start-crawl-card">
+    <mat-card-header>
+      <mat-card-title>Start New Crawl</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="form-row">
+        <mat-form-field appearance="outline" class="seed-field">
+          <mat-label>Seed URL or Path</mat-label>
+          <input matInput [(ngModel)]="seed" placeholder="https://docs.example.com or /path/to/docs">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" *ngIf="crawlers.length > 0">
+          <mat-label>Crawler</mat-label>
+          <mat-select [(ngModel)]="selectedCrawlerId">
+            <mat-option value="">Auto-detect</mat-option>
+            <mat-option *ngFor="let c of crawlers" [value]="c.id">{{ c.name }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+
+      <div class="form-row">
+        <mat-form-field appearance="outline">
+          <mat-label>Max Depth</mat-label>
+          <input matInput type="number" [(ngModel)]="maxDepth" min="0" max="10">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Max Documents</mat-label>
+          <input matInput type="number" [(ngModel)]="maxDocuments" min="1">
+        </mat-form-field>
+
+        <mat-slide-toggle [(ngModel)]="sameDomainOnly">Same domain only</mat-slide-toggle>
+      </div>
+    </mat-card-content>
+    <mat-card-actions>
+      <button mat-raised-button color="primary"
+              [disabled]="isLoading || !seed.trim()"
+              (click)="startCrawl()">
+        <mat-icon>play_arrow</mat-icon> Start Crawl
+      </button>
+    </mat-card-actions>
+  </mat-card>
+
+  <!-- Jobs list -->
+  <mat-card class="jobs-card">
+    <mat-card-header>
+      <mat-card-title>Crawl Jobs</mat-card-title>
+      <span class="spacer"></span>
+      <button mat-button (click)="loadJobs()"><mat-icon>refresh</mat-icon> Refresh</button>
+      <button mat-button (click)="cleanupJobs()" [disabled]="jobs.length === 0">
+        <mat-icon>cleaning_services</mat-icon> Cleanup
+      </button>
+    </mat-card-header>
+    <mat-card-content>
+      <div *ngIf="jobs.length === 0" class="no-jobs">No crawl jobs found.</div>
+
+      <div *ngFor="let job of jobs" class="job-row">
+        <div class="job-header">
+          <mat-chip [color]="getStatusColor(job.status)">{{ job.status }}</mat-chip>
+          <mat-chip *ngIf="job.resumedFromCheckpoint" class="resumed-chip"
+                    [matTooltip]="'Resumed from checkpoint' + (job.resumedUrlCount ? ' (' + job.resumedUrlCount + ' URLs already visited)' : '')">
+            <mat-icon>replay</mat-icon> Resumed
+          </mat-chip>
+          <span class="job-seed">{{ job.seed }}</span>
+          <span class="job-id">{{ job.jobId | slice:0:8 }}</span>
+        </div>
+
+        <!-- Resume info banner -->
+        <div class="crawl-resume-banner" *ngIf="job.resumedFromCheckpoint">
+          <mat-icon>history</mat-icon>
+          <span>Continuing from checkpoint — {{ job.resumedUrlCount || 0 }} URLs already visited</span>
+        </div>
+
+        <mat-progress-bar *ngIf="isJobActive(job.status)"
+                          mode="determinate"
+                          [value]="job.progress.estimatedPercent >= 0 ? job.progress.estimatedPercent : 0">
+        </mat-progress-bar>
+
+        <div class="job-stats">
+          <span>Discovered: {{ job.progress.discovered }}</span>
+          <span>Processed: {{ job.progress.processed }}</span>
+          <span>Failed: {{ job.progress.failed }}</span>
+          <span>Queued: {{ job.progress.queued }}</span>
+          <span *ngIf="job.progress.currentItem">Current: {{ job.progress.currentItem }}</span>
+        </div>
+
+        <div class="job-stats queue-stats" *ngIf="job.ingestQueue">
+          <span>Ingest workers: {{ job.ingestQueue.activeThreads }}/{{ job.ingestQueue.maxThreads }}</span>
+          <span>Ingest queue: {{ job.ingestQueue.queuedTasks }}/{{ job.ingestQueue.queueCapacity }}</span>
+          <span>Completed ingest tasks: {{ job.ingestQueue.completedTasks }}</span>
+        </div>
+
+        <!-- Live WebSocket crawl progress -->
+        <div class="live-progress" *ngIf="liveCrawlProgress[job.jobId]">
+          <div class="live-progress-row">
+            <span>Discovered: {{ liveCrawlProgress[job.jobId].discovered || 0 }}</span>
+            <span>Processed: {{ liveCrawlProgress[job.jobId].processed || 0 }}</span>
+            <span>Failed: {{ liveCrawlProgress[job.jobId].failed || 0 }}</span>
+            <span *ngIf="liveCrawlProgress[job.jobId].currentDepth != null">Depth: {{ liveCrawlProgress[job.jobId].currentDepth }}</span>
+          </div>
+          <mat-progress-bar mode="determinate" [value]="liveCrawlProgress[job.jobId].estimatedPercent || 0"></mat-progress-bar>
+          <div class="live-current" *ngIf="liveCrawlProgress[job.jobId].currentItem">
+            {{ liveCrawlProgress[job.jobId].currentItem }}
+          </div>
+        </div>
+
+        <div class="pipeline-strip" *ngIf="getVisiblePipelines(job).length > 0">
+          <div *ngFor="let pipeline of getVisiblePipelines(job)"
+               class="pipeline-step"
+               [ngClass]="getPipelineStatusClass(pipeline.status)">
+            <div class="pipeline-step-header">
+              <mat-icon>{{ getPipelineTypeIcon(pipeline.pipelineType) }}</mat-icon>
+              <span class="pipeline-name">{{ pipeline.displayName || pipeline.pipelineId }}</span>
+              <span class="pipeline-type" [ngClass]="getPipelineTypeClass(pipeline.pipelineType)">
+                {{ pipeline.pipelineType }}
+              </span>
+              <span class="pipeline-status">{{ pipeline.status || 'PENDING' }}</span>
+            </div>
+            <mat-progress-bar mode="determinate" [value]="getPipelineProgress(pipeline)"></mat-progress-bar>
+            <div class="pipeline-metrics">
+              <span>Routed: {{ pipeline.routedItems || 0 }}</span>
+              <span>Queued: {{ pipeline.queuedTasks || 0 }}</span>
+              <span>Active: {{ pipeline.activeTasks || 0 }}</span>
+              <span>Dispatched: {{ pipeline.dispatchedTasks || 0 }}</span>
+              <span *ngIf="pipeline.failedDispatches">Failed: {{ pipeline.failedDispatches }}</span>
+            </div>
+            <div class="pipeline-current" *ngIf="pipeline.lastItem">
+              {{ pipeline.lastItem }}
+            </div>
+          </div>
+        </div>
+
+        <div class="job-actions">
+          <button mat-icon-button *ngIf="job.status === 'RUNNING'"
+                  (click)="pauseJob(job.jobId)" matTooltip="Pause">
+            <mat-icon>pause</mat-icon>
+          </button>
+          <button mat-icon-button *ngIf="job.status === 'PAUSED'"
+                  (click)="resumeJob(job.jobId)" matTooltip="Resume">
+            <mat-icon>play_arrow</mat-icon>
+          </button>
+          <button mat-icon-button *ngIf="isJobActive(job.status)"
+                  (click)="cancelJob(job.jobId)" matTooltip="Cancel">
+            <mat-icon>stop</mat-icon>
+          </button>
+          <button mat-button
+                  (click)="toggleLogs(job.jobId)" matTooltip="Crawler job logs">
+            <mat-icon>terminal</mat-icon> Job Logs
+          </button>
+        </div>
+
+        <div class="pipeline-log-panel"
+             *ngIf="expandedLogsJobId === job.jobId">
+          <app-job-log-viewer
+            [taskId]="getCrawlerHistoryTaskId(job)"
+            [isJobRunning]="isJobActive(job.status)"
+            logSource="ingest"
+            [maxTailLogs]="150">
+          </app-job-log-viewer>
+          <app-job-log-viewer
+            *ngIf="getLatestPipelineTaskId(job)"
+            [taskId]="getLatestPipelineTaskId(job)!"
+            [isJobRunning]="isJobActive(job.status)"
+            logSource="ingest"
+            [maxTailLogs]="80">
+          </app-job-log-viewer>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

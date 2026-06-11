@@ -137,6 +137,20 @@ public class GraphEdge {
     @Column(name = "fact_sheet_id")
     private Long factSheetId;
 
+    /**
+     * Confidence score for this edge (0.0 to 1.0).
+     * Used during compaction and deduplication.
+     */
+    @Column
+    private Double confidence;
+
+    /**
+     * Provenance string (source document, extraction method, etc.).
+     * Used for transparency and debugging.
+     */
+    @Column(columnDefinition = "TEXT")
+    private String provenance;
+
     // ═══════════════════════════════════════════════════════════════════════════
     // KNOWLEDGE GRAPH EMBEDDINGS
     // ═══════════════════════════════════════════════════════════════════════════

@@ -191,7 +191,7 @@ public class ContextualRagConfigService {
             new PresetInfo("minimal", "Minimal enrichment",
                 "Source attribution only, no LLM contextualization. Good for cost-sensitive deployments."),
             new PresetInfo("fast", "Fast contextualization",
-                "Uses fast LLM (gpt-4o-mini) with minimal context. Good balance of speed and quality."),
+                "Uses default LLM with minimal context. Good balance of speed and quality."),
             new PresetInfo("balanced", "Balanced contextualization",
                 "Full document summary and chunk context. Recommended for most use cases."),
             new PresetInfo("quality", "Maximum quality",
@@ -258,8 +258,8 @@ public class ContextualRagConfigService {
     private ContextualRagConfig createFastPreset() {
         return ContextualRagConfig.builder()
                 .enabled(true)
-                .llmProvider("openai")
-                .llmModel("gpt-4o-mini")
+                .llmProvider("default")
+                .llmModel(null)
                 .temperature(0.0)
                 .maxContextTokens(100)
                 .includeDocumentSummary(false)
@@ -281,8 +281,8 @@ public class ContextualRagConfigService {
     private ContextualRagConfig createBalancedPreset() {
         return ContextualRagConfig.builder()
                 .enabled(true)
-                .llmProvider("openai")
-                .llmModel("gpt-4o-mini")
+                .llmProvider("default")
+                .llmModel(null)
                 .temperature(0.1)
                 .maxContextTokens(150)
                 .includeDocumentSummary(true)
@@ -305,8 +305,8 @@ public class ContextualRagConfigService {
     private ContextualRagConfig createQualityPreset() {
         return ContextualRagConfig.builder()
                 .enabled(true)
-                .llmProvider("openai")
-                .llmModel("gpt-4o")
+                .llmProvider("default")
+                .llmModel(null)
                 .temperature(0.1)
                 .maxContextTokens(200)
                 .includeDocumentSummary(true)
@@ -357,11 +357,8 @@ public class ContextualRagConfigService {
                 throw new IllegalArgumentException("webSearchFallbackThreshold must be between 0.0 and 1.0");
             }
         }
-        if (config.getLlmProvider() != null) {
-            List<String> validProviders = List.of("openai", "anthropic", "gemini", "ollama", "azure");
-            if (!validProviders.contains(config.getLlmProvider().toLowerCase())) {
-                throw new IllegalArgumentException("Invalid LLM provider. Valid options: " + validProviders);
-            }
+        if (config.getLlmProvider() != null && config.getLlmProvider().isBlank()) {
+            throw new IllegalArgumentException("LLM provider cannot be blank");
         }
     }
 

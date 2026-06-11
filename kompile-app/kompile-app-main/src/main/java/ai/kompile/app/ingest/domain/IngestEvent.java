@@ -231,6 +231,8 @@ public class IngestEvent {
         EXTRACTION,
         /** Concurrent keyword indexing and embedding (keyword index updated immediately) */
         INDEXING_AND_EMBEDDING,
+        /** Graph extraction phase */
+        GRAPH_EXTRACTION,
         /** Generating embeddings for chunks */
         EMBEDDING,
         /** Indexing chunks in vector store */

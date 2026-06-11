@@ -94,6 +94,10 @@ public class TrainingSubprocessMain {
 
             initializeNd4j(trainingArgs, reporter);
 
+            // Trim GPU memory pools after ND4J initialization to release
+            // any reserved-but-unused memory from backend init.
+            trimGpuMemoryPools("post-nd4j-init");
+
             reporter.reportPhaseTransition("INITIALIZING", "TRAINING", 0);
 
             executeTraining(trainingArgs, reporter);
@@ -121,6 +125,24 @@ public class TrainingSubprocessMain {
         }
 
         System.exit(0);
+    }
+
+    // ==================== GPU Memory Pool Trimming ====================
+
+    /**
+     * Trim CUDA memory pools on all devices to release reserved-but-unused GPU memory.
+     */
+    private static void trimGpuMemoryPools(String reason) {
+        try {
+            var nativeOps = Nd4j.getNativeOps();
+            int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+            for (int d = 0; d < numDevices; d++) {
+                nativeOps.trimMemoryPool(d);
+            }
+            logger.info("Trimmed GPU memory pools on {} device(s) (reason: {})", numDevices, reason);
+        } catch (Exception e) {
+            logger.debug("Could not trim GPU memory pools (CPU backend?): {}", e.getMessage());
+        }
     }
 
     // ==================== ND4J Initialization ====================
@@ -1188,6 +1210,8 @@ public class TrainingSubprocessMain {
                 reporter.reportLog("INFO", "Loaded SameDiff model from: " + modelFile.getAbsolutePath());
                 reporter.reportLog("INFO", "Model variables: " + sd.variables().size() +
                         ", inputs: " + sd.inputs() + ", outputs: " + sd.outputs());
+                // Trim GPU memory pools after model load to release reserved-but-unused memory
+                trimGpuMemoryPools("post-training-model-load");
                 return sd;
             } else {
                 reporter.reportLog("WARN", "Model file not found for: " + args.modelId() + ", using simulation mode");

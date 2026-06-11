@@ -27,6 +27,8 @@ import ai.kompile.pipelines.framework.core.config.SchemaRegistry;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import org.apache.commons.io.FileUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -47,6 +49,8 @@ import java.util.stream.Collectors;
         modelTransformer = NewStepCreator.class
 )
 public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTransformer {
+
+    private static final Logger log = LoggerFactory.getLogger(NewStepCreator.class);
 
     @Option(names = {"-o", "--output"}, description = "Output file path for the step configuration. If not set for a subcommand, prints to STDOUT.", scope = CommandLine.ScopeType.INHERIT)
     private File outputFile;
@@ -84,7 +88,7 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
 
         List<StepSchema> availableSchemas = getAvailableSchemas();
         if (availableSchemas.isEmpty()) {
-            System.err.println("CLI Transform: No step schemas found. No dynamic subcommands will be created for 'create-step'.");
+            log.debug("No step schemas found. No dynamic subcommands will be created for 'create-step'.");
         }
 
         for (StepSchema schema : availableSchemas) {
@@ -182,7 +186,7 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
             }
         }
         if (schemas.isEmpty()) {
-            System.err.println("CLI: No pipeline step schemas found. Dynamic subcommands might not be available.");
+            log.debug("No pipeline step schemas found. Dynamic subcommands might not be available.");
         }
         schemas.sort(Comparator.comparing(StepSchema::getRunnerClassName, String.CASE_INSENSITIVE_ORDER));
         return schemas;

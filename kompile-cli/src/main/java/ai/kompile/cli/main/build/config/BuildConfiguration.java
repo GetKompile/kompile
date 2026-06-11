@@ -64,6 +64,14 @@ public final class BuildConfiguration {
     private final List<String> registryUrls;
     private final boolean archiveOnly;
 
+    // Container deployment (Jib)
+    private final boolean buildContainer;
+    private final String containerImageName;
+    private final String containerBaseImage;
+    private final String containerRegistry;
+    private final List<String> containerPorts;
+    private final List<String> containerJvmFlags;
+
     // Pipeline-specific
     private final String appType;
     private final File pipelineFile;
@@ -98,6 +106,12 @@ public final class BuildConfiguration {
         this.modelSourceType = b.modelSourceType;
         this.registryUrls = b.registryUrls;
         this.archiveOnly = b.archiveOnly;
+        this.buildContainer = b.buildContainer;
+        this.containerImageName = b.containerImageName;
+        this.containerBaseImage = b.containerBaseImage;
+        this.containerRegistry = b.containerRegistry;
+        this.containerPorts = b.containerPorts;
+        this.containerJvmFlags = b.containerJvmFlags;
         this.appType = b.appType;
         this.pipelineFile = b.pipelineFile;
         this.pipelineComponents = b.pipelineComponents;
@@ -132,6 +146,12 @@ public final class BuildConfiguration {
     public String getModelSourceType() { return modelSourceType; }
     public List<String> getRegistryUrls() { return registryUrls; }
     public boolean isArchiveOnly() { return archiveOnly; }
+    public boolean isBuildContainer() { return buildContainer; }
+    public String getContainerImageName() { return containerImageName; }
+    public String getContainerBaseImage() { return containerBaseImage; }
+    public String getContainerRegistry() { return containerRegistry; }
+    public List<String> getContainerPorts() { return containerPorts; }
+    public List<String> getContainerJvmFlags() { return containerJvmFlags; }
     public String getAppType() { return appType; }
     public File getPipelineFile() { return pipelineFile; }
     public List<String> getPipelineComponents() { return pipelineComponents; }
@@ -169,6 +189,12 @@ public final class BuildConfiguration {
         private String modelSourceType = "HYBRID";
         private List<String> registryUrls;
         private boolean archiveOnly;
+        private boolean buildContainer;
+        private String containerImageName;
+        private String containerBaseImage = "eclipse-temurin:17-jre";
+        private String containerRegistry;
+        private List<String> containerPorts = new ArrayList<>(List.of("8080"));
+        private List<String> containerJvmFlags = new ArrayList<>();
         private String appType = "rag";
         private File pipelineFile;
         private List<String> pipelineComponents;
@@ -201,6 +227,12 @@ public final class BuildConfiguration {
         public Builder modelSourceType(String v) { this.modelSourceType = v; return this; }
         public Builder registryUrls(List<String> v) { this.registryUrls = v; return this; }
         public Builder archiveOnly(boolean v) { this.archiveOnly = v; return this; }
+        public Builder buildContainer(boolean v) { this.buildContainer = v; return this; }
+        public Builder containerImageName(String v) { this.containerImageName = v; return this; }
+        public Builder containerBaseImage(String v) { if (v != null && !v.isBlank()) this.containerBaseImage = v; return this; }
+        public Builder containerRegistry(String v) { this.containerRegistry = v; return this; }
+        public Builder containerPorts(List<String> v) { if (v != null) this.containerPorts = v; return this; }
+        public Builder containerJvmFlags(List<String> v) { if (v != null) this.containerJvmFlags = v; return this; }
         public Builder appType(String v) { this.appType = v; return this; }
         public Builder pipelineFile(File v) { this.pipelineFile = v; return this; }
         public Builder pipelineComponents(List<String> v) { this.pipelineComponents = v; return this; }

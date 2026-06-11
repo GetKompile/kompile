@@ -49,7 +49,7 @@ import java.util.regex.Pattern;
  * - Tracks modified files from Edit/Write tool calls
  * - Improved tool usage rendering
  */
-@Service
+@Service("appClaudeStreamParser")
 public class ClaudeStreamParser {
 
     private static final Logger log = LoggerFactory.getLogger(ClaudeStreamParser.class);
@@ -64,6 +64,12 @@ public class ClaudeStreamParser {
 
     // Track token generation metrics per session for hosted API responses
     private final Map<String, TokenSessionMetrics> tokenMetricsPerSession = new ConcurrentHashMap<>();
+
+    // Track last streamed Codex agent_message text per session/item for delta rendering
+    private final Map<String, String> codexAgentMessages = new ConcurrentHashMap<>();
+
+    // Track last streamed Codex command output per session/item for delta rendering
+    private final Map<String, String> codexCommandOutputs = new ConcurrentHashMap<>();
 
     /**
      * Tracks token metrics accumulated across streaming events for a session.
@@ -134,7 +140,7 @@ public class ClaudeStreamParser {
      * Parse a single line of stream-json output.
      * Returns the parsed result or null if no meaningful content.
      *
-     * Handles both Claude CLI format and Anthropic Streaming API format.
+     * Handles Claude CLI, Anthropic Streaming API, and Codex CLI JSONL formats.
      */
     public ParseResult parseLine(String sessionId, String line) {
         if (line == null || line.isBlank()) {
@@ -153,7 +159,8 @@ public class ClaudeStreamParser {
 
         try {
             JsonNode root = objectMapper.readTree(line);
-            String type = root.has("type") ? root.get("type").asText() : null;
+            JsonNode eventRoot = root.has("msg") && root.get("msg").isObject() ? root.get("msg") : root;
+            String type = eventRoot.has("type") ? eventRoot.get("type").asText() : null;
 
             if (type == null) {
                 // Unknown format, return as-is
@@ -162,16 +169,29 @@ public class ClaudeStreamParser {
 
             return switch (type) {
                 // Claude CLI format
-                case "system" -> handleSystemEvent(sessionId, root, line);
-                case "assistant" -> handleAssistantEvent(sessionId, root);
-                case "user" -> handleUserEvent(sessionId, root);
-                case "result" -> handleResultEvent(sessionId, root);
+                case "system" -> handleSystemEvent(sessionId, eventRoot, line);
+                case "assistant" -> handleAssistantEvent(sessionId, eventRoot);
+                case "user" -> handleUserEvent(sessionId, eventRoot);
+                case "result" -> handleResultEvent(sessionId, eventRoot);
 
                 // Anthropic Streaming API format
-                case "stream_event" -> handleStreamEvent(sessionId, root);
+                case "stream_event" -> handleStreamEvent(sessionId, eventRoot);
 
                 // Claude CLI content_block_delta (direct stream-json format)
-                case "content_block_delta" -> handleContentBlockDelta(sessionId, sessionId, root);
+                case "content_block_delta" -> handleContentBlockDelta(sessionId, sessionId, eventRoot);
+
+                // Codex CLI --json format
+                case "thread.started", "turn.started" -> null;
+                case "message.delta", "agent_message_delta", "response.output_text.delta" ->
+                        textResult(firstText(eventRoot, "delta", "text", "content"));
+                case "message.completed", "agent_message", "response.output_text.done" ->
+                        textResult(extractCodexText(eventRoot));
+                case "response_item" -> textResult(extractCodexText(eventRoot.has("payload") ? eventRoot.get("payload") : eventRoot));
+                case "item.started" -> handleCodexItemStarted(sessionId, eventRoot);
+                case "item.updated" -> handleCodexItemUpdated(sessionId, eventRoot);
+                case "item.completed" -> handleCodexItemCompleted(sessionId, eventRoot);
+                case "turn.completed" -> ParseResult.result(false, null, null, null);
+                case "turn.failed", "error" -> textResult("[Error] " + extractCodexError(eventRoot));
 
                 default -> {
                     // Unknown type, return raw
@@ -432,6 +452,147 @@ public class ClaudeStreamParser {
         return SYSTEM_REMINDER_PATTERN.matcher(text).replaceAll("").trim();
     }
 
+    private ParseResult handleCodexItemStarted(String sessionId, JsonNode root) {
+        JsonNode item = root.get("item");
+        if (item == null || !item.isObject()) {
+            return null;
+        }
+        String itemType = item.path("type").asText("");
+        String itemId = item.path("id").asText("");
+        String key = codexKey(sessionId, itemId);
+        if ("agent_message".equals(itemType) && !itemId.isEmpty()) {
+            codexAgentMessages.put(key, extractCodexText(item, ""));
+        } else if ("command_execution".equals(itemType)) {
+            codexCommandOutputs.put(key, item.path("aggregated_output").asText(""));
+            String command = item.path("command").asText("");
+            return ParseResult.event("tool_use", command.isEmpty() ? null : "\n[exec] " + command + "\n");
+        }
+        return null;
+    }
+
+    private ParseResult handleCodexItemUpdated(String sessionId, JsonNode root) {
+        JsonNode item = root.get("item");
+        if (item == null || !item.isObject()) {
+            return null;
+        }
+        String itemType = item.path("type").asText("");
+        String itemId = item.path("id").asText("");
+        if ("agent_message".equals(itemType)) {
+            return codexTextDelta(sessionId, itemId, item, false);
+        }
+        if ("command_execution".equals(itemType) && item.has("aggregated_output")) {
+            String key = codexKey(sessionId, itemId);
+            String current = item.path("aggregated_output").asText("");
+            String previous = codexCommandOutputs.getOrDefault(key, "");
+            codexCommandOutputs.put(key, current);
+            String delta = current.substring(Math.min(previous.length(), current.length()));
+            return textResult(delta);
+        }
+        return null;
+    }
+
+    private ParseResult handleCodexItemCompleted(String sessionId, JsonNode root) {
+        JsonNode item = root.get("item");
+        if (item == null || !item.isObject()) {
+            return null;
+        }
+        String itemType = item.path("type").asText("");
+        String itemId = item.path("id").asText("");
+        if ("agent_message".equals(itemType)) {
+            return codexTextDelta(sessionId, itemId, item, true);
+        }
+        if ("command_execution".equals(itemType)) {
+            String key = codexKey(sessionId, itemId);
+            String current = item.path("aggregated_output").asText("");
+            String previous = codexCommandOutputs.getOrDefault(key, "");
+            codexCommandOutputs.remove(key);
+            String delta = current.substring(Math.min(previous.length(), current.length()));
+            return textResult(delta);
+        }
+        return null;
+    }
+
+    private ParseResult codexTextDelta(String sessionId, String itemId, JsonNode item, boolean completed) {
+        String text = extractCodexText(item);
+        if (text == null) {
+            return null;
+        }
+        String key = codexKey(sessionId, itemId);
+        String previous = itemId != null && !itemId.isEmpty()
+                ? codexAgentMessages.getOrDefault(key, "") : "";
+        String delta = text.substring(Math.min(previous.length(), text.length()));
+        if (itemId != null && !itemId.isEmpty()) {
+            if (completed) {
+                codexAgentMessages.remove(key);
+            } else {
+                codexAgentMessages.put(key, text);
+            }
+        }
+        return textResult(delta);
+    }
+
+    private ParseResult textResult(String text) {
+        return text != null && !text.isEmpty() ? ParseResult.text(text) : null;
+    }
+
+    private String extractCodexError(JsonNode root) {
+        if (root == null) return "Unknown error";
+        String message = firstText(root, "message", "error");
+        if (message != null) return message;
+        JsonNode error = root.get("error");
+        if (error != null && error.isObject()) {
+            message = firstText(error, "message", "error");
+            if (message != null) return message;
+        }
+        return "Unknown error";
+    }
+
+    private String extractCodexText(JsonNode node) {
+        return extractCodexText(node, null);
+    }
+
+    private String extractCodexText(JsonNode node, String defaultValue) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return defaultValue;
+        }
+        String direct = firstText(node, "text", "delta", "content", "message");
+        if (direct != null) {
+            return direct;
+        }
+        if (node.has("message") && node.get("message").isObject()) {
+            String fromMessage = extractCodexText(node.get("message"));
+            if (fromMessage != null) return fromMessage;
+        }
+        if (node.has("content") && node.get("content").isArray()) {
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode part : node.get("content")) {
+                String partText = firstText(part, "text", "content", "delta");
+                if (partText != null) sb.append(partText);
+            }
+            if (sb.length() > 0) return sb.toString();
+        }
+        if (node.has("payload") && node.get("payload").isObject()) {
+            String fromPayload = extractCodexText(node.get("payload"));
+            if (fromPayload != null) return fromPayload;
+        }
+        return defaultValue;
+    }
+
+    private String firstText(JsonNode node, String... fields) {
+        if (node == null) return null;
+        for (String field : fields) {
+            JsonNode value = node.get(field);
+            if (value != null && value.isTextual()) {
+                return value.asText();
+            }
+        }
+        return null;
+    }
+
+    private String codexKey(String sessionId, String itemId) {
+        return sessionId + ":" + (itemId != null ? itemId : "");
+    }
+
     /**
      * Get token generation metrics for a session.
      * Returns a map with: outputTokens, inputTokens, totalGenerationMs, tokensPerSecond, model.
@@ -461,6 +622,8 @@ public class ClaudeStreamParser {
     public void clearSession(String sessionId) {
         contentBlocks.keySet().removeIf(key -> key.startsWith(sessionId + ":"));
         tokenMetricsPerSession.remove(sessionId);
+        codexAgentMessages.keySet().removeIf(key -> key.startsWith(sessionId + ":"));
+        codexCommandOutputs.keySet().removeIf(key -> key.startsWith(sessionId + ":"));
     }
 
     /**
@@ -628,15 +791,44 @@ public class ClaudeStreamParser {
     }
 
     /**
-     * Check if the given agent supports stream-json output.
-     * Currently only Claude CLI supports this.
+     * Check if the given agent supports structured streaming output.
      */
     public boolean supportsStreamJson(String agentName) {
         if (agentName == null) {
             return true; // Default to Claude
         }
         String lower = agentName.toLowerCase();
-        // Only Claude supports stream-json, not Codex or Gemini
-        return !lower.equals("codex") && !lower.equals("gemini");
+        // Claude and Codex emit structured JSON streams; Gemini remains plain text here.
+        return !lower.equals("gemini") && !lower.contains("gemini");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ANSI / TERMINAL ESCAPE SEQUENCE STRIPPING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Regex covering all common terminal escape sequences:
+     * CSI (e.g. \033[0m, \033[?2004l), OSC (\033]...\007),
+     * character set selection (\033(B), keypad/app modes (\033> \033=),
+     * and string terminators (\033\\).
+     */
+    private static final Pattern ANSI_PATTERN = Pattern.compile(
+            "\033\\[[0-9;?><]*[a-zA-Z]"
+            + "|\033\\].*?(?:\033\\\\|\007)"
+            + "|\033[()][0-9A-B]"
+            + "|\033[>=<]"
+            + "|\033\\\\"
+    );
+
+    /**
+     * Strip all ANSI/terminal escape sequences from the given string.
+     * Used to clean TUI cleanup codes (cursor show, bracketed paste disable, mouse mode resets, etc.)
+     * that leak into subprocess output when TUI agents exit.
+     */
+    public static String stripAnsi(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        return ANSI_PATTERN.matcher(text).replaceAll("");
     }
 }

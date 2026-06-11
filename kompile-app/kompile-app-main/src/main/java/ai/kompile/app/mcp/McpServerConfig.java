@@ -74,7 +74,7 @@ public class McpServerConfig implements ApplicationListener<ApplicationReadyEven
     /**
      * Create the MCP Server capabilities.
      */
-    @Bean
+    @Bean("appMcpServerCapabilities")
     public ServerCapabilities mcpServerCapabilities() {
         return ServerCapabilities.builder()
                 .tools(true)      // Enable tool support with list changes

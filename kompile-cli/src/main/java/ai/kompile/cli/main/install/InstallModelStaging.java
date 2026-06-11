@@ -57,14 +57,18 @@ public class InstallModelStaging implements Callable<Integer> {
             defaultValue = "8081")
     private int port = 8081;
 
-    @CommandLine.Option(names = {"--build-from-source"}, 
+    @CommandLine.Option(names = {"--build-from-source"},
             description = "Build from local source instead of downloading")
     private String sourceDir;
+
+    @CommandLine.Option(names = {"--local"},
+            description = "Install from a local JAR file (e.g., a pre-built exec JAR)")
+    private File localJar;
 
     @Override
     public Integer call() throws Exception {
         ComponentRegistry registry = new ComponentRegistry();
-        
+
         // Override version if specified
         if (version != null) {
             registry.setVersion(version);
@@ -81,8 +85,15 @@ public class InstallModelStaging implements Callable<Integer> {
 
         try {
             File installedJar;
-            
-            if (sourceDir != null) {
+
+            if (localJar != null) {
+                // Install from local JAR file directly
+                if (!localJar.isFile()) {
+                    System.err.println("Local JAR not found: " + localJar.getAbsolutePath());
+                    return 1;
+                }
+                installedJar = installer.installFromLocalJar(ComponentRegistry.KOMPILE_MODEL_STAGING, localJar);
+            } else if (sourceDir != null) {
                 // Build from source
                 installedJar = installer.buildFromSource(ComponentRegistry.KOMPILE_MODEL_STAGING, sourceDir);
             } else {
@@ -91,18 +102,18 @@ public class InstallModelStaging implements Callable<Integer> {
                 installedJar = installer.installComponent(ComponentRegistry.KOMPILE_MODEL_STAGING, releaseSource);
             }
 
-            System.out.println("\n✓ kompile-model-staging installed successfully!");
+            System.out.println("\nkompile-model-staging installed successfully!");
             System.out.println("  JAR: " + installedJar.getAbsolutePath());
             System.out.println("  Default port: " + port);
             System.out.println("\nTo start the service:");
             System.out.println("  kompile manage start kompile-model-staging --port " + port);
-            System.out.println("\nOr manually:");
-            System.out.println("  java -jar " + installedJar.getAbsolutePath() + " --server.port=" + port);
+            System.out.println("\nOr use within a project:");
+            System.out.println("  kompile project start");
 
             return 0;
 
         } catch (Exception e) {
-            System.err.println("\n✗ Failed to install kompile-model-staging: " + e.getMessage());
+            System.err.println("\nFailed to install kompile-model-staging: " + e.getMessage());
             if (verbose) {
                 e.printStackTrace();
             }

@@ -34,6 +34,10 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-crawler-core</artifactId>
+        </dependency>
 
         <!-- Slack SDK for Java -->
         <dependency>

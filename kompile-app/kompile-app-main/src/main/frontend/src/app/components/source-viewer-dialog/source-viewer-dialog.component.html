@@ -21,6 +21,13 @@
         <mat-icon>content_copy</mat-icon>
       </button>
       <button mat-icon-button
+              *ngIf="canConvertToMarkdown()"
+              matTooltip="Convert to Markdown"
+              [disabled]="isConvertingToMarkdown"
+              (click)="convertToMarkdown()">
+        <mat-icon>{{ isConvertingToMarkdown ? 'hourglass_empty' : 'article' }}</mat-icon>
+      </button>
+      <button mat-icon-button
               *ngIf="rawContentUrl"
               matTooltip="Open in new tab"
               (click)="openInNewTab()">
@@ -96,6 +103,29 @@
         <mat-icon>download</mat-icon>
         Download File
       </button>
+    </div>
+
+    <div class="markdown-conversion-status" *ngIf="markdownConversion || markdownConversionError || markdownIndexingMessage || markdownIndexingError">
+      <div class="conversion-success" *ngIf="markdownConversion">
+        <mat-icon>check_circle</mat-icon>
+        <span class="conversion-message">Markdown source created: {{ markdownConversion.fileName }}</span>
+        <button mat-stroked-button
+                color="primary"
+                class="conversion-action"
+                [disabled]="isIndexingMarkdown"
+                (click)="indexMarkdown()">
+          <mat-icon>{{ isIndexingMarkdown ? 'hourglass_empty' : 'playlist_add_check' }}</mat-icon>
+          Index Markdown
+        </button>
+      </div>
+      <div class="conversion-success conversion-secondary" *ngIf="markdownIndexingMessage">
+        <mat-icon>task_alt</mat-icon>
+        <span>{{ markdownIndexingMessage }}</span>
+      </div>
+      <div class="conversion-error" *ngIf="markdownConversionError || markdownIndexingError">
+        <mat-icon color="warn">error</mat-icon>
+        <span>{{ markdownConversionError || markdownIndexingError }}</span>
+      </div>
     </div>
 
     <!-- Source Info Panel -->

@@ -1,0 +1,537 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   MARKDOWN BODY — Base styles for rendered markdown content
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.markdown-body {
+  font-size: 0.925rem;
+  line-height: 1.7;
+  color: var(--text-primary);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.markdown-body p {
+  margin: 0 0 0.75em 0;
+}
+
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.2em 0 0.5em 0;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+
+.markdown-body h1:first-child,
+.markdown-body h2:first-child,
+.markdown-body h3:first-child {
+  margin-top: 0;
+}
+
+.markdown-body h1 { font-size: 1.5em; }
+.markdown-body h2 { font-size: 1.3em; }
+.markdown-body h3 { font-size: 1.15em; }
+.markdown-body h4 { font-size: 1.05em; }
+
+.markdown-body strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.markdown-body em {
+  font-style: italic;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   LISTS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.5em 0 0.75em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-body li {
+  margin: 0.25em 0;
+}
+
+.markdown-body li > p {
+  margin: 0.25em 0;
+}
+
+.markdown-body ul ul,
+.markdown-body ol ol,
+.markdown-body ul ol,
+.markdown-body ol ul {
+  margin: 0.15em 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   INLINE CODE
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.inline-code {
+  display: inline;
+  padding: 0.15em 0.4em;
+  margin: 0 0.1em;
+  font-size: 0.88em;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  background-color: var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: #c7254e;
+  word-break: break-word;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   CODE BLOCKS — with header, language label, and copy button
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.code-block-wrapper {
+  margin: 0.75em 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-code);
+}
+
+.code-block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background-color: var(--bg-code-header);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.code-lang-label {
+  font-size: 0.75em;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: lowercase;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+}
+
+.code-copy-btn {
+  padding: 2px 10px;
+  font-size: 0.72em;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.code-copy-btn:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-input);
+}
+
+.code-block {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.55;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  background-color: var(--bg-code);
+  color: var(--text-code);
+}
+
+.code-block code {
+  font-family: inherit;
+  background: none;
+  padding: 0;
+  border: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   HIGHLIGHT.JS THEME — Custom dark theme matching the code block background
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.hljs {
+  background: transparent;
+  color: var(--text-code);
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-name,
+.hljs-tag {
+  color: #c678dd;
+}
+
+.hljs-string,
+.hljs-title,
+.hljs-section,
+.hljs-attribute,
+.hljs-literal,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-addition {
+  color: #98c379;
+}
+
+.hljs-deletion,
+.hljs-selector-attr,
+.hljs-selector-pseudo,
+.hljs-meta {
+  color: #e06c75;
+}
+
+.hljs-doctag,
+.hljs-attr {
+  color: #d19a66;
+}
+
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-subst,
+.hljs-title.function_ {
+  color: #61afef;
+}
+
+.hljs-comment,
+.hljs-formula {
+  color: #6a6a8a;
+  font-style: italic;
+}
+
+.hljs-number,
+.hljs-regexp,
+.hljs-variable,
+.hljs-template-variable {
+  color: #d19a66;
+}
+
+.hljs-params {
+  color: #abb2bf;
+}
+
+.hljs-class .hljs-title {
+  color: #e5c07b;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: bold;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   BLOCKQUOTE
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.md-blockquote {
+  margin: 0.75em 0;
+  padding: 0.5em 1em;
+  border-left: 3px solid var(--color-primary);
+  background-color: rgba(102, 126, 234, 0.06);
+  color: var(--text-secondary);
+  border-radius: 0 6px 6px 0;
+}
+
+.md-blockquote p {
+  margin: 0.25em 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   TABLE
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.table-wrapper {
+  margin: 0.75em 0;
+  overflow-x: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.md-table th {
+  background-color: var(--bg-card-secondary);
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.md-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.md-table tbody tr:hover {
+  background-color: rgba(102, 126, 234, 0.04);
+}
+
+.md-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   LINKS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.md-link {
+  color: var(--color-primary);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.md-link:hover {
+  border-bottom-color: var(--color-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   HORIZONTAL RULE
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.markdown-body hr {
+  margin: 1.25em 0;
+  border: none;
+  border-top: 1px solid var(--border-color);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   THINKING BLOCK — Collapsible reasoning display
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.thinking-block {
+  margin: 0.6em 0;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-surface-elevated) 100%);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+
+.thinking-block.streaming {
+  border-color: var(--border-input);
+  animation: thinking-pulse 2s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { border-color: var(--border-input); }
+  50% { border-color: var(--border-color); }
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s;
+}
+
+.thinking-header:hover {
+  background-color: var(--bg-hover);
+}
+
+.thinking-icon {
+  display: flex;
+  align-items: center;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.thinking-icon.spinning svg {
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.thinking-label {
+  flex: 1;
+  font-size: 0.82em;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.thinking-toggle {
+  font-size: 0.85em;
+  color: var(--color-primary);
+  font-weight: 600;
+  width: 18px;
+  text-align: center;
+}
+
+.thinking-content {
+  padding: 6px 14px 12px 14px;
+  font-size: 0.85em;
+  color: var(--text-tertiary);
+  line-height: 1.6;
+  border-top: 1px solid var(--border-color);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.thinking-content p {
+  margin: 0.3em 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   TOOL USE BLOCK — Collapsible tool call display
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.tool-use-block {
+  margin: 0.5em 0;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-surface-elevated) 100%);
+  overflow: hidden;
+}
+
+.tool-use-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s;
+}
+
+.tool-use-header:hover {
+  background-color: var(--bg-hover);
+}
+
+.tool-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-link);
+  flex-shrink: 0;
+}
+
+.tool-name {
+  flex: 1;
+  font-size: 0.82em;
+  font-weight: 600;
+  color: var(--text-link);
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+}
+
+.tool-status {
+  font-size: 0.72em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background-color: var(--bg-hover);
+  color: var(--text-link);
+}
+
+.tool-toggle {
+  font-size: 0.85em;
+  color: var(--text-link);
+  font-weight: 600;
+  width: 18px;
+  text-align: center;
+}
+
+.tool-use-content {
+  border-top: 1px solid var(--border-color);
+  padding: 8px 14px;
+}
+
+.tool-section-label {
+  display: block;
+  font-size: 0.72em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.tool-json {
+  margin: 0 0 10px 0;
+  padding: 8px 12px;
+  font-size: 0.8em;
+  line-height: 1.5;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  background-color: var(--bg-card-secondary);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-json:last-child {
+  margin-bottom: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   STREAMING CURSOR
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.streaming-cursor {
+  display: inline-block;
+  color: var(--color-primary);
+  animation: cursor-blink 1s ease-in-out infinite;
+  font-weight: bold;
+  margin-left: 2px;
+}
+
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   IMAGES
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.5em 0;
+}

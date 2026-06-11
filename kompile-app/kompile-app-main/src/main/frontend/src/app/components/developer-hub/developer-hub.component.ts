@@ -71,7 +71,7 @@ export class DeveloperHubComponent implements OnInit, AfterViewInit {
    * Currently only supports System tab subtab navigation.
    */
   private setSubtab(index: number): void {
-    // Only support System tab (index 4) for now, which has the Embedding Subprocess logs
+    // Only support System tab (index 4) for now
     if (this.selectedTabIndex === 4 && this.systemInnerTabs) {
       this.systemInnerTabs.selectedIndex = index;
     }

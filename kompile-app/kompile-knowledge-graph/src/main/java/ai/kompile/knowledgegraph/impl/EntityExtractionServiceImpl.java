@@ -33,13 +33,16 @@ import java.util.stream.Collectors;
 @Slf4j
 public class EntityExtractionServiceImpl implements EntityExtractionService {
 
-    // Patterns for different entity types
+    // Patterns for different entity types — Unicode-aware to handle accented names
+    // (e.g., François Vasseur, José García, Müller)
     private static final Pattern CAPITALIZED_PHRASE = Pattern.compile(
-        "\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)+)\\b"
+        "\\b([A-Z\\p{Lu}][a-z\\p{Ll}]+(?:\\s+[A-Z\\p{Lu}][a-z\\p{Ll}]+)+)\\b",
+        Pattern.UNICODE_CHARACTER_CLASS
     );
 
     private static final Pattern SINGLE_CAPITALIZED = Pattern.compile(
-        "\\b([A-Z][a-z]{2,})\\b"
+        "\\b([A-Z\\p{Lu}][a-z\\p{Ll}]{2,})\\b",
+        Pattern.UNICODE_CHARACTER_CLASS
     );
 
     private static final Pattern ORGANIZATION_INDICATORS = Pattern.compile(

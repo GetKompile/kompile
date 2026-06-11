@@ -446,6 +446,10 @@ public class ReActAgentConfigController {
             case ANSWER_CORRECTNESS -> "Compares the response against expected ground truth";
             case SEMANTIC_SIMILARITY -> "Measures semantic similarity to expected answer";
             case HALLUCINATION_DETECTION -> "Detects fabricated or unsupported claims";
+            case ENTITY_PRESENCE -> "Evaluates entity presence in graph extraction";
+            case ENTITY_TYPE_ACCURACY -> "Evaluates entity type accuracy in graph extraction";
+            case GRAPH_COMPLETENESS -> "Evaluates graph extraction completeness";
+            case RELATIONSHIP_PRESENCE -> "Evaluates relationship presence in graph extraction";
             case CUSTOM -> "Custom evaluation criteria";
         };
     }

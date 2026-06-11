@@ -584,49 +584,6 @@ public class VectorPopulationController {
         ));
     }
 
-    // ==================== Task Logs ====================
-
-    /**
-     * Get all stored logs for a task.
-     * @deprecated Logs are no longer stored server-side. Use WebSocket subscription for real-time logs.
-     * Job history is available via /api/indexing/history endpoints.
-     */
-    @Deprecated
-    @GetMapping("/tracker/tasks/{taskId}/logs")
-    public ResponseEntity<Map<String, Object>> getTaskLogs(@PathVariable String taskId) {
-        // Logs are no longer stored server-side - they are streamed via WebSocket only
-        // Historical job data is available in IndexingJobHistory
-        return ResponseEntity.ok(Map.of(
-                "available", false,
-                "taskId", taskId,
-                "logCount", 0,
-                "totalStoredCount", 0,
-                "logs", List.of(),
-                "message", "Logs are no longer stored server-side. Use WebSocket subscription for real-time logs. Job history available at /api/indexing/history/{taskId}"
-        ));
-    }
-
-    /**
-     * Get logs for a task since a specific sequence number.
-     * @deprecated Logs are no longer stored server-side. Use WebSocket subscription for real-time logs.
-     */
-    @Deprecated
-    @GetMapping("/tracker/tasks/{taskId}/logs/since/{afterSequence}")
-    public ResponseEntity<Map<String, Object>> getTaskLogsSince(
-            @PathVariable String taskId,
-            @PathVariable long afterSequence) {
-        // Logs are no longer stored server-side - they are streamed via WebSocket only
-        return ResponseEntity.ok(Map.of(
-                "available", false,
-                "taskId", taskId,
-                "afterSequence", afterSequence,
-                "newLogCount", 0,
-                "totalStoredCount", 0,
-                "logs", List.of(),
-                "message", "Logs are no longer stored server-side. Use WebSocket subscription for real-time logs."
-        ));
-    }
-
     /**
      * Get complete task state for page reload recovery.
      * Returns task status and environment. Logs are no longer stored server-side.

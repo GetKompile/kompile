@@ -17,6 +17,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, Observable, tap } from 'rxjs';
+import { backendUrl } from './base.service';
 
 export interface SdkArtifact {
   platform: string;
@@ -103,14 +104,7 @@ export class SdkService {
   loading$ = this.loadingSubject.asObservable();
 
   constructor(private http: HttpClient) {
-    if (typeof window !== 'undefined' && window.location) {
-      const protocol = window.location.protocol;
-      const hostname = window.location.hostname;
-      const port = window.location.port;
-      this.baseUrl = `${protocol}//${hostname}${port ? ':' + port : ''}/api/sdk`;
-    } else {
-      this.baseUrl = '/api/sdk';
-    }
+    this.baseUrl = `${backendUrl}/sdk`;
   }
 
   getPlatforms(): Observable<SdkPlatformsResponse> {

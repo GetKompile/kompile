@@ -27,6 +27,7 @@ export class StagingProgressComponent implements OnInit, OnDestroy {
   modelsInStaging: StagingModelInfo[] = [];
   isLoading = true;
   private pollSubscription: Subscription | null = null;
+  private sseConnections: Map<string, EventSource> = new Map();
 
   constructor(
     private stagingService: StagingService,
@@ -41,6 +42,7 @@ export class StagingProgressComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stopPolling();
+    this.closeAllSseConnections();
   }
 
   loadModels(): void {
@@ -48,6 +50,7 @@ export class StagingProgressComponent implements OnInit, OnDestroy {
       next: (models) => {
         this.modelsInStaging = models;
         this.isLoading = false;
+        this.connectSseForActiveModels(models);
         this.cdr.detectChanges();
       },
       error: (err) => {
@@ -59,9 +62,13 @@ export class StagingProgressComponent implements OnInit, OnDestroy {
   }
 
   startPolling(): void {
-    this.pollSubscription = this.stagingService.pollStagingStatus(1000).subscribe({
+    // Poll at a slower interval (5s) since SSE handles real-time updates.
+    // Polling discovers new models and handles SSE reconnection.
+    this.pollSubscription = this.stagingService.pollStagingStatus(5000).subscribe({
       next: (status) => {
-        this.modelsInStaging = status.modelsInStaging || [];
+        const models = status.modelsInStaging || [];
+        this.modelsInStaging = models;
+        this.connectSseForActiveModels(models);
         this.cdr.detectChanges();
       }
     });
@@ -178,6 +185,76 @@ export class StagingProgressComponent implements OnInit, OnDestroy {
     } catch {
       return '...';
     }
+  }
+
+  /**
+   * Open SSE connections for active (non-terminal) staging models.
+   * Closes connections for models that are no longer active.
+   */
+  private connectSseForActiveModels(models: StagingModelInfo[]): void {
+    const activeIds = new Set<string>();
+
+    for (const model of models) {
+      if (this.isActiveStatus(model.status)) {
+        activeIds.add(model.model_id);
+        if (!this.sseConnections.has(model.model_id)) {
+          this.openSseConnection(model.model_id);
+        }
+      }
+    }
+
+    // Close SSE for models that are no longer active
+    for (const [modelId, es] of this.sseConnections) {
+      if (!activeIds.has(modelId)) {
+        es.close();
+        this.sseConnections.delete(modelId);
+      }
+    }
+  }
+
+  /**
+   * Open an SSE connection for a specific model and handle status events.
+   */
+  private openSseConnection(modelId: string): void {
+    const es = this.stagingService.connectToStagingStream(modelId);
+
+    es.addEventListener('status', (event: any) => {
+      try {
+        const updated: StagingModelInfo = JSON.parse(event.data);
+        const idx = this.modelsInStaging.findIndex(m => m.model_id === modelId);
+        if (idx >= 0) {
+          this.modelsInStaging[idx] = updated;
+        } else {
+          this.modelsInStaging.push(updated);
+        }
+        this.cdr.detectChanges();
+
+        // Close connection on terminal states
+        if (updated.status === 'completed' || updated.status === 'failed' || updated.status === 'ready') {
+          es.close();
+          this.sseConnections.delete(modelId);
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+    });
+
+    es.onerror = () => {
+      // EventSource will auto-reconnect on error.
+      // If the server closed the stream (terminal state), close our side too.
+      if (es.readyState === EventSource.CLOSED) {
+        this.sseConnections.delete(modelId);
+      }
+    };
+
+    this.sseConnections.set(modelId, es);
+  }
+
+  private closeAllSseConnections(): void {
+    for (const [, es] of this.sseConnections) {
+      es.close();
+    }
+    this.sseConnections.clear();
   }
 
   private showSnackbar(message: string, isError: boolean = false): void {

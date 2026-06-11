@@ -1,0 +1,647 @@
+<section class="project-manager">
+  <mat-progress-bar *ngIf="loading || saving" mode="indeterminate"></mat-progress-bar>
+
+  <div class="error-banner" *ngIf="error">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+  </div>
+
+  <!-- Init panel when no project exists -->
+  <ng-container *ngIf="response && !response.manifest">
+    <section class="init-panel">
+      <h3>Initialize Project Repository</h3>
+      <div class="form-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Name</mat-label>
+          <input matInput [(ngModel)]="initName" [ngModelOptions]="{standalone: true}" placeholder="kompile-project">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Backend</mat-label>
+          <mat-select [(ngModel)]="initBackend" [ngModelOptions]="{standalone: true}">
+            <mat-option *ngFor="let backend of backendOptions" [value]="backend">{{ backend }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Remote URL</mat-label>
+          <input matInput [(ngModel)]="initRemote" [ngModelOptions]="{standalone: true}">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Branch</mat-label>
+          <input matInput [(ngModel)]="initBranch" [ngModelOptions]="{standalone: true}">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Tags</mat-label>
+          <input matInput [(ngModel)]="initTags" [ngModelOptions]="{standalone: true}">
+        </mat-form-field>
+      </div>
+      <div class="toggle-row">
+        <mat-checkbox [(ngModel)]="initGit" [ngModelOptions]="{standalone: true}">Initialize Git</mat-checkbox>
+        <mat-checkbox [(ngModel)]="initGitXetInstall" [ngModelOptions]="{standalone: true}">Install Git Xet</mat-checkbox>
+      </div>
+      <button mat-raised-button color="primary" type="button" (click)="initializeProject()" [disabled]="saving">
+        <mat-icon>inventory_2</mat-icon> Initialize
+      </button>
+    </section>
+  </ng-container>
+
+  <!-- Main split layout when project exists -->
+  <ng-container *ngIf="response?.manifest as project">
+    <!-- Project header bar -->
+    <div class="project-header">
+      <div class="header-info">
+        <h2>{{ project.name }}</h2>
+        <span class="header-root">{{ response!.status.root }}</span>
+      </div>
+      <div class="header-actions">
+        <mat-button-toggle-group [value]="scopeMode" (change)="switchScope($event.value)" class="scope-toggle">
+          <mat-button-toggle value="project">
+            <mat-icon>folder_open</mat-icon> Project
+          </mat-button-toggle>
+          <mat-button-toggle value="fact-sheets">
+            <mat-icon>library_books</mat-icon> Fact Sheets
+          </mat-button-toggle>
+        </mat-button-toggle-group>
+        <button mat-icon-button type="button" (click)="load()" [disabled]="loading || saving" matTooltip="Refresh">
+          <mat-icon>refresh</mat-icon>
+        </button>
+      </div>
+    </div>
+
+    <!-- Summary bar -->
+    <div class="summary-bar">
+      <div class="summary-chip">
+        <mat-icon>sync</mat-icon>
+        <mat-select class="compact-select" [ngModel]="project.lifecycle"
+                    [ngModelOptions]="{standalone: true}" (ngModelChange)="setLifecycle($event)">
+          <mat-option *ngFor="let lifecycle of lifecycleOptions" [value]="lifecycle">{{ lifecycle }}</mat-option>
+        </mat-select>
+      </div>
+      <div class="summary-chip">
+        <mat-icon>storage</mat-icon> {{ project.repository.backend }}
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.branch">
+        <mat-icon>fork_right</mat-icon> {{ response!.status.branch }}
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.gitRepository">
+        <mat-icon [class.dirty]="response!.status.gitDirty">{{ response!.status.gitDirty ? 'warning' : 'check_circle' }}</mat-icon>
+        {{ response!.status.gitDirty ? 'Dirty' : 'Clean' }}
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.markdownCount > 0">
+        <mat-icon>description</mat-icon> {{ response!.status.markdownCount }} docs
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.crawlResultCount > 0">
+        <mat-icon>travel_explore</mat-icon> {{ response!.status.crawlResultCount }} crawls
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.sourceDocumentCount > 0">
+        <mat-icon>upload_file</mat-icon> {{ response!.status.sourceDocumentCount }} sources
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.factSheetCount > 0">
+        <mat-icon>library_books</mat-icon> {{ response!.status.factSheetCount }} sheets
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.chatSessionCount > 0">
+        <mat-icon>chat</mat-icon> {{ response!.status.chatSessionCount }} chats
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.promptTemplateCount > 0">
+        <mat-icon>auto_fix_high</mat-icon> {{ response!.status.promptTemplateCount }} prompts
+      </div>
+      <div class="summary-chip" *ngIf="response!.status.indexedDocumentCount > 0">
+        <mat-icon>source</mat-icon> {{ response!.status.indexedDocumentCount }} managed
+      </div>
+      <span class="tag" *ngFor="let tag of project.tags">{{ tag }}</span>
+      <span class="spacer"></span>
+      <div class="git-buttons" *ngIf="response!.status.gitRepository">
+        <button mat-stroked-button type="button" (click)="commit()" [disabled]="saving">
+          <mat-icon>task_alt</mat-icon> Commit
+        </button>
+        <button mat-stroked-button type="button" (click)="pull()" [disabled]="saving">
+          <mat-icon>download</mat-icon> Pull
+        </button>
+        <button mat-stroked-button type="button" (click)="push()" [disabled]="saving">
+          <mat-icon>upload</mat-icon> Push
+        </button>
+      </div>
+    </div>
+
+    <pre class="git-output" *ngIf="gitOutput">{{ gitOutput }}</pre>
+
+    <!-- Split layout: tree + content -->
+    <div class="browser-layout">
+      <!-- Left: Tree sidebar -->
+      <div class="tree-sidebar">
+        <div class="tree-search" *ngIf="scopeMode === 'project'">
+          <mat-form-field appearance="outline" class="tree-search-field">
+            <mat-icon matPrefix>search</mat-icon>
+            <input matInput placeholder="Search markdown..." [(ngModel)]="markdownSearch"
+                   [ngModelOptions]="{standalone: true}" (keyup.enter)="searchMarkdown()">
+          </mat-form-field>
+        </div>
+
+        <mat-tree [dataSource]="dataSource" [treeControl]="treeControl" class="project-tree">
+          <!-- Leaf nodes -->
+          <mat-tree-node *matTreeNodeDef="let node" matTreeNodePadding
+                         class="tree-node" [class.selected]="isSelected(node)"
+                         (click)="selectNode(node)">
+            <button mat-icon-button disabled class="tree-toggle-placeholder"></button>
+            <mat-icon class="tree-icon" [class]="'type-' + node.type">{{ node.icon }}</mat-icon>
+            <span class="tree-label">{{ node.name }}</span>
+          </mat-tree-node>
+
+          <!-- Branch nodes -->
+          <mat-nested-tree-node *matTreeNodeDef="let node; when: hasChildren">
+            <div class="tree-node branch" [class.selected]="isSelected(node)" (click)="selectNode(node)">
+              <button mat-icon-button matTreeNodeToggle class="tree-toggle"
+                      [attr.aria-label]="'Toggle ' + node.name">
+                <mat-icon>{{ treeControl.isExpanded(node) ? 'expand_more' : 'chevron_right' }}</mat-icon>
+              </button>
+              <mat-icon class="tree-icon" [class]="'type-' + node.type">{{ node.icon }}</mat-icon>
+              <span class="tree-label">{{ node.name }}</span>
+              <span class="tree-badge" *ngIf="node.badge">{{ node.badge }}</span>
+            </div>
+            <div class="tree-children" [class.collapsed]="!treeControl.isExpanded(node)">
+              <ng-container matTreeNodeOutlet></ng-container>
+            </div>
+          </mat-nested-tree-node>
+        </mat-tree>
+      </div>
+
+      <!-- Right: Content viewer -->
+      <div class="content-viewer">
+        <!-- Welcome / empty state -->
+        <div class="viewer-empty" *ngIf="viewMode === 'welcome'">
+          <mat-icon class="big-icon">account_tree</mat-icon>
+          <p>Select an item from the tree to view details</p>
+        </div>
+
+        <!-- Markdown viewer -->
+        <div class="viewer-markdown" *ngIf="viewMode === 'markdown'">
+          <mat-progress-bar *ngIf="markdownLoading" mode="indeterminate"></mat-progress-bar>
+          <ng-container *ngIf="selectedMarkdown && !markdownLoading">
+            <div class="md-header">
+              <h3>{{ selectedMarkdown.title || selectedMarkdown.path }}</h3>
+              <span class="md-path">{{ selectedMarkdown.path }}</span>
+            </div>
+            <div class="md-meta" *ngIf="selectedMarkdown.tags || selectedMarkdown.createdAt">
+              <span class="tag small" *ngIf="selectedMarkdown.tags">{{ selectedMarkdown.tags }}</span>
+              <span class="md-date" *ngIf="selectedMarkdown.createdAt">Created: {{ selectedMarkdown.createdAt }}</span>
+              <span class="md-date" *ngIf="selectedMarkdown.updatedAt">Updated: {{ selectedMarkdown.updatedAt }}</span>
+            </div>
+            <div class="md-provenance" *ngIf="selectedMarkdown.crawlProfile || selectedMarkdown.factSheet || selectedMarkdown.collection || selectedMarkdown.source">
+              <span class="provenance-chip" *ngIf="selectedMarkdown.crawlProfile">
+                <mat-icon>travel_explore</mat-icon> {{ selectedMarkdown.crawlProfile }}
+              </span>
+              <span class="provenance-chip" *ngIf="selectedMarkdown.factSheet">
+                <mat-icon>library_books</mat-icon> {{ selectedMarkdown.factSheet }}
+              </span>
+              <span class="provenance-chip" *ngIf="selectedMarkdown.collection">
+                <mat-icon>collections_bookmark</mat-icon> {{ selectedMarkdown.collection }}
+              </span>
+              <span class="provenance-chip" *ngIf="selectedMarkdown.source">
+                <mat-icon>source</mat-icon> {{ selectedMarkdown.source }}
+              </span>
+              <span class="provenance-chip" *ngIf="selectedMarkdown.converter">
+                <mat-icon>transform</mat-icon> {{ selectedMarkdown.converter }}
+              </span>
+            </div>
+            <div class="md-body">
+              <app-markdown-renderer [content]="selectedMarkdown.body || ''"></app-markdown-renderer>
+            </div>
+          </ng-container>
+        </div>
+
+        <!-- Item details (component, script, crawl, workflow, code project) -->
+        <div class="viewer-details" *ngIf="viewMode === 'details' && selectedNode">
+          <div class="detail-header">
+            <mat-icon>{{ selectedNode.icon }}</mat-icon>
+            <h3>{{ selectedNode.name }}</h3>
+            <span class="detail-type">{{ selectedNode.type }}</span>
+          </div>
+          <div class="detail-grid">
+            <ng-container *ngIf="selectedNode.type === 'component'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row"><span>Type</span><span>{{ selectedNode.data.type }}</span></div>
+              <div class="detail-row"><span>Path</span><span class="mono">{{ selectedNode.data.path }}</span></div>
+              <div class="detail-row"><span>Storage</span><span>{{ selectedNode.data.storageBackend }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.description"><span>Description</span><span>{{ selectedNode.data.description }}</span></div>
+              <div class="detail-row" *ngIf="hasTags(selectedNode.data.tags)">
+                <span>Tags</span>
+                <span><span class="tag small" *ngFor="let t of selectedNode.data.tags">{{ t }}</span></span>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'script'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row"><span>Phase</span><span>{{ selectedNode.data.phase || '-' }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.path"><span>Path</span><span class="mono">{{ selectedNode.data.path }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.command"><span>Command</span><span class="mono">{{ selectedNode.data.command }}</span></div>
+              <div class="detail-row"><span>Platform</span><span>{{ selectedNode.data.platform || 'any' }}</span></div>
+              <div class="detail-row" *ngIf="hasTags(selectedNode.data.tags)">
+                <span>Tags</span>
+                <span><span class="tag small" *ngFor="let t of selectedNode.data.tags">{{ t }}</span></span>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'crawl'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row"><span>Mode</span><span>{{ selectedNode.data.graphExtraction ? 'Graph' : 'Vector' }}</span></div>
+              <div class="detail-row"><span>Sources</span><span class="mono">{{ selectedNode.data.sources?.join(', ') }}</span></div>
+              <div class="detail-row"><span>Max Depth</span><span>{{ selectedNode.data.maxDepth }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.factSheetName"><span>Fact Sheet</span><span>{{ selectedNode.data.factSheetName }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.schemaPresetId"><span>Schema</span><span>{{ selectedNode.data.schemaPresetId }}</span></div>
+              <div class="detail-row" *ngIf="hasTags(selectedNode.data.tags)">
+                <span>Tags</span>
+                <span><span class="tag small" *ngFor="let t of selectedNode.data.tags">{{ t }}</span></span>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'workflow'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row"><span>Phase</span><span>{{ selectedNode.data.phase || '-' }}</span></div>
+              <div class="detail-row"><span>Steps</span><span>{{ selectedNode.data.steps?.length || 0 }}</span></div>
+              <div class="detail-row" *ngFor="let step of selectedNode.data.steps; let i = index">
+                <span>Step {{ i + 1 }}</span>
+                <span class="mono">{{ step.type }} {{ step.ref || step.command || step.url || '' }}</span>
+              </div>
+              <div class="detail-row" *ngIf="hasTags(selectedNode.data.tags)">
+                <span>Tags</span>
+                <span><span class="tag small" *ngFor="let t of selectedNode.data.tags">{{ t }}</span></span>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'code-project'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row"><span>Root Path</span><span class="mono">{{ selectedNode.data.rootPath }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.codeProjectId"><span>Index ID</span><span class="mono">{{ selectedNode.data.codeProjectId }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.description"><span>Description</span><span>{{ selectedNode.data.description }}</span></div>
+              <div class="detail-row"><span>Auto Index</span><span>{{ selectedNode.data.autoIndex ? 'Yes' : 'No' }}</span></div>
+              <div class="detail-row" *ngIf="hasTags(selectedNode.data.tags)">
+                <span>Tags</span>
+                <span><span class="tag small" *ngFor="let t of selectedNode.data.tags">{{ t }}</span></span>
+              </div>
+              <div class="detail-actions">
+                <button mat-stroked-button (click)="indexCodingProject(selectedNode.data)" [disabled]="saving">
+                  <mat-icon>play_circle</mat-icon> Index
+                </button>
+                <button mat-stroked-button (click)="indexCodingProject(selectedNode.data, true)" [disabled]="saving">
+                  <mat-icon>refresh</mat-icon> Force Reindex
+                </button>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'model'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row"><span>Model ID</span><span class="mono">{{ selectedNode.data.modelId }}</span></div>
+              <div class="detail-row"><span>Role</span><span>{{ selectedNode.data.role }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.version"><span>Version</span><span>{{ selectedNode.data.version }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.source"><span>Source</span><span>{{ selectedNode.data.source }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.sourceRepository"><span>Repository</span><span class="mono">{{ selectedNode.data.sourceRepository }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.path"><span>Path</span><span class="mono">{{ selectedNode.data.path }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.registryModelId"><span>Registry ID</span><span class="mono">{{ selectedNode.data.registryModelId }}</span></div>
+              <div class="detail-row"><span>Required</span><span>{{ selectedNode.data.required ? 'Yes' : 'No' }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.lifecycle"><span>Lifecycle</span><span>{{ selectedNode.data.lifecycle }}</span></div>
+              <div class="detail-row" *ngIf="hasTags(selectedNode.data.tags)">
+                <span>Tags</span>
+                <span><span class="tag small" *ngFor="let t of selectedNode.data.tags">{{ t }}</span></span>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'pipeline'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row"><span>Name</span><span>{{ selectedNode.data.name }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.role"><span>Role</span><span>{{ selectedNode.data.role }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.version"><span>Version</span><span>{{ selectedNode.data.version }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.definitionPath"><span>Definition</span><span class="mono">{{ selectedNode.data.definitionPath }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.registryPath"><span>Registry Path</span><span class="mono">{{ selectedNode.data.registryPath }}</span></div>
+              <div class="detail-row"><span>Active</span><span>{{ selectedNode.data.active ? 'Yes' : 'No' }}</span></div>
+              <div class="detail-row"><span>Required</span><span>{{ selectedNode.data.required ? 'Yes' : 'No' }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.modelRefs?.length > 0"><span>Model Refs</span><span class="mono">{{ selectedNode.data.modelRefs.join(', ') }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.lifecycle"><span>Lifecycle</span><span>{{ selectedNode.data.lifecycle }}</span></div>
+              <div class="detail-row" *ngIf="hasTags(selectedNode.data.tags)">
+                <span>Tags</span>
+                <span><span class="tag small" *ngFor="let t of selectedNode.data.tags">{{ t }}</span></span>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'crawl-result'">
+              <div class="detail-row"><span>Profile</span><span class="mono">{{ selectedNode.data.profileId }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.name"><span>Name</span><span>{{ selectedNode.data.name }}</span></div>
+              <div class="detail-row"><span>Status</span><span>{{ selectedNode.data.status }}</span></div>
+              <div class="detail-row"><span>Documents</span><span>{{ selectedNode.data.documentCount }}</span></div>
+              <div class="detail-row"><span>Markdown Files</span><span>{{ selectedNode.data.markdownCount }}</span></div>
+              <div class="detail-row"><span>Chunks</span><span>{{ selectedNode.data.chunkCount }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.loader"><span>Loader</span><span>{{ selectedNode.data.loader }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.chunker"><span>Chunker</span><span>{{ selectedNode.data.chunker }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.collection"><span>Collection</span><span>{{ selectedNode.data.collection }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.factSheetName"><span>Fact Sheet</span><span>{{ selectedNode.data.factSheetName }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.markdownPath"><span>Markdown Path</span><span class="mono">{{ selectedNode.data.markdownPath }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.finishedAt"><span>Finished</span><span>{{ selectedNode.data.finishedAt }}</span></div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'source-document'">
+              <div class="detail-row"><span>File</span><span class="mono">{{ selectedNode.data.fileName }}</span></div>
+              <div class="detail-row"><span>Path</span><span class="mono">{{ selectedNode.data.path }}</span></div>
+              <div class="detail-row"><span>Size</span><span>{{ selectedNode.data.sizeBytes | number }} bytes</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.contentType"><span>Content Type</span><span>{{ selectedNode.data.contentType }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.lastModified"><span>Last Modified</span><span>{{ selectedNode.data.lastModified }}</span></div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'prompt-template'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row"><span>Name</span><span>{{ selectedNode.data.name }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.displayName"><span>Display Name</span><span>{{ selectedNode.data.displayName }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.description"><span>Description</span><span>{{ selectedNode.data.description }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.category"><span>Category</span><span>{{ selectedNode.data.category }}</span></div>
+              <div class="detail-row"><span>Enabled</span><span>{{ selectedNode.data.enabled ? 'Yes' : 'No' }}</span></div>
+              <div class="detail-row"><span>Built-in</span><span>{{ selectedNode.data.builtIn ? 'Yes' : 'No' }}</span></div>
+              <div class="detail-row" *ngIf="hasTags(selectedNode.data.tags)">
+                <span>Tags</span>
+                <span><span class="tag small" *ngFor="let t of selectedNode.data.tags">{{ t }}</span></span>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'chat-session'">
+              <div class="detail-row"><span>Session ID</span><span class="mono">{{ selectedNode.data.sessionId }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.title"><span>Title</span><span>{{ selectedNode.data.title }}</span></div>
+              <div class="detail-row"><span>Messages</span><span>{{ selectedNode.data.messageCount }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.source"><span>Source</span><span>{{ selectedNode.data.source }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.factSheetName"><span>Fact Sheet</span><span>{{ selectedNode.data.factSheetName }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.codeProjectId"><span>Code Project</span><span class="mono">{{ selectedNode.data.codeProjectId }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.createdAt"><span>Created</span><span>{{ selectedNode.data.createdAt }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.updatedAt"><span>Updated</span><span>{{ selectedNode.data.updatedAt }}</span></div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'indexed-document'">
+              <div class="detail-row"><span>Source</span><span class="mono">{{ selectedNode.data.sourceId }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.fileName"><span>File</span><span>{{ selectedNode.data.fileName }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.checksum"><span>Checksum</span><span class="mono">{{ selectedNode.data.checksum }}</span></div>
+              <div class="detail-row"><span>Overall Status</span><span>{{ selectedNode.data.overallStatus || 'NOT_INDEXED' }}</span></div>
+              <div class="detail-row"><span>Keyword Index</span><span>{{ selectedNode.data.keywordIndexStatus || '-' }} ({{ selectedNode.data.keywordPassageCount }} passages)</span></div>
+              <div class="detail-row"><span>Vector Store</span><span>{{ selectedNode.data.vectorStoreStatus || '-' }} ({{ selectedNode.data.vectorPassageCount }} passages)</span></div>
+              <div class="detail-row"><span>Knowledge Graph</span><span>{{ selectedNode.data.graphStatus || '-' }} ({{ selectedNode.data.graphNodeCount }} nodes)</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.factSheetName"><span>Fact Sheet</span><span>{{ selectedNode.data.factSheetName }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.createdAt"><span>Created</span><span>{{ selectedNode.data.createdAt }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.updatedAt"><span>Updated</span><span>{{ selectedNode.data.updatedAt }}</span></div>
+            </ng-container>
+
+            <ng-container *ngIf="selectedNode.type === 'note-sync'">
+              <div class="detail-row"><span>ID</span><span class="mono">{{ selectedNode.data.id }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.provider"><span>Provider</span><span>{{ selectedNode.data.provider }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.direction"><span>Direction</span><span>{{ selectedNode.data.direction }}</span></div>
+              <div class="detail-row"><span>Enabled</span><span>{{ selectedNode.data.enabled ? 'Yes' : 'No' }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.externalScope"><span>Scope</span><span>{{ selectedNode.data.externalScope }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.factSheetName"><span>Fact Sheet</span><span>{{ selectedNode.data.factSheetName }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.repositoryUrl"><span>Repository</span><span class="mono">{{ selectedNode.data.repositoryUrl }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.gitBranch"><span>Branch</span><span class="mono">{{ selectedNode.data.gitBranch }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.lastSyncAt"><span>Last Sync</span><span>{{ selectedNode.data.lastSyncAt }}</span></div>
+              <div class="detail-row" *ngIf="selectedNode.data.lastSyncStatus"><span>Status</span><span>{{ selectedNode.data.lastSyncStatus }}</span></div>
+            </ng-container>
+          </div>
+        </div>
+
+        <!-- Category table view -->
+        <div class="viewer-table" *ngIf="viewMode === 'table' && selectedNode">
+          <div class="detail-header">
+            <mat-icon>{{ selectedNode.icon }}</mat-icon>
+            <h3>{{ selectedNode.name }}</h3>
+            <span class="tree-badge">{{ selectedNode.children.length }}</span>
+            <span class="spacer"></span>
+            <button mat-stroked-button *ngIf="selectedNode.name === 'Markdown'" (click)="registerMarkdownAsFacts()"
+                    [disabled]="saving" matTooltip="Register all markdown files as facts in the active fact sheet">
+              <mat-icon>library_add</mat-icon> Register as Facts
+            </button>
+          </div>
+          <div class="component-table" *ngIf="selectedNode.children.length > 0">
+            <div class="table-row table-head">
+              <span>Name</span>
+              <span>Type</span>
+            </div>
+            <div class="table-row clickable" *ngFor="let child of selectedNode.children" (click)="selectNode(child)">
+              <span>{{ child.name }}</span>
+              <span>{{ child.type }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fact sheet view -->
+        <div class="viewer-fact-sheet" *ngIf="viewMode === 'fact-sheet' && selectedFactSheet">
+          <div class="detail-header">
+            <mat-icon>{{ selectedFactSheet.isActive ? 'auto_stories' : 'menu_book' }}</mat-icon>
+            <h3>{{ selectedFactSheet.name }}</h3>
+            <span class="tag small" *ngIf="selectedFactSheet.isActive">Active</span>
+          </div>
+          <div class="detail-grid">
+            <div class="detail-row" *ngIf="selectedFactSheet.description"><span>Description</span><span>{{ selectedFactSheet.description }}</span></div>
+            <div class="detail-row"><span>Embedding Model</span><span class="mono">{{ selectedFactSheet.embeddingModel || '-' }}</span></div>
+            <div class="detail-row"><span>Vector Store</span><span class="mono">{{ selectedFactSheet.vectorStorePath || '-' }}</span></div>
+            <div class="detail-row"><span>Keyword Index</span><span class="mono">{{ selectedFactSheet.keywordIndexPath || '-' }}</span></div>
+            <div class="detail-row"><span>Facts</span><span>{{ selectedFactSheet.factCount }} ({{ selectedFactSheet.indexedCount }} indexed)</span></div>
+          </div>
+          <div class="fact-list" *ngIf="activeFacts.length > 0">
+            <h4>Facts ({{ activeFacts.length }})</h4>
+            <div class="fact-card" *ngFor="let fact of activeFacts" (click)="selectedFact = fact; viewMode = 'fact'">
+              <mat-icon>{{ factIcon(fact) }}</mat-icon>
+              <div class="fact-info">
+                <span class="fact-title">{{ fact.title || fact.fileName }}</span>
+                <span class="fact-meta">{{ fact.extension }} &middot; {{ fact.sourceType }}</span>
+              </div>
+              <span class="tag small" *ngIf="fact.indexed">indexed</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Single fact view -->
+        <div class="viewer-fact" *ngIf="viewMode === 'fact' && selectedFact">
+          <div class="detail-header">
+            <mat-icon>{{ factIcon(selectedFact) }}</mat-icon>
+            <h3>{{ selectedFact.title || selectedFact.fileName }}</h3>
+          </div>
+          <div class="detail-grid">
+            <div class="detail-row"><span>File</span><span class="mono">{{ selectedFact.fileName }}</span></div>
+            <div class="detail-row"><span>Path</span><span class="mono">{{ selectedFact.filePath }}</span></div>
+            <div class="detail-row"><span>Type</span><span>{{ selectedFact.sourceType }}</span></div>
+            <div class="detail-row"><span>Extension</span><span>{{ selectedFact.extension || '-' }}</span></div>
+            <div class="detail-row"><span>Indexed</span><span>{{ selectedFact.indexed ? 'Yes' : 'No' }}</span></div>
+            <div class="detail-row" *ngIf="selectedFact.checksum"><span>Checksum</span><span class="mono">{{ selectedFact.checksum }}</span></div>
+            <div class="detail-row" *ngIf="selectedFact.notes"><span>Notes</span><span>{{ selectedFact.notes }}</span></div>
+            <div class="detail-row" *ngIf="selectedFact.tags">
+              <span>Tags</span>
+              <span>{{ selectedFact.tags }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add forms (collapsible at bottom) -->
+    <mat-expansion-panel class="add-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title><mat-icon>add</mat-icon> Add Items</mat-panel-title>
+      </mat-expansion-panel-header>
+
+      <mat-tab-group>
+        <mat-tab label="Component">
+          <div class="form-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Type</mat-label>
+              <mat-select [(ngModel)]="newComponent.type" [ngModelOptions]="{standalone: true}">
+                <mat-option *ngFor="let type of componentTypes" [value]="type">{{ type }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Name</mat-label>
+              <input matInput [(ngModel)]="newComponent.name" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Path</mat-label>
+              <input matInput [(ngModel)]="newComponent.path" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Storage</mat-label>
+              <mat-select [(ngModel)]="newComponent.storageBackend" [ngModelOptions]="{standalone: true}">
+                <mat-option *ngFor="let backend of backendOptions" [value]="backend">{{ backend }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Tags</mat-label>
+              <input matInput [(ngModel)]="newComponentTags" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+          </div>
+          <button mat-raised-button color="primary" (click)="addComponent()" [disabled]="saving">
+            <mat-icon>add</mat-icon> Add Component
+          </button>
+        </mat-tab>
+
+        <mat-tab label="Script">
+          <div class="form-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Name</mat-label>
+              <input matInput [(ngModel)]="newScript.name" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Path</mat-label>
+              <input matInput [(ngModel)]="newScript.path" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Command</mat-label>
+              <input matInput [(ngModel)]="newScript.command" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Phase</mat-label>
+              <input matInput [(ngModel)]="newScript.phase" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Tags</mat-label>
+              <input matInput [(ngModel)]="newScriptTags" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+          </div>
+          <button mat-raised-button color="primary" (click)="addScript()" [disabled]="saving">
+            <mat-icon>terminal</mat-icon> Add Script
+          </button>
+        </mat-tab>
+
+        <mat-tab label="Crawl Profile">
+          <div class="form-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Name</mat-label>
+              <input matInput [(ngModel)]="newCrawlProfile.name" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Sources</mat-label>
+              <input matInput [(ngModel)]="newCrawlSources" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Fact Sheet</mat-label>
+              <input matInput [(ngModel)]="newCrawlProfile.factSheetName" [ngModelOptions]="{standalone: true}"
+                     placeholder="Target fact sheet name">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Include Patterns</mat-label>
+              <input matInput [(ngModel)]="newCrawlIncludes" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Exclude Patterns</mat-label>
+              <input matInput [(ngModel)]="newCrawlExcludes" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Tags</mat-label>
+              <input matInput [(ngModel)]="newCrawlTags" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+          </div>
+          <div class="toggle-row">
+            <mat-checkbox [(ngModel)]="newCrawlProfile.graphExtraction" [ngModelOptions]="{standalone: true}">Graph</mat-checkbox>
+            <mat-checkbox [(ngModel)]="newCrawlProfile.watch" [ngModelOptions]="{standalone: true}">Watch</mat-checkbox>
+            <mat-checkbox [(ngModel)]="newCrawlProfile.multimodal" [ngModelOptions]="{standalone: true}">Multimodal</mat-checkbox>
+          </div>
+          <button mat-raised-button color="primary" (click)="addCrawlProfile()" [disabled]="saving">
+            <mat-icon>travel_explore</mat-icon> Add Crawl Profile
+          </button>
+        </mat-tab>
+
+        <mat-tab label="Workflow">
+          <div class="form-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Name</mat-label>
+              <input matInput [(ngModel)]="newWorkflow.name" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Phase</mat-label>
+              <input matInput [(ngModel)]="newWorkflow.phase" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Step Type</mat-label>
+              <mat-select [(ngModel)]="newWorkflowStep.type" [ngModelOptions]="{standalone: true}">
+                <mat-option value="CRAWL">CRAWL</mat-option>
+                <mat-option value="SCRIPT">SCRIPT</mat-option>
+                <mat-option value="COMMAND">COMMAND</mat-option>
+                <mat-option value="HTTP">HTTP</mat-option>
+                <mat-option value="HEALTH_CHECK">HEALTH_CHECK</mat-option>
+                <mat-option value="WAIT">WAIT</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Ref</mat-label>
+              <input matInput [(ngModel)]="newWorkflowStep.ref" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Command</mat-label>
+              <input matInput [(ngModel)]="newWorkflowStep.command" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Tags</mat-label>
+              <input matInput [(ngModel)]="newWorkflowTags" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+          </div>
+          <button mat-raised-button color="primary" (click)="addWorkflow()" [disabled]="saving">
+            <mat-icon>account_tree</mat-icon> Add Workflow
+          </button>
+        </mat-tab>
+
+        <mat-tab label="Coding Project">
+          <div class="form-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Name</mat-label>
+              <input matInput [(ngModel)]="newCodingProject.name" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>External Root Path</mat-label>
+              <input matInput [(ngModel)]="newCodingProject.rootPath" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Code Index ID</mat-label>
+              <input matInput [(ngModel)]="newCodingProject.codeProjectId" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Tags</mat-label>
+              <input matInput [(ngModel)]="newCodingProjectTags" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+          </div>
+          <div class="toggle-row">
+            <mat-checkbox [(ngModel)]="newCodingProject.autoIndex" [ngModelOptions]="{standalone: true}">Auto Index</mat-checkbox>
+          </div>
+          <button mat-raised-button color="primary" (click)="addCodingProject()" [disabled]="saving">
+            <mat-icon>integration_instructions</mat-icon> Add Coding Project
+          </button>
+        </mat-tab>
+      </mat-tab-group>
+    </mat-expansion-panel>
+  </ng-container>
+</section>

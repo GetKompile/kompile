@@ -1089,3 +1089,28 @@
   margin: 0 0 20px 0;
   font-size: 16px;
 }
+
+/* Job Statistics Panel */
+.job-statistics-panel {
+  margin-top: 16px; padding: 16px;
+  background: #f5f5f5; border-radius: 8px; border: 1px solid #e0e0e0;
+}
+.job-statistics-panel.loading {
+  text-align: center; color: #888; font-size: 13px;
+}
+.job-statistics-panel h4 {
+  margin: 0 0 12px; font-size: 14px; color: #333;
+}
+.job-statistics-panel .stats-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+}
+.job-statistics-panel .stat-item {
+  text-align: center; padding: 8px;
+  background: #fff; border-radius: 6px; border: 1px solid #e8e8e8;
+}
+.job-statistics-panel .stat-val {
+  display: block; font-size: 20px; font-weight: 600; color: #1565c0;
+}
+.job-statistics-panel .stat-lbl {
+  display: block; font-size: 11px; color: #888; margin-top: 2px;
+}

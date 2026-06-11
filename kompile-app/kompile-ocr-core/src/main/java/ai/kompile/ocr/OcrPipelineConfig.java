@@ -246,6 +246,15 @@ public class OcrPipelineConfig {
     private int maxPages = 0;
 
     /**
+     * Maximum number of image tiles per page. Controls how many sub-images the
+     * vision encoder processes. Lower values reduce VRAM usage and speed up inference
+     * at the cost of detail. -1 = unlimited (default), 9 = recommended for SmolDocling-256M.
+     * Each tile produces 64 image tokens in the prompt.
+     */
+    @Builder.Default
+    private int maxTiles = -1;
+
+    /**
      * CUDA pinned host memory limit in MB. 0 = system default.
      * Set via SD_CUDA_PINNED_HOST_LIMIT env var on subprocess.
      */

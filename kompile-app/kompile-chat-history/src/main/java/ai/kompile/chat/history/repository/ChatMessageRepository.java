@@ -67,6 +67,13 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
     Optional<ChatMessage> findByIdWithSession(@Param("messageId") Long messageId);
 
     /**
+     * Count messages per session for a list of sessions (avoids N+1 lazy loading).
+     * Returns Object[] rows of [sessionId (String), count (Long)].
+     */
+    @Query("SELECT m.session.sessionId, COUNT(m) FROM ChatMessage m WHERE m.session IN :sessions GROUP BY m.session.sessionId")
+    List<Object[]> countMessagesBySessions(@Param("sessions") List<ChatSession> sessions);
+
+    /**
      * Find all messages in a session up to and including a specific message ID.
      * Used for fork/branch operations where we need conversation history up to a point.
      *

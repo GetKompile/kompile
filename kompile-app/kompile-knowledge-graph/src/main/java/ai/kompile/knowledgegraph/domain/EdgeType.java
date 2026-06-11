@@ -52,5 +52,10 @@ public enum EdgeType {
     /**
      * Related content across different sources
      */
-    CROSS_SOURCE
+    CROSS_SOURCE,
+
+    /**
+     * Containment relationship (e.g., entity contains another entity)
+     */
+    CONTAINS
 }

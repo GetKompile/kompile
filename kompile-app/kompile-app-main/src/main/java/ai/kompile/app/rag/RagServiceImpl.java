@@ -138,13 +138,13 @@ public class RagServiceImpl implements RagService {
 
                 if (keywordRetrievedDocs != null && !keywordRetrievedDocs.isEmpty()) {
                     keywordRetrievedDocs.stream()
-                            .filter(doc -> doc != null && doc.getContent() != null && !doc.getContent().startsWith("Error:"))
+                            .filter(doc -> doc != null && doc.getText() != null && !doc.getText().startsWith("Error:"))
                             .forEach(doc -> {
                                 combinedDocsSet.add(doc);
-                                finalContextForLLM.add(doc.getContent());
+                                finalContextForLLM.add(doc.getText());
                             });
                     logger.info("Keyword search returned {} valid documents.",
-                            keywordRetrievedDocs.stream().filter(doc -> doc != null && doc.getContent() != null && !doc.getContent().startsWith("Error:")).count());
+                            keywordRetrievedDocs.stream().filter(doc -> doc != null && doc.getText() != null && !doc.getText().startsWith("Error:")).count());
                 } else {
                     logger.warn("Keyword search returned no results or an error for query: {}", ragQuery.getQuery());
                 }
@@ -177,7 +177,7 @@ public class RagServiceImpl implements RagService {
 
                     semanticRetrievedDocs.forEach(doc -> {
                         if (combinedDocsSet.add(doc)) { // Add to set to ensure uniqueness based on RetrievedDoc's equals/hashCode
-                            finalContextForLLM.add(doc.getContent()); // Add content to LLM context
+                            finalContextForLLM.add(doc.getText()); // Add content to LLM context
                         }
                     });
                     logger.info("Semantic search returned {} valid documents.", semanticRetrievedDocs.size());

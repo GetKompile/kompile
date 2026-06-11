@@ -26,7 +26,12 @@ import ai.kompile.ocr.document.ParsedDocument;
 import ai.kompile.ocr.models.factory.OcrModelFactory;
 import ai.kompile.ocr.structured.StructuredTable;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDResources;
+import org.apache.pdfbox.pdmodel.graphics.PDXObject;
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
@@ -36,8 +41,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -242,8 +251,8 @@ public class DefaultOcrPipeline implements OcrPipeline {
                     progressCallback.accept(PipelineProgress.processing(pageNum, totalPages, "OCR"));
                 }
 
-                // Render page to image
-                BufferedImage pageImage = renderer.renderImageWithDPI(pageNum - 1, config.getPdfRenderDpi());
+                // Render page to image (with fallback for corrupt font dictionaries)
+                BufferedImage pageImage = renderPageSafe(renderer, document, pageNum - 1, config.getPdfRenderDpi());
 
                 // Convert to INDArray
                 INDArray imageArray = bufferedImageToINDArray(pageImage);
@@ -468,5 +477,62 @@ public class DefaultOcrPipeline implements OcrPipeline {
         }
 
         return Nd4j.create(data, new int[]{1, 3, h, w}, 'c');
+    }
+
+    /**
+     * Render a PDF page with fallback for corrupt font dictionaries.
+     * Falls back to extracting embedded images from XObject resources.
+     */
+    private BufferedImage renderPageSafe(PDFRenderer renderer, PDDocument document,
+                                         int pageIndex, float dpi) throws IOException {
+        try {
+            return renderer.renderImageWithDPI(pageIndex, dpi);
+        } catch (IOException e) {
+            logger.warn("Page {} standard rendering failed ({}), attempting embedded image extraction",
+                    pageIndex + 1, e.getMessage());
+            return extractEmbeddedPageImage(document, pageIndex, dpi);
+        }
+    }
+
+    /**
+     * Extract embedded images from a PDF page's XObject resources.
+     * Fallback for pages with corrupt font dictionaries.
+     */
+    private BufferedImage extractEmbeddedPageImage(PDDocument document, int pageIndex,
+                                                    float dpi) throws IOException {
+        PDPage page = document.getPage(pageIndex);
+        PDResources resources = page.getResources();
+        if (resources == null) {
+            throw new IOException("Page " + (pageIndex + 1) + " has no resources for image extraction");
+        }
+
+        List<BufferedImage> images = new ArrayList<>();
+        for (COSName name : resources.getXObjectNames()) {
+            PDXObject xobj = resources.getXObject(name);
+            if (xobj instanceof PDImageXObject) {
+                images.add(((PDImageXObject) xobj).getImage());
+            }
+        }
+
+        if (images.isEmpty()) {
+            throw new IOException("Page " + (pageIndex + 1) + " has no embedded images to extract");
+        }
+
+        if (images.size() == 1) {
+            return images.get(0);
+        }
+
+        float scale = dpi / 72f;
+        int canvasWidth = Math.round(page.getMediaBox().getWidth() * scale);
+        int canvasHeight = Math.round(page.getMediaBox().getHeight() * scale);
+        BufferedImage canvas = new BufferedImage(canvasWidth, canvasHeight, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = canvas.createGraphics();
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, canvasWidth, canvasHeight);
+        for (BufferedImage img : images) {
+            g.drawImage(img, 0, 0, canvasWidth, canvasHeight, null);
+        }
+        g.dispose();
+        return canvas;
     }
 }

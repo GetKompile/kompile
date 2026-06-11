@@ -24,15 +24,23 @@ import ai.kompile.pipelines.framework.api.llm.LLMStepConfig;
 import ai.kompile.pipelines.framework.core.context.DefaultContext;
 import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
 import ai.kompile.pipelines.steps.samediff.llm.SameDiffLanguageModelStepRunner;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Primary;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -44,39 +52,70 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
- * On-demand SameDiff-backed {@link LanguageModel} implementation.
+ * In-process SameDiff-backed {@link LanguageModel} and {@link ChatModel} implementation.
  *
- * <p>This bean starts up with no model loaded — calls to {@link #generateResponse(String, List)}
- * fail until {@link #loadModel(String, Path, Path, Map)} is invoked (typically via the
- * {@code POST /api/llm/load} endpoint exposed by {@link LlmModelController}).</p>
+ * <p>Runs inference directly using {@link SameDiffLanguageModelStepRunner}. This class
+ * is used <b>only in the serving subprocess</b> (port 8091) where the actual model
+ * is loaded. It is never used in app-main or model-staging.</p>
  *
- * <p>Loading constructs a fresh {@link SameDiffLanguageModelStepRunner}, initializes it
- * against the supplied SameDiff model and tokenizer files, and then atomically swaps it
- * into place. A subsequent load call cleanly closes the previous runner.</p>
+ * <p>Model lifecycle (load/unload) and observability (DSP phase, Triton stats) are
+ * exposed as public methods consumed by {@link LlmObservabilityService} and
+ * {@link LlmModelController} in the subprocess context.</p>
  *
- * <p>Marked {@code @Primary} so that this bean wins over the legacy
- * {@code KompilePipelineLanguageModelImpl} (which is now opt-in via
- * {@code kompile.langmodel.pipeline.enabled=true}) and the
- * {@code NoOpLanguageModelImpl} fallback in {@code kompile-app-core}.</p>
+ * <p>Implements {@link ChatModel} so that Spring AI consumers can call
+ * {@link #call(Prompt)} directly.</p>
  */
 @Service
-@Primary
-public class SameDiffLanguageModelImpl implements LanguageModel {
+@ConditionalOnProperty(name = "kompile.llm.direct-serving.enabled", havingValue = "true", matchIfMissing = false)
+public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
 
     private static final Logger logger = LoggerFactory.getLogger(SameDiffLanguageModelImpl.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final Object loadLock = new Object();
     private volatile LoadedModel loaded; // null until first successful load
+    private volatile boolean loading;
+    private volatile String loadingModelId;
+    private volatile long loadStartedAtMs = -1;
+    private volatile String loadingPhase;
+    private volatile String dspPlanPhase;
+    private volatile int dspFrozenCount = -1;
+    private volatile String dspPlanReport;
+    private volatile Map<String, Object> dspCompilationStats;
     private final Metrics metrics;
     private final Profiler profiler;
 
     @Autowired
-    public SameDiffLanguageModelImpl(Optional<Metrics> metricsOpt, Optional<Profiler> profilerOpt) {
+    public SameDiffLanguageModelImpl(
+            Optional<Metrics> metricsOpt,
+            Optional<Profiler> profilerOpt) {
         this.metrics = metricsOpt.orElse(null);
         this.profiler = profilerOpt.orElse(NoOpProfiler.INSTANCE);
-        logger.info("SameDiffLanguageModelImpl initialized (no model loaded). Use POST /api/llm/load to load a model.");
+        logger.info("SameDiffLanguageModelImpl initialized (direct mode). " +
+                "Use POST /api/llm/load to load a model.");
+    }
+
+    // ==================== ChatModel impl ====================
+
+    @Override
+    public ChatResponse call(Prompt prompt) {
+        LoadedModel current = this.loaded;
+        if (current == null) {
+            throw new IllegalStateException(
+                    "No SameDiff language model loaded. POST /api/llm/load first.");
+        }
+        String composedPrompt = extractPromptText(prompt);
+        return execDirect(current, composedPrompt);
+    }
+
+    @Override
+    public Flux<ChatResponse> stream(Prompt prompt) {
+        return Flux.just(call(prompt));
     }
 
     // ==================== LanguageModel impl ====================
@@ -84,7 +123,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
     @Override
     public String generateResponse(String userQuery, List<String> context) {
         ChatResponse response = generateResponseWithPotentialToolCalls(userQuery, context);
-        if (response != null && response.getResult() != null && response.getResult().getOutput() != null) {
+        if (response != null && response.getResult() != null
+                && response.getResult().getOutput() != null) {
             return response.getResult().getOutput().getText();
         }
         return "";
@@ -95,55 +135,45 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
         LoadedModel current = this.loaded;
         if (current == null) {
             throw new IllegalStateException(
-                    "No SameDiff language model loaded. POST /api/llm/load with a modelId before invoking the LLM.");
+                    "No SameDiff language model loaded. POST /api/llm/load first.");
         }
-
         String prompt = composePrompt(userQuery, context);
+        return execDirect(current, prompt);
+    }
+
+    // ==================== Direct inference ====================
+
+    private ChatResponse execDirect(LoadedModel current, String prompt) {
         String executionId = UUID.randomUUID().toString();
         Data input = Data.empty();
         input.put(current.config.getPromptInputName(), prompt);
 
         Context ctx = new DefaultContext(
-                Data.empty(),
-                executionId,
-                "ctx-llm-" + executionId,
-                null,
-                this.metrics,
-                this.profiler);
+                Data.empty(), executionId, "ctx-llm-" + executionId,
+                null, this.metrics, this.profiler);
 
         try {
             Data output = current.runner.exec(input, ctx);
             String text = output.getString(current.config.getResponseOutputName(), "");
             AssistantMessage assistant = new AssistantMessage(text);
-            Generation generation = new Generation(assistant, ChatGenerationMetadata.NULL);
-            return new ChatResponse(List.of(generation));
+            return new ChatResponse(List.of(
+                    new Generation(assistant, ChatGenerationMetadata.NULL)));
         } catch (Exception e) {
-            logger.error("SameDiffLanguageModelImpl: generation failed for modelId='{}'", current.modelId, e);
-            AssistantMessage error = new AssistantMessage("Error generating response: " + e.getMessage());
-            return new ChatResponse(List.of(new Generation(error, ChatGenerationMetadata.NULL)));
+            logger.error("Generation failed for modelId='{}'", current.modelId, e);
+            AssistantMessage error = new AssistantMessage(
+                    "Error generating response: " + e.getMessage());
+            return new ChatResponse(List.of(
+                    new Generation(error, ChatGenerationMetadata.NULL)));
         }
     }
 
-    // ==================== Lifecycle / loading ====================
+    // ==================== Model lifecycle ====================
 
     /**
-     * Load (or reload) a SameDiff LLM, replacing any previously loaded model atomically.
-     *
-     * @param modelId       a logical identifier for status/logging (e.g. the staging registry id)
-     * @param modelFile     path to the SameDiff model file (e.g. {@code model.sdz})
-     * @param tokenizerFile path to the tokenizer file or directory (HuggingFace tokenizer.json
-     *                      or a WordPiece vocab.txt)
-     * @param configOpts    optional config knobs:
-     *                      <ul>
-     *                          <li>{@code tokenizerType} (default {@code huggingface})</li>
-     *                          <li>{@code maxNewTokens} (default 256)</li>
-     *                          <li>{@code temperature} (default 0.7)</li>
-     *                          <li>{@code topK} (default 0)</li>
-     *                          <li>{@code inputIdsPlaceholderName} / {@code attentionMaskPlaceholderName} / {@code logitsOutputName}</li>
-     *                      </ul>
+     * Load (or reload) a SameDiff LLM, replacing any previously loaded model.
      */
-    public void loadModel(String modelId, Path modelFile, Path tokenizerFile, Map<String, Object> configOpts)
-            throws Exception {
+    public void loadModel(String modelId, Path modelFile, Path tokenizerFile,
+                          Map<String, Object> configOpts) throws Exception {
         Objects.requireNonNull(modelId, "modelId");
         Objects.requireNonNull(modelFile, "modelFile");
         Objects.requireNonNull(tokenizerFile, "tokenizerFile");
@@ -154,12 +184,14 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
         if (!Files.exists(tokenizerFile)) {
             throw new IOException("Tokenizer file/directory does not exist: " + tokenizerFile);
         }
-        Map<String, Object> opts = configOpts != null ? configOpts : new HashMap<>();
 
+        Map<String, Object> opts = configOpts != null ? configOpts : new HashMap<>();
         String tokenizerType = stringOpt(opts, "tokenizerType", "huggingface");
         int maxNewTokens = intOpt(opts, "maxNewTokens", 256);
         double temperature = doubleOpt(opts, "temperature", 0.7d);
         int topK = intOpt(opts, "topK", 0);
+        int maxPrefillLength = intOpt(opts, "maxPrefillLength", 0);
+        String chatTemplate = stringOpt(opts, "chatTemplate", null);
         String inputIdsName = stringOpt(opts, "inputIdsPlaceholderName", "input_ids");
         String attentionMaskName = stringOpt(opts, "attentionMaskPlaceholderName", "attention_mask");
         String logitsName = stringOpt(opts, "logitsOutputName", "logits");
@@ -178,14 +210,18 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
                 .generationParameterEntry("maxNewTokens", maxNewTokens)
                 .generationParameterEntry("temperature", (float) temperature)
                 .generationParameterEntry("topK", topK)
+                .generationParameterEntry("maxPrefillLength", maxPrefillLength)
                 .generationParameterEntry("inputIdsPlaceholderName", inputIdsName)
                 .generationParameterEntry("attentionMaskPlaceholderName", attentionMaskName)
                 .generationParameterEntry("logitsOutputName", logitsName);
 
-        // Pass through any tokenizer-specific overrides like padTokenId/eosTokenId/etc.
-        // Keys recognised by SameDiffHuggingFaceTokenizer.
-        for (String tkKey : new String[] {
-                "padTokenId", "eosTokenId", "bosTokenId", "unkTokenId", "clsTokenId", "sepTokenId", "maskTokenId" }) {
+        if (chatTemplate != null) {
+            builder.generationParameterEntry("chatTemplate", chatTemplate);
+        }
+
+        for (String tkKey : new String[]{
+                "padTokenId", "eosTokenId", "bosTokenId", "unkTokenId",
+                "clsTokenId", "sepTokenId", "maskTokenId"}) {
             if (opts.containsKey(tkKey) && opts.get(tkKey) != null) {
                 builder.tokenizerConfigEntry(tkKey, String.valueOf(opts.get(tkKey)));
             }
@@ -194,43 +230,69 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
         LLMStepConfig config = builder.build();
         SameDiffLanguageModelStepRunner runner = new SameDiffLanguageModelStepRunner();
         Context initCtx = new DefaultContext(
-                Data.empty(),
-                "init-" + modelId,
-                "ctx-llm-init-" + modelId,
-                null,
-                this.metrics,
-                this.profiler);
+                Data.empty(), "init-" + modelId, "ctx-llm-init-" + modelId,
+                null, this.metrics, this.profiler);
 
         long start = System.currentTimeMillis();
-        try {
-            runner.init(config, initCtx);
-        } catch (Exception e) {
-            // Best-effort cleanup if init partially succeeded.
-            try {
-                runner.close();
-            } catch (Exception ignored) {
-            }
-            throw e;
-        }
-        long durationMs = System.currentTimeMillis() - start;
+        this.loadingModelId = modelId;
+        this.loadStartedAtMs = start;
+        this.loading = true;
+        this.dspPlanPhase = null;
+        this.dspFrozenCount = -1;
+        this.dspPlanReport = null;
+        this.dspCompilationStats = null;
 
+        ScheduledExecutorService dspPoller = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "dsp-phase-poller");
+            t.setDaemon(true);
+            return t;
+        });
+        dspPoller.scheduleAtFixedRate(this::pollDspPhase, 3, 5, TimeUnit.SECONDS);
+
+        try {
+            this.loadingPhase = "Loading SameDiff model, tokenizer, and running DSP warmup";
+            runner.init(config, initCtx);
+            this.loadingPhase = "Model loaded and DSP warmup complete";
+        } catch (Exception e) {
+            this.loading = false;
+            this.loadingModelId = null;
+            this.loadStartedAtMs = -1;
+            this.loadingPhase = null;
+            this.dspPlanPhase = null;
+            this.dspFrozenCount = -1;
+            this.dspPlanReport = null;
+            this.dspCompilationStats = null;
+            try { runner.close(); } catch (Exception ignored) {}
+            throw e;
+        } finally {
+            dspPoller.shutdownNow();
+        }
+
+        long durationMs = System.currentTimeMillis() - start;
         synchronized (loadLock) {
             LoadedModel previous = this.loaded;
             this.loaded = new LoadedModel(modelId, runner, config, durationMs);
+            this.loading = false;
+            this.loadingModelId = null;
+            this.loadStartedAtMs = -1;
+            this.loadingPhase = null;
+            this.dspPlanPhase = null;
+            this.dspFrozenCount = -1;
+            this.dspPlanReport = null;
+            this.dspCompilationStats = null;
             if (previous != null) {
-                logger.info("SameDiffLanguageModelImpl: replaced previously loaded model '{}' with '{}'", previous.modelId, modelId);
-                try {
-                    previous.runner.close();
-                } catch (Exception e) {
-                    logger.warn("Failed to close previous SameDiff runner '{}': {}", previous.modelId, e.getMessage(), e);
+                logger.info("Replaced previously loaded model '{}' with '{}'",
+                        previous.modelId, modelId);
+                try { previous.runner.close(); } catch (Exception e) {
+                    logger.warn("Failed to close previous runner '{}': {}",
+                            previous.modelId, e.getMessage());
                 }
             } else {
-                logger.info("SameDiffLanguageModelImpl: loaded model '{}' in {} ms", modelId, durationMs);
+                logger.info("Loaded model '{}' in {} ms", modelId, durationMs);
             }
         }
     }
 
-    /** Unload any currently loaded model. Safe to call when nothing is loaded. */
     public void unloadModel() {
         synchronized (loadLock) {
             LoadedModel current = this.loaded;
@@ -238,17 +300,17 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
             if (current != null) {
                 try {
                     current.runner.close();
-                    logger.info("SameDiffLanguageModelImpl: unloaded model '{}'", current.modelId);
+                    logger.info("Unloaded model '{}'", current.modelId);
                 } catch (Exception e) {
-                    logger.warn("Failed to close SameDiff runner '{}': {}", current.modelId, e.getMessage(), e);
+                    logger.warn("Failed to close runner '{}': {}", current.modelId, e.getMessage());
                 }
             }
         }
     }
 
-    public boolean isLoaded() {
-        return this.loaded != null;
-    }
+    // ==================== Status getters ====================
+
+    public boolean isLoaded() { return this.loaded != null; }
 
     public String getLoadedModelId() {
         LoadedModel current = this.loaded;
@@ -260,23 +322,196 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
         return current != null ? current.loadDurationMs : -1L;
     }
 
+    public boolean isLoading() { return this.loading; }
+    public String getLoadingModelId() { return this.loadingModelId; }
+
+    public long getLoadElapsedMs() {
+        long started = this.loadStartedAtMs;
+        return started > 0 ? System.currentTimeMillis() - started : -1L;
+    }
+
+    public String getLoadingPhase() { return this.loadingPhase; }
+    public String getDspPlanPhase() { return this.dspPlanPhase; }
+    public int getDspFrozenCount() { return this.dspFrozenCount; }
+    public String getDspPlanReport() { return this.dspPlanReport; }
+    public Map<String, Object> getDspCompilationStats() { return this.dspCompilationStats; }
+
+    // ==================== DSP diagnostics polling ====================
+
+    private void pollDspPhase() {
+        try {
+            String report = org.nd4j.autodiff.samediff.diagnostics.DspDiagnostics.getPlanReport();
+            if (report != null && !report.isBlank()) {
+                this.dspPlanReport = report.length() > 4096
+                        ? report.substring(0, 4096) + "..." : report;
+
+                if (report.contains("REPLAYING") || report.contains("replay")) {
+                    this.dspPlanPhase = "REPLAYING";
+                } else if (report.contains("SHAPES_FROZEN") || report.contains("frozen")) {
+                    this.dspPlanPhase = "SHAPES_FROZEN";
+                } else if (report.contains("SLOT_BY_SLOT") || report.contains("slot-by-slot")) {
+                    this.dspPlanPhase = "SLOT_BY_SLOT";
+                }
+            }
+
+            String json = org.nd4j.autodiff.samediff.diagnostics.DspDiagnostics.getJsonReport();
+            if (json != null && !json.isBlank()) {
+                try {
+                    JsonNode node = MAPPER.readTree(json);
+                    if (node.has("frozenExecutionCount")) {
+                        this.dspFrozenCount = node.get("frozenExecutionCount").asInt(-1);
+                    }
+
+                    Map<String, Object> stats = new java.util.LinkedHashMap<>();
+
+                    JsonNode planInfo = node.get("planInfo");
+                    if (planInfo != null) {
+                        stats.put("numSlots", planInfo.path("numSlots").asInt(0));
+                        stats.put("numSegments", planInfo.path("numSegments").asInt(0));
+                        stats.put("stepsExecuted", planInfo.path("stepsExecuted").asInt(0));
+                        stats.put("totalTimeMs", planInfo.path("totalTimeMs").asDouble(0));
+                    }
+
+                    JsonNode catStats = node.get("categoryStats");
+                    if (catStats != null) {
+                        JsonNode compile = catStats.get("COMPILE");
+                        if (compile != null) {
+                            stats.put("compileEvents", compile.path("events").asInt(0));
+                            if (compile.has("totalTimeUs")) {
+                                stats.put("compileTotalMs", compile.path("totalTimeUs").asLong(0) / 1000.0);
+                                stats.put("compileMaxMs", compile.path("maxTimeUs").asLong(0) / 1000.0);
+                            }
+                        }
+                        JsonNode jit = catStats.get("JIT");
+                        if (jit != null) {
+                            stats.put("jitEvents", jit.path("events").asInt(0));
+                            if (jit.has("totalTimeUs")) {
+                                stats.put("jitTotalMs", jit.path("totalTimeUs").asLong(0) / 1000.0);
+                            }
+                        }
+                        JsonNode segment = catStats.get("SEGMENT");
+                        if (segment != null) {
+                            stats.put("segmentEvents", segment.path("events").asInt(0));
+                        }
+                        JsonNode timing = catStats.get("TIMING");
+                        if (timing != null) {
+                            stats.put("timingEvents", timing.path("events").asInt(0));
+                        }
+                    }
+
+                    JsonNode events = node.get("events");
+                    int cacheHits = 0, cacheStored = 0, cacheMisses = 0, cacheStale = 0;
+                    String currentKernel = null;
+                    List<String> recentCompilations = new ArrayList<>();
+                    if (events != null && events.isArray()) {
+                        for (JsonNode ev : events) {
+                            String msg = ev.path("message").asText("");
+                            if (msg.contains("cache HIT")) {
+                                cacheHits++;
+                            } else if (msg.contains("cache STORED")) {
+                                cacheStored++;
+                                currentKernel = extractSubSegmentRange(msg);
+                                if (currentKernel != null) recentCompilations.add(currentKernel);
+                            } else if (msg.contains("cache MISS") || msg.contains("cache miss")) {
+                                cacheMisses++;
+                            } else if (msg.contains("stale")) {
+                                cacheStale++;
+                            }
+                        }
+                    }
+
+                    Map<String, Object> tritonInfo = new java.util.LinkedHashMap<>();
+                    tritonInfo.put("cacheHits", cacheHits);
+                    tritonInfo.put("newCompilations", cacheStored);
+                    tritonInfo.put("cacheMisses", cacheMisses);
+                    tritonInfo.put("cacheStale", cacheStale);
+                    boolean isTritonCompiling = cacheStored > 0;
+                    tritonInfo.put("isCompiling", isTritonCompiling);
+                    if (currentKernel != null) tritonInfo.put("currentKernel", currentKernel);
+                    if (!recentCompilations.isEmpty()) {
+                        int fromIdx = Math.max(0, recentCompilations.size() - 10);
+                        tritonInfo.put("recentCompilations",
+                                recentCompilations.subList(fromIdx, recentCompilations.size()));
+                    }
+                    String cacheDir = System.getProperty("nd4j.triton.cacheDir");
+                    if (cacheDir == null) cacheDir = System.getenv("ND4J_TRITON_CACHE_DIR");
+                    if (cacheDir == null) cacheDir = System.getProperty("user.home")
+                            + "/.kompile/cache/triton/triton_cache";
+                    tritonInfo.put("cacheDir", cacheDir);
+                    stats.put("tritonCompilation", tritonInfo);
+
+                    if ("SHAPES_FROZEN".equals(this.dspPlanPhase)) {
+                        if (isTritonCompiling) {
+                            this.loadingPhase = String.format(
+                                    "Triton kernel compilation: %d compiled, %d from cache%s",
+                                    cacheStored, cacheHits,
+                                    currentKernel != null ? " (current: " + currentKernel + ")" : "");
+                        } else if (cacheHits > 0 && cacheStored == 0) {
+                            this.loadingPhase = String.format(
+                                    "DSP warmup: loading %d cached Triton kernels", cacheHits);
+                        } else {
+                            this.loadingPhase = "DSP: shapes frozen, compiling kernels";
+                        }
+                    } else if ("REPLAYING".equals(this.dspPlanPhase)) {
+                        this.loadingPhase = "DSP: replaying compiled plan";
+                    } else if ("SLOT_BY_SLOT".equals(this.dspPlanPhase)) {
+                        this.loadingPhase = "DSP: slot-by-slot warmup";
+                    }
+
+                    this.dspCompilationStats = stats;
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            logger.trace("DSP phase poll skipped: {}", e.getMessage());
+        }
+    }
+
+    private static String extractSubSegmentRange(String message) {
+        int bracketStart = message.indexOf('[');
+        int bracketEnd = message.indexOf(']', bracketStart);
+        if (bracketStart >= 0 && bracketEnd > bracketStart) {
+            return "segment " + message.substring(bracketStart + 1, bracketEnd);
+        }
+        int hashIdx = message.indexOf("hash ");
+        if (hashIdx >= 0) {
+            String rest = message.substring(hashIdx + 5).trim();
+            int spaceIdx = rest.indexOf(' ');
+            if (spaceIdx > 0) return "hash " + rest.substring(0, Math.min(spaceIdx, 12));
+            return "hash " + rest.substring(0, Math.min(rest.length(), 12));
+        }
+        return null;
+    }
+
     // ==================== Helpers ====================
 
-    private static String composePrompt(String userQuery, List<String> context) {
-        if (userQuery == null) {
-            userQuery = "";
-        }
-        if (context == null || context.isEmpty()) {
-            return userQuery;
+    private static String extractPromptText(Prompt prompt) {
+        if (prompt == null || prompt.getInstructions() == null
+                || prompt.getInstructions().isEmpty()) {
+            return "";
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("Context:\n");
-        List<String> filtered = new ArrayList<>();
-        for (String c : context) {
-            if (c != null && !c.isBlank()) {
-                filtered.add(c);
-            }
+        String userText = null;
+        List<String> systemParts = new ArrayList<>();
+
+        for (Message message : prompt.getInstructions()) {
+            if (message instanceof SystemMessage) systemParts.add(message.getText());
+            else if (message instanceof UserMessage) userText = message.getText();
         }
+        if (!systemParts.isEmpty()) {
+            sb.append("System:\n");
+            for (String sys : systemParts) sb.append(sys).append("\n");
+            sb.append("\n");
+        }
+        if (userText != null) sb.append(userText);
+        return sb.toString().trim();
+    }
+
+    private static String composePrompt(String userQuery, List<String> context) {
+        if (userQuery == null) userQuery = "";
+        if (context == null || context.isEmpty()) return userQuery;
+        StringBuilder sb = new StringBuilder("Context:\n");
+        List<String> filtered = new ArrayList<>();
+        for (String c : context) { if (c != null && !c.isBlank()) filtered.add(c); }
         for (int i = 0; i < filtered.size(); i++) {
             sb.append("[").append(i + 1).append("] ").append(filtered.get(i)).append("\n");
         }
@@ -293,15 +528,20 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
         Object v = opts.get(key);
         if (v instanceof Number) return ((Number) v).intValue();
         if (v instanceof String) {
-            try { return Integer.parseInt((String) v); } catch (NumberFormatException ignored) { }
+            try { return Integer.parseInt((String) v); } catch (NumberFormatException ignored) {}
         }
         return defaultValue;
     }
 
-    /**
-     * Check if shard files exist for a model base path.
-     * SameDiff.load() strips the extension and looks for {baseName}.shard*-of-*.sdnb
-     */
+    private static double doubleOpt(Map<String, Object> opts, String key, double defaultValue) {
+        Object v = opts.get(key);
+        if (v instanceof Number) return ((Number) v).doubleValue();
+        if (v instanceof String) {
+            try { return Double.parseDouble((String) v); } catch (NumberFormatException ignored) {}
+        }
+        return defaultValue;
+    }
+
     private static boolean hasShardFiles(Path modelFile) {
         Path parent = modelFile.toAbsolutePath().getParent();
         if (parent == null || !Files.isDirectory(parent)) return false;
@@ -319,23 +559,14 @@ public class SameDiffLanguageModelImpl implements LanguageModel {
         }
     }
 
-    private static double doubleOpt(Map<String, Object> opts, String key, double defaultValue) {
-        Object v = opts.get(key);
-        if (v instanceof Number) return ((Number) v).doubleValue();
-        if (v instanceof String) {
-            try { return Double.parseDouble((String) v); } catch (NumberFormatException ignored) { }
-        }
-        return defaultValue;
-    }
-
-    /** Holder for an active runner + the config it was initialised with. */
     private static final class LoadedModel {
         final String modelId;
         final SameDiffLanguageModelStepRunner runner;
         final LLMStepConfig config;
         final long loadDurationMs;
 
-        LoadedModel(String modelId, SameDiffLanguageModelStepRunner runner, LLMStepConfig config, long loadDurationMs) {
+        LoadedModel(String modelId, SameDiffLanguageModelStepRunner runner,
+                    LLMStepConfig config, long loadDurationMs) {
             this.modelId = modelId;
             this.runner = runner;
             this.config = config;

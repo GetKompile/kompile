@@ -29,7 +29,12 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class TikaLoaderImpl implements DocumentLoader {
@@ -48,6 +53,61 @@ public class TikaLoaderImpl implements DocumentLoader {
         // For simplicity, let's say it supports if it's a file and not explicitly handled by others.
         // A more robust check might involve trying to detect type with Tika itself.
         return sourceDescriptor.getType() == DocumentSourceDescriptor.SourceType.FILE;
+    }
+
+    /**
+     * Parse a single CSV line respecting RFC 4180 quoting rules.
+     */
+    public static List<String> parseCsvLine(String line) {
+        List<String> fields = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inQuotes = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (inQuotes) {
+                if (c == '"') {
+                    if (i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                        current.append('"');
+                        i++;
+                    } else {
+                        inQuotes = false;
+                    }
+                } else {
+                    current.append(c);
+                }
+            } else {
+                if (c == '"') {
+                    inQuotes = true;
+                } else if (c == ',') {
+                    fields.add(current.toString());
+                    current.setLength(0);
+                } else {
+                    current.append(c);
+                }
+            }
+        }
+        fields.add(current.toString());
+        return fields;
+    }
+
+    private static final Pattern ATX_HEADING = Pattern.compile("^(#{1,6})\\s+(.+)$");
+
+    /**
+     * Extract ATX-style markdown headings from text content.
+     */
+    public static List<Map<String, String>> extractMarkdownHeadings(String markdown) {
+        List<Map<String, String>> headings = new ArrayList<>();
+        for (String line : markdown.split("\n")) {
+            Matcher m = ATX_HEADING.matcher(line.trim());
+            if (m.matches()) {
+                String text = m.group(2).replaceAll("\\s+#+\\s*$", "").trim();
+                Map<String, String> entry = new LinkedHashMap<>();
+                entry.put("text", text);
+                entry.put("level", String.valueOf(m.group(1).length()));
+                headings.add(entry);
+            }
+        }
+        return headings;
     }
 
     @Override

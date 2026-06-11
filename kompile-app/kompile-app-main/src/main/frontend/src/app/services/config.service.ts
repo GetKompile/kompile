@@ -19,6 +19,7 @@ import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, Observable, of } from 'rxjs';
 import { catchError, tap } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
+import { backendUrl } from './base.service';
 
 export interface AppConfig {
   appTitle: string;
@@ -71,5 +72,37 @@ export class ConfigService {
    */
   getConfig(): Observable<AppConfig> {
     return this.config$;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // K-APP CONFIG (vector store, subprocess, indexing settings)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  getKAppConfig(): Observable<any> {
+    return this.http.get<any>(`${backendUrl}/config/k-app`);
+  }
+
+  updateKAppConfig(config: any): Observable<any> {
+    return this.http.put<any>(`${backendUrl}/config/k-app`, config);
+  }
+
+  resetKAppConfig(): Observable<any> {
+    return this.http.post<any>(`${backendUrl}/config/k-app/reset`, {});
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SYSTEM HEALTH & INFO
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  getSystemHealth(): Observable<any> {
+    return this.http.get<any>(`${backendUrl}/system/health`);
+  }
+
+  getSystemInfo(): Observable<any> {
+    return this.http.get<any>(`${backendUrl}/system/info`);
+  }
+
+  getSystemComponents(): Observable<any[]> {
+    return this.http.get<any[]>(`${backendUrl}/system/components`);
   }
 }

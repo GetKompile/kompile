@@ -52,7 +52,8 @@ import {
   RagServiceStatus,
   ChatFolder,
   KompileLocalModelStatus,
-  ActiveModelContext
+  ActiveModelContext,
+  MessageAttachment
 } from '../../models/api-models';
 
 // Unified message interface
@@ -74,6 +75,10 @@ interface UnifiedMessage {
     generationMs: number;
     documentsRetrieved: number;
   };
+  ragMetrics?: {
+    retrievalMs: number;
+    documentsRetrieved: number;
+  };
   queryInfo?: {
     originalQuery: string;
     rewrittenQuery: string;
@@ -88,6 +93,7 @@ interface UnifiedMessage {
   _sourcesExpanded?: boolean;
   latencyMs?: number;
   tokenCount?: number;
+  attachments?: MessageAttachment[];
   tokenMetrics?: {
     outputTokens: number;
     inputTokens: number;
@@ -109,6 +115,7 @@ interface ChatSession {
   conversationId?: string; // For RAG conversation tracking
   source?: string; // Source badge: kompile, claude-code, opencode, codex, qwen
   synced?: boolean; // True if loaded from backend (not localStorage)
+  messageCount?: number; // Message count from backend (avoids loading full messages)
 }
 
 @Component({
@@ -285,8 +292,13 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   // Kompile Local Model state
   kompileLocalStatus: any = null;
-  kompileLocalStagingUrl: string = 'http://localhost:8081';
+  kompileLocalStagingUrl: string = 'http://localhost:8090';
   kompileLocalLoading: boolean = false;
+
+  // Attachment state
+  pendingAttachments: MessageAttachment[] = [];
+  isDragOver: boolean = false;
+  agentSupportsVision: boolean = false;
 
   // Active Model Context state
   activeModelContext: ActiveModelContext | null = null;
@@ -327,6 +339,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   private subscriptions: Subscription[] = [];
   private streamingSubscription: Subscription | null = null;
+  private activeStreamingSubs: Subscription[] = [];
 
   // Monitor wake-up subscription (re-bound whenever currentSession changes)
   private monitorSubscription: Subscription | null = null;
@@ -384,6 +397,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.subscriptions.push(
       this.agentService.agents$.subscribe(agents => {
         this.agents = agents;
+        this.cdr.markForCheck();
       })
     );
 
@@ -599,7 +613,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
             createdAt: s.createdAt,
             updatedAt: s.updatedAt,
             source: s.source,
-            synced: true
+            synced: true,
+            messageCount: s.messageCount
           }));
         this.syncedSessionsLoading = false;
         this.cdr.markForCheck();
@@ -711,6 +726,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.agentSession = null; // Reset agent session for new chat
     this.saveSessions();
     this.updateMonitorSubscription();
+    this.cdr.detectChanges();
   }
 
   loadSession(session: ChatSession): void {
@@ -871,6 +887,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     const content = this.userInput.trim();
     this.userInput = '';
 
+    // Capture and clear pending attachments
+    const attachments = this.pendingAttachments.length > 0 ? [...this.pendingAttachments] : undefined;
+    this.pendingAttachments = [];
+
     // Create session if needed
     if (!this.currentSession) {
       this.newChat();
@@ -881,18 +901,20 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       id: this.generateId(),
       role: 'user',
       content: content,
-      timestamp: new Date()
+      timestamp: new Date(),
+      attachments: attachments
     };
 
     this.messages.push(userMessage);
     this.updateCurrentSession();
     this.shouldScrollToBottom = true;
+    this.cdr.detectChanges();
 
     // Send to agent (with optional RAG augmentation)
-    this.sendAgentMessage(content);
+    this.sendAgentMessage(content, attachments);
   }
 
-  private async sendAgentMessage(content: string): Promise<void> {
+  private async sendAgentMessage(content: string, attachments?: MessageAttachment[]): Promise<void> {
     if (!this.selectedAgent) return;
 
     this.isStreaming = true;
@@ -917,6 +939,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         this.cdr.detectChanges();
       }
     }, 300); // Update UI every 300ms during streaming
+
+    // Clean up any stale streaming subs from a previous run
+    this.unsubscribeStreamingSubs();
 
     // Subscribe to streaming content updates
     const contentSub = this.agentChatService.getStreamingContent().subscribe((content: string) => {
@@ -947,6 +972,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         if (msg.tokenMetrics) {
           lastMsg.tokenMetrics = msg.tokenMetrics;
         }
+        if (msg.ragMetrics) {
+          lastMsg.ragMetrics = msg.ragMetrics;
+        }
+        if (msg.queryInfo) {
+          lastMsg.queryInfo = msg.queryInfo;
+        }
       }
       this.isStreaming = false;
 
@@ -954,10 +985,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       this.cleanupStreaming();
 
       this.updateCurrentSession();
-      contentSub.unsubscribe();
-      completeSub.unsubscribe();
-      errorSub.unsubscribe();
-      statsSub.unsubscribe();
+      this.unsubscribeStreamingSubs();
     });
 
     const errorSub = this.agentChatService.getStreamingError().subscribe((errorMsg: string) => {
@@ -972,11 +1000,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       // Clean up and reattach change detection
       this.cleanupStreaming();
 
-      contentSub.unsubscribe();
-      completeSub.unsubscribe();
-      errorSub.unsubscribe();
-      statsSub.unsubscribe();
+      this.unsubscribeStreamingSubs();
     });
+
+    // Store subs so cancelStreaming() can clean them up
+    this.activeStreamingSubs = [contentSub, completeSub, errorSub, statsSub];
 
     // Add placeholder assistant message
     const assistantMessage: UnifiedMessage = {
@@ -1005,7 +1033,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
           graphRagSearchType: this.graphRagSearchType,
           graphRagConversationId: this.currentSession?.conversationId || this.currentSession?.id,
           folderId: this.selectedFolder?.folderId,
-          timeoutSeconds: this.timeoutSeconds
+          timeoutSeconds: this.timeoutSeconds,
+          attachments: attachments
         }
       );
     } catch (error: unknown) {
@@ -1016,11 +1045,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
       // Clean up and reattach change detection
       this.cleanupStreaming();
-
-      contentSub.unsubscribe();
-      completeSub.unsubscribe();
-      errorSub.unsubscribe();
-      statsSub.unsubscribe();
+      this.unsubscribeStreamingSubs();
     }
   }
 
@@ -1028,6 +1053,13 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    * Clean up streaming state and reattach change detection.
    * Called when streaming completes, errors, or is cancelled.
    */
+  private unsubscribeStreamingSubs(): void {
+    for (const sub of this.activeStreamingSubs) {
+      sub.unsubscribe();
+    }
+    this.activeStreamingSubs = [];
+  }
+
   private cleanupStreaming(): void {
     // Clear streaming interval
     if (this.streamingUpdateInterval) {
@@ -1086,6 +1118,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       this.streamingSubscription.unsubscribe();
       this.streamingSubscription = null;
     }
+
+    // Unsubscribe the per-stream content/complete/error/stats subs
+    this.unsubscribeStreamingSubs();
+
     this.isStreaming = false;
     this.isLoading = false;
 
@@ -1304,18 +1340,25 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.cdr.markForCheck();
     this.agentService.getAllAgents().subscribe({
       next: (agents: AgentProvider[]) => {
-        this.agents = agents;
-        this.agentsLoading = false;
+        this.ngZone.run(() => {
+          this.agents = agents;
+          this.agentsLoading = false;
 
-        // Auto-select default or first available agent
-        const defaultAgent = agents.find((a: AgentProvider) => a.isDefault && a.available);
-        const firstAvailable = agents.find((a: AgentProvider) => a.available);
-        this.selectedAgent = defaultAgent || firstAvailable || null;
-        this.cdr.markForCheck();
+          // Auto-select default or first available agent
+          const defaultAgent = agents.find((a: AgentProvider) => a.isDefault && a.available);
+          const firstAvailable = agents.find((a: AgentProvider) => a.available);
+          this.selectedAgent = defaultAgent || firstAvailable || null;
+          if (this.selectedAgent) {
+            this.loadAgentCapabilities(this.selectedAgent);
+          }
+          this.cdr.detectChanges();
+        });
       },
       error: () => {
-        this.agentsLoading = false;
-        this.cdr.markForCheck();
+        this.ngZone.run(() => {
+          this.agentsLoading = false;
+          this.cdr.detectChanges();
+        });
       }
     });
   }
@@ -1329,25 +1372,29 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.cdr.markForCheck();
     this.agentService.refreshAllAgents().subscribe({
       next: (agents: AgentProvider[]) => {
-        this.agents = agents;
-        this.agentsLoading = false;
+        this.ngZone.run(() => {
+          this.agents = agents;
+          this.agentsLoading = false;
 
-        // Re-select if current agent is no longer available
-        if (this.selectedAgent && !this.selectedAgent.available) {
-          const stillAvailable = agents.find((a: AgentProvider) => a.name === this.selectedAgent?.name && a.available);
-          if (stillAvailable) {
-            this.selectedAgent = stillAvailable;
-          } else {
-            // Select first available instead
-            const firstAvailable = agents.find((a: AgentProvider) => a.available);
-            this.selectedAgent = firstAvailable || null;
+          // Re-select if current agent is no longer available
+          if (this.selectedAgent && !this.selectedAgent.available) {
+            const stillAvailable = agents.find((a: AgentProvider) => a.name === this.selectedAgent?.name && a.available);
+            if (stillAvailable) {
+              this.selectedAgent = stillAvailable;
+            } else {
+              // Select first available instead
+              const firstAvailable = agents.find((a: AgentProvider) => a.available);
+              this.selectedAgent = firstAvailable || null;
+            }
           }
-        }
-        this.cdr.markForCheck();
+          this.cdr.detectChanges();
+        });
       },
       error: () => {
-        this.agentsLoading = false;
-        this.cdr.markForCheck();
+        this.ngZone.run(() => {
+          this.agentsLoading = false;
+          this.cdr.detectChanges();
+        });
       }
     });
   }
@@ -1359,6 +1406,28 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       this.currentSession.agentName = agent.name;
       this.saveSessions();
     }
+    this.loadAgentCapabilities(agent);
+    this.cdr.detectChanges();
+  }
+
+  private loadAgentCapabilities(agent: AgentProvider): void {
+    if (agent.agentType !== 'API') {
+      // CLI agents (claude, codex) handle vision natively via passthrough
+      this.agentSupportsVision = true;
+      this.cdr.markForCheck();
+      return;
+    }
+    this.http.get<any>(`${this.modelContextService.backendUrl}/agents/api-config/${encodeURIComponent(agent.name)}/capabilities`)
+      .subscribe({
+        next: (caps) => {
+          this.agentSupportsVision = caps.supportsVision === true;
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.agentSupportsVision = false;
+          this.cdr.markForCheck();
+        }
+      });
   }
 
   onSkipPermissionsChange(): void {
@@ -1409,6 +1478,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     if (!this.showApiAgentConfig) {
       this.resetApiAgentForm();
     }
+    this.cdr.detectChanges();
   }
 
   resetApiAgentForm(): void {
@@ -1622,6 +1692,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   toggleFolderSidebar(): void {
     this.showFolderSidebar = !this.showFolderSidebar;
+    this.cdr.detectChanges();
   }
 
   onFolderSelected(folder: ChatFolder | null): void {
@@ -1827,19 +1898,122 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // ATTACHMENT HANDLING
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @ViewChild('fileInput') private fileInput!: ElementRef<HTMLInputElement>;
+
+  onAttachClick(): void {
+    this.fileInput?.nativeElement?.click();
+  }
+
+  onFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files) {
+      this.processFiles(Array.from(input.files));
+      input.value = ''; // reset so same file can be re-selected
+    }
+  }
+
+  onDragOver(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragOver = true;
+  }
+
+  onDragLeave(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragOver = false;
+  }
+
+  onDrop(event: DragEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDragOver = false;
+    if (event.dataTransfer?.files) {
+      this.processFiles(Array.from(event.dataTransfer.files));
+    }
+  }
+
+  onPaste(event: ClipboardEvent): void {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    const files: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file') {
+        const file = items[i].getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      this.processFiles(files);
+    }
+  }
+
+  private processFiles(files: File[]): void {
+    for (const file of files) {
+      if (file.size > 5 * 1024 * 1024) {
+        console.warn(`File ${file.name} exceeds 5MB limit, skipping`);
+        continue;
+      }
+      const isImage = file.type.startsWith('image/');
+      if (isImage && !this.agentSupportsVision) {
+        console.warn(`Agent does not support vision, skipping image ${file.name}`);
+        continue;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const attachment: MessageAttachment = {
+          filename: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          isImage: isImage
+        };
+        if (isImage) {
+          const dataUrl = reader.result as string;
+          attachment.base64Data = dataUrl.split(',')[1];
+          attachment.previewUrl = dataUrl;
+        } else {
+          attachment.textContent = reader.result as string;
+        }
+        this.pendingAttachments.push(attachment);
+        this.cdr.markForCheck();
+      };
+      if (isImage) {
+        reader.readAsDataURL(file);
+      } else {
+        reader.readAsText(file);
+      }
+    }
+  }
+
+  removeAttachment(index: number): void {
+    this.pendingAttachments.splice(index, 1);
+    this.cdr.markForCheck();
+  }
+
+  hasImageAttachments(): boolean {
+    return this.pendingAttachments.some(a => a.isImage);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // UI HELPERS
   // ═══════════════════════════════════════════════════════════════════════════════
 
   toggleSettings(): void {
     this.showSettings = !this.showSettings;
+    this.cdr.detectChanges();
   }
 
   toggleHistorySidebar(): void {
     this.showHistorySidebar = !this.showHistorySidebar;
+    this.cdr.detectChanges();
   }
 
   toggleShowArchived(): void {
     this.showArchivedChats = !this.showArchivedChats;
+    this.cdr.detectChanges();
   }
 
   toggleDocuments(message: UnifiedMessage): void {
@@ -1854,6 +2028,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   toggleSources(message: UnifiedMessage): void {
     message._sourcesExpanded = !message._sourcesExpanded;
+    this.cdr.detectChanges();
   }
 
   /**
@@ -2008,6 +2183,14 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     return /\[\d+\]/.test(message.content);
   }
 
+  /**
+   * Check if message content contains tool use blocks or thinking tags from CLI transcripts.
+   */
+  hasToolBlocks(message: UnifiedMessage): boolean {
+    if (!message.content) return false;
+    return /\[tool:[^\]]+\]/.test(message.content) || /<thinking>/.test(message.content);
+  }
+
   handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -2016,6 +2199,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       event.preventDefault();
       this.cancelStreaming();
     }
+  }
+
+  onUserInputChange(value: string): void {
+    this.userInput = value;
+    this.cdr.markForCheck();
   }
 
   private scrollToBottom(): void {
@@ -2345,6 +2533,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   toggleModelSwitchDropdown(): void {
     this.showModelSwitchDropdown = !this.showModelSwitchDropdown;
+    this.cdr.detectChanges();
   }
 
   /**

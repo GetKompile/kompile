@@ -41,7 +41,7 @@ public class CliAgentConfig {
     private String outputFormat;            // e.g., "stream-json" for Claude
     private String verboseFlag;             // e.g., "--verbose" for Claude
     private String promptFlag;              // e.g., "-p" for Claude
-    private Set<String> defaultArgs;        // Default CLI arguments
+    private List<String> defaultArgs;        // Default CLI arguments (order-preserving)
     private Map<String, String> environment; // Environment variables
     private boolean available;              // Whether CLI is installed
     private boolean defaultAgent;           // Default agent selection
@@ -64,7 +64,7 @@ public class CliAgentConfig {
             .outputFormat("stream-json")
             .verboseFlag("--verbose")
             .promptFlag("-p")
-            .defaultArgs(Set.of("--output-format", "stream-json", "--verbose"))
+            .defaultArgs(List.of("--output-format", "stream-json", "--verbose"))
             .environment(Map.of())
             .mcpSupported(true)
             .mcpServerFlag("--mcp-server")
@@ -79,7 +79,7 @@ public class CliAgentConfig {
             .command("codex")
             .skipPermissionsFlag("--full-auto")
             .promptFlag("-p")
-            .defaultArgs(Set.of())
+            .defaultArgs(List.of())
             .environment(Map.of())
             .mcpSupported(false)
             .defaultAgent(false)
@@ -91,7 +91,7 @@ public class CliAgentConfig {
             .command("gemini")
             .skipPermissionsFlag("--yolo")
             .promptFlag("-p")
-            .defaultArgs(Set.of())
+            .defaultArgs(List.of())
             .environment(Map.of())
             .mcpSupported(false)
             .defaultAgent(false)

@@ -70,7 +70,7 @@ public class AgentChatServiceIntegrationTest {
             receivedQueries.add(query);
             return documentsToReturn.stream()
                     .limit(maxResults)
-                    .map(RetrievedDoc::getContent)
+                    .map(RetrievedDoc::getText)
                     .toList();
         }
 
@@ -267,7 +267,7 @@ public class AgentChatServiceIntegrationTest {
 
             // Assert
             assertEquals(2, results.size());
-            assertEquals("Machine learning is a subset of AI.", results.get(0).getContent());
+            assertEquals("Machine learning is a subset of AI.", results.get(0).getText());
             assertTrue(documentRetriever.getReceivedQueries().contains("What is machine learning?"));
         }
 
@@ -322,10 +322,10 @@ public class AgentChatServiceIntegrationTest {
         @DisplayName("Should retrieve context from knowledge graph")
         void shouldRetrieveContextFromKnowledgeGraph() {
             // Arrange
-            GraphRagResult result = new GraphRagResult(
-                    "TechCorp is a leading AI company founded in 2010.",
-                    "Entity: TechCorp [COMPANY]\n  Description: A leading AI technology company\n  Related to: AI Platform, John Smith"
-            );
+            GraphRagResult result = GraphRagResult.builder()
+                    .answer("TechCorp is a leading AI company founded in 2010.")
+                    .formattedContext("Entity: TechCorp [COMPANY]\n  Description: A leading AI technology company\n  Related to: AI Platform, John Smith")
+                    .build();
             graphRagService.setResultToReturn(result);
 
             // Act
@@ -347,7 +347,7 @@ public class AgentChatServiceIntegrationTest {
         @DisplayName("Should support LOCAL search type")
         void shouldSupportLocalSearchType() {
             // Arrange
-            graphRagService.setResultToReturn(new GraphRagResult("Local answer", "Local context"));
+            graphRagService.setResultToReturn(GraphRagResult.builder().answer("Local answer").formattedContext("Local context").build());
 
             // Act
             GraphRagQuery query = GraphRagQuery.builder()
@@ -366,7 +366,7 @@ public class AgentChatServiceIntegrationTest {
         @DisplayName("Should support GLOBAL search type")
         void shouldSupportGlobalSearchType() {
             // Arrange
-            graphRagService.setResultToReturn(new GraphRagResult("Global answer", "Global context"));
+            graphRagService.setResultToReturn(GraphRagResult.builder().answer("Global answer").formattedContext("Global context").build());
 
             // Act
             GraphRagQuery query = GraphRagQuery.builder()
@@ -385,7 +385,7 @@ public class AgentChatServiceIntegrationTest {
         @DisplayName("Should maintain conversation context with conversationId")
         void shouldMaintainConversationContextWithConversationId() {
             // Arrange
-            graphRagService.setResultToReturn(new GraphRagResult("Answer with context", "Context"));
+            graphRagService.setResultToReturn(GraphRagResult.builder().answer("Answer with context").formattedContext("Context").build());
             String conversationId = "test-conversation-" + System.currentTimeMillis();
 
             // Act - First query
@@ -450,10 +450,10 @@ public class AgentChatServiceIntegrationTest {
             documentRetriever.setDocumentsToReturn(ragDocs);
 
             // Set up GraphRAG results
-            GraphRagResult graphResult = new GraphRagResult(
-                    "TechCorp produces AI Platform and DataEngine.",
-                    "Entity: TechCorp [COMPANY]\n  Produces: AI Platform\n  Produces: DataEngine"
-            );
+            GraphRagResult graphResult = GraphRagResult.builder()
+                    .answer("TechCorp produces AI Platform and DataEngine.")
+                    .formattedContext("Entity: TechCorp [COMPANY]\n  Produces: AI Platform\n  Produces: DataEngine")
+                    .build();
             graphRagService.setResultToReturn(graphResult);
 
             // Act
@@ -528,10 +528,10 @@ public class AgentChatServiceIntegrationTest {
         void shouldHandleRagFailureGracefullyAndStillUseGraphRag() {
             // Arrange
             documentRetriever.setDocumentsToReturn(Collections.emptyList()); // RAG returns nothing
-            graphRagService.setResultToReturn(new GraphRagResult(
-                    "Answer from graph only",
-                    "Graph context"
-            ));
+            graphRagService.setResultToReturn(GraphRagResult.builder()
+                    .answer("Answer from graph only")
+                    .formattedContext("Graph context")
+                    .build());
 
             // Act
             List<RetrievedDoc> ragResults = documentRetriever.retrieveWithDetails("query", 5);
@@ -572,7 +572,7 @@ public class AgentChatServiceIntegrationTest {
             int docNum = 1;
             for (RetrievedDoc doc : docs) {
                 formattedContext.append(String.format("### Document %d (Score: %.3f)\n%s\n\n",
-                        docNum++, doc.getScore(), doc.getContent()));
+                        docNum++, doc.getScore(), doc.getText()));
             }
 
             // Assert
@@ -652,7 +652,7 @@ public class AgentChatServiceIntegrationTest {
             documentRetriever.setDocumentsToReturn(List.of(
                     new RetrievedDoc("doc1", "Content", Map.of(), 0.9)
             ));
-            graphRagService.setResultToReturn(new GraphRagResult("Answer", "Context"));
+            graphRagService.setResultToReturn(GraphRagResult.builder().answer("Answer").formattedContext("Context").build());
 
             // Act
             long startTime = System.currentTimeMillis();
@@ -695,7 +695,7 @@ public class AgentChatServiceIntegrationTest {
         @DisplayName("Should handle null GraphRAG conversation ID")
         void shouldHandleNullGraphRagConversationId() {
             // Arrange
-            graphRagService.setResultToReturn(new GraphRagResult("Answer", "Context"));
+            graphRagService.setResultToReturn(GraphRagResult.builder().answer("Answer").formattedContext("Context").build());
 
             // Act
             GraphRagQuery query = GraphRagQuery.builder()

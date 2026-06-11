@@ -14,13 +14,13 @@
   ~ limitations under the License.
   -->
 
-<div class="unified-chat-wrapper">
+<div class="unified-chat-wrapper" data-testid="chat-wrapper">
 
   <!-- Chat History Sidebar (Left) -->
-  <aside class="history-sidebar" [class.collapsed]="!showHistorySidebar">
+  <aside class="history-sidebar" [class.collapsed]="!showHistorySidebar" data-testid="history-sidebar">
     <div class="history-sidebar-header">
       <h3>Chats</h3>
-      <button class="new-chat-btn" (click)="newChat()" title="New Chat">
+      <button class="new-chat-btn" (click)="newChat()" title="New Chat" data-testid="new-chat-btn">
         <span>+</span> New
       </button>
     </div>
@@ -29,7 +29,7 @@
 
       <!-- Search + Source Filter -->
       <div class="history-search">
-        <input type="text" class="search-input" placeholder="Search chats..." [(ngModel)]="chatSearchQuery" [ngModelOptions]="{standalone: true}">
+        <input type="text" class="search-input" placeholder="Search chats..." [(ngModel)]="chatSearchQuery" [ngModelOptions]="{standalone: true}" data-testid="chat-search-input">
         <span class="search-icon">🔍</span>
       </div>
 
@@ -112,7 +112,7 @@
                 </span>
               </span>
               <span class="chat-meta">
-                {{ session.messages?.length || 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
+                {{ session.messageCount ?? session.messages?.length ?? 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
               </span>
               <span class="chat-preview" *ngIf="!session.synced && getSessionPreview(session)">{{ getSessionPreview(session) }}</span>
             </div>
@@ -272,7 +272,7 @@
   </aside>
 
   <!-- Settings Sidebar (Right) -->
-  <aside class="settings-sidebar" [class.visible]="showSettings">
+  <aside class="settings-sidebar" [class.visible]="showSettings" data-testid="settings-sidebar">
     <div class="sidebar-header">
       <h3>Chat Settings</h3>
       <button class="close-btn" (click)="toggleSettings()">×</button>
@@ -845,19 +845,19 @@
   </aside>
 
   <!-- Main Chat Container -->
-  <main class="chat-container">
+  <main class="chat-container" data-testid="chat-container">
 
     <!-- Header -->
     <header class="chat-header">
       <div class="header-left">
-        <button class="icon-btn" (click)="toggleSettings()" title="Settings">
+        <button class="icon-btn" (click)="toggleSettings()" title="Settings" data-testid="settings-toggle-btn">
           <span class="settings-icon">⚙</span>
         </button>
 
         <!-- Agent selector -->
         <div class="inline-agent-selector">
           <label class="selector-label">Agent:</label>
-          <select class="agent-select" [value]="selectedAgent?.name || ''"
+          <select class="agent-select" data-testid="agent-select" [value]="selectedAgent?.name || ''"
             (change)="selectAgent(agents[$any($event.target).selectedIndex - 1])" [disabled]="isStreaming">
             <option value="" disabled>Select agent...</option>
             <option *ngFor="let agent of agents" [value]="agent.name" [disabled]="!agent.available">
@@ -914,7 +914,7 @@
           Clear
         </button>
         <!-- Prominent Stop button during streaming -->
-        <button class="stop-btn" (click)="cancelStreaming()" *ngIf="isStreaming" title="Stop agent execution">
+        <button class="stop-btn" (click)="cancelStreaming()" *ngIf="isStreaming" title="Stop agent execution" data-testid="header-stop-btn">
           <span class="stop-icon">⏹</span>
           Stop
         </button>
@@ -922,7 +922,7 @@
     </header>
 
     <!-- Conversation Area -->
-    <div class="conversation-area" #conversationArea>
+    <div class="conversation-area" #conversationArea data-testid="conversation-area">
 
       <!-- Viewport indicator: more messages above -->
       <div *ngIf="hasMoreAbove" class="viewport-indicator above" [class.loading]="isLoadingMore">
@@ -933,7 +933,7 @@
       </div>
 
       <!-- Welcome message -->
-      <div *ngIf="messages.length === 0" class="welcome-message">
+      <div *ngIf="messages.length === 0" class="welcome-message" data-testid="welcome-message">
         <h3>💬 Chat</h3>
 
         <p *ngIf="selectedAgent">
@@ -959,7 +959,7 @@
           </div>
         </div>
 
-        <div class="no-agents-warning" *ngIf="getAvailableAgentCount() === 0">
+        <div class="no-agents-warning" *ngIf="getAvailableAgentCount() === 0" data-testid="no-agents-warning">
           <span class="warning-icon">⚠</span>
           <div>
             <strong>No agents available</strong>
@@ -969,11 +969,11 @@
       </div>
 
       <!-- Messages -->
-      <div *ngFor="let message of messages; let i = index" class="message-wrapper"
+      <div *ngFor="let message of messages; let i = index" class="message-wrapper" data-testid="message-wrapper"
         [class.user-wrapper]="message.role === 'user'" [class.bot-wrapper]="message.role === 'assistant'"
         [class.system-wrapper]="message.role === 'system'">
 
-        <div class="message-bubble" [class.user-message]="message.role === 'user'"
+        <div class="message-bubble" data-testid="message-bubble" [attr.data-role]="message.role" [class.user-message]="message.role === 'user'"
           [class.bot-message]="message.role === 'assistant'"
           [class.system-message]="message.role === 'system'" [class.error-message]="message.error"
           [class.streaming]="message.isStreaming">
@@ -1017,21 +1017,29 @@
             </div>
           </div>
 
-          <div class="message-content" [class.large-message]="isLargeMessage(message)">
+          <div class="message-content" data-testid="message-content" [class.large-message]="isLargeMessage(message)">
             <!-- Use inline source linking for assistant messages with sources -->
             <pre *ngIf="message.role === 'assistant' && hasLinkableSourceRefs(message)"
               [innerHTML]="getContentWithSourceLinks(message)"></pre>
             <!-- Regular content for user messages or messages without source refs -->
             <pre *ngIf="message.role !== 'assistant' || !hasLinkableSourceRefs(message)">{{ message.content }}</pre>
-            <span class="streaming-cursor" *ngIf="message.isStreaming">▌</span>
+            <span class="streaming-cursor" *ngIf="message.isStreaming" data-testid="streaming-cursor">▌</span>
           </div>
 
           <!-- Performance Metrics -->
-          <div *ngIf="message.role === 'assistant' && showMetrics && (message.latencyMs || message.tokenMetrics) && !message.isStreaming"
-            class="metrics-bar">
+          <div *ngIf="message.role === 'assistant' && showMetrics && (message.latencyMs || message.tokenMetrics || message.ragMetrics) && !message.isStreaming"
+            class="metrics-bar" data-testid="metrics-bar">
             <span class="metric" *ngIf="message.latencyMs">
               <span class="metric-label">Latency:</span>
               <span class="metric-value">{{ formatDuration(message.latencyMs) }}</span>
+            </span>
+            <span class="metric" *ngIf="message.ragMetrics?.retrievalMs">
+              <span class="metric-label">Retrieval:</span>
+              <span class="metric-value metric-rag">{{ formatDuration(message.ragMetrics!.retrievalMs) }}</span>
+            </span>
+            <span class="metric" *ngIf="message.ragMetrics?.documentsRetrieved">
+              <span class="metric-label">Docs:</span>
+              <span class="metric-value metric-rag">{{ message.ragMetrics!.documentsRetrieved }}</span>
             </span>
             <span class="metric" *ngIf="message.tokenMetrics?.tokensPerSecond">
               <span class="metric-label">Speed:</span>
@@ -1055,9 +1063,30 @@
             </span>
           </div>
 
+          <!-- Query Transformation Info -->
+          <div *ngIf="message.role === 'assistant' && message.queryInfo?.wasRewritten"
+            class="query-info-bar" data-testid="query-info-bar">
+            <span class="query-info-toggle" (click)="toggleQueryInfo(message)">
+              <span class="query-info-icon">&#x1F50D;</span>
+              <span class="query-info-label">Query rewritten</span>
+              <span class="query-info-intent" *ngIf="message.queryInfo?.intent">({{ message.queryInfo!.intent }})</span>
+              <span class="query-info-chevron">{{ message.queryInfo?.expanded ? '&#x25BC;' : '&#x25B6;' }}</span>
+            </span>
+            <div *ngIf="message.queryInfo?.expanded" class="query-info-detail">
+              <div class="query-info-row">
+                <span class="query-info-field">Original:</span>
+                <span class="query-info-value">{{ message.queryInfo!.originalQuery }}</span>
+              </div>
+              <div class="query-info-row">
+                <span class="query-info-field">Rewritten:</span>
+                <span class="query-info-value query-info-rewritten">{{ message.queryInfo!.rewrittenQuery }}</span>
+              </div>
+            </div>
+          </div>
+
           <!-- Retrieved Documents (from RAG) - Source Attribution -->
           <div *ngIf="message.role === 'assistant' && showDocuments && message.sources && message.sources.length > 0"
-            class="sources-section">
+            class="sources-section" data-testid="sources-section">
             <div class="sources-header" (click)="toggleSources(message)">
               <span class="sources-icon">📚</span>
               <span class="sources-title">{{ message.sources.length }} source{{ message.sources.length > 1 ? 's' : '' }} referenced</span>
@@ -1145,7 +1174,7 @@
       </div>
 
       <!-- Loading indicator -->
-      <div *ngIf="isLoading && !isStreaming" class="loading-indicator">
+      <div *ngIf="isLoading && !isStreaming" class="loading-indicator" data-testid="loading-indicator">
         <div class="loading-dots">
           <span></span>
           <span></span>
@@ -1157,9 +1186,9 @@
     </div>
 
     <!-- Input Area -->
-    <div class="input-area">
+    <div class="input-area" data-testid="input-area">
       <!-- Streaming indicator with stop button -->
-      <div class="streaming-bar" *ngIf="isStreaming">
+      <div class="streaming-bar" *ngIf="isStreaming" data-testid="streaming-bar">
         <div class="streaming-indicator-bar">
           <span class="pulse-dot"></span>
           <span>Agent is responding...</span>
@@ -1171,16 +1200,17 @@
       </div>
 
       <div class="input-container">
-        <textarea [(ngModel)]="userInput" [ngModelOptions]="{standalone: true}"
+        <textarea [ngModel]="userInput" (ngModelChange)="onUserInputChange($event)" [ngModelOptions]="{standalone: true}"
           placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : 'Type your message...' }}"
-          (keydown)="handleKeydown($event)" rows="2" [disabled]="isLoading || isStreaming || !selectedAgent">
+          (keydown)="handleKeydown($event)" rows="2" [disabled]="isLoading || isStreaming || !selectedAgent"
+          data-testid="chat-input">
         </textarea>
         <button class="send-btn" (click)="sendMessage()"
           [disabled]="!userInput.trim() || isLoading || isStreaming || !selectedAgent" title="Send message"
-          *ngIf="!isStreaming">
+          *ngIf="!isStreaming" data-testid="send-btn">
           <span class="send-icon">➤</span>
         </button>
-        <button class="stop-btn-send" (click)="cancelStreaming()" title="Stop agent execution" *ngIf="isStreaming">
+        <button class="stop-btn-send" (click)="cancelStreaming()" title="Stop agent execution" *ngIf="isStreaming" data-testid="stop-btn">
           <span class="stop-icon">⏹</span>
         </button>
       </div>

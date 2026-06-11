@@ -19,7 +19,7 @@ import { HttpClient } from '@angular/common/http';
 import { Client, IMessage, StompSubscription } from '@stomp/stompjs';
 import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
-import { IngestProgressUpdate, IngestLogEntry, SystemResourcesResponse, ModelStatusUpdate } from '../models/api-models';
+import { IngestProgressUpdate, IngestLogEntry, SystemResourcesResponse, ModelStatusUpdate, EnrichmentProgressUpdate } from '../models/api-models';
 import { MonitorEvent } from '../models/monitor-models';
 import { BaseService, backendUrl } from './base.service';
 import SockJS from 'sockjs-client';
@@ -71,7 +71,7 @@ export class WebSocketService extends BaseService implements OnDestroy {
     // Prevent race condition: don't create a new client if already connected or connecting
     if (this.client && (this.connectionState.value === WebSocketConnectionState.CONNECTED ||
                         this.connectionState.value === WebSocketConnectionState.CONNECTING)) {
-      console.log('WebSocket already connected or connecting, state:', this.connectionState.value);
+      console.debug('WebSocket already connected or connecting, state:', this.connectionState.value);
       return;
     }
 
@@ -79,24 +79,24 @@ export class WebSocketService extends BaseService implements OnDestroy {
 
     // Construct WebSocket URL from the backend URL
     const wsUrl = this.getWebSocketUrl();
-    console.log('Connecting to WebSocket at:', wsUrl);
+    console.debug('Connecting to WebSocket at:', wsUrl);
 
     this.client = new Client({
       webSocketFactory: () => new SockJS(wsUrl),
       debug: (str) => {
-        console.log('STOMP:', str);
+        console.debug('STOMP:', str);
       },
       reconnectDelay: 5000,
       heartbeatIncoming: 4000,
       heartbeatOutgoing: 4000,
 
       onConnect: () => {
-        console.log('WebSocket connected');
+        console.debug('WebSocket connected');
         this.connectionState.next(WebSocketConnectionState.CONNECTED);
       },
 
       onDisconnect: () => {
-        console.log('WebSocket disconnected');
+        console.debug('WebSocket disconnected');
         this.connectionState.next(WebSocketConnectionState.DISCONNECTED);
       },
 
@@ -452,7 +452,7 @@ export class WebSocketService extends BaseService implements OnDestroy {
     // Notify backend to start broadcasting
     this.http.post(`${backendUrl}/staging-config/broadcast/subscribe`, {}).subscribe({
       next: (response: any) => {
-        console.log('[WS-MODEL] Backend broadcast subscription enabled:', response);
+        console.debug('[WS-MODEL] Backend broadcast subscription enabled:', response);
       },
       error: (err) => {
         console.error('[WS-MODEL] Failed to subscribe to model status broadcast:', err);
@@ -473,7 +473,7 @@ export class WebSocketService extends BaseService implements OnDestroy {
     // Notify backend to potentially stop broadcasting
     this.http.post(`${backendUrl}/staging-config/broadcast/unsubscribe`, {}).subscribe({
       next: (response: any) => {
-        console.log('[WS-MODEL] Backend broadcast subscription disabled:', response);
+        console.debug('[WS-MODEL] Backend broadcast subscription disabled:', response);
       },
       error: (err) => {
         console.error('[WS-MODEL] Failed to unsubscribe from model status broadcast:', err);
@@ -779,6 +779,265 @@ export class WebSocketService extends BaseService implements OnDestroy {
     });
 
     this.subscriptions.set(topic, subscription);
+  }
+
+  // ==================== Enrichment Progress WebSocket ====================
+
+  private static readonly ENRICHMENT_PROGRESS_TOPIC = '/topic/enrichment/progress';
+
+  private enrichmentUpdates = new Subject<EnrichmentProgressUpdate>();
+  public enrichmentUpdates$ = this.enrichmentUpdates.asObservable();
+
+  subscribeToEnrichmentProgress(): Observable<EnrichmentProgressUpdate> {
+    const topic = WebSocketService.ENRICHMENT_PROGRESS_TOPIC;
+    this.subscribeToEnrichmentTopic(topic);
+    return this.enrichmentUpdates$;
+  }
+
+  unsubscribeFromEnrichmentProgress(): void {
+    const topic = WebSocketService.ENRICHMENT_PROGRESS_TOPIC;
+    this.unsubscribeFromTopic(topic);
+  }
+
+  private subscribeToEnrichmentTopic(topic: string): void {
+    if (!this.client || this.connectionState.value !== WebSocketConnectionState.CONNECTED) {
+      const sub = this.connectionState$.pipe(
+        filter(state => state === WebSocketConnectionState.CONNECTED)
+      ).subscribe(() => {
+        this.doSubscribeEnrichment(topic);
+        sub.unsubscribe();
+      });
+      return;
+    }
+
+    this.doSubscribeEnrichment(topic);
+  }
+
+  private doSubscribeEnrichment(topic: string): void {
+    if (this.subscriptions.has(topic)) {
+      return;
+    }
+
+    if (!this.client) {
+      console.error('Cannot subscribe to enrichment progress: client is null');
+      return;
+    }
+
+    const subscription = this.client.subscribe(topic, (message: IMessage) => {
+      this.ngZone.run(() => {
+        try {
+          const update: EnrichmentProgressUpdate = JSON.parse(message.body);
+          this.enrichmentUpdates.next(update);
+        } catch (error) {
+          console.error('Failed to parse enrichment progress update:', error);
+        }
+      });
+    });
+
+    this.subscriptions.set(topic, subscription);
+  }
+
+  // ==================== Job Scheduler WebSocket ====================
+
+  private static readonly SCHEDULER_EVENTS_TOPIC = '/topic/scheduler/events';
+  private static readonly SCHEDULER_STATUS_TOPIC = '/topic/scheduler/status';
+  private static readonly GPU_LIFECYCLE_TOPIC = '/topic/gpu-lifecycle';
+  private static readonly SUBPROCESS_HEARTBEAT_TOPIC = '/topic/subprocess/heartbeat';
+  private static readonly SUBPROCESS_PHASE_TOPIC = '/topic/subprocess/phase';
+
+  // Scheduler event updates (individual job events: queued, dispatched, blocked, skipped-ahead, etc.)
+  private schedulerEvents = new Subject<any>();
+  public schedulerEvents$ = this.schedulerEvents.asObservable();
+
+  // GPU lifecycle events (acquire, release, eviction, restoration)
+  private gpuLifecycleEvents = new Subject<any>();
+  public gpuLifecycleEvents$ = this.gpuLifecycleEvents.asObservable();
+
+  // Subprocess heartbeat memory data
+  private subprocessHeartbeats = new Subject<any>();
+  public subprocessHeartbeats$ = this.subprocessHeartbeats.asObservable();
+
+  // Subprocess phase transition events
+  private subprocessPhases = new Subject<any>();
+  public subprocessPhases$ = this.subprocessPhases.asObservable();
+
+  // Scheduler status updates (full queue + running snapshot on state changes)
+  private schedulerStatus = new Subject<any>();
+  public schedulerStatus$ = this.schedulerStatus.asObservable();
+
+  /**
+   * Subscribe to real-time job scheduler event updates via WebSocket.
+   * Events include: JOB_QUEUED, JOB_DISPATCHED, JOB_BLOCKED, JOB_SKIPPED_AHEAD,
+   * JOB_REORDERED, JOB_COMPLETED, JOB_FAILED, JOB_CANCELLED, etc.
+   */
+  subscribeToSchedulerEvents(): Observable<any> {
+    const topic = WebSocketService.SCHEDULER_EVENTS_TOPIC;
+    this.subscribeToSchedulerTopic(topic, this.schedulerEvents);
+    return this.schedulerEvents$;
+  }
+
+  /**
+   * Subscribe to real-time scheduler status snapshots via WebSocket.
+   * Status includes full queue, running jobs, and scheduler state on every state change.
+   */
+  subscribeToSchedulerStatus(): Observable<any> {
+    const topic = WebSocketService.SCHEDULER_STATUS_TOPIC;
+    this.subscribeToSchedulerTopic(topic, this.schedulerStatus);
+    return this.schedulerStatus$;
+  }
+
+  /**
+   * Unsubscribe from scheduler event updates.
+   */
+  unsubscribeFromSchedulerEvents(): void {
+    this.unsubscribeFromTopic(WebSocketService.SCHEDULER_EVENTS_TOPIC);
+  }
+
+  /**
+   * Unsubscribe from scheduler status updates.
+   */
+  unsubscribeFromSchedulerStatus(): void {
+    this.unsubscribeFromTopic(WebSocketService.SCHEDULER_STATUS_TOPIC);
+  }
+
+  /**
+   * Subscribe to GPU lifecycle events (acquire, release, eviction, restoration).
+   */
+  subscribeToGpuLifecycleEvents(): Observable<any> {
+    this.subscribeToSchedulerTopic(WebSocketService.GPU_LIFECYCLE_TOPIC, this.gpuLifecycleEvents);
+    return this.gpuLifecycleEvents$;
+  }
+
+  unsubscribeFromGpuLifecycleEvents(): void {
+    this.unsubscribeFromTopic(WebSocketService.GPU_LIFECYCLE_TOPIC);
+  }
+
+  /**
+   * Subscribe to subprocess heartbeat memory data.
+   */
+  subscribeToSubprocessHeartbeats(): Observable<any> {
+    this.subscribeToSchedulerTopic(WebSocketService.SUBPROCESS_HEARTBEAT_TOPIC, this.subprocessHeartbeats);
+    return this.subprocessHeartbeats$;
+  }
+
+  unsubscribeFromSubprocessHeartbeats(): void {
+    this.unsubscribeFromTopic(WebSocketService.SUBPROCESS_HEARTBEAT_TOPIC);
+  }
+
+  /**
+   * Subscribe to subprocess phase transition events with duration data.
+   */
+  subscribeToSubprocessPhases(): Observable<any> {
+    this.subscribeToSchedulerTopic(WebSocketService.SUBPROCESS_PHASE_TOPIC, this.subprocessPhases);
+    return this.subprocessPhases$;
+  }
+
+  unsubscribeFromSubprocessPhases(): void {
+    this.unsubscribeFromTopic(WebSocketService.SUBPROCESS_PHASE_TOPIC);
+  }
+
+  private subscribeToSchedulerTopic(topic: string, subject: Subject<any>): void {
+    if (!this.client || this.connectionState.value !== WebSocketConnectionState.CONNECTED) {
+      const sub = this.connectionState$.pipe(
+        filter(state => state === WebSocketConnectionState.CONNECTED)
+      ).subscribe(() => {
+        this.doSubscribeScheduler(topic, subject);
+        sub.unsubscribe();
+      });
+      return;
+    }
+
+    this.doSubscribeScheduler(topic, subject);
+  }
+
+  private doSubscribeScheduler(topic: string, subject: Subject<any>): void {
+    if (this.subscriptions.has(topic)) {
+      return;
+    }
+
+    if (!this.client) {
+      console.error('Cannot subscribe to scheduler topic: client is null');
+      return;
+    }
+
+    const subscription = this.client.subscribe(topic, (message: IMessage) => {
+      this.ngZone.run(() => {
+        try {
+          const update = JSON.parse(message.body);
+          subject.next(update);
+        } catch (error) {
+          console.error('Failed to parse scheduler update:', error);
+        }
+      });
+    });
+
+    this.subscriptions.set(topic, subscription);
+  }
+
+  // ==================== Crawl Progress WebSocket ====================
+
+  private static readonly CRAWL_PROGRESS_TOPIC = '/topic/crawl/progress';
+  private static readonly CRAWL_COMPLETE_TOPIC = '/topic/crawl/complete';
+
+  private crawlProgress = new Subject<any>();
+  public crawlProgress$ = this.crawlProgress.asObservable();
+  private crawlComplete = new Subject<any>();
+  public crawlComplete$ = this.crawlComplete.asObservable();
+
+  subscribeToCrawlProgress(): Observable<any> {
+    this.subscribeToSchedulerTopic(WebSocketService.CRAWL_PROGRESS_TOPIC, this.crawlProgress);
+    return this.crawlProgress$;
+  }
+
+  subscribeToCrawlComplete(): Observable<any> {
+    this.subscribeToSchedulerTopic(WebSocketService.CRAWL_COMPLETE_TOPIC, this.crawlComplete);
+    return this.crawlComplete$;
+  }
+
+  unsubscribeFromCrawlProgress(): void {
+    this.unsubscribeFromTopic(WebSocketService.CRAWL_PROGRESS_TOPIC);
+    this.unsubscribeFromTopic(WebSocketService.CRAWL_COMPLETE_TOPIC);
+  }
+
+  // ==================== Note Sync WebSocket ====================
+
+  private static readonly SYNC_ALL_TOPIC = '/topic/sync/all';
+
+  private syncProgress = new Subject<any>();
+  public syncProgress$ = this.syncProgress.asObservable();
+
+  subscribeToSyncProgress(): Observable<any> {
+    this.subscribeToSchedulerTopic(WebSocketService.SYNC_ALL_TOPIC, this.syncProgress);
+    return this.syncProgress$;
+  }
+
+  unsubscribeFromSyncProgress(): void {
+    this.unsubscribeFromTopic(WebSocketService.SYNC_ALL_TOPIC);
+  }
+
+  // ==================== Adaptive Batching Audit WebSocket ====================
+
+  private static readonly ADAPTIVE_AUDIT_TOPIC = '/topic/adaptive/audit';
+  private static readonly ADAPTIVE_STATUS_TOPIC = '/topic/adaptive/status';
+
+  private adaptiveAudit = new Subject<any>();
+  public adaptiveAudit$ = this.adaptiveAudit.asObservable();
+  private adaptiveStatus = new Subject<any>();
+  public adaptiveStatus$ = this.adaptiveStatus.asObservable();
+
+  subscribeToAdaptiveAudit(): Observable<any> {
+    this.subscribeToSchedulerTopic(WebSocketService.ADAPTIVE_AUDIT_TOPIC, this.adaptiveAudit);
+    return this.adaptiveAudit$;
+  }
+
+  subscribeToAdaptiveStatus(): Observable<any> {
+    this.subscribeToSchedulerTopic(WebSocketService.ADAPTIVE_STATUS_TOPIC, this.adaptiveStatus);
+    return this.adaptiveStatus$;
+  }
+
+  unsubscribeFromAdaptiveAudit(): void {
+    this.unsubscribeFromTopic(WebSocketService.ADAPTIVE_AUDIT_TOPIC);
+    this.unsubscribeFromTopic(WebSocketService.ADAPTIVE_STATUS_TOPIC);
   }
 
   // ==================== Common Methods ====================

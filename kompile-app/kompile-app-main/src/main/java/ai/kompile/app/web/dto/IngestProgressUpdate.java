@@ -59,6 +59,8 @@ public record IngestProgressUpdate(
         CHUNKING,
         /** Concurrent extraction of structured content (entities, concepts, facts, etc.) */
         EXTRACTION,
+        /** Graph extraction phase */
+        GRAPH_EXTRACTION,
         /** Concurrent keyword indexing and embedding (keyword index updated immediately) */
         INDEXING_AND_EMBEDDING,
         EMBEDDING,

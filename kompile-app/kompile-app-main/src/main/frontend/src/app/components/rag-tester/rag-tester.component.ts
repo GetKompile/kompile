@@ -46,6 +46,25 @@ interface GraphRagInfo {
   searchTypes: GraphRagSearchType[];
 }
 
+interface GraphRagEntity {
+  name: string;
+  type?: string;
+  properties?: Record<string, any>;
+}
+
+interface GraphRagRelationship {
+  source: string;
+  target: string;
+  type: string;
+  properties?: Record<string, any>;
+}
+
+interface GraphRagCommunity {
+  id?: string;
+  summary?: string;
+  members?: string[];
+}
+
 interface GraphRagQueryResponse {
   query: string;
   searchType: string;
@@ -60,6 +79,10 @@ interface GraphRagQueryResponse {
   contextLength?: number;
   error?: string;
   searchTypeWarning?: string;
+  entities?: GraphRagEntity[];
+  relationships?: GraphRagRelationship[];
+  communities?: GraphRagCommunity[];
+  sourceChunks?: string[];
 }
 
 interface RerankerParam {
@@ -832,18 +855,15 @@ export class RagTesterComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Navigate to the Developer Hub > System > Embedding Subprocess logs tab.
-   * This helps users diagnose embedding model failures.
+   * Navigate to the Developer Hub > Management > Job Scheduler tab.
+   * Subprocess logs (including embedding) are now in the scheduler dashboard.
    */
   navigateToEmbeddingLogs(): void {
-    // Navigate to developer-hub with query params to select the System tab (index 4)
-    // and the Embedding Subprocess sub-tab (index 3)
     this.router.navigate(['/developer-hub'], {
       queryParams: {
-        tab: 4,       // System tab
-        subtab: 3     // Embedding Subprocess sub-tab
+        tab: 2        // Management tab (contains Job Scheduler with Subprocess Logs)
       }
     });
-    this.showSnackbar('Navigate to Developer Hub > System > Embedding Subprocess to view logs');
+    this.showSnackbar('Navigate to Developer Hub > Management > Job Scheduler > Subprocess Logs to view embedding logs');
   }
 }

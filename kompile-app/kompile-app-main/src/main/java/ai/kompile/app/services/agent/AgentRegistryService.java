@@ -61,50 +61,10 @@ public class AgentRegistryService {
     public void initialize() {
         log.info("Initializing agent registry...");
 
-        // Claude Code CLI (local installation, not API)
-        AgentProvider claude = AgentProvider.builder()
-                .name("claude-cli")
-                .displayName("Claude Code")
-                .command("claude")
-                .skipPermissionsFlag("--dangerously-skip-permissions")
-                .skipPermissions(true)
-                .addArg("--output-format")
-                .addArg("stream-json")
-                .addArg("--verbose")
-                .available(false) // Will be checked below
-                .isDefault(true)
-                .description("Anthropic's Claude Code CLI - requires local installation (not API)")
-                .interactivePromptPattern(null) // Claude uses stream-json result event for turn detection
-                .build();
-        agents.put(claude.getName(), claude);
-
-        // OpenAI Codex CLI (local installation, not API)
-        AgentProvider codex = AgentProvider.builder()
-                .name("codex-cli")
-                .displayName("Codex")
-                .command("codex")
-                .skipPermissionsFlag("--full-auto")
-                .skipPermissions(true)
-                .available(false) // Will be checked below
-                .isDefault(false)
-                .description("OpenAI's Codex CLI - requires local installation (not API)")
-                .interactivePromptPattern("^> $")
-                .build();
-        agents.put(codex.getName(), codex);
-
-        // Google Gemini CLI (local installation, not API)
-        AgentProvider gemini = AgentProvider.builder()
-                .name("gemini-cli")
-                .displayName("Gemini")
-                .command("gemini")
-                .skipPermissionsFlag("--yolo")
-                .skipPermissions(true)
-                .available(false) // Will be checked below
-                .isDefault(false)
-                .description("Google's Gemini CLI - requires local installation (not API)")
-                .interactivePromptPattern("^> $")
-                .build();
-        agents.put(gemini.getName(), gemini);
+        // Load CLI agent definitions from cli-agents.json (single source of truth)
+        for (AgentProvider agent : ai.kompile.core.agent.CliAgentRegistry.loadAll()) {
+            agents.put(agent.getName(), agent);
+        }
 
         log.info("Agent registry initialized with {} CLI agents, checking availability...", agents.size());
 
@@ -329,6 +289,24 @@ public class AgentRegistryService {
                 .or(() -> agents.values().stream()
                         .filter(AgentProvider::isAvailable)
                         .findFirst());
+    }
+
+    /**
+     * Get an agent by its CLI command name (e.g. "opencode" matches "opencode-cli").
+     */
+    public AgentProvider getAgentByCommand(String command) {
+        if (command == null) return null;
+        // Exact name match first
+        AgentProvider exact = agents.get(command);
+        if (exact != null) return exact;
+        // Try with -cli suffix
+        AgentProvider withSuffix = agents.get(command + "-cli");
+        if (withSuffix != null) return withSuffix;
+        // Search by command field
+        return agents.values().stream()
+                .filter(a -> command.equals(a.getCommand()))
+                .findFirst()
+                .orElse(null);
     }
 
     /**

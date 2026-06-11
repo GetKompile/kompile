@@ -16,14 +16,55 @@
 
 package ai.kompile.core.graphrag.model;
 
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents the entire constructed graph, containing lists of entities, relationships, and communities.
  */
 @Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class Graph {
+    /**
+     * An optional identifier for this graph.
+     */
+    private String id;
+
+    /**
+     * Optional name for this graph.
+     */
+    private String name;
+
+    /**
+     * Optional description for this graph.
+     */
+    private String description;
+
+    /**
+     * Optional parent graph identifier for hierarchical graphs.
+     */
+    private String parentGraphId;
+
+    /**
+     * Associated fact sheet identifier.
+     */
+    private Long factSheetId;
+
+    /**
+     * Child graph identifiers for hierarchical graphs.
+     */
+    @Builder.Default
+    private List<String> childGraphIds = new ArrayList<>();
+
     /**
      * A list of all entities identified in the source documents.
      */
@@ -38,4 +79,10 @@ public class Graph {
      * A list of communities detected within the graph.
      */
     private List<Community> communities;
+
+    /**
+     * Arbitrary metadata for this graph.
+     */
+    @Builder.Default
+    private Map<String, Object> metadata = new HashMap<>();
 }

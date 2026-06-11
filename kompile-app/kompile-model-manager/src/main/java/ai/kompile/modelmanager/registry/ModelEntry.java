@@ -17,6 +17,7 @@
 package ai.kompile.modelmanager.registry;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -107,6 +108,7 @@ public class ModelEntry {
     /**
      * Check if the model is active and usable.
      */
+    @JsonIgnore
     public boolean isActive() {
         return status == ModelStatus.ACTIVE;
     }
@@ -114,6 +116,7 @@ public class ModelEntry {
     /**
      * Get the effective version from metadata or fall back to null.
      */
+    @JsonIgnore
     public String getEffectiveVersion() {
         if (metadata != null && metadata.getVersion() != null) {
             return metadata.getVersion();
@@ -124,6 +127,7 @@ public class ModelEntry {
     /**
      * Get the full relative path to the model file.
      */
+    @JsonIgnore
     public String getModelFilePath() {
         return path + "/" + modelFile;
     }
@@ -131,6 +135,7 @@ public class ModelEntry {
     /**
      * Get the full relative path to the vocab file.
      */
+    @JsonIgnore
     public String getVocabFilePath() {
         return path + "/" + vocabFile;
     }

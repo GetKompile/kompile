@@ -222,6 +222,10 @@ public class OrchestratorAutoConfiguration {
     @Bean
     public OrchestratorComponentWiring orchestratorComponentWiring(
             OrchestratorService orchestratorService,
+            StateMachineService stateMachineService,
+            TaskExecutionService taskExecutionService,
+            TaskExecutorRegistry taskExecutorRegistry,
+            @Autowired(required = false) List<TaskExecutor> taskExecutors,
             SnapshotService snapshotService,
             RecoveryService recoveryService,
             HookRegistry hookRegistry,
@@ -230,7 +234,9 @@ public class OrchestratorAutoConfiguration {
             TaskInstanceRepository taskInstanceRepository,
             WorkflowRepository workflowRepository) {
         return new OrchestratorComponentWiring(
-                orchestratorService, snapshotService, recoveryService,
+                orchestratorService, stateMachineService, taskExecutionService,
+                taskExecutorRegistry, taskExecutors,
+                snapshotService, recoveryService,
                 hookRegistry, triggerManager, auditService,
                 taskInstanceRepository, workflowRepository);
     }
@@ -242,6 +248,10 @@ public class OrchestratorAutoConfiguration {
 
         public OrchestratorComponentWiring(
                 OrchestratorService orchestratorService,
+                StateMachineService stateMachineService,
+                TaskExecutionService taskExecutionService,
+                TaskExecutorRegistry taskExecutorRegistry,
+                List<TaskExecutor> taskExecutors,
                 SnapshotService snapshotService,
                 RecoveryService recoveryService,
                 HookRegistry hookRegistry,
@@ -257,6 +267,18 @@ public class OrchestratorAutoConfiguration {
                 defaultService.setSnapshotService(snapshotService);
                 defaultService.setRecoveryService(recoveryService);
                 defaultService.setAuditService(auditService);
+            }
+
+            // Wire task execution service into state machine for onEnter/onExit task hooks
+            if (stateMachineService instanceof DefaultStateMachineService defaultStateMachine) {
+                defaultStateMachine.setTaskExecutionService(taskExecutionService);
+            }
+
+            // Auto-register all TaskExecutor beans into the registry
+            if (taskExecutors != null) {
+                for (TaskExecutor executor : taskExecutors) {
+                    taskExecutorRegistry.register(executor);
+                }
             }
 
             // Wire repositories into snapshot service

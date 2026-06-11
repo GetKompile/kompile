@@ -1,0 +1,1420 @@
+<!--
+  Copyright 2025 Kompile Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<div class="code-graph-builder">
+
+  <!-- ═══════════════════════════════════════════════════════ Header -->
+  <div class="builder-header">
+    <h2>
+      <span class="material-icons">account_tree</span>
+      Code Graph Builder
+    </h2>
+    <div class="header-actions">
+      <button class="btn-icon" (click)="loadDirectories(); loadStats()" title="Refresh">
+        <span class="material-icons">refresh</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ Project ID bar -->
+  <div class="project-bar">
+    <label class="project-label">
+      <span class="material-icons">folder_special</span>
+      Project ID
+    </label>
+    <input
+      class="project-input"
+      type="text"
+      [(ngModel)]="projectId"
+      placeholder="default"
+      (change)="loadDirectories(); loadStats()"
+    />
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ Tab bar -->
+  <div class="view-tabs">
+    <button [class.active]="activeTab === 'build'" (click)="setActiveTab('build')">
+      <span class="material-icons">build</span> Build
+    </button>
+    <button [class.active]="activeTab === 'search'" (click)="setActiveTab('search')">
+      <span class="material-icons">search</span> Search
+    </button>
+    <button [class.active]="activeTab === 'directories'" (click)="setActiveTab('directories')">
+      <span class="material-icons">folder_open</span> Directories
+    </button>
+    <button [class.active]="activeTab === 'stats'" (click)="setActiveTab('stats')">
+      <span class="material-icons">bar_chart</span> Statistics
+    </button>
+    <button [class.active]="activeTab === 'visualize'" (click)="setActiveTab('visualize')">
+      <span class="material-icons">hub</span> Visualize
+    </button>
+    <button [class.active]="activeTab === 'analysis'" (click)="setActiveTab('analysis')">
+      <span class="material-icons">psychology</span> Analysis
+    </button>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ Alerts -->
+  <div class="alert alert-error" *ngIf="error">
+    <span class="material-icons">error_outline</span>
+    {{ error }}
+    <button class="alert-close" (click)="error = null">
+      <span class="material-icons">close</span>
+    </button>
+  </div>
+  <div class="alert alert-success" *ngIf="successMessage">
+    <span class="material-icons">check_circle_outline</span>
+    {{ successMessage }}
+    <button class="alert-close" (click)="successMessage = null">
+      <span class="material-icons">close</span>
+    </button>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ BUILD TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'build'">
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">source</span>
+        Index & Build Knowledge Graph
+      </h3>
+      <p class="card-hint">
+        Point to a local codebase directory. The indexer will parse source files,
+        extract entities and relations, and build a queryable code graph.
+      </p>
+
+      <div class="form-row">
+        <label class="field-label">Directory Path</label>
+        <input
+          class="text-input"
+          type="text"
+          [(ngModel)]="directoryPath"
+          placeholder="/path/to/your/project"
+          [disabled]="building"
+        />
+      </div>
+
+      <div class="form-actions">
+        <button
+          class="btn-primary"
+          (click)="buildGraph()"
+          [disabled]="building || !directoryPath.trim()"
+        >
+          <span class="material-icons" *ngIf="!building">play_arrow</span>
+          <span class="material-icons spin" *ngIf="building">sync</span>
+          {{ building ? 'Building…' : 'Build Graph' }}
+        </button>
+        <button
+          class="btn-secondary"
+          (click)="ensureConnectivity()"
+          [disabled]="ensuringConnectivity"
+          title="Link disconnected graph components"
+        >
+          <span class="material-icons" *ngIf="!ensuringConnectivity">link</span>
+          <span class="material-icons spin" *ngIf="ensuringConnectivity">sync</span>
+          {{ ensuringConnectivity ? 'Linking…' : 'Ensure Connectivity' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Build result -->
+    <div class="card result-card" *ngIf="buildResult">
+      <h3 class="card-title">
+        <span class="material-icons">done_all</span>
+        Build Result
+      </h3>
+
+      <div class="stat-grid">
+        <div class="stat-item" *ngIf="buildResult.filesProcessed !== undefined">
+          <span class="stat-value">{{ buildResult.filesProcessed }}</span>
+          <span class="stat-label">Files Processed</span>
+        </div>
+        <div class="stat-item" *ngIf="buildResult.entitiesFound !== undefined">
+          <span class="stat-value">{{ buildResult.entitiesFound }}</span>
+          <span class="stat-label">Entities Found</span>
+        </div>
+        <div class="stat-item" *ngIf="buildResult.relationsCreated !== undefined">
+          <span class="stat-value">{{ buildResult.relationsCreated }}</span>
+          <span class="stat-label">Relations Created</span>
+        </div>
+        <div class="stat-item" *ngIf="buildResult.nodesAdded !== undefined">
+          <span class="stat-value">{{ buildResult.nodesAdded }}</span>
+          <span class="stat-label">Nodes Added</span>
+        </div>
+        <div class="stat-item" *ngIf="buildResult.edgesAdded !== undefined">
+          <span class="stat-value">{{ buildResult.edgesAdded }}</span>
+          <span class="stat-label">Edges Added</span>
+        </div>
+        <div class="stat-item" *ngIf="buildResult.durationMs !== undefined">
+          <span class="stat-value">{{ buildResult.durationMs | number }}ms</span>
+          <span class="stat-label">Duration</span>
+        </div>
+      </div>
+
+      <div class="result-detail" *ngIf="buildResult.message">
+        <span class="material-icons">info</span>
+        {{ buildResult.message }}
+      </div>
+
+      <div class="result-detail result-error" *ngIf="buildResult.error">
+        <span class="material-icons">warning</span>
+        {{ buildResult.error }}
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ SEARCH TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'search'">
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">manage_search</span>
+        Search the Code Graph
+      </h3>
+
+      <div class="form-row">
+        <label class="field-label">Query</label>
+        <input
+          class="text-input"
+          type="text"
+          [(ngModel)]="searchQuery"
+          placeholder="e.g. UserService, parseDocument, embedText…"
+          [disabled]="searching"
+          (keyup.enter)="doSearch()"
+        />
+      </div>
+
+      <div class="form-inline">
+        <div class="form-row form-row-sm" *ngIf="!useGraphSearch">
+          <label class="field-label">Symbol Type <span class="optional">(optional)</span></label>
+          <select class="select-input" [(ngModel)]="searchType" [disabled]="searching">
+            <option value="">All types</option>
+            <option value="CLASS">Class</option>
+            <option value="INTERFACE">Interface</option>
+            <option value="METHOD">Method</option>
+            <option value="FIELD">Field</option>
+            <option value="FUNCTION">Function</option>
+            <option value="VARIABLE">Variable</option>
+            <option value="MODULE">Module</option>
+            <option value="PACKAGE">Package</option>
+          </select>
+        </div>
+
+        <div class="form-row form-row-sm">
+          <label class="field-label">Max Results</label>
+          <input
+            class="text-input number-input"
+            type="number"
+            [(ngModel)]="searchMaxResults"
+            min="1"
+            max="100"
+            [disabled]="searching"
+          />
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <label class="toggle-label">
+          <input type="checkbox" [(ngModel)]="useGraphSearch" />
+          <span>Graph Search</span>
+          <span class="optional">(code entities + knowledge graph)</span>
+        </label>
+        <button
+          class="btn-primary"
+          (click)="doSearch()"
+          [disabled]="searching || !searchQuery.trim()"
+        >
+          <span class="material-icons" *ngIf="!searching">search</span>
+          <span class="material-icons spin" *ngIf="searching">sync</span>
+          {{ searching ? 'Searching…' : 'Search' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Search results -->
+    <div class="card" *ngIf="searchResults.length > 0">
+      <h3 class="card-title">
+        <span class="material-icons">list</span>
+        Results <span class="count-badge">{{ searchResults.length }}</span>
+      </h3>
+
+      <div class="results-list">
+        <div class="result-row" *ngFor="let r of searchResults; trackBy: trackByIndex">
+          <div class="result-type-badge">{{ r.type || r.entityType || '—' }}</div>
+          <div class="result-info">
+            <span class="result-name">{{ r.name || r.fullyQualifiedName || r.fqn || '(unknown)' }}</span>
+            <span class="result-file" *ngIf="r.filePath || r.file">
+              <span class="material-icons">insert_drive_file</span>
+              {{ r.filePath || r.file }}
+              <span class="result-line" *ngIf="r.line !== undefined || r.lineNumber !== undefined">
+                :{{ r.line ?? r.lineNumber }}
+              </span>
+            </span>
+            <span class="result-snippet" *ngIf="r.snippet || r.description">
+              {{ r.snippet || r.description }}
+            </span>
+          </div>
+          <div class="result-score" *ngIf="r.score !== undefined">
+            {{ r.score | number:'1.2-2' }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="empty-state" *ngIf="!searching && searchQuery && searchResults.length === 0">
+      <span class="material-icons">search_off</span>
+      <p>No results found for "{{ searchQuery }}"</p>
+    </div>
+
+    <!-- Callers lookup -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">call_split</span>
+        Callers Lookup
+      </h3>
+      <p class="card-hint">
+        Find all call sites for a given function or method name.
+      </p>
+
+      <div class="form-row">
+        <label class="field-label">Function / Method Name</label>
+        <input
+          class="text-input"
+          type="text"
+          [(ngModel)]="callersQuery"
+          placeholder="e.g. buildGraph, parseDocument"
+          [disabled]="loadingCallers"
+          (keyup.enter)="lookupCallers()"
+        />
+      </div>
+
+      <div class="form-actions">
+        <button
+          class="btn-primary"
+          (click)="lookupCallers()"
+          [disabled]="loadingCallers || !callersQuery.trim()"
+        >
+          <span class="material-icons" *ngIf="!loadingCallers">call_split</span>
+          <span class="material-icons spin" *ngIf="loadingCallers">sync</span>
+          {{ loadingCallers ? 'Looking up…' : 'Find Callers' }}
+        </button>
+      </div>
+
+      <div class="results-list" *ngIf="callersResults.length > 0" style="margin-top: 12px;">
+        <div class="result-row" *ngFor="let c of callersResults; trackBy: trackByIndex">
+          <div class="result-type-badge">{{ c.entityType || c.type || 'CALLER' }}</div>
+          <div class="result-info">
+            <span class="result-name">{{ c.name || c.fullyQualifiedName || c.fqn || '(unknown)' }}</span>
+            <span class="result-file" *ngIf="c.filePath || c.file">
+              <span class="material-icons">insert_drive_file</span>
+              {{ c.filePath || c.file }}
+              <span class="result-line" *ngIf="c.line !== undefined || c.startLine !== undefined">
+                :{{ c.line ?? c.startLine }}
+              </span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="empty-state" *ngIf="!loadingCallers && callersQuery && callersResults.length === 0 && successMessage === null && error === null">
+        <span class="material-icons">search_off</span>
+        <p>No callers found for "{{ callersQuery }}"</p>
+      </div>
+    </div>
+
+    <!-- Shortest path -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">route</span>
+        Shortest Path
+      </h3>
+      <p class="card-hint">
+        Find the shortest path between two symbols in the knowledge graph.
+      </p>
+
+      <div class="form-inline">
+        <div class="form-row form-row-sm" style="flex: 2 1 280px;">
+          <label class="field-label">From (FQN)</label>
+          <input
+            class="text-input"
+            type="text"
+            [(ngModel)]="spathFrom"
+            placeholder="e.g. com.example.UserService"
+            [disabled]="loadingSpath"
+          />
+        </div>
+        <div class="form-row form-row-sm" style="flex: 2 1 280px;">
+          <label class="field-label">To (FQN)</label>
+          <input
+            class="text-input"
+            type="text"
+            [(ngModel)]="spathTo"
+            placeholder="e.g. com.example.DatabaseConfig"
+            [disabled]="loadingSpath"
+          />
+        </div>
+        <div class="form-row form-row-sm">
+          <label class="field-label">Edge Type <span class="optional">(optional)</span></label>
+          <select class="select-input" [(ngModel)]="spathEdgeType" [disabled]="loadingSpath">
+            <option value="">All</option>
+            <option value="HIERARCHICAL">Hierarchical</option>
+            <option value="SHARED_ENTITY">Shared Entity</option>
+            <option value="CROSS_SOURCE">Cross Source</option>
+            <option value="USER_DEFINED">User Defined</option>
+            <option value="CITATION">Citation</option>
+            <option value="EMBEDDING_SIMILARITY">Embedding Similarity</option>
+            <option value="TEMPORAL">Temporal</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button
+          class="btn-primary"
+          (click)="findShortestPath()"
+          [disabled]="loadingSpath || !spathFrom.trim() || !spathTo.trim()"
+        >
+          <span class="material-icons" *ngIf="!loadingSpath">route</span>
+          <span class="material-icons spin" *ngIf="loadingSpath">sync</span>
+          {{ loadingSpath ? 'Finding path…' : 'Find Path' }}
+        </button>
+      </div>
+
+      <!-- Path result -->
+      <div *ngIf="spathResult" style="margin-top: 12px;">
+        <div *ngIf="spathResult.pathFound" class="spath-result">
+          <div class="spath-header">
+            <span class="material-icons">check_circle</span>
+            Path found: <strong>{{ spathResult.hops }}</strong> hop{{ spathResult.hops !== 1 ? 's' : '' }}
+          </div>
+          <div class="spath-path">
+            <div
+              *ngFor="let node of spathResult.path; let i = index; let last = last"
+              class="spath-node"
+            >
+              <div class="spath-node-row">
+                <span class="spath-badge" [class.spath-start]="i === 0" [class.spath-end]="last">
+                  {{ i === 0 ? 'START' : last ? 'END' : i }}
+                </span>
+                <span class="spath-type-badge" *ngIf="node.type">{{ node.type }}</span>
+                <span class="spath-title">{{ node.title || node.externalId }}</span>
+              </div>
+              <div class="spath-fqn" *ngIf="node.externalId && node.externalId !== node.title">
+                {{ node.externalId }}
+              </div>
+              <div class="spath-connector" *ngIf="!last">
+                <span class="material-icons">arrow_downward</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div *ngIf="spathResult.pathFound === false" class="empty-state" style="padding: 20px;">
+          <span class="material-icons">link_off</span>
+          <p>No path found between the two symbols.</p>
+        </div>
+        <div *ngIf="spathResult.error" class="result-detail result-error">
+          <span class="material-icons">warning</span>
+          {{ spathResult.error }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Unused functions -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">delete_sweep</span>
+        Unused Functions
+      </h3>
+      <p class="card-hint">
+        Find functions/methods that appear to have no callers in the indexed codebase.
+      </p>
+
+      <div class="form-inline">
+        <div class="form-row form-row-sm">
+          <label class="field-label">Visibility <span class="optional">(optional)</span></label>
+          <select class="select-input" [(ngModel)]="unusedVisibility" [disabled]="loadingUnused">
+            <option value="">All</option>
+            <option value="public">Public</option>
+            <option value="protected">Protected</option>
+            <option value="private">Private</option>
+          </select>
+        </div>
+
+        <div class="form-row form-row-sm">
+          <label class="field-label">Language <span class="optional">(optional)</span></label>
+          <select class="select-input" [(ngModel)]="unusedLanguage" [disabled]="loadingUnused">
+            <option value="">All</option>
+            <option *ngFor="let lang of projectLanguages" [value]="lang">{{ lang }}</option>
+          </select>
+        </div>
+
+        <div class="form-row form-row-sm">
+          <label class="field-label">Max Results</label>
+          <input
+            class="text-input number-input"
+            type="number"
+            [(ngModel)]="unusedMaxResults"
+            min="1"
+            max="500"
+            [disabled]="loadingUnused"
+          />
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <label class="toggle-label">
+          <input type="checkbox" [(ngModel)]="unusedIncludeTests" />
+          <span>Include test files</span>
+        </label>
+        <button
+          class="btn-primary"
+          (click)="loadUnusedFunctions()"
+          [disabled]="loadingUnused"
+        >
+          <span class="material-icons" *ngIf="!loadingUnused">policy</span>
+          <span class="material-icons spin" *ngIf="loadingUnused">sync</span>
+          {{ loadingUnused ? 'Scanning…' : 'Find Unused' }}
+        </button>
+      </div>
+
+      <div class="results-list" *ngIf="unusedFunctions.length > 0" style="margin-top: 12px;">
+        <div class="result-row" *ngFor="let r of unusedFunctions; trackBy: trackByIndex">
+          <div class="result-type-badge">{{ r.entityType || '—' }}</div>
+          <div class="result-info">
+            <span class="result-name">{{ r.name || r.fullyQualifiedName || '(unknown)' }}</span>
+            <span class="result-file" *ngIf="r.filePath">
+              <span class="material-icons">insert_drive_file</span>
+              {{ r.filePath }}
+              <span class="result-line" *ngIf="r.startLine">:{{ r.startLine }}</span>
+            </span>
+            <span class="result-snippet" *ngIf="r.signature">{{ r.signature }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ DIRECTORIES TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'directories'">
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">create_new_folder</span>
+        Add Directory
+      </h3>
+
+      <div class="form-row">
+        <label class="field-label">Path</label>
+        <input
+          class="text-input"
+          type="text"
+          [(ngModel)]="newDirectoryPath"
+          placeholder="/path/to/codebase"
+          [disabled]="addingDirectory"
+        />
+      </div>
+
+      <div class="form-row">
+        <label class="field-label">Display Name <span class="optional">(optional)</span></label>
+        <input
+          class="text-input"
+          type="text"
+          [(ngModel)]="newDirectoryDisplay"
+          placeholder="My Codebase"
+          [disabled]="addingDirectory"
+        />
+      </div>
+
+      <div class="form-row">
+        <label class="field-label">Description <span class="optional">(optional)</span></label>
+        <input
+          class="text-input"
+          type="text"
+          [(ngModel)]="newDirectoryDescription"
+          placeholder="e.g. Backend API service for user management"
+          [disabled]="addingDirectory"
+        />
+      </div>
+
+      <div class="form-row">
+        <label class="field-label">Tags <span class="optional">(optional)</span></label>
+        <input
+          class="text-input"
+          type="text"
+          [(ngModel)]="newDirectoryTags"
+          placeholder="e.g. backend,java,microservice"
+          [disabled]="addingDirectory"
+        />
+      </div>
+
+      <div class="form-inline">
+        <div class="form-row form-row-sm">
+          <label class="field-label">Include Patterns <span class="optional">(optional)</span></label>
+          <input
+            class="text-input"
+            type="text"
+            [(ngModel)]="newDirectoryInclude"
+            placeholder="e.g. *.java,*.py,*.ts"
+            [disabled]="addingDirectory"
+          />
+        </div>
+
+        <div class="form-row form-row-sm">
+          <label class="field-label">Exclude Patterns <span class="optional">(optional)</span></label>
+          <input
+            class="text-input"
+            type="text"
+            [(ngModel)]="newDirectoryExclude"
+            placeholder="e.g. *_test.go,node_modules/**"
+            [disabled]="addingDirectory"
+          />
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button
+          class="btn-primary"
+          (click)="addDirectory()"
+          [disabled]="addingDirectory || !newDirectoryPath.trim()"
+        >
+          <span class="material-icons" *ngIf="!addingDirectory">add</span>
+          <span class="material-icons spin" *ngIf="addingDirectory">sync</span>
+          {{ addingDirectory ? 'Adding…' : 'Add Directory' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Directory list -->
+    <div class="card" *ngIf="!loadingDirs">
+      <h3 class="card-title">
+        <span class="material-icons">folder_open</span>
+        Indexed Directories
+        <span class="count-badge">{{ directories.length }}</span>
+      </h3>
+
+      <div class="empty-state" *ngIf="directories.length === 0">
+        <span class="material-icons">folder_off</span>
+        <p>No directories indexed yet for project "{{ projectId }}".</p>
+      </div>
+
+      <div class="dir-list" *ngIf="directories.length > 0">
+        <div class="dir-row" *ngFor="let d of directories; trackBy: trackByIndex">
+          <span class="material-icons dir-icon">folder</span>
+          <div class="dir-info">
+            <span class="dir-name">{{ d.displayName || d.absolutePath || d.path }}</span>
+            <span class="dir-path" *ngIf="d.displayName">{{ d.absolutePath || d.path }}</span>
+            <span class="dir-description" *ngIf="d.description">{{ d.description }}</span>
+            <div class="dir-meta-row">
+              <span class="dir-meta" *ngIf="d.status">
+                <span
+                  class="status-dot"
+                  [class.status-ok]="d.status === 'INDEXED'"
+                  [class.status-pending]="d.status === 'PENDING' || d.status === 'INDEXING'"
+                  [class.status-error]="d.status === 'FAILED' || d.status === 'ERROR'"
+                ></span>
+                {{ d.status }}
+              </span>
+              <span class="dir-stat" *ngIf="d.filesIndexed">
+                <span class="material-icons stat-icon">insert_drive_file</span>
+                {{ d.filesIndexed }} files
+              </span>
+              <span class="dir-stat" *ngIf="d.entitiesFound">
+                <span class="material-icons stat-icon">code</span>
+                {{ d.entitiesFound }} entities
+              </span>
+              <span class="dir-stat" *ngIf="d.relationsCreated">
+                <span class="material-icons stat-icon">link</span>
+                {{ d.relationsCreated }} relations
+              </span>
+            </div>
+            <div class="dir-tags-row" *ngIf="d.tags">
+              <span class="dir-tag" *ngFor="let tag of d.tags.split(',')">{{ tag.trim() }}</span>
+            </div>
+            <div class="dir-patterns-row" *ngIf="d.includePatterns || d.excludePatterns">
+              <span class="dir-pattern" *ngIf="d.includePatterns" title="Include patterns">
+                <span class="material-icons stat-icon">add_circle_outline</span>
+                {{ d.includePatterns }}
+              </span>
+              <span class="dir-pattern" *ngIf="d.excludePatterns" title="Exclude patterns">
+                <span class="material-icons stat-icon">remove_circle_outline</span>
+                {{ d.excludePatterns }}
+              </span>
+            </div>
+            <span class="dir-last-indexed" *ngIf="d.lastIndexedAt">
+              Last indexed: {{ d.lastIndexedAt | date:'medium' }}
+            </span>
+          </div>
+          <button
+            class="btn-danger-sm"
+            (click)="removeDirectory(d.absolutePath || d.path)"
+            [disabled]="removingPath === (d.absolutePath || d.path)"
+            title="Remove directory"
+          >
+            <span class="material-icons spin" *ngIf="removingPath === (d.absolutePath || d.path)">sync</span>
+            <span class="material-icons" *ngIf="removingPath !== (d.absolutePath || d.path)">delete_outline</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="loading-state" *ngIf="loadingDirs">
+      <span class="material-icons spin">sync</span> Loading directories…
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ STATISTICS TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'stats'">
+    <div class="loading-state" *ngIf="loadingStats">
+      <span class="material-icons spin">sync</span> Loading statistics…
+    </div>
+
+    <!-- Index statistics -->
+    <div class="card" *ngIf="!loadingStats && stats">
+      <h3 class="card-title">
+        <span class="material-icons">analytics</span>
+        Index Statistics
+      </h3>
+
+      <div class="stat-grid">
+        <div class="stat-item" *ngIf="stats.totalFiles !== undefined">
+          <span class="stat-value">{{ stats.totalFiles | number }}</span>
+          <span class="stat-label">Total Files</span>
+        </div>
+        <div class="stat-item" *ngIf="stats.totalEntities !== undefined">
+          <span class="stat-value">{{ stats.totalEntities | number }}</span>
+          <span class="stat-label">Total Entities</span>
+        </div>
+        <div class="stat-item" *ngIf="stats.totalRelations !== undefined">
+          <span class="stat-value">{{ stats.totalRelations | number }}</span>
+          <span class="stat-label">Total Relations</span>
+        </div>
+        <div class="stat-item" *ngIf="stats.indexedAt">
+          <span class="stat-value stat-value-sm">{{ stats.indexedAt | date:'short' }}</span>
+          <span class="stat-label">Last Indexed</span>
+        </div>
+      </div>
+
+      <!-- Entity counts by type -->
+      <div class="sub-section" *ngIf="getEntityEntries().length > 0">
+        <h4 class="sub-title">Entities by Type</h4>
+        <div class="type-breakdown">
+          <div class="type-row" *ngFor="let e of getEntityEntries(); trackBy: trackByIndex">
+            <span class="type-label">{{ e.type }}</span>
+            <div class="type-bar-wrap">
+              <div class="type-bar" [style.width.%]="(e.count / stats.totalEntities) * 100"></div>
+            </div>
+            <span class="type-count">{{ e.count | number }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Relation counts by type -->
+      <div class="sub-section" *ngIf="getRelationEntries().length > 0">
+        <h4 class="sub-title">Relations by Type</h4>
+        <div class="type-breakdown">
+          <div class="type-row" *ngFor="let r of getRelationEntries(); trackBy: trackByIndex">
+            <span class="type-label">{{ r.type }}</span>
+            <div class="type-bar-wrap">
+              <div class="type-bar type-bar-rel" [style.width.%]="(r.count / stats.totalRelations) * 100"></div>
+            </div>
+            <span class="type-count">{{ r.count | number }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Graph statistics -->
+    <div class="card" *ngIf="!loadingStats && graphStats">
+      <h3 class="card-title">
+        <span class="material-icons">hub</span>
+        Graph Statistics
+      </h3>
+      <div class="stat-grid">
+        <div class="stat-item" *ngIf="graphStats.nodeCount !== undefined">
+          <span class="stat-value">{{ graphStats.nodeCount | number }}</span>
+          <span class="stat-label">Nodes</span>
+        </div>
+        <div class="stat-item" *ngIf="graphStats.edgeCount !== undefined">
+          <span class="stat-value">{{ graphStats.edgeCount | number }}</span>
+          <span class="stat-label">Edges</span>
+        </div>
+        <div class="stat-item" *ngIf="graphStats.connectedComponents !== undefined">
+          <span class="stat-value">{{ graphStats.connectedComponents | number }}</span>
+          <span class="stat-label">Components</span>
+        </div>
+        <div class="stat-item" *ngIf="graphStats.density !== undefined">
+          <span class="stat-value">{{ graphStats.density | number:'1.4-4' }}</span>
+          <span class="stat-label">Density</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Language breakdown -->
+    <div class="card" *ngIf="!loadingStats && projectLanguages.length > 0">
+      <h3 class="card-title">
+        <span class="material-icons">translate</span>
+        Languages Detected
+      </h3>
+      <div class="lang-tags">
+        <span class="lang-tag" *ngFor="let lang of projectLanguages">{{ lang }}</span>
+      </div>
+    </div>
+
+    <div class="empty-state" *ngIf="!loadingStats && !stats && !graphStats">
+      <span class="material-icons">query_stats</span>
+      <p>No statistics available for project "{{ projectId }}".<br>Build a graph first.</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ VISUALIZE TAB -->
+  <div class="tab-content tab-content-viz" *ngIf="activeTab === 'visualize'">
+
+    <!-- Controls -->
+    <div class="card viz-controls">
+      <h3 class="card-title">
+        <span class="material-icons">tune</span>
+        Visualization Controls
+      </h3>
+
+      <div class="form-inline">
+        <div class="form-row form-row-sm">
+          <label class="field-label">Max Nodes</label>
+          <input
+            class="text-input number-input"
+            type="number"
+            [(ngModel)]="vizMaxNodes"
+            min="10"
+            max="2000"
+            [disabled]="loadingGraph"
+          />
+        </div>
+
+        <div class="form-row form-row-sm" style="flex: 2 1 280px;">
+          <label class="field-label">Symbol FQN <span class="optional">(focus on symbol)</span></label>
+          <div class="input-with-btn">
+            <input
+              class="text-input"
+              type="text"
+              [(ngModel)]="vizSymbolFqn"
+              placeholder="e.g. ai.kompile.core.graphrag.model.Entity"
+              [disabled]="loadingGraph"
+              (keyup.enter)="loadSymbolGraph()"
+            />
+            <button
+              class="btn-sm"
+              (click)="loadSymbolGraph()"
+              [disabled]="loadingGraph || !vizSymbolFqn.trim()"
+              title="Load symbol neighborhood"
+            >
+              <span class="material-icons">account_tree</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="form-row form-row-sm" style="flex: 2 1 280px;">
+          <label class="field-label">File Path <span class="optional">(focus on file)</span></label>
+          <div class="input-with-btn">
+            <input
+              class="text-input"
+              type="text"
+              [(ngModel)]="vizFilePath"
+              placeholder="e.g. src/main/java/MyService.java"
+              [disabled]="loadingGraph"
+              (keyup.enter)="loadFileGraph()"
+            />
+            <button
+              class="btn-sm"
+              (click)="loadFileGraph()"
+              [disabled]="loadingGraph || !vizFilePath.trim()"
+              title="Load file graph"
+            >
+              <span class="material-icons">insert_drive_file</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button
+          class="btn-primary"
+          (click)="loadVisualization()"
+          [disabled]="loadingGraph"
+        >
+          <span class="material-icons" *ngIf="!loadingGraph">hub</span>
+          <span class="material-icons spin" *ngIf="loadingGraph">sync</span>
+          {{ loadingGraph ? 'Loading…' : 'Load Full Graph' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Entity type filter -->
+    <div class="filter-bar" *ngIf="graphData">
+      <span class="filter-label">Filter:</span>
+      <label *ngFor="let et of allEntityTypes" class="filter-chip"
+             [class.active]="entityTypeFilters[et]">
+        <input type="checkbox"
+               [(ngModel)]="entityTypeFilters[et]"
+               (ngModelChange)="onFilterChanged()" hidden />
+        {{ et }}
+      </label>
+      <button class="btn-xs" (click)="toggleAllFilters(true)">All</button>
+      <button class="btn-xs" (click)="toggleAllFilters(false)">None</button>
+      <span class="filter-sep">|</span>
+      <button class="btn-xs" (click)="exportSvg()" title="Export as SVG (client)">
+        <span class="material-icons">download</span> SVG
+      </button>
+      <button class="btn-xs" (click)="exportPng()" title="Export as PNG (client)">
+        <span class="material-icons">image</span> PNG
+      </button>
+      <span class="filter-sep">|</span>
+      <button class="btn-xs" (click)="exportServerSide('svg')" [disabled]="exportingGraph" title="Server-rendered SVG (full layout)">
+        <span class="material-icons">cloud_download</span> SVG (server)
+      </button>
+      <button class="btn-xs" (click)="exportServerSide('html')" [disabled]="exportingGraph" title="Interactive HTML with D3.js">
+        <span class="material-icons">web</span> HTML
+      </button>
+      <button class="btn-xs" (click)="exportServerSide('json')" [disabled]="exportingGraph" title="Export raw graph JSON">
+        <span class="material-icons">data_object</span> JSON
+      </button>
+    </div>
+
+    <!-- Graph canvas + detail panel -->
+    <div class="viz-layout" *ngIf="graphData">
+      <div class="viz-canvas-wrap" [class.with-panel]="selectedNode">
+        <app-graph-canvas
+          [data]="filteredGraphData || graphData"
+          [showLegend]="true"
+          (nodeSelected)="onNodeSelected($event)"
+          (nodeDoubleClicked)="onNodeDoubleClicked($event)"
+        ></app-graph-canvas>
+      </div>
+
+      <!-- Node detail panel -->
+      <div class="node-detail-panel" *ngIf="selectedNode">
+        <div class="panel-header">
+          <h4>{{ selectedNode.label }}</h4>
+          <button class="btn-close" (click)="closeDetail()" title="Close">&times;</button>
+        </div>
+        <div class="panel-body">
+          <div class="detail-row" *ngIf="selectedNode.symbolType">
+            <span class="detail-label">Type</span>
+            <span class="detail-value badge">{{ selectedNode.symbolType }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedNode.language">
+            <span class="detail-label">Language</span>
+            <span class="detail-value">{{ selectedNode.language }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedNode.fqn">
+            <span class="detail-label">FQN</span>
+            <span class="detail-value mono">{{ selectedNode.fqn }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedNode.filePath">
+            <span class="detail-label">File</span>
+            <span class="detail-value mono">{{ selectedNode.filePath }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedNode.startLine">
+            <span class="detail-label">Lines</span>
+            <span class="detail-value">{{ selectedNode.startLine }}<span *ngIf="selectedNode.endLine && selectedNode.endLine !== selectedNode.startLine"> – {{ selectedNode.endLine }}</span></span>
+          </div>
+          <div class="detail-row" *ngIf="selectedNode.signature">
+            <span class="detail-label">Signature</span>
+            <pre class="detail-code">{{ selectedNode.signature }}</pre>
+          </div>
+          <div class="detail-row" *ngIf="selectedNode.docComment">
+            <span class="detail-label">Doc</span>
+            <pre class="detail-doc">{{ selectedNode.docComment }}</pre>
+          </div>
+          <div class="detail-row" *ngIf="selectedNode.childCount">
+            <span class="detail-label">Children</span>
+            <span class="detail-value">{{ selectedNode.childCount }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedNode.edgeCount">
+            <span class="detail-label">Edges</span>
+            <span class="detail-value">{{ selectedNode.edgeCount }}</span>
+          </div>
+          <div class="detail-actions" *ngIf="selectedNode.fqn || selectedNode.id">
+            <button class="btn-xs" (click)="onNodeDoubleClicked(selectedNode)" title="Focus on this symbol's subgraph">
+              <span class="material-icons">center_focus_strong</span> Focus
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading -->
+    <div class="loading-state" *ngIf="loadingGraph && !graphData">
+      <span class="material-icons spin">sync</span> Loading graph visualization…
+    </div>
+
+    <!-- Empty state -->
+    <div class="empty-state" *ngIf="!loadingGraph && !graphData">
+      <span class="material-icons">hub</span>
+      <p>No graph loaded. Click "Load Full Graph" or search for a symbol/file.</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ ANALYSIS TAB -->
+  <div class="tab-content" *ngIf="activeTab === 'analysis'">
+
+    <!-- Impact Analysis -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">warning_amber</span>
+        Impact Analysis
+      </h3>
+      <p class="card-hint">
+        Blast-radius: find everything affected by changing a symbol. Answers: "if I change X, what breaks?"
+      </p>
+
+      <div class="form-row">
+        <label class="field-label">Symbol FQN</label>
+        <input class="text-input" type="text" [(ngModel)]="impactFqn"
+               placeholder="e.g. com.example.UserService" [disabled]="loadingImpact"
+               (keyup.enter)="runImpactAnalysis()" />
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="runImpactAnalysis()"
+                [disabled]="loadingImpact || !impactFqn.trim()">
+          <span class="material-icons" *ngIf="!loadingImpact">warning_amber</span>
+          <span class="material-icons spin" *ngIf="loadingImpact">sync</span>
+          {{ loadingImpact ? 'Analyzing...' : 'Run Impact Analysis' }}
+        </button>
+      </div>
+
+      <div *ngIf="impactResult" style="margin-top: 12px;">
+        <div class="stat-grid" *ngIf="impactResult.summary">
+          <div class="stat-item" *ngFor="let key of ['callers','subclasses','implementors','importedBy','totalImpact']">
+            <span class="stat-value">{{ impactResult.summary[key] ?? 0 }}</span>
+            <span class="stat-label">{{ key }}</span>
+          </div>
+        </div>
+        <div class="results-list" *ngIf="impactResult.callers?.length > 0" style="margin-top: 8px;">
+          <h4 class="sub-title">Callers ({{ impactResult.callers.length }})</h4>
+          <div class="result-row" *ngFor="let c of impactResult.callers; trackBy: trackByIndex">
+            <div class="result-type-badge">CALLS</div>
+            <div class="result-info">
+              <span class="result-name">{{ c.sourceFqn || '?' }}</span>
+              <span class="result-file" *ngIf="c.filePath">
+                <span class="material-icons">insert_drive_file</span> {{ c.filePath }}
+                <span class="result-line" *ngIf="c.line">:{{ c.line }}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="results-list" *ngIf="impactResult.subclasses?.length > 0" style="margin-top: 8px;">
+          <h4 class="sub-title">Subclasses ({{ impactResult.subclasses.length }})</h4>
+          <div class="result-row" *ngFor="let s of impactResult.subclasses; trackBy: trackByIndex">
+            <div class="result-type-badge">EXTENDS</div>
+            <div class="result-info"><span class="result-name">{{ s.sourceFqn || '?' }}</span></div>
+          </div>
+        </div>
+        <div class="results-list" *ngIf="impactResult.implementors?.length > 0" style="margin-top: 8px;">
+          <h4 class="sub-title">Implementors ({{ impactResult.implementors.length }})</h4>
+          <div class="result-row" *ngFor="let im of impactResult.implementors; trackBy: trackByIndex">
+            <div class="result-type-badge">IMPLEMENTS</div>
+            <div class="result-info"><span class="result-name">{{ im.sourceFqn || '?' }}</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dependency Tree -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">account_tree</span>
+        Dependency Tree
+      </h3>
+      <p class="card-hint">
+        What does this symbol depend on? Follows outgoing relations recursively. Answers: "what does X need?"
+      </p>
+
+      <div class="form-inline">
+        <div class="form-row form-row-sm" style="flex: 3 1 280px;">
+          <label class="field-label">Root Symbol FQN</label>
+          <input class="text-input" type="text" [(ngModel)]="depsFqn"
+                 placeholder="e.g. com.example.OrderService" [disabled]="loadingDeps"
+                 (keyup.enter)="runDependencyTree()" />
+        </div>
+        <div class="form-row form-row-sm">
+          <label class="field-label">Max Depth</label>
+          <input class="text-input number-input" type="number" [(ngModel)]="depsMaxDepth"
+                 min="1" max="10" [disabled]="loadingDeps" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="runDependencyTree()"
+                [disabled]="loadingDeps || !depsFqn.trim()">
+          <span class="material-icons" *ngIf="!loadingDeps">account_tree</span>
+          <span class="material-icons spin" *ngIf="loadingDeps">sync</span>
+          {{ loadingDeps ? 'Loading...' : 'Build Dependency Tree' }}
+        </button>
+      </div>
+
+      <div *ngIf="depsResult" style="margin-top: 12px;">
+        <div class="stat-grid">
+          <div class="stat-item">
+            <span class="stat-value">{{ depsResult.totalDependencies ?? 0 }}</span>
+            <span class="stat-label">Total Dependencies</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value">{{ depsResult.layers?.length ?? 0 }}</span>
+            <span class="stat-label">Depth Layers</span>
+          </div>
+        </div>
+        <div *ngFor="let layer of depsResult.layers; trackBy: trackByIndex" style="margin-top: 8px;">
+          <h4 class="sub-title">Depth {{ layer.depth }} ({{ layer.count }})</h4>
+          <div class="results-list">
+            <div class="result-row" *ngFor="let dep of layer.dependencies; trackBy: trackByIndex">
+              <div class="result-type-badge">{{ dep.relationType }}</div>
+              <div class="result-info">
+                <span class="result-name">{{ dep.fqn }}</span>
+                <span class="result-file" *ngIf="dep.filePath">
+                  <span class="material-icons">insert_drive_file</span> {{ dep.filePath }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Component Map -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">view_module</span>
+        Component Map
+      </h3>
+      <p class="card-hint">
+        All types in a file or package with inheritance and external references. Answers: "what belongs here?"
+      </p>
+
+      <div class="form-row">
+        <label class="field-label">File Path or Package FQN</label>
+        <input class="text-input" type="text" [(ngModel)]="componentScope"
+               placeholder="e.g. src/main/java/MyService.java or com.example.service"
+               [disabled]="loadingComponent" (keyup.enter)="runComponentMap()" />
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="runComponentMap()"
+                [disabled]="loadingComponent || !componentScope.trim()">
+          <span class="material-icons" *ngIf="!loadingComponent">view_module</span>
+          <span class="material-icons spin" *ngIf="loadingComponent">sync</span>
+          {{ loadingComponent ? 'Mapping...' : 'Map Component' }}
+        </button>
+      </div>
+
+      <div *ngIf="componentResult" style="margin-top: 12px;">
+        <div class="stat-grid">
+          <div class="stat-item">
+            <span class="stat-value">{{ componentResult.memberCount ?? 0 }}</span>
+            <span class="stat-label">Members</span>
+          </div>
+          <div class="stat-item" *ngIf="componentResult.externalReferenceCount !== undefined">
+            <span class="stat-value">{{ componentResult.externalReferenceCount }}</span>
+            <span class="stat-label">External Refs</span>
+          </div>
+          <div class="stat-item" *ngIf="componentResult.inheritance">
+            <span class="stat-value">{{ componentResult.inheritance.length }}</span>
+            <span class="stat-label">Inheritance</span>
+          </div>
+        </div>
+        <div class="results-list" *ngIf="componentResult.members?.length > 0" style="margin-top: 8px;">
+          <h4 class="sub-title">Members</h4>
+          <div class="result-row" *ngFor="let m of componentResult.members; trackBy: trackByIndex">
+            <div class="result-type-badge">{{ m.entityType || '?' }}</div>
+            <div class="result-info">
+              <span class="result-name">{{ m.name || m.fqn || '?' }}</span>
+              <span class="result-file" *ngIf="m.filePath">
+                <span class="material-icons">insert_drive_file</span> {{ m.filePath }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Symbol Dossier -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">description</span>
+        Symbol Dossier
+      </h3>
+      <p class="card-hint">
+        Complete profile: entity details, parent, children, all relations, callers. Answers: "tell me everything about X."
+      </p>
+
+      <div class="form-row">
+        <label class="field-label">Symbol FQN</label>
+        <input class="text-input" type="text" [(ngModel)]="dossierFqn"
+               placeholder="e.g. com.example.UserRepository" [disabled]="loadingDossier"
+               (keyup.enter)="runSymbolDossier()" />
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="runSymbolDossier()"
+                [disabled]="loadingDossier || !dossierFqn.trim()">
+          <span class="material-icons" *ngIf="!loadingDossier">description</span>
+          <span class="material-icons spin" *ngIf="loadingDossier">sync</span>
+          {{ loadingDossier ? 'Loading...' : 'Get Dossier' }}
+        </button>
+      </div>
+
+      <div *ngIf="dossierResult" style="margin-top: 12px;">
+        <div *ngIf="dossierResult.found === false" class="empty-state" style="padding: 16px;">
+          <span class="material-icons">search_off</span>
+          <p>Symbol not found: {{ dossierFqn }}</p>
+        </div>
+        <div *ngIf="dossierResult.found !== false">
+          <div class="stat-grid" *ngIf="dossierResult.entity">
+            <div class="stat-item">
+              <span class="stat-value stat-value-sm">{{ dossierResult.entity.entityType }}</span>
+              <span class="stat-label">Type</span>
+            </div>
+            <div class="stat-item" *ngIf="dossierResult.entity.language">
+              <span class="stat-value stat-value-sm">{{ dossierResult.entity.language }}</span>
+              <span class="stat-label">Language</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ dossierResult.childCount ?? 0 }}</span>
+              <span class="stat-label">Children</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ dossierResult.outgoingCount ?? 0 }}</span>
+              <span class="stat-label">Outgoing</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ dossierResult.incomingCount ?? 0 }}</span>
+              <span class="stat-label">Incoming</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ dossierResult.callerCount ?? 0 }}</span>
+              <span class="stat-label">Callers</span>
+            </div>
+          </div>
+          <div *ngIf="dossierResult.entity?.filePath" class="result-detail" style="margin-top: 8px;">
+            <span class="material-icons">insert_drive_file</span>
+            {{ dossierResult.entity.filePath }}
+            <span *ngIf="dossierResult.entity.startLine">:{{ dossierResult.entity.startLine }}</span>
+          </div>
+          <pre class="detail-code" *ngIf="dossierResult.entity?.signature" style="margin-top: 8px;">{{ dossierResult.entity.signature }}</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Localized Export -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">image</span>
+        Localized Graph Export
+      </h3>
+      <p class="card-hint">
+        Export a focused SVG/HTML/JSON visualization for a specific symbol neighborhood or file.
+      </p>
+
+      <div class="form-inline">
+        <div class="form-row form-row-sm" style="flex: 3 1 280px;">
+          <label class="field-label">Focus (FQN or file path)</label>
+          <input class="text-input" type="text" [(ngModel)]="localExportFocus"
+                 placeholder="e.g. com.example.MyService or src/main/java/MyService.java"
+                 [disabled]="exportingLocal" />
+        </div>
+        <div class="form-row form-row-sm">
+          <label class="field-label">Format</label>
+          <select class="select-input" [(ngModel)]="localExportFormat" [disabled]="exportingLocal">
+            <option value="svg">SVG</option>
+            <option value="html">HTML (interactive)</option>
+            <option value="json">JSON</option>
+          </select>
+        </div>
+        <div class="form-row form-row-sm">
+          <label class="field-label">Depth</label>
+          <input class="text-input number-input" type="number" [(ngModel)]="localExportDepth"
+                 min="1" max="5" [disabled]="exportingLocal" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="exportLocalGraph()"
+                [disabled]="exportingLocal || !localExportFocus.trim()">
+          <span class="material-icons" *ngIf="!exportingLocal">download</span>
+          <span class="material-icons spin" *ngIf="exportingLocal">sync</span>
+          {{ exportingLocal ? 'Exporting...' : 'Export Localized Graph' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Test Frameworks -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">science</span>
+        Test Frameworks
+      </h3>
+      <p class="card-hint">
+        Detect which test frameworks are used in the project (JUnit, pytest, Jest, Go test, cargo test, etc.)
+      </p>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="loadTestFrameworks()" [disabled]="loadingTestFrameworks">
+          <span class="material-icons" *ngIf="!loadingTestFrameworks">biotech</span>
+          <span class="material-icons spin" *ngIf="loadingTestFrameworks">sync</span>
+          {{ loadingTestFrameworks ? 'Detecting...' : 'Detect Frameworks' }}
+        </button>
+      </div>
+      <div *ngIf="testFrameworksResult" class="result-panel">
+        <div *ngIf="testFrameworksResult.languages?.length" class="result-section">
+          <strong>Languages:</strong> {{ testFrameworksResult.languages.join(', ') }}
+        </div>
+        <div *ngIf="testFrameworksResult.frameworksByLanguage" class="result-section">
+          <strong>Frameworks by Language:</strong>
+          <div *ngFor="let lang of (testFrameworksResult.frameworksByLanguage | keyvalue)" class="result-item">
+            <span class="badge">{{ lang.key }}</span> {{ $any(lang.value).join ? $any(lang.value).join(', ') : lang.value }}
+          </div>
+        </div>
+        <div *ngIf="testFrameworksResult.testAnnotationCounts" class="result-section">
+          <strong>Annotation Counts:</strong>
+          <div *ngFor="let a of (testFrameworksResult.testAnnotationCounts | keyvalue)" class="result-item">
+            {{ a.key }}: {{ a.value }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Test Coverage Report -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">verified</span>
+        Test Coverage Report
+      </h3>
+      <p class="card-hint">
+        Coverage summary: test/production ratio, coverage %, untested methods, and framework breakdown.
+      </p>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="loadTestCoverage()" [disabled]="loadingTestCoverage">
+          <span class="material-icons" *ngIf="!loadingTestCoverage">assessment</span>
+          <span class="material-icons spin" *ngIf="loadingTestCoverage">sync</span>
+          {{ loadingTestCoverage ? 'Analyzing...' : 'Run Coverage Analysis' }}
+        </button>
+      </div>
+      <div *ngIf="testCoverageResult" class="result-panel">
+        <div class="result-section stats-grid">
+          <div class="stat-item"><strong>Test Entities:</strong> {{ testCoverageResult.testCount }}</div>
+          <div class="stat-item"><strong>Production Methods:</strong> {{ testCoverageResult.productionMethodCount }}</div>
+          <div class="stat-item"><strong>Tested:</strong> {{ testCoverageResult.testedMethodCount }}</div>
+          <div class="stat-item"><strong>Untested:</strong> {{ testCoverageResult.untestedMethodCount }}</div>
+          <div class="stat-item highlight"><strong>Coverage:</strong> {{ testCoverageResult.coveragePercent }}%</div>
+        </div>
+        <div *ngIf="testCoverageResult.untestedMethods?.length" class="result-section">
+          <strong>Untested Methods (top {{ testCoverageResult.untestedMethods.length }}):</strong>
+          <div class="scrollable-list">
+            <div *ngFor="let m of testCoverageResult.untestedMethods" class="result-item mono">
+              {{ m.fqn || m.name }} <span class="text-muted">{{ m.filePath }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tests for Symbol -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">find_in_page</span>
+        Tests for Symbol
+      </h3>
+      <p class="card-hint">
+        Find tests that cover a specific production symbol (direct and indirect callers).
+      </p>
+      <div class="form-inline">
+        <div class="form-row form-row-sm" style="flex: 1 1 300px;">
+          <label class="field-label">Symbol FQN</label>
+          <input class="text-input" type="text" [(ngModel)]="testsForFqn"
+                 placeholder="e.g. com.example.MyService.processOrder"
+                 [disabled]="loadingTestsFor" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="findTestsForSymbol()"
+                [disabled]="loadingTestsFor || !testsForFqn.trim()">
+          <span class="material-icons" *ngIf="!loadingTestsFor">search</span>
+          <span class="material-icons spin" *ngIf="loadingTestsFor">sync</span>
+          {{ loadingTestsFor ? 'Searching...' : 'Find Tests' }}
+        </button>
+      </div>
+      <div *ngIf="testsForResult" class="result-panel">
+        <div class="result-section">
+          <strong>Status:</strong>
+          <span [class]="testsForResult.tested ? 'badge badge-success' : 'badge badge-warning'">
+            {{ testsForResult.tested ? 'TESTED' : 'UNTESTED' }}
+          </span>
+          <span *ngIf="testsForResult.totalTestCount">({{ testsForResult.totalTestCount }} tests)</span>
+        </div>
+        <div *ngIf="testsForResult.directTests?.length" class="result-section">
+          <strong>Direct Tests ({{ testsForResult.directTestCount }}):</strong>
+          <div *ngFor="let t of testsForResult.directTests" class="result-item mono">
+            {{ t.fqn || t.name }} <span class="text-muted">{{ t.filePath }}</span>
+          </div>
+        </div>
+        <div *ngIf="testsForResult.indirectTests?.length" class="result-section">
+          <strong>Indirect Tests ({{ testsForResult.indirectTestCount }}):</strong>
+          <div *ngFor="let t of testsForResult.indirectTests" class="result-item mono">
+            {{ t.fqn || t.name }} <span class="text-muted">{{ t.filePath }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Code Paths -->
+    <div class="card">
+      <h3 class="card-title">
+        <span class="material-icons">route</span>
+        Code Paths
+      </h3>
+      <p class="card-hint">
+        Trace execution paths from an entry point through CALLS relations. Shows all reachable symbols layer by layer.
+      </p>
+      <div class="form-inline">
+        <div class="form-row form-row-sm" style="flex: 3 1 280px;">
+          <label class="field-label">Entry point FQN</label>
+          <input class="text-input" type="text" [(ngModel)]="codePathsFqn"
+                 placeholder="e.g. com.example.Main.main"
+                 [disabled]="loadingCodePaths" />
+        </div>
+        <div class="form-row form-row-sm">
+          <label class="field-label">Max depth</label>
+          <input class="text-input number-input" type="number" [(ngModel)]="codePathsMaxDepth"
+                 min="1" max="10" [disabled]="loadingCodePaths" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-primary" (click)="traceCodePaths()"
+                [disabled]="loadingCodePaths || !codePathsFqn.trim()">
+          <span class="material-icons" *ngIf="!loadingCodePaths">timeline</span>
+          <span class="material-icons spin" *ngIf="loadingCodePaths">sync</span>
+          {{ loadingCodePaths ? 'Tracing...' : 'Trace Code Paths' }}
+        </button>
+      </div>
+      <div *ngIf="codePathsResult" class="result-panel">
+        <div class="result-section">
+          <strong>Reachable symbols:</strong> {{ codePathsResult.totalReachable }}
+        </div>
+        <div *ngFor="let layer of codePathsResult.layers" class="result-section">
+          <strong>Depth {{ layer.depth }} ({{ layer.count }} calls):</strong>
+          <div class="scrollable-list">
+            <div *ngFor="let call of layer.calls" class="result-item mono">
+              <span *ngIf="call.entityType" class="badge">{{ call.entityType }}</span>
+              {{ call.fqn }}
+              <span *ngIf="call.callSite" class="text-muted">{{ call.callSite }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>

@@ -77,6 +77,13 @@ public class ChatHistory {
     private final Path conversationsDir;
     private PrintWriter writer;
 
+    // Deferred header fields — stored on open(), written on first actual content
+    private boolean opened;
+    private String pendingServerUrl;
+    private String pendingAgentName;
+    private boolean pendingRagEnabled;
+    private final List<String> harvestedSourceIds = new ArrayList<>();
+
     public ChatHistory(String sessionId) {
         this.sessionId = sessionId;
         this.conversationsDir = KompileHome.homeDirectory().toPath().resolve("conversations");
@@ -84,35 +91,51 @@ public class ChatHistory {
     }
 
     /**
-     * Opens the transcript file for writing. Writes the header if this is a new conversation.
+     * Marks this history as open but does NOT create the file yet.
+     * The file is created lazily on the first actual content write,
+     * preventing empty stub files from accumulating.
      */
     public void open(String serverUrl, String agentName, boolean ragEnabled) throws IOException {
-        Files.createDirectories(conversationsDir);
+        this.opened = true;
+        this.pendingServerUrl = serverUrl;
+        this.pendingAgentName = agentName;
+        this.pendingRagEnabled = ragEnabled;
+    }
 
-        boolean isNew = !Files.exists(transcriptFile);
+    /**
+     * Ensures the file and writer exist, writing the header on first call.
+     * Called lazily before any content write.
+     */
+    private void ensureWriter() {
+        if (writer != null) return;
+        if (!opened) return;
+        try {
+            Files.createDirectories(conversationsDir);
+            boolean isNew = !Files.exists(transcriptFile);
 
-        writer = new PrintWriter(new BufferedWriter(
-                new OutputStreamWriter(
-                        new FileOutputStream(transcriptFile.toFile(), true),
-                        StandardCharsets.UTF_8)), true);
+            writer = new PrintWriter(new BufferedWriter(
+                    new OutputStreamWriter(
+                            new FileOutputStream(transcriptFile.toFile(), true),
+                            StandardCharsets.UTF_8)), true);
 
-        if (isNew) {
-            writer.println("──── Conversation: " + sessionId + " ────");
-            writer.println("Started: " + TIMESTAMP_FMT.format(Instant.now()));
-            writer.println("Server:  " + serverUrl);
-            writer.println("Agent:   " + agentName);
-            writer.println("RAG:     " + (ragEnabled ? "enabled" : "disabled"));
-            writer.println();
-            writer.println(SEPARATOR);
-            writer.println();
+            if (isNew) {
+                writer.println("──── Conversation: " + sessionId + " ────");
+                writer.println("Started: " + TIMESTAMP_FMT.format(Instant.now()));
+                writer.println("Server:  " + (pendingServerUrl != null ? pendingServerUrl : ""));
+                writer.println("Agent:   " + (pendingAgentName != null ? pendingAgentName : ""));
+                writer.println("RAG:     " + (pendingRagEnabled ? "enabled" : "disabled"));
+                writer.println();
+                writer.println(SEPARATOR);
+                writer.println();
 
-            // Update the index
-            updateIndex(sessionId, serverUrl, agentName);
-        } else {
-            // Resuming - add a resume marker
-            writer.println();
-            writer.println("[resumed " + TIMESTAMP_FMT.format(Instant.now()) + "]");
-            writer.println();
+                updateIndex(sessionId, pendingServerUrl, pendingAgentName);
+            } else {
+                writer.println();
+                writer.println("[resumed " + TIMESTAMP_FMT.format(Instant.now()) + "]");
+                writer.println();
+            }
+        } catch (IOException e) {
+            // Best effort — writer stays null, subsequent writes are no-ops
         }
     }
 
@@ -120,6 +143,7 @@ public class ChatHistory {
      * Logs a user message.
      */
     public void logUserMessage(String message) {
+        ensureWriter();
         if (writer != null) {
             writer.println("> " + message);
             writer.println();
@@ -130,6 +154,7 @@ public class ChatHistory {
      * Logs an assistant response from inline RAG chat.
      */
     public void logAssistantMessage(String answer, int docsRetrieved, long timeMs) {
+        ensureWriter();
         if (writer != null) {
             writer.println(answer);
             if (docsRetrieved > 0) {
@@ -143,6 +168,7 @@ public class ChatHistory {
      * Logs an agent streaming response (from /ask).
      */
     public void logAgentResponse(String agentName, String fullResponse, long durationMs) {
+        ensureWriter();
         if (writer != null) {
             writer.println("[agent:" + agentName + "]");
             writer.println(fullResponse);
@@ -157,6 +183,7 @@ public class ChatHistory {
      * Logs a system event (slash commands, config changes, etc.).
      */
     public void logSystem(String event) {
+        ensureWriter();
         if (writer != null) {
             writer.println("[system] " + event);
             writer.println();
@@ -167,6 +194,7 @@ public class ChatHistory {
      * Logs a tool call execution.
      */
     public void logToolCall(String toolName, boolean isError, long durationMs) {
+        ensureWriter();
         if (writer != null) {
             String status = isError ? "error" : "ok";
             writer.printf("[tool:%s] %s (%dms)%n", toolName, status, durationMs);
@@ -177,6 +205,7 @@ public class ChatHistory {
      * Logs a subagent invocation.
      */
     public void logSubagent(String agentType, String description, long durationMs, boolean isError) {
+        ensureWriter();
         if (writer != null) {
             String status = isError ? "error" : "complete";
             writer.printf("[subagent:%s] %s — %s (%dms)%n", agentType, description, status, durationMs);
@@ -187,6 +216,7 @@ public class ChatHistory {
      * Logs a todo task event.
      */
     public void logTodoEvent(String action, String taskId, String subject) {
+        ensureWriter();
         if (writer != null) {
             writer.printf("[todo:%s] #%s %s%n", action, taskId, subject);
         }
@@ -196,8 +226,22 @@ public class ChatHistory {
      * Logs an agentic chat loop step.
      */
     public void logAgenticStep(int step, int maxSteps, int toolCallCount) {
+        ensureWriter();
         if (writer != null) {
             writer.printf("[agentic-step] %d/%d (%d tool calls)%n", step, maxSteps, toolCallCount);
+        }
+    }
+
+    /**
+     * Records that this session harvested content from an external agent session.
+     * Written as a header-level metadata line so the resume tool can deduplicate.
+     */
+    public void logHarvestedSource(String externalSessionId) {
+        if (externalSessionId == null || externalSessionId.isEmpty()) return;
+        harvestedSourceIds.add(externalSessionId);
+        ensureWriter();
+        if (writer != null) {
+            writer.println("[harvested:" + externalSessionId + "]");
         }
     }
 
@@ -310,8 +354,8 @@ public class ChatHistory {
 
         for (File file : files) {
             String sid = file.getName().replace(".txt", "");
-            String firstLine = "";
             String title = "";
+            List<String> harvested = new ArrayList<>();
             try (BufferedReader reader = new BufferedReader(new FileReader(file, StandardCharsets.UTF_8))) {
                 // Read header to get metadata
                 String line;
@@ -322,20 +366,40 @@ public class ChatHistory {
                         started = line.substring(8).trim();
                     } else if (line.startsWith("Agent:")) {
                         agent = line.substring(6).trim();
+                    } else if (line.startsWith("[harvested:") && line.endsWith("]")) {
+                        harvested.add(line.substring(11, line.length() - 1));
                     } else if (line.startsWith("> ")) {
-                        title = line.substring(2).trim();
+                        String candidate = line.substring(2).trim();
+                        // Skip Claude Code internal command messages — not real user content
+                        if (candidate.startsWith("<local-command-") || candidate.startsWith("<command-")) {
+                            continue;
+                        }
+                        title = candidate;
+                        // For enforcer sessions, the first user message is boilerplate.
+                        // Read ahead to find the actual user prompt after "## User Prompt".
+                        if (title.startsWith("# Enforcer-Controlled Task")) {
+                            String userPrompt = extractEnforcerUserPrompt(reader);
+                            if (userPrompt != null && !userPrompt.isEmpty()) {
+                                title = userPrompt;
+                            }
+                        }
                         break;
                     }
+                }
+                // Skip empty sessions (header-only stubs with no user messages)
+                if (title.isEmpty()) {
+                    continue;
                 }
                 results.add(new ConversationSummary(
                         sid,
                         title.length() > 80 ? title.substring(0, 77) + "..." : title,
                         started,
                         agent,
-                        file.lastModified()
+                        file.lastModified(),
+                        harvested
                 ));
             } catch (IOException e) {
-                results.add(new ConversationSummary(sid, "(unreadable)", "", "", file.lastModified()));
+                // Skip unreadable files
             }
         }
 
@@ -370,17 +434,55 @@ public class ChatHistory {
         }
     }
 
+    /**
+     * Reads ahead in the transcript to find the actual user prompt inside an enforcer message.
+     * The enforcer wraps the real prompt under a "## User Prompt" heading.
+     */
+    private static String extractEnforcerUserPrompt(BufferedReader reader) throws IOException {
+        String line;
+        boolean foundUserPromptHeader = false;
+        while ((line = reader.readLine()) != null) {
+            if (line.startsWith("## User Prompt")) {
+                foundUserPromptHeader = true;
+                continue;
+            }
+            if (foundUserPromptHeader) {
+                String trimmed = line.trim();
+                // Skip blank lines right after the header
+                if (trimmed.isEmpty()) continue;
+                // Stop at the next section header or end marker
+                if (trimmed.startsWith("## ") || trimmed.startsWith("Produce the response now")) break;
+                return trimmed;
+            }
+            // Stop scanning if we hit the end of the user message block
+            if (line.isEmpty() && !foundUserPromptHeader) {
+                // Blank line before finding ## User Prompt — keep scanning (enforcer messages are multi-line)
+            }
+        }
+        return null;
+    }
+
     public Path getTranscriptFile() {
         return transcriptFile;
     }
 
-    public static record Turn(String role, String content) {}
+    public static record Turn(String role, String content, com.fasterxml.jackson.databind.node.ArrayNode rawContentBlocks) {
+        /** Convenience constructor for plain-text turns (no structured blocks). */
+        public Turn(String role, String content) {
+            this(role, content, null);
+        }
+    }
 
     public static record ConversationSummary(
             String sessionId,
             String title,
             String started,
             String agent,
-            long lastModified
-    ) {}
+            long lastModified,
+            List<String> harvestedSourceIds
+    ) {
+        public ConversationSummary(String sessionId, String title, String started, String agent, long lastModified) {
+            this(sessionId, title, started, agent, lastModified, List.of());
+        }
+    }
 }

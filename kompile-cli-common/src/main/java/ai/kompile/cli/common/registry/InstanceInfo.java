@@ -27,6 +27,7 @@ public class InstanceInfo {
     private int port;
     private long pid;
     private String jarPath;
+    private String projectDir;
     private Instant startedAt;
 
     public InstanceInfo() {
@@ -39,6 +40,11 @@ public class InstanceInfo {
         this.pid = pid;
         this.jarPath = jarPath;
         this.startedAt = Instant.now();
+    }
+
+    public InstanceInfo(String name, String type, int port, long pid, String jarPath, String projectDir) {
+        this(name, type, port, pid, jarPath);
+        this.projectDir = projectDir;
     }
 
     public String getName() { return name; }
@@ -55,6 +61,9 @@ public class InstanceInfo {
 
     public String getJarPath() { return jarPath; }
     public void setJarPath(String jarPath) { this.jarPath = jarPath; }
+
+    public String getProjectDir() { return projectDir; }
+    public void setProjectDir(String projectDir) { this.projectDir = projectDir; }
 
     public Instant getStartedAt() { return startedAt; }
     public void setStartedAt(Instant startedAt) { this.startedAt = startedAt; }

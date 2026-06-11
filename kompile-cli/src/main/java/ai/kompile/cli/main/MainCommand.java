@@ -16,26 +16,39 @@
 
 package ai.kompile.cli.main;
 
-import ai.kompile.cli.main.app.IngestCommand;
-import ai.kompile.cli.main.app.IndexCommand;
-import ai.kompile.cli.main.app.JobsCommand;
-import ai.kompile.cli.main.app.ScheduleCommand;
-import ai.kompile.cli.main.app.SubprocessCommand;
+import ai.kompile.cli.main.a2a.A2ACommand;
+import ai.kompile.cli.main.app.AppCommand;
 import ai.kompile.cli.main.chat.ChatCommand;
+import ai.kompile.cli.main.chat.EnforcerCommand;
 import ai.kompile.cli.main.chat.LiteChatCommand;
 import ai.kompile.cli.main.chat.PassthroughCommand;
+import ai.kompile.cli.main.chat.ResumeAllCommand;
 import ai.kompile.cli.main.chat.ResumeCommand;
 import ai.kompile.cli.main.chat.SessionCommand;
+import ai.kompile.cli.main.chat.harness.HarnessCommand;
+import ai.kompile.cli.main.chat.harness.eval.EvalCommand;
+import ai.kompile.cli.main.chat.skill.SkillsCommand;
+import ai.kompile.cli.main.codeindex.CodeIndexCommand;
+import ai.kompile.cli.main.coordination.EditCoordinatorCommand;
 import ai.kompile.cli.main.mcp.McpStdioCommand;
 import ai.kompile.cli.main.build.BuildMain;
+import ai.kompile.cli.main.build.DeployCommand;
+import ai.kompile.cli.main.build.InitProjectCommand;
 import ai.kompile.cli.main.build.KompileApplicationBuilder;
 import ai.kompile.cli.main.config.ConfigMain;
+import ai.kompile.cli.main.configure.ConfigureCommand;
 import ai.kompile.cli.main.graph.GraphCommand;
 import ai.kompile.cli.main.install.InstallMain;
+import ai.kompile.cli.main.knowledge.KnowledgeCommand;
 import ai.kompile.cli.main.manage.ManageComponents;
 import ai.kompile.cli.main.pipeline.PipelineMain;
+import ai.kompile.cli.main.project.ProjectCommand;
+import ai.kompile.cli.main.run.RunCommand;
 import ai.kompile.cli.main.sdk.SdkMain;
+import ai.kompile.cli.main.serve.DaemonCommand;
+import ai.kompile.cli.main.serve.ServeCommand;
 import ai.kompile.cli.main.uninstall.UnInstallMain;
+import ai.kompile.cli.main.web.WebCommand;
 import ai.kompile.cli.plugin.api.CliCommandRegistrar;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,26 +64,42 @@ import java.util.concurrent.Callable;
                 Info.class,
                 Bootstrap.class,
                 Init.class,
+                ConfigureCommand.class,
                 ConfigMain.class,
                 BuildMain.class,
                 KompileApplicationBuilder.BuildKompileAppCommand.class,
+                InitProjectCommand.class,
+                DeployCommand.class,
+                ProjectCommand.class,
                 InstallMain.class,
                 UnInstallMain.class,
                 ManageComponents.class,
                 SdkMain.class,
                 PipelineMain.class,
+                // Chat and agent commands
                 ChatCommand.class,
                 LiteChatCommand.class,
                 SessionCommand.class,
                 PassthroughCommand.class,
                 ResumeCommand.class,
+                ResumeAllCommand.class,
+                EnforcerCommand.class,
+                HarnessCommand.class,
+                EvalCommand.class,
+                SkillsCommand.class,
+                // App interaction commands
+                AppCommand.class,
+                A2ACommand.class,
+                GraphCommand.class,
+                KnowledgeCommand.class,
+                // Infrastructure commands
                 McpStdioCommand.class,
-                IngestCommand.class,
-                IndexCommand.class,
-                JobsCommand.class,
-                ScheduleCommand.class,
-                SubprocessCommand.class,
-                GraphCommand.class
+                ServeCommand.class,
+                DaemonCommand.class,
+                CodeIndexCommand.class,
+                EditCoordinatorCommand.class,
+                WebCommand.class,
+                RunCommand.class
         },
         mixinStandardHelpOptions = true,
         versionProvider = VersionProvider.class,
@@ -88,7 +117,7 @@ public class MainCommand implements Callable<Integer> {
     public Integer call() throws Exception {
         File kompileDir = Info.homeDirectory();
         if(!kompileDir.exists()) {
-            System.err.println("Kompile directory not initialized. Please run 'kompile bootstrap' first.");
+            System.err.println("Kompile directory not initialized. Please run 'kompile configure init' first.");
             return 1;
         }
         System.err.println("No command specified. Showing help:\n");
@@ -111,9 +140,7 @@ public class MainCommand implements Callable<Integer> {
             }
         }
 
-        // Add delegation subcommands for federated CLIs (kompile-app, kompile-model, kompile-agent)
-        commandLine.addSubcommand("app", new DelegatingCommand("kompile-app",
-                "Manage running kompile applications (start, stop, status, ingest, query)."));
+        // Add delegation subcommands for federated CLIs (kompile-model, kompile-agent, kompile-lite)
         commandLine.addSubcommand("model", new DelegatingCommand("kompile-model",
                 "Model lifecycle management (list, download, convert, export, import)."));
         commandLine.addSubcommand("agent", new DelegatingCommand("kompile-agent",
@@ -121,7 +148,10 @@ public class MainCommand implements Callable<Integer> {
         commandLine.addSubcommand("lite", new DelegatingCommand("kompile-lite",
                 "Kompile Lite self-contained chat + RAG + Graph RAG application."));
 
-        commandLine.execute(args);
+        int exitCode = commandLine.execute(args);
+        if (exitCode != 0) {
+            System.exit(exitCode);
+        }
     }
 
     /**

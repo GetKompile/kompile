@@ -35,17 +35,15 @@ public class Bootstrap implements Callable<Integer> {
     @Override
     public Integer call() throws Exception {
        if(createFolder) {
-           File user = new File(System.getProperty("user.home"),".kompile");
+           File user = Info.homeDirectory();
            if(user.exists() && forceBootstrap) {
                FileUtils.deleteDirectory(user);
                System.err.println("Forcing recreation of " + user.getAbsolutePath());
            }
 
-           if(!user.exists() && !user.mkdirs()) {
-               System.err.println("Unable to create directory.");
-           } else {
-               System.out.println("Created directory " + user.getAbsolutePath());
-           }
+           GlobalBootstrap.ensureHomeDirectory();
+           GlobalBootstrap.ensureConfigs();
+           System.out.println("Initialized kompile home at " + user.getAbsolutePath());
        } else {
            System.err.println("Not creating folder. createFolder was false.");
        }

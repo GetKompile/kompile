@@ -52,6 +52,11 @@
      <version>${project.version}</version>
     </dependency>
     <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-pipeline-serving</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>${backend}</artifactId>
       <version>1.0.0-SNAPSHOT</version>
@@ -231,6 +236,12 @@
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
+      <artifactId>kompile-tool-table-search</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-knowledge-graph</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
@@ -238,6 +249,12 @@
     <dependency>
       <groupId>ai.kompile</groupId>
       <artifactId>kompile-graph-algorithms</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-data-enrichment</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
@@ -372,6 +389,12 @@
     </plugins>
   </build>
   <profiles>
+    <profile>
+      <id>cpu</id>
+      <properties>
+        <backend>nd4j-native</backend>
+      </properties>
+    </profile>
     <profile>
       <id>native</id>
       <build>

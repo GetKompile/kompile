@@ -61,6 +61,10 @@ import { Subscription, interval } from 'rxjs';
             <div class="stat-label">Memory Utilization</div>
           </mat-card>
           <mat-card class="stat-card mini">
+            <div class="stat-value">{{ kvCacheService.formatBytes(stats.memoryUsedBytes || 0) }} / {{ kvCacheService.formatBytes(stats.memoryCapacityBytes || 0) }}</div>
+            <div class="stat-label">Memory Used / Capacity</div>
+          </mat-card>
+          <mat-card class="stat-card mini">
             <div class="stat-value">{{ stats.activeSequences }}</div>
             <div class="stat-label">Active Sequences</div>
           </mat-card>
@@ -70,9 +74,26 @@ import { Subscription, interval } from 'rxjs';
           </mat-card>
           <mat-card class="stat-card mini">
             <div class="stat-value">{{ (stats.hitRate * 100).toFixed(1) }}%</div>
-            <div class="stat-label">Hit Rate</div>
+            <div class="stat-label">Hit Rate ({{ stats.hitCount || 0 }} / {{ (stats.hitCount || 0) + (stats.missCount || 0) }})</div>
+          </mat-card>
+          <mat-card class="stat-card mini">
+            <div class="stat-value">{{ stats.totalFrees || 0 }}</div>
+            <div class="stat-label">Total Frees</div>
           </mat-card>
         </div>
+
+        <!-- Per-sequence token counts -->
+        <mat-card *ngIf="stats.perSequenceTokenCounts && getSequenceKeys().length > 0" class="sequence-card">
+          <mat-card-header><mat-card-title>Per-Sequence Token Counts</mat-card-title></mat-card-header>
+          <mat-card-content>
+            <div class="sequence-grid">
+              <div *ngFor="let seqIdx of getSequenceKeys()" class="sequence-item">
+                <span class="seq-label">Seq {{ seqIdx }}</span>
+                <span class="seq-value">{{ stats.perSequenceTokenCounts![seqIdx] }} tokens</span>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
 
         <!-- Time-series charts -->
         <div class="charts-grid">
@@ -83,7 +104,7 @@ import { Subscription, interval } from 'rxjs';
             </mat-card-content>
           </mat-card>
           <mat-card class="chart-card">
-            <mat-card-header><mat-card-title>Operations/sec</mat-card-title></mat-card-header>
+            <mat-card-header><mat-card-title>Operations/sec (Appends + Evictions)</mat-card-title></mat-card-header>
             <mat-card-content>
               <canvas #opsChart width="400" height="200"></canvas>
             </mat-card-content>
@@ -98,17 +119,25 @@ import { Subscription, interval } from 'rxjs';
     </div>
   `,
   styles: [`
-    .stat-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+    .stat-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
     .stat-card { text-align: center; padding: 16px; }
     .stat-card.mini { padding: 12px; }
     .stat-value { font-size: 24px; font-weight: 600; color: #1565c0; }
-    .stat-card.mini .stat-value { font-size: 18px; }
+    .stat-card.mini .stat-value { font-size: 16px; }
     .stat-label { font-size: 12px; color: #666; margin-top: 4px; }
     .controls { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
     .controls mat-form-field { min-width: 250px; }
     .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .chart-card canvas { width: 100%; height: 200px; }
     .detail-stats { margin-top: 16px; }
+    .sequence-card { margin-bottom: 16px; }
+    .sequence-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .sequence-item {
+      display: flex; gap: 6px; align-items: center;
+      padding: 4px 10px; background: #e3f2fd; border-radius: 4px; font-size: 12px;
+    }
+    .seq-label { font-weight: 600; color: #1565c0; }
+    .seq-value { color: #333; }
     .empty-state {
       text-align: center; padding: 40px; color: #888;
       display: flex; flex-direction: column; align-items: center; gap: 8px;
@@ -174,14 +203,51 @@ export class CacheStatsComponent implements OnInit, OnDestroy, AfterViewInit {
       if (ctx) this.drawLineChart(ctx, memCanvas, samples.map(s => s.memoryUsedBytes / (1024 * 1024)), '#1565c0', 'MB');
     }
 
-    // Ops chart
+    // Ops chart — appends (green) + evictions (red)
     const opsCanvas = this.opsChartRef?.nativeElement;
     if (opsCanvas) {
       const ctx = opsCanvas.getContext('2d');
       if (ctx) {
-        this.drawLineChart(ctx, opsCanvas, samples.map(s => s.appendsPerSecond), '#2e7d32', 'appends/s');
+        this.drawDualLineChart(ctx, opsCanvas,
+          samples.map(s => s.appendsPerSecond), '#2e7d32', 'appends/s',
+          samples.map(s => s.evictionsPerSecond), '#c62828', 'evictions/s');
       }
     }
+  }
+
+  getSequenceKeys(): number[] {
+    if (!this.stats?.perSequenceTokenCounts) return [];
+    return Object.keys(this.stats.perSequenceTokenCounts).map(Number).sort((a, b) => a - b);
+  }
+
+  private drawDualLineChart(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement,
+    data1: number[], color1: string, label1: string,
+    data2: number[], color2: string, label2: string): void {
+    const w = canvas.width;
+    const h = canvas.height;
+    const pad = 40;
+    ctx.clearRect(0, 0, w, h);
+    if (data1.length < 2) return;
+    const max = Math.max(...data1, ...data2, 1);
+    const xStep = (w - pad * 2) / (data1.length - 1);
+    // Grid
+    ctx.strokeStyle = '#e0e0e0';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad + (h - 2 * pad) * (i / 4);
+      ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad, y); ctx.stroke();
+    }
+    // Line 1
+    ctx.strokeStyle = color1; ctx.lineWidth = 2; ctx.beginPath();
+    data1.forEach((v, i) => { const x = pad + i * xStep; const y = h - pad - ((v / max) * (h - 2 * pad)); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+    ctx.stroke();
+    // Line 2
+    ctx.strokeStyle = color2; ctx.lineWidth = 2; ctx.beginPath();
+    data2.forEach((v, i) => { const x = pad + i * xStep; const y = h - pad - ((v / max) * (h - 2 * pad)); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+    ctx.stroke();
+    // Legend
+    ctx.fillStyle = color1; ctx.font = '11px sans-serif'; ctx.fillText(label1, pad, 14);
+    ctx.fillStyle = color2; ctx.fillText(label2, pad + ctx.measureText(label1).width + 20, 14);
   }
 
   private drawLineChart(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, data: number[], color: string, label: string): void {

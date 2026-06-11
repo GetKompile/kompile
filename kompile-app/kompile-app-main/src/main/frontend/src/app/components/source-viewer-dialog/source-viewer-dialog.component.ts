@@ -24,9 +24,11 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { SourceViewerService } from '../../services/source-viewer.service';
+import { DocumentService } from '../../services/document.service';
 import {
   SourceInfo,
   TextContentResponse,
+  MarkdownConversionResponse,
   SourceViewMode,
   formatFileSize,
   getSourceViewModeIcon
@@ -69,6 +71,12 @@ export class SourceViewerDialogComponent implements OnInit, OnDestroy {
   textTruncated = false;
   lineCount = 0;
   viewMode: SourceViewMode = 'DOWNLOAD_ONLY';
+  isConvertingToMarkdown = false;
+  isIndexingMarkdown = false;
+  markdownConversion: MarkdownConversionResponse | null = null;
+  markdownConversionError: string | null = null;
+  markdownIndexingMessage: string | null = null;
+  markdownIndexingError: string | null = null;
 
   // For embedded/image content
   contentUrl: SafeResourceUrl | null = null;
@@ -87,6 +95,7 @@ export class SourceViewerDialogComponent implements OnInit, OnDestroy {
     public dialogRef: MatDialogRef<SourceViewerDialogComponent>,
     @Inject(MAT_DIALOG_DATA) public data: SourceViewerDialogData,
     private sourceViewerService: SourceViewerService,
+    private documentService: DocumentService,
     private sanitizer: DomSanitizer
   ) { }
 
@@ -212,6 +221,55 @@ export class SourceViewerDialogComponent implements OnInit, OnDestroy {
       case 'EMBEDDED': return 'Document Viewer';
       default: return 'File Info';
     }
+  }
+
+  canConvertToMarkdown(): boolean {
+    if (!this.sourceInfo) return false;
+    const ext = (this.sourceInfo.extension || '').toLowerCase();
+    return ['html', 'htm', 'txt', 'json', 'xml', 'csv', 'tsv', 'log', 'conf', 'cfg', 'ini',
+      'properties', 'env', 'java', 'py', 'js', 'ts', 'css', 'sql', 'yaml', 'yml', 'sh', 'bash'].includes(ext);
+  }
+
+  convertToMarkdown(): void {
+    if (!this.sourceInfo || this.isConvertingToMarkdown) return;
+    this.isConvertingToMarkdown = true;
+    this.markdownConversion = null;
+    this.markdownConversionError = null;
+    this.markdownIndexingMessage = null;
+    this.markdownIndexingError = null;
+
+    this.sourceViewerService.convertToMarkdown(this.sourceInfo.fileName, this.sourceInfo.checksum)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (result) => {
+          this.markdownConversion = result;
+          this.isConvertingToMarkdown = false;
+        },
+        error: (err) => {
+          this.markdownConversionError = err.message || 'Failed to convert source to Markdown';
+          this.isConvertingToMarkdown = false;
+        }
+      });
+  }
+
+  indexMarkdown(): void {
+    if (!this.markdownConversion || this.isIndexingMarkdown) return;
+    this.isIndexingMarkdown = true;
+    this.markdownIndexingMessage = null;
+    this.markdownIndexingError = null;
+
+    this.documentService.processUploadedFile(this.markdownConversion.fileName, undefined, 'custom_markdown')
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.markdownIndexingMessage = `Indexing started for ${this.markdownConversion?.fileName}`;
+          this.isIndexingMarkdown = false;
+        },
+        error: (err) => {
+          this.markdownIndexingError = err.message || 'Failed to index Markdown source';
+          this.isIndexingMarkdown = false;
+        }
+      });
   }
 
   copyToClipboard(): void {

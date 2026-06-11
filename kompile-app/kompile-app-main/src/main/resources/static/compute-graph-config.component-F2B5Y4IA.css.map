@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["angular:styles/component:css;32ddd5de56a163464bc92e2a6b885e8e0db68a6a51a781e240f8eddcfc50ff23;/home/agibsonccc/Documents/GitHub/kompile/kompile-app/kompile-app-main/src/main/frontend/src/app/components/compute-graph/compute-graph-config.component.ts"],
+  "sourcesContent": ["\n    .config-container { padding: 16px; max-width: 800px; }\n    .config-card { margin-bottom: 16px; }\n    .toggle-row { padding: 8px 0; }\n    .toggle-group { padding: 8px 0; }\n    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 8px 0; }\n    .action-bar { display: flex; gap: 12px; padding-top: 8px; }\n    mat-divider { margin: 8px 0; }\n  "],
+  "mappings": ";AACI,CAAC;AAAmB,WAAS;AAAM,aAAW;AAAO;AACrD,CAAC;AAAc,iBAAe;AAAM;AACpC,CAAC;AAAa,WAAS,IAAI;AAAG;AAC9B,CAAC;AAAe,WAAS,IAAI;AAAG;AAChC,CAAC;AAAY,WAAS;AAAM,yBAAuB,IAAI;AAAK,OAAK;AAAM,WAAS,IAAI;AAAG;AACvF,CAAC;AAAa,WAAS;AAAM,OAAK;AAAM,eAAa;AAAK;AAC1D;AAAc,UAAQ,IAAI;AAAG;",
+  "names": []
+}
