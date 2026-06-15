@@ -37,9 +37,7 @@
     <module>kompile-models</module>
     <module>kompile-middleware</module>
     <module>kompile-agents</module>
-    <module>kompile-tools</module>
     <module>kompile-app-parent</module>
-    <module>kompile-sdk-serving</module>
   </modules>
 
   <dependencyManagement>

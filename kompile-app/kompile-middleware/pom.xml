@@ -20,5 +20,7 @@
         <module>kompile-evaluation</module>
         <module>kompile-metrics</module>
         <module>kompile-vectorstores</module>
+        <module>kompile-tools</module>
+        <module>kompile-sdk-serving</module>
     </modules>
 </project>
