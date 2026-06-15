@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-llm-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-llms</artifactId>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>kompile-app-openai-llm</module>
+        <module>kompile-app-anthropic-llm</module>
+        <module>kompile-app-gemini-llm</module>
+        <module>kompile-app-springai-llm</module>
+        <module>kompile-app-cli-llm</module>
+        <module>kompile-pipelines-app-llm</module>
+    </modules>
+</project>
