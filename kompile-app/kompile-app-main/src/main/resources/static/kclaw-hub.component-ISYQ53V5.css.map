@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/components/kclaw-hub/kclaw-hub.component.css"],
-  "sourcesContent": [".kclaw-hub {\n  padding: 16px;\n}\n\n.header-card {\n  margin-bottom: 16px;\n}\n\n.header-card mat-card-title {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.stats-row {\n  display: flex;\n  gap: 16px;\n  margin-top: 16px;\n  flex-wrap: wrap;\n}\n\n.stat-card {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 12px 16px;\n  border-radius: 8px;\n  background: var(--mat-app-surface-container-high);\n  flex: 1;\n  min-width: 150px;\n}\n\n.stat-card mat-icon {\n  font-size: 32px;\n  width: 32px;\n  height: 32px;\n  color: var(--mat-app-primary);\n}\n\n.stat-content {\n  display: flex;\n  flex-direction: column;\n}\n\n.stat-value {\n  font-size: 24px;\n  font-weight: 500;\n}\n\n.stat-label {\n  font-size: 12px;\n  color: var(--mat-app-on-surface-variant);\n}\n\n.main-tabs {\n  margin-top: 16px;\n}\n\n::ng-deep .mat-mdc-tab-body-content {\n  padding: 16px;\n}\n"],
-  "mappings": ";AAAA,CAAC;AACC,WAAS;AACX;AAEA,CAAC;AACC,iBAAe;AACjB;AAEA,CAJC,YAIY;AACX,WAAS;AACT,eAAa;AACb,OAAK;AACP;AAEA,CAAC;AACC,WAAS;AACT,OAAK;AACL,cAAY;AACZ,aAAW;AACb;AAEA,CAAC;AACC,WAAS;AACT,eAAa;AACb,OAAK;AACL,WAAS,KAAK;AACd,iBAAe;AACf,cAAY,IAAI;AAChB,QAAM;AACN,aAAW;AACb;AAEA,CAXC,UAWU;AACT,aAAW;AACX,SAAO;AACP,UAAQ;AACR,SAAO,IAAI;AACb;AAEA,CAAC;AACC,WAAS;AACT,kBAAgB;AAClB;AAEA,CAAC;AACC,aAAW;AACX,eAAa;AACf;AAEA,CAAC;AACC,aAAW;AACX,SAAO,IAAI;AACb;AAEA,CAAC;AACC,cAAY;AACd;AAEA,UAAU,CAAC;AACT,WAAS;AACX;",
-  "names": []
-}

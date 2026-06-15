@@ -108,7 +108,8 @@ class WorkflowRunTest {
 
         WorkflowRun fromAllArgs = new WorkflowRun(
                 "wf-004", "pd-1", 1, "snap-1", RunStatus.COMPLETED,
-                start, null, null, null, null, null, null, null, null
+                start, null, null, null, null, null, null, null, null,
+                0.0, null, null
         );
 
         assertThat(fromBuilder).isEqualTo(fromAllArgs);

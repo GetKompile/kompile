@@ -212,7 +212,10 @@ public class MainApplication {
      *   <li>{@code embedding} → {@link ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain}</li>
      *   <li>{@code model-init} → {@link ai.kompile.app.subprocess.model.ModelInitSubprocessMain}</li>
      *   <li>{@code vlm-test} → {@link ai.kompile.app.subprocess.VlmTestSubprocessMain}</li>
-     *   <li>{@code training} → {@link ai.kompile.staging.subprocess.TrainingSubprocessMain}</li>
+     *   <li>{@code graph} → {@link ai.kompile.app.subprocess.GraphSubprocessMain}</li>
+     *   <li>{@code serving} → {@link ai.kompile.app.subprocess.ServingSubprocessMain}</li>
+     *   <li>{@code pipeline-serving} → ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain (via reflection)</li>
+     *   <li>{@code training} → {@link ai.kompile.staging.subprocess.TrainingSubprocessMain} (via reflection)</li>
      * </ul>
      *
      * @param type the subprocess type (kebab-case)
@@ -246,11 +249,20 @@ public class MainApplication {
             case "vlm-test":
                 ai.kompile.app.subprocess.VlmTestSubprocessMain.main(args);
                 break;
+            case "graph":
+                ai.kompile.app.subprocess.GraphSubprocessMain.main(args);
+                break;
+            case "serving":
+                ai.kompile.app.subprocess.ServingSubprocessMain.main(args);
+                break;
+            case "pipeline-serving":
+                invokeSubprocessMainByReflection("ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain", args);
+                break;
             case "training":
                 invokeSubprocessMainByReflection("ai.kompile.staging.subprocess.TrainingSubprocessMain", args);
                 break;
             default:
-                logger.error("Unknown subprocess type: {}. Supported types: ingest, vector-population, embedding, model-init, vlm-test, training", type);
+                logger.error("Unknown subprocess type: {}. Supported types: ingest, vector-population, embedding, model-init, vlm-test, graph, serving, pipeline-serving, training", type);
                 System.exit(1);
         }
     }
@@ -484,7 +496,7 @@ public class MainApplication {
 
             // === DEBUG/VERBOSE MODES ===
             if (config.debug() != null) {
-                Nd4j.getEnvironment().setDebug(true);
+                Nd4j.getEnvironment().setDebug(config.debug());
                 logger.debug("Set debug to {}", config.debug());
             }
             if (config.verbose() != null) {

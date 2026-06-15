@@ -125,6 +125,13 @@ public class SubprocessHandle {
     }
 
     /**
+     * Get the underlying OS process.
+     */
+    public Process getProcess() {
+        return process;
+    }
+
+    /**
      * Get the process PID.
      */
     public long getPid() {

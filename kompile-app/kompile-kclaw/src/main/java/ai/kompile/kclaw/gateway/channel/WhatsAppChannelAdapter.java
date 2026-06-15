@@ -16,7 +16,8 @@
 package ai.kompile.kclaw.gateway.channel;
 
 import ai.kompile.kclaw.agent.KClawAgentService;
-import ai.kompile.gateway.core.gateway.channel.*;
+import ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashSet;
@@ -108,9 +109,28 @@ public class WhatsAppChannelAdapter extends BaseChannelAdapter implements WhatsA
                 Map.of("phone_number", message.from())
         );
 
-        ChannelAdapter.MessageResponder responder = new WhatsAppMessageResponder(
-                apiClient, message.from(), message.messageId()
-        );
+        String replyToId = message.messageId();
+        String recipientPhone = message.from();
+        ChannelAdapter.MessageResponder responder = new ChannelAdapter.MessageResponder() {
+            @Override
+            public void reply(ChannelAdapter.OutgoingMessage msg) {
+                if (replyToId != null && !replyToId.isEmpty()) {
+                    apiClient.sendReply(recipientPhone, msg.content(), replyToId);
+                } else {
+                    apiClient.sendTextMessage(recipientPhone, msg.content());
+                }
+            }
+
+            @Override
+            public void replyError(String error) {
+                apiClient.sendTextMessage(recipientPhone, "Error: " + error);
+            }
+
+            @Override
+            public void typing() {
+                // WhatsApp does not have a typing indicator API
+            }
+        };
         createAgentHandler().handle(incoming, responder);
 
         apiClient.markAsRead(message.messageId());

@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["angular:styles/component:css;aeb7c39904e24e87a5c1ab783dc194429c02f0d5ea35308c825d1689b32ac61b;/home/agibsonccc/Documents/GitHub/kompile/kompile-app/kompile-app-main/src/main/frontend/src/app/components/kvcache/prefix-cache-viewer.component.ts"],
-  "sourcesContent": ["\n    .stat-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }\n    .stat-card { text-align: center; padding: 16px; }\n    .stat-value { font-size: 20px; font-weight: 600; color: #1565c0; }\n    .stat-label { font-size: 12px; color: #666; margin-top: 4px; }\n    .actions { display: flex; gap: 8px; margin-bottom: 16px; }\n    .entries-table { width: 100%; }\n  "],
-  "mappings": ";AACI,CAAC;AAAa,WAAS;AAAM,yBAAuB,OAAO,CAAC,EAAE;AAAM,OAAK;AAAM,iBAAe;AAAM;AACpG,CAAC;AAAY,cAAY;AAAQ,WAAS;AAAM;AAChD,CAAC;AAAa,aAAW;AAAM,eAAa;AAAK,SAAO;AAAS;AACjE,CAAC;AAAa,aAAW;AAAM,SAAO;AAAM,cAAY;AAAK;AAC7D,CAAC;AAAU,WAAS;AAAM,OAAK;AAAK,iBAAe;AAAM;AACzD,CAAC;AAAgB,SAAO;AAAM;",
-  "names": []
-}

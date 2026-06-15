@@ -23,7 +23,6 @@ import ai.kompile.staging.download.DownloadProgress;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.web.dto.StageWithOptimizationRequest;
 import ai.kompile.modelmanager.registry.*;
-import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.core.staging.StagingStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -102,21 +101,21 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * Stage a model asynchronously.
      * Downloads, converts, validates, and prepares for promotion.
      */
-    public CompletableFuture<StagingModelInfo> stageModelAsync(DownloadRequest request) {
+    public CompletableFuture<ai.kompile.core.staging.StagingModelInfo> stageModelAsync(DownloadRequest request) {
         return CompletableFuture.supplyAsync(() -> stageModel(request), executor);
     }
 
     /**
      * Stage a model synchronously.
      */
-    public StagingModelInfo stageModel(DownloadRequest request) {
+    public ai.kompile.core.staging.StagingModelInfo stageModel(DownloadRequest request) {
         return stageModel(request, progress -> {});
     }
 
     /**
      * Stage a model with progress callback.
      */
-    public StagingModelInfo stageModel(DownloadRequest request, Consumer<StagingModelInfo> progressCallback) {
+    public ai.kompile.core.staging.StagingModelInfo stageModel(DownloadRequest request, Consumer<ai.kompile.core.staging.StagingModelInfo> progressCallback) {
         String modelId = request.getModelId();
         String source = request.getSource() + ":" + request.getRepository();
 
@@ -420,8 +419,9 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     /**
      * Get all models currently in staging.
      */
-    public List<StagingModelInfo> getStagingModels() {
-        return new ArrayList<>(stagingModels.values());
+    @SuppressWarnings("unchecked")
+    public List<ai.kompile.core.staging.StagingModelInfo> getStagingModels() {
+        return (List<ai.kompile.core.staging.StagingModelInfo>) (List<?>) new ArrayList<>(stagingModels.values());
     }
 
     /**
@@ -937,10 +937,10 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     private StagingModelInfo findStagedModel(String modelId) {
         Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
         if (Files.exists(verifiedDir)) {
-            return StagingModelInfo.builder()
-                    .modelId(modelId)
-                    .status(StagingStatus.READY)
-                    .build();
+            StagingModelInfo info = new StagingModelInfo();
+            info.setModelId(modelId);
+            info.setStatus(StagingStatus.READY);
+            return info;
         }
         return null;
     }

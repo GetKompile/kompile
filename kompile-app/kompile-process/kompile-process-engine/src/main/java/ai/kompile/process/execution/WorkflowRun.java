@@ -58,4 +58,10 @@ public class WorkflowRun {
     private List<String> graphNodeIds;
     /** KPI metrics for this run: cycle time, auto-fix rate, exception count, etc. */
     private Map<String, Object> metrics;
+    /** Overall likelihood score (0.0–1.0) computed from causal attribution chains. */
+    private double overallLikelihood;
+    /** ID of the risk assessment produced for this run (if any). */
+    private String riskAssessmentId;
+    /** ID of the process suggestion that triggered this run. */
+    private String sourceSuggestionId;
 }

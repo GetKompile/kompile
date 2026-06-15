@@ -81,10 +81,12 @@ class UnifiedCrawlGraphServiceImplTest {
     @TempDir Path tempDir;
 
     private UnifiedCrawlGraphServiceImpl service;
+    private GraphExtractionOrchestrator orchestrator;
 
     @BeforeEach
     void setUp() throws Exception {
         service = new UnifiedCrawlGraphServiceImpl();
+        orchestrator = new GraphExtractionOrchestrator();
         Path runtimeConfig = tempDir.resolve("graph-extraction-config.json");
         Files.writeString(runtimeConfig, """
                 {
@@ -196,6 +198,7 @@ class UnifiedCrawlGraphServiceImplTest {
                 any(GraphNode.class), anyString(), nullable(Long.class))).thenReturn(Optional.empty());
         when(entityMentionRepository.save(any(EntityMention.class))).thenAnswer(invocation -> invocation.getArgument(0));
         setField(service, "entityMentionRepository", entityMentionRepository);
+        setField(service, "graphExtractionOrchestrator", orchestrator);
     }
 
     @AfterEach
@@ -213,11 +216,11 @@ class UnifiedCrawlGraphServiceImplTest {
                 .request(UnifiedCrawlRequest.builder().sources(List.of()).build())
                 .build();
 
-        assertEquals(3, service.resetGraphExtractionProgress(job, 3));
-        assertEquals(2, service.incrementGraphChunksProcessed(job, 2));
-        assertEquals(3, service.incrementGraphChunksProcessed(job, 5));
+        assertEquals(3, orchestrator.resetGraphExtractionProgress(job, 3));
+        assertEquals(2, orchestrator.incrementGraphChunksProcessed(job, 2));
+        assertEquals(3, orchestrator.incrementGraphChunksProcessed(job, 5));
         assertEquals(3, job.getGraphChunksProcessed().get());
-        assertEquals(3, service.normalizeGraphChunksProcessed(job));
+        assertEquals(3, orchestrator.normalizeGraphChunksProcessed(job));
     }
 
     @Test
@@ -230,7 +233,7 @@ class UnifiedCrawlGraphServiceImplTest {
         job.getGraphChunksTotal().set(4);
         job.getGraphChunksProcessed().set(9);
 
-        assertEquals(4, service.normalizeGraphChunksProcessed(job));
+        assertEquals(4, orchestrator.normalizeGraphChunksProcessed(job));
         assertEquals(4, job.getGraphChunksProcessed().get());
     }
 
@@ -241,10 +244,10 @@ class UnifiedCrawlGraphServiceImplTest {
                 .jobId("job-progress-complete")
                 .request(UnifiedCrawlRequest.builder().sources(List.of()).build())
                 .build();
-        service.resetGraphExtractionProgress(job, 5);
-        service.incrementGraphChunksProcessed(job, 2);
+        orchestrator.resetGraphExtractionProgress(job, 5);
+        orchestrator.incrementGraphChunksProcessed(job, 2);
 
-        assertEquals(5, service.completeGraphExtractionProgress(job));
+        assertEquals(5, orchestrator.completeGraphExtractionProgress(job));
         assertEquals(5, job.getGraphChunksProcessed().get());
     }
 

@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["angular:styles/component:css;cc9d29a4a98b7f11d6793990238114ac8ae08df3190924898b74514f4619abc0;/home/agibsonccc/Documents/GitHub/kompile/kompile-app/kompile-app-main/src/main/frontend/src/app/components/rag-pipeline-editor/rag-pipeline-editor.component.ts"],
-  "sourcesContent": ["\n    .editor-content { min-width: 600px; max-height: 70vh; }\n    .section { margin-bottom: 16px; }\n    .full-width { width: 100%; }\n    .stage-content { padding: 8px 0; display: flex; flex-direction: column; gap: 12px; }\n    .section-icon { margin-right: 8px; }\n    .strategy-group { display: flex; gap: 16px; margin-bottom: 8px; }\n    .reranking-options { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }\n    .param-row { display: flex; gap: 16px; }\n    .param-row mat-form-field { flex: 1; }\n    mat-expansion-panel { margin-bottom: 8px; }\n  "],
-  "mappings": ";AACI,CAAC;AAAiB,aAAW;AAAO,cAAY;AAAM;AACtD,CAAC;AAAU,iBAAe;AAAM;AAChC,CAAC;AAAa,SAAO;AAAM;AAC3B,CAAC;AAAgB,WAAS,IAAI;AAAG,WAAS;AAAM,kBAAgB;AAAQ,OAAK;AAAM;AACnF,CAAC;AAAe,gBAAc;AAAK;AACnC,CAAC;AAAiB,WAAS;AAAM,OAAK;AAAM,iBAAe;AAAK;AAChE,CAAC;AAAoB,cAAY;AAAM,WAAS;AAAM,kBAAgB;AAAQ,OAAK;AAAM;AACzF,CAAC;AAAY,WAAS;AAAM,OAAK;AAAM;AACvC,CADC,UACU;AAAiB,QAAM;AAAG;AACrC;AAAsB,iBAAe;AAAK;",
-  "names": []
-}

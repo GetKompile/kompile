@@ -24,6 +24,7 @@
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-app</artifactId>
         <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
     </parent>
     <artifactId>kompile-app-llm-pipeline</artifactId>
     <name>Kompile :: App :: LLM :: Pipeline Language Model</name>

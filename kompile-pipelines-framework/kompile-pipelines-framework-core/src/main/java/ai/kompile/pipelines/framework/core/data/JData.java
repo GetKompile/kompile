@@ -499,7 +499,7 @@ public class JData implements Data {
             // This relies on the generic put(String, Object) to correctly infer types
             // from the 'other' Data object when its raw values are retrieved.
             // Or, we could inspect other.type(key) and call specific put methods.
-            this.put(key, other.get(key));
+            this.put(key, (Object) other.get(key));
             if (other.type(key) == ValueType.LIST) {
                 this.listElementTypes.put(key, other.listType(key));
             }
@@ -582,30 +582,5 @@ public class JData implements Data {
     @Override
     public int hashCode() {
         return Objects.hash(values, listElementTypes);
-    }
-}
-
-/**
- * Helper class to infer ValueType from a Java Object.
- * This would be used by JData.put(String, Object).
- */
-class JDataValueInferer {
-    static ValueType inferValueType(Object value) {
-        if (value == null) return null; // Or a specific "NULL_TYPE" if JData wants to store typed nulls
-        if (value instanceof String) return ValueType.STRING;
-        if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte) return ValueType.INT64;
-        if (value instanceof Double || value instanceof Float) return ValueType.DOUBLE;
-        if (value instanceof Boolean) return ValueType.BOOLEAN;
-        if (value instanceof byte[]) return ValueType.BYTES;
-        if (value instanceof ByteBuffer) return ValueType.BYTES; // Will be converted to byte[] by JData
-        if (value instanceof NDArray) return ValueType.NDARRAY;
-        if (value instanceof Image) return ValueType.IMAGE;
-        if (value instanceof Point) return ValueType.POINT;
-        if (value instanceof BoundingBox) return ValueType.BOUNDING_BOX;
-        if (value instanceof KVCache) return ValueType.KV_CACHE;
-        if (value instanceof Data) return ValueType.DATA;
-        if (value instanceof List) return ValueType.LIST;
-        // Add more specific inferences if needed
-        return null; // Or throw IllegalArgumentException
     }
 }

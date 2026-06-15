@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/components/vlm-orchestration/vlm-orchestration.component.css"],
-  "sourcesContent": [".vlm-orchestration-container {\n  padding: 16px;\n}\n\n.config-card {\n  margin-bottom: 16px;\n  background: rgba(255, 255, 255, 0.05);\n}\n\n.config-field {\n  margin-top: 16px;\n}\n\n.config-field mat-form-field {\n  width: 100%;\n}\n\n.toggle-field {\n  margin: 12px 0;\n}\n\n.action-bar {\n  display: flex;\n  gap: 12px;\n  justify-content: flex-end;\n  padding-top: 16px;\n  border-top: 1px solid rgba(255, 255, 255, 0.1);\n}\n\n.loading-spinner {\n  display: flex;\n  justify-content: center;\n  padding: 48px;\n}\n"],
-  "mappings": ";AAAA,CAAC;AACC,WAAS;AACX;AAEA,CAAC;AACC,iBAAe;AACf,cAAY,KAAK,GAAG,EAAE,GAAG,EAAE,GAAG,EAAE;AAClC;AAEA,CAAC;AACC,cAAY;AACd;AAEA,CAJC,aAIa;AACZ,SAAO;AACT;AAEA,CAAC;AACC,UAAQ,KAAK;AACf;AAEA,CAAC;AACC,WAAS;AACT,OAAK;AACL,mBAAiB;AACjB,eAAa;AACb,cAAY,IAAI,MAAM,KAAK,GAAG,EAAE,GAAG,EAAE,GAAG,EAAE;AAC5C;AAEA,CAAC;AACC,WAAS;AACT,mBAAiB;AACjB,WAAS;AACX;",
-  "names": []
-}

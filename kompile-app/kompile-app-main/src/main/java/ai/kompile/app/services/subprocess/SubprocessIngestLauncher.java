@@ -1217,23 +1217,11 @@ public class SubprocessIngestLauncher {
     }
 
     /**
-     * Get process for a handle (helper to access the process from handle).
+     * Get process for a handle.
      */
     private Process getProcessForHandle(SubprocessHandle handle) {
-        // This is a workaround since we can't access the process directly from handle
-        // In practice, we'd need to either expose it or track it separately
         SubprocessHandle tracked = activeProcesses.get(handle.getTaskId());
-        if (tracked != null) {
-            // Use reflection or add a getter
-            try {
-                var field = SubprocessHandle.class.getDeclaredField("process");
-                field.setAccessible(true);
-                return (Process) field.get(tracked);
-            } catch (Exception e) {
-                logger.error("Failed to get process from handle", e);
-            }
-        }
-        return null;
+        return tracked != null ? tracked.getProcess() : null;
     }
 
     /**
