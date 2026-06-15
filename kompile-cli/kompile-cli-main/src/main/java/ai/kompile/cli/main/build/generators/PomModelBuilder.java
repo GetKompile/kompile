@@ -231,7 +231,7 @@ public class PomModelBuilder {
         }
 
         // Tokenizers native
-        addDep(deps, "ai.kompile", "tokenizers-native", "0.1.0-SNAPSHOT", "compile",
+        addDep(deps, "org.eclipse.deeplearning4j", "tokenizers-native", "${nd4j.version}", "compile",
                 config.getJavacppPlatform(), false);
 
         // Jakarta mail

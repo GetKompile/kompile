@@ -73,6 +73,7 @@ data/
 
 # Generated build output projects
 kompile-rag-builds/
+dl4j-build/
 
 # Large build artifacts
 gcc-*.tar.gz
