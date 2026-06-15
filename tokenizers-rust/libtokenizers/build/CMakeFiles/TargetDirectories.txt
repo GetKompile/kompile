@@ -1,0 +1,9 @@
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/tokenizers-external.dir
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/tokenizers_wrapper.dir
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/clean-external.dir
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/edit_cache.dir
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/rebuild_cache.dir
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/list_install_components.dir
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/install.dir
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/install/local.dir
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/install/strip.dir

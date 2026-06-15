@@ -172,6 +172,7 @@
 
     <!-- Main application (must be last) -->
     <module>kompile-app-main</module>
+    <module>kompile-sdk-serving</module>
   </modules>
 
   <dependencyManagement>

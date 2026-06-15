@@ -1,0 +1,1138 @@
+
+---
+events:
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineSystem.cmake:204 (message)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      The system is: Linux - 6.2.15-100.fc36.x86_64 - x86_64
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCCompiler.cmake:123 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the C compiler identification source file "CMakeCCompilerId.c" succeeded.
+      Compiler: /home/linuxbrew/.linuxbrew/bin/gcc 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "a.out"
+      
+      The C compiler identification is GNU, found in:
+        /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/3.26.3/CompilerIdC/a.out
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler: /home/linuxbrew/.linuxbrew/bin/g++ 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
+      
+      The CXX compiler identification is GNU, found in:
+        /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/3.26.3/CompilerIdCXX/a.out
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile)"
+      - "/usr/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    checks:
+      - "Detecting C compiler ABI info"
+    directories:
+      source: "/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-NaEHZ3"
+      binary: "/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-NaEHZ3"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_C_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-NaEHZ3
+        
+        Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_da8c1/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_da8c1.dir/build.make CMakeFiles/cmTC_da8c1.dir/build
+        gmake[1]: Entering directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-NaEHZ3'
+        Building C object CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o
+        /home/linuxbrew/.linuxbrew/bin/gcc   -v -o CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o -c /usr/share/cmake/Modules/CMakeCCompilerABI.c
+        Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs
+        COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/gcc
+        Target: x86_64-pc-linux-gnu
+        Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 12.3.0 (Homebrew GCC 12.3.0) 
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_da8c1.dir/'
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/cc1 -quiet -v -imultiarch x86_64-linux-gnu -iprefix /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/ /usr/share/cmake/Modules/CMakeCCompilerABI.c -isysroot /home/linuxbrew/.linuxbrew/nonexistent -idirafter /home/linuxbrew/.linuxbrew/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /usr/include -quiet -dumpdir CMakeFiles/cmTC_da8c1.dir/ -dumpbase CMakeCCompilerABI.c.c -dumpbase-ext .c -mtune=generic -march=x86-64 -version -o /tmp/ccd9GIne.s
+        GNU C17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 12.3.0, GMP version 6.2.1, MPFR version 4.2.0-p12, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        warning: GMP header version 6.2.1 differs from library version 6.3.0.
+        warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include"
+        ignoring nonexistent directory "/usr/include/x86_64-linux-gnu"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include
+         /home/linuxbrew/.linuxbrew/include
+         /usr/include
+        End of search list.
+        GNU C17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 12.3.0, GMP version 6.2.1, MPFR version 4.2.0-p12, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        warning: GMP header version 6.2.1 differs from library version 6.3.0.
+        warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        Compiler executable checksum: 4527a2ed54f66e46c6b379da0d836ed5
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_da8c1.dir/'
+         as -v --64 -o CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o /tmp/ccd9GIne.s
+        GNU assembler version 2.37 (x86_64-redhat-linux) using BFD version version 2.37-37.fc36
+        COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/
+        LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.'
+        Linking C executable cmTC_da8c1
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_da8c1.dir/link.txt --verbose=1
+        /home/linuxbrew/.linuxbrew/bin/gcc  -v CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o -o cmTC_da8c1 
+        Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs
+        COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/gcc
+        COLLECT_LTO_WRAPPER=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper
+        Target: x86_64-pc-linux-gnu
+        Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 12.3.0 (Homebrew GCC 12.3.0) 
+        COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/
+        LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_da8c1' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_da8c1.'
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2 -plugin /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so -plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper -plugin-opt=-fresolution=/tmp/ccIAI12t.res -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 --dynamic-linker /home/linuxbrew/.linuxbrew/lib/ld.so -rpath /home/linuxbrew/.linuxbrew/lib/gcc/12 -pie -o cmTC_da8c1 /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12 -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../.. -L/home/linuxbrew/.linuxbrew/lib/gcc/12 -L/home/linuxbrew/.linuxbrew/lib CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o -rpath /home/linuxbrew/.linuxbrew/lib -lgcc --push-state --as-needed -lgcc_s --pop-state -lc -lgcc --push-state --as-needed -lgcc_s --pop-state /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_da8c1' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_da8c1.'
+        gmake[1]: Leaving directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-NaEHZ3'
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:127 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed C implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include]
+          add: [/home/linuxbrew/.linuxbrew/include]
+          add: [/usr/include]
+        end of search list found
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include]
+        collapse include dir [/home/linuxbrew/.linuxbrew/include] ==> [/home/linuxbrew/.linuxbrew/include]
+        collapse include dir [/usr/include] ==> [/usr/include]
+        implicit include dirs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include;/home/linuxbrew/.linuxbrew/include;/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:152 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed C implicit link information:
+        link line regex: [^( *|.*[/\\])(ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        ignore line: [Change Dir: /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-NaEHZ3]
+        ignore line: []
+        ignore line: [Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_da8c1/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_da8c1.dir/build.make CMakeFiles/cmTC_da8c1.dir/build]
+        ignore line: [gmake[1]: Entering directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-NaEHZ3']
+        ignore line: [Building C object CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o]
+        ignore line: [/home/linuxbrew/.linuxbrew/bin/gcc   -v -o CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o -c /usr/share/cmake/Modules/CMakeCCompilerABI.c]
+        ignore line: [Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs]
+        ignore line: [COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/gcc]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 12.3.0 (Homebrew GCC 12.3.0) ]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_da8c1.dir/']
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/cc1 -quiet -v -imultiarch x86_64-linux-gnu -iprefix /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/ /usr/share/cmake/Modules/CMakeCCompilerABI.c -isysroot /home/linuxbrew/.linuxbrew/nonexistent -idirafter /home/linuxbrew/.linuxbrew/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /usr/include -quiet -dumpdir CMakeFiles/cmTC_da8c1.dir/ -dumpbase CMakeCCompilerABI.c.c -dumpbase-ext .c -mtune=generic -march=x86-64 -version -o /tmp/ccd9GIne.s]
+        ignore line: [GNU C17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.3.0  GMP version 6.2.1  MPFR version 4.2.0-p12  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [warning: GMP header version 6.2.1 differs from library version 6.3.0.]
+        ignore line: [warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.]
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include"]
+        ignore line: [ignoring nonexistent directory "/usr/include/x86_64-linux-gnu"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include]
+        ignore line: [ /home/linuxbrew/.linuxbrew/include]
+        ignore line: [ /usr/include]
+        ignore line: [End of search list.]
+        ignore line: [GNU C17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.3.0  GMP version 6.2.1  MPFR version 4.2.0-p12  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [warning: GMP header version 6.2.1 differs from library version 6.3.0.]
+        ignore line: [warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.]
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [Compiler executable checksum: 4527a2ed54f66e46c6b379da0d836ed5]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_da8c1.dir/']
+        ignore line: [ as -v --64 -o CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o /tmp/ccd9GIne.s]
+        ignore line: [GNU assembler version 2.37 (x86_64-redhat-linux) using BFD version version 2.37-37.fc36]
+        ignore line: [COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/]
+        ignore line: [LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.']
+        ignore line: [Linking C executable cmTC_da8c1]
+        ignore line: [/usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_da8c1.dir/link.txt --verbose=1]
+        ignore line: [/home/linuxbrew/.linuxbrew/bin/gcc  -v CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o -o cmTC_da8c1 ]
+        ignore line: [Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs]
+        ignore line: [COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/gcc]
+        ignore line: [COLLECT_LTO_WRAPPER=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 12.3.0 (Homebrew GCC 12.3.0) ]
+        ignore line: [COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/]
+        ignore line: [LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_da8c1' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_da8c1.']
+        link line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2 -plugin /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so -plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper -plugin-opt=-fresolution=/tmp/ccIAI12t.res -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 --dynamic-linker /home/linuxbrew/.linuxbrew/lib/ld.so -rpath /home/linuxbrew/.linuxbrew/lib/gcc/12 -pie -o cmTC_da8c1 /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12 -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../.. -L/home/linuxbrew/.linuxbrew/lib/gcc/12 -L/home/linuxbrew/.linuxbrew/lib CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o -rpath /home/linuxbrew/.linuxbrew/lib -lgcc --push-state --as-needed -lgcc_s --pop-state -lc -lgcc --push-state --as-needed -lgcc_s --pop-state /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2] ==> ignore
+          arg [-plugin] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so] ==> ignore
+          arg [-plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/ccIAI12t.res] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [--eh-frame-hdr] ==> ignore
+          arg [-m] ==> ignore
+          arg [elf_x86_64] ==> ignore
+          arg [-dynamic-linker] ==> ignore
+          arg [/lib64/ld-linux-x86-64.so.2] ==> ignore
+          arg [--dynamic-linker] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib/ld.so] ==> ignore
+          arg [-rpath] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> ignore
+          arg [-pie] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_da8c1] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..]
+          arg [-L/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> dir [/home/linuxbrew/.linuxbrew/lib/gcc/12]
+          arg [-L/home/linuxbrew/.linuxbrew/lib] ==> dir [/home/linuxbrew/.linuxbrew/lib]
+          arg [CMakeFiles/cmTC_da8c1.dir/CMakeCCompilerABI.c.o] ==> ignore
+          arg [-rpath] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib] ==> ignore
+          arg [-lgcc] ==> lib [gcc]
+          arg [--push-state] ==> ignore
+          arg [--as-needed] ==> ignore
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [--pop-state] ==> ignore
+          arg [-lc] ==> lib [c]
+          arg [-lgcc] ==> lib [gcc]
+          arg [--push-state] ==> ignore
+          arg [--as-needed] ==> ignore
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [--pop-state] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> [/home/linuxbrew/.linuxbrew/lib/gcc/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/lib] ==> [/home/linuxbrew/.linuxbrew/lib]
+        implicit libs: [gcc;gcc_s;c;gcc;gcc_s]
+        implicit objs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        implicit dirs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12;/home/linuxbrew/.linuxbrew/lib/gcc/12;/home/linuxbrew/.linuxbrew/lib]
+        implicit fwks: []
+      
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    checks:
+      - "Detecting CXX compiler ABI info"
+    directories:
+      source: "/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-aVpxoD"
+      binary: "/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-aVpxoD"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_CXX_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-aVpxoD
+        
+        Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_aa861/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_aa861.dir/build.make CMakeFiles/cmTC_aa861.dir/build
+        gmake[1]: Entering directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-aVpxoD'
+        Building CXX object CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o
+        /home/linuxbrew/.linuxbrew/bin/g++   -v -o CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp
+        Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs
+        COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/g++
+        Target: x86_64-pc-linux-gnu
+        Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 12.3.0 (Homebrew GCC 12.3.0) 
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_aa861.dir/'
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/cc1plus -quiet -v -imultiarch x86_64-linux-gnu -iprefix /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/ -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -isysroot /home/linuxbrew/.linuxbrew/nonexistent -idirafter /home/linuxbrew/.linuxbrew/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /usr/include -quiet -dumpdir CMakeFiles/cmTC_aa861.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -o /tmp/ccGzFI6O.s
+        GNU C++17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 12.3.0, GMP version 6.2.1, MPFR version 4.2.0-p12, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        warning: GMP header version 6.2.1 differs from library version 6.3.0.
+        warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include"
+        ignoring nonexistent directory "/usr/include/x86_64-linux-gnu"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include
+         /home/linuxbrew/.linuxbrew/include
+         /usr/include
+        End of search list.
+        GNU C++17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 12.3.0, GMP version 6.2.1, MPFR version 4.2.0-p12, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        warning: GMP header version 6.2.1 differs from library version 6.3.0.
+        warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        Compiler executable checksum: 5afe2e26eba3c035dc2bbe78a86b66ed
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_aa861.dir/'
+         as -v --64 -o CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccGzFI6O.s
+        GNU assembler version 2.37 (x86_64-redhat-linux) using BFD version version 2.37-37.fc36
+        COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/
+        LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.'
+        Linking CXX executable cmTC_aa861
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_aa861.dir/link.txt --verbose=1
+        /home/linuxbrew/.linuxbrew/bin/g++  -v CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_aa861 
+        Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs
+        COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/g++
+        COLLECT_LTO_WRAPPER=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper
+        Target: x86_64-pc-linux-gnu
+        Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 12.3.0 (Homebrew GCC 12.3.0) 
+        COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/
+        LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_aa861' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_aa861.'
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2 -plugin /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so -plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper -plugin-opt=-fresolution=/tmp/ccLwkbb2.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 --dynamic-linker /home/linuxbrew/.linuxbrew/lib/ld.so -rpath /home/linuxbrew/.linuxbrew/lib/gcc/12 -pie -o cmTC_aa861 /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12 -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../.. -L/home/linuxbrew/.linuxbrew/lib/gcc/12 -L/home/linuxbrew/.linuxbrew/lib CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -rpath /home/linuxbrew/.linuxbrew/lib -lgcc_s -lgcc -lc -lgcc_s -lgcc /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_aa861' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_aa861.'
+        gmake[1]: Leaving directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-aVpxoD'
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:127 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed CXX implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include]
+          add: [/home/linuxbrew/.linuxbrew/include]
+          add: [/usr/include]
+        end of search list found
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12/x86_64-pc-linux-gnu]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12/backward]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include]
+        collapse include dir [/home/linuxbrew/.linuxbrew/include] ==> [/home/linuxbrew/.linuxbrew/include]
+        collapse include dir [/usr/include] ==> [/usr/include]
+        implicit include dirs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12/x86_64-pc-linux-gnu;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12/backward;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include;/home/linuxbrew/.linuxbrew/include;/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:152 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed CXX implicit link information:
+        link line regex: [^( *|.*[/\\])(ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        ignore line: [Change Dir: /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-aVpxoD]
+        ignore line: []
+        ignore line: [Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_aa861/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_aa861.dir/build.make CMakeFiles/cmTC_aa861.dir/build]
+        ignore line: [gmake[1]: Entering directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-aVpxoD']
+        ignore line: [Building CXX object CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o]
+        ignore line: [/home/linuxbrew/.linuxbrew/bin/g++   -v -o CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs]
+        ignore line: [COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/g++]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 12.3.0 (Homebrew GCC 12.3.0) ]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_aa861.dir/']
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/cc1plus -quiet -v -imultiarch x86_64-linux-gnu -iprefix /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/ -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -isysroot /home/linuxbrew/.linuxbrew/nonexistent -idirafter /home/linuxbrew/.linuxbrew/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /usr/include -quiet -dumpdir CMakeFiles/cmTC_aa861.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -o /tmp/ccGzFI6O.s]
+        ignore line: [GNU C++17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.3.0  GMP version 6.2.1  MPFR version 4.2.0-p12  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [warning: GMP header version 6.2.1 differs from library version 6.3.0.]
+        ignore line: [warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.]
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include"]
+        ignore line: [ignoring nonexistent directory "/usr/include/x86_64-linux-gnu"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include]
+        ignore line: [ /home/linuxbrew/.linuxbrew/include]
+        ignore line: [ /usr/include]
+        ignore line: [End of search list.]
+        ignore line: [GNU C++17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.3.0  GMP version 6.2.1  MPFR version 4.2.0-p12  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [warning: GMP header version 6.2.1 differs from library version 6.3.0.]
+        ignore line: [warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.]
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [Compiler executable checksum: 5afe2e26eba3c035dc2bbe78a86b66ed]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_aa861.dir/']
+        ignore line: [ as -v --64 -o CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccGzFI6O.s]
+        ignore line: [GNU assembler version 2.37 (x86_64-redhat-linux) using BFD version version 2.37-37.fc36]
+        ignore line: [COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/]
+        ignore line: [LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.']
+        ignore line: [Linking CXX executable cmTC_aa861]
+        ignore line: [/usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_aa861.dir/link.txt --verbose=1]
+        ignore line: [/home/linuxbrew/.linuxbrew/bin/g++  -v CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_aa861 ]
+        ignore line: [Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs]
+        ignore line: [COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/g++]
+        ignore line: [COLLECT_LTO_WRAPPER=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 12.3.0 (Homebrew GCC 12.3.0) ]
+        ignore line: [COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/]
+        ignore line: [LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_aa861' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_aa861.']
+        link line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2 -plugin /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so -plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper -plugin-opt=-fresolution=/tmp/ccLwkbb2.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 --dynamic-linker /home/linuxbrew/.linuxbrew/lib/ld.so -rpath /home/linuxbrew/.linuxbrew/lib/gcc/12 -pie -o cmTC_aa861 /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12 -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../.. -L/home/linuxbrew/.linuxbrew/lib/gcc/12 -L/home/linuxbrew/.linuxbrew/lib CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -rpath /home/linuxbrew/.linuxbrew/lib -lgcc_s -lgcc -lc -lgcc_s -lgcc /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2] ==> ignore
+          arg [-plugin] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so] ==> ignore
+          arg [-plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/ccLwkbb2.res] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [--eh-frame-hdr] ==> ignore
+          arg [-m] ==> ignore
+          arg [elf_x86_64] ==> ignore
+          arg [-dynamic-linker] ==> ignore
+          arg [/lib64/ld-linux-x86-64.so.2] ==> ignore
+          arg [--dynamic-linker] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib/ld.so] ==> ignore
+          arg [-rpath] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> ignore
+          arg [-pie] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_aa861] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..]
+          arg [-L/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> dir [/home/linuxbrew/.linuxbrew/lib/gcc/12]
+          arg [-L/home/linuxbrew/.linuxbrew/lib] ==> dir [/home/linuxbrew/.linuxbrew/lib]
+          arg [CMakeFiles/cmTC_aa861.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [-lstdc++] ==> lib [stdc++]
+          arg [-lm] ==> lib [m]
+          arg [-rpath] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib] ==> ignore
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [-lc] ==> lib [c]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> [/home/linuxbrew/.linuxbrew/lib/gcc/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/lib] ==> [/home/linuxbrew/.linuxbrew/lib]
+        implicit libs: [stdc++;m;gcc_s;gcc;c;gcc_s;gcc]
+        implicit objs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        implicit dirs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12;/home/linuxbrew/.linuxbrew/lib/gcc/12;/home/linuxbrew/.linuxbrew/lib]
+        implicit fwks: []
+      
+      
+...
+
+---
+events:
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineSystem.cmake:204 (message)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      The system is: Linux - 6.2.15-100.fc36.x86_64 - x86_64
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCCompiler.cmake:123 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the C compiler identification source file "CMakeCCompilerId.c" succeeded.
+      Compiler: /home/linuxbrew/.linuxbrew/bin/gcc 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "a.out"
+      
+      The C compiler identification is GNU, found in:
+        /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/3.26.3/CompilerIdC/a.out
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/share/cmake/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler: /home/linuxbrew/.linuxbrew/bin/g++ 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
+      
+      The CXX compiler identification is GNU, found in:
+        /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/3.26.3/CompilerIdCXX/a.out
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile)"
+      - "/usr/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    checks:
+      - "Detecting C compiler ABI info"
+    directories:
+      source: "/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-9aLTgI"
+      binary: "/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-9aLTgI"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_C_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-9aLTgI
+        
+        Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_619ea/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_619ea.dir/build.make CMakeFiles/cmTC_619ea.dir/build
+        gmake[1]: Entering directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-9aLTgI'
+        Building C object CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o
+        /home/linuxbrew/.linuxbrew/bin/gcc   -v -o CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o -c /usr/share/cmake/Modules/CMakeCCompilerABI.c
+        Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs
+        COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/gcc
+        Target: x86_64-pc-linux-gnu
+        Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 12.3.0 (Homebrew GCC 12.3.0) 
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_619ea.dir/'
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/cc1 -quiet -v -imultiarch x86_64-linux-gnu -iprefix /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/ /usr/share/cmake/Modules/CMakeCCompilerABI.c -isysroot /home/linuxbrew/.linuxbrew/nonexistent -idirafter /home/linuxbrew/.linuxbrew/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /usr/include -quiet -dumpdir CMakeFiles/cmTC_619ea.dir/ -dumpbase CMakeCCompilerABI.c.c -dumpbase-ext .c -mtune=generic -march=x86-64 -version -o /tmp/cc2HwH6z.s
+        GNU C17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 12.3.0, GMP version 6.2.1, MPFR version 4.2.0-p12, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        warning: GMP header version 6.2.1 differs from library version 6.3.0.
+        warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include"
+        ignoring nonexistent directory "/usr/include/x86_64-linux-gnu"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include
+         /home/linuxbrew/.linuxbrew/include
+         /usr/include
+        End of search list.
+        GNU C17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 12.3.0, GMP version 6.2.1, MPFR version 4.2.0-p12, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        warning: GMP header version 6.2.1 differs from library version 6.3.0.
+        warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        Compiler executable checksum: 4527a2ed54f66e46c6b379da0d836ed5
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_619ea.dir/'
+         as -v --64 -o CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o /tmp/cc2HwH6z.s
+        GNU assembler version 2.37 (x86_64-redhat-linux) using BFD version version 2.37-37.fc36
+        COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/
+        LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.'
+        Linking C executable cmTC_619ea
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_619ea.dir/link.txt --verbose=1
+        /home/linuxbrew/.linuxbrew/bin/gcc  -v CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o -o cmTC_619ea 
+        Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs
+        COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/gcc
+        COLLECT_LTO_WRAPPER=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper
+        Target: x86_64-pc-linux-gnu
+        Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 12.3.0 (Homebrew GCC 12.3.0) 
+        COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/
+        LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_619ea' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_619ea.'
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2 -plugin /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so -plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper -plugin-opt=-fresolution=/tmp/ccgjdIZ5.res -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 --dynamic-linker /home/linuxbrew/.linuxbrew/lib/ld.so -rpath /home/linuxbrew/.linuxbrew/lib/gcc/12 -pie -o cmTC_619ea /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12 -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../.. -L/home/linuxbrew/.linuxbrew/lib/gcc/12 -L/home/linuxbrew/.linuxbrew/lib CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o -rpath /home/linuxbrew/.linuxbrew/lib -lgcc --push-state --as-needed -lgcc_s --pop-state -lc -lgcc --push-state --as-needed -lgcc_s --pop-state /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_619ea' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_619ea.'
+        gmake[1]: Leaving directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-9aLTgI'
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:127 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed C implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include]
+          add: [/home/linuxbrew/.linuxbrew/include]
+          add: [/usr/include]
+        end of search list found
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include]
+        collapse include dir [/home/linuxbrew/.linuxbrew/include] ==> [/home/linuxbrew/.linuxbrew/include]
+        collapse include dir [/usr/include] ==> [/usr/include]
+        implicit include dirs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include;/home/linuxbrew/.linuxbrew/include;/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:152 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed C implicit link information:
+        link line regex: [^( *|.*[/\\])(ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        ignore line: [Change Dir: /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-9aLTgI]
+        ignore line: []
+        ignore line: [Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_619ea/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_619ea.dir/build.make CMakeFiles/cmTC_619ea.dir/build]
+        ignore line: [gmake[1]: Entering directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-9aLTgI']
+        ignore line: [Building C object CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o]
+        ignore line: [/home/linuxbrew/.linuxbrew/bin/gcc   -v -o CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o -c /usr/share/cmake/Modules/CMakeCCompilerABI.c]
+        ignore line: [Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs]
+        ignore line: [COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/gcc]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 12.3.0 (Homebrew GCC 12.3.0) ]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_619ea.dir/']
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/cc1 -quiet -v -imultiarch x86_64-linux-gnu -iprefix /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/ /usr/share/cmake/Modules/CMakeCCompilerABI.c -isysroot /home/linuxbrew/.linuxbrew/nonexistent -idirafter /home/linuxbrew/.linuxbrew/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /usr/include -quiet -dumpdir CMakeFiles/cmTC_619ea.dir/ -dumpbase CMakeCCompilerABI.c.c -dumpbase-ext .c -mtune=generic -march=x86-64 -version -o /tmp/cc2HwH6z.s]
+        ignore line: [GNU C17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.3.0  GMP version 6.2.1  MPFR version 4.2.0-p12  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [warning: GMP header version 6.2.1 differs from library version 6.3.0.]
+        ignore line: [warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.]
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include"]
+        ignore line: [ignoring nonexistent directory "/usr/include/x86_64-linux-gnu"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include]
+        ignore line: [ /home/linuxbrew/.linuxbrew/include]
+        ignore line: [ /usr/include]
+        ignore line: [End of search list.]
+        ignore line: [GNU C17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.3.0  GMP version 6.2.1  MPFR version 4.2.0-p12  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [warning: GMP header version 6.2.1 differs from library version 6.3.0.]
+        ignore line: [warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.]
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [Compiler executable checksum: 4527a2ed54f66e46c6b379da0d836ed5]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_619ea.dir/']
+        ignore line: [ as -v --64 -o CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o /tmp/cc2HwH6z.s]
+        ignore line: [GNU assembler version 2.37 (x86_64-redhat-linux) using BFD version version 2.37-37.fc36]
+        ignore line: [COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/]
+        ignore line: [LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o' '-c' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.']
+        ignore line: [Linking C executable cmTC_619ea]
+        ignore line: [/usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_619ea.dir/link.txt --verbose=1]
+        ignore line: [/home/linuxbrew/.linuxbrew/bin/gcc  -v CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o -o cmTC_619ea ]
+        ignore line: [Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs]
+        ignore line: [COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/gcc]
+        ignore line: [COLLECT_LTO_WRAPPER=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 12.3.0 (Homebrew GCC 12.3.0) ]
+        ignore line: [COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/]
+        ignore line: [LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_619ea' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_619ea.']
+        link line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2 -plugin /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so -plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper -plugin-opt=-fresolution=/tmp/ccgjdIZ5.res -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lgcc_s --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 --dynamic-linker /home/linuxbrew/.linuxbrew/lib/ld.so -rpath /home/linuxbrew/.linuxbrew/lib/gcc/12 -pie -o cmTC_619ea /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12 -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../.. -L/home/linuxbrew/.linuxbrew/lib/gcc/12 -L/home/linuxbrew/.linuxbrew/lib CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o -rpath /home/linuxbrew/.linuxbrew/lib -lgcc --push-state --as-needed -lgcc_s --pop-state -lc -lgcc --push-state --as-needed -lgcc_s --pop-state /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2] ==> ignore
+          arg [-plugin] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so] ==> ignore
+          arg [-plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/ccgjdIZ5.res] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [--eh-frame-hdr] ==> ignore
+          arg [-m] ==> ignore
+          arg [elf_x86_64] ==> ignore
+          arg [-dynamic-linker] ==> ignore
+          arg [/lib64/ld-linux-x86-64.so.2] ==> ignore
+          arg [--dynamic-linker] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib/ld.so] ==> ignore
+          arg [-rpath] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> ignore
+          arg [-pie] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_619ea] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..]
+          arg [-L/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> dir [/home/linuxbrew/.linuxbrew/lib/gcc/12]
+          arg [-L/home/linuxbrew/.linuxbrew/lib] ==> dir [/home/linuxbrew/.linuxbrew/lib]
+          arg [CMakeFiles/cmTC_619ea.dir/CMakeCCompilerABI.c.o] ==> ignore
+          arg [-rpath] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib] ==> ignore
+          arg [-lgcc] ==> lib [gcc]
+          arg [--push-state] ==> ignore
+          arg [--as-needed] ==> ignore
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [--pop-state] ==> ignore
+          arg [-lc] ==> lib [c]
+          arg [-lgcc] ==> lib [gcc]
+          arg [--push-state] ==> ignore
+          arg [--as-needed] ==> ignore
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [--pop-state] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> [/home/linuxbrew/.linuxbrew/lib/gcc/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/lib] ==> [/home/linuxbrew/.linuxbrew/lib]
+        implicit libs: [gcc;gcc_s;c;gcc;gcc_s]
+        implicit objs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        implicit dirs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12;/home/linuxbrew/.linuxbrew/lib/gcc/12;/home/linuxbrew/.linuxbrew/lib]
+        implicit fwks: []
+      
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:57 (try_compile)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    checks:
+      - "Detecting CXX compiler ABI info"
+    directories:
+      source: "/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-ri2glZ"
+      binary: "/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-ri2glZ"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_CXX_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-ri2glZ
+        
+        Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_afeeb/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_afeeb.dir/build.make CMakeFiles/cmTC_afeeb.dir/build
+        gmake[1]: Entering directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-ri2glZ'
+        Building CXX object CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o
+        /home/linuxbrew/.linuxbrew/bin/g++   -v -o CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp
+        Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs
+        COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/g++
+        Target: x86_64-pc-linux-gnu
+        Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 12.3.0 (Homebrew GCC 12.3.0) 
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_afeeb.dir/'
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/cc1plus -quiet -v -imultiarch x86_64-linux-gnu -iprefix /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/ -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -isysroot /home/linuxbrew/.linuxbrew/nonexistent -idirafter /home/linuxbrew/.linuxbrew/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /usr/include -quiet -dumpdir CMakeFiles/cmTC_afeeb.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -o /tmp/ccyccVxP.s
+        GNU C++17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 12.3.0, GMP version 6.2.1, MPFR version 4.2.0-p12, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        warning: GMP header version 6.2.1 differs from library version 6.3.0.
+        warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include"
+        ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include/x86_64-linux-gnu"
+        ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include"
+        ignoring nonexistent directory "/usr/include/x86_64-linux-gnu"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include
+         /home/linuxbrew/.linuxbrew/include
+         /usr/include
+        End of search list.
+        GNU C++17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)
+        	compiled by GNU C version 12.3.0, GMP version 6.2.1, MPFR version 4.2.0-p12, MPC version 1.3.1, isl version isl-0.27-GMP
+        
+        warning: GMP header version 6.2.1 differs from library version 6.3.0.
+        warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        Compiler executable checksum: 5afe2e26eba3c035dc2bbe78a86b66ed
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_afeeb.dir/'
+         as -v --64 -o CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccyccVxP.s
+        GNU assembler version 2.37 (x86_64-redhat-linux) using BFD version version 2.37-37.fc36
+        COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/
+        LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.'
+        Linking CXX executable cmTC_afeeb
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_afeeb.dir/link.txt --verbose=1
+        /home/linuxbrew/.linuxbrew/bin/g++  -v CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_afeeb 
+        Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs
+        COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/g++
+        COLLECT_LTO_WRAPPER=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper
+        Target: x86_64-pc-linux-gnu
+        Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 12.3.0 (Homebrew GCC 12.3.0) 
+        COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/
+        LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_afeeb' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_afeeb.'
+         /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2 -plugin /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so -plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper -plugin-opt=-fresolution=/tmp/ccMLBiV5.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 --dynamic-linker /home/linuxbrew/.linuxbrew/lib/ld.so -rpath /home/linuxbrew/.linuxbrew/lib/gcc/12 -pie -o cmTC_afeeb /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12 -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../.. -L/home/linuxbrew/.linuxbrew/lib/gcc/12 -L/home/linuxbrew/.linuxbrew/lib CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -rpath /home/linuxbrew/.linuxbrew/lib -lgcc_s -lgcc -lc -lgcc_s -lgcc /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_afeeb' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_afeeb.'
+        gmake[1]: Leaving directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-ri2glZ'
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:127 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed CXX implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+          add: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include]
+          add: [/home/linuxbrew/.linuxbrew/include]
+          add: [/usr/include]
+        end of search list found
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12/x86_64-pc-linux-gnu]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12/backward]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+        collapse include dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include]
+        collapse include dir [/home/linuxbrew/.linuxbrew/include] ==> [/home/linuxbrew/.linuxbrew/include]
+        collapse include dir [/usr/include] ==> [/usr/include]
+        implicit include dirs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12/x86_64-pc-linux-gnu;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include/c++/12/backward;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/include;/home/linuxbrew/.linuxbrew/include;/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/share/cmake/Modules/CMakeDetermineCompilerABI.cmake:152 (message)"
+      - "/usr/share/cmake/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      Parsed CXX implicit link information:
+        link line regex: [^( *|.*[/\\])(ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        ignore line: [Change Dir: /home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-ri2glZ]
+        ignore line: []
+        ignore line: [Run Build Command(s):/usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_afeeb/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_afeeb.dir/build.make CMakeFiles/cmTC_afeeb.dir/build]
+        ignore line: [gmake[1]: Entering directory '/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/CMakeScratch/TryCompile-ri2glZ']
+        ignore line: [Building CXX object CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o]
+        ignore line: [/home/linuxbrew/.linuxbrew/bin/g++   -v -o CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o -c /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs]
+        ignore line: [COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/g++]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 12.3.0 (Homebrew GCC 12.3.0) ]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_afeeb.dir/']
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/cc1plus -quiet -v -imultiarch x86_64-linux-gnu -iprefix /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/ -D_GNU_SOURCE /usr/share/cmake/Modules/CMakeCXXCompilerABI.cpp -isysroot /home/linuxbrew/.linuxbrew/nonexistent -idirafter /home/linuxbrew/.linuxbrew/include -idirafter /usr/include/x86_64-linux-gnu -idirafter /usr/include -quiet -dumpdir CMakeFiles/cmTC_afeeb.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mtune=generic -march=x86-64 -version -o /tmp/ccyccVxP.s]
+        ignore line: [GNU C++17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.3.0  GMP version 6.2.1  MPFR version 4.2.0-p12  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [warning: GMP header version 6.2.1 differs from library version 6.3.0.]
+        ignore line: [warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.]
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/local/include"]
+        ignore line: [ignoring duplicate directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../x86_64-pc-linux-gnu/include"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include/x86_64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/home/linuxbrew/.linuxbrew/nonexistent/usr/include"]
+        ignore line: [ignoring nonexistent directory "/usr/include/x86_64-linux-gnu"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/x86_64-pc-linux-gnu]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../../../../include/c++/12/backward]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/include-fixed]
+        ignore line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/../../../../include]
+        ignore line: [ /home/linuxbrew/.linuxbrew/include]
+        ignore line: [ /usr/include]
+        ignore line: [End of search list.]
+        ignore line: [GNU C++17 (Homebrew GCC 12.3.0) version 12.3.0 (x86_64-pc-linux-gnu)]
+        ignore line: [	compiled by GNU C version 12.3.0  GMP version 6.2.1  MPFR version 4.2.0-p12  MPC version 1.3.1  isl version isl-0.27-GMP]
+        ignore line: []
+        ignore line: [warning: GMP header version 6.2.1 differs from library version 6.3.0.]
+        ignore line: [warning: MPFR header version 4.2.0-p12 differs from library version 4.2.2.]
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [Compiler executable checksum: 5afe2e26eba3c035dc2bbe78a86b66ed]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_afeeb.dir/']
+        ignore line: [ as -v --64 -o CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccyccVxP.s]
+        ignore line: [GNU assembler version 2.37 (x86_64-redhat-linux) using BFD version version 2.37-37.fc36]
+        ignore line: [COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/]
+        ignore line: [LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.']
+        ignore line: [Linking CXX executable cmTC_afeeb]
+        ignore line: [/usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_afeeb.dir/link.txt --verbose=1]
+        ignore line: [/home/linuxbrew/.linuxbrew/bin/g++  -v CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_afeeb ]
+        ignore line: [Reading specs from /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/specs]
+        ignore line: [COLLECT_GCC=/home/linuxbrew/.linuxbrew/bin/g++]
+        ignore line: [COLLECT_LTO_WRAPPER=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper]
+        ignore line: [Target: x86_64-pc-linux-gnu]
+        ignore line: [Configured with: ../configure --prefix=/home/linuxbrew/.linuxbrew/opt/gcc@12 --libdir=/home/linuxbrew/.linuxbrew/opt/gcc@12/lib/gcc/12 --disable-nls --enable-checking=release --with-gcc-major-version-only --enable-languages=c,c++,objc,obj-c++,fortran --program-suffix=-12 --with-gmp=/home/linuxbrew/.linuxbrew/opt/gmp --with-mpfr=/home/linuxbrew/.linuxbrew/opt/mpfr --with-mpc=/home/linuxbrew/.linuxbrew/opt/libmpc --with-isl=/home/linuxbrew/.linuxbrew/opt/isl --with-zstd=/home/linuxbrew/.linuxbrew/opt/zstd --with-pkgversion='Homebrew GCC 12.3.0' --with-bugurl=https://github.com/Homebrew/homebrew-core/issues --with-system-zlib --with-boot-ldflags='-static-libstdc++ -static-libgcc ' --disable-multilib --enable-default-pie]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 12.3.0 (Homebrew GCC 12.3.0) ]
+        ignore line: [COMPILER_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/]
+        ignore line: [LIBRARY_PATH=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/:/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_afeeb' '-shared-libgcc' '-mtune=generic' '-march=x86-64' '-dumpdir' 'cmTC_afeeb.']
+        link line: [ /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2 -plugin /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so -plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper -plugin-opt=-fresolution=/tmp/ccMLBiV5.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --eh-frame-hdr -m elf_x86_64 -dynamic-linker /lib64/ld-linux-x86-64.so.2 --dynamic-linker /home/linuxbrew/.linuxbrew/lib/ld.so -rpath /home/linuxbrew/.linuxbrew/lib/gcc/12 -pie -o cmTC_afeeb /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12 -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc -L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../.. -L/home/linuxbrew/.linuxbrew/lib/gcc/12 -L/home/linuxbrew/.linuxbrew/lib CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -rpath /home/linuxbrew/.linuxbrew/lib -lgcc_s -lgcc -lc -lgcc_s -lgcc /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o /home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/collect2] ==> ignore
+          arg [-plugin] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/liblto_plugin.so] ==> ignore
+          arg [-plugin-opt=/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../libexec/gcc/x86_64-pc-linux-gnu/12/lto-wrapper] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/ccMLBiV5.res] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [--eh-frame-hdr] ==> ignore
+          arg [-m] ==> ignore
+          arg [elf_x86_64] ==> ignore
+          arg [-dynamic-linker] ==> ignore
+          arg [/lib64/ld-linux-x86-64.so.2] ==> ignore
+          arg [--dynamic-linker] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib/ld.so] ==> ignore
+          arg [-rpath] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> ignore
+          arg [-pie] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_afeeb] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc]
+          arg [-L/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..] ==> dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..]
+          arg [-L/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> dir [/home/linuxbrew/.linuxbrew/lib/gcc/12]
+          arg [-L/home/linuxbrew/.linuxbrew/lib] ==> dir [/home/linuxbrew/.linuxbrew/lib]
+          arg [CMakeFiles/cmTC_afeeb.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [-lstdc++] ==> lib [stdc++]
+          arg [-lm] ==> lib [m]
+          arg [-rpath] ==> ignore
+          arg [/home/linuxbrew/.linuxbrew/lib] ==> ignore
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [-lc] ==> lib [c]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o]
+          arg [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o] ==> obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o]
+        collapse obj [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc]
+        collapse library dir [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/bin/../lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/../../..] ==> [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/lib/gcc/12] ==> [/home/linuxbrew/.linuxbrew/lib/gcc/12]
+        collapse library dir [/home/linuxbrew/.linuxbrew/lib] ==> [/home/linuxbrew/.linuxbrew/lib]
+        implicit libs: [stdc++;m;gcc_s;gcc;c;gcc_s;gcc]
+        implicit objs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/Scrt1.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crti.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtbeginS.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtendS.o;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12/crtn.o]
+        implicit dirs: [/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc/x86_64-pc-linux-gnu/12;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12/gcc;/home/linuxbrew/.linuxbrew/Cellar/gcc@12/12.3.0/lib/gcc/12;/home/linuxbrew/.linuxbrew/lib/gcc/12;/home/linuxbrew/.linuxbrew/lib]
+        implicit fwks: []
+      
+      
+...

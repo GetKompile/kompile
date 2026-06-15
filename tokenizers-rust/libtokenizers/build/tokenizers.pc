@@ -1,0 +1,10 @@
+prefix=/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib64
+includedir=${prefix}/include
+
+Name: tokenizers
+Description: HuggingFace tokenizers library with C++ wrapper
+Version: 1.0.0
+Libs: -L${libdir} -ltokenizers_wrapper -ltokenizers_c
+Cflags: -I${includedir}/tokenizers

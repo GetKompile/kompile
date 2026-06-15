@@ -1,0 +1,13 @@
+# Target labels
+ tokenizers-external
+# Source files and their labels
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/tokenizers-external
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/tokenizers-external.rule
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/CMakeFiles/tokenizers-external-complete.rule
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/external/src/tokenizers-external-stamp/tokenizers-external-build.rule
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/external/src/tokenizers-external-stamp/tokenizers-external-configure.rule
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/external/src/tokenizers-external-stamp/tokenizers-external-download.rule
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/external/src/tokenizers-external-stamp/tokenizers-external-install.rule
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/external/src/tokenizers-external-stamp/tokenizers-external-mkdir.rule
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/external/src/tokenizers-external-stamp/tokenizers-external-patch.rule
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/build/external/src/tokenizers-external-stamp/tokenizers-external-update.rule
