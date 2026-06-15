@@ -1,350 +1,694 @@
 # Kompile
 
-Kompile is a comprehensive AI/ML platform for building, deploying, and operating retrieval-augmented
-generation (RAG), agentic chat, and model inference workloads on the JVM. It combines a
-Picocli-based developer CLI, a pluggable Spring Boot RAG framework, a pipeline execution engine
-(the former Konduit Serving, now merged into `kompile-pipelines-framework`), Rust-backed
-tokenizers, and GraalVM native-image packaging into a single toolchain built on top of the
-[Eclipse DeepLearning4j / ND4J ecosystem](https://github.com/deeplearning4j/deeplearning4j).
+Kompile is a self-hosted AI platform for building retrieval-augmented generation (RAG),
+agentic chat, knowledge graph, and model inference applications. It ships as native
+binaries — no JVM required — and runs entirely on your hardware. Embeddings, vector search,
+and model inference are computed locally using
+[ND4J/SameDiff](https://github.com/deeplearning4j/deeplearning4j) with CUDA or CPU backends.
+Hosted LLMs (OpenAI, Anthropic, Gemini) can be plugged in for generation while keeping
+all retrieval and data processing local.
 
-> Status: README is actively maintained. For questions, join the community at
-> <https://community.konduit.ai>.
+## Download
 
-## What's in the box
+Pre-built native binaries are published to
+[GitHub Releases](https://github.com/GetKompile/kompile/releases):
 
-Kompile is a monorepo of several cooperating subsystems:
+| Platform | Archive |
+|----------|---------|
+| Linux x86_64 (CUDA) | `kompile-<version>-linux-x86_64-cuda12.9.tar.gz` |
+| Linux x86_64 (CPU) | `kompile-<version>-linux-x86_64-cpu.tar.gz` |
+| Linux ARM64 | `kompile-<version>-linux-arm64-cpu.tar.gz` |
+| macOS Apple Silicon | `kompile-<version>-macosx-arm64-cpu.tar.gz` |
+| Windows x86_64 | `kompile-<version>-windows-x86_64-cuda12.9.zip` |
 
-- **`kompile-cli`** — The main developer CLI (`kompile`). Subcommands cover bootstrap, install,
-  config generation, build (RAG apps, native images, ND4J backends), model conversion, pipeline
-  management, ingest/index, chat/REPL, MCP stdio server, and job scheduling. Additional federated
-  CLIs (`kompile-app-cli`, `kompile-agent-cli`, `kompile-model-cli`, `kompile-component-cli`) are
-  discoverable through the `kompile app|agent|model` delegating subcommands.
-- **`kompile-app`** — A 40+ module Spring Boot RAG framework with pluggable embeddings, vector
-  stores, document loaders, data sources, chunkers, LLM providers, tools, chat history, guardrails,
-  and an evaluation harness. See [Architecture](#architecture) below.
-- **`kompile-pipelines-framework`** — A pipeline execution engine (`api`, `core`, `runtime`) with
-  reusable steps for Python, SameDiff, DL4J, ONNX, and VLM workloads.
-- **`kompile-model-importer-{tensorflow,onnx,keras}`** — Model importers that convert TensorFlow,
-  ONNX, and Keras models into DL4J / SameDiff formats for execution on the JVM.
-- **`anserini`** — A vendored fork of Anserini (Lucene-based IR toolkit) with custom SameDiff
-  dense encoders (BGE, Arctic Embed, etc.) and an `AnseriniModelDownloader`.
-- **`tokenizers-rust`** — HuggingFace tokenizers compiled as a Rust static lib with a C++ wrapper
-  and JavaCPP bindings (`tokenizers-native`, `tokenizers-native-preset`) for high-performance
-  tokenization on the JVM.
-- **`kompile-c-library` / `kompile-python` / `kompile-sdk-serving`** — C shim, Python SDK, and
-  serving SDK used by generated pipelines.
-- **`kompile-rag-builds`** — Pre-generated sample RAG projects used during development so you do
-  not have to regenerate every time.
+Extract and run. Native libraries auto-resolve from the adjacent `lib/` directory — no
+environment variables or setup needed.
 
-## Prerequisites
+```
+kompile-<version>-<platform>/
+  bin/
+    kompile                # CLI
+    kompile-server         # RAG server with web UI
+    kompile-model-staging  # Model operations service
+  lib/                     # Native libraries (ND4J, CUDA, JavaCPP)
+  conf/
+  data/
+  models/
+```
 
-- Java 17 (GraalVM 21 required for native-image builds)
-- Maven 3.9+
-- 10 GB RAM minimum; 16 GB+ recommended (native-image builds want 18–32 GB heap)
-- Optional: Docker, Python (Anaconda/Miniconda), CUDA toolkit for GPU workloads
+---
 
-## Building
+## Quick start
 
-### Standard JVM build
+### 1. Create a project
+
+A **project** is the central organizing concept in Kompile. It's a directory with a
+`kompile.project.json` manifest that ties together your documents, models, code repositories,
+crawl profiles, pipelines, prompt templates, and chat sessions.
+
+```bash
+# Initialize a project in the current directory
+kompile project init --name my-rag-project
+
+# Or start from a pre-built app template
+kompile build app --configName=myapp --preset=hosted-llm-rag
+```
+
+`kompile project init` scans your directory for existing assets — build files, model files,
+documents — and auto-detects what kind of project it is (data-only, code-only, models-only,
+or a combination). It creates the standard directory structure:
+
+```
+my-rag-project/
+  kompile.project.json          # Project manifest (ID, name, lifecycle, components)
+  .kompile/                     # Local runtime state
+  scripts/                      # Lifecycle scripts (start-all, stop-all)
+  data/
+    input_documents/            # Raw documents for ingestion
+    models/                     # Model artifacts
+    indices/                    # Lucene keyword + HNSW vector indices
+    code-projects/              # Registered code repos for code search
+    crawls/                     # Crawl output
+    pipelines/                  # Inference pipelines
+    prompt-templates/           # Reusable prompt templates
+    fact-sheets/                # Notebook-style knowledge organization
+    markdown/                   # Synced notes
+    workflows/                  # Automation workflows
+```
+
+### 2. Build a generated application (alternative to project init)
+
+`kompile build app` generates a complete, self-contained application as a Maven project.
+This is different from `project init` — it produces a compiled artifact (JAR or native
+binary) with exactly the modules you selected baked in:
+
+```bash
+kompile build app --configName=myapp --preset=hosted-llm-rag
+```
+
+The output lives at `kompile-rag-builds/myapp/project/` and includes:
+
+```
+kompile-rag-builds/myapp/project/
+  kompile.project.json            # Project manifest (auto-generated)
+  pom.xml                         # Maven POM with your selected modules
+  src/main/resources/
+    application.properties        # Structural config (ports, paths, provider flags)
+  scripts/
+    start-all.sh                  # Starts staging → serving → app in order
+    stop-all.sh
+    start-app.sh
+    start-staging.sh
+  data/
+    input_documents/              # Drop documents here
+    models/                       # Model artifacts
+    indices/                      # Built during ingestion
+    prompt-templates/             # Pre-seeded: rag_query, code_review, extract_entities, etc.
+    crawls/                       # Crawl profile definitions
+    fact-sheets/
+    ...
+  .kompile/
+    project/open.json             # Tracks which project is active, ports, PID state
+  target/
+    myapp-0.1.0-SNAPSHOT-exec.jar # The compiled application (or native binary with -Pnative)
+```
+
+The generated `application.properties` handles structural wiring (ports, paths, which
+Spring AI providers are enabled/disabled). All runtime configuration — vector store type,
+batch sizes, ND4J settings, feature flags, LLM provider — lives in JSON files under
+`~/.kompile/config/` and is managed through the web UI or CLI wizards, not properties files.
+
+### 3. Open the project and start the server
+
+```bash
+# Start the web application for this project
+kompile project open .
+
+# This writes .kompile/project/open.json, starts the server on port 8080,
+# starts model-staging on port 8090, and writes .mcp.json for AI agents
+```
+
+Open your browser to **http://localhost:8080**. The setup wizard walks you through:
+
+1. **Staging server** — confirms kompile-model-staging is running
+2. **Model source** — connects to the staging service or loads local models
+3. **Embedding model** — downloads and initializes an embedding model (e.g., BGE, Arctic Embed)
+4. **Document indexing** — ingest your first documents
+5. **Search readiness** — verifies end-to-end retrieval works
+
+### 4. Ingest documents
+
+**From the web UI** (Knowledge tab → New Crawl Job):
+
+The crawl job form lets you add one or more sources, each with its own type, path/URL,
+max depth, and max document count. Configure graph extraction (LLM provider, entity types,
+schema mode, entity resolution with embedding similarity), vector indexing (collection name,
+batch size, adaptive batching), and PDF routing (auto/force-VLM/force-text). Submit and
+watch progress in real-time — the UI streams pipeline counters (Found → Loaded → Chunks →
+Entities → Embedded → Indexed), current phase, memory meters (heap, native, subprocess RSS),
+adaptive batch sizing, and per-document status.
+
+**From the CLI:**
+
+```bash
+kompile ingest file /path/to/document.pdf          # Upload a local file
+kompile ingest path /path/to/documents/             # Register a directory
+kompile ingest url https://docs.example.com         # Add a URL source
+kompile ingest status                               # Check job progress
+```
+
+**Supported source types** (20+): local files and directories, web crawl (recursive with
+configurable depth), S3, SFTP, SQL databases, email (IMAP, POP3, Gmail, Outlook PST, MBOX,
+Maildir), Confluence, Jira, Notion, Slack, Discord, Google Drive, OneDrive, Google
+Workspace, and SMB shares. Cloud sources use OAuth connections managed through the
+**Connected Services** screen — each provider shows connection status, token expiry, required
+scopes, and connect/disconnect/refresh actions.
+
+**The ingestion pipeline** runs as isolated subprocesses (the same binary re-launched with
+`--subprocess=TYPE`):
+
+```
+Documents → Loader → Chunker → (Graph Extraction) → Embedder → Vector Index
+```
+
+- **PDF routing**: Auto-classifies image-heavy PDFs and routes them through VLM OCR
+- **Graph extraction**: LLM extracts entities and relationships per chunk, entity
+  resolution deduplicates via embedding similarity + string matching
+- **Adaptive batching**: Embedding batch sizes adjust based on ND4J memory pressure
+
+### 5. Chat with your data
+
+```bash
+# Web UI: http://localhost:8080 → Chat tab
+
+# CLI: connect to the running server for RAG-augmented chat
+kompile chat --url=http://localhost:8080
+
+# CLI: direct LLM chat (no server needed)
+kompile chat
+
+# CLI: wrap Claude Code / Codex with kompile's RAG tools
+kompile chat --agent=claude-code --rag
+```
+
+Queries flow through: optional query rewriting → embedding → vector search → optional
+reranking → optional filter chain → LLM generation with retrieved context. If graph RAG
+is enabled, entity/relationship/community context from the knowledge graph augments the
+vector results.
+
+---
+
+## The three components
+
+### kompile (CLI)
+
+The command-line tool for everything: project management, building applications, chatting,
+ingesting documents, running models, and connecting AI agents to your data.
+
+**Project management:**
+
+```bash
+kompile project init --name myproject          # Initialize a project
+kompile project open .                         # Start the server for this project
+kompile project status                         # Show manifest, components, Git state
+kompile project add-model --path=model.onnx    # Register a model
+kompile project add-crawl-profile              # Add an ingestion profile
+kompile project add-code-project --dir=./src   # Register code for semantic search
+kompile project index-code-project <id>        # Index code for search
+kompile project lifecycle --state=ACTIVE       # Transition project state
+kompile project commit / pull / push           # Git operations on the project
+```
+
+Projects move through lifecycle states: `DRAFT → ACTIVE → PAUSED → ARCHIVED | DEPRECATED`.
+They can be backed by Git or Git-XET for version control with optional auto-commit.
+
+**Build applications:**
+
+```bash
+# Interactive wizard
+kompile build app --wizard
+
+# From a preset
+kompile build app --configName=myapp --preset=hosted-llm-rag
+
+# Fine-tune modules
+kompile build app --configName=myapp \
+  --preset=full \
+  --exclude=graph-neo4j,ocr \
+  --llm=anthropic \
+  --embedding=anserini \
+  --vectorstore=pgvector \
+  --native                    # Compile to GraalVM native image
+  --container                 # Or build an OCI container (Jib, no Docker needed)
+```
+
+`build app` generates a complete Maven project under `kompile-rag-builds/<configName>/project/`
+with a POM assembled from your selected modules, downloads required ML models (embeddings,
+sentence tokenizers), and compiles it. Use `--skipMavenBuild` to generate project files only.
+
+| Preset | Includes | API keys needed? |
+|--------|----------|-----------------|
+| `hosted-llm-rag` | OpenAI LLM + Anserini embeddings + PDF loader | Yes (OpenAI) |
+| `cli-agent-rag` | CLI agent (Claude/Codex) + Anserini + filesystem tools | No |
+| `samediff-rag` | Fully local — SameDiff embeddings, no hosted LLM | No |
+| `lite` | Self-contained chat + RAG + Graph RAG, minimal footprint | No |
+| `full` | All LLMs, embeddings, vector stores, OCR, crawler, graph, training | Mixed |
+| `pipeline` | Pipeline executor only (SameDiff, ONNX, Python steps) | No |
+| `minimal` | OpenAI embeddings + OpenAI LLM + Anserini vector store | Yes (OpenAI) |
+
+**Chat — three modes:**
+
+```bash
+# 1. Direct LLM chat (no server, setup wizard on first use)
+kompile chat
+
+# 2. Server-connected RAG chat
+kompile chat --url=http://localhost:8080
+
+# 3. Agent passthrough — wrap an AI agent with kompile's tools
+kompile chat --agent=claude-code --rag --role=architect
+```
+
+In passthrough mode, Kompile injects its MCP tools (RAG search, graph RAG, file I/O, code
+search, memory) into the agent, adds a system prompt, and manages session persistence.
+Sessions are resumed with `kompile chat --continue` or `kompile session list`.
+
+**Policy enforcement:**
+
+```bash
+kompile enforcer --agent=claude-code \
+  --rules="STOP_CMD: git push --force" \
+  --rules="BAN_DIFF_REGEX: password\s*=\s*\"[^\"]+\"" \
+  --max-corrections=3
+```
+
+The enforcer evaluates every agent response against rules (keyword patterns or LLM judge),
+can interrupt mid-stream, auto-rollback file changes on violations, and retry with
+correction prompts. `--diff-patterns` catches banned code patterns in file diffs.
+
+**Run a local LLM:**
+
+```bash
+# Downloads from HuggingFace, starts an OpenAI-compatible server
+kompile run Qwen/Qwen3-0.6B --serve --port=8000
+
+# Interactive chat with a local model
+kompile run Qwen/Qwen3-0.6B --backend=cuda
+```
+
+**MCP server for AI agents:**
+
+Kompile exposes its full tool set to any MCP-compatible agent (Claude Code, Codex, Gemini
+Code Assist, Qwen, OpenCode) via the Model Context Protocol. Two transport modes:
+
+```bash
+# Stdio mode — agent launches kompile as a subprocess
+kompile mcp-stdio --profile=full
+
+# SSE mode — agent connects to a running kompile-server
+# (auto-configured in .mcp.json when you run `kompile project open`)
+```
+
+When a project is opened, Kompile writes a `.mcp.json` in the project directory so agents
+auto-discover the tools:
+
+```json
+{
+  "mcpServers": {
+    "kompile": {
+      "command": "kompile",
+      "args": ["mcp-stdio", "--work-dir", "/path/to/project"]
+    },
+    "kompile-app": {
+      "url": "http://localhost:8080/mcp/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
+**Tool profiles** control how many tools are exposed:
+
+| Profile | Tools | Use case |
+|---------|-------|----------|
+| `minimal` | 5 | read, grep, glob, list, bash |
+| `explore` | 10 | Read-only + code intelligence |
+| `core` | 15 | File I/O + search + workflow |
+| `full` | ~44 | Everything below |
+
+**Full tool set by category:**
+
+| Category | Tools |
+|----------|-------|
+| File I/O | `read`, `write`, `edit`, `patch` |
+| Search | `grep`, `glob`, `list`, `explore` |
+| Execution | `bash`, `process` |
+| Network | `webfetch`, `websearch`, `browser` (CDP-based) |
+| Workflow | `todowrite`, `todoread` |
+| Knowledge | `rag_search`, `graph_rag_search`, `semantic_memory`, `memory`, `transcript_search` |
+| Code | `code_search`, `code_graph`, `local_code_index`, `tool_call_catalog` |
+| Delegation | `task` (single subagent), `multi_task` (parallel), `quorum_task` (consensus voting) |
+| Coordination | `edit_coordinator`, `file_activity` (file watcher for multi-agent) |
+| Config | `project_config`, `enforcer_config`, `role_manager`, `skill_manager`, `config_archive` |
+
+Any tool can run asynchronously with `_background: true` — returns a task ID immediately,
+use `poll` to check status later. Schema compression (`--schema-level=compact`) reduces the
+token footprint of tool definitions by thousands of tokens.
+
+Kompile also auto-configures hooks in agent settings files (`.claude/settings.local.json`,
+`.codex/config.toml`, `.opencode/plugins/`, `.gemini/settings.json`) to display tool name,
+parameters, and timing for every call.
+
+`kompile serve` runs a shared daemon that multiplexes MCP sessions over a Unix socket at
+`~/.kompile/runtime/kompile.sock` — one process serves N agent sessions instead of N
+separate JVMs.
+
+**Other commands:** `kompile model` (download, convert, list, export, import),
+`kompile agent` (workflows, tasks, channels), `kompile app` (manage a running server:
+ingest, index, crawl, jobs, graph, a2a, setup), `kompile graph` (knowledge graph: nodes,
+edges, traverse, search, communities, shell, import/export), `kompile code-index` (local
+code search with `search`, `find`, `usages`, `watch` for live re-indexing),
+`kompile perf` (model performance analytics and leaderboards),
+`kompile build dist` (build all three binaries into a distribution tarball).
+
+---
+
+### kompile-server (RAG application)
+
+The web application generated by `kompile build app`. It's a full-stack Spring Boot +
+Angular application that serves as the primary interface for document-powered AI.
+
+**What you see at http://localhost:8080:**
+
+| Screen | What it does |
+|--------|-------------|
+| **Chat** (default) | Conversational RAG with streaming, source attribution, multi-turn history, token metrics. Supports both RAG mode (retrieved documents + LLM) and agent mode (Claude Code, Codex, etc.) |
+| **Knowledge** | Document ingestion from 20+ sources, knowledge graph builder with entity/relationship browsing, fact sheets (notebook-style knowledge organization), graph visualization |
+| **Code Projects** | Register code repositories, trigger semantic indexing, browse code graphs, manage project context for agent sessions |
+| **Tools** | Configure MCP servers, browse and invoke tools, view tool call audit logs, manage prompt template skills |
+| **KClaw** (Agent Hub) | Run CLI agents interactively in the browser with MCP tool injection, permission management, heartbeat monitoring, session history |
+| **Settings** | Vector store backend, chunking strategy, embedding config, LLM provider, query rewriting, reranking, filter chains, guardrails, system prompts, tool gateway rules, ND4J environment tuning |
+| **Developer** | ND4J framework status, GPU lifecycle, subprocess logs, operation timing, benchmarks, VLM orchestration, SameDiff graph visualization, model debug |
+
+**The ingestion pipeline in detail:**
+
+Documents pass through phases tracked in real-time via SSE:
+`QUEUED → DISCOVERING → LOADING → CHUNKING → GRAPH_EXTRACTION → ENTITY_RESOLUTION →
+EMBEDDING → VECTOR_INDEXING → COMPLETED`
+
+- **Graph extraction** (optional): An LLM extracts entities and relationships from each
+  chunk, then entity resolution deduplicates using embedding similarity + string matching
+- **PDF routing**: Auto-classifies PDFs as text-heavy or image-heavy, routes image-heavy
+  ones through VLM OCR
+- **Adaptive batching**: Embedding batch sizes adjust based on available ND4J memory
+- **Memory monitoring**: Each job reports heap, native memory, direct buffers, and
+  subprocess RSS
+
+Subprocesses (`ingest`, `vector-population`, `embedding`, `model-init`, `vlm-test`,
+`training`) are the same binary re-launched with `--subprocess=TYPE`. No separate process
+management needed.
+
+**REST API highlights** (~100+ endpoints):
+
+- `/api/chat`, `/api/chat/stream` — conversational RAG (streaming SSE)
+- `/api/graph-rag/search` — graph-augmented retrieval (local or global)
+- `/api/unified-crawl/start` — multi-source ingestion with graph extraction
+- `/api/agents/passthrough/*` — interactive agent terminal sessions over HTTP
+- `/api/agents/chat/stream` — structured agent chat with RAG augmentation
+- `/api/retriever/search` — direct vector search (bypass LLM)
+- `/api/skills` — prompt template CRUD (exposed as MCP prompts)
+- `/api/mcp/*` — MCP server config, tool invocation, audit log
+- `/api/nd4j/environment` — full ND4J/CUDA runtime tuning
+- `/api/config/k-app` — vector store, subprocess, and pipeline config
+- `/api/projects/current` — project manifest and component management
+- `/api/setup/status` — setup wizard state and staging server management
+- `/api/fact-sheets` — notebook-style knowledge organization
+
+**Pluggable modules** — the same binary reshapes behavior based on which modules are on
+the classpath:
+
+| Category | Options |
+|----------|---------|
+| Embeddings | Anserini SameDiff (BGE, Arctic Embed, E5), OpenAI, PostgresML, sentence-transformers, SameDiff |
+| Vector stores | Anserini (Lucene HNSW), pgvector, Chroma, Vespa |
+| LLM providers | OpenAI, Anthropic, Gemini, local SameDiff, CLI agent passthrough, Spring AI |
+| Document loaders | PDF (extended + tables), Office, Tika, email (IMAP/POP3/Gmail/PST), web crawler |
+| Data sources | Slack, Confluence, Jira, Notion, Reddit, Google Drive, OneDrive, S3, SFTP, SQL, Discord |
+| Chunkers | Token, sentence, recursive-character, markdown, table-aware |
+| Graph | Neo4j knowledge graph, entity extraction, community detection |
+| Other | KV cache, OCR pipeline, guardrails, filter chain, evaluation harness, training |
+
+---
+
+### kompile-model-staging (model operations)
+
+A model lifecycle service that handles the path from raw HuggingFace weights to
+production-ready deployment. Runs as a REST API on port 8090 with its own Angular UI,
+or as a CLI tool.
+
+**The staging pipeline:**
+
+Models pass through managed states: `DOWNLOADING → CONVERTING → VALIDATING → READY →
+PROMOTING → COMPLETED`. Failed models land in `.staging/failed/` with diagnostics.
+
+```bash
+# Download from HuggingFace
+kompile-model-staging download \
+  --source=huggingface \
+  --repo=BAAI/bge-base-en-v1.5 \
+  --format=onnx
+
+# Conversions: ONNX, TensorFlow, GGUF/GGML → SameDiff (sharded .sdnb)
+kompile-model-staging convert --input=model.onnx --output=model.sdz
+
+# List registered models
+kompile-model-staging list
+
+# Promote a staged model to production (notifies live server to hot-reload)
+kompile-model-staging promote <modelId>
+```
+
+After promotion, the staging service sends an HTTP callback to the running kompile-server
+telling it to hot-swap the model in memory — no server restart needed. The server can also
+pull model files directly from staging over HTTP.
+
+**Local LLM inference with OpenAI-compatible API:**
+
+The staging service includes a full inference engine. Load a converted model and query it
+from any OpenAI client:
+
+```bash
+curl http://localhost:8090/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3-0.6b", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+Supports streaming, speculative decoding, prompt templates, text processing pipelines,
+and generation cancellation.
+
+**Training and fine-tuning:**
+
+Training jobs with PEFT (LoRA, etc.), knowledge distillation, and alignment are managed
+through REST endpoints with SSE log streaming and metrics tracking. Dataset management is
+built in.
+
+**Graph compiler:**
+
+SameDiff graph optimization with Triton GPU compilation, caching, and async compilation
+jobs. Compare optimized vs. unoptimized graph performance.
+
+**Kompile Archives (.karch):**
+
+Versioned bundles of pre-converted models for redistribution and offline installation.
+Each archive contains a manifest with checksums, compatibility ranges, and model metadata.
+
+```bash
+kompile-model-staging archive export --output=models-v1.karch
+kompile-model-staging archive import --input=models-v1.karch
+```
+
+Remote catalogs at GitHub Releases and kompile.ai are checked every 24 hours for updates.
+
+**Built-in model catalog:**
+
+| Category | Models |
+|----------|--------|
+| Dense encoders | BGE base/small/large, BGE-M3 (multilingual, 8K context), Arctic Embed L, E5-base-v2 |
+| Cross-encoder rerankers | MS MARCO MiniLM L-6, MS MARCO MiniLM L-12 |
+| Vision-language | Florence-2 base, Florence-2 large |
+
+---
+
+## Configuration
+
+Kompile uses a **JSON config file system** rooted at `~/.kompile/config/`. All three
+entry points — CLI wizards, the web UI, and the REST API — read and write the same files.
+Spring properties exist only for bootstrap defaults; the JSON files always take precedence
+at runtime.
+
+### First-time setup
+
+```bash
+kompile configure init          # Creates ~/.kompile/ directory tree + default config files
+
+kompile configure app           # Interactive 9-section config wizard
+kompile configure chat          # Chat session mode, LLM provider, agent preferences
+kompile configure mcp           # MCP profile and schema level
+kompile configure enforcer      # Per-project policy rules
+kompile configure judge         # LLM judge mode, model, scoring
+```
+
+### Config files
+
+All configs are JSON files under `~/.kompile/config/`. They're created with sensible
+defaults by `kompile configure init` and can be edited by the CLI wizards, the web UI
+settings screens, the REST API, or by hand:
+
+| File | What it controls |
+|------|-----------------|
+| `app-index-config.json` | Vector store type (Anserini/pgvector/Chroma/Vespa), index paths, subprocess settings, batch sizes |
+| `pipeline-config.json` | Batch sizes, thread counts (embedding, chunking, indexing), chunking strategy and parameters |
+| `subprocess-ingest-config.json` | Subprocess JVM heap, timeout, parallel workers, queue capacity |
+| `nd4j-environment-config.json` | ND4J threads, BLAS settings, CUDA config, Triton compiler, SameDiff optimizer, memory limits |
+| `feature-flags-config.json` | Toggle: guardrails, query transformation, contextual RAG, tool gateway, KV cache, graph RAG, multi-modal |
+| `model-roles-config.json` | Dense/sparse retrieval models, reranking model, hybrid search weights |
+| `llm-provider-config.json` | LLM provider, model, API key, base URL |
+| `tool-gateway-config.json` | Model source, fail-open, evaluation timeout, judge scoring |
+| `backup-config.json` | Backup schedule, retention, format |
+
+### Auto-configuration
+
+```bash
+# Detect hardware and apply recommended settings
+curl -X POST http://localhost:8080/api/auto-configure/apply
+
+# Preview what would change
+curl http://localhost:8080/api/auto-configure/detect
+```
+
+This probes your hardware (GPU count, VRAM, CPU cores, RAM) and sets subprocess, ND4J,
+and pipeline configs simultaneously.
+
+### Config archives
+
+Export and import all configs as a `.zip` bundle for portability:
+
+```bash
+# From the web UI: Settings → Config Archive Manager
+# From the API:
+curl -X POST http://localhost:8080/api/config-archives/export -o config-backup.zip
+curl -X POST http://localhost:8080/api/config-archives/import -F file=@config-backup.zip
+```
+
+---
+
+## How the pieces fit together
+
+```
+                              +-----------------------+
+                              |   kompile (CLI)       |
+                              |                       |
+                              |  project init/open    |
+                              |  build app            |  generates + compiles
+                              |  chat / ingest        |  talks to server
+                              |  mcp-stdio            |  exposes tools to agents
+                              |  run <model>          |  local LLM serving
+                              |  enforcer             |  policy-governed agents
+                              +-----------+-----------+
+                                          |
+                          +---------------+---------------+
+                          |                               |
+               +----------v----------+         +----------v----------+
+               |  kompile-server     |         | kompile-model-      |
+               |  (port 8080)        |         | staging (port 8090) |
+               |                     |         |                     |
+               |  Web UI + REST API  |<------->|  Download + convert |
+               |  Document ingestion |  hot    |  LLM inference      |
+               |  Vector search      | reload  |  Training / PEFT    |
+               |  Knowledge graph    |  notify |  OpenAI-compat API  |
+               |  Agent hub          |         |  Archive management |
+               |  Chat + RAG         |         |  Graph compiler     |
+               +-----+---------+----+         +---------------------+
+                     |         |
+          subprocess |         | subprocess
+          (same      |         | (same binary)
+           binary)   |         |
+               +-----v--+ +---v--------+
+               | ingest  | | vector-    |
+               | (load + | | population |
+               | chunk)  | | (embed +   |
+               |         | | index)     |
+               +---------+ +------------+
+```
+
+The kompile-server binary is self-contained. For compute-heavy work it re-launches itself
+as an isolated subprocess with `--subprocess=TYPE` so the web server stays responsive.
+Model-staging notifies the server to hot-reload models after promotion — no restart needed.
+
+---
+
+## For developers
+
+### Building from source
+
+Requires Java 17, Maven 3.9+, 10+ GB RAM. GraalVM 17 for native image builds (18-32 GB
+heap).
 
 ```bash
 # Full build
-mvn clean install
-
-# Faster — skip tests
 mvn clean install -DskipTests
 
 # CLI only
 cd kompile-cli && mvn clean package
 
-# RAG application (UI builds by default)
+# RAG application
 cd kompile-app/kompile-app-main && mvn clean package
 
-# RAG application, backend only (~5× faster)
-cd kompile-app/kompile-app-main && mvn clean package -Dskip.ui
+# Native image (requires GraalVM 17)
+cd kompile-rag-builds/kompile-sample/project
+mvn clean package -DskipTests -Pnative
 
-# Install or refresh frontend node_modules (first checkout or after package.json changes)
-cd kompile-app/kompile-app-main && mvn clean install -Dui.deps
+# Full distribution tarball
+kompile build dist
 ```
 
-### GraalVM native image
-
-```bash
-# CLI
-cd kompile-cli && mvn clean package -Pnative
-
-# RAG app (unified executable — routes subprocess types via --subprocess=TYPE)
-JAVA_HOME=~/.sdkman/candidates/java/21.0.10-graal \
-  mvn clean package -DskipTests -Dskip.ui \
-      -pl kompile-app/kompile-app-main -am -Pnative
-```
-
-Subprocess-specific profiles (`native-ingest`, `native-vector`, `native-embedding`,
-`native-model-init`) are available for building standalone subprocess binaries.
-
-### Rust tokenizers
-
-```bash
-cd tokenizers-rust/libtokenizers
-./buildnativetokenizers.sh                    # current platform
-JAVACPP_PLATFORM=linux-x86_64 ./buildnativetokenizers.sh   # cross target
-```
-
-### Docker
-
-```bash
-# Build image
-docker build -f Dockerfile.rockylinux8 --ulimit nofile=98304:98304 \
-  -t konduitai/kompile:latest .
-
-# Pull prebuilt image
-docker pull ghcr.io/konduitai/kompile
-
-# Run the CLI
-docker run --rm -it konduitai/kompile
-
-# Interactive shell with the working dir mounted
-docker run --ulimit nofile=98304:98304 --rm -it \
-  -v "$(pwd):/mnt/:Z" --entrypoint /bin/bash konduitai/kompile
-```
-
-## Testing
-
-```bash
-mvn test                                    # all modules
-cd kompile-cli && mvn test                  # one module
-mvn test -Dtest=YourTestClass               # one class
-mvn test -Dtest=YourTestClass#testMethod    # one method
-
-# Integration tests with Spring profile
-cd kompile-app/kompile-app-main && mvn verify -Dspring.profiles.active=test
-```
-
-## CLI quick start
-
-```bash
-# First-time setup: create ~/.kompile and install dependencies
-./kompile bootstrap
-./kompile install all                  # graalvm + maven + python (miniconda)
-./kompile install graalvm              # or install components individually
-./kompile install python
-
-# Ask the CLI what it can do
-./kompile --help
-./kompile <command> --help
-```
-
-Top-level subcommands include:
-
-| Command      | Purpose                                                                      |
-| ------------ | ---------------------------------------------------------------------------- |
-| `bootstrap`  | Initialize `~/.kompile` directory layout                                     |
-| `install`    | Install GraalVM, Maven, Anaconda/Python, native tools, headers               |
-| `uninstall`  | Remove managed components                                                    |
-| `info`       | Report installed versions and environment info                               |
-| `config`     | Generate pipeline, python, server, and variable configs                      |
-| `build`      | Build RAG apps, native images, ND4J backends, serving binaries               |
-| `build-rag-app` | Generate a custom RAG Spring Boot project with chosen modules             |
-| `sdk`        | Operate on the generated Python SDK                                          |
-| `pipeline`   | Manage and run pipelines                                                     |
-| `ingest`     | Load documents into a vector store                                           |
-| `index`      | Build / update a search index                                                |
-| `chat`       | Interactive agentic chat REPL with tools, roles, MCP, and session history    |
-| `lite`       | Self-contained Kompile Lite chat + RAG + Graph RAG app                       |
-| `session`    | List, resume, export, import chat sessions                                   |
-| `passthrough`| Stream a single prompt through the chat runtime                              |
-| `resume`     | Resume a previous chat session                                               |
-| `mcp-stdio`  | Run the MCP (Model Context Protocol) stdio server                            |
-| `jobs`       | Inspect/manage background jobs                                               |
-| `schedule`   | Create and manage scheduled tasks                                            |
-| `subprocess` | Entry point used by the app when spawning helper processes                   |
-| `app`        | Delegates to `kompile-app-cli` (start/stop/status/ingest/query)              |
-| `agent`      | Delegates to `kompile-agent-cli` (workflow, task, channel, session, chat)    |
-| `model`      | Delegates to `kompile-model-cli` (list, download, convert, export, import)   |
-
-Examples:
-
-```bash
-# Convert a TensorFlow model to SameDiff flatbuffers
-./kompile model convert \
-  --inputFile=model.pb \
-  --outputFile=model.fb
-
-# Convert a Keras model to DL4J zip
-./kompile model convert \
-  --inputFile=model.h5 \
-  --outputFile=model.zip \
-  --kerasNetworkType=sequential
-
-# Generate a custom RAG application with only the modules you want
-./kompile build-rag-app \
-  --instanceId=myapp \
-  --enableAnserini=true \
-  --enableOpenAi=true \
-  --enablePgvector=false
-
-# Simpler hosted-LLM RAG app
-./kompile build-hosted-llm-rag-app --instanceId=myapp
-
-# SameDiff-embedding RAG app
-./kompile build-samediff-app --instanceId=myapp
-```
-
-## Architecture
-
-### `kompile-app` — RAG framework modules
-
-**Core interfaces** (`kompile-app-core`):
-
-- `EmbeddingModel#embed(text) → INDArray`
-- `VectorStore` — `add`/`search`/`delete` documents
-- `DocumentRetriever#retrieve(query, k) → List<String>`
-- `LanguageModel#generate(prompt)`
-
-**Centralized model management** (`kompile-model-manager`):
-
-- Downloads to `~/.kompile/models/` with SHA256 verification
-- Registry in `ModelConstants`, descriptor in `ModelDescriptor`
-
-**Embeddings**: `kompile-embedding-anserini` (SameDiff: bge-base-en-v1.5, arctic-embed, …),
-`kompile-embedding-openai`, `kompile-embedding-postgresml`,
-`kompile-embedding-sentence-transformer` (Python subprocess), `kompile-embedding-samediff`.
-
-**Vector stores**: `kompile-vectorstore-anserini` (Lucene HNSW, primary),
-`kompile-vectorstore-pgvector`, `kompile-vectorstore-chroma`, `kompile-vectorstore-vespa`.
-
-**Loaders & sources**: PDF (extended, tables), Office, Tika, email (IMAP, mail), web, Slack,
-Confluence, Jira, Notion, Reddit, Google Drive, plus `kompile-app-loaders-orchestrator` to
-coordinate them.
-
-**Chunkers**: token, sentence, recursive-character, markdown, table-aware.
-
-**LLM providers**: `kompile-app-openai-llm`, `kompile-app-anthropic-llm`, `kompile-app-gemini-llm`,
-`kompile-app-springai-llm`, `kompile-pipelines-app-llm` (local SameDiff LLMs).
-
-**Tools & agents**: `kompile-tool-rag`, `kompile-tool-filesystem`, `kompile-tool-model-staging`,
-`kompile-react-agent`, `kompile-orchestrator`, `kompile-query-transformer`, `kompile-guardrails`,
-`kompile-filter-chain`.
-
-**Other subsystems**: `kompile-kvcache` (paged/evictable KV cache for local LLMs),
-`kompile-chat-history`, `kompile-evaluation`, `kompile-graph-neo4j` and `kompile-knowledge-graph`
-(Graph RAG), `kompile-ocr-*` (document OCR pipeline), `kompile-model-staging`,
-`kompile-pipeline-management`, `kompile-oauth2-client`, `kompile-postgres-common`.
-
-**Plugin activation** uses Spring Boot `@ConditionalOnProperty` with `kompile.embedding.type`,
-`kompile.vectorstore.type`, `kompile.llm.type`, etc., so the same binary can be reshaped via
-`application.properties` or generated POMs from `RagPomGenerator`.
-
-### RAG data flow
-
-```
-Documents → Loaders → Chunks → Embeddings → Vector Index
-
-Query → Embed Query → Vector Search → Retrieved Context → LLM → Response
-```
-
-### `kompile-pipelines-framework`
-
-`api` defines `Configuration`, `StepConfig`, `Data`; `core` is the execution engine; `runtime`
-provides runtime support. Step implementations live under `kompile-pipeline-steps-parent`
-(`samediff`, `python`, `onnx`, `vlm`, …).
-
-### Native-image subprocess model
-
-The main application ships as a single native executable that routes subprocess types before
-Spring Boot starts via `--subprocess=TYPE` (`ingest`, `vector-population`, `embedding`,
-`model-init`, `vlm-test`, `training`). `NativeImageInfo` detects the runtime mode and
-`SubprocessExecutableConfig` (`kompile.subprocess.executable.*` properties) configures how
-helper processes are launched in auto / jvm / native modes.
-
-## Repository layout
+### Repository structure
 
 ```
 kompile/
-├── kompile-cli/                    # Main developer CLI (Picocli)
-├── kompile-app/                    # Spring Boot RAG framework (40+ modules)
-│   ├── kompile-app-core/           # Core interfaces
-│   ├── kompile-app-main/           # Main app + web UI (Angular)
-│   ├── kompile-app-lite/           # Self-contained chat + RAG + Graph RAG
-│   ├── kompile-model-manager/      # Model download + cache
-│   ├── kompile-embedding-*/        # Embedding implementations
-│   ├── kompile-vectorstore-*/      # Vector store implementations
-│   ├── kompile-loader-*/           # Document loaders
-│   ├── kompile-source-*/           # Data sources (Slack, Jira, Notion, …)
-│   ├── kompile-chunker-*/          # Chunking strategies
-│   ├── kompile-tool-*/             # Spring AI / MCP tools
-│   ├── kompile-kvcache/            # Paged KV cache for local LLMs
-│   ├── kompile-graph-neo4j/        # Graph RAG
-│   └── kompile-ocr-*/              # OCR pipeline modules
-├── kompile-agent-cli/              # Federated agent CLI
-├── kompile-app-cli/                # Federated app-management CLI
-├── kompile-model-cli/              # Federated model CLI
-├── kompile-component-cli/          # Component management CLI
-├── kompile-pipelines-framework/    # Pipeline execution engine
-│   ├── kompile-pipelines-framework-api/
-│   ├── kompile-pipelines-framework-core/
-│   ├── kompile-pipelines-framework-runtime/
-│   └── kompile-pipeline-steps-parent/ (samediff, python, onnx, vlm, …)
-├── kompile-model-importer-tensorflow/
-├── kompile-model-importer-onnx/
-├── kompile-model-importer-keras/
-├── anserini/                       # Lucene IR toolkit + SameDiff dense encoders
-├── tokenizers-rust/                # HuggingFace tokenizers → JavaCPP bindings
-│   ├── libtokenizers/
-│   ├── cpp-wrapper/
-│   ├── tokenizers-native/
-│   └── tokenizers-native-preset/
-├── kompile-c-library/              # C shim for generated pipelines
-├── kompile-python/                 # Python SDK
-├── kompile-sdk-serving/            # Serving SDK
-├── kompile-rag-builds/             # Pre-generated sample RAG projects
-├── docs/                           # AsciiDoc / HTML docs
-└── pom.xml                         # Parent POM
+  kompile-cli/                       CLI (Picocli)
+  kompile-project-store/             Project manifest read/write
+  kompile-app/                       Spring Boot RAG framework (40+ modules)
+    kompile-app-core/                  Core interfaces
+    kompile-app-main/                  Main application + Angular web UI
+    kompile-model-manager/             Model download and cache
+    kompile-model-staging/             Model lifecycle service
+    kompile-embedding-*/               Embedding implementations
+    kompile-vectorstore-*/             Vector store implementations
+    kompile-loader-*/                  Document loaders
+    kompile-source-*/                  Data sources
+    kompile-chunker-*/                 Chunking strategies
+    kompile-tool-*/                    Spring AI / MCP tools
+    kompile-kvcache/                   Paged KV cache for local LLMs
+    kompile-graph-neo4j/               Graph RAG with Neo4j
+    kompile-ocr-*/                     OCR pipeline
+  kompile-pipelines-framework/       Pipeline execution engine
+  anserini/                          Lucene IR toolkit + SameDiff dense encoders
+  tokenizers-rust/                   HuggingFace tokenizers -> JavaCPP JNI bindings
+  kompile-model-importer-*/          Model importers (TensorFlow, ONNX, Keras)
 ```
 
-## Memory management
+### Key dependencies
 
-**Build**
+Java 17 . Spring Boot 3.2.5 . Spring AI 1.0.0 . Picocli 4.7.6 .
+ND4J 1.0.0-SNAPSHOT . Lucene (via Anserini) . JavaCPP 1.5.11 .
+GraalVM 17
 
-- Standard build: ~4 GB heap
-- Native-image build: 18–32 GB heap
-- Docker: `--memory=16g` recommended
+### Links
 
-```bash
-docker run --ulimit nofile=98304:98304 --memory=16g --rm -it \
-  --entrypoint /bin/bash konduitai/kompile
-```
+- Community: https://community.konduit.ai
+- Eclipse DeepLearning4j: https://github.com/deeplearning4j/deeplearning4j
 
-**Runtime**
+## License
 
-```bash
-java -Xmx4g  -jar kompile-cli.jar
-java -Xmx8g  -jar kompile-app-main.jar
-```
-
-ND4J cleans up workspaces on shutdown, caps OpenBLAS threads via `ND4J_NUM_BLAS_THREADS`, and
-runs with `-Dorg.bytedeco.javacpp.nopointergc=true` in production configurations.
-
-## Common pitfalls
-
-- **Out of memory during build** — raise `MAVEN_OPTS=-Xmx…`.
-- **Native library not found** — verify `JAVACPP_PLATFORM` matches your OS/arch.
-- **Model download fails** — check network access and SHA256 in `ModelConstants`.
-- **Vector search returns nothing** — index and query must use the same embedding model.
-- **Spring bean not found** — double-check `kompile.*.type` in `application.properties` matches a
-  module that is on the classpath.
-- **Frontend changes not visible** — Spring Boot caches static resources at startup; restart the
-  app after rebuilding the Angular UI, and clean `target/classes/static/` if stale hashed
-  bundles linger.
-
-## Key dependencies
-
-Java 17 · Spring Boot 3.2.5 · Spring AI 1.0.0 · Picocli 4.7.6 · ND4J 1.0.0-SNAPSHOT ·
-Lucene (via Anserini) · JavaCPP 1.5.11 · GraalVM SDK 24.0.1 · Jackson 2.15.3 · Lombok 1.18.38
-
-## Links
-
-- Community: <https://community.konduit.ai>
-- Eclipse DeepLearning4j: <https://github.com/deeplearning4j/deeplearning4j>
-- HTML docs: [`./docs/`](./docs)
-- License: see [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE)
+See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
