@@ -113,9 +113,69 @@ The kompile-server exposes ~100+ REST endpoints. This page lists the major endpo
 | POST | `/api/code-indexer/index` | Trigger indexing |
 | POST | `/api/code-indexer/search` | Code search |
 
+## KV cache
+
+| Method | Endpoint | Description |
+|--------|----------|------------|
+| GET | `/api/kvcache` | List caches |
+| POST | `/api/kvcache` | Create a cache |
+| GET | `/api/kvcache/{id}` | Get cache details |
+| DELETE | `/api/kvcache/{id}` | Delete a cache |
+| GET | `/api/kvcache/{id}/stats` | Cache statistics |
+| POST | `/api/kvcache/{id}/checkpoint` | Create a checkpoint |
+| POST | `/api/kvcache/{id}/prefix` | Prefix cache lookup |
+
+## VLM (Vision-Language Models)
+
+| Method | Endpoint | Description |
+|--------|----------|------------|
+| GET | `/api/vlm/models` | List VLM model sets |
+| POST | `/api/vlm/models/download` | Download a model set |
+| GET | `/api/vlm/config` | VLM pipeline configuration |
+| POST | `/api/vlm/config` | Update pipeline config |
+| POST | `/api/vlm/test` | Run VLM test workflow |
+| GET | `/api/vlm-orchestration` | Orchestration state |
+| POST | `/api/vlm-orchestration/reset` | Reset orchestration |
+
+## SDX model serving
+
+| Method | Endpoint | Description |
+|--------|----------|------------|
+| GET | `/api/sdx` | List loaded models |
+| POST | `/api/sdx/load` | Load a model |
+| POST | `/api/sdx/unload` | Unload a model |
+| POST | `/api/sdx/invoke` | Run inference |
+| GET | `/api/sdx/{model}/schema` | Model input/output schema |
+
+## Backup
+
+| Method | Endpoint | Description |
+|--------|----------|------------|
+| POST | `/api/backup` | Trigger a backup |
+| GET | `/api/backup` | List backups |
+| GET | `/api/backup/{name}` | Download a backup |
+| POST | `/api/backup/{name}/restore` | Restore from backup |
+| DELETE | `/api/backup/{name}` | Delete a backup |
+| POST | `/api/backup/cleanup` | Clean old backups |
+
+## Benchmark
+
+| Method | Endpoint | Description |
+|--------|----------|------------|
+| GET | `/api/benchmark` | List benchmark configs |
+| POST | `/api/benchmark` | Create a benchmark config |
+| POST | `/api/benchmark/run` | Run a benchmark |
+| POST | `/api/benchmark/matrix` | Run a matrix benchmark |
+| GET | `/api/benchmark/results` | Get benchmark results |
+| POST | `/api/benchmark/apply-optimal` | Apply optimal config |
+
 ## Process and workflows
 
 | Method | Endpoint | Description |
 |--------|----------|------------|
-| POST | `/api/process/diagrams/generate` | Generate process diagram |
-| GET | `/api/sdx` | SDX model serving |
+| POST | `/api/process/diagrams/generate` | Generate process diagram (streaming) |
+| POST | `/api/process/diagrams` | Create a diagram session |
+| GET | `/api/process/diagrams/{id}` | Get diagram session |
+| POST | `/api/process/diagrams/{id}/finalize` | Finalize a diagram |
+| DELETE | `/api/process/diagrams/{id}` | Delete a diagram session |
+| POST | `/api/process/diagrams/{id}/bpmn` | Render BPMN preview |
