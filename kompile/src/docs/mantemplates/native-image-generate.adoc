@@ -1,0 +1,20 @@
+:includedir: /home/agibsonccc/Documents/GitHub/kompile/target/generated-picocli-docs
+//include::{includedir}/native-image-generate.adoc[tag=picocli-generated-full-manpage]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-header]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-name]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-synopsis]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-description]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-options]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-arguments]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-commands]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-exit-status]
+
+include::{includedir}/native-image-generate.adoc[tag=picocli-generated-man-section-footer]

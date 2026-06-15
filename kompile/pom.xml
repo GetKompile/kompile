@@ -1,0 +1,653 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  ~ Copyright (c) 2022 Konduit K.K.
+  ~
+  ~     This program and the accompanying materials are made available under the
+  ~     terms of the Apache License, Version 2.0 which is available at
+  ~     https://www.apache.org/licenses/LICENSE-2.0.
+  ~
+  ~     Unless required by applicable law or agreed to in writing, software
+  ~     distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+  ~     WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+  ~     License for the specific language governing permissions and limitations
+  ~     under the License.
+  ~
+  ~     SPDX-License-Identifier: Apache-2.0
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <parent>
+    <groupId>ai.konduit</groupId>
+    <artifactId>kompile-parent</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>ai.konduit</groupId>
+  <artifactId>kompile</artifactId>
+  <version>1.0-SNAPSHOT</version>
+
+  <name>kompile</name>
+
+  <repositories>
+    <repository>
+      <id>sonatype-nexus-snapshots</id>
+      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>op-codegen</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.conscrypt</groupId>
+      <artifactId>conscrypt-openjdk-uber</artifactId>
+      <version>${conscrypt.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>nd4j-native</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>nd4j-native-preset</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.bytedeco</groupId>
+      <artifactId>openblas-platform</artifactId>
+      <version>0.3.19-1.5.7</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.jgit</groupId>
+      <artifactId>org.eclipse.jgit</artifactId>
+      <version>${jgit.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>1.18.24</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>me.tongfei</groupId>
+      <artifactId>progressbar</artifactId>
+      <version>${progressbar.version}</version>
+    </dependency>
+
+
+    <dependency>
+      <groupId>org.zeroturnaround</groupId>
+      <artifactId>zt-process-killer</artifactId>
+      <version>${ztprocesskiller.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.zeroturnaround</groupId>
+      <artifactId>zt-exec</artifactId>
+      <version>${ztexec.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.jetty.alpn</groupId>
+      <artifactId>alpn-api</artifactId>
+      <version>1.1.3.v20160715</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.jetty.npn</groupId>
+      <artifactId>npn-api</artifactId>
+      <version>1.1.1.v20141010</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.bytedeco</groupId>
+      <artifactId>javacpp</artifactId>
+      <version>${javacpp.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>nd4j-native</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+
+    <dependency>
+      <groupId>org.graalvm.nativeimage</groupId>
+      <artifactId>svm</artifactId>
+      <version>${graalvm.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+
+    <dependency>
+      <groupId>org.graalvm.sdk</groupId>
+      <artifactId>graal-sdk</artifactId>
+      <version>${graalvm.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.maven.shared</groupId>
+      <artifactId>maven-invoker</artifactId>
+      <version>3.2.0</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-model</artifactId>
+      <version>3.8.5</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-vertx</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-image-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-document-parser-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-onnx-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>info.picocli</groupId>
+      <artifactId>picocli</artifactId>
+      <version>${pico.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-deeplearning4j-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-samediff-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-tensorflow-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-python-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-tvm-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-nd4j-tensorflow-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-1.2-api</artifactId>
+      <version>2.3.2</version>
+    </dependency>
+
+    <!-- Needed for graalvm, not sure why. -->
+    <dependency>
+      <groupId>com.guicedee.services</groupId>
+      <artifactId>javax.jms-api</artifactId>
+      <version>1.0.20.0</version>
+    </dependency>
+
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>samediff-import-tensorflow</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>samediff-import-onnx</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-transport-native-unix-common</artifactId>
+      <version>${netty.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>samediff-import-api</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.github.microutils</groupId>
+      <artifactId>kotlin-logging-jvm</artifactId>
+      <version>2.1.23</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.deeplearning4j</groupId>
+      <artifactId>deeplearning4j-modelimport</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>2.11.0</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.github.classgraph</groupId>
+      <artifactId>classgraph</artifactId>
+      <version>4.8.90</version>
+    </dependency>
+
+    <!-- Tensorflow import -->
+    <dependency>
+      <groupId>com.google.flatbuffers</groupId>
+      <artifactId>flatbuffers-java</artifactId>
+      <version>${flatbuffers.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.9.0</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <version>1.4.4</version>
+    </dependency>
+
+  </dependencies>
+
+
+  <profiles>
+    <profile>
+      <id>native</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.graalvm.buildtools</groupId>
+            <artifactId>native-maven-plugin</artifactId>
+            <version>${native-image-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>build-native</id>
+                <goals>
+                  <goal>build</goal>
+                </goals>
+                <phase>package</phase>
+              </execution>
+              <execution>
+                <id>test-native</id>
+                <goals>
+                  <goal>test</goal>
+                </goals>
+                <phase>test</phase>
+              </execution>
+            </executions>
+            <configuration>
+              <mainClass>ai.konduit.pipelinegenerator.main.MainCommand</mainClass>
+              <buildArgs>
+                -J-Xmx18g
+                --no-fallback
+                --verbose
+                -H:+JNI
+                --allow-incomplete-classpath
+                -H:IncludeResourceBundles=org.eclipse.jgit.internal.JGitText
+                -H:IncludeResources="konduit-serving.h"
+                -H:IncludeResources="numpy_struct.h"
+                -H:IncludeResources="ServingMain.java"
+                -H:IncludeResources="NumpyEntryPoint.java"
+                -H:IncludeResources="org/nd4j/.*"
+                -H:IncludeResources=".*.vso"
+                -H:ReflectionConfigurationFiles=${project.basedir}/src/main/resources/META-INF/native-image/reflect-config.json
+                -H:IncludeResources="META-INF/native-image/jni-config.json"
+                -H:IncludeResources="META-INF/native-image/proxy-config.json"
+                -H:IncludeResources="META-INF/native-image/reflect-config.json"
+                -H:IncludeResources="META-INF/native-image/resource-config.json"
+                -H:IncludeResources="META-INF/native-image/serialization-config.json"
+                -H:IncludeResources="nd4j-op-def.pbtxt"
+                -H:IncludeResources="onnx.pbtxt"
+                -H:IncludeResources="onnxops.json"
+                -H:IncludeResources="ops.proto"
+                -H:IncludeResources="onnx-mapping-ruleset.pbtxt"
+                -H:IncludeResources="onnx-op-def.pbtxt"
+                -H:IncludeResources="onnx-op-defs.pb"
+                -H:IncludeResources="tensorflow-mapping-ruleset.pbtxt"
+                -H:IncludeResources="tensorflow-op-def.pbtxt"
+                -H:IncludeResources="org/bytedeco/.*"
+                -H:IncludeResources="META-INF/services/.*"
+                -H:IncludeResources="generate-image-and-sdk.sh"
+                -H:IncludeResources="scanned-import-json.json"
+                -H:IncludeResources="onnx-mapping-ruleset.pbtxt"
+                -H:IncludeResources="onnx-op-def.pbtxt"
+                -H:IncludeResources="onnx-op-defs.pb"
+                -H:IncludeResources="tensorflow-mapping-rupleset.pbtxt"
+                -H:IncludeResources="tensorflow-op-def.pbtxt"
+                -Dorg.nd4j.log.initialization=true
+                -H:Class=ai.konduit.pipelinegenerator.main.MainCommand
+                -H:DeadlockWatchdogInterval=30
+                -H:+DeadlockWatchdogExitOnTimeout
+                -Dorg.nd4j.samediff.frameworkimport.initcache=true
+                --initialize-at-build-time=onnx.
+                -H:+ReportExceptionStackTraces
+                -Dorg.eclipse.python4j.numpyimport=false
+                -H:Log=registerResource
+                -Dorg.bytedeco.javacpp.noPointerGC=true
+                -Dorg.bytedeco.javacpp.nopointergc=true
+                --enable-url-protocols=jar
+                -H:-CheckToolchain
+                --enable-https
+                --enable-http
+                -H:+AddAllCharsets
+                -Djavacpp.platform=${javacpp.platform}
+                -H:+ReportUnsupportedElementsAtRuntime
+                -H:+ReportExceptionStackTraces
+                --initialize-at-run-time=org.eclipse.jgit
+                --initialize-at-run-time=org.nd4j.common.config.ND4JClassLoading
+                --initialize-at-run-time=org.apache.commons.lang3.RandomUtils
+                --initialize-at-build-time=org.eclipse.jgit
+                --initialize-at-run-time=org.eclipse.jgit.util.FileUtils
+                --initialize-at-run-time=org.eclipse.jgit.lib.internal.WorkQueue
+                --initialize-at-run-time=org.eclipse.jgit.lib.RepositoryCache
+                --initialize-at-run-time=org.eclipse.jgit.internal.storage.file.WindowCache
+                --initialize-at-run-time=ai.konduit.pipelinegenerator.main.build.CloneBuildComponents
+                --initialize-at-build-time=org.eclipse.jgit
+                --initialize-at-run-time=org.eclipse.jgit.transport.HttpAuthMethod$Digest
+                --initialize-at-run-time=org.nd4j.linalg.cpu.nativecpu
+                --initialize-at-run-time=org.bytedeco
+                --initialize-at-build-time=org.tensorflow
+                --initialize-at-build-time=org.apache
+                --initialize-at-build-time=org.joda
+                --initialize-at-run-time=org.nd4j.common.io.VfsUtils
+                --initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font
+                --initialize-at-run-time=org.nd4j.samediff.frameworkimport.reflect.ClassGraphHolder
+                --initialize-at-build-time=org.nd4j.shade.
+                --initialize-at-run-time=org.nd4j.nativeblas
+                --initialize-at-run-time=ai.konduit.pipelinegenerator.main.models.Convert
+                --initialize-at-run-time=io.netty
+                --report-unsupported-elements-at-runtime
+              </buildArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+
+  <build>
+    <plugins>
+
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.0.0</version>
+        <executions>
+          <execution>
+            <id>generateManPages</id>
+            <phase>process-classes</phase>
+            <goals>
+              <goal>java</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <includeProjectDependencies>true</includeProjectDependencies>
+          <includePluginDependencies>true</includePluginDependencies>
+          <mainClass>picocli.codegen.docgen.manpage.ManPageGenerator</mainClass>
+          <arguments>
+            <argument>--outdir=${project.build.directory}/generated-picocli-docs</argument>
+            <argument>-v</argument>
+            <!-- FIXME: remove the template-dir option after generating templates once -->
+            <argument>--template-dir=/kompile/src/docs/mantemplates</argument>
+            <argument>ai.konduit.pipelinegenerator.main.MainCommand</argument>
+            <argument>ai.konduit.pipelinegenerator.main.Bootstrap</argument>
+            <argument>ai.konduit.pipelinegenerator.main.Info</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.BuildMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.CloneBuildComponents</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.GenerateImageAndSDK</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.NativeImageBuilder</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.PipelineCommandGenerator</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.PomGenerator</argument>
+            <argument>ai.konduit.pipelinegenerator.main.config.python.GeneratePythonConfig</argument>
+            <argument>ai.konduit.pipelinegenerator.main.config.python.GeneratePythonVariableConfig</argument>
+            <argument>ai.konduit.pipelinegenerator.main.config.ConfigMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.ExecMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.InferenceServerCreate</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.PipelineGenerator</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.SequencePipelineCombiner</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.StepCreator</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallAll</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallGraalvm</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallMaven</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallPython</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallSDK</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.Convert</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.DL4jSummary</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.OnnxPrint</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.samediff.SameDiffSummary</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.TensorflowPrint</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallAll</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallGraalvm</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallMaven</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallPython</argument>
+            <argument>ai.konduit.pipelinegenerator.main.util.ModelFileDebug</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallGraalvm</argument>
+          </arguments>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>info.picocli</groupId>
+            <artifactId>picocli-codegen</artifactId>
+            <version>4.6.3</version>
+            <type>jar</type>
+          </dependency>
+        </dependencies>
+      </plugin>
+      <plugin>
+        <groupId>org.asciidoctor</groupId>
+        <artifactId>asciidoctor-maven-plugin</artifactId>
+        <version>2.1.0</version>
+        <executions>
+          <execution>
+            <id>output-html</id>
+            <!--            <phase>prepare-package</phase>-->
+            <phase>process-classes</phase>
+            <goals>
+              <goal>process-asciidoc</goal>
+            </goals>
+            <configuration>
+              <sourceHighlighter>coderay</sourceHighlighter>
+              <backend>html5</backend>
+            </configuration>
+          </execution>
+          <execution>
+            <id>output-manpage</id>
+            <!--            <phase>prepare-package</phase>-->
+            <phase>process-classes</phase>
+            <goals>
+              <goal>process-asciidoc</goal>
+            </goals>
+            <configuration>
+              <sourceHighlighter>coderay</sourceHighlighter>
+              <backend>manpage</backend>
+            </configuration>
+          </execution>
+        </executions>
+        <configuration>
+          <sourceDirectory>../kompile-core/target/generated-picocli-docs</sourceDirectory>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>${maven-compiler-plugin.version}</version>
+        <configuration>
+          <source>${maven.compiler.source}</source>
+          <target>${maven.compiler.target}</target>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.jetbrains.kotlin</groupId>
+        <artifactId>kotlin-maven-plugin</artifactId>
+        <version>${kotlin.version}</version>
+        <configuration>
+          <args>
+            <arg>-Xjsr305=strict</arg>
+          </args>
+          <compilerPlugins>
+            <plugin>spring</plugin>
+            <plugin>jpa</plugin>
+          </compilerPlugins>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-maven-allopen</artifactId>
+            <version>${kotlin.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-maven-noarg</artifactId>
+            <version>${kotlin.version}</version>
+          </dependency>
+        </dependencies>
+        <executions>
+          <execution>
+            <id>compile</id>
+            <goals> <goal>compile</goal> </goals>
+            <configuration>
+              <sourceDirs>
+                <sourceDir>${project.basedir}/src/main/stubs</sourceDir>
+                <sourceDir>${project.basedir}/src/main/kotlin</sourceDir>
+                <sourceDir>../kompile-core/src/main/java</sourceDir>
+                <sourceDir>${project.basedir}/src/main/ops</sourceDir>
+              </sourceDirs>
+            </configuration>
+          </execution>
+          <execution>
+            <id>test-compile</id>
+            <goals> <goal>test-compile</goal> </goals>
+            <configuration>
+              <sourceDirs>
+                <sourceDir>${project.basedir}/src/test/stubs</sourceDir>
+                <sourceDir>${project.basedir}/src/test/kotlin</sourceDir>
+                <sourceDir>../kompile-core/src/test/java</sourceDir>
+                <sourceDir>${project.basedir}/src/test/ops</sourceDir>
+              </sourceDirs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>${maven-shade-plugin.version}</version>
+        <configuration>
+          <shadedArtifactAttached>true</shadedArtifactAttached>
+          <createDependencyReducedPom>true</createDependencyReducedPom>
+          <filters>
+            <filter>
+              <artifact>*:*</artifact>
+              <excludes>
+                <exclude>org/datanucleus/**</exclude>
+                <exclude>META-INF/*.SF</exclude>
+                <exclude>META-INF/*.DSA</exclude>
+                <exclude>META-INF/*.RSA</exclude>
+              </excludes>
+            </filter>
+          </filters>
+        </configuration>
+
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <transformers>
+                <transformer
+                        implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                  <resource>reference.conf</resource>
+                </transformer>
+                <transformer
+                        implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer
+                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>ai.konduit.pipelinegenerator.main.MainCommand</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+    </plugins>
+  </build>
+
+</project>

@@ -1,0 +1,20 @@
+:includedir: /home/agibsonccc/Documents/GitHub/kompile/target/generated-picocli-docs
+//include::{includedir}/step-create.adoc[tag=picocli-generated-full-manpage]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-header]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-name]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-synopsis]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-description]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-options]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-arguments]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-commands]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-exit-status]
+
+include::{includedir}/step-create.adoc[tag=picocli-generated-man-section-footer]
