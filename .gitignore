@@ -114,8 +114,8 @@ new-script.sh
 scripts/cleanup-tmp.sh
 
 # PostgreSQL data
-index/pg_wal/
-index2/pg_wal/
+index/
+index2/
 
 # Maven wrapper (bundled)
 .maven/
