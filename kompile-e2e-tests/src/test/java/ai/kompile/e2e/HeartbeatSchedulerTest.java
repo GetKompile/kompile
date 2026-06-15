@@ -1,9 +1,9 @@
 package ai.kompile.e2e;
 
-import ai.kompile.openclaw.service.HeartbeatScheduler;
-import ai.kompile.openclaw.service.HeartbeatScheduler.HeartbeatInfo;
-import ai.kompile.openclaw.service.HeartbeatScheduler.HeartbeatStatus;
-import ai.kompile.openclaw.service.impl.QuartzHeartbeatScheduler;
+import ai.kompile.gateway.core.service.HeartbeatScheduler;
+import ai.kompile.gateway.core.service.HeartbeatScheduler.HeartbeatInfo;
+import ai.kompile.gateway.core.service.HeartbeatScheduler.HeartbeatStatus;
+import ai.kompile.kclaw.service.impl.QuartzHeartbeatScheduler;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
@@ -53,14 +53,14 @@ class HeartbeatSchedulerTest {
 
         JobDetail job = jobCaptor.getValue();
         assertEquals("daily-check", job.getKey().getName());
-        assertEquals("openclaw-heartbeats", job.getKey().getGroup());
+        assertEquals("kclaw-heartbeats", job.getKey().getGroup());
         assertEquals("agent-1", job.getJobDataMap().getString("agentId"));
         assertEquals("session-1", job.getJobDataMap().getString("sessionKey"));
         assertEquals("Check status", job.getJobDataMap().getString("message"));
 
         Trigger trigger = triggerCaptor.getValue();
         assertEquals("daily-check-trigger", trigger.getKey().getName());
-        assertEquals("openclaw-heartbeats", trigger.getKey().getGroup());
+        assertEquals("kclaw-heartbeats", trigger.getKey().getGroup());
     }
 
     @Test
@@ -88,13 +88,13 @@ class HeartbeatSchedulerTest {
     @Test
     @DisplayName("Cancel heartbeat deletes Quartz job")
     void testCancelHeartbeat() throws Exception {
-        when(quartzScheduler.deleteJob(new JobKey("daily-check", "openclaw-heartbeats")))
+        when(quartzScheduler.deleteJob(new JobKey("daily-check", "kclaw-heartbeats")))
                 .thenReturn(true);
 
         boolean cancelled = heartbeatScheduler.cancelHeartbeat("daily-check");
 
         assertTrue(cancelled);
-        verify(quartzScheduler).deleteJob(new JobKey("daily-check", "openclaw-heartbeats"));
+        verify(quartzScheduler).deleteJob(new JobKey("daily-check", "kclaw-heartbeats"));
     }
 
     @Test
@@ -119,7 +119,7 @@ class HeartbeatSchedulerTest {
     @Test
     @DisplayName("isScheduled returns true for existing job")
     void testIsScheduled() throws Exception {
-        when(quartzScheduler.checkExists(new JobKey("daily-check", "openclaw-heartbeats")))
+        when(quartzScheduler.checkExists(new JobKey("daily-check", "kclaw-heartbeats")))
                 .thenReturn(true);
 
         assertTrue(heartbeatScheduler.isScheduled("daily-check"));
@@ -149,7 +149,7 @@ class HeartbeatSchedulerTest {
     void testPauseHeartbeat() throws Exception {
         heartbeatScheduler.pauseHeartbeat("daily-check");
 
-        verify(quartzScheduler).pauseJob(new JobKey("daily-check", "openclaw-heartbeats"));
+        verify(quartzScheduler).pauseJob(new JobKey("daily-check", "kclaw-heartbeats"));
     }
 
     @Test
@@ -157,7 +157,7 @@ class HeartbeatSchedulerTest {
     void testResumeHeartbeat() throws Exception {
         heartbeatScheduler.resumeHeartbeat("daily-check");
 
-        verify(quartzScheduler).resumeJob(new JobKey("daily-check", "openclaw-heartbeats"));
+        verify(quartzScheduler).resumeJob(new JobKey("daily-check", "kclaw-heartbeats"));
     }
 
     @Test
@@ -182,7 +182,7 @@ class HeartbeatSchedulerTest {
     @DisplayName("List heartbeats returns heartbeat info")
     @SuppressWarnings("unchecked")
     void testListHeartbeats() throws Exception {
-        JobKey jobKey = new JobKey("daily-check", "openclaw-heartbeats");
+        JobKey jobKey = new JobKey("daily-check", "kclaw-heartbeats");
         Set<JobKey> jobKeys = new HashSet<>();
         jobKeys.add(jobKey);
 
@@ -198,7 +198,7 @@ class HeartbeatSchedulerTest {
         when(quartzScheduler.getJobDetail(jobKey)).thenReturn(jobDetail);
 
         CronTrigger cronTrigger = mock(CronTrigger.class);
-        TriggerKey triggerKey = new TriggerKey("daily-check-trigger", "openclaw-heartbeats");
+        TriggerKey triggerKey = new TriggerKey("daily-check-trigger", "kclaw-heartbeats");
         when(cronTrigger.getKey()).thenReturn(triggerKey);
         when(cronTrigger.getCronExpression()).thenReturn("0 0 9 * * ?");
         when(cronTrigger.getNextFireTime()).thenReturn(new Date());
@@ -236,7 +236,7 @@ class HeartbeatSchedulerTest {
     @DisplayName("PAUSED trigger state maps to PAUSED heartbeat status")
     @SuppressWarnings("unchecked")
     void testPausedStateMapping() throws Exception {
-        JobKey jobKey = new JobKey("paused-job", "openclaw-heartbeats");
+        JobKey jobKey = new JobKey("paused-job", "kclaw-heartbeats");
         Set<JobKey> jobKeys = new HashSet<>();
         jobKeys.add(jobKey);
 
@@ -252,7 +252,7 @@ class HeartbeatSchedulerTest {
         when(quartzScheduler.getJobDetail(jobKey)).thenReturn(jobDetail);
 
         CronTrigger cronTrigger = mock(CronTrigger.class);
-        TriggerKey triggerKey = new TriggerKey("paused-job-trigger", "openclaw-heartbeats");
+        TriggerKey triggerKey = new TriggerKey("paused-job-trigger", "kclaw-heartbeats");
         when(cronTrigger.getKey()).thenReturn(triggerKey);
         when(cronTrigger.getCronExpression()).thenReturn("0 0 * * * ?");
         when(cronTrigger.getNextFireTime()).thenReturn(null);

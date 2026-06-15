@@ -27,8 +27,9 @@
 
   <parent>
     <groupId>ai.kompile</groupId>
-    <artifactId>kompile</artifactId>
+    <artifactId>kompile-app</artifactId>
     <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
   </parent>
 
   <licenses>

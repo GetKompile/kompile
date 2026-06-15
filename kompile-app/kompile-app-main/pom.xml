@@ -253,10 +253,10 @@
             <artifactId>kompile-evaluation</artifactId>
         </dependency>
 
-        <!-- OpenClaw Agent Framework -->
+        <!-- KClaw Agent Framework -->
         <dependency>
             <groupId>ai.kompile</groupId>
-            <artifactId>kompile-openclaw</artifactId>
+            <artifactId>kompile-kclaw</artifactId>
         </dependency>
 
         <!-- OCR Integration -->

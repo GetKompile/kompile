@@ -1,11 +1,11 @@
 package ai.kompile.e2e;
 
-import ai.kompile.openclaw.agent.OpenClawAgentService;
-import ai.kompile.openclaw.gateway.channel.BaseChannelAdapter;
-import ai.kompile.openclaw.gateway.channel.ChannelAdapter;
-import ai.kompile.openclaw.gateway.channel.ChannelAdapter.*;
-import ai.kompile.openclaw.model.OpenClawRequest;
-import ai.kompile.openclaw.model.OpenClawResponse;
+import ai.kompile.kclaw.agent.KClawAgentService;
+import ai.kompile.kclaw.gateway.channel.BaseChannelAdapter;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter.*;
+import ai.kompile.gateway.core.model.AgentRequest;
+import ai.kompile.gateway.core.model.AgentResponse;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
@@ -26,7 +26,7 @@ import static org.mockito.Mockito.*;
 class BaseChannelAdapterTest {
 
     @Mock
-    private OpenClawAgentService agentService;
+    private KClawAgentService agentService;
 
     @Mock
     private MessageResponder responder;
@@ -38,7 +38,7 @@ class BaseChannelAdapterTest {
         boolean doStartCalled = false;
         boolean doStopCalled = false;
 
-        TestChannelAdapter(OpenClawAgentService agentService) {
+        TestChannelAdapter(KClawAgentService agentService) {
             super(agentService);
         }
 
@@ -233,11 +233,11 @@ class BaseChannelAdapterTest {
         AdapterConfig config = AdapterConfig.defaults("ch-1", "test-agent");
         adapter.updateConfig(config);
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("Agent reply")
                 .success(true)
                 .build();
-        when(agentService.execute(any(OpenClawRequest.class))).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         IncomingMessage message = new IncomingMessage(
                 "msg1", "U123", "User123", "Hello agent",
@@ -247,7 +247,7 @@ class BaseChannelAdapterTest {
         adapter.getAgentHandler().handle(message, responder);
 
         verify(responder).typing();
-        ArgumentCaptor<OpenClawRequest> reqCaptor = ArgumentCaptor.forClass(OpenClawRequest.class);
+        ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
         verify(agentService).execute(reqCaptor.capture());
         assertEquals("test-agent", reqCaptor.getValue().getAgentId());
         assertTrue(reqCaptor.getValue().getMessage().contains("Hello agent"));
@@ -262,11 +262,11 @@ class BaseChannelAdapterTest {
         AdapterConfig config = AdapterConfig.defaults("ch-1", "test-agent");
         adapter.updateConfig(config);
 
-        OpenClawResponse errorResponse = OpenClawResponse.builder()
+        AgentResponse errorResponse = AgentResponse.builder()
                 .success(false)
                 .error("Rate limited")
                 .build();
-        when(agentService.execute(any())).thenReturn(errorResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(errorResponse);
 
         IncomingMessage message = new IncomingMessage(
                 "msg1", "U123", "User123", "Hello",
@@ -284,7 +284,7 @@ class BaseChannelAdapterTest {
         AdapterConfig config = AdapterConfig.defaults("ch-1", "test-agent");
         adapter.updateConfig(config);
 
-        when(agentService.execute(any())).thenThrow(new RuntimeException("Crash"));
+        when(agentService.execute(any(AgentRequest.class))).thenThrow(new RuntimeException("Crash"));
 
         IncomingMessage message = new IncomingMessage(
                 "msg1", "U123", "User123", "Hello",

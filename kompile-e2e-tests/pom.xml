@@ -237,11 +237,6 @@
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
-      <artifactId>kompile-openclaw</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>ai.kompile</groupId>
       <artifactId>kompile-kclaw</artifactId>
       <scope>test</scope>
     </dependency>

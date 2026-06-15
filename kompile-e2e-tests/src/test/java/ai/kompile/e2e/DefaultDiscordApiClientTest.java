@@ -1,8 +1,8 @@
 package ai.kompile.e2e;
 
-import ai.kompile.openclaw.gateway.channel.DefaultDiscordApiClient;
-import ai.kompile.openclaw.gateway.channel.DiscordApiClient;
-import ai.kompile.openclaw.gateway.channel.DiscordApiClient.DiscordMessageHandler;
+import ai.kompile.kclaw.gateway.channel.DefaultDiscordApiClient;
+import ai.kompile.gateway.core.gateway.channel.DiscordApiClient;
+import ai.kompile.gateway.core.gateway.channel.DiscordApiClient.DiscordMessageHandler;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;

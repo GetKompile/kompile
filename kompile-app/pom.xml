@@ -34,31 +34,31 @@
 
   <modules>
     <!-- Core modules -->
-    <module>kompile-model-manager</module>
+    <module>kompile-models/kompile-model-manager</module>
     <module>kompile-app-core</module>
-    <module>kompile-app-anserini</module>
-    <module>kompile-app-pgml-indexer</module>
-    <module>kompile-postgres-common</module>
-    <module>kompile-oauth2-client</module>
-    <module>kompile-orchestrator</module>
-    <module>kompile-chat-history</module>
-    <module>kompile-model-staging</module>
-    <module>kompile-query-transformer</module>
-    <module>kompile-guardrails</module>
-    <module>kompile-filter-chain</module>
-    <module>kompile-evaluation</module>
-    <module>kompile-react-agent</module>
-    <module>kompile-agent-gateway-core</module>
-    <module>kompile-openclaw</module>
-    <module>kompile-kclaw</module>
-    <module>kompile-kvcache</module>
-    <module>kompile-a2a</module>
-    <module>kompile-data-enrichment</module>
-    <module>kompile-code-indexer</module>
-    <module>kompile-crawl-graph</module>
-    <module>kompile-crawler-core</module>
-    <module>kompile-langdetect</module>
-    <module>kompile-metrics</module>
+    <module>kompile-search/anserini</module>
+    <module>kompile-search/kompile-app-anserini</module>
+    <module>kompile-search/kompile-app-pgml-indexer</module>
+    <module>kompile-search/kompile-postgres-common</module>
+    <module>kompile-sources/kompile-oauth2-client</module>
+    <module>kompile-agents/kompile-orchestrator</module>
+    <module>kompile-agents/kompile-chat-history</module>
+    <module>kompile-models/kompile-model-staging</module>
+    <module>kompile-middleware/kompile-query-transformer</module>
+    <module>kompile-middleware/kompile-guardrails</module>
+    <module>kompile-middleware/kompile-filter-chain</module>
+    <module>kompile-middleware/kompile-evaluation</module>
+    <module>kompile-agents/kompile-react-agent</module>
+    <module>kompile-agents/kompile-agent-gateway-core</module>
+    <module>kompile-agents/kompile-kclaw</module>
+    <module>kompile-agents/kompile-kvcache</module>
+    <module>kompile-agents/kompile-a2a</module>
+    <module>kompile-data/kompile-data-enrichment</module>
+    <module>kompile-code/kompile-code-indexer</module>
+    <module>kompile-crawlers/kompile-crawl-graph</module>
+    <module>kompile-crawlers/kompile-crawler-core</module>
+    <module>kompile-data/kompile-langdetect</module>
+    <module>kompile-middleware/kompile-metrics</module>
     <module>kompile-test-milestone</module>
     <module>kompile-app-lite</module>
 
@@ -689,11 +689,6 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-agent-gateway-core</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>ai.kompile</groupId>
-        <artifactId>kompile-openclaw</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

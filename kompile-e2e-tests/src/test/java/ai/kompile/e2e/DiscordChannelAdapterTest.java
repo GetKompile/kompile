@@ -1,10 +1,11 @@
 package ai.kompile.e2e;
 
-import ai.kompile.openclaw.agent.OpenClawAgentService;
-import ai.kompile.openclaw.gateway.channel.*;
-import ai.kompile.openclaw.gateway.channel.ChannelAdapter.AdapterConfig;
-import ai.kompile.openclaw.model.OpenClawRequest;
-import ai.kompile.openclaw.model.OpenClawResponse;
+import ai.kompile.kclaw.agent.KClawAgentService;
+import ai.kompile.kclaw.gateway.channel.*;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter.AdapterConfig;
+import ai.kompile.gateway.core.model.AgentRequest;
+import ai.kompile.gateway.core.model.AgentResponse;
+import ai.kompile.gateway.core.gateway.channel.DiscordApiClient;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
@@ -32,7 +33,7 @@ import static org.mockito.Mockito.*;
 class DiscordChannelAdapterTest {
 
     @Mock
-    private OpenClawAgentService agentService;
+    private KClawAgentService agentService;
 
     @Mock
     private DiscordApiClient discordApiClient;
@@ -92,11 +93,11 @@ class DiscordChannelAdapterTest {
         when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
         when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("Hello from agent!")
                 .success(true)
                 .build();
-        when(agentService.execute(any(OpenClawRequest.class))).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -108,7 +109,7 @@ class DiscordChannelAdapterTest {
         adapter.onMessage(message);
 
         verify(discordApiClient).sendTyping("discord-ch-1");
-        ArgumentCaptor<OpenClawRequest> reqCaptor = ArgumentCaptor.forClass(OpenClawRequest.class);
+        ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
         verify(agentService).execute(reqCaptor.capture());
         assertEquals("test-agent", reqCaptor.getValue().getAgentId());
         assertEquals("Help me!", reqCaptor.getValue().getMessage());
@@ -175,11 +176,11 @@ class DiscordChannelAdapterTest {
         when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
         when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -208,11 +209,11 @@ class DiscordChannelAdapterTest {
         when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
         when(discordApiClient.getChannels("G_ALLOWED")).thenReturn(List.of(channel));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -238,11 +239,11 @@ class DiscordChannelAdapterTest {
         when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
         when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -308,11 +309,11 @@ class DiscordChannelAdapterTest {
         when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
         when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
-        OpenClawResponse errorResponse = OpenClawResponse.builder()
+        AgentResponse errorResponse = AgentResponse.builder()
                 .success(false)
                 .error("API unavailable")
                 .build();
-        when(agentService.execute(any())).thenReturn(errorResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(errorResponse);
 
         adapter.start();
 
@@ -340,11 +341,11 @@ class DiscordChannelAdapterTest {
         when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
         when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 

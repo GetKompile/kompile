@@ -24,7 +24,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Shared base class for channel adapters in both kompile-kclaw and kompile-openclaw.
+ * Shared base class for channel adapters in kompile-kclaw.
  * Uses the {@link AgentExecutor} interface so the adapter does not depend on any
  * specific agent-service implementation.
  */

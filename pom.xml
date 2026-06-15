@@ -30,9 +30,8 @@
     <module>kompile-project-store</module>
     <module>kompile-model-importers</module>
     <module>kompile-pipelines-framework</module>
-    <!-- kompile-app must come before anserini (anserini depends on kompile-model-manager) -->
+    <!-- kompile-app includes anserini (moved to kompile-app/kompile-search/anserini) -->
     <module>kompile-app</module>
-    <module>anserini</module>
     <module>kompile-cli</module>
     <module>kompile-e2e-tests</module>
   </modules>

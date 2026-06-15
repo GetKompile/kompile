@@ -1338,7 +1338,7 @@ public class RagPomGenerator implements Callable<Void> {
         // using jakarta.validation-api
         addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-validation",
                 "${spring-boot.version}");
-        // Quartz scheduler - required by kompile-openclaw (OpenClawAutoConfiguration)
+        // Quartz scheduler - required by kompile-kclaw (KClawAutoConfiguration)
         addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-quartz",
                 "${spring-boot.version}");
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-client",

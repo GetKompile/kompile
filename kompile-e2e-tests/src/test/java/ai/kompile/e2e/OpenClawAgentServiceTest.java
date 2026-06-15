@@ -1,12 +1,12 @@
 package ai.kompile.e2e;
 
-import ai.kompile.openclaw.agent.OpenClawAgentService;
-import ai.kompile.openclaw.agent.ToolkitRegistry;
-import ai.kompile.openclaw.model.AgentDefinition;
-import ai.kompile.openclaw.model.OpenClawRequest;
-import ai.kompile.openclaw.model.OpenClawResponse;
-import ai.kompile.openclaw.service.AgentRegistry;
-import ai.kompile.openclaw.service.SessionService;
+import ai.kompile.kclaw.agent.KClawAgentService;
+import ai.kompile.kclaw.agent.ToolkitRegistry;
+import ai.kompile.gateway.core.model.AgentDefinition;
+import ai.kompile.kclaw.model.KClawRequest;
+import ai.kompile.kclaw.model.KClawResponse;
+import ai.kompile.gateway.core.service.AgentRegistry;
+import ai.kompile.gateway.core.service.SessionService;
 import ai.kompile.react.context.Toolkit;
 import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.ReActResult;
@@ -26,12 +26,12 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Tests for the OpenClaw agent service: request routing, session management,
+ * Tests for the KClaw agent service: request routing, session management,
  * error handling, and async execution.
  */
 @Tag("e2e")
 @ExtendWith(MockitoExtension.class)
-@DisplayName("OpenClaw Agent Service")
+@DisplayName("KClaw Agent Service")
 class OpenClawAgentServiceTest {
 
     @Mock
@@ -49,11 +49,11 @@ class OpenClawAgentServiceTest {
     @Mock
     private Toolkit toolkit;
 
-    private OpenClawAgentService agentService;
+    private KClawAgentService agentService;
 
     @BeforeEach
     void setUp() {
-        agentService = new OpenClawAgentService(
+        agentService = new KClawAgentService(
                 reActAgentService, agentRegistry, sessionService, toolkitRegistry
         );
     }
@@ -79,13 +79,13 @@ class OpenClawAgentServiceTest {
         when(toolkitRegistry.getToolkit(agentDef)).thenReturn(toolkit);
         when(reActAgentService.runSync(eq("Hello"), eq(toolkit), any())).thenReturn(result);
 
-        OpenClawRequest request = OpenClawRequest.builder()
+        KClawRequest request = KClawRequest.builder()
                 .agentId("test-agent")
                 .sessionKey("session-1")
                 .message("Hello")
                 .build();
 
-        OpenClawResponse response = agentService.execute(request);
+        KClawResponse response = agentService.execute(request);
 
         assertTrue(response.isSuccess());
         assertEquals("Hello, I can help you!", response.getResponse());
@@ -118,11 +118,11 @@ class OpenClawAgentServiceTest {
         when(toolkitRegistry.getToolkit(defaultAgent)).thenReturn(toolkit);
         when(reActAgentService.runSync(anyString(), any(), any())).thenReturn(result);
 
-        OpenClawRequest request = OpenClawRequest.builder()
+        KClawRequest request = KClawRequest.builder()
                 .message("Test")
                 .build();
 
-        OpenClawResponse response = agentService.execute(request);
+        KClawResponse response = agentService.execute(request);
 
         assertTrue(response.isSuccess());
         verify(agentRegistry).getAgent("jarvis");
@@ -147,13 +147,13 @@ class OpenClawAgentServiceTest {
         when(toolkitRegistry.getToolkit(defaultAgent)).thenReturn(toolkit);
         when(reActAgentService.runSync(anyString(), any(), any())).thenReturn(result);
 
-        OpenClawRequest request = OpenClawRequest.builder()
+        KClawRequest request = KClawRequest.builder()
                 .agentId("unknown-agent")
                 .sessionKey("s1")
                 .message("Test")
                 .build();
 
-        OpenClawResponse response = agentService.execute(request);
+        KClawResponse response = agentService.execute(request);
 
         assertTrue(response.isSuccess());
     }
@@ -164,13 +164,13 @@ class OpenClawAgentServiceTest {
         when(agentRegistry.getAgent("missing")).thenReturn(Optional.empty());
         when(agentRegistry.getDefaultAgent()).thenReturn(null);
 
-        OpenClawRequest request = OpenClawRequest.builder()
+        KClawRequest request = KClawRequest.builder()
                 .agentId("missing")
                 .sessionKey("s1")
                 .message("Test")
                 .build();
 
-        OpenClawResponse response = agentService.execute(request);
+        KClawResponse response = agentService.execute(request);
 
         assertFalse(response.isSuccess());
         assertNotNull(response.getError());
@@ -194,13 +194,13 @@ class OpenClawAgentServiceTest {
         when(reActAgentService.runSync(anyString(), any(), any()))
                 .thenThrow(new RuntimeException("LLM API timeout"));
 
-        OpenClawRequest request = OpenClawRequest.builder()
+        KClawRequest request = KClawRequest.builder()
                 .agentId("test-agent")
                 .sessionKey("s1")
                 .message("Test")
                 .build();
 
-        OpenClawResponse response = agentService.execute(request);
+        KClawResponse response = agentService.execute(request);
 
         assertFalse(response.isSuccess());
         assertTrue(response.getError().contains("Agent execution failed"));
@@ -226,11 +226,11 @@ class OpenClawAgentServiceTest {
         when(toolkitRegistry.getToolkit(agentDef)).thenReturn(toolkit);
         when(reActAgentService.runSync(anyString(), any(), any())).thenReturn(result);
 
-        OpenClawRequest request = OpenClawRequest.builder()
+        KClawRequest request = KClawRequest.builder()
                 .message("Test")
                 .build();
 
-        OpenClawResponse response = agentService.execute(request);
+        KClawResponse response = agentService.execute(request);
 
         assertTrue(response.isSuccess());
         assertNotNull(response.getSessionKey());
@@ -286,14 +286,14 @@ class OpenClawAgentServiceTest {
         when(toolkitRegistry.getToolkit(agentDef)).thenReturn(toolkit);
         when(reActAgentService.runSync(anyString(), any(), any())).thenReturn(result);
 
-        OpenClawRequest request = OpenClawRequest.builder()
+        KClawRequest request = KClawRequest.builder()
                 .agentId("test-agent")
                 .sessionKey("async-session")
                 .message("Async test")
                 .build();
 
-        CompletableFuture<OpenClawResponse> future = agentService.executeAsync(request);
-        OpenClawResponse response = future.get();
+        CompletableFuture<KClawResponse> future = agentService.executeAsync(request);
+        KClawResponse response = future.get();
 
         assertTrue(response.isSuccess());
         assertEquals("Async response", response.getResponse());
@@ -319,14 +319,14 @@ class OpenClawAgentServiceTest {
         when(toolkitRegistry.getToolkit(agentDef)).thenReturn(toolkit);
         when(reActAgentService.runSync(anyString(), any(), any())).thenReturn(result);
 
-        OpenClawRequest request = OpenClawRequest.builder()
+        KClawRequest request = KClawRequest.builder()
                 .agentId("test-agent")
                 .sessionKey("s1")
                 .message("Test")
                 .metadata(Map.of("channel", "slack", "userId", "U123"))
                 .build();
 
-        OpenClawResponse response = agentService.execute(request);
+        KClawResponse response = agentService.execute(request);
 
         assertTrue(response.isSuccess());
     }

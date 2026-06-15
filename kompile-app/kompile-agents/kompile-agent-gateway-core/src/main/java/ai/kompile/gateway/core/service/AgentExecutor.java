@@ -19,8 +19,8 @@ import ai.kompile.gateway.core.model.AgentRequest;
 import ai.kompile.gateway.core.model.AgentResponse;
 
 /**
- * Common interface for agent execution services (KClawAgentService, OpenClawAgentService).
- * Implemented by both to allow shared channel adapter code in kompile-agent-gateway-core.
+ * Common interface for agent execution services (KClawAgentService).
+ * Implemented by KClaw to allow shared channel adapter code in kompile-agent-gateway-core.
  */
 public interface AgentExecutor {
 
