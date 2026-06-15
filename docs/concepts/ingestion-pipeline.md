@@ -95,3 +95,16 @@ Real-time progress is streamed via SSE (Server-Sent Events) to both the web UI a
 - Memory meters: heap, native, direct buffers, subprocess RSS
 - Adaptive batch sizing adjustments
 - Per-document status and errors
+
+## Related concepts
+
+- **[Crawl Jobs](crawl-jobs.md)** — the crawl system that feeds documents
+  into this pipeline, including source types, pipeline routing, content
+  classification, and adaptive batching
+- **[Knowledge Graphs](knowledge-graphs.md)** — the graph extraction and
+  entity resolution phases in detail, plus Bayesian networks and graph
+  algorithms
+- **[Information Retrieval](information-retrieval.md)** — how the indexed
+  data is searched and retrieved during queries
+- **[Fact Sheets](fact-sheets.md)** — how crawl jobs scope to fact sheets
+  and how facts are indexed alongside document chunks

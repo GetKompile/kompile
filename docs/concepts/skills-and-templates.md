@@ -74,3 +74,25 @@ Generated applications come with pre-seeded templates: `rag_query`, `code_review
 ### Variable extraction
 
 Templates automatically detect `{{variable}}` placeholders. The render endpoint validates that all required variables are provided.
+
+## When to use skills vs. templates
+
+**Skills** are agent-facing. Use them when you want an agent to have a
+named capability it can invoke — "analyze code", "search documentation",
+"extract entities". Skills are exposed as MCP prompts.
+
+**Templates** are prompt-facing. Use them when you want reusable prompt
+structures that can be filled with different variables — the code review
+template, the entity extraction template, the RAG query template.
+
+A skill typically *uses* a template. The skill defines what the agent can
+do, the template defines the prompt structure.
+
+## Related concepts
+
+- **[Agents](agents.md)** — agents discover skills through MCP and use
+  them as capabilities
+- **[MCP Integration](../mcp/README.md)** — skills are exposed as MCP
+  prompts via the `skill_manager` tool
+- **[Fact Sheets](fact-sheets.md)** — fact sheet data can be injected
+  into prompt templates as variables

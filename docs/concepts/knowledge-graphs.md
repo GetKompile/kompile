@@ -861,3 +861,18 @@ The graph is exposed to AI agents through MCP tools:
 | `graph_mutation` | Create/update/delete nodes and edges |
 | `graph_label` | Manage node labels |
 | `named_graph` | Named graph operations |
+
+## Related concepts
+
+- **[Crawl Jobs](crawl-jobs.md)** — how graph extraction is triggered
+  during crawls, including `--graph`, `--graph-schema-mode`, schema
+  presets, and the full extraction configuration
+- **[Information Retrieval](information-retrieval.md)** — how Graph RAG
+  adds entity and community context to vector search results during queries
+- **[Fact Sheets](fact-sheets.md)** — how `graph build --fact-sheet-id`
+  builds graphs from scoped documents, and how fact sheet scoping affects
+  graph queries
+- **[Agents](agents.md)** — how agents access the graph through MCP tools
+  (`knowledge_graph`, `graph_search`, `graph_traversal`, etc.)
+- **[Ingestion Pipeline](ingestion-pipeline.md)** — the GRAPH_EXTRACTION
+  and ENTITY_RESOLUTION phases in the pipeline

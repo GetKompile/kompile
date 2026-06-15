@@ -72,3 +72,30 @@ Any tool can run asynchronously with `_background: true` -- returns a task ID im
 ## Shared daemon
 
 `kompile serve` runs a shared daemon that multiplexes MCP sessions over a Unix socket at `~/.kompile/runtime/kompile.sock`. One process serves N agent sessions instead of N separate JVMs.
+
+## When to use each transport
+
+**Stdio** — agent launches Kompile as a subprocess. No running server
+needed. Best for: single-agent sessions, development, offline use. The
+agent gets tools immediately when it starts.
+
+**SSE** — agent connects to a running server. Requires `kompile project
+open` or `kompile web`. Best for: multiple agents sharing the same
+knowledge base, persistent state, web UI alongside agent work.
+
+You can use both simultaneously. The `.mcp.json` file written by
+`kompile project open` configures both.
+
+## Related concepts
+
+- **[Agents](../concepts/agents.md)** — agent modes that use MCP tools,
+  including passthrough, KClaw, and A2A
+- **[Information Retrieval](../concepts/information-retrieval.md)** — the
+  retrieval mechanisms behind `rag_search`, `knowledge_search`, and
+  `graph_search` tools
+- **[Knowledge Graphs](../concepts/knowledge-graphs.md)** — the graph
+  system behind the `knowledge_graph` and graph tools
+- **[Code Projects](../concepts/code-projects.md)** — the code indexing
+  system behind `code_search` and `code_graph` tools
+- **[Configuration](../configuration/README.md)** — `kompile configure mcp`
+  sets tool profiles and schema levels

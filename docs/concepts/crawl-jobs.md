@@ -678,3 +678,17 @@ PHASE_COMPLETED, STATE_TRANSITION, WARNING, ERROR, COMPLETED, FAILED,
 CANCELLED, MEMORY_KILLED, RESTART_SCHEDULED, RESTART_ATTEMPTED,
 RESTART_SUCCEEDED, RESTART_FAILED, MEMORY_ANALYSIS, HEAP_ADJUSTED,
 THREADS_REDUCED, MANUAL_RESTART, and extraction-specific events.
+
+## Related concepts
+
+- **[Ingestion Pipeline](ingestion-pipeline.md)** — the pipeline phases
+  that documents pass through after a crawl discovers them
+- **[Knowledge Graphs](knowledge-graphs.md)** — how graph extraction
+  during crawls builds entity/relationship graphs, including entity
+  resolution, schema modes, and multi-agent extraction
+- **[Information Retrieval](information-retrieval.md)** — how the indexed
+  data is searched and retrieved during queries
+- **[Fact Sheets](fact-sheets.md)** — how crawl jobs scope to fact sheets
+  with `--fact-sheet`
+- **[Configuration](../configuration/README.md)** — `pipeline-config.json`
+  and `subprocess-ingest-config.json` control crawl and pipeline settings
