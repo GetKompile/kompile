@@ -395,8 +395,18 @@ separate JVMs.
 | `kompile resume` | Browse and resume previous conversations across agents |
 | `kompile resume-all` | Resume all tracked agent sessions in new terminal windows |
 | `kompile edit-coordinator` | Inspect and manage multi-agent edit locks and coordination state |
+| `kompile pipeline` | Compose and execute multi-step pipelines (Python, ONNX, SameDiff, DL4J): exec, validate, list-steps, serve, create |
 | `kompile daemon` | Observe the MCP daemon: status, stop, view logs |
 | `kompile build dist` | Build all three native binaries into a distribution tarball |
+| `kompile build native-dev` | Build a GraalVM native image for developer use (in-place build) |
+| `kompile build native-dist` | Build a native image + self-contained distribution tarball |
+| `kompile build native-image-generate` | Generate a native image from pipeline steps with a project scaffold |
+| `kompile build pom-generate` | Generate a `pom.xml` for building Kompile applications or pipelines |
+| `kompile build pipeline-command-generate` | Generate a `build pom-generate` command from a pipeline or server config file |
+| `kompile build clone-build` | Clone and build deeplearning4j from source (handles Git, compilers, cross-compilation) |
+| `kompile build dl4j-build-generate` | Generate a DL4J build output as a tar file with an ND4J backend + dependencies |
+| `kompile build build-nd4j-backend` | Build a custom ND4J/libnd4j backend with selected data types, ops, and optimizations |
+| `kompile build sync-sample` | Regenerate the sample project POM using the current module catalog and FULL preset |
 
 > **Federated CLI:** `kompile model`, `kompile agent`, and `kompile lite` are separate
 > binaries (`kompile-model`, `kompile-agent`, `kompile-lite`) resolved from PATH or
@@ -455,6 +465,18 @@ management needed.
 - `/api/projects/current` — project manifest and component management
 - `/api/setup/status` — setup wizard state and staging server management
 - `/api/fact-sheets` — notebook-style knowledge organization
+- `/api/code-indexer` — semantic code search, indexing, call graphs, entity queries
+- `/api/code-projects` — code project CRUD, per-project indexing, status, fact-sheet generation
+- `/api/guardrails` — guardrail config, list available guardrails, toggle individual rules
+- `/api/evaluation` — evaluation config, evaluator listing, toggle evaluators
+- `/api/experiments` — experiment CRUD, run execution, run comparison, dataset management
+- `/api/kvcache` — KV cache CRUD, stats, checkpoints, prefix cache
+- `/api/vlm/*` — VLM model management, pipeline config, test workflows, orchestration state
+- `/api/sdx` — SameDiff model serving: load, unload, invoke, schema, input templates
+- `/api/backup` — backup lifecycle: trigger, list, download, restore, cleanup, delete
+- `/api/benchmark` — SameDiff benchmark configs, run single/matrix benchmarks, apply optimal configs
+- `/api/process/diagrams` — AI-generated process diagrams, BPMN preview, session management
+- `/api/graph-extraction` — graph extraction config, schema modes, entity/relationship suggestions, presets
 
 **Pluggable modules** — the same binary reshapes behavior based on which modules are on
 the classpath:
@@ -564,9 +586,10 @@ Remote catalogs at GitHub Releases and kompile.ai are checked every 24 hours for
 
 | Category | Models |
 |----------|--------|
-| Dense encoders | BGE base/small/large, BGE-M3 (multilingual, 8K context), Arctic Embed L, E5-base-v2 |
-| Cross-encoder rerankers | MS MARCO MiniLM L-6, MS MARCO MiniLM L-12 |
-| Vision-language | Florence-2 base, Florence-2 large |
+| Dense encoders | BGE base-en-v1.5, Arctic Embed L |
+| Sparse encoders | CosDPR-distil, SPLADE++ (ed, sd) |
+| Cross-encoder rerankers | MS MARCO MiniLM L-6-v2, MS MARCO MiniLM L-12-v2, STSB TinyBERT L-4, mMARCO mMiniLMv2 L12, QNLI DistilRoBERTa |
+| Vision-language | SmolDocling-256M, Donut base, Nougat base |
 
 ---
 
@@ -584,9 +607,22 @@ kompile configure init          # Creates ~/.kompile/ directory tree + default c
 
 kompile configure app           # Interactive 9-section config wizard
 kompile configure chat          # Chat session mode, LLM provider, agent preferences
+kompile configure passthrough   # Inspect CLI agents, prepare MCP usage guidance
 kompile configure mcp           # MCP profile and schema level
 kompile configure enforcer      # Per-project policy rules
 kompile configure judge         # LLM judge mode, model, scoring
+kompile configure code-index    # Guided local code indexing for a source tree
+kompile configure gateway       # Tool gateway rule wizard
+```
+
+### Config management (kompile config)
+
+```bash
+kompile config export           # Export configs + chat provider settings to a zip
+kompile config import           # Import configs from a zip archive
+kompile config archives         # List saved configuration archives
+kompile config app              # Configure kompile-app-main UI settings (wizard, show, set, reset)
+kompile config tool-gateway     # Configure the LLM-based tool gateway rules
 ```
 
 ### Config files
