@@ -58,7 +58,7 @@ public class TokenDecodingStepRunner implements PipelineStepRunner {
         // Attempt to load tokenizer via reflection to avoid hard dependency
         if (tokenizerPath != null) {
             try {
-                Class<?> tokenizerClass = Class.forName("ai.kompile.tokenizers.HuggingFaceTokenizer");
+                Class<?> tokenizerClass = Class.forName("org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer");
                 java.lang.reflect.Method fromFile = tokenizerClass.getMethod("fromFile", String.class);
                 this.tokenizer = fromFile.invoke(null, tokenizerPath);
                 log.info("Loaded HuggingFace tokenizer from: {}", tokenizerPath);

@@ -62,13 +62,13 @@ public class NativeLibraryExtractor {
         // Tokenizers wrapper libraries
         LIBRARY_CONFIGS.add(new LibraryConfig(
                 "tokenizers_wrapper",
-                "/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so",
+                "/org/eclipse/deeplearning4j/tokenizers/lib64/libtokenizers_wrapper.so",
                 "linux", "x86_64"
         ));
 
         LIBRARY_CONFIGS.add(new LibraryConfig(
                 "tokenizers_wrapper",
-                "/ai/kompile/tokenizers/linux-x86_64/libtokenizers_wrapper.so",
+                "/org/eclipse/deeplearning4j/tokenizers/linux-x86_64/libtokenizers_wrapper.so",
                 "linux", "x86_64"
         ));
 

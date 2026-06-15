@@ -28,7 +28,6 @@
 
   <modules>
     <module>kompile-project-store</module>
-    <module>tokenizers-rust</module>
     <module>kompile-model-importers</module>
     <module>kompile-pipelines-framework</module>
     <!-- kompile-app must come before anserini (anserini depends on kompile-model-manager) -->

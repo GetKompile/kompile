@@ -429,7 +429,7 @@
                                 <buildArg>--initialize-at-run-time=java.awt.event,sun.awt,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,sun.awt.X11,sun.awt.X11GraphicsConfig,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.channel.epoll.Epoll</buildArg>
                                 <buildArg>--initialize-at-run-time=org.apache.lucene.util.ScalarQuantizer</buildArg>
-                                <buildArg>--initialize-at-run-time=ai.kompile.presets.TokenizersHelper,ai.kompile.bindings.TokenizersNative</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.tokenizers.presets.TokenizersHelper,org.eclipse.deeplearning4j.tokenizers.bindings.TokenizersNative</buildArg>
                                 <!-- Native-image config directory -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/staging</buildArg>
                                 <!-- Resource includes -->
@@ -446,9 +446,9 @@
                                 <buildArg>-H:IncludeResources=log4j2\.xml</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2-spring\.xml</buildArg>
                                 <buildArg>-H:IncludeResources=.*Log4j2Plugins\.dat$</buildArg>
-                                <buildArg>-H:IncludeResources=ai/kompile/tokenizers/.*\.so</buildArg>
-                                <buildArg>-H:IncludeResources=ai/kompile/tokenizers/.*\.dll</buildArg>
-                                <buildArg>-H:IncludeResources=ai/kompile/tokenizers/.*\.dylib</buildArg>
+                                <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.so</buildArg>
+                                <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.dll</buildArg>
+                                <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.dylib</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.so</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.dll</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.dylib</buildArg>
