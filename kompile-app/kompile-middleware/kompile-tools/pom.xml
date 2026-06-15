@@ -6,7 +6,7 @@
 
     <parent>
         <groupId>ai.kompile</groupId>
-        <artifactId>kompile-app</artifactId>
+        <artifactId>kompile-middleware</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
