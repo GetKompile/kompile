@@ -161,3 +161,20 @@ kompile edit-coordinator agents        # Active agents
 kompile edit-coordinator release --file=path/to/file  # Release a lock
 kompile edit-coordinator clean         # Clean up stale state
 ```
+
+## Related concepts
+
+- **[MCP Integration](../mcp/README.md)** — how agents connect to
+  Kompile's tools via stdio or SSE transport, tool profiles, auto-discovery
+- **[Information Retrieval](information-retrieval.md)** — the retrieval
+  mechanisms agents use through `rag_search`, `knowledge_search`, and
+  `graph_search` MCP tools
+- **[Knowledge Graphs](knowledge-graphs.md)** — the graph system agents
+  query through the `knowledge_graph` MCP tool, including Graph RAG,
+  entity search, and Cypher queries
+- **[Fact Sheets](fact-sheets.md)** — how agents activate and query
+  scoped knowledge partitions
+- **[Code Projects](code-projects.md)** — the code indexing system agents
+  use through `code_search` and `code_graph` MCP tools
+- **[Guardrails and Evaluation](guardrails-and-evaluation.md)** — input/output
+  filters and evaluation harness for agent quality

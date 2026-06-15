@@ -386,3 +386,22 @@ pending notes.
 | Cross-session context | Semantic memory |
 | Finding past conversations | Transcript search |
 | Direct graph exploration | Cypher queries |
+
+## Related concepts
+
+- **[Crawl Jobs](crawl-jobs.md)** — how data enters the system and becomes
+  searchable, including source types, pipeline routing, and adaptive batching
+- **[Knowledge Graphs](knowledge-graphs.md)** — the graph system that
+  powers Graph RAG, including entity extraction, Bayesian networks, graph
+  algorithms, and community detection
+- **[Fact Sheets](fact-sheets.md)** — how active fact sheets scope retrieval
+  and inject curated facts into the context
+- **[Agents](agents.md)** — how agents access retrieval through MCP tools
+  (`rag_search`, `knowledge_search`, `graph_search`, `code_search`,
+  `semantic_memory`, `transcript_search`)
+- **[Guardrails and Evaluation](guardrails-and-evaluation.md)** — input/output
+  filters that wrap the retrieval pipeline, and the evaluation harness that
+  measures retrieval quality
+- **[Configuration](../configuration/README.md)** — `model-roles-config.json`
+  for embedding and reranking models, `feature-flags-config.json` for
+  toggling retrieval features

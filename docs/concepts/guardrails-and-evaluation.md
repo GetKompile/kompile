@@ -116,3 +116,34 @@ kompile perf recommend                 # Get optimization recommendations
 kompile perf config                    # Configure settings
 kompile perf reset                     # Reset collected data
 ```
+
+## When to use guardrails
+
+Guardrails add latency to every query. Enable them selectively:
+
+- **Always on for external users**: prompt injection, jailbreak, PII
+- **On for regulated domains**: business rules, copyright, competitor mention
+- **On for production RAG**: hallucination, relevancy
+- **Off for internal dev use**: most guardrails add overhead you don't need
+
+## When to use evaluation
+
+Run evaluations when you:
+- Change the embedding model or chunking strategy
+- Modify query transformation or reranking settings
+- Add or remove data sources
+- Want to compare LLM providers
+
+The evaluation harness catches regressions that manual testing misses.
+Schedule nightly runs with `kompile app schedule` for continuous quality
+monitoring.
+
+## Related concepts
+
+- **[Information Retrieval](information-retrieval.md)** — guardrails wrap
+  the retrieval pipeline, evaluation measures its quality
+- **[Agents](agents.md)** — the policy enforcer provides agent-specific
+  rule enforcement beyond guardrails; evaluation suites measure agent quality
+- **[Configuration](../configuration/README.md)** — `feature-flags-config.json`
+  toggles guardrails globally; `tool-gateway-config.json` controls the
+  tool gateway

@@ -101,3 +101,23 @@ Code Projects screen in the web UI. Register repositories, trigger indexing, bro
 ## MCP tools
 
 Code search is exposed as MCP tools (`code_search`, `code_graph`, `local_code_index`) so agents can query your codebase during chat sessions.
+
+## When to use code projects
+
+Use code projects when agents need structural understanding of a codebase:
+- Finding where a function is defined and who calls it
+- Impact analysis before refactoring
+- Understanding dependencies between modules
+- Navigating unfamiliar code during review
+
+Code search works independently of document search. An agent can call
+`code_search` to find a function and `rag_search` to find documentation
+about that function — both from the same MCP tool set.
+
+## Related concepts
+
+- **[Information Retrieval](information-retrieval.md)** — code search is
+  one of several retrieval mechanisms, alongside vector search and Graph RAG
+- **[Agents](agents.md)** — agents access code search through MCP tools
+- **[MCP Integration](../mcp/README.md)** — tool profiles control which
+  code tools are exposed to agents
