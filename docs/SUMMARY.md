@@ -18,6 +18,7 @@
   * [Skills and Prompt Templates](concepts/skills-and-templates.md)
   * [Agents](concepts/agents.md)
   * [Code Projects](concepts/code-projects.md)
+  * [Information Retrieval](concepts/information-retrieval.md)
   * [Guardrails and Evaluation](concepts/guardrails-and-evaluation.md)
 
 ## CLI Reference
