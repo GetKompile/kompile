@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-data</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-loaders</artifactId>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>kompile-app-loaders-orchestrator</module>
+        <module>kompile-loader-tika</module>
+        <module>kompile-loader-microsoft</module>
+        <module>kompile-loader-mail</module>
+        <module>kompile-loader-slack</module>
+        <module>kompile-loader-pdf-extended</module>
+        <module>kompile-loader-pdf-tables</module>
+        <module>kompile-loader-web</module>
+        <module>kompile-loader-gdrive</module>
+        <module>kompile-loader-onedrive</module>
+        <module>kompile-loader-email-imap</module>
+        <module>kompile-loader-email-inbox</module>
+        <module>kompile-loader-excel</module>
+        <module>kompile-loader-audio</module>
+        <module>kompile-loader-discord</module>
+        <module>kompile-loader-gdocs</module>
+        <module>kompile-loader-gmail</module>
+        <module>kompile-loader-google-workspace</module>
+    </modules>
+</project>
