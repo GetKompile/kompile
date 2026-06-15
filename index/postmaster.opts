@@ -1,1 +1,0 @@
-/home/linuxbrew/.linuxbrew/Cellar/postgresql@14/14.18/bin/postgres "-D" "./index"
