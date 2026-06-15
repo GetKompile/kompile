@@ -25,7 +25,7 @@ import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Repository;
+import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.io.IOException;
@@ -41,7 +41,7 @@ import java.util.stream.Stream;
  * File-based implementation of PromptTemplateRepository.
  * Stores prompt templates as JSON files in a configurable directory.
  */
-@Repository
+@Component
 public class FileBasedPromptTemplateRepository implements PromptTemplateRepository {
 
     private static final Logger logger = LoggerFactory.getLogger(FileBasedPromptTemplateRepository.class);

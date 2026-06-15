@@ -16,6 +16,7 @@
 
 package ai.kompile.app.ingest.service;
 
+import ai.kompile.app.config.PrimaryDataSourceConfig;
 import ai.kompile.app.ingest.domain.IndexingJobHistory;
 import ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason;
 import ai.kompile.app.ingest.domain.IndexingJobHistory.JobStatus;
@@ -55,8 +56,14 @@ import java.util.stream.Stream;
 @ConditionalOnProperty(name = "kompile.ingest.eventlog.enabled", havingValue = "true", matchIfMissing = true)
 public class IndexingJobHistoryService {
 
-    private final IndexingJobHistoryRepository repository;
-    private final JobLogService jobLogService;
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected IndexingJobHistoryService() {}
+
+
+    @Autowired
+    private IndexingJobHistoryRepository repository;
+    @Autowired(required = false)
+    private JobLogService jobLogService;
 
     @Value("${kompile.ingest.job-history.retention-days:30}")
     private int retentionDays;
@@ -80,7 +87,7 @@ public class IndexingJobHistoryService {
      * These are jobs that were interrupted by a server restart or crash.
      */
     @PostConstruct
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void cleanupOrphanedJobsOnStartup() {
         try {
             List<IndexingJobHistory> orphanedJobs = repository.findActiveJobs();
@@ -125,7 +132,7 @@ public class IndexingJobHistoryService {
      * Create a new job history entry when a job is queued.
      * Uses optimistic approach: try to save and handle unique constraint violation.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public IndexingJobHistory createJob(String taskId, String fileName) {
         // First, try to find existing job to avoid unnecessary save attempts
         Optional<IndexingJobHistory> existing = repository.findByTaskId(taskId);
@@ -151,7 +158,7 @@ public class IndexingJobHistoryService {
      * Create a job with additional environment info.
      * Uses optimistic approach: try to save and handle unique constraint violation.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public IndexingJobHistory createJobWithEnvironment(String taskId, String fileName,
             String nd4jEnvironmentJson,
             Long fileSizeBytes,
@@ -191,7 +198,7 @@ public class IndexingJobHistoryService {
     /**
      * Mark a job as running.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void markJobRunning(String taskId) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.markRunning();
@@ -203,7 +210,7 @@ public class IndexingJobHistoryService {
     /**
      * Update job phase and progress.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void updateJobProgress(String taskId, IngestPhase phase, int progressPercent) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.updatePhase(phase, progressPercent);
@@ -214,7 +221,7 @@ public class IndexingJobHistoryService {
     /**
      * Update job phase timing.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void updatePhaseTiming(String taskId, IngestPhase phase, long durationMs) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             switch (phase) {
@@ -231,7 +238,7 @@ public class IndexingJobHistoryService {
     /**
      * Update job statistics.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void updateJobStats(String taskId, Integer documentsLoaded, Integer chunksCreated,
             Integer chunksEmbedded, Integer documentsIndexed) {
         repository.findByTaskId(taskId).ifPresent(job -> {
@@ -243,7 +250,7 @@ public class IndexingJobHistoryService {
     /**
      * Update processing parameters used.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void updateJobParameters(String taskId, String loaderUsed, String chunkerUsed,
             String embeddingModelUsed, String indexerUsed,
             Integer chunkSize, Integer chunkOverlap,
@@ -267,7 +274,7 @@ public class IndexingJobHistoryService {
     /**
      * Update memory usage.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void updateMemoryUsage(String taskId, double currentUsagePercent) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.updatePeakMemory(currentUsagePercent);
@@ -279,7 +286,7 @@ public class IndexingJobHistoryService {
      * Mark a job as completed.
      * Also archives the job logs if archiving is enabled.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void markJobCompleted(String taskId) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.markCompleted();
@@ -305,7 +312,7 @@ public class IndexingJobHistoryService {
      * Mark a job as failed.
      * Also archives the job logs if archiving is enabled.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void markJobFailed(String taskId, IngestPhase failedPhase, String errorMessage,
             Throwable exception, FailureReason reason) {
         repository.findByTaskId(taskId).ifPresent(job -> {
@@ -331,7 +338,7 @@ public class IndexingJobHistoryService {
     /**
      * Mark a job as cancelled.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void markJobCancelled(String taskId, IngestPhase currentPhase, String reason) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.markCancelled(currentPhase, reason);
@@ -343,7 +350,7 @@ public class IndexingJobHistoryService {
     /**
      * Mark a job as killed due to memory pressure.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void markJobMemoryKilled(String taskId, IngestPhase currentPhase, double memoryPercent) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.markMemoryKilled(currentPhase, memoryPercent);
@@ -355,7 +362,7 @@ public class IndexingJobHistoryService {
     /**
      * Set index path for a job.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void setIndexPath(String taskId, String indexPath) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.setIndexPath(indexPath);
@@ -366,7 +373,7 @@ public class IndexingJobHistoryService {
     /**
      * Set embedding dimension.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void setEmbeddingDimension(String taskId, int dimension) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.setEmbeddingDimension(dimension);
@@ -383,7 +390,7 @@ public class IndexingJobHistoryService {
      * @param checkpointPath Path to the checkpoint file
      * @param phase The ingest phase at which the checkpoint was created
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordCheckpointPath(String taskId, String checkpointPath, IngestPhase phase) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.setCheckpointPath(checkpointPath);
@@ -399,7 +406,7 @@ public class IndexingJobHistoryService {
      * @param newTaskId The task ID of the new (resumed) job
      * @param originalTaskId The task ID of the original job that was resumed
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void setResumedFromTaskId(String newTaskId, String originalTaskId) {
         repository.findByTaskId(newTaskId).ifPresent(job -> {
             job.setResumedFromTaskId(originalTaskId);
@@ -412,7 +419,7 @@ public class IndexingJobHistoryService {
      * List all jobs that have a checkpoint and can be resumed.
      * Returns jobs that are in FAILED, MEMORY_KILLED, CANCELLED, or PAUSED status with a checkpoint.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> listResumableJobs() {
         return repository.findAll().stream()
                 .filter(IndexingJobHistory::isResumable)
@@ -430,7 +437,7 @@ public class IndexingJobHistoryService {
      * @param batchSize Initial batch size
      * @param threadCount Initial thread count
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void initializeRestartTracking(String taskId, int maxAttempts, long heapBytes, int batchSize, int threadCount) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.initializeRestartTracking(maxAttempts, heapBytes, batchSize, threadCount);
@@ -450,7 +457,7 @@ public class IndexingJobHistoryService {
      * @param newBatchSize New batch size after adjustment
      * @param newThreadCount New thread count after adjustment
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordRestartAttempt(String taskId, int attemptNumber, String reason,
                                       long newHeapBytes, int newBatchSize, int newThreadCount) {
         repository.findByTaskId(taskId).ifPresent(job -> {
@@ -466,7 +473,7 @@ public class IndexingJobHistoryService {
      *
      * @param taskId Task identifier
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void markRestartSuccessful(String taskId) {
         repository.findByTaskId(taskId).ifPresent(job -> {
             job.markRestartSuccessful();
@@ -490,7 +497,7 @@ public class IndexingJobHistoryService {
      * @param reason Restart reason (null to not update)
      * @param recoveredAfterRestart Whether recovered after restart (null to not update)
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void updateRestartInfo(String taskId,
                                    Integer restartAttempts,
                                    Integer maxRestartAttempts,
@@ -536,7 +543,7 @@ public class IndexingJobHistoryService {
     /**
      * Get jobs that recovered after restart.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getJobsRecoveredAfterRestart() {
         return repository.findByRecoveredAfterRestartTrue();
     }
@@ -544,7 +551,7 @@ public class IndexingJobHistoryService {
     /**
      * Get jobs with restart attempts.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getJobsWithRestarts() {
         return repository.findByRestartAttemptsGreaterThan(0);
     }
@@ -554,7 +561,7 @@ public class IndexingJobHistoryService {
     /**
      * Get a job by task ID.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Optional<IndexingJobHistory> getJob(String taskId) {
         return repository.findByTaskId(taskId);
     }
@@ -562,7 +569,7 @@ public class IndexingJobHistoryService {
     /**
      * Get all jobs with pagination.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<IndexingJobHistory> getAllJobs(int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "startTime"));
         return repository.findAll(pageable);
@@ -571,7 +578,7 @@ public class IndexingJobHistoryService {
     /**
      * Get jobs by status.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getJobsByStatus(JobStatus status) {
         return repository.findByStatusOrderByStartTimeDesc(status);
     }
@@ -579,7 +586,7 @@ public class IndexingJobHistoryService {
     /**
      * Get jobs by status within a time range.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getJobsByStatus(JobStatus status, int hours) {
         Instant since = Instant.now().minus(Duration.ofHours(hours));
         return repository.findByStatusAndStartTimeAfter(status, since);
@@ -588,7 +595,7 @@ public class IndexingJobHistoryService {
     /**
      * Get jobs by status with pagination.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<IndexingJobHistory> getJobsByStatus(JobStatus status, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "startTime"));
         return repository.findByStatus(status, pageable);
@@ -597,7 +604,7 @@ public class IndexingJobHistoryService {
     /**
      * Get recent jobs (last N hours).
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getRecentJobs(int hours) {
         Instant since = Instant.now().minus(Duration.ofHours(hours));
         return repository.findRecentJobs(since);
@@ -606,7 +613,7 @@ public class IndexingJobHistoryService {
     /**
      * Get recent jobs with pagination.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<IndexingJobHistory> getRecentJobs(int hours, int page, int size) {
         Instant since = Instant.now().minus(Duration.ofHours(hours));
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "startTime"));
@@ -616,7 +623,7 @@ public class IndexingJobHistoryService {
     /**
      * Get jobs in a time range.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getJobsBetween(Instant start, Instant end) {
         return repository.findByStartTimeBetweenOrderByStartTimeDesc(start, end);
     }
@@ -624,7 +631,7 @@ public class IndexingJobHistoryService {
     /**
      * Get failed jobs.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getFailedJobs() {
         List<IndexingJobHistory> failed = new ArrayList<>();
         failed.addAll(repository.findByStatusOrderByStartTimeDesc(JobStatus.FAILED));
@@ -636,7 +643,7 @@ public class IndexingJobHistoryService {
     /**
      * Get jobs by failure reason.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getJobsByFailureReason(FailureReason reason) {
         return repository.findByFailureReasonOrderByStartTimeDesc(reason);
     }
@@ -644,7 +651,7 @@ public class IndexingJobHistoryService {
     /**
      * Get currently active jobs.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getActiveJobs() {
         return repository.findActiveJobs();
     }
@@ -652,7 +659,7 @@ public class IndexingJobHistoryService {
     /**
      * Get the most recent N jobs.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getMostRecentJobs(int limit) {
         return repository.findTop100ByOrderByStartTimeDesc().stream()
                 .limit(limit)
@@ -662,7 +669,7 @@ public class IndexingJobHistoryService {
     /**
      * Search jobs by file name pattern.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> searchByFileName(String pattern) {
         return repository.findByFileNamePattern("%" + pattern + "%");
     }
@@ -670,7 +677,7 @@ public class IndexingJobHistoryService {
     /**
      * Get jobs with high memory usage.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getHighMemoryJobs(double threshold) {
         return repository.findJobsWithHighMemoryUsage(threshold);
     }
@@ -678,7 +685,7 @@ public class IndexingJobHistoryService {
     /**
      * Get long-running jobs.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IndexingJobHistory> getLongRunningJobs(long thresholdMs) {
         return repository.findLongRunningJobs(thresholdMs);
     }
@@ -688,7 +695,7 @@ public class IndexingJobHistoryService {
     /**
      * Get job statistics summary.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Map<String, Object> getJobStatistics(int lastHours) {
         Instant start = Instant.now().minus(Duration.ofHours(lastHours));
         Instant end = Instant.now();
@@ -762,7 +769,7 @@ public class IndexingJobHistoryService {
     /**
      * Get failure rate for a time period.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public double getFailureRate(int lastHours) {
         long completed = repository.countByStatus(JobStatus.COMPLETED);
         long failed = repository.countByStatus(JobStatus.FAILED);
@@ -780,7 +787,7 @@ public class IndexingJobHistoryService {
      * Runs daily at 3 AM.
      */
     @Scheduled(cron = "0 0 3 * * ?")
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void cleanupOldJobs() {
         // 1. Time-based retention
         Instant cutoff = Instant.now().minus(Duration.ofDays(retentionDays));
@@ -882,7 +889,7 @@ public class IndexingJobHistoryService {
     /**
      * Force cleanup of all jobs older than specified days.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public int forceCleanup(int days) {
         Instant cutoff = Instant.now().minus(Duration.ofDays(days));
         int deleted = repository.deleteJobsOlderThan(cutoff);
@@ -893,7 +900,7 @@ public class IndexingJobHistoryService {
     /**
      * Delete a specific job history.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public boolean deleteJob(String taskId) {
         Optional<IndexingJobHistory> job = repository.findByTaskId(taskId);
         if (job.isPresent()) {

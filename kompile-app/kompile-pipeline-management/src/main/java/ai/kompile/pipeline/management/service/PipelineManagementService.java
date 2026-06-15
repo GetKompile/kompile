@@ -485,7 +485,8 @@ public class PipelineManagementService {
             if (Files.exists(file)) {
                 modified = Files.getLastModifiedTime(file).toInstant();
             }
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            log.warn("Could not read last modified time for pipeline file {}: {}", file, e.getMessage());
         }
 
         return PipelineSummaryDto.builder()

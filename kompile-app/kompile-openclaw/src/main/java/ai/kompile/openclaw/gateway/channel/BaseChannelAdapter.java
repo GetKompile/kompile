@@ -16,113 +16,24 @@
 package ai.kompile.openclaw.gateway.channel;
 
 import ai.kompile.openclaw.agent.OpenClawAgentService;
-import ai.kompile.openclaw.model.OpenClawRequest;
-import ai.kompile.openclaw.model.OpenClawResponse;
-import lombok.extern.slf4j.Slf4j;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+/**
+ * OpenClaw-specific base channel adapter.
+ * Extends the shared {@link ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter}
+ * and wires in the OpenClaw agent service as the executor.
+ *
+ * @deprecated New channel adapters should extend
+ *   {@link ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter} directly
+ *   and accept an {@link ai.kompile.gateway.core.service.AgentExecutor}.
+ */
+public abstract class BaseChannelAdapter
+        extends ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter {
 
-@Slf4j
-public abstract class BaseChannelAdapter implements ChannelAdapter {
-
-    protected final OpenClawAgentService agentService;
-    protected final Map<String, AdapterConfig> channelConfigs = new ConcurrentHashMap<>();
-    protected volatile boolean running = false;
-
+    /**
+     * Convenience constructor that adapts {@link OpenClawAgentService} (which implements
+     * {@link ai.kompile.gateway.core.service.AgentExecutor}) into the shared base class.
+     */
     protected BaseChannelAdapter(OpenClawAgentService agentService) {
-        this.agentService = agentService;
-    }
-
-    @Override
-    public void start() {
-        if (running) {
-            log.warn("{} adapter already running", getChannelName());
-            return;
-        }
-        running = true;
-        doStart();
-        log.info("{} adapter started", getChannelName());
-    }
-
-    @Override
-    public void stop() {
-        if (!running) {
-            return;
-        }
-        running = false;
-        doStop();
-        log.info("{} adapter stopped", getChannelName());
-    }
-
-    @Override
-    public boolean isRunning() {
-        return running;
-    }
-
-    @Override
-    public void updateConfig(AdapterConfig config) {
-        channelConfigs.put(config.channelId(), config);
-        log.info("Updated config for channel: {}", config.channelId());
-    }
-
-    protected abstract void doStart();
-
-    protected abstract void doStop();
-
-    protected MessageHandler createAgentHandler() {
-        return (message, responder) -> {
-            AdapterConfig config = channelConfigs.get(message.channelId());
-            if (config == null || !config.enabled()) {
-                log.warn("No config or disabled for channel: {}", message.channelId());
-                return;
-            }
-
-            String sessionKey = buildSessionKey(config, message);
-            String agentId = config.agentId();
-
-            responder.typing();
-
-            try {
-                OpenClawRequest request = OpenClawRequest.builder()
-                        .agentId(agentId)
-                        .sessionKey(sessionKey)
-                        .message(truncateMessage(message.content(), config.maxMessageLength()))
-                        .metadata(Map.of(
-                                "channel", getChannelName(),
-                                "userId", message.userId(),
-                                "userName", message.userName()
-                        ))
-                        .build();
-
-                OpenClawResponse response = agentService.execute(request);
-
-                if (response.isSuccess()) {
-                    responder.reply(OutgoingMessage.reply(response.getResponse(), message.messageId()));
-                } else {
-                    responder.replyError(response.getError() != null ? response.getError() : "An error occurred");
-                }
-
-            } catch (Exception e) {
-                log.error("Error processing message from {}: {}", getChannelName(), message.messageId(), e);
-                responder.replyError("Internal error processing your request");
-            }
-        };
-    }
-
-    protected String buildSessionKey(AdapterConfig config, IncomingMessage message) {
-        String prefix = config.sessionKeyPrefix();
-        if (prefix == null || prefix.isEmpty()) {
-            prefix = config.channelId() + ":";
-        }
-        return prefix + message.userId();
-    }
-
-    protected String truncateMessage(String content, int maxLength) {
-        if (content == null) return "";
-        if (maxLength <= 0 || content.length() <= maxLength) {
-            return content;
-        }
-        return content.substring(0, maxLength) + "...";
+        super(agentService);
     }
 }

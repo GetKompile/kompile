@@ -133,7 +133,7 @@ public class CliAgentLanguageModelImpl implements LanguageModel {
 
         try {
             List<String> cmdLine = buildCommandLine(command, prompt);
-            log.debug("Executing CLI agent: {}", String.join(" ", cmdLine.subList(0, Math.min(3, cmdLine.size()))) + " ...");
+            log.debug("Executing CLI agent: {} ...", String.join(" ", cmdLine.subList(0, Math.min(3, cmdLine.size()))));
 
             ProcessBuilder pb = new ProcessBuilder(cmdLine);
             pb.redirectErrorStream(true);

@@ -20,6 +20,8 @@ import ai.kompile.modelmanager.vlm.VlmModelComponent;
 import ai.kompile.modelmanager.vlm.VlmModelSet;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.*;
 
@@ -48,6 +50,8 @@ import java.util.*;
  * @author Kompile Inc.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@Getter
+@Setter
 public class VlmCustomModelSet {
 
     /**
@@ -65,7 +69,9 @@ public class VlmCustomModelSet {
     private ModelSource source;
     private String huggingFaceRepo;
     private String localPath;
+    @Setter(lombok.AccessLevel.NONE)
     private List<VlmModelComponentConfig> components;
+    @Setter(lombok.AccessLevel.NONE)
     private Map<String, Object> pipelineConfig;
     private boolean isBuiltin;
     private long createdAt;
@@ -136,94 +142,14 @@ public class VlmCustomModelSet {
         return builder.build();
     }
 
-    // Getters and setters
-
-    public String getSetId() {
-        return setId;
-    }
-
-    public void setSetId(String setId) {
-        this.setId = setId;
-    }
-
-    public String getDisplayName() {
-        return displayName;
-    }
-
-    public void setDisplayName(String displayName) {
-        this.displayName = displayName;
-    }
-
-    public String getDescription() {
-        return description;
-    }
-
-    public void setDescription(String description) {
-        this.description = description;
-    }
-
-    public ModelSource getSource() {
-        return source;
-    }
-
-    public void setSource(ModelSource source) {
-        this.source = source;
-    }
-
-    public String getHuggingFaceRepo() {
-        return huggingFaceRepo;
-    }
-
-    public void setHuggingFaceRepo(String huggingFaceRepo) {
-        this.huggingFaceRepo = huggingFaceRepo;
-    }
-
-    public String getLocalPath() {
-        return localPath;
-    }
-
-    public void setLocalPath(String localPath) {
-        this.localPath = localPath;
-    }
-
-    public List<VlmModelComponentConfig> getComponents() {
-        return components;
-    }
+    // Custom setters with null-safety
 
     public void setComponents(List<VlmModelComponentConfig> components) {
         this.components = components != null ? components : new ArrayList<>();
     }
 
-    public Map<String, Object> getPipelineConfig() {
-        return pipelineConfig;
-    }
-
     public void setPipelineConfig(Map<String, Object> pipelineConfig) {
         this.pipelineConfig = pipelineConfig != null ? pipelineConfig : new LinkedHashMap<>();
-    }
-
-    public boolean isBuiltin() {
-        return isBuiltin;
-    }
-
-    public void setBuiltin(boolean builtin) {
-        isBuiltin = builtin;
-    }
-
-    public long getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setCreatedAt(long createdAt) {
-        this.createdAt = createdAt;
-    }
-
-    public long getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(long updatedAt) {
-        this.updatedAt = updatedAt;
     }
 
     /**
@@ -349,6 +275,8 @@ public class VlmCustomModelSet {
      * Configuration for a single model component.
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
+    @Getter
+    @Setter
     public static class VlmModelComponentConfig {
         private String componentKey;
         private String fileName;
@@ -415,72 +343,6 @@ public class VlmCustomModelSet {
             }
 
             return builder.build();
-        }
-
-        // Getters and setters
-
-        public String getComponentKey() {
-            return componentKey;
-        }
-
-        public void setComponentKey(String componentKey) {
-            this.componentKey = componentKey;
-        }
-
-        public String getFileName() {
-            return fileName;
-        }
-
-        public void setFileName(String fileName) {
-            this.fileName = fileName;
-        }
-
-        public String getDownloadUrl() {
-            return downloadUrl;
-        }
-
-        public void setDownloadUrl(String downloadUrl) {
-            this.downloadUrl = downloadUrl;
-        }
-
-        public String getPipelineStage() {
-            return pipelineStage;
-        }
-
-        public void setPipelineStage(String pipelineStage) {
-            this.pipelineStage = pipelineStage;
-        }
-
-        public String getDescription() {
-            return description;
-        }
-
-        public void setDescription(String description) {
-            this.description = description;
-        }
-
-        public String getInputShape() {
-            return inputShape;
-        }
-
-        public void setInputShape(String inputShape) {
-            this.inputShape = inputShape;
-        }
-
-        public String getOutputShape() {
-            return outputShape;
-        }
-
-        public void setOutputShape(String outputShape) {
-            this.outputShape = outputShape;
-        }
-
-        public long getEstimatedSizeBytes() {
-            return estimatedSizeBytes;
-        }
-
-        public void setEstimatedSizeBytes(long estimatedSizeBytes) {
-            this.estimatedSizeBytes = estimatedSizeBytes;
         }
 
         public static ComponentBuilder builder() {

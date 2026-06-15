@@ -59,6 +59,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SourceDocumentStorageService {
 
     private static final Logger logger = LoggerFactory.getLogger(SourceDocumentStorageService.class);
+    private static final int BUFFER_SIZE = 8192; // SHA-256 read buffer
 
     private final Path storageRoot;
     private final boolean enabled;
@@ -512,7 +513,7 @@ public class SourceDocumentStorageService {
      */
     public static String calculateChecksum(Path filePath) throws IOException, NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] buffer = new byte[8192];
+        byte[] buffer = new byte[BUFFER_SIZE];
         int bytesRead;
 
         try (InputStream is = Files.newInputStream(filePath)) {

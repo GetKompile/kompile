@@ -51,7 +51,7 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
@@ -190,7 +190,7 @@ public final class IndexCollection extends AbstractIndexer {
       this.whitelistDocids = null;
     }
 
-    final Directory dir = FSDirectory.open(Paths.get(args.index));
+    final Directory dir = new NIOFSDirectory(Paths.get(args.index));
     final IndexWriterConfig config = new IndexWriterConfig(getAnalyzer());
 
     if (args.bm25Accurate) {

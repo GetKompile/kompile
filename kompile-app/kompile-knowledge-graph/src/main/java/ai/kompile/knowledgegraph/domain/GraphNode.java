@@ -38,7 +38,8 @@ import java.util.UUID;
     @Index(name = "idx_node_parent", columnList = "parent_id"),
     @Index(name = "idx_node_source", columnList = "source_id"),
     @Index(name = "idx_node_fact_sheet", columnList = "fact_sheet_id"),
-    @Index(name = "idx_node_fact_sheet_type", columnList = "fact_sheet_id, nodeType")
+    @Index(name = "idx_node_fact_sheet_type", columnList = "fact_sheet_id, nodeType"),
+    @Index(name = "idx_node_occurred_at", columnList = "occurred_at")
 })
 @Data
 @Builder
@@ -172,6 +173,53 @@ public class GraphNode {
      */
     @Column(name = "named_graph_id", length = 255)
     private String namedGraphId;
+
+    /**
+     * Whether this node has been soft-deleted (marked stale).
+     */
+    @Column
+    @Builder.Default
+    private Boolean stale = false;
+
+    /**
+     * When this node was marked stale.
+     */
+    @Column(name = "stale_at")
+    private LocalDateTime staleAt;
+
+    /**
+     * Whether a user has pinned this node (preventing automatic pruning).
+     */
+    @Column(name = "user_pinned")
+    @Builder.Default
+    private Boolean userPinned = false;
+
+    /**
+     * When this node expires (for TTL-based sweeping).
+     */
+    @Column(name = "valid_until")
+    private LocalDateTime validUntil;
+
+    /**
+     * When this node was last verified as still valid.
+     */
+    @Column(name = "last_verified_at")
+    private LocalDateTime lastVerifiedAt;
+
+    /**
+     * When this node was first observed in the source.
+     */
+    @Column(name = "observed_at")
+    private LocalDateTime observedAt;
+
+    /**
+     * When the real-world event represented by this node occurred.
+     * For example: email sent time, document creation date, commit timestamp,
+     * Google Docs creation time. Distinct from createdAt (DB insertion)
+     * and observedAt (when first seen during crawl).
+     */
+    @Column(name = "occurred_at")
+    private LocalDateTime occurredAt;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // KNOWLEDGE GRAPH EMBEDDINGS

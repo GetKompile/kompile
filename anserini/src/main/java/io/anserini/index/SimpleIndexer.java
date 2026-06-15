@@ -47,7 +47,7 @@ import org.apache.lucene.index.ConcurrentMergeScheduler;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 
@@ -125,7 +125,7 @@ public class SimpleIndexer {
     generator = (LuceneDocumentGenerator) generatorClass.getDeclaredConstructor(Args.class).newInstance(args);
     analyzer = getAnalyzer(args);
 
-    final Directory dir = FSDirectory.open(this.indexPath);
+    final Directory dir = new NIOFSDirectory(this.indexPath);
     final IndexWriterConfig config = new IndexWriterConfig(analyzer);
 
     config.setOpenMode(args.append ? IndexWriterConfig.OpenMode.CREATE_OR_APPEND : IndexWriterConfig.OpenMode.CREATE);

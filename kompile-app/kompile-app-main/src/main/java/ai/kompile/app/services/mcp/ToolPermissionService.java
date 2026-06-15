@@ -25,8 +25,8 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Service for managing tool-level permissions.
@@ -52,10 +52,10 @@ public class ToolPermissionService {
         private PermissionLevel defaultPermission = PermissionLevel.ALLOW;
 
         @JsonProperty
-        private Map<String, PermissionLevel> categoryRules = new HashMap<>();
+        private Map<String, PermissionLevel> categoryRules = new ConcurrentHashMap<>();
 
         @JsonProperty
-        private Map<String, PermissionLevel> toolRules = new HashMap<>();
+        private Map<String, PermissionLevel> toolRules = new ConcurrentHashMap<>();
 
         public PermissionLevel getDefaultPermission() { return defaultPermission; }
         public void setDefaultPermission(PermissionLevel defaultPermission) { this.defaultPermission = defaultPermission; }

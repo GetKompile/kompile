@@ -84,7 +84,7 @@ public class SameDiffEmbeddingModelImpl implements EmbeddingModel {
                 this.sameDiff = null;
             }
         } catch (Exception e) {
-            log.error("Failed to load SameDiff model from URI: " + properties.getModelUri(), e);
+            log.error("Failed to load SameDiff model from URI: {}", properties.getModelUri(), e);
             this.sameDiff = null;
         }
     }
@@ -128,6 +128,10 @@ public class SameDiffEmbeddingModelImpl implements EmbeddingModel {
     @Override
     public int dimensions() {
         if(dimensions < 0) {
+            if (this.sameDiff == null) {
+                log.warn("Cannot determine dimensions: SameDiff model is not loaded.");
+                return -1;
+            }
             // Evaluate to get dimensions, then close the array to prevent memory leak
             INDArray evalArray = this.sameDiff.getVariable(outputTensorName).eval();
             try {
@@ -192,7 +196,7 @@ public class SameDiffEmbeddingModelImpl implements EmbeddingModel {
             return result;
 
         } catch (Exception e) {
-            log.error("Error during SameDiff embedding generation for text: '" + text + "'", e);
+            log.error("Error during SameDiff embedding generation for text: '{}'", text, e);
             // Close result if we created it before the exception
             if (result != null && !result.wasClosed()) {
                 try {

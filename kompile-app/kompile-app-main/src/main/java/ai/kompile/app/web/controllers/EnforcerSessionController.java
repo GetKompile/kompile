@@ -26,6 +26,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -51,6 +53,7 @@ import java.util.UUID;
 @RequestMapping("/api/enforcer")
 public class EnforcerSessionController {
 
+    private static final Logger log = LoggerFactory.getLogger(EnforcerSessionController.class);
     private static final String CONFIG_FILENAME = "enforcer-config.json";
     private static final ObjectMapper CONFIG_MAPPER = new ObjectMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
@@ -233,7 +236,9 @@ public class EnforcerSessionController {
                         .name("error")
                         .data(Map.of("message", "Session not found: " + sessionId)));
                 errorEmitter.complete();
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("Failed to send session-not-found error event for {}: {}", sessionId, e.getMessage());
+            }
             return errorEmitter;
         }
         return emitter;

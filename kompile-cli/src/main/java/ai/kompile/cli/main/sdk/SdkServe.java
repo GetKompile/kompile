@@ -101,7 +101,11 @@ public class SdkServe implements Callable<Integer> {
 
         Runtime.getRuntime().addShutdownHook(new Thread(process::destroy));
 
-        return process.waitFor();
+        if (!process.waitFor(3600, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            return 1;
+        }
+        return process.exitValue();
     }
 
     private File findShadedJar(String kompileHome) {

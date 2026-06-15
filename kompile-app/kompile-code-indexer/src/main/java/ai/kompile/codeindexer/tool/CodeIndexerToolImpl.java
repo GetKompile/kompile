@@ -36,13 +36,17 @@ import java.util.stream.Collectors;
 @Component
 public class CodeIndexerToolImpl {
 
-    private final CodebaseIndexer indexer;
-    private final CodeSearchService searchService;
-    private final LanguageRegistry languageRegistry;
-    private final CodeGraphBuilder graphBuilder;
-    private final CodeEntityRepository entityRepository;
-    private final CodeRelationRepository relationRepository;
-    private final IndexedDirectoryRepository directoryRepository;
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected CodeIndexerToolImpl() {}
+
+
+    private CodebaseIndexer indexer;
+    private CodeSearchService searchService;
+    private LanguageRegistry languageRegistry;
+    private CodeGraphBuilder graphBuilder;
+    private CodeEntityRepository entityRepository;
+    private CodeRelationRepository relationRepository;
+    private IndexedDirectoryRepository directoryRepository;
 
     @Autowired
     public CodeIndexerToolImpl(CodebaseIndexer indexer,

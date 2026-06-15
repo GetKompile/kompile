@@ -16,6 +16,9 @@
 
 package ai.kompile.core.agent;
 
+import lombok.Getter;
+import lombok.Setter;
+
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -27,6 +30,8 @@ import java.util.UUID;
 /**
  * Tracks the status of an agent process.
  */
+@Getter
+@Setter
 public class ProcessStatus {
 
     private final String id;
@@ -39,10 +44,16 @@ public class ProcessStatus {
     private List<String> commandArgs;
     private int exitCode;
     private String errorMessage;
+    @Setter(lombok.AccessLevel.NONE)
     private int linesReceived;
+    @Setter(lombok.AccessLevel.NONE)
     private int chunksStreamed;
+    @Setter(lombok.AccessLevel.NONE)
     private long bytesReceived;
+    @Setter(lombok.AccessLevel.NONE)
     private List<String> modifiedFiles;
+    @Setter(lombok.AccessLevel.NONE)
+    @Getter(lombok.AccessLevel.NONE)
     private List<String> recentOutput;
     private Map<String, Object> metadata;
 
@@ -106,102 +117,9 @@ public class ProcessStatus {
                state == ProcessState.STREAMING;
     }
 
-    // Getters and Setters
-
-    public String getId() {
-        return id;
-    }
-
-    public String getAgentName() {
-        return agentName;
-    }
-
-    public LocalDateTime getStartTime() {
-        return startTime;
-    }
-
-    public LocalDateTime getEndTime() {
-        return endTime;
-    }
-
-    public void setEndTime(LocalDateTime endTime) {
-        this.endTime = endTime;
-    }
-
-    public ProcessState getState() {
-        return state;
-    }
-
-    public void setState(ProcessState state) {
-        this.state = state;
-    }
-
-    public Long getPid() {
-        return pid;
-    }
-
-    public void setPid(Long pid) {
-        this.pid = pid;
-    }
-
-    public String getCommand() {
-        return command;
-    }
-
-    public void setCommand(String command) {
-        this.command = command;
-    }
-
-    public List<String> getCommandArgs() {
-        return commandArgs;
-    }
-
-    public void setCommandArgs(List<String> commandArgs) {
-        this.commandArgs = commandArgs;
-    }
-
-    public int getExitCode() {
-        return exitCode;
-    }
-
-    public void setExitCode(int exitCode) {
-        this.exitCode = exitCode;
-    }
-
-    public String getErrorMessage() {
-        return errorMessage;
-    }
-
-    public void setErrorMessage(String errorMessage) {
-        this.errorMessage = errorMessage;
-    }
-
-    public int getLinesReceived() {
-        return linesReceived;
-    }
-
-    public int getChunksStreamed() {
-        return chunksStreamed;
-    }
-
-    public long getBytesReceived() {
-        return bytesReceived;
-    }
-
-    public List<String> getModifiedFiles() {
-        return modifiedFiles;
-    }
-
+    /** Returns a defensive copy to avoid concurrent modification. */
     public List<String> getRecentOutput() {
         return new ArrayList<>(recentOutput);
-    }
-
-    public Map<String, Object> getMetadata() {
-        return metadata;
-    }
-
-    public void setMetadata(Map<String, Object> metadata) {
-        this.metadata = metadata;
     }
 
     public void addMetadata(String key, Object value) {

@@ -16,6 +16,7 @@
 
 package ai.kompile.core.loaders;
 
+import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +34,7 @@ import java.util.Map;
  *   <li><b>COMPARE</b>: Try multiple loaders and use the one with most content</li>
  * </ul>
  */
+@Getter
 public class PdfProcessingConfig {
 
     private static final Logger log = LoggerFactory.getLogger(PdfProcessingConfig.class);
@@ -311,43 +313,6 @@ public class PdfProcessingConfig {
                 Map.entry("extractMetadata", extractMetadata)
         );
     }
-
-    // Getters
-    public ProcessingMode getProcessingMode() { return processingMode; }
-    public boolean isUseVlm() { return useVlm; }
-    public String getVlmModelId() { return vlmModelId; }
-    public VlmOutputFormat getVlmOutputFormat() { return vlmOutputFormat; }
-    public int getMaxNewTokens() { return maxNewTokens; }
-    public double getTemperature() { return temperature; }
-    public double getTopP() { return topP; }
-    public int getBeamSize() { return beamSize; }
-    public boolean isDoSample() { return doSample; }
-    public String getDetectionModelId() { return detectionModelId; }
-    public String getRecognitionModelId() { return recognitionModelId; }
-    public String getTableModelId() { return tableModelId; }
-    public String getLayoutModelId() { return layoutModelId; }
-    public int getPdfRenderDpi() { return pdfRenderDpi; }
-    public boolean isExtractTables() { return extractTables; }
-    public TableStorageMode getTableStorageMode() { return tableStorageMode; }
-    public TableExtractionMethod getTableExtractionMethod() { return tableExtractionMethod; }
-    public String getTableFormat() { return tableFormat; }
-    public int getMinTableRows() { return minTableRows; }
-    public int getMinTableCols() { return minTableCols; }
-    public boolean isExtractByPage() { return extractByPage; }
-    public boolean isExtractMetadata() { return extractMetadata; }
-    public boolean isExtractAnnotations() { return extractAnnotations; }
-    public boolean isExtractFormFields() { return extractFormFields; }
-    public boolean isExtractBookmarks() { return extractBookmarks; }
-    public boolean isExtractLinks() { return extractLinks; }
-    public boolean isEnablePostProcessing() { return enablePostProcessing; }
-    public boolean isEnableLayoutAnalysis() { return enableLayoutAnalysis; }
-    public int getAutoModeMinCharacters() { return autoModeMinCharacters; }
-    public boolean isUseCompositeLoader() { return useCompositeLoader; }
-    public String getVlmDecoderPath() { return vlmDecoderPath; }
-    public String getVlmEncoderPath() { return vlmEncoderPath; }
-    public String getVlmEmbedTokensPath() { return vlmEmbedTokensPath; }
-    public String getVlmTokenizerPath() { return vlmTokenizerPath; }
-    public String getVlmPreprocessorConfigPath() { return vlmPreprocessorConfigPath; }
 
     public static class Builder {
         private final PdfProcessingConfig config = new PdfProcessingConfig();

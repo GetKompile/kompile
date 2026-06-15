@@ -15,9 +15,9 @@
  */
 package ai.kompile.kclaw.gateway;
 
-import ai.kompile.kclaw.gateway.channel.ChannelConfig;
-import ai.kompile.kclaw.gateway.channel.ChannelManager;
-import ai.kompile.kclaw.gateway.channel.ChannelAdapter;
+import ai.kompile.gateway.core.gateway.channel.ChannelConfig;
+import ai.kompile.gateway.core.gateway.channel.ChannelManager;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
 import ai.kompile.kclaw.gateway.channel.DefaultWhatsAppApiClient;
 import ai.kompile.kclaw.gateway.channel.WhatsAppChannelAdapter;
 import lombok.RequiredArgsConstructor;
@@ -151,7 +151,7 @@ public class ChannelController {
         
         if (config.getTelegram().getBotToken() != null) {
             telegramAdapter.setApiClient(
-                    new ai.kompile.kclaw.gateway.channel.DefaultTelegramApiClient(
+                    new ai.kompile.gateway.core.gateway.channel.DefaultTelegramApiClient(
                             config.getTelegram().getBotToken()
                     )
             );
@@ -226,8 +226,8 @@ public class ChannelController {
         
         ChannelConfig.EmailConfig email = config.getEmail();
         
-        ai.kompile.kclaw.gateway.channel.EmailClient.EmailConfig emailClientConfig = 
-                new ai.kompile.kclaw.gateway.channel.EmailClient.EmailConfig(
+        ai.kompile.gateway.core.gateway.channel.EmailClient.EmailConfig emailClientConfig = 
+                new ai.kompile.gateway.core.gateway.channel.EmailClient.EmailConfig(
                         email.getImapHost(),
                         email.getImapPort(),
                         email.getUsername(),
@@ -244,7 +244,7 @@ public class ChannelController {
         
         emailAdapter.setEmailConfig(emailClientConfig);
         emailAdapter.setEmailClient(
-                new ai.kompile.kclaw.gateway.channel.DefaultEmailClient()
+                new ai.kompile.gateway.core.gateway.channel.DefaultEmailClient()
         );
         
         email.getAllowedSenders()

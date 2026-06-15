@@ -19,6 +19,8 @@ package ai.kompile.modelmanager.vlm.dynamic;
 import ai.kompile.modelmanager.vlm.VlmPipelineStage;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.Objects;
 
@@ -46,6 +48,8 @@ import java.util.Objects;
  * @author Kompile Inc.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@Getter
+@Setter
 public class VlmStageDefinition {
 
     private String stageId;
@@ -54,6 +58,8 @@ public class VlmStageDefinition {
     private String outputDescription;
     private String modelComponentKey;
     private boolean requiresModel;
+    @Getter(value = lombok.AccessLevel.NONE)
+    @Setter(value = lombok.AccessLevel.NONE)
     private boolean isBuiltin;
     private String description;
 
@@ -103,55 +109,7 @@ public class VlmStageDefinition {
         }
     }
 
-    // Getters and setters
-
-    public String getStageId() {
-        return stageId;
-    }
-
-    public void setStageId(String stageId) {
-        this.stageId = stageId;
-    }
-
-    public String getDisplayName() {
-        return displayName;
-    }
-
-    public void setDisplayName(String displayName) {
-        this.displayName = displayName;
-    }
-
-    public String getInputDescription() {
-        return inputDescription;
-    }
-
-    public void setInputDescription(String inputDescription) {
-        this.inputDescription = inputDescription;
-    }
-
-    public String getOutputDescription() {
-        return outputDescription;
-    }
-
-    public void setOutputDescription(String outputDescription) {
-        this.outputDescription = outputDescription;
-    }
-
-    public String getModelComponentKey() {
-        return modelComponentKey;
-    }
-
-    public void setModelComponentKey(String modelComponentKey) {
-        this.modelComponentKey = modelComponentKey;
-    }
-
-    public boolean isRequiresModel() {
-        return requiresModel;
-    }
-
-    public void setRequiresModel(boolean requiresModel) {
-        this.requiresModel = requiresModel;
-    }
+    // Manual accessor for 'isBuiltin' field to avoid Lombok generating 'isIsBuiltin()'
 
     public boolean isBuiltin() {
         return isBuiltin;
@@ -159,14 +117,6 @@ public class VlmStageDefinition {
 
     public void setBuiltin(boolean builtin) {
         isBuiltin = builtin;
-    }
-
-    public String getDescription() {
-        return description;
-    }
-
-    public void setDescription(String description) {
-        this.description = description;
     }
 
     @Override

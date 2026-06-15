@@ -107,7 +107,9 @@ public class VlmOrchestrationConfigService {
             Files.move(tempFile, configFilePath, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             // Clean up temp file on failure
-            try { Files.deleteIfExists(tempFile); } catch (IOException ignored) {}
+            try { Files.deleteIfExists(tempFile); } catch (IOException cleanupEx) {
+                log.warn("Failed to clean up temp config file {} after write failure: {}", tempFile, cleanupEx.getMessage());
+            }
             throw e;
         }
     }

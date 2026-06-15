@@ -245,8 +245,16 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             entity.setType(ee.getNodeLabel());
             entity.setDescription(ee.getDescription());
             entity.setMetadata(ee.getMetadata());
-            entity.setConfidence(ee.getMetadata() != null && ee.getMetadata().containsKey("confidence")
-                    ? Double.parseDouble(ee.getMetadata().get("confidence").toString()) : 1.0);
+            double confidence = 1.0;
+            Map<String, Object> meta = ee.getMetadata();
+            if (meta != null) {
+                Object confObj = meta.get("confidence");
+                if (confObj != null) {
+                    try { confidence = Double.parseDouble(confObj.toString()); }
+                    catch (NumberFormatException ignored) { }
+                }
+            }
+            entity.setConfidence(confidence);
             return entity;
         }).collect(Collectors.toList()));
 

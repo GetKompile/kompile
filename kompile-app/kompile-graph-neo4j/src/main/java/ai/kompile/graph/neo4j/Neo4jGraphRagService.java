@@ -55,7 +55,7 @@ public class Neo4jGraphRagService implements GraphRagService {
 
     // Per-conversation entity tracking
     private final Map<String, SessionEntityState> sessionEntities = new ConcurrentHashMap<>();
-    private int turnCounter = 0;
+    private final java.util.concurrent.atomic.AtomicInteger turnCounter = new java.util.concurrent.atomic.AtomicInteger(0);
 
     private static final Pattern ENTITY_MENTION_PATTERN = Pattern.compile(
             "\\b(that|the|this|those)\\s+(company|person|organization|place|product|event|ceo|founder|manager)\\b",
@@ -79,7 +79,7 @@ public class Neo4jGraphRagService implements GraphRagService {
     @Override
     public GraphRagResult answerQuery(GraphRagQuery query) {
         String conversationId = query.getConversationId();
-        turnCounter++;
+        int currentTurn = turnCounter.incrementAndGet();
 
         // 1. Get or create session entity state
         SessionEntityState entityState = sessionEntities.computeIfAbsent(
@@ -90,8 +90,9 @@ public class Neo4jGraphRagService implements GraphRagService {
 
         // 3. Refine the query with conversation history
         String refinedQuery = refineQueryWithHistory(conversationId, resolvedQuery);
+        String safeQuery = query.getQuery() != null ? query.getQuery().replaceAll("[\\r\\n]", " ") : null;
         log.info("Original: '{}', Resolved: '{}', Refined: '{}'",
-                query.getQuery(), resolvedQuery, refinedQuery);
+                safeQuery, resolvedQuery, refinedQuery);
 
         // 4. Embed the (potentially refined) query
         INDArray queryVector;
@@ -191,7 +192,7 @@ public class Neo4jGraphRagService implements GraphRagService {
     private String retrieveContextWithEntityTracking(INDArray queryVector, int topK, SessionEntityState entityState) {
         try (Session session = neo4jDriver.session()) {
             List<Record> records = session.run(VECTOR_SEARCH_QUERY,
-                    Values.parameters("topK", topK, "queryVector", queryVector)).list();
+                    Values.parameters("topK", topK, "queryVector", queryVector.toFloatVector())).list();
 
             StringBuilder contextBuilder = new StringBuilder();
             for (Record record : records) {
@@ -208,7 +209,7 @@ public class Neo4jGraphRagService implements GraphRagService {
                             .findFirst()
                             .orElse("CONCEPT");
 
-                    entityState.trackEntity(entityId, title, type, List.of(), turnCounter, entityId);
+                    entityState.trackEntity(entityId, title, type, List.of(), turnCounter.get(), entityId);
                 }
 
                 if (contextBuilder.length() > 0) contextBuilder.append("\n---\n");

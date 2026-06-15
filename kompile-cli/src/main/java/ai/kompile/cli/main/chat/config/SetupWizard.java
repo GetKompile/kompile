@@ -70,7 +70,9 @@ public class SetupWizard {
             if ("resume".equals(chatMode)) {
                 try {
                     terminal.close();
-                } catch (Exception e) {}
+                } catch (Exception e) {
+                    if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                }
                 terminal = null;
 
                 System.out.println();
@@ -169,7 +171,9 @@ public class SetupWizard {
             if (terminal != null) {
                 try {
                     terminal.close();
-                } catch (Exception e) {}
+                } catch (Exception e) {
+                    if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                }
             }
         }
     }

@@ -236,7 +236,9 @@ public class CoChangeAnalyzer {
                 commits.add(currentCommit);
             }
 
-            proc.waitFor();
+            if (!proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly();
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception e) {

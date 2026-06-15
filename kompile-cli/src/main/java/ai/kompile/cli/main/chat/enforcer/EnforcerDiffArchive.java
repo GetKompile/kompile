@@ -313,7 +313,9 @@ public class EnforcerDiffArchive {
             pb.redirectErrorStream(true);
             Process proc = pb.start();
             String output = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            proc.waitFor();
+            if (!proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly();
+            }
 
             // Also include untracked files status
             ProcessBuilder pbStatus = new ProcessBuilder("git", "diff", "--cached", "--no-color");
@@ -321,7 +323,9 @@ public class EnforcerDiffArchive {
             pbStatus.redirectErrorStream(true);
             Process procStatus = pbStatus.start();
             String staged = new String(procStatus.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            procStatus.waitFor();
+            if (!procStatus.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                procStatus.destroyForcibly();
+            }
 
             return output + (staged.isEmpty() ? "" : "\n--- STAGED ---\n" + staged);
         } catch (Exception e) {
@@ -338,7 +342,9 @@ public class EnforcerDiffArchive {
             pb.redirectErrorStream(true);
             Process proc = pb.start();
             String output = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            proc.waitFor();
+            if (!proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly();
+            }
             for (String line : output.split("\n")) {
                 if (!line.isBlank()) files.add(line.trim());
             }
@@ -349,7 +355,9 @@ public class EnforcerDiffArchive {
             pbStaged.redirectErrorStream(true);
             Process procStaged = pbStaged.start();
             String staged = new String(procStaged.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            procStaged.waitFor();
+            if (!procStaged.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                procStaged.destroyForcibly();
+            }
             for (String line : staged.split("\n")) {
                 if (!line.isBlank() && !files.contains(line.trim())) {
                     files.add(line.trim());

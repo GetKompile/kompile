@@ -26,6 +26,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -45,11 +46,26 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 public class IndexSyncService {
 
-    private final CrossIndexTrackingService trackingService;
-    private final ApplicationEventPublisher eventPublisher;
-    private final EmbeddingModel embeddingModel;
-    private final VectorStore vectorStore;
-    private final KnowledgeGraphService knowledgeGraphService;
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected IndexSyncService() {}
+
+
+    @Autowired
+    private CrossIndexTrackingService trackingService;
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+    @Autowired(required = false)
+    private EmbeddingModel embeddingModel;
+    @Autowired(required = false)
+    private VectorStore vectorStore;
+    @Autowired(required = false)
+    private KnowledgeGraphService knowledgeGraphService;
+
+    // Self-reference through proxy to ensure @Async is honored on self-calls.
+    // Uses ApplicationContext lookup instead of @Lazy self-injection to avoid
+    // CGLIB proxy callback mismatch in GraalVM native image.
+    @Autowired
+    private ApplicationContext applicationContext;
 
     @Autowired
     public IndexSyncService(CrossIndexTrackingService trackingService,
@@ -110,7 +126,7 @@ public class IndexSyncService {
 
         // Trigger async sync if missing entries found
         String jobId = UUID.randomUUID().toString();
-        triggerAsyncSync(jobId, factSheetId, resolution, config);
+        applicationContext.getBean(IndexSyncService.class).triggerAsyncSync(jobId, factSheetId, resolution, config);
 
         log.info("Auto-sync triggered for {} missing passages in fact sheet {}",
                 missingCount, factSheetId);
@@ -122,7 +138,7 @@ public class IndexSyncService {
      * Trigger async sync for missing entries.
      */
     @Async
-    protected void triggerAsyncSync(String jobId, Long factSheetId,
+    public void triggerAsyncSync(String jobId, Long factSheetId,
                                      CrossIndexResolutionResult resolution,
                                      AutoSyncConfig config) {
         SyncJob job = new SyncJob(jobId, factSheetId, SyncTarget.ALL);
@@ -228,7 +244,7 @@ public class IndexSyncService {
                         try {
                             indexDocumentPassagesToVector(doc, job);
                         } catch (Exception e) {
-                            log.warn("Failed to vector-index document {}: {}", doc.getId(), e.getMessage());
+                            log.warn("Failed to vector-index document {}", doc.getId(), e);
                             job.getErrorCount().incrementAndGet();
                             job.getErrors().add("Doc " + doc.getId() + ": " + e.getMessage());
                         }
@@ -286,7 +302,7 @@ public class IndexSyncService {
                     try {
                         indexPassageToGraph(passage);
                     } catch (Exception e) {
-                        log.warn("Failed to graph-index passage {}: {}", passage.getChunkId(), e.getMessage());
+                        log.warn("Failed to graph-index passage {}", passage.getChunkId(), e);
                         job.getErrorCount().incrementAndGet();
                         job.getErrors().add("Passage " + passage.getChunkId() + ": " + e.getMessage());
                     }
@@ -348,7 +364,7 @@ public class IndexSyncService {
                             indexDocumentPassagesToGraph(doc, job);
                         }
                     } catch (Exception e) {
-                        log.warn("Failed to sync document {}: {}", doc.getId(), e.getMessage());
+                        log.warn("Failed to sync document {}", doc.getId(), e);
                         job.getErrorCount().incrementAndGet();
                         job.getErrors().add("Doc " + doc.getId() + ": " + e.getMessage());
                     }
@@ -412,7 +428,7 @@ public class IndexSyncService {
                                 indexDocumentPassagesToGraph(doc, job);
                             }
                         } catch (Exception e) {
-                            log.warn("Failed to sync document {}: {}", docId, e.getMessage());
+                            log.warn("Failed to sync document {}", docId, e);
                             job.getErrorCount().incrementAndGet();
                             job.getErrors().add("Doc " + docId + ": " + e.getMessage());
                         }
@@ -461,13 +477,25 @@ public class IndexSyncService {
                 job.setStatus(SyncStatus.RUNNING);
                 job.setTotalPassages(chunkIds.size());
 
+                // Batch-load all passages upfront to avoid N+1 queries
+                Map<String, ai.kompile.app.ingest.domain.IndexedPassage> passageMap = new HashMap<>();
+                List<String> chunkIdList = new ArrayList<>(chunkIds);
+                int batchSize = 500;
+                for (int i = 0; i < chunkIdList.size(); i += batchSize) {
+                    List<String> batch = chunkIdList.subList(i, Math.min(i + batchSize, chunkIdList.size()));
+                    for (ai.kompile.app.ingest.domain.IndexedPassage p : trackingService.findPassagesByChunkIds(batch)) {
+                        passageMap.put(p.getChunkId(), p);
+                    }
+                }
+
                 for (String chunkId : chunkIds) {
                     if (job.isCancelled()) {
                         job.setStatus(SyncStatus.CANCELLED);
                         break;
                     }
 
-                    trackingService.findPassage(chunkId).ifPresent(passage -> {
+                    ai.kompile.app.ingest.domain.IndexedPassage passage = passageMap.get(chunkId);
+                    if (passage != null) {
                         try {
                             if (targetSet.contains(SyncTarget.VECTOR_STORE) && passage.needsVectorIndexing()) {
                                 indexPassageToVector(passage);
@@ -476,12 +504,12 @@ public class IndexSyncService {
                                 indexPassageToGraph(passage);
                             }
                         } catch (Exception e) {
-                            log.warn("Failed to sync passage {}: {}", chunkId, e.getMessage());
+                            log.warn("Failed to sync passage {}", chunkId, e);
                             job.getErrorCount().incrementAndGet();
                             job.getErrors().add("Passage " + chunkId + ": " + e.getMessage());
                         }
                         job.getPassagesProcessed().incrementAndGet();
-                    });
+                    }
                 }
 
                 if (!job.isCancelled()) {
@@ -631,13 +659,13 @@ public class IndexSyncService {
                     try {
                         indexPassageToVector(passage);
                     } catch (Exception e) {
-                        log.warn("Failed to vector-index passage {}: {}", chunkId, e.getMessage());
+                        log.warn("Failed to vector-index passage {}", chunkId, e);
                         job.getErrorCount().incrementAndGet();
                         job.getErrors().add("Passage " + chunkId + ": " + e.getMessage());
                     }
                 });
             } catch (Exception e) {
-                log.warn("Failed to find passage {}: {}", chunkId, e.getMessage());
+                log.warn("Failed to find passage {}", chunkId, e);
                 job.getErrorCount().incrementAndGet();
             }
 
@@ -664,13 +692,13 @@ public class IndexSyncService {
                     try {
                         indexPassageToGraph(passage);
                     } catch (Exception e) {
-                        log.warn("Failed to graph-index passage {}: {}", chunkId, e.getMessage());
+                        log.warn("Failed to graph-index passage {}", chunkId, e);
                         job.getErrorCount().incrementAndGet();
                         job.getErrors().add("Passage " + chunkId + ": " + e.getMessage());
                     }
                 });
             } catch (Exception e) {
-                log.warn("Failed to find passage {}: {}", chunkId, e.getMessage());
+                log.warn("Failed to find passage {}", chunkId, e);
                 job.getErrorCount().incrementAndGet();
             }
 
@@ -870,10 +898,10 @@ public class IndexSyncService {
      * Internal sync job tracking.
      */
     private static class SyncJob {
-        private final String jobId;
-        private final Long factSheetId;
-        private final SyncTarget target;
-        private final Instant startTime;
+        private String jobId;
+        private Long factSheetId;
+        private SyncTarget target;
+        private Instant startTime;
         private volatile Instant endTime;
         private volatile SyncStatus status;
         private volatile boolean cancelled;

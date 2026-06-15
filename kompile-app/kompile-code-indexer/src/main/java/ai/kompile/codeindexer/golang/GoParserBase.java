@@ -2,7 +2,8 @@ package ai.kompile.codeindexer.golang;
 
 import java.util.List;
 import org.antlr.v4.runtime.*;
-import java.io.PrintStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -12,6 +13,7 @@ import java.util.Set;
  */
 public abstract class GoParserBase extends Parser
 {
+    private static final Logger log = LoggerFactory.getLogger(GoParserBase.class);
     private static boolean debug = false;
     private Set<String> table = new HashSet<>();
 
@@ -65,7 +67,7 @@ public abstract class GoParserBase extends Parser
         GoParser.PackageNameContext packageName = importSpec.packageName();
         if (packageName != null) {
             String name = packageName.getText();
-            if (debug) System.out.println("Entering " + name);
+            if (debug) log.debug("Entering {}", name);
             table.add(name);
             return;
         }
@@ -74,7 +76,7 @@ public abstract class GoParserBase extends Parser
             return;
         }
         String name = importPath.getText();
-        if (debug) System.out.println("import path " + name);
+        if (debug) log.debug("import path {}", name);
         name = name.replace("\"", "");
         if (name.isEmpty()) {
             return;
@@ -96,7 +98,7 @@ public abstract class GoParserBase extends Parser
         // Guard against empty array (can happen if lastComponent is all dots)
         if (fileArr.length == 0) {
             table.add(lastComponent);
-            if (debug) System.out.println("Entering " + lastComponent);
+            if (debug) log.debug("Entering {}", lastComponent);
             return;
         }
         String fileName = fileArr[fileArr.length - 1];
@@ -104,7 +106,7 @@ public abstract class GoParserBase extends Parser
             // Fall back to lastComponent if split resulted in empty string
             fileName = lastComponent;
         }
-        if (debug) System.out.println("Entering " + fileName);
+        if (debug) log.debug("Entering {}", fileName);
         table.add(fileName);
     }
 
@@ -116,23 +118,23 @@ public abstract class GoParserBase extends Parser
         }
         boolean result = true;
         if (la.getType() != GoParser.IDENTIFIER) {
-            if (debug) System.out.println("isOperand Returning " + result + " for " + la);
+            if (debug) log.debug("isOperand Returning {} for {}", result, la);
             return result;
         }
         result = table.contains(la.getText());
         Token la2 = stream.LT(2);
         if (la2.getType() != GoParser.DOT) {
             result = true;
-            if (debug) System.out.println("isOperand Returning " + result + " for " + la);
+            if (debug) log.debug("isOperand Returning {} for {}", result, la);
             return result;
         }
         Token la3 = stream.LT(3);
         if (la3.getType() == GoParser.L_PAREN) {
             result = true;
-            if (debug) System.out.println("isOperand Returning " + result + " for " + la);
+            if (debug) log.debug("isOperand Returning {} for {}", result, la);
             return result;
         }
-        if (debug) System.out.println("isOperand Returning " + result + " for " + la);
+        if (debug) log.debug("isOperand Returning {} for {}", result, la);
         return result;
     }
 
@@ -143,20 +145,20 @@ public abstract class GoParserBase extends Parser
 
         // If '*' => definitely a method expression
         if (la.getType() == GoParser.STAR) {
-            if (debug) System.out.println("isMethodExpr Returning " + result + " for " + la);
+            if (debug) log.debug("isMethodExpr Returning {} for {}", result, la);
             return result;
         }
 
         // If not an identifier, can't be a method expr
         if (la.getType() != GoParser.IDENTIFIER) {
             result = false;
-            if (debug) System.out.println("isMethodExpr Returning " + result + " for " + la);
+            if (debug) log.debug("isMethodExpr Returning {} for {}", result, la);
             return result;
         }
 
         // If it's an identifier not in the table => method expr
         result = !table.contains(la.getText());
-        if (debug) System.out.println("isMethodExpr Returning " + result + " for " + la);
+        if (debug) log.debug("isMethodExpr Returning {} for {}", result, la);
         return result;
     }
 
@@ -165,7 +167,7 @@ public abstract class GoParserBase extends Parser
         BufferedTokenStream stream = (BufferedTokenStream)_input;
         var la = stream.LT(1);
         var result = la.getType() != GoLexer.IDENTIFIER;
-        if (debug) System.out.println("isConversion Returning " + result + " for " + la);
+        if (debug) log.debug("isConversion Returning {} for {}", result, la);
         return result;
     }
 
@@ -179,11 +181,11 @@ public abstract class GoParserBase extends Parser
         // After matching L_PAREN, LT(-1) is '(' and LT(-2) is the token before it
         Token funcToken = stream.LT(-2);
         if (funcToken == null || funcToken.getType() != GoParser.IDENTIFIER) {
-            if (debug) System.out.println("isTypeArgument Returning false - no identifier before (");
+            if (debug) log.debug("isTypeArgument Returning false - no identifier before (");
             return false;
         }
         boolean result = BUILTIN_TYPE_FUNCTIONS.contains(funcToken.getText());
-        if (debug) System.out.println("isTypeArgument Returning " + result + " for " + funcToken.getText());
+        if (debug) log.debug("isTypeArgument Returning {} for {}", result, funcToken.getText());
         return result;
     }
 
@@ -191,7 +193,7 @@ public abstract class GoParserBase extends Parser
     // This is the inverse of isTypeArgument for the expressionList alternative.
     public boolean isExpressionArgument() {
         boolean result = !isTypeArgument();
-        if (debug) System.out.println("isExpressionArgument Returning " + result);
+        if (debug) log.debug("isExpressionArgument Returning {}", result);
         return result;
     }
 }

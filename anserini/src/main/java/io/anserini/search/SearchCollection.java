@@ -111,7 +111,7 @@ import org.apache.lucene.search.similarities.LMDirichletSimilarity;
 import org.apache.lucene.search.similarities.LMJelinekMercerSimilarity;
 import org.apache.lucene.search.similarities.LambdaDF;
 import org.apache.lucene.search.similarities.NormalizationH2;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
@@ -916,7 +916,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
 
         LOG.info("============ Initializing SearchCollection ============");
         LOG.info("Index: " + indexPath.toAbsolutePath());
-        this.reader = DirectoryReader.open(FSDirectory.open(indexPath));
+        this.reader = DirectoryReader.open(new NIOFSDirectory(indexPath));
         LOG.info("Threads for internal topic processing (per SearcherThread): " + args.threads);
         LOG.info("Parallelism for different settings (number of SearcherThreads): " + args.parallelism);
 

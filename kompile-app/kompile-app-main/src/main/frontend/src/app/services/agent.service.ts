@@ -34,6 +34,18 @@ import {
 } from '../models/api-models';
 
 /**
+ * Model configuration info for an agent.
+ */
+export interface AgentModelInfo {
+  agentName: string;
+  displayName: string;
+  available: boolean;
+  currentModel: string | null;
+  availableModels: string[];
+  modelSource?: string;
+}
+
+/**
  * Service for managing local AI agents (Claude Code, Codex, Gemini CLI).
  *
  * Provides functionality for:
@@ -383,5 +395,18 @@ export class AgentService extends BaseService {
 
   updateSkipPermissions(agentName: string, skipPermissions: boolean): Observable<any> {
     return this.http.put(`${this.agentsUrl}/chat/agents/${agentName}/skip-permissions`, { skipPermissions });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // AGENT MODEL CONFIGURATION
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  getAllAgentModels(refresh: boolean = false): Observable<AgentModelInfo[]> {
+    const params: Record<string, string> = refresh ? { refresh: 'true' } : {};
+    return this.http.get<AgentModelInfo[]>(`${this.agentsUrl}/models`, { params });
+  }
+
+  setAgentModel(agentName: string, model: string | null): Observable<void> {
+    return this.http.put<void>(`${this.agentsUrl}/${agentName}/model`, { model });
   }
 }

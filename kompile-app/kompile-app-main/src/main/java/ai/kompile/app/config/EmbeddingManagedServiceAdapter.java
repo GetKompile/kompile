@@ -48,7 +48,7 @@ import java.util.Optional;
  *
  * <p>Only activates when both beans are present in the application context.</p>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnBean({AnseriniEmbeddingModelImpl.class, ModelLifecycleManager.class})
 public class EmbeddingManagedServiceAdapter implements ModelLifecycleManager.ManagedService {
 

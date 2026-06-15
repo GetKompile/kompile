@@ -16,6 +16,8 @@
 
 package ai.kompile.core.crawl.graph;
 
+import ai.kompile.core.crawler.pipeline.ContentRouteRule;
+import ai.kompile.core.crawler.pipeline.IngestPipelineDefinition;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -24,6 +26,7 @@ import lombok.NoArgsConstructor;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Request to start a unified crawl-to-graph job.
@@ -60,6 +63,63 @@ public class UnifiedCrawlRequest {
     /** Per-request runtime overrides (null fields fall back to global config) */
     private RuntimeConfig runtimeConfig;
 
+    /** Pre-processing configuration (null = use defaults) */
+    private Object preprocessing;
+
+    /** Named ingest pipeline definitions (empty list = use defaults) */
+    @Builder.Default
+    private List<IngestPipelineDefinition> pipelines = new ArrayList<>();
+
+    /** Content routing rules for directing sources to specific pipelines (empty list = use defaults) */
+    @Builder.Default
+    private List<ContentRouteRule> routeRules = new ArrayList<>();
+
+    /** Default pipeline ID to use when no route rule matches (null = system default) */
+    private String defaultPipelineId;
+
+    /** Distribution configuration for multi-worker crawls (null = single-worker) */
+    private DistributionConfig distribution;
+
+    /**
+     * Strategy for partitioning sources across workers in distributed crawls.
+     */
+    public enum PartitionStrategy {
+        /** Round-robin assignment across workers */
+        ROUND_ROBIN,
+        /** Partition by source type (e.g., all PDFs to one worker) */
+        BY_TYPE,
+        /** Partition by estimated size for load balancing */
+        BY_SIZE,
+        /** One worker per source */
+        PER_SOURCE,
+        /** Hash-based sharding across workers */
+        HASH_SHARD
+    }
+
+    /**
+     * Configuration for distributing a crawl across multiple workers.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class DistributionConfig {
+        /** Number of workers to distribute across */
+        @Builder.Default
+        private int workerCount = 1;
+
+        /** How to partition sources across workers */
+        @Builder.Default
+        private PartitionStrategy partitionStrategy = PartitionStrategy.ROUND_ROBIN;
+
+        /** Callback URL for worker completion notifications */
+        private String callbackUrl;
+
+        /** Additional metadata to pass to each worker */
+        private Map<String, Object> workerMetadata;
+    }
+
     /**
      * Per-request runtime configuration overrides.
      * Any non-null field overrides the corresponding global config value.
@@ -90,5 +150,23 @@ public class UnifiedCrawlRequest {
 
         /** Whether to sort chunks by estimated cost before batching */
         private Boolean costSortChunks;
+
+        /** Batch size for entity resolution (deduplication) pass */
+        private Integer entityResolutionBatchSize;
+
+        /** Parallelism for edge computation (relationship resolution) */
+        private Integer edgeComputationParallelism;
+
+        /** Parallelism for vector indexing */
+        private Integer vectorIndexingParallelism;
+
+        /** Whether to run vector indexing and graph extraction in parallel */
+        private Boolean parallelVectorAndGraph;
+
+        /** Timeout in seconds for a single LLM call */
+        private Integer llmCallTimeoutSeconds;
+
+        /** Timeout in seconds for an entire graph extraction batch */
+        private Integer graphExtractionBatchTimeoutSeconds;
     }
 }

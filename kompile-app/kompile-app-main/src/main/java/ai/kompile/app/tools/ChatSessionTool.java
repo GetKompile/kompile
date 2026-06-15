@@ -20,6 +20,7 @@ import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.services.agent.AgentRegistryService;
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
 import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.core.rag.ConversationalRagOptions;
 import ai.kompile.core.rag.ConversationalRagResult;
 import ai.kompile.core.rag.ConversationalRagService;
@@ -260,7 +261,7 @@ public class ChatSessionTool {
                     return Map.of("status", "error", "error", "Agent not found: " + config.agentName);
                 }
                 if (!agent.get().isAvailable()) {
-                    return Map.of("status", "warning", "sessionId", sessionId,
+                    return Map.of("status", "warning", FieldNames.SESSION_ID, sessionId,
                             "message", "Session created but agent '" + config.agentName + "' is not currently available");
                 }
             }
@@ -270,7 +271,7 @@ public class ChatSessionTool {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
-            result.put("sessionId", sessionId);
+            result.put(FieldNames.SESSION_ID, sessionId);
             result.put("message", "Chat session created successfully");
             result.put("configuration", configToMap(config));
 
@@ -347,7 +348,7 @@ public class ChatSessionTool {
             // Build response
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", "success");
-            response.put("sessionId", sessionId);
+            response.put(FieldNames.SESSION_ID, sessionId);
             response.put("answer", result.answer());
             response.put("executionTimeMs", duration);
 
@@ -359,7 +360,7 @@ public class ChatSessionTool {
                 for (var doc : result.retrievedDocuments()) {
                     Map<String, Object> docInfo = new LinkedHashMap<>();
                     docInfo.put("id", doc.document().getId());
-                    docInfo.put("score", doc.score());
+                    docInfo.put(FieldNames.SCORE, doc.score());
                     String content = doc.document().getText();
                     if (content != null) {
                         docInfo.put("contentPreview", content.length() > 200 ? content.substring(0, 200) + "..." : content);
@@ -412,7 +413,7 @@ public class ChatSessionTool {
             List<Message> history = ragService.getConversationHistory(input.sessionId());
 
             if (history == null || history.isEmpty()) {
-                return Map.of("status", "success", "sessionId", input.sessionId(),
+                return Map.of("status", "success", FieldNames.SESSION_ID, input.sessionId(),
                         "messageCount", 0, "messages", Collections.emptyList());
             }
 
@@ -436,7 +437,7 @@ public class ChatSessionTool {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
-            result.put("sessionId", input.sessionId());
+            result.put(FieldNames.SESSION_ID, input.sessionId());
             result.put("messageCount", messages.size());
             result.put("totalMessages", ragService.getConversationSize(input.sessionId()));
             result.put("messages", messages);
@@ -477,7 +478,7 @@ public class ChatSessionTool {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
-            result.put("sessionId", input.sessionId());
+            result.put(FieldNames.SESSION_ID, input.sessionId());
             result.put("messagesCleared", sizeBefore);
             result.put("message", "Chat session cleared successfully");
 
@@ -510,7 +511,7 @@ public class ChatSessionTool {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
-            result.put("sessionId", input.sessionId());
+            result.put(FieldNames.SESSION_ID, input.sessionId());
             result.put("configuration", configToMap(config));
 
             // Add conversation stats
@@ -588,7 +589,7 @@ public class ChatSessionTool {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
-            result.put("sessionId", input.sessionId());
+            result.put(FieldNames.SESSION_ID, input.sessionId());
             result.put("updatedFields", updatedFields);
             result.put("configuration", configToMap(config));
 
@@ -674,7 +675,7 @@ public class ChatSessionTool {
 
             for (SessionConfig config : sessionConfigs.values()) {
                 Map<String, Object> sessionInfo = new LinkedHashMap<>();
-                sessionInfo.put("sessionId", config.sessionId);
+                sessionInfo.put(FieldNames.SESSION_ID, config.sessionId);
                 sessionInfo.put("agentName", config.agentName);
                 sessionInfo.put("enableRag", config.enableRag);
                 sessionInfo.put("createdAt", config.createdAt != null ? config.createdAt.toString() : null);
@@ -808,7 +809,7 @@ public class ChatSessionTool {
 
     private Map<String, Object> configToMap(SessionConfig config) {
         Map<String, Object> map = new LinkedHashMap<>();
-        map.put("sessionId", config.sessionId);
+        map.put(FieldNames.SESSION_ID, config.sessionId);
         map.put("agentName", config.agentName);
         map.put("enableRag", config.enableRag);
         map.put("semanticK", config.semanticK);

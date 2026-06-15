@@ -15,8 +15,13 @@
  */
 package ai.kompile.orchestrator.config;
 
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
@@ -47,15 +52,30 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
  *   <li>/topic/orchestrator/heartbeat - Keep-alive signals</li>
  * </ul>
  */
-@Configuration("orchestratorWebSocketConfig")
+@Configuration(value = "orchestratorWebSocketConfig", proxyBeanMethods = false)
 @EnableWebSocketMessageBroker
 @ConditionalOnClass(name = "ai.kompile.orchestrator.config.WebSocketConfig")
 @ConditionalOnProperty(name = "kompile.orchestrator.websocket.enabled", havingValue = "true", matchIfMissing = true)
-@RequiredArgsConstructor
 @Slf4j
-public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+public class WebSocketConfig implements WebSocketMessageBrokerConfigurer, BeanFactoryAware {
 
-    private final OrchestratorProperties properties;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private OrchestratorProperties properties;
+
+    private BeanFactory beanFactory;
+
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
+    public WebSocketConfig() {
+    }
+
+    public WebSocketConfig(OrchestratorProperties properties) {
+        this.properties = properties;
+    }
+
+    @Override
+    public void setBeanFactory(BeanFactory beanFactory) throws BeansException {
+        this.beanFactory = beanFactory;
+    }
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {

@@ -105,6 +105,17 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
         String subject = str(meta.get(GraphConstants.META_EMAIL_SUBJECT));
         String date = str(meta.get(GraphConstants.META_EMAIL_DATE));
 
+        // Build a reusable relation properties map that carries provenance + occurredAt for
+        // all relations produced from this email document.
+        final Map<String, String> emailRelProps;
+        if (date != null) {
+            emailRelProps = new LinkedHashMap<>();
+            emailRelProps.put(GraphConstants.PROP_PROVENANCE, GraphConstants.PROVENANCE_EXTRACTED);
+            emailRelProps.put(GraphConstants.PROP_OCCURRED_AT, date);
+        } else {
+            emailRelProps = new LinkedHashMap<>(ExtractorUtils.PROVENANCE_MAP);
+        }
+
         String msgEntityId = messageId != null ? entityId(messageId) : entityId(subject + date);
         Map<String, String> msgProps = new LinkedHashMap<>();
         if (subject != null) msgProps.put("subject", subject);
@@ -216,7 +227,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, senderEntity.id(), GraphConstants.REL_SENT_BY,
                         senderEntity.name() + " sent this email",
-                        1.0, ExtractorUtils.PROVENANCE_MAP
+                        1.0, emailRelProps
                 ));
             }
         }
@@ -276,7 +287,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, recipient.entity.id(), GraphConstants.REL_SENT_TO,
                         "Email sent to " + recipient.entity.name(),
-                        1.0, ExtractorUtils.PROVENANCE_MAP
+                        1.0, emailRelProps
                 ));
             }
         }
@@ -290,7 +301,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, cc.entity.id(), GraphConstants.REL_CC_TO,
                         "Email CC'd to " + cc.entity.name(),
-                        1.0, ExtractorUtils.PROVENANCE_MAP
+                        1.0, emailRelProps
                 ));
             }
         }
@@ -304,7 +315,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, bcc.entity.id(), GraphConstants.REL_BCC_TO,
                         "Email BCC'd to " + bcc.entity.name(),
-                        0.9, ExtractorUtils.PROVENANCE_MAP
+                        0.9, emailRelProps
                 ));
             }
         }
@@ -318,7 +329,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, rtp.entity.id(), GraphConstants.REL_REPLY_TO_DIRECTED_AT,
                         "Replies to this email should go to " + rtp.entity.name(),
-                        0.9, ExtractorUtils.PROVENANCE_MAP
+                        0.9, emailRelProps
                 ));
             }
         }
@@ -336,7 +347,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
             relations.add(new ExtractedRelation(
                     msgEntityId, replyTargetId, GraphConstants.REL_REPLIED_TO,
                     "This email is a reply to " + inReplyTo,
-                    1.0, ExtractorUtils.PROVENANCE_MAP
+                    1.0, emailRelProps
             ));
         }
 
@@ -356,7 +367,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             msgEntityId, refEntityId, GraphConstants.REL_REFERENCES,
                             "This email references " + refId,
-                            0.9, ExtractorUtils.PROVENANCE_MAP
+                            0.9, emailRelProps
                     ));
                 }
             }
@@ -386,7 +397,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
             relations.add(new ExtractedRelation(
                     msgEntityId, threadEntityId, GraphConstants.REL_IN_THREAD,
                     (subject != null ? subject : "Email") + " is part of thread",
-                    0.9, ExtractorUtils.PROVENANCE_MAP
+                    0.9, emailRelProps
             ));
         }
 
@@ -406,7 +417,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
             relations.add(new ExtractedRelation(
                     msgEntityId, listEntityId, GraphConstants.REL_POSTED_TO,
                     "Email posted to mailing list " + listId,
-                    1.0, ExtractorUtils.PROVENANCE_MAP
+                    1.0, emailRelProps
             ));
         }
 
@@ -424,7 +435,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
             relations.add(new ExtractedRelation(
                     msgEntityId, topicEntityId, GraphConstants.REL_HAS_CONVERSATION_TOPIC,
                     "Email in conversation: " + conversationTopic,
-                    0.9, ExtractorUtils.PROVENANCE_MAP
+                    0.9, emailRelProps
             ));
         }
 
@@ -443,7 +454,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, catEntityId, GraphConstants.REL_HAS_TOPIC,
                         "Email categorized as: " + category,
-                        0.9, ExtractorUtils.PROVENANCE_MAP
+                        0.9, emailRelProps
                 ));
             }
         }
@@ -487,7 +498,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             currentFolderId, previousFolderId, GraphConstants.REL_SUBFOLDER_OF,
                             part + " is subfolder of " + parts[fi - 1],
-                            0.9, Map.of(GraphConstants.PROP_PROVENANCE, GraphConstants.PROVENANCE_EXTRACTED)));
+                            0.9, emailRelProps));
                 }
                 previousFolderId = currentFolderId;
                 leafFolderEntityId = currentFolderId;
@@ -496,7 +507,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, leafFolderEntityId, GraphConstants.REL_IN_FOLDER,
                         "Email in folder " + folder,
-                        1.0, Map.of(GraphConstants.PROP_PROVENANCE, GraphConstants.PROVENANCE_EXTRACTED)));
+                        1.0, emailRelProps));
             }
         }
 
@@ -559,7 +570,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, calEntityId, GraphConstants.REL_HAS_CALENDAR_EVENT,
                         "Email has calendar event: " + summary,
-                        1.0, ExtractorUtils.PROVENANCE_MAP
+                        1.0, emailRelProps
                 ));
                 // Organizer relationship
                 if (calProps.containsKey("organizer")) {
@@ -575,7 +586,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             calEntityId, orgId, GraphConstants.REL_ORGANIZED_BY,
                             "Calendar event organized by " + orgEmail,
-                            1.0, ExtractorUtils.PROVENANCE_MAP
+                            1.0, emailRelProps
                     ));
                 }
                 // Attendee relationships
@@ -595,7 +606,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                         relations.add(new ExtractedRelation(
                                 calEntityId, attId, GraphConstants.REL_ATTENDED_BY,
                                 "Calendar event attended by " + attendee,
-                                1.0, ExtractorUtils.PROVENANCE_MAP
+                                1.0, emailRelProps
                         ));
                     }
                 }
@@ -612,7 +623,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             calEntityId, locId, GraphConstants.REL_AT_LOCATION,
                             "Calendar event at " + locName,
-                            1.0, ExtractorUtils.PROVENANCE_MAP
+                            1.0, emailRelProps
                     ));
                 }
                 // DATE entities from dtstart/dtend
@@ -626,7 +637,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             calEntityId, startDateId, GraphConstants.REL_STARTS_ON,
                             summary + " starts on " + dtstart,
-                            0.9, ExtractorUtils.PROVENANCE_MAP));
+                            0.9, emailRelProps));
                 }
                 String dtend = calProps.get("dtend");
                 if (dtend != null && !dtend.isBlank()) {
@@ -638,7 +649,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             calEntityId, endDateId, GraphConstants.REL_ENDS_ON,
                             summary + " ends on " + dtend,
-                            0.9, ExtractorUtils.PROVENANCE_MAP));
+                            0.9, emailRelProps));
                 }
             } else {
                 String attachEntityId = entityId("attach:" + msgEntityId + ":" + attachmentName);
@@ -660,7 +671,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         msgEntityId, attachEntityId, GraphConstants.REL_HAS_ATTACHMENT,
                         "Email has attachment: " + attachmentName,
-                        1.0, ExtractorUtils.PROVENANCE_MAP
+                        1.0, emailRelProps
                 ));
             }
         }
@@ -713,7 +724,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             parentEntityId, calEntityId, GraphConstants.REL_HAS_CALENDAR_EVENT,
                             "Email has calendar event: " + summary,
-                            1.0, ExtractorUtils.PROVENANCE_MAP
+                            1.0, emailRelProps
                     ));
                     // Create DATE entities from dtstart/dtend
                     String dtstart = calProps.get("dtstart");
@@ -726,7 +737,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                         relations.add(new ExtractedRelation(
                                 calEntityId, startDateId, GraphConstants.REL_STARTS_ON,
                                 summary + " starts on " + dtstart,
-                                0.9, ExtractorUtils.PROVENANCE_MAP));
+                                0.9, emailRelProps));
                     }
                     String dtend = calProps.get("dtend");
                     if (dtend != null && !dtend.isBlank()) {
@@ -738,7 +749,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                         relations.add(new ExtractedRelation(
                                 calEntityId, endDateId, GraphConstants.REL_ENDS_ON,
                                 summary + " ends on " + dtend,
-                                0.9, ExtractorUtils.PROVENANCE_MAP));
+                                0.9, emailRelProps));
                     }
                 } else {
                     String attachEntityId = entityId("attach:" + parentEntityId + ":" + attachName);
@@ -773,7 +784,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             parentEntityId, attachEntityId, GraphConstants.REL_HAS_ATTACHMENT,
                             "Email has attachment: " + attachName,
-                            1.0, ExtractorUtils.PROVENANCE_MAP
+                            1.0, emailRelProps
                     ));
                 }
             }
@@ -816,22 +827,21 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             fromServerId, byServerId, GraphConstants.REL_ROUTED_VIA,
                             "Mail relayed from " + fromHost + " to " + byHost,
-                            0.8, Map.of(GraphConstants.PROP_PROVENANCE, GraphConstants.PROVENANCE_EXTRACTED,
-                                    "hopIndex", String.valueOf(ri))));
+                            0.8, provenanceWithOccurredAt(emailRelProps, "hopIndex", String.valueOf(ri))));
                 }
                 // Chain hops: link previous hop's by-server to this hop's from-server
                 if (previousServerId != null && fromServerId != null && !previousServerId.equals(fromServerId)) {
                     relations.add(new ExtractedRelation(
                             previousServerId, fromServerId, GraphConstants.REL_ROUTED_VIA,
                             "Mail relay chain",
-                            0.7, Map.of(GraphConstants.PROP_PROVENANCE, GraphConstants.PROVENANCE_EXTRACTED)));
+                            0.7, emailRelProps));
                 }
                 // Link the message to the first receiving server (final destination)
                 if (ri == 0 && byServerId != null) {
                     relations.add(new ExtractedRelation(
                             msgEntityId, byServerId, GraphConstants.REL_ROUTED_VIA,
                             "Email delivered via " + byHost,
-                            0.9, ExtractorUtils.PROVENANCE_MAP));
+                            0.9, emailRelProps));
                 }
                 previousServerId = byServerId;
             }
@@ -856,7 +866,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             msgEntityId, urlEntityId, GraphConstants.REL_HYPERLINKS_TO,
                             "Email contains link to " + url,
-                            0.8, ExtractorUtils.PROVENANCE_MAP
+                            0.8, emailRelProps
                     ));
                 }
             }
@@ -882,7 +892,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             msgEntityId, urlEntityId, GraphConstants.REL_HYPERLINKS_TO,
                             "Email HTML body links to " + url,
-                            0.8, Map.of(GraphConstants.PROP_PROVENANCE, GraphConstants.PROVENANCE_EXTRACTED, "linkSource", "htmlBody")
+                            0.8, provenanceWithOccurredAt(emailRelProps, "linkSource", "htmlBody")
                     ));
                 }
             }
@@ -944,7 +954,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     Map.of("software", mailer, "headerSource", "X-Mailer")));
             relations.add(new ExtractedRelation(msgEntityId, clientId,
                     GraphConstants.REL_SENT_WITH,
-                    "Email sent with " + mailer, 0.9, ExtractorUtils.PROVENANCE_MAP));
+                    "Email sent with " + mailer, 0.9, emailRelProps));
         } else if (userAgent != null) {
             String clientId = entityId("email_client:" + userAgent.toLowerCase());
             addEntity(entityIndex, new ExtractedEntity(clientId, userAgent,
@@ -953,7 +963,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                     Map.of("software", userAgent, "headerSource", "User-Agent")));
             relations.add(new ExtractedRelation(msgEntityId, clientId,
                     GraphConstants.REL_SENT_WITH,
-                    "Email sent with " + userAgent, 0.9, ExtractorUtils.PROVENANCE_MAP));
+                    "Email sent with " + userAgent, 0.9, emailRelProps));
         }
 
         // List-Unsubscribe → EXTERNAL_RESOURCE entities
@@ -972,7 +982,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(msgEntityId, unsubId,
                         GraphConstants.REL_HYPERLINKS_TO,
                         "Email has unsubscribe link: " + unsubUri,
-                        0.8, ExtractorUtils.PROVENANCE_MAP));
+                        0.8, emailRelProps));
             }
         }
 
@@ -1139,6 +1149,16 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
 
     private static String entityId(String key) {
         return UUID.nameUUIDFromBytes(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
+    /**
+     * Creates a new map merging the given base relation props with one extra key/value pair.
+     * Used for relations that need both the email's {@code occurredAt} and an additional property.
+     */
+    private static Map<String, String> provenanceWithOccurredAt(Map<String, String> base, String extraKey, String extraValue) {
+        Map<String, String> m = new LinkedHashMap<>(base);
+        m.put(extraKey, extraValue);
+        return m;
     }
 
     private static boolean isPstItemType(String type) {

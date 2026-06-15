@@ -17,6 +17,8 @@
 package ai.kompile.app.config;
 
 import ai.kompile.cli.common.util.NativeImageInfo;
+import lombok.Getter;
+import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -77,8 +79,10 @@ import java.util.List;
  * kompile.subprocess.executable.embedding-path=/opt/kompile/kompile-embedding
  * </pre>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConfigurationProperties(prefix = "kompile.subprocess.executable")
+@Getter
+@Setter
 public class SubprocessExecutableConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessExecutableConfig.class);
@@ -171,7 +175,9 @@ public class SubprocessExecutableConfig {
     @Value("${kompile.subprocess.executable.type-flag:--subprocess=}")
     private String subprocessTypeFlag;
 
+    @Setter(lombok.AccessLevel.NONE)
     private LaunchMode resolvedLaunchMode;
+    @Setter(lombok.AccessLevel.NONE)
     private String resolvedNativePath;
 
     @PostConstruct
@@ -281,13 +287,6 @@ public class SubprocessExecutableConfig {
     }
 
     /**
-     * Get the resolved launch mode.
-     */
-    public LaunchMode getLaunchMode() {
-        return resolvedLaunchMode;
-    }
-
-    /**
      * Check if using native executable mode.
      */
     public boolean isNativeMode() {
@@ -359,6 +358,14 @@ public class SubprocessExecutableConfig {
     public List<String> buildModelInitCommand(Path argsFile, String heapSize, String javaPath, String classpath) {
         return buildSubprocessCommand(SubprocessType.MODEL_INIT, argsFile, heapSize, javaPath, classpath,
                 "ai.kompile.app.subprocess.model.ModelInitSubprocessMain");
+    }
+
+    /**
+     * Build the command for launching a graph extraction subprocess.
+     */
+    public List<String> buildGraphCommand(Path argsFile, String heapSize, String javaPath, String classpath) {
+        return buildSubprocessCommand(SubprocessType.GRAPH, argsFile, heapSize, javaPath, classpath,
+                "ai.kompile.app.subprocess.GraphSubprocessMain");
     }
 
     /**
@@ -449,6 +456,7 @@ public class SubprocessExecutableConfig {
             case MODEL_INIT -> modelInitPath;
             case TRAINING -> trainingPath;
             case VLM_TEST -> vlmTestPath;
+            case GRAPH -> null;
         };
 
         if (specificPath != null && !specificPath.isBlank()) {
@@ -471,6 +479,7 @@ public class SubprocessExecutableConfig {
             case MODEL_INIT -> modelInitPath;
             case TRAINING -> trainingPath;
             case VLM_TEST -> vlmTestPath;
+            case GRAPH -> null;
         };
 
         // Use unified executable if no specific path is configured
@@ -493,80 +502,6 @@ public class SubprocessExecutableConfig {
         } catch (NumberFormatException e) {
             return 4096;
         }
-    }
-
-    // Getters and setters for Spring binding
-
-    public String getMode() {
-        return mode;
-    }
-
-    public void setMode(String mode) {
-        this.mode = mode;
-    }
-
-    public String getNativePath() {
-        return nativePath;
-    }
-
-    public void setNativePath(String nativePath) {
-        this.nativePath = nativePath;
-    }
-
-    public String getIngestPath() {
-        return ingestPath;
-    }
-
-    public void setIngestPath(String ingestPath) {
-        this.ingestPath = ingestPath;
-    }
-
-    public String getVectorPopulationPath() {
-        return vectorPopulationPath;
-    }
-
-    public void setVectorPopulationPath(String vectorPopulationPath) {
-        this.vectorPopulationPath = vectorPopulationPath;
-    }
-
-    public String getEmbeddingPath() {
-        return embeddingPath;
-    }
-
-    public void setEmbeddingPath(String embeddingPath) {
-        this.embeddingPath = embeddingPath;
-    }
-
-    public String getModelInitPath() {
-        return modelInitPath;
-    }
-
-    public void setModelInitPath(String modelInitPath) {
-        this.modelInitPath = modelInitPath;
-    }
-
-    public String getTrainingPath() {
-        return trainingPath;
-    }
-
-    public void setTrainingPath(String trainingPath) {
-        this.trainingPath = trainingPath;
-    }
-
-    public String getVlmTestPath() {
-        return vlmTestPath;
-    }
-
-    public void setVlmTestPath(String vlmTestPath) {
-        this.vlmTestPath = vlmTestPath;
-    }
-
-    public String getSubprocessTypeFlag() {
-        return subprocessTypeFlag;
-    }
-
-    public void setSubprocessTypeFlag(String subprocessTypeFlag) {
-        this.subprocessTypeFlag = subprocessTypeFlag;
     }
 
     // --- Backend-routed subprocess launching ---
@@ -628,17 +563,6 @@ public class SubprocessExecutableConfig {
                 || (cpuJarPath != null && !cpuJarPath.isBlank());
     }
 
-    // Getters/setters for backend paths
-
-    public String getCudaExecutablePath() { return cudaExecutablePath; }
-    public void setCudaExecutablePath(String v) { this.cudaExecutablePath = v; }
-    public String getCpuExecutablePath() { return cpuExecutablePath; }
-    public void setCpuExecutablePath(String v) { this.cpuExecutablePath = v; }
-    public String getCudaJarPath() { return cudaJarPath; }
-    public void setCudaJarPath(String v) { this.cudaJarPath = v; }
-    public String getCpuJarPath() { return cpuJarPath; }
-    public void setCpuJarPath(String v) { this.cpuJarPath = v; }
-
     /**
      * Launch mode enumeration.
      */
@@ -656,6 +580,7 @@ public class SubprocessExecutableConfig {
         EMBEDDING,
         MODEL_INIT,
         TRAINING,
-        VLM_TEST
+        VLM_TEST,
+        GRAPH
     }
 }

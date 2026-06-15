@@ -29,9 +29,8 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Lazy;
 
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = "ai.kompile.staging.catalog.CatalogService")
 @ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 public class StagingMcpServerConfig implements ApplicationListener<ApplicationReadyEvent> {
@@ -48,7 +47,6 @@ public class StagingMcpServerConfig implements ApplicationListener<ApplicationRe
     private StagingServerPortService serverPortService;
 
     @Autowired(required = false)
-    @Lazy
     private StagingMcpToolRegistry toolRegistry;
 
     @Bean

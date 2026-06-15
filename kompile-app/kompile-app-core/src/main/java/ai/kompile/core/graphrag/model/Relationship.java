@@ -59,4 +59,10 @@ public class Relationship {
      * Additional metadata associated with the relationship.
      */
     private Map<String, Object> metadata;
+
+    /**
+     * When the real-world event represented by this relationship occurred.
+     * ISO-8601 datetime string (e.g., email sent time, doc edit time, commit timestamp).
+     */
+    private String occurredAt;
 }

@@ -21,7 +21,9 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -102,6 +104,49 @@ public class IngestPipelineDefinition {
 
     /** Target collection name for documents processed by this pipeline (null = use crawl default) */
     private String collectionName;
+
+    // ---- Graph extraction options ----
+
+    /** Entity types to extract (e.g., "PERSON", "ORGANIZATION"). Null = use defaults */
+    private List<String> extractionEntityTypes;
+
+    /** Relationship types to extract. Null = extract all discovered relationships */
+    private List<String> extractionRelationshipTypes;
+
+    /** Custom prompt template for graph extraction. Null = use default */
+    private String extractionPromptTemplate;
+
+    /** Content-signal prompt augmentations for dynamic extraction guidance */
+    @Builder.Default
+    private List<PromptAugmentation> promptAugmentations = new ArrayList<>();
+
+    /**
+     * LLM provider ID for graph extraction in this pipeline (null = use job-level default).
+     * E.g., "claude-cli", "gemini-cli".
+     */
+    private String extractionLlmProvider;
+
+    /**
+     * Model name override for graph extraction in this pipeline (null = use provider default).
+     * E.g., "claude-sonnet-4-20250514", "gemini-2.5-pro".
+     */
+    private String extractionModelName;
+
+    /**
+     * Temperature override for graph extraction LLM calls (null = use provider default).
+     * Range: 0.0 to 2.0.
+     */
+    private Double extractionTemperature;
+
+    /**
+     * Max tokens override for graph extraction LLM responses (null = use provider default).
+     */
+    private Integer extractionMaxTokens;
+
+    /**
+     * Maximum characters per extraction chunk for this pipeline (null = use job-level default).
+     */
+    private Integer maxChunkChars;
 
     /**
      * Additional processing options passed to the pipeline.

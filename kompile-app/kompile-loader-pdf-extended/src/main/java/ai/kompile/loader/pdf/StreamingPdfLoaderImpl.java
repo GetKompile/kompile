@@ -106,11 +106,16 @@ public class StreamingPdfLoaderImpl extends PdfExtendedLoaderImpl implements Str
 
         // Load the document - it will be closed when iteration completes
         PDDocument document = Loader.loadPDF(file);
-        int totalPages = document.getNumberOfPages();
+        try {
+            int totalPages = document.getNumberOfPages();
 
-        logger.info("Starting streaming PDF load: {} pages from {}", totalPages, file.getName());
+            logger.info("Starting streaming PDF load: {} pages from {}", totalPages, file.getName());
 
-        return new PdfPageIterator(document, file, totalPages, progressCallback);
+            return new PdfPageIterator(document, file, totalPages, progressCallback);
+        } catch (Exception e) {
+            document.close();
+            throw e;
+        }
     }
 
     /**

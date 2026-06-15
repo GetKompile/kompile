@@ -65,6 +65,10 @@ public class JobLogController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "500") int size) {
 
+        // Cap page size to prevent memory exhaustion
+        size = Math.max(1, Math.min(size, 1000));
+        page = Math.max(0, page);
+
         if (jobLogService == null || !jobLogService.isEnabled()) {
             return ResponseEntity.ok(Map.of(
                     "enabled", false,

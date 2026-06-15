@@ -262,7 +262,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
             this.dspFrozenCount = -1;
             this.dspPlanReport = null;
             this.dspCompilationStats = null;
-            try { runner.close(); } catch (Exception ignored) {}
+            try { runner.close(); } catch (Exception closeEx) { logger.warn("Failed to close runner after load failure: {}", closeEx.getMessage()); }
             throw e;
         } finally {
             dspPoller.shutdownNow();
@@ -459,7 +459,9 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
                     }
 
                     this.dspCompilationStats = stats;
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    logger.trace("Failed to parse DSP compilation stats from status: {}", e.getMessage());
+                }
             }
         } catch (Exception e) {
             logger.trace("DSP phase poll skipped: {}", e.getMessage());
@@ -528,7 +530,9 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         Object v = opts.get(key);
         if (v instanceof Number) return ((Number) v).intValue();
         if (v instanceof String) {
-            try { return Integer.parseInt((String) v); } catch (NumberFormatException ignored) {}
+            try { return Integer.parseInt((String) v); } catch (NumberFormatException e) {
+                logger.debug("Option '{}' has non-integer value '{}', using default {}: {}", key, v, defaultValue, e.getMessage());
+            }
         }
         return defaultValue;
     }
@@ -537,7 +541,9 @@ public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
         Object v = opts.get(key);
         if (v instanceof Number) return ((Number) v).doubleValue();
         if (v instanceof String) {
-            try { return Double.parseDouble((String) v); } catch (NumberFormatException ignored) {}
+            try { return Double.parseDouble((String) v); } catch (NumberFormatException e) {
+                logger.debug("Option '{}' has non-double value '{}', using default {}: {}", key, v, defaultValue, e.getMessage());
+            }
         }
         return defaultValue;
     }

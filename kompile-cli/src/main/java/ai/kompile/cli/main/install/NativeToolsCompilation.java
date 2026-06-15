@@ -118,9 +118,12 @@ public class NativeToolsCompilation implements Callable<Integer> {
             ProcessBuilder pb = new ProcessBuilder("tar", "xzf", archive.getAbsolutePath(), "-C", platformDir.getAbsolutePath());
             pb.inheritIO();
             Process p = pb.start();
-            int exitCode = p.waitFor();
-            if (exitCode != 0) {
-                throw new RuntimeException("tar extraction failed with exit code: " + exitCode);
+            if (!p.waitFor(300, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                throw new RuntimeException("tar extraction timed out after 300 seconds");
+            }
+            if (p.exitValue() != 0) {
+                throw new RuntimeException("tar extraction failed with exit code: " + p.exitValue());
             }
         }
 

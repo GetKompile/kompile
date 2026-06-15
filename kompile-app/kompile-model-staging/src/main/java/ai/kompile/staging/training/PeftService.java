@@ -114,10 +114,10 @@ public class PeftService {
                 log.info("Created PEFT model: type={}, base={}, trainable={}/{}", peftType, modelId, trainableParams, totalParams);
                 return result;
             } catch (Exception e) {
-                log.warn("Failed to create PEFT model from file: {}", e.getMessage());
+                log.warn("Failed to create PEFT model from file", e);
             } finally {
                 if (sd != null) {
-                    try { sd.close(); } catch (Exception ignored) {}
+                    try { sd.close(); } catch (Exception e) { log.warn("Failed to close SameDiff model", e); }
                 }
             }
         }
@@ -196,13 +196,13 @@ public class PeftService {
                 log.info("Merged PEFT weights: {} -> {} ({} adapters)", peftModelId, mergedId, mergedCount);
                 return result;
             } catch (Exception e) {
-                log.warn("Failed to merge PEFT weights: {}", e.getMessage());
+                log.warn("Failed to merge PEFT weights", e);
                 result.put("status", "failed");
                 result.put("error", e.getMessage());
                 return result;
             } finally {
                 if (sd != null) {
-                    try { sd.close(); } catch (Exception ignored) {}
+                    try { sd.close(); } catch (Exception e) { log.warn("Failed to close SameDiff model", e); }
                 }
             }
         }
@@ -263,7 +263,7 @@ public class PeftService {
                 log.debug("Failed to get PEFT info from model: {}", e.getMessage());
             } finally {
                 if (sd != null) {
-                    try { sd.close(); } catch (Exception ignored) {}
+                    try { sd.close(); } catch (Exception e) { log.warn("Failed to close SameDiff model", e); }
                 }
             }
         }

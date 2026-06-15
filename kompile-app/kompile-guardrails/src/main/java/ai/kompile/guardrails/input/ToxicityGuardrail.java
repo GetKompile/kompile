@@ -91,7 +91,9 @@ public class ToxicityGuardrail implements InputGuardrail {
             if (end > start) {
                 return response.substring(start + 1, end);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.debug("Failed to extract reason from toxicity response: {}", e.getMessage());
+        }
         return "Toxic content detected";
     }
 

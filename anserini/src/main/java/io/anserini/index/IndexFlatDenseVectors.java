@@ -50,7 +50,7 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
@@ -99,7 +99,7 @@ public final class IndexFlatDenseVectors extends AbstractIndexer {
     }
 
     try {
-      final Directory dir = FSDirectory.open(Paths.get(args.index));
+      final Directory dir = new NIOFSDirectory(Paths.get(args.index));
       final IndexWriterConfig config;
 
       if (args.quantizeInt8) {

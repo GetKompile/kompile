@@ -18,6 +18,8 @@ package ai.kompile.ocr.datapipeline.parse;
 
 import ai.kompile.ocr.datapipeline.config.OutputParseConfig;
 import ai.kompile.ocr.datapipeline.entity.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +39,8 @@ import java.util.regex.Pattern;
  * </document>
  */
 public class DocTagsParser {
+
+    private static final Logger log = LoggerFactory.getLogger(DocTagsParser.class);
 
     // Pattern for DocTags elements: <tagname><loc_N>content</tagname>
     private static final Pattern ELEMENT_PATTERN = Pattern.compile(
@@ -264,7 +268,9 @@ public class DocTagsParser {
         if (levelMatcher.find() && levelMatcher.group(1).equals("level")) {
             try {
                 level = Integer.parseInt(levelMatcher.group(2));
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException e) {
+                log.debug("Could not parse heading level '{}': {}", levelMatcher.group(2), e.getMessage());
+            }
         }
 
         return HeadingEntity.builder()

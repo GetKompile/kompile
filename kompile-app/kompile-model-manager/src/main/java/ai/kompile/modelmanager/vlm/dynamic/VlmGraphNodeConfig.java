@@ -17,6 +17,8 @@
 package ai.kompile.modelmanager.vlm.dynamic;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.*;
 
@@ -54,13 +56,17 @@ import java.util.*;
  * @author Kompile Inc.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@Getter
+@Setter
 public class VlmGraphNodeConfig {
 
     private String nodeId;
     private String stageId;
+    @Setter(value = lombok.AccessLevel.NONE)
     private List<String> inputs;
     private boolean enabled = true;
     private String modelOverrideId;
+    @Setter(value = lombok.AccessLevel.NONE)
     private Map<String, Object> parameters;
     private String condition;
 
@@ -81,66 +87,14 @@ public class VlmGraphNodeConfig {
         this.condition = builder.condition;
     }
 
-    // Getters and setters
-
-    public String getNodeId() {
-        return nodeId;
-    }
-
-    public void setNodeId(String nodeId) {
-        this.nodeId = nodeId;
-    }
-
-    public String getStageId() {
-        return stageId;
-    }
-
-    public void setStageId(String stageId) {
-        this.stageId = stageId;
-    }
-
-    public List<String> getInputs() {
-        return inputs;
-    }
+    // Non-trivial setters with null-safety (cannot use Lombok for these)
 
     public void setInputs(List<String> inputs) {
         this.inputs = inputs != null ? inputs : new ArrayList<>();
     }
 
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-
-    public String getModelOverrideId() {
-        return modelOverrideId;
-    }
-
-    public void setModelOverrideId(String modelOverrideId) {
-        this.modelOverrideId = modelOverrideId;
-    }
-
-    public Map<String, Object> getParameters() {
-        return parameters;
-    }
-
     public void setParameters(Map<String, Object> parameters) {
         this.parameters = parameters != null ? parameters : new LinkedHashMap<>();
-    }
-
-    /**
-     * Optional condition expression for conditional execution.
-     * If set, this node only executes if the condition evaluates to true.
-     */
-    public String getCondition() {
-        return condition;
-    }
-
-    public void setCondition(String condition) {
-        this.condition = condition;
     }
 
     /**

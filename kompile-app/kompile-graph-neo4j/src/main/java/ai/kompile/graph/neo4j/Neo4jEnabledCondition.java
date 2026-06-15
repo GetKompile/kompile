@@ -37,6 +37,7 @@ import java.nio.file.Paths;
 public class Neo4jEnabledCondition implements Condition {
 
     private static final String CONFIG_FILENAME = "kg-embedding-config.json";
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     @Override
     public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
@@ -49,8 +50,7 @@ public class Neo4jEnabledCondition implements Condition {
                 return false;
             }
 
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(configFilePath.toFile());
+            JsonNode root = OBJECT_MAPPER.readTree(configFilePath.toFile());
             JsonNode neo4jNode = root.path("neo4j");
 
             boolean enabled = neo4jNode.path("enabled").asBoolean(false);

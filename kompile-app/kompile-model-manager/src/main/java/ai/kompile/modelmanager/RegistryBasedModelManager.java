@@ -79,6 +79,7 @@ public class RegistryBasedModelManager {
     private volatile JsonNode localRegistry;
     private volatile long localRegistryFetchTime;
     private static final long LOCAL_REGISTRY_CACHE_TTL_MS = 30000; // 30 seconds
+    private static final int BUFFER_SIZE = 8192; // SHA-256 read buffer
 
     // Cached active selections
     private volatile Map<String, String> activeSelections;
@@ -178,7 +179,7 @@ public class RegistryBasedModelManager {
         // Check cache
         long now = System.currentTimeMillis();
         if (activeSelections != null && (now - activeSelectionsFetchTime) < REGISTRY_CACHE_TTL_MS) {
-            return activeSelections;
+            return Collections.unmodifiableMap(activeSelections);
         }
 
         String baseUrl = stagingUrl.endsWith("/") ? stagingUrl.substring(0, stagingUrl.length() - 1) : stagingUrl;
@@ -233,7 +234,7 @@ public class RegistryBasedModelManager {
             logger.warn("Error fetching active selections from {}: {}", url, e.getMessage());
         }
 
-        return activeSelections != null ? activeSelections : Map.of();
+        return activeSelections != null ? Collections.unmodifiableMap(activeSelections) : Map.of();
     }
 
     /**
@@ -606,9 +607,10 @@ public class RegistryBasedModelManager {
      * Get an encoder model bundle.
      */
     public KompileModelManager.ModelBundle getEncoderModelBundle(String modelId) {
-        // Check cache
-        if (bundleCache.containsKey(modelId)) {
-            return bundleCache.get(modelId);
+        // Check cache — use putIfAbsent-style to avoid TOCTOU race
+        KompileModelManager.ModelBundle cached = bundleCache.get(modelId);
+        if (cached != null) {
+            return cached;
         }
 
         Optional<ModelEntry> entryOpt = getModelEntry(modelId);
@@ -619,7 +621,8 @@ public class RegistryBasedModelManager {
         try {
             KompileModelManager.ModelBundle bundle = loadModelBundle(modelId, entryOpt.get());
             if (bundle != null) {
-                bundleCache.put(modelId, bundle);
+                KompileModelManager.ModelBundle existing = bundleCache.putIfAbsent(modelId, bundle);
+                return existing != null ? existing : bundle;
             }
             return bundle;
         } catch (IOException e) {
@@ -631,9 +634,10 @@ public class RegistryBasedModelManager {
      * Get a cross-encoder model bundle.
      */
     public KompileModelManager.CrossEncoderBundle getCrossEncoderModelBundle(String modelId) {
-        // Check cache
-        if (crossEncoderCache.containsKey(modelId)) {
-            return crossEncoderCache.get(modelId);
+        // Check cache — use putIfAbsent-style to avoid TOCTOU race
+        KompileModelManager.CrossEncoderBundle cached = crossEncoderCache.get(modelId);
+        if (cached != null) {
+            return cached;
         }
 
         Optional<ModelEntry> entryOpt = getModelEntry(modelId);
@@ -644,7 +648,8 @@ public class RegistryBasedModelManager {
         try {
             KompileModelManager.CrossEncoderBundle bundle = loadCrossEncoderBundle(modelId, entryOpt.get());
             if (bundle != null) {
-                crossEncoderCache.put(modelId, bundle);
+                KompileModelManager.CrossEncoderBundle existing = crossEncoderCache.putIfAbsent(modelId, bundle);
+                return existing != null ? existing : bundle;
             }
             return bundle;
         } catch (IOException e) {
@@ -911,8 +916,8 @@ public class RegistryBasedModelManager {
         try {
             java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
             try (InputStream is = Files.newInputStream(file);
-                 BufferedInputStream bis = new BufferedInputStream(is, 8192)) {
-                byte[] buffer = new byte[8192];
+                 BufferedInputStream bis = new BufferedInputStream(is, BUFFER_SIZE)) {
+                byte[] buffer = new byte[BUFFER_SIZE];
                 int bytesRead;
                 while ((bytesRead = bis.read(buffer)) != -1) {
                     digest.update(buffer, 0, bytesRead);

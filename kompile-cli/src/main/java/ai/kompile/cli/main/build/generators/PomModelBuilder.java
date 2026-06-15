@@ -148,8 +148,16 @@ public class PomModelBuilder {
             props.setProperty("javacpp.platform", config.getJavacppPlatform());
         }
 
+        // ND4J CUDA version property — drives the backend artifact ID.
+        // Default: 12.9. Override at build time with -Dnd4j.cuda.version=12.6
+        if (config.getCudaVersion() != null && !config.getCudaVersion().isBlank()) {
+            props.setProperty("nd4j.cuda.version", config.getCudaVersion());
+        } else {
+            props.setProperty("nd4j.cuda.version", "12.9");
+        }
+
         // ND4J backend property — referenced by the ND4J backend dependencies below.
-        // Defaults to nd4j-cuda-12.9 (see BuildConfiguration.Builder.backend).
+        // Uses ${nd4j.cuda.version} so CUDA version is overridable via a single property.
         if (config.getBackend() != null && !config.getBackend().isBlank()) {
             props.setProperty("backend", config.getBackend());
         }

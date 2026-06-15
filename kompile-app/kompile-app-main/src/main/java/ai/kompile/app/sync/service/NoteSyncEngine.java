@@ -49,6 +49,10 @@ import java.util.Optional;
 @Service
 public class NoteSyncEngine {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected NoteSyncEngine() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(NoteSyncEngine.class);
 
     @Autowired
@@ -72,6 +76,7 @@ public class NoteSyncEngine {
     /**
      * Run a full sync cycle for a given connection.
      */
+    @Transactional
     public SyncRunResult syncConnection(Long connectionId) {
         NoteSyncConnection conn = connectionRepository.findById(connectionId)
                 .orElseThrow(() -> new IllegalArgumentException("Connection not found: " + connectionId));

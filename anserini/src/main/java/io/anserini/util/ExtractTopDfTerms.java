@@ -40,7 +40,7 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
@@ -95,7 +95,7 @@ public class ExtractTopDfTerms {
       return;
     }
 
-    Directory dir = FSDirectory.open(Paths.get(myArgs.index));
+    Directory dir = new NIOFSDirectory(Paths.get(myArgs.index));
     IndexReader reader = DirectoryReader.open(dir);
     int numDocs = reader.numDocs();
 

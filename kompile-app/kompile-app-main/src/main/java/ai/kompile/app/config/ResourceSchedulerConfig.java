@@ -18,6 +18,8 @@ package ai.kompile.app.config;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -27,6 +29,8 @@ import java.util.Map;
  * Persisted to {@code ~/.kompile/config/resource-scheduler-config.json}.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
+@Getter
+@Setter
 public class ResourceSchedulerConfig {
 
     @JsonProperty("enabled")
@@ -101,59 +105,11 @@ public class ResourceSchedulerConfig {
     @JsonProperty("externalAuthToken")
     private String externalAuthToken = "";
 
-    // --- Getters and Setters ---
-
-    public boolean isEnabled() { return enabled; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
-
-    public int getGlobalQueueDepth() { return globalQueueDepth; }
-    public void setGlobalQueueDepth(int depth) { this.globalQueueDepth = depth; }
-
-    public Map<String, Integer> getMaxConcurrentByType() { return maxConcurrentByType; }
-    public void setMaxConcurrentByType(Map<String, Integer> m) { this.maxConcurrentByType = m; }
-
-    public String getSchedulingAlgorithm() { return schedulingAlgorithm; }
-    public void setSchedulingAlgorithm(String alg) { this.schedulingAlgorithm = alg; }
-
-    public long getDispatchIntervalMs() { return dispatchIntervalMs; }
-    public void setDispatchIntervalMs(long ms) { this.dispatchIntervalMs = ms; }
-
-    public long getQueueTimeoutMs() { return queueTimeoutMs; }
-    public void setQueueTimeoutMs(long ms) { this.queueTimeoutMs = ms; }
-
-    public boolean isPhaseAwareYieldEnabled() { return phaseAwareYieldEnabled; }
-    public void setPhaseAwareYieldEnabled(boolean b) { this.phaseAwareYieldEnabled = b; }
-
-    public long getBatchWindowMs() { return batchWindowMs; }
-    public void setBatchWindowMs(long ms) { this.batchWindowMs = ms; }
-
-    public int getHistoryRetentionDays() { return historyRetentionDays; }
-    public void setHistoryRetentionDays(int days) { this.historyRetentionDays = days; }
-
-    public int getMaxHistoryEntries() { return maxHistoryEntries; }
-    public void setMaxHistoryEntries(int max) { this.maxHistoryEntries = max; }
+    // --- Computed / non-trivial methods ---
 
     public int getMaxConcurrentForType(String type) {
         return maxConcurrentByType.getOrDefault(type, 1);
     }
-
-    public String getExternalSchedulerMode() { return externalSchedulerMode; }
-    public void setExternalSchedulerMode(String mode) { this.externalSchedulerMode = mode; }
-
-    public String getKubernetesNamespace() { return kubernetesNamespace; }
-    public void setKubernetesNamespace(String ns) { this.kubernetesNamespace = ns; }
-
-    public String getKubernetesServiceAccount() { return kubernetesServiceAccount; }
-    public void setKubernetesServiceAccount(String sa) { this.kubernetesServiceAccount = sa; }
-
-    public String getKubernetesJobImage() { return kubernetesJobImage; }
-    public void setKubernetesJobImage(String image) { this.kubernetesJobImage = image; }
-
-    public String getExternalWebhookUrl() { return externalWebhookUrl; }
-    public void setExternalWebhookUrl(String url) { this.externalWebhookUrl = url; }
-
-    public String getExternalAuthToken() { return externalAuthToken; }
-    public void setExternalAuthToken(String token) { this.externalAuthToken = token; }
 
     public boolean isExternalSchedulerEnabled() {
         return externalSchedulerMode != null

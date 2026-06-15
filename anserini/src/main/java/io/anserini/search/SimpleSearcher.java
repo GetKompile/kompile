@@ -82,7 +82,7 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.search.similarities.LMDirichletSimilarity;
 import org.apache.lucene.search.similarities.Similarity;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -146,7 +146,7 @@ public class SimpleSearcher implements Closeable {
       throw new IllegalArgumentException(indexDir + " does not exist or is not a directory.");
     }
 
-    this.reader = DirectoryReader.open(FSDirectory.open(indexPath));
+    this.reader = DirectoryReader.open(new NIOFSDirectory(indexPath));
 
     // Fix for index compatibility issue between Lucene 8 and 9: https://github.com/castorini/anserini/issues/1952
     // If we detect an older index version, we turn off consistent tie-breaking, which avoids accessing docvalues,

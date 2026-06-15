@@ -33,6 +33,7 @@ import {
   ControlAttestation,
   SpelResult
 } from '../../services/process-engine.service';
+import { ProcessAttributionService, ProcessEventAlert } from '../../services/process-attribution.service';
 
 type ViewMode = 'list' | 'create' | 'detail';
 
@@ -258,6 +259,112 @@ type ViewMode = 'list' | 'create' | 'detail';
             </div>
           </div>
         </div>
+
+        <mat-divider class="section-divider"></mat-divider>
+
+        <!-- Failure Analysis -->
+        <div class="evaluate-section">
+          <div class="section-label">Failure Analysis (Attribution)</div>
+          <p class="hint">Investigate why this control failed on a specific run/step using causal attribution.</p>
+          <div class="eval-form">
+            <mat-form-field appearance="outline">
+              <mat-label>Workflow Run ID</mat-label>
+              <input matInput [(ngModel)]="failureRunId" placeholder="run-id">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Step ID</mat-label>
+              <input matInput [(ngModel)]="failureStepId" placeholder="step-id">
+            </mat-form-field>
+            <button mat-raised-button color="accent" (click)="analyzeFailure()"
+                    [disabled]="analyzingFailure || !failureRunId.trim() || !failureStepId.trim()">
+              <mat-icon>psychology</mat-icon> {{ analyzingFailure ? 'Analyzing...' : 'Analyze Failure' }}
+            </button>
+          </div>
+
+          <div *ngIf="failureAlert" class="failure-analysis-result">
+            <div class="failure-header">
+              <mat-icon [class]="'severity-' + (failureAlert.severity || 'medium').toLowerCase()">
+                {{ failureAlert.severity === 'CRITICAL' ? 'error' :
+                   failureAlert.severity === 'HIGH' ? 'warning' : 'info' }}
+              </mat-icon>
+              <span class="failure-title">{{ failureAlert.title }}</span>
+              <mat-chip [class]="'severity-chip severity-chip-' + (failureAlert.severity || 'medium').toLowerCase()">
+                {{ failureAlert.severity }}
+              </mat-chip>
+            </div>
+            <p class="failure-explanation" *ngIf="failureAlert.explanation">{{ failureAlert.explanation }}</p>
+            <div class="failure-meta">
+              <span>{{ (failureAlert.confidence * 100).toFixed(0) }}% confidence</span>
+              <span *ngIf="failureAlert.causalChains?.length">{{ failureAlert.causalChains.length }} causal chains</span>
+              <span *ngIf="failureAlert.predictions?.length">{{ failureAlert.predictions.length }} predictions</span>
+              <span class="alert-type-badge" *ngIf="failureAlert.alertType">{{failureAlert.alertType}}</span>
+              <span class="alert-id-badge" *ngIf="failureAlert.alertId" [matTooltip]="failureAlert.alertId">ID: {{failureAlert.alertId | slice:0:8}}</span>
+              <span class="alert-timestamp" *ngIf="failureAlert.createdAt">{{failureAlert.createdAt | slice:0:19}}</span>
+              <mat-icon *ngIf="failureAlert.acknowledged" class="alert-ack-icon" matTooltip="Acknowledged">check_circle</mat-icon>
+              <mat-icon *ngIf="failureAlert.llmUsed" class="alert-llm-icon" matTooltip="LLM-assisted">smart_toy</mat-icon>
+            </div>
+
+            <div *ngIf="failureAlert.causalChains?.length" class="failure-chains">
+              <span class="chains-label">Causal Chains</span>
+              <div *ngFor="let chain of failureAlert.causalChains; let i = index" class="chain-card">
+                <span class="chain-index">{{ i + 1 }}</span>
+                <span class="chain-detail">
+                  {{ chain.rootCauseTitle }} → {{ chain.hops?.length || 0 }} hops → {{ chain.targetEventTitle }}
+                </span>
+                <span class="chain-conf" [style.color]="chain.overallConfidence >= 0.7 ? '#ef5350' : chain.overallConfidence >= 0.4 ? '#ffb74d' : '#66bb6a'">
+                  {{ (chain.overallConfidence * 100).toFixed(0) }}%
+                </span>
+              </div>
+            </div>
+
+            <!-- Predictions detail -->
+            <div *ngIf="failureAlert.predictions?.length" class="failure-predictions">
+              <span class="chains-label">Predictions</span>
+              <div *ngFor="let pred of failureAlert.predictions" class="pred-card">
+                <span class="pred-title-sm" [matTooltip]="pred.nodeId">{{ pred.title || pred.nodeId | slice:0:24 }}</span>
+                <span class="pred-prob-sm"
+                      [style.color]="pred.probability >= 0.7 ? '#ef5350' : pred.probability >= 0.4 ? '#ffb74d' : '#66bb6a'">
+                  {{ (pred.probability * 100).toFixed(0) }}%
+                </span>
+                <span class="pred-hops-sm">{{ pred.hopsFromSource }} hops</span>
+                <span *ngIf="pred.explanation" class="pred-expl-sm" [matTooltip]="pred.explanation">
+                  {{ pred.explanation | slice:0:50 }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Bayesian priors / posteriors -->
+            <div *ngIf="failureAlert.bayesianPosteriors && hasKeys(failureAlert.bayesianPosteriors)" class="failure-bayesian">
+              <span class="chains-label">Bayesian Inference</span>
+              <div *ngFor="let nodeId of getObjectKeys(failureAlert.bayesianPosteriors!)" class="bayesian-row">
+                <span class="bayesian-node-id" [matTooltip]="nodeId">{{ nodeId | slice:0:20 }}</span>
+                <span class="bayesian-vals">
+                  <span class="bayesian-prior" *ngIf="failureAlert.bayesianPriors?.[nodeId] != null">
+                    {{ ((failureAlert.bayesianPriors?.[nodeId] ?? 0) * 100).toFixed(1) }}%
+                  </span>
+                  <mat-icon class="bayesian-arrow" *ngIf="failureAlert.bayesianPriors?.[nodeId] != null">arrow_forward</mat-icon>
+                  <span class="bayesian-posterior"
+                        [style.color]="failureAlert.bayesianPosteriors![nodeId] >= 0.7 ? '#ef5350' : failureAlert.bayesianPosteriors![nodeId] >= 0.4 ? '#ffb74d' : '#66bb6a'">
+                    {{ (failureAlert.bayesianPosteriors![nodeId] * 100).toFixed(1) }}%
+                  </span>
+                </span>
+                <ng-container *ngIf="failureAlert.mebnMeta?.[nodeId] as meta">
+                  <div class="alert-mebn-badges">
+                    <span class="alert-mebn-badge alert-mfrag">{{meta.mfragName}}</span>
+                    <span class="alert-mebn-badge alert-role"
+                          [class.alert-role-resident]="meta.nodeRole === 'RESIDENT'"
+                          [class.alert-role-input]="meta.nodeRole === 'INPUT'">{{meta.nodeRole}}</span>
+                    <span *ngIf="meta.entityType" class="alert-mebn-badge alert-etype">{{meta.entityType}}</span>
+                  </div>
+                </ng-container>
+              </div>
+            </div>
+
+            <button mat-button (click)="failureAlert = null" class="clear-btn">
+              <mat-icon>close</mat-icon> Clear
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   `,
@@ -358,6 +465,50 @@ type ViewMode = 'list' | 'create' | 'detail';
     .test-fail mat-icon { color: #ef5350; }
     .test-result-info { font-size: 12px; }
     .test-verdict { font-weight: 500; }
+
+    /* Failure Analysis */
+    .hint { font-size: 12px; color: #aaa; margin: 0 0 8px; }
+    .failure-analysis-result {
+      background: rgba(239,83,80,0.05); border: 1px solid rgba(239,83,80,0.15);
+      border-radius: 8px; padding: 12px; margin-top: 12px; max-width: 700px;
+    }
+    .failure-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .failure-header mat-icon { font-size: 20px; width: 20px; height: 20px; }
+    .failure-title { flex: 1; font-size: 14px; font-weight: 500; }
+    .failure-explanation { font-size: 12px; color: #bbb; margin: 0 0 8px; border-left: 3px solid #667eea; padding-left: 10px; }
+    .failure-meta { display: flex; gap: 12px; font-size: 11px; color: #888; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
+    .alert-type-badge { padding: 1px 5px; border-radius: 3px; background: rgba(144,202,249,0.12); color: #90caf9; font-size: 9px; font-weight: 500; }
+    .alert-id-badge { font-family: monospace; font-size: 9px; color: #777; cursor: default; }
+    .alert-timestamp { font-family: monospace; font-size: 9px; color: #777; }
+    .alert-ack-icon { font-size: 14px !important; width: 14px !important; height: 14px !important; color: #66bb6a; }
+    .alert-llm-icon { font-size: 14px !important; width: 14px !important; height: 14px !important; color: #ce93d8; }
+    .alert-mebn-badges { display: flex; gap: 4px; margin-top: 2px; }
+    .alert-mebn-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
+    .alert-mfrag { background: rgba(102,126,234,0.15); color: #90caf9; }
+    .alert-role { background: rgba(255,255,255,0.06); color: #aaa; }
+    .alert-role-resident { color: #81c784; }
+    .alert-role-input { color: #ffb74d; }
+    .alert-etype { background: rgba(206,147,216,0.15); color: #ce93d8; }
+    .failure-chains { margin-top: 8px; }
+    .chains-label { font-size: 11px; font-weight: 600; color: #999; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px; }
+    .chain-card { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: rgba(255,255,255,0.02); border-radius: 4px; margin-bottom: 4px; font-size: 12px; }
+    .chain-index { font-size: 10px; font-weight: 600; color: #667eea; width: 16px; text-align: center; }
+    .chain-detail { flex: 1; color: #bbb; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chain-conf { font-weight: 600; font-family: monospace; font-size: 11px; }
+    .failure-predictions { margin-top: 8px; }
+    .pred-card { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: rgba(255,255,255,0.02); border-radius: 4px; margin-bottom: 4px; font-size: 12px; }
+    .pred-title-sm { color: #bbb; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pred-prob-sm { font-weight: 600; font-family: monospace; font-size: 11px; min-width: 32px; text-align: right; }
+    .pred-hops-sm { color: #888; font-size: 10px; }
+    .pred-expl-sm { color: #aaa; font-style: italic; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .failure-bayesian { margin-top: 8px; }
+    .bayesian-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; font-size: 12px; background: rgba(255,255,255,0.02); border-radius: 4px; margin-bottom: 3px; }
+    .bayesian-node-id { color: #aaa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; font-size: 11px; }
+    .bayesian-vals { display: flex; align-items: center; gap: 4px; }
+    .bayesian-prior { color: #888; font-size: 11px; }
+    .bayesian-arrow { font-size: 12px; width: 12px; height: 12px; color: #666; }
+    .bayesian-posterior { font-weight: 600; font-family: monospace; }
+    .clear-btn { margin-top: 8px; }
   `]
 })
 export class ProcessControlsComponent implements OnInit {
@@ -383,8 +534,15 @@ export class ProcessControlsComponent implements OnInit {
   testingExpr = false;
   testResult: SpelResult | null = null;
 
+  // Failure analysis state
+  failureRunId = '';
+  failureStepId = '';
+  analyzingFailure = false;
+  failureAlert: ProcessEventAlert | null = null;
+
   constructor(
     private processEngineService: ProcessEngineService,
+    private processAttributionService: ProcessAttributionService,
     private snackBar: MatSnackBar
   ) {}
 
@@ -409,6 +567,7 @@ export class ProcessControlsComponent implements OnInit {
   backToList(): void {
     this.viewMode = 'list';
     this.evalResult = null;
+    this.failureAlert = null;
   }
 
   createControl(): void {
@@ -493,6 +652,24 @@ export class ProcessControlsComponent implements OnInit {
     });
   }
 
+  analyzeFailure(): void {
+    if (!this.selectedControl?.id) return;
+    this.analyzingFailure = true;
+    this.failureAlert = null;
+    this.processAttributionService.explainControlFailure(
+      this.failureRunId, this.failureStepId, this.selectedControl.id
+    ).subscribe({
+      next: (result) => {
+        this.failureAlert = result;
+        this.analyzingFailure = false;
+      },
+      error: (err) => {
+        this.snackBar.open('Failure analysis failed: ' + (err.error?.message || err.message), 'Close', { duration: 4000 });
+        this.analyzingFailure = false;
+      }
+    });
+  }
+
   getSeverityIcon(severity: string): string {
     switch (severity) {
       case 'LOW': return 'info';
@@ -501,5 +678,13 @@ export class ProcessControlsComponent implements OnInit {
       case 'CRITICAL': return 'error';
       default: return 'info';
     }
+  }
+
+  hasKeys(obj: any): boolean {
+    return obj && Object.keys(obj).length > 0;
+  }
+
+  getObjectKeys(obj: Record<string, any>): string[] {
+    return obj ? Object.keys(obj) : [];
   }
 }

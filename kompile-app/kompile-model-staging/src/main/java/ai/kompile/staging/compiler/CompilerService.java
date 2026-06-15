@@ -627,7 +627,7 @@ public class CompilerService {
                     .tritonOverrideArch(env.tritonOverrideArch())
                     .build();
         } catch (Exception e) {
-            log.warn("Failed to read Triton config: {}", e.getMessage());
+            log.warn("Failed to read Triton config", e);
             return TritonConfigResponse.builder().build();
         }
     }
@@ -759,7 +759,7 @@ public class CompilerService {
             }
             result.put("success", true);
         } catch (Exception e) {
-            log.warn("Failed to clear cache: {}", e.getMessage());
+            log.warn("Failed to clear cache", e);
             result.put("success", false);
             result.put("error", e.getMessage());
         }
@@ -786,7 +786,7 @@ public class CompilerService {
             }
             result.put("success", true);
         } catch (Exception e) {
-            log.warn("Failed to set cache enabled: {}", e.getMessage());
+            log.warn("Failed to set cache enabled", e);
             result.put("success", false);
             result.put("error", e.getMessage());
         }
@@ -852,7 +852,7 @@ public class CompilerService {
                     .build());
 
         } catch (Exception e) {
-            log.warn("Failed to get device cache status: {}", e.getMessage());
+            log.warn("Failed to get device cache status", e);
             builder.availableDevices(0)
                     .devices(Collections.emptyList())
                     .tadCache(DeviceCacheStatusResponse.NativeCacheInfo.builder()
@@ -888,7 +888,7 @@ public class CompilerService {
             }
             result.put("success", true);
         } catch (Exception e) {
-            log.warn("Failed to clear native cache: {}", e.getMessage());
+            log.warn("Failed to clear native cache", e);
             result.put("success", false);
             result.put("error", e.getMessage());
         }
@@ -1058,7 +1058,7 @@ public class CompilerService {
                     List<OptimizerSet> sets = resolveOptimizerSets(passes);
                     optimized = GraphOptimizer.optimize(sd, request.getTargetOutputs(), sets);
                 } catch (Exception e) {
-                    log.warn("Subgraph extraction failed, applying standard passes: {}", e.getMessage());
+                    log.warn("Subgraph extraction failed, applying standard passes", e);
                     optimized = applyOptimizations(sd, passes, request.getMaxIterations());
                 }
             } else {
@@ -1180,7 +1180,7 @@ public class CompilerService {
                     modelId, optimizationTimeMs, passes, stats, config);
             log.info("Updated registry optimization metadata for model: {}", modelId);
         } catch (Exception e) {
-            log.warn("Failed to update registry optimization metadata for {}: {}", modelId, e.getMessage());
+            log.warn("Failed to update registry optimization metadata for '{}'", modelId, e);
         }
     }
 
@@ -1195,7 +1195,7 @@ public class CompilerService {
                 return magic[0] == 0x50 && magic[1] == 0x4B;
             }
         } catch (IOException e) {
-            log.warn("Failed to read magic bytes from {}: {}", file.getName(), e.getMessage());
+            log.warn("Failed to read magic bytes from {}", file.getName(), e);
         }
         return false;
     }
@@ -1584,6 +1584,24 @@ public class CompilerService {
 
             emitJobStatus(jobId, completedStatus);
 
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.warn("Compilation job {} interrupted", jobId);
+            emitLog(jobId, "WARN", "COMPILATION", "Compilation interrupted");
+            CompilationJobStatus cancelledStatus = CompilationJobStatus.builder()
+                    .jobId(jobId)
+                    .modelId(request.getModelId())
+                    .status("CANCELLED")
+                    .compilationMode(request.getCompilationMode())
+                    .executionMode(request.getExecutionMode())
+                    .progressPercent(0)
+                    .currentPhase("CANCELLED")
+                    .error("Interrupted")
+                    .completedAt(Instant.now().toString())
+                    .build();
+            activeJobs.put(jobId, cancelledStatus);
+            emitJobStatus(jobId, cancelledStatus);
+            return;
         } catch (Exception e) {
             log.error("Compilation job {} failed", jobId, e);
             emitLog(jobId, "ERROR", "COMPILATION", "Compilation failed: " + e.getMessage());

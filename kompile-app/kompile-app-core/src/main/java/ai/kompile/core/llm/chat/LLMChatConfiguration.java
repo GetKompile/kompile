@@ -17,6 +17,8 @@
 package ai.kompile.core.llm.chat;
 
 import ai.kompile.core.embeddings.VectorStore;
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -44,6 +46,8 @@ public class LLMChatConfiguration {
      * Configuration properties for LLMChat.
      */
     @ConfigurationProperties(prefix = "kompile.llm.chat")
+    @Getter
+    @Setter
     public static class LLMChatProperties {
         
         /**
@@ -76,53 +80,6 @@ public class LLMChatConfiguration {
          */
         private double ragSimilarityThreshold = 0.0;
 
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        public String getDefaultSystem() {
-            return defaultSystem;
-        }
-
-        public void setDefaultSystem(String defaultSystem) {
-            this.defaultSystem = defaultSystem;
-        }
-
-        public boolean isAutoConfigureMemory() {
-            return autoConfigureMemory;
-        }
-
-        public void setAutoConfigureMemory(boolean autoConfigureMemory) {
-            this.autoConfigureMemory = autoConfigureMemory;
-        }
-
-        public boolean isAutoConfigureRag() {
-            return autoConfigureRag;
-        }
-
-        public void setAutoConfigureRag(boolean autoConfigureRag) {
-            this.autoConfigureRag = autoConfigureRag;
-        }
-
-        public int getRagMaxDocuments() {
-            return ragMaxDocuments;
-        }
-
-        public void setRagMaxDocuments(int ragMaxDocuments) {
-            this.ragMaxDocuments = ragMaxDocuments;
-        }
-
-        public double getRagSimilarityThreshold() {
-            return ragSimilarityThreshold;
-        }
-
-        public void setRagSimilarityThreshold(double ragSimilarityThreshold) {
-            this.ragSimilarityThreshold = ragSimilarityThreshold;
-        }
     }
 
     /**

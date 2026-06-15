@@ -222,7 +222,9 @@ public class PageRankComputer {
                     }
                 }
             }
-            proc.waitFor();
+            if (!proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly();
+            }
 
             if (!fileOrder.isEmpty()) {
                 int maxOrder = order;

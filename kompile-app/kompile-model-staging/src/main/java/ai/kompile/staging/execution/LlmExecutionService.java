@@ -603,26 +603,22 @@ public class LlmExecutionService {
         // Check for named presets first
         if (request.getPresetName() != null) {
             switch (request.getPresetName().toLowerCase()) {
-                case "greedy": {
-                    SamplingConfig sc = SamplingConfig.greedy();
-                    sc.setMaxNewTokens(request.getMaxTokens());
-                    return sc;
-                }
-                case "default": {
-                    SamplingConfig sc = SamplingConfig.defaultConfig();
-                    sc.setMaxNewTokens(request.getMaxTokens());
-                    return sc;
-                }
-                case "creative": {
-                    SamplingConfig sc = SamplingConfig.creative();
-                    sc.setMaxNewTokens(request.getMaxTokens());
-                    return sc;
-                }
-                case "precise": {
-                    SamplingConfig sc = SamplingConfig.precise();
-                    sc.setMaxNewTokens(request.getMaxTokens());
-                    return sc;
-                }
+                case "greedy":
+                    return SamplingConfig.builder()
+                            .doSample(false).temperature(0.0)
+                            .maxNewTokens(request.getMaxTokens()).build();
+                case "default":
+                    return SamplingConfig.builder()
+                            .temperature(0.7).topP(0.9).doSample(true)
+                            .maxNewTokens(request.getMaxTokens()).build();
+                case "creative":
+                    return SamplingConfig.builder()
+                            .temperature(0.9).topK(50).topP(0.95).doSample(true)
+                            .maxNewTokens(request.getMaxTokens()).build();
+                case "precise":
+                    return SamplingConfig.builder()
+                            .temperature(0.3).topP(0.85).doSample(true)
+                            .maxNewTokens(request.getMaxTokens()).build();
                 default:
                     log.warn("Unknown sampling preset '{}', using explicit parameters", request.getPresetName());
                     break;

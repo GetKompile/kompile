@@ -39,9 +39,9 @@ import java.util.stream.Collectors;
 public class EntityCategoryServiceImpl {
     private static final Logger log = LoggerFactory.getLogger(EntityCategoryServiceImpl.class);
 
-    private final EntityCategoryRepository categoryRepository;
-    private final GraphNodeRepository nodeRepository;
-    private final ObjectMapper objectMapper;
+    private EntityCategoryRepository categoryRepository;
+    private GraphNodeRepository nodeRepository;
+    private ObjectMapper objectMapper;
 
     public EntityCategoryServiceImpl(EntityCategoryRepository categoryRepository,
                                      GraphNodeRepository nodeRepository,
@@ -50,6 +50,10 @@ public class EntityCategoryServiceImpl {
         this.nodeRepository = nodeRepository;
         this.objectMapper = objectMapper;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected EntityCategoryServiceImpl() {}
+
 
     // ── CRUD ────────────────────────────────────────────────────
 
@@ -361,7 +365,8 @@ public class EntityCategoryServiceImpl {
                 meta.remove("taxonomyDomain");
                 entity.setMetadataJson(objectMapper.writeValueAsString(meta));
                 nodeRepository.save(entity);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.warn("Failed to uncategorize entity {}: {}", entity.getNodeId(), e.getMessage());
             }
         }
     }

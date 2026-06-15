@@ -207,4 +207,98 @@ class PiParserTest {
         List<PassthroughEvent> events = parser.parsePiLineMulti(line);
         AgentOutputAssertions.assertThat(events).isEmpty();
     }
+
+    // ===================================================================
+    // Non-JSON plain-text fallback
+    // ===================================================================
+
+    @Test
+    void nonJsonText_shouldProduceTextChunk() {
+        String line = ParserTestFixtures.piPlainText("Here is a plain text response from Pi.");
+        PassthroughEvent event = parser.parsePiLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasTextContaining("Here is a plain text response from Pi.");
+    }
+
+    @Test
+    void nonJsonTextWithMarkdown_shouldPreserveFormatting() {
+        String line = "**Bold** and `code` and [link](http://example.com)";
+        PassthroughEvent event = parser.parsePiLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasTextContaining("**Bold**");
+    }
+
+    @Test
+    void nonJsonTextWithSpecialChars_shouldPreserve() {
+        String line = "Error: file → not found (check /tmp/foo.txt)";
+        PassthroughEvent event = parser.parsePiLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasTextContaining("file");
+    }
+
+    // ===================================================================
+    // Tool execution with error exit code
+    // ===================================================================
+
+    @Test
+    void toolExecutionEnd_withErrorExitCode_shouldHaveErrorFlag() {
+        parser.parsePiLine(ParserTestFixtures.piToolStart("call-err-001", "bash", "{}"));
+        String line = ParserTestFixtures.piToolEnd("call-err-001", "bash", "command not found\n", 127);
+        PassthroughEvent event = parser.parsePiLine(line);
+
+        ToolComplete tc = AgentOutputAssertions.assertThat(event).firstOfType(ToolComplete.class);
+        assertNotNull(tc);
+        assertEquals(127, tc.exitCode());
+        // exitCode != 0 should set error=true
+        assertTrue(tc.error(), "Non-zero exit code should set error=true");
+    }
+
+    // ===================================================================
+    // Multiple tool executions — independent delta tracking
+    // ===================================================================
+
+    @Test
+    void multipleToolExecutions_shouldTrackDeltasIndependently() {
+        // Start two tool calls
+        parser.parsePiLine(ParserTestFixtures.piToolStart("tool-a", "bash", "{}"));
+        parser.parsePiLine(ParserTestFixtures.piToolStart("tool-b", "grep", "{}"));
+
+        // Update tool-a
+        parser.parsePiLine(ParserTestFixtures.piToolUpdate("tool-a", "output-a-partial"));
+        // Update tool-b
+        parser.parsePiLine(ParserTestFixtures.piToolUpdate("tool-b", "output-b-partial"));
+
+        // Complete tool-a with more output
+        PassthroughEvent eventA = parser.parsePiLine(
+                ParserTestFixtures.piToolEnd("tool-a", "bash", "output-a-partial-and-more", 0));
+        // Complete tool-b with more output
+        PassthroughEvent eventB = parser.parsePiLine(
+                ParserTestFixtures.piToolEnd("tool-b", "grep", "output-b-partial-full", 0));
+
+        ToolComplete tcA = AgentOutputAssertions.assertThat(eventA).firstOfType(ToolComplete.class);
+        ToolComplete tcB = AgentOutputAssertions.assertThat(eventB).firstOfType(ToolComplete.class);
+
+        assertNotNull(tcA);
+        assertNotNull(tcB);
+        // Deltas should only contain the new portion
+        assertEquals("-and-more", tcA.output());
+        assertEquals("-full", tcB.output());
+    }
+
+    // ===================================================================
+    // Unknown JSON event type
+    // ===================================================================
+
+    @Test
+    void unknownJsonEventType_shouldReturnNull() {
+        String line = "{\"type\":\"heartbeat\",\"data\":\"ping\"}";
+        PassthroughEvent event = parser.parsePiLine(line);
+        assertNull(event, "Unknown JSON event types should be ignored");
+    }
 }

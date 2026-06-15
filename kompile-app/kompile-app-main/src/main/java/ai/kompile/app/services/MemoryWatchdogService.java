@@ -44,11 +44,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Service
 public class MemoryWatchdogService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected MemoryWatchdogService() {}
+
+
     private static final Logger logger = LoggerFactory.getLogger(MemoryWatchdogService.class);
 
-    private final IngestConfiguration ingestConfiguration;
-    private final SimpMessagingTemplate messagingTemplate;
-    private final IngestEventService ingestEventService;
+    @Autowired
+    private IngestConfiguration ingestConfiguration;
+    @Autowired(required = false)
+    private SimpMessagingTemplate messagingTemplate;
+    @Autowired(required = false)
+    private IngestEventService ingestEventService;
 
     // Track jobs that should be stopped
     private final Set<String> jobsToStop = ConcurrentHashMap.newKeySet();
@@ -78,8 +85,8 @@ public class MemoryWatchdogService {
 
     // Configuration
     private long checkIntervalMs = 2000; // Check every 2 seconds
-    private int consecutiveHighMemoryChecks = 0;
-    private int consecutiveKillThresholdChecks = 0;
+    private volatile int consecutiveHighMemoryChecks = 0;
+    private volatile int consecutiveKillThresholdChecks = 0;
     private static final int HIGH_MEMORY_THRESHOLD_CHECKS = 3; // Require 3 consecutive high readings
     private static final int KILL_THRESHOLD_CHECKS = 2; // Require 2 consecutive readings before killing (faster response)
 

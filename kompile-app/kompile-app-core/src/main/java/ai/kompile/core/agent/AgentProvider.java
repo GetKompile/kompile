@@ -16,6 +16,9 @@
 
 package ai.kompile.core.agent;
 
+import lombok.Getter;
+import lombok.Setter;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -28,6 +31,8 @@ import java.util.Map;
  * Supports CLI agents (Claude Code, Codex, Gemini CLI) and
  * API agents (OpenAI-compatible endpoints like OpenAI, Ollama, vLLM, LM Studio).
  */
+@Getter
+@Setter
 public class AgentProvider {
 
     private String name;
@@ -38,6 +43,8 @@ public class AgentProvider {
     private List<String> args;
     private Map<String, String> environment;
     private boolean available;
+    @Getter(value = lombok.AccessLevel.NONE)
+    @Setter(value = lombok.AccessLevel.NONE)
     private boolean isDefault;
     private String description;
 
@@ -50,6 +57,9 @@ public class AgentProvider {
     private String modelName;               // e.g., "gpt-4o", "llama3", "mistral"
     private double temperature = 0.7;
     private int maxTokens = 4096;
+
+    // Model discovery: command to list available models for this agent
+    private List<String> modelListCommand;
 
     // Interactive mode configuration
     private String interactivePromptPattern; // Regex pattern to detect when agent is waiting for input
@@ -208,181 +218,13 @@ public class AgentProvider {
         return environment != null ? Collections.unmodifiableMap(environment) : Collections.emptyMap();
     }
 
-    // Getters and Setters
-    public String getName() {
-        return name;
-    }
-
-    public void setName(String name) {
-        this.name = name;
-    }
-
-    public String getDisplayName() {
-        return displayName;
-    }
-
-    public void setDisplayName(String displayName) {
-        this.displayName = displayName;
-    }
-
-    public String getCommand() {
-        return command;
-    }
-
-    public void setCommand(String command) {
-        this.command = command;
-    }
-
-    public String getSkipPermissionsFlag() {
-        return skipPermissionsFlag;
-    }
-
-    public void setSkipPermissionsFlag(String skipPermissionsFlag) {
-        this.skipPermissionsFlag = skipPermissionsFlag;
-    }
-
-    public boolean isSkipPermissions() {
-        return skipPermissions;
-    }
-
-    public void setSkipPermissions(boolean skipPermissions) {
-        this.skipPermissions = skipPermissions;
-    }
-
-    public List<String> getArgs() {
-        return args;
-    }
-
-    public void setArgs(List<String> args) {
-        this.args = args;
-    }
-
-    public Map<String, String> getEnvironment() {
-        return environment;
-    }
-
-    public void setEnvironment(Map<String, String> environment) {
-        this.environment = environment;
-    }
-
-    public boolean isAvailable() {
-        return available;
-    }
-
-    public void setAvailable(boolean available) {
-        this.available = available;
-    }
-
+    // Manual accessor for 'isDefault' field to avoid Lombok generating 'isIsDefault()'
     public boolean isDefault() {
         return isDefault;
     }
 
     public void setDefault(boolean aDefault) {
         isDefault = aDefault;
-    }
-
-    public String getDescription() {
-        return description;
-    }
-
-    public void setDescription(String description) {
-        this.description = description;
-    }
-
-    public boolean isMcpSupported() {
-        return mcpSupported;
-    }
-
-    public void setMcpSupported(boolean mcpSupported) {
-        this.mcpSupported = mcpSupported;
-    }
-
-    public String getMcpServerFlag() {
-        return mcpServerFlag;
-    }
-
-    public void setMcpServerFlag(String mcpServerFlag) {
-        this.mcpServerFlag = mcpServerFlag;
-    }
-
-    public String getMcpConfigFlag() {
-        return mcpConfigFlag;
-    }
-
-    public void setMcpConfigFlag(String mcpConfigFlag) {
-        this.mcpConfigFlag = mcpConfigFlag;
-    }
-
-    public String getMcpAllowToolsFlag() {
-        return mcpAllowToolsFlag;
-    }
-
-    public void setMcpAllowToolsFlag(String mcpAllowToolsFlag) {
-        this.mcpAllowToolsFlag = mcpAllowToolsFlag;
-    }
-
-    public String getHelpOutput() {
-        return helpOutput;
-    }
-
-    public void setHelpOutput(String helpOutput) {
-        this.helpOutput = helpOutput;
-    }
-
-    public String getInteractivePromptPattern() {
-        return interactivePromptPattern;
-    }
-
-    public void setInteractivePromptPattern(String interactivePromptPattern) {
-        this.interactivePromptPattern = interactivePromptPattern;
-    }
-
-    public AgentType getAgentType() {
-        return agentType;
-    }
-
-    public void setAgentType(AgentType agentType) {
-        this.agentType = agentType;
-    }
-
-    public String getEndpointUrl() {
-        return endpointUrl;
-    }
-
-    public void setEndpointUrl(String endpointUrl) {
-        this.endpointUrl = endpointUrl;
-    }
-
-    public String getApiKey() {
-        return apiKey;
-    }
-
-    public void setApiKey(String apiKey) {
-        this.apiKey = apiKey;
-    }
-
-    public String getModelName() {
-        return modelName;
-    }
-
-    public void setModelName(String modelName) {
-        this.modelName = modelName;
-    }
-
-    public double getTemperature() {
-        return temperature;
-    }
-
-    public void setTemperature(double temperature) {
-        this.temperature = temperature;
-    }
-
-    public int getMaxTokens() {
-        return maxTokens;
-    }
-
-    public void setMaxTokens(int maxTokens) {
-        this.maxTokens = maxTokens;
     }
 
     public boolean isApiAgent() {

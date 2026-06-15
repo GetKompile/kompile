@@ -198,7 +198,12 @@ public class ServerJudgeBackend implements JudgeBackend {
             ProcessBuilder pb = new ProcessBuilder("ollama", "pull", model);
             pb.inheritIO();
             Process p = pb.start();
-            int exit = p.waitFor();
+            if (!p.waitFor(600, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                System.err.println("[Judge] Warning: ollama pull timed out after 10 minutes");
+                return;
+            }
+            int exit = p.exitValue();
             if (exit != 0) {
                 System.err.println("[Judge] Warning: ollama pull returned exit code " + exit);
             }

@@ -47,7 +47,7 @@ import java.util.Map;
  *
  * <p>Also ensures device routing is enabled and VLM is routed to the largest GPU.</p>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class GpuDeviceConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(GpuDeviceConfiguration.class);

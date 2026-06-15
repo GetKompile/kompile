@@ -172,14 +172,14 @@ public class Neo4jGraphStorage implements GraphStorageStrategy {
         try {
             Result result = session.run(MERGE_NODE_QUERY, params);
             if (result.hasNext()) {
-                return result.single().get("entityId").asString();
+                return result.next().get("entityId").asString();
             }
         } catch (Exception e) {
             // APOC might not be installed, try simple query
             log.debug("APOC not available, using simple node creation: {}", e.getMessage());
             Result result = session.run(MERGE_NODE_SIMPLE_QUERY, params);
             if (result.hasNext()) {
-                return result.single().get("entityId").asString();
+                return result.next().get("entityId").asString();
             }
         }
 
@@ -201,13 +201,16 @@ public class Neo4jGraphStorage implements GraphStorageStrategy {
         ));
 
         if (result.hasNext()) {
-            return result.single().get("edgeId").asString();
+            return result.next().get("edgeId").asString();
         }
         return edgeId;
     }
 
     private String generateEntityId(String name, Long factSheetId) {
         // Generate a deterministic ID based on name and factSheetId for deduplication
+        if (name == null) {
+            name = "unknown";
+        }
         String input = name.toLowerCase().trim() + ":" + factSheetId;
         return UUID.nameUUIDFromBytes(input.getBytes()).toString();
     }

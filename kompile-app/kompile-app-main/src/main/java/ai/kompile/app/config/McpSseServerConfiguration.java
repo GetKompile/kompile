@@ -60,7 +60,7 @@ import java.util.Set;
  * - Spring AI: /sse, /mcp/message (configurable)
  * - Custom: /mcp/sse, /mcp/message, /mcp/status
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "spring.ai.mcp.server.enabled", havingValue = "true", matchIfMissing = true)
 public class McpSseServerConfiguration {
 

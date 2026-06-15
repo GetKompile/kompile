@@ -29,7 +29,7 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Spring configuration for reranking functionality.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = "ai.kompile.vectorstore.anserini.AnseriniVectorStoreImpl")
 @EnableConfigurationProperties(RerankerProperties.class)
 public class RerankerConfiguration {

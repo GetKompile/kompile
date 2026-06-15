@@ -18,6 +18,8 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.enforcer.*;
+import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -86,6 +88,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--mcp-port"}, description = "Port for embedded MCP server (0 = auto-detect)", defaultValue = "0")
     int mcpPort;
 
+    @CommandLine.Option(names = {"--resume-session"}, description = "Session ID to resume — loads and displays prior conversation turns and passes the session to the underlying agent for continuation")
+    String resumeSessionId;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final PassthroughStreamParser parser = new PassthroughStreamParser();
     private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
@@ -123,6 +128,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     // Tracks last output timestamp for TUI stall detection
     private final AtomicLong lastOutputTime = new AtomicLong(0);
 
+    // Scroll region layout — input box stays fixed at bottom, chat scrolls above
+    private int scrollBottom;  // last row of scroll region (1-indexed)
+
     // Persistent TUI process (OpenCode) — launched once, reused across messages
     private volatile Process tuiProcess;
     private volatile Thread tuiOutputReader;
@@ -138,6 +146,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     // Optional: set by ChatCommand when platform init is done externally
     SystemPromptManager systemPromptManager;
+
+    // Enforcer support — set by ChatCommand when enforcer rules are active.
+    // When non-null, every agent turn is wrapped with enforcement (retry on violations).
+    EnforcerEvaluator enforcerEvaluator;
+    EnforcerPolicy enforcerPolicy;
+    EnforcerService enforcerService;
+    EnforcerConversationWindow enforcerConversationWindow;
+    Map<String, String> enforcerExtraEnv;
 
     // ANSI
     private static final String RESET = "\033[0m";
@@ -169,7 +185,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             term = ChatCompleter.buildSystemTerminal();
             this.terminal = term;
             renderer = new TerminalRenderer();
-            ascii = new AsciiRenderer(renderer);
+            int termWidth = term.getWidth();
+            if (termWidth <= 0) termWidth = 120;
+            ascii = new AsciiRenderer(renderer, termWidth);
 
             this.lineReader = LineReaderBuilder.builder()
                     .terminal(term)
@@ -266,19 +284,34 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             // Bind Escape to cancel
             bindCancelKey(lineReader);
 
-            // Welcome
+            // Set up scroll region: chat scrolls in top area, input box fixed at bottom
+            initScrollLayout();
+
+            // Welcome — prints into scroll region
             printWelcomePanel(agentBinary);
+
+            // If resuming, replay prior conversation turns and pre-set the agent
+            // session ID so the very first message uses continuation flags
+            // (--continue, --resume, --session) with the existing native session.
+            if (resumeSessionId != null && !resumeSessionId.isBlank()) {
+                replayConversationHistory(resumeSessionId, history);
+                agentSessionId = resumeSessionId;
+                firstMessageSent = true;
+            }
 
             try {
                 while (true) {
                     String line;
                     try {
-                        printTopBorder();
+                        // Re-establish scroll region before positioning (JLine may have reset it)
+                        System.out.printf("\033[1;%dr", scrollBottom);
+                        System.out.flush();
+                        // Position cursor at prompt row (fixed area below scroll region)
+                        positionAtPrompt();
                         ChatCompleter.schedulePostRestore();
                         line = lineReader.readLine(buildPrompt());
                     } catch (UserInterruptException e) {
                         // Ctrl+C at idle prompt → exit
-                        System.out.println();
                         break;
                     } catch (EndOfFileException e) {
                         break;
@@ -286,22 +319,21 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                         break;
                     }
 
-                    // Clear the old input box (top border + prompt) so
-                    // input boxes don't stack on every Enter press.
-                    clearInputBox();
-
                     if (line == null || line.isBlank()) {
                         continue;
                     }
                     String trimmed = line.trim();
 
+                    // Re-establish scroll region (JLine's readLine may have reset it)
+                    System.out.printf("\033[1;%dr", scrollBottom);
+                    System.out.flush();
+
                     if (trimmed.startsWith("/")) {
                         String result = handleSlashCommand(trimmed, lineReader, metrics);
                         if ("quit".equals(result)) break;
                     } else {
-                        // Echo user message in chat area, then dispatch synchronously
-                        System.out.println(BOLD + "  > " + RESET + trimmed);
-                        System.out.println(DIM + "  " + agent + " responding..." + RESET);
+                        // Echo user message in scroll region, then dispatch
+                        safePrintln(BOLD + "  > " + RESET + trimmed);
                         dispatchToAgent(trimmed, history, metrics);
                     }
                 }
@@ -318,8 +350,16 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 if (systemPromptManager != null) {
                     systemPromptManager.cleanup();
                 }
+                if (enforcerEvaluator instanceof AutoCloseable closeable) {
+                    try { closeable.close(); } catch (Exception ignored) {}
+                }
 
-                System.out.println();
+                // Reset scroll region to full terminal BEFORE printing summary
+                System.out.print("\033[r");
+                // Clear the entire screen and move cursor home
+                System.out.print("\033[2J\033[H");
+                System.out.flush();
+
                 printSessionSummary(metrics, history, sessionId, startTime);
 
                 Path metricsFile = history.getTranscriptFile()
@@ -354,18 +394,311 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
     }
 
-    // ── Thread-safe output ──────────────────────────────────────────────────
+    // ── Scroll region layout ─────────────────────────────────────────────
 
     /**
-     * Prints a line of text safely.
+     * Set up the scroll region layout: chat area scrolls in the top portion,
+     * input box is fixed at the bottom. This matches how codex/opencode work.
+     *
+     * Layout (1-indexed rows):
+     *   Row 1 .. scrollBottom     — scroll region (chat + agent output)
+     *   Row scrollBottom+1        — top input border  ─────────
+     *   Row scrollBottom+2        — prompt:  kompile [agent]> _
+     *   Row scrollBottom+3        — bottom input border ─────────
+     *   Row scrollBottom+4        — status line
      */
-    private void safePrintln(String text) {
-        System.out.println(text);
+    private void initScrollLayout() {
+        int h = terminal.getHeight();
+        int w = terminal.getWidth();
+        if (h <= 0) h = 24;
+        if (w <= 0) w = 120;
+
+        // Reserve 4 rows at bottom for input box + status
+        scrollBottom = Math.max(4, h - 4);
+
+        // Clear entire screen BEFORE setting scroll region
+        // (some terminals only clear within the active scroll region)
+        System.out.print("\033[r");          // Reset scroll region to full screen first
+        System.out.print("\033[2J\033[H");   // Clear everything, cursor to home
+        // Now draw the fixed input box on the cleared screen
+        drawFixedInputBox();
+        // THEN set scroll region — this protects the input box from scrolling
+        System.out.printf("\033[1;%dr", scrollBottom);
+        // Move cursor into scroll region for initial output (welcome panel)
+        System.out.printf("\033[1;1H");
+        System.out.flush();
     }
 
-    /** Prints an empty line safely. */
+    /** Draw the fixed input box borders and status line below the scroll region. */
+    private void drawFixedInputBox() {
+        int w = terminal.getWidth();
+        if (w <= 0) w = 120;
+        String border = DIM + "\u2500".repeat(w) + RESET;
+
+        // Top border
+        System.out.printf("\033[%d;1H\033[2K%s", scrollBottom + 1, border);
+        // Prompt row — readLine fills this
+        System.out.printf("\033[%d;1H\033[2K", scrollBottom + 2);
+        // Bottom border
+        System.out.printf("\033[%d;1H\033[2K%s", scrollBottom + 3, border);
+        // Status line
+        updateStatusLine("idle");
+        System.out.flush();
+    }
+
+    /** Update the status line below the input box. */
+    void updateStatusLine(String status) {
+        int w = terminal.getWidth();
+        if (w <= 0) w = 120;
+        String enforcerTag = enforcerEvaluator != null ? " · enforcer active" : "";
+        String statusText = DIM + "  kompile [" + agent + "] · " + status + enforcerTag
+                + " · Esc cancel · /quit exit" + RESET;
+        System.out.printf("\033[%d;1H\033[2K%s", scrollBottom + 4, statusText);
+        System.out.flush();
+    }
+
+    /** Position cursor at prompt row for readLine and redraw input box borders. */
+    private void positionAtPrompt() {
+        // Redraw the input box to ensure borders are intact after agent output
+        drawFixedInputBox();
+        // Move cursor to the prompt row and clear it for readLine
+        System.out.printf("\033[%d;1H\033[2K", scrollBottom + 2);
+        System.out.flush();
+    }
+
+    // ── Thread-safe output (prints into scroll region) ────────────────────
+
+    /**
+     * Prints a line of text into the scroll region.
+     * Moves cursor to scrollBottom, prints the text + newline (which scrolls
+     * the region content up), then redraws the entire fixed input box below
+     * to guarantee it's never corrupted.
+     */
+    private synchronized void safePrintln(String text) {
+        // Move cursor to last row of scroll region and print text
+        System.out.printf("\033[%d;1H\033[2K%s", scrollBottom, text);
+        // Newline at the bottom of the scroll region triggers scroll-up
+        System.out.print("\n");
+        // Redraw the FULL input box (borders + status) — belt-and-suspenders
+        // to guarantee they're never corrupted by scroll, cursor drift, or JLine
+        drawFixedInputBox();
+    }
+
+    /** Prints an empty line in the scroll region. */
     private void safePrintln() {
         safePrintln("");
+    }
+
+    /**
+     * Replays prior conversation turns into the scroll region so the user
+     * can see the conversation history before continuing.
+     * <p>
+     * Shows "Loading..." while reading turns, then renders ALL turns into a
+     * buffer and flushes everything at once so the screen doesn't stream a
+     * wall of text line by line. The terminal naturally ends scrolled to
+     * the bottom — the user can scroll up to see earlier turns.
+     */
+    private void replayConversationHistory(String sessionId, ChatHistory history) {
+        safePrintln(DIM + "  Loading..." + RESET);
+
+        List<ChatHistory.Turn> turns = null;
+
+        // Try kompile's own session store first
+        try {
+            turns = ai.kompile.cli.main.chat.format.ConversationReader.readKompileSession(sessionId);
+        } catch (Exception e) {
+            // Fall through to external sources
+        }
+
+        // Try external agent sources
+        if (turns == null || turns.isEmpty()) {
+            for (String source : List.of("claude-code", "codex", "qwen", "opencode", "gemini")) {
+                try {
+                    turns = ai.kompile.cli.main.chat.format.ConversationReader.readExternalSession(source, sessionId);
+                    if (turns != null && !turns.isEmpty()) break;
+                } catch (Exception ignored) {}
+            }
+        }
+
+        if (turns == null || turns.isEmpty()) {
+            safePrintln(DIM + "  (No prior turns found for session " + sessionId + ")" + RESET);
+            safePrintln();
+            return;
+        }
+
+        // Buffer all rendered lines — we flush everything at once so the screen
+        // doesn't blitz the user with streaming text.
+        List<String> buf = new ArrayList<>();
+
+        buf.add(DIM + "  ── Resumed conversation (" + turns.size() + " turns) ──" + RESET);
+        buf.add("");
+
+        for (ChatHistory.Turn turn : turns) {
+            com.fasterxml.jackson.databind.node.ArrayNode blocks = turn.rawContentBlocks();
+
+            if ("user".equals(turn.role())) {
+                if (blocks != null && !blocks.isEmpty()) {
+                    replayUserBlocks(blocks, history, buf);
+                } else {
+                    String content = turn.content();
+                    if (content != null && !content.isBlank() && !isReplayNoise(content)) {
+                        buf.add(CYAN + "  You: " + RESET + truncateForReplay(content));
+                        history.logUserMessage(content);
+                        buf.add("");
+                    }
+                }
+            } else {
+                if (blocks != null && !blocks.isEmpty()) {
+                    replayAssistantBlocks(blocks, history, buf);
+                } else {
+                    String content = turn.content();
+                    if (content != null && !content.isBlank()) {
+                        replayAssistantText(content, history, buf);
+                    }
+                }
+            }
+        }
+
+        buf.add(DIM + "  ── End of history · continue below ──" + RESET);
+        buf.add("");
+
+        // Flush the entire buffer at once
+        for (String line : buf) {
+            safePrintln(line);
+        }
+    }
+
+    /** Replay user-role content blocks into a buffer. */
+    private void replayUserBlocks(com.fasterxml.jackson.databind.node.ArrayNode blocks,
+                                  ChatHistory history, List<String> buf) {
+        for (com.fasterxml.jackson.databind.JsonNode block : blocks) {
+            String type = block.has("type") ? block.get("type").asText() : "";
+            switch (type) {
+                case "tool_result" -> {
+                    boolean isError = block.has("is_error") && block.get("is_error").asBoolean();
+                    String status = isError ? renderer.red("✗ error") : renderer.green("✓");
+                    String preview = "";
+                    if (block.has("content")) {
+                        com.fasterxml.jackson.databind.JsonNode contentNode = block.get("content");
+                        if (contentNode.isTextual()) {
+                            preview = truncateForReplay(contentNode.asText());
+                        } else if (contentNode.isArray()) {
+                            for (com.fasterxml.jackson.databind.JsonNode part : contentNode) {
+                                if ("text".equals(part.path("type").asText("")) && part.has("text")) {
+                                    preview = truncateForReplay(part.get("text").asText());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!preview.isBlank()) {
+                        buf.add(renderer.dim("  " + status + " " + truncateForReplay(preview)));
+                    }
+                }
+                case "text" -> {
+                    String text = block.has("text") ? block.get("text").asText() : "";
+                    if (!text.isBlank() && !isReplayNoise(text)) {
+                        buf.add(CYAN + "  You: " + RESET + truncateForReplay(text));
+                        history.logUserMessage(text);
+                        buf.add("");
+                    }
+                }
+                default -> {
+                    if (block.isTextual() && !block.asText().isBlank() && !isReplayNoise(block.asText())) {
+                        buf.add(CYAN + "  You: " + RESET + truncateForReplay(block.asText()));
+                        history.logUserMessage(block.asText());
+                        buf.add("");
+                    }
+                }
+            }
+        }
+    }
+
+    /** Replay assistant-role content blocks into a buffer. */
+    private void replayAssistantBlocks(com.fasterxml.jackson.databind.node.ArrayNode blocks,
+                                       ChatHistory history, List<String> buf) {
+        StringBuilder fullText = new StringBuilder();
+
+        for (com.fasterxml.jackson.databind.JsonNode block : blocks) {
+            String type = block.has("type") ? block.get("type").asText() : "";
+            switch (type) {
+                case "thinking" -> {
+                    String thinking = block.has("thinking") ? block.get("thinking").asText() : "";
+                    if (!thinking.isBlank()) {
+                        String preview = thinking.length() > 120
+                                ? thinking.substring(0, 117) + "..."
+                                : thinking;
+                        buf.add(renderer.dim("  thinking: " + preview));
+                    }
+                }
+                case "tool_use" -> {
+                    String toolName = block.has("name") ? block.get("name").asText() : "unknown";
+                    String input = "";
+                    if (block.has("input")) {
+                        input = block.get("input").toString();
+                    }
+                    buf.add(renderer.renderToolCallStart(toolName, input));
+                }
+                case "text" -> {
+                    String text = block.has("text") ? block.get("text").asText() : "";
+                    if (!text.isBlank() && !isReplayNoise(text)) {
+                        fullText.append(text);
+                        String rendered = ascii.renderMarkdown(text);
+                        for (String rl : rendered.split("\n", -1)) {
+                            buf.add("  " + rl);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (fullText.length() > 0) {
+            history.logAgentResponse(agent, fullText.toString(), 0);
+        }
+        buf.add("");
+    }
+
+    /** Replay plain-text assistant response into a buffer. */
+    private void replayAssistantText(String content, ChatHistory history, List<String> buf) {
+        if (isReplayNoise(content)) return;
+        String rendered = ascii.renderMarkdown(content);
+        for (String rl : rendered.split("\n", -1)) {
+            buf.add("  " + rl);
+        }
+        history.logAgentResponse(agent, content, 0);
+        buf.add("");
+    }
+
+    /**
+     * Detects system prompt noise that should not be displayed during resume replay.
+     * Catches XML-tagged instruction blocks (permissions, skills, system-reminder),
+     * enforcer rules, MCP tool listings, and other internal framework content.
+     */
+    private static boolean isReplayNoise(String text) {
+        if (text == null || text.isBlank()) return false;
+        // Delegate to SubprocessAgentRunner's existing noise detector
+        if (SubprocessAgentRunner.isSystemPromptNoise(text)) return true;
+        // XML-tagged instruction blocks that agents embed in conversations
+        if (text.contains("<permissions") && text.contains("instructions>")) return true;
+        if (text.contains("<sandbox_mode>")) return true;
+        if (text.contains("<skills_instructions>")) return true;
+        if (text.contains("<system-reminder>")) return true;
+        if (text.contains("<available-deferred-tools>")) return true;
+        if (text.contains("<tool_config>")) return true;
+        // Claude system prompt markers
+        if (text.contains("You are Claude Code") && text.contains("Anthropic")) return true;
+        if (text.contains("IMPORTANT: Assist with authorized security testing")) return true;
+        if (text.contains("# Environment") && text.contains("git repository")) return true;
+        // Codex/other agent system prompts
+        if (text.contains("You are an AI assistant") && text.contains("operating in a sandboxed")) return true;
+        if (text.contains("sandbox_mode")) return true;
+        return false;
+    }
+
+    private static String truncateForReplay(String line) {
+        if (line == null) return "";
+        if (line.length() > 200) return line.substring(0, 197) + "...";
+        return line;
     }
 
     // ── Subprocess communication ───────────────────────────────────────────
@@ -379,15 +712,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * @return the agent's text response (for follow-up question detection)
      */
     private String sendToAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
-        // Route TUI-based agents to the persistent process path
-        if (agent.toLowerCase().contains("opencode")) {
-            return sendToTuiAgent(message, history, metrics);
-        }
-
         String agentBinary = resolveAgent(agent);
         if (agentBinary == null) {
-            System.out.println(renderer.red("  Agent '" + agent + "' not found on PATH."));
-            System.out.println(renderer.dim("  Supported agents: " + String.join(", ",
+            safePrintln(renderer.red("  Agent '" + agent + "' not found on PATH."));
+            safePrintln(renderer.dim("  Supported agents: " + String.join(", ",
                     ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder())));
             return "";
         }
@@ -398,8 +726,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
         List<String> agentCmd = buildCommand(agentBinary, message);
 
-        renderer.setTerminalTitle("Generating... (" + agent + ")");
-        TerminalRenderer.SpinnerHandle spinner = renderer.startGeneratingSpinner(agent);
+        renderer.setTerminalTitle("Kompiling... (" + agent + ")");
+        updateStatusLine("running");
+        // Start spinner pinned to the last row of the scroll region (above input border)
+        TerminalRenderer.SpinnerHandle spinner = renderer.startPinnedSpinner(scrollBottom, " (" + agent + ")");
 
         StringBuilder fullText = new StringBuilder();
         StringBuilder pendingText = new StringBuilder();
@@ -418,6 +748,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             inheritEnv(env, "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
                     "JAVA_HOME", "MAVEN_HOME", "TERM", "COLORTERM",
                     "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY");
+            if (enforcerExtraEnv != null) {
+                env.putAll(enforcerExtraEnv);
+            }
 
             Process process = pb.start();
             activeProcess = process;
@@ -540,6 +873,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         firstMessageSent = true;
         safePrintln();
         renderer.setTerminalTitle("kompile [" + agent + "]");
+        updateStatusLine("idle");
         return fullText.toString();
     }
 
@@ -551,8 +885,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private String sendToTuiAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
         String agentBinary = resolveAgent(agent);
         if (agentBinary == null) {
-            System.out.println(renderer.red("  Agent '" + agent + "' not found on PATH."));
-            System.out.println(renderer.dim("  Supported agents: " + String.join(", ",
+            safePrintln(renderer.red("  Agent '" + agent + "' not found on PATH."));
+            safePrintln(renderer.dim("  Supported agents: " + String.join(", ",
                     ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder())));
             return "";
         }
@@ -561,8 +895,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         history.logUserMessage(message);
         metrics.recordUserTurn(message);
 
-        renderer.setTerminalTitle("Generating... (" + agent + ")");
-        TerminalRenderer.SpinnerHandle spinner = renderer.startGeneratingSpinner(agent);
+        renderer.setTerminalTitle("Kompiling... (" + agent + ")");
+        updateStatusLine("running");
+        // Start spinner pinned to the last row of the scroll region (above input border)
+        TerminalRenderer.SpinnerHandle spinner = renderer.startPinnedSpinner(scrollBottom, " (" + agent + ")");
 
         StringBuilder fullText = new StringBuilder();
         StringBuilder pendingText = new StringBuilder();
@@ -724,6 +1060,18 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
         if (stripped.length() < 3) return; // Too short — TUI noise
 
+        // Filter out TUI status-line fragments: short strings that are mostly
+        // non-alphabetic or look like cursor addresses / mode indicators.
+        // Real content has words; TUI noise is short gibberish like "~ 1tcATBDOm", "/ 1".
+        if (stripped.length() < 20) {
+            String alpha = stripped.replaceAll("[^a-zA-Z]", "");
+            long spaceCount = stripped.chars().filter(c -> c == ' ').count();
+            // If less than 40% alphabetic or no spaces in a multi-char string, it's noise
+            if (alpha.length() < stripped.length() * 0.4 || (stripped.length() > 3 && spaceCount == 0 && alpha.length() < 5)) {
+                return;
+            }
+        }
+
         // Update timestamp only on real text — stall detection needs this
         lastOutputTime.set(System.currentTimeMillis());
 
@@ -758,6 +1106,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                                     StringBuilder pendingText) {
         lastOutputTime.set(System.currentTimeMillis());
         String agentLower = agent.toLowerCase();
+
+        // Filter out CLI deprecation warnings and version-change noise from agent binaries
+        // (e.g., codex's "--full-auto is deprecated", node version warnings)
+        String trimmedLine = line.trim();
+        if (trimmedLine.startsWith("warning:") || trimmedLine.startsWith("Warning:")
+                || trimmedLine.startsWith("WARN:") || trimmedLine.startsWith("DeprecationWarning")) {
+            return;
+        }
 
         // Route to the correct parser — may return multiple events from one line
         // (e.g., text + AskUserQuestion in the same assistant message)
@@ -924,7 +1280,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                                          AtomicBoolean spinnerStopped) {
         if (spinnerStopped.compareAndSet(false, true)) {
             spinner.stop();
-            System.out.println();
+            safePrintln("");
         }
 
         if (event instanceof PassthroughStreamParser.InteractiveQuestion iq) {
@@ -939,7 +1295,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * Writes the selected answer back to the agent's stdin.
      */
     private void handleInteractiveQuestion(PassthroughStreamParser.InteractiveQuestion iq) {
-        System.out.println();
+        safePrintln("");
         List<PassthroughStreamParser.QuestionOption> options = iq.options();
 
         // Build the question panel
@@ -963,7 +1319,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
         }
 
-        System.out.println(ascii.panel("Agent Question", body.toString()));
+        for (String line : ascii.panel("Agent Question", body.toString()).split("\n")) {
+            safePrintln(line);
+        }
 
         // Read user's choice
         String response = readUserResponse(options.isEmpty()
@@ -985,15 +1343,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
         // Write response to agent stdin based on agent type
         writeToAgentStdin(answer, iq.callId(), iq.turnId(), iq.questionId());
-        System.out.println(renderer.dim("  → Sent: " + answer));
-        System.out.println();
+        safePrintln(renderer.dim("  → Sent: " + answer));
+        safePrintln("");
     }
 
     /**
      * Present an approval request for a command and read the user's decision.
      */
     private void handleInteractiveApproval(PassthroughStreamParser.InteractiveApproval ia) {
-        System.out.println();
+        safePrintln("");
 
         StringBuilder body = new StringBuilder();
         body.append("The agent wants to execute:\n\n");
@@ -1014,7 +1372,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     .append(color).append(d).append(RESET).append("\n");
         }
 
-        System.out.println(ascii.panel("Approval Required", body.toString()));
+        for (String line : ascii.panel("Approval Required", body.toString()).split("\n")) {
+            safePrintln(line);
+        }
 
         String response = readUserResponse("  decision [1-" + decisions.size() + "]> ");
         if (response == null || response.isBlank()) return;
@@ -1032,8 +1392,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
         writeApprovalToAgentStdin(decision, ia.callId(), ia.turnId());
         String color = decision.equalsIgnoreCase("approve") ? GREEN : YELLOW;
-        System.out.println(color + "  → " + decision + RESET);
-        System.out.println();
+        safePrintln(color + "  → " + decision + RESET);
+        safePrintln("");
     }
 
     /**
@@ -1141,7 +1501,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 cmd.add("--continue");
             }
         } else if (name.contains("codex")) {
-            // Codex: exec [resume <id>|--last] --json [--full-auto] message
+            // Codex: exec [resume <id>|--last] --json [--sandbox workspace-write] message
             if (firstMessageSent) {
                 cmd.add("exec");
                 cmd.add("resume");
@@ -1152,14 +1512,16 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 }
                 cmd.add("--json");
                 if (skipPermissions) {
-                    cmd.add("--full-auto");
+                    cmd.add("--sandbox");
+                    cmd.add("workspace-write");
                 }
                 cmd.add(message);
             } else {
                 cmd.add("exec");
                 cmd.add("--json");
                 if (skipPermissions) {
-                    cmd.add("--full-auto");
+                    cmd.add("--sandbox");
+                    cmd.add("workspace-write");
                 }
                 cmd.add(message);
             }
@@ -1188,10 +1550,20 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
             cmd.add(message);
         } else if (name.contains("opencode")) {
-            // Interactive TUI mode — streams text in real time via PTY.
-            // Message is written to stdin after the TUI initializes.
-            // Note: --dangerously-skip-permissions is only valid for 'opencode run',
-            // not the base TUI command, so we don't pass it here.
+            // OpenCode: run --format json [--dangerously-skip-permissions] [--session id] message
+            // Uses structured JSON output — same as Claude's stream-json.
+            // This avoids the PTY/TUI path that produces garbage from cell-by-cell rendering.
+            cmd.add("run");
+            cmd.add("--format");
+            cmd.add("json");
+            if (skipPermissions) {
+                cmd.add("--dangerously-skip-permissions");
+            }
+            if (firstMessageSent && agentSessionId != null) {
+                cmd.add("--session");
+                cmd.add(agentSessionId);
+            }
+            cmd.add(message);
         } else {
             // Unknown agent — best-effort with -p
             cmd.add("-p");
@@ -1213,27 +1585,36 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/help" -> printHelp();
             case "/agent" -> switchAgent(rest.isBlank() ? null : rest.trim(), lineReader);
             case "/status" -> printStatus(metrics);
-            case "/clear" -> { System.out.print("\033[2J\033[H"); System.out.flush(); }
+            case "/clear" -> initScrollLayout();
             case "/mode" -> {
-                System.out.println(renderer.dim("  Current mode: emulated passthrough (" + agent + ")"));
-                System.out.println(renderer.dim("  Available: emulated, passthrough, standard"));
+                safePrintln(renderer.dim("  Current mode: emulated passthrough (" + agent + ")"));
+                safePrintln(renderer.dim("  Available: emulated, passthrough, standard"));
+            }
+            case "/rules" -> {
+                if (enforcerPolicy != null) {
+                    for (String line : ascii.panel("Enforcer Rules", enforcerPolicy.getRules()).split("\n")) {
+                        safePrintln(line);
+                    }
+                } else {
+                    safePrintln(renderer.dim("  No enforcer rules active."));
+                }
             }
             case "/enforcer" -> handleEnforcerSlash(rest.trim());
             default -> {
                 // Forward unrecognized slash commands to the underlying agent
                 String agentBinary = AgentCommandForwarder.resolveAgentBinary(agent);
                 if (agentBinary == null) {
-                    System.out.println(renderer.dim("  Unknown command: " + cmd + " (agent '" + agent + "' not found on PATH)"));
+                    safePrintln(renderer.dim("  Unknown command: " + cmd + " (agent '" + agent + "' not found on PATH)"));
                 } else {
                     AgentCommandForwarder forwarder = new AgentCommandForwarder(
                             Path.of(workingDir).toAbsolutePath().normalize().toString());
                     String slashCmd = rest.isEmpty() ? cmd : cmd + " " + rest;
                     AgentCommandForwarder.AgentCommand agentCmd = forwarder.mapSlashCommand(slashCmd, agentBinary, agent);
                     if (agentCmd != null) {
-                        System.out.println(renderer.dim("  → " + agentCmd.label()));
+                        safePrintln(renderer.dim("  → " + agentCmd.label()));
                         forwarder.executeWithRealtimeOutput(agentCmd);
                     } else {
-                        System.out.println(renderer.dim("  Command " + cmd + " not supported for " + agent));
+                        safePrintln(renderer.dim("  Command " + cmd + " not supported for " + agent));
                     }
                 }
             }
@@ -1249,37 +1630,37 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 ai.kompile.cli.main.chat.enforcer.EnforcerConfig config =
                         ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard.run(wd);
                 if (config != null) {
-                    System.out.println(renderer.green("  Enforcer configured."));
+                    safePrintln(renderer.green("  Enforcer configured."));
                 } else {
-                    System.out.println("  Setup cancelled.");
+                    safePrintln("  Setup cancelled.");
                 }
             }
             case "show", "status" -> {
                 ai.kompile.cli.main.chat.enforcer.EnforcerConfig config =
                         ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
                 if (config == null) {
-                    System.out.println(renderer.dim("  No enforcer config. Run /enforcer init to configure."));
+                    safePrintln(renderer.dim("  No enforcer config. Run /enforcer init to configure."));
                     return;
                 }
-                System.out.println();
-                System.out.println("  Agent:         " + config.getAgent());
-                System.out.println("  Mode:          " + (config.isKeywordMode() ? "keyword" : "LLM judge"));
-                System.out.println("  Max retries:   " + config.getMaxCorrections());
-                System.out.println("  Diff archive:  " + (config.isArchiveDiffs() ? "enabled" : "disabled"));
+                safePrintln("");
+                safePrintln("  Agent:         " + config.getAgent());
+                safePrintln("  Mode:          " + (config.isKeywordMode() ? "keyword" : "LLM judge"));
+                safePrintln("  Max retries:   " + config.getMaxCorrections());
+                safePrintln("  Diff archive:  " + (config.isArchiveDiffs() ? "enabled" : "disabled"));
                 if (!config.getBannedTools().isEmpty()) {
-                    System.out.println("  Banned tools:  " + String.join(", ", config.getBannedTools()));
+                    safePrintln("  Banned tools:  " + String.join(", ", config.getBannedTools()));
                 }
-                System.out.println();
+                safePrintln("");
             }
             case "delete" -> {
                 try {
                     ai.kompile.cli.main.chat.enforcer.EnforcerConfig.delete(wd);
-                    System.out.println(renderer.dim("  Enforcer config deleted."));
+                    safePrintln(renderer.dim("  Enforcer config deleted."));
                 } catch (Exception e) {
-                    System.out.println(renderer.yellow("  Failed: " + e.getMessage()));
+                    safePrintln(renderer.yellow("  Failed: " + e.getMessage()));
                 }
             }
-            default -> System.out.println(renderer.dim("  Usage: /enforcer [init|show|delete]"));
+            default -> safePrintln(renderer.dim("  Usage: /enforcer [init|show|delete]"));
         }
     }
 
@@ -1304,15 +1685,18 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   claude, codex, gemini, qwen, opencode
                   (or any binary on PATH)""".formatted(agent);
 
-        System.out.println();
-        System.out.println(ascii.panel("Emulated Passthrough Help", body));
-        System.out.println();
+        safePrintln("");
+        for (String line : ascii.panel("Emulated Passthrough Help", body).split("\n")) {
+            safePrintln(line);
+        }
+        safePrintln("");
     }
 
     private void switchAgent(String newAgent, LineReader lineReader) {
         if (newAgent == null) {
-            System.out.println("  Available: claude, codex, qwen, opencode, gemini (or any binary on PATH)");
+            safePrintln("  Available: claude, codex, qwen, opencode, gemini (or any binary on PATH)");
             try {
+                positionAtPrompt();
                 String agentInput = lineReader.readLine(CYAN + "  agent> " + RESET);
                 if (agentInput != null && !agentInput.trim().isEmpty()) {
                     newAgent = agentInput.trim();
@@ -1326,8 +1710,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
         String binary = resolveAgent(newAgent);
         if (binary == null) {
-            System.out.println(renderer.yellow("  Agent '" + newAgent + "' not found on PATH."));
-            System.out.println(renderer.dim("  Supported agents: " + String.join(", ",
+            safePrintln(renderer.yellow("  Agent '" + newAgent + "' not found on PATH."));
+            safePrintln(renderer.dim("  Supported agents: " + String.join(", ",
                     ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder())));
             return;
         }
@@ -1335,14 +1719,19 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         agent = newAgent;
         firstMessageSent = false;
         agentSessionId = null;
-        System.out.println(renderer.green("  Switched to " + agent));
-        System.out.println(renderer.dim("  Conversation context reset (new agent session)."));
+        safePrintln(renderer.green("  Switched to " + agent));
+        safePrintln(renderer.dim("  Conversation context reset (new agent session)."));
         renderer.setTerminalTitle("kompile [" + agent + "]");
     }
 
     private void printStatus(ChatSessionMetrics metrics) {
         StringBuilder body = new StringBuilder();
-        body.append("Agent:     ").append(agent).append(" (emulated passthrough)\n");
+        String modeDesc = enforcerEvaluator != null ? "enforced passthrough" : "emulated passthrough";
+        body.append("Agent:     ").append(agent).append(" (").append(modeDesc).append(")\n");
+        if (enforcerEvaluator != null) {
+            body.append("Judge:     ").append(enforcerEvaluator.describe()).append("\n");
+            body.append("Retries:   ").append(enforcerPolicy != null ? enforcerPolicy.getMaxCorrections() : 3).append("\n");
+        }
         body.append("Messages:  ").append(metrics.getUserTurns()).append(" sent, ")
                 .append(metrics.getAssistantTurns()).append(" received\n");
         if (metrics.getTotalToolCalls() > 0) {
@@ -1350,9 +1739,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         body.append("Duration:  ").append(metrics.formatDuration(metrics.getSessionDuration())).append("\n");
         body.append("Context:   ").append(firstMessageSent ? "active (--continue)" : "new session");
-        System.out.println();
-        System.out.println(ascii.panel("Session Status", body.toString()));
-        System.out.println();
+        safePrintln("");
+        for (String line : ascii.panel("Session Status", body.toString()).split("\n")) {
+            safePrintln(line);
+        }
+        safePrintln("");
     }
 
     // ── Welcome panel ──────────────────────────────────────────────────────
@@ -1370,18 +1761,32 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         StringBuilder body = new StringBuilder();
         body.append("Agent:   ").append(agentDesc).append("\n");
         body.append("Binary:  ").append(agentBinary).append("\n");
-        body.append("Mode:    Emulated Passthrough\n");
+        if (enforcerEvaluator != null) {
+            body.append("Judge:   ").append(enforcerEvaluator.describe()).append("\n");
+            body.append("Retries: ").append(enforcerPolicy != null ? enforcerPolicy.getMaxCorrections() : 3).append("\n");
+            body.append("Mode:    Managed Passthrough with real-time enforcement\n");
+        } else {
+            body.append("Mode:    Emulated Passthrough\n");
+        }
         body.append("\n");
         body.append("Each message is sent to ").append(agent)
                 .append(" as a non-interactive subprocess.\n");
         body.append("Agent output is cleaned and rendered through kompile's UI.\n");
+        if (enforcerEvaluator != null) {
+            body.append("The judge monitors output and can interrupt on violations.\n");
+        }
         body.append("Slash commands (/help, /quit, /agent, /status) remain active.\n");
         body.append("\n");
         body.append(DIM).append("Ctrl+C to cancel · /agent to switch · /quit to exit").append(RESET);
 
-        System.out.println();
-        System.out.println(ascii.panel("Kompile Emulated Passthrough", body.toString()));
-        System.out.println();
+        String title = enforcerEvaluator != null
+                ? "Kompile Enforced Passthrough" : "Kompile Emulated Passthrough";
+        safePrintln("");
+        String panelText = ascii.panel(title, body.toString());
+        for (String panelLine : panelText.split("\n")) {
+            safePrintln(panelLine);
+        }
+        safePrintln("");
 
         renderer.setTerminalTitle("kompile [" + agent + "]");
     }
@@ -1470,9 +1875,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 if (activeProcess != null && activeProcess.isAlive()) {
                     cancelSignal.set(true);
                     killProcess(activeProcess);
-                    System.out.println();
-                    System.out.println(renderer.yellow("  Cancelling..."));
-                    System.out.flush();
+                    safePrintln("");
+                    safePrintln(renderer.yellow("  Cancelling..."));
                 }
                 return true;
             });
@@ -1491,7 +1895,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private static boolean isStructuredAgent(String agentLower) {
         return agentLower.contains("claude")
                 || agentLower.contains("gemini") || agentLower.contains("qwen")
-                || agentLower.contains("codex");
+                || agentLower.contains("codex") || agentLower.contains("opencode");
     }
 
     /** Route a line of output to the correct JSON parser. Returns empty list if unparseable. */
@@ -1503,6 +1907,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             return e != null ? List.of(e) : List.of();
         } else if (agentLower.contains("codex")) {
             PassthroughStreamParser.PassthroughEvent e = parser.parseCodexLine(line);
+            return e != null ? List.of(e) : List.of();
+        } else if (agentLower.contains("opencode")) {
+            PassthroughStreamParser.PassthroughEvent e = parser.parseOpenCodeLine(line);
             return e != null ? List.of(e) : List.of();
         }
         return List.of();
@@ -1540,7 +1947,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
 
         // Show a follow-up prompt
-        System.out.println();
+        safePrintln("");
         if (!options.isEmpty()) {
             String response = readUserResponse("  choice [1-" + options.size() + "]> ");
             if (response == null || response.isBlank()) return null;
@@ -1629,14 +2036,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         System.out.flush();
     }
 
-    /** Prints the top border line above the input area. */
+    /** Prints the top border line above the input area, spanning full terminal width. */
     private void printTopBorder() {
         int termWidth = 80;
         if (terminal != null) {
             int w = terminal.getWidth();
             if (w > 0) termWidth = w;
         }
-        int borderWidth = Math.max(20, Math.min(termWidth, 200));
+        int borderWidth = Math.max(20, termWidth);
         System.out.println(DIM + "\u2500".repeat(borderWidth) + RESET);
     }
 
@@ -1650,14 +2057,75 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     /**
      * Dispatches a message to the agent synchronously.
+     * When enforcer is configured, wraps the call with enforcement (retry on violations).
      * The REPL blocks until the agent finishes, giving real-time streaming output.
      */
     private void dispatchToAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
         agentBusy = true;
         try {
-            sendToAgent(message, history, metrics);
+            if (enforcerService != null && enforcerPolicy != null) {
+                dispatchEnforced(message, history, metrics);
+            } else {
+                sendToAgent(message, history, metrics);
+            }
         } finally {
             agentBusy = false;
+        }
+    }
+
+    /**
+     * Enforced dispatch: wraps sendToAgent with EnforcerService retry logic.
+     */
+    private void dispatchEnforced(String message, ChatHistory history, ChatSessionMetrics metrics) {
+        if (enforcerConversationWindow != null) {
+            enforcerConversationWindow.addUserMessage(message);
+        }
+
+        int[] attemptCounter = {0};
+        try {
+            EnforcerResult result = enforcerService.enforce(message, enforcerPolicy,
+                    enforcerConversationWindow != null ? enforcerConversationWindow::snapshot : null,
+                    agentPrompt -> {
+                        attemptCounter[0]++;
+                        if (attemptCounter[0] > 1) {
+                            safePrintln(renderer.yellow(
+                                    "[enforcer] violation detected, sending correction (attempt "
+                                            + attemptCounter[0] + ")"));
+                        }
+                        String output = sendToAgent(agentPrompt, history, metrics);
+                        if (enforcerConversationWindow != null) {
+                            enforcerConversationWindow.finishAssistantMessage(output);
+                        }
+                        return output;
+                    });
+
+            if (result != null) {
+                switch (result.getStatus()) {
+                    case ACCEPTED -> {
+                        if (result.getAttempts().size() > 1) {
+                            safePrintln(renderer.dim("[enforcer] accepted after "
+                                    + result.getAttempts().size() + " attempts"));
+                        }
+                    }
+                    case BLOCKED -> {
+                        safePrintln(renderer.yellow("[enforcer] blocked: " + result.getMessage()));
+                        var attempts = result.getAttempts();
+                        if (!attempts.isEmpty() && attempts.get(attempts.size() - 1).decision() != null) {
+                            for (String v : attempts.get(attempts.size() - 1).decision().getViolations()) {
+                                safePrintln(renderer.yellow("  - " + v));
+                            }
+                        }
+                    }
+                    case UNAVAILABLE, ERROR ->
+                            safePrintln(renderer.red("[enforcer] " + result.getMessage()));
+                }
+            }
+
+            if (result != null && !result.isAccepted()) {
+                history.logSystem("Enforcer " + result.getStatus() + ": " + result.getMessage());
+            }
+        } catch (Exception e) {
+            safePrintln(renderer.red("[enforcer] error: " + e.getMessage()));
         }
     }
 

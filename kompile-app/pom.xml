@@ -101,6 +101,8 @@
     <module>kompile-ocr-postprocess</module>
     <module>kompile-ocr-integration</module>
     <module>kompile-ocr-datapipeline</module>
+    <!-- Shared gateway code (must be before kclaw and openclaw) -->
+    <module>kompile-agent-gateway-core</module>
     <module>kompile-openclaw</module>
     <module>kompile-pipeline-management</module>
     <module>kompile-pipeline-serving</module>
@@ -116,6 +118,8 @@
     <module>kompile-code-indexer</module>
     <module>kompile-crawl-graph</module>
     <module>kompile-process-discovery</module>
+    <module>kompile-event-attribution</module>
+    <module>kompile-process-attribution</module>
     <module>kompile-tool-crawler</module>
     <module>kompile-langdetect</module>
     <module>kompile-crawler-core</module>
@@ -125,6 +129,35 @@
     <module>kompile-loader-excel</module>
     <module>kompile-tool-knowledge</module>
     <module>kompile-tool-table-search</module>
+    <!-- CLI LLM integration -->
+    <module>kompile-app-cli-llm</module>
+    <!-- Compute graph engine modules -->
+    <module>kompile-compute-graph-camel</module>
+    <module>kompile-compute-graph-drools</module>
+    <module>kompile-compute-graph-excel</module>
+    <module>kompile-compute-graph-n8n</module>
+    <module>kompile-compute-graph-scripting</module>
+    <module>kompile-compute-graph-xircuits</module>
+    <!-- Graph change tracking -->
+    <module>kompile-graph-change-tracking</module>
+    <!-- Additional loader modules -->
+    <module>kompile-loader-audio</module>
+    <module>kompile-loader-discord</module>
+    <module>kompile-loader-gdocs</module>
+    <module>kompile-loader-gmail</module>
+    <module>kompile-loader-google-workspace</module>
+    <!-- Metrics -->
+    <module>kompile-metrics</module>
+    <!-- Additional source provider modules -->
+    <module>kompile-source-discord</module>
+    <module>kompile-source-gdocs</module>
+    <module>kompile-source-gmail</module>
+    <module>kompile-source-google-workspace</module>
+    <!-- Additional tool modules -->
+    <module>kompile-tool-camel</module>
+    <module>kompile-tool-graph</module>
+    <module>kompile-tool-graph-localization</module>
+    <module>kompile-tool-workflow</module>
 
   </modules>
 
@@ -155,6 +188,22 @@
         <version>${log4j2.version}</version>
         <type>pom</type>
         <scope>import</scope>
+      </dependency>
+
+      <!-- Exclude byte-buddy from JPA starter globally: Hibernate 6.4 uses ByteBuddy
+           for runtime proxy generation via ServiceLoader, which fails in GraalVM native images.
+           Without byte-buddy on classpath, Hibernate falls back to its built-in
+           none.BytecodeProviderImpl which works without runtime class generation. -->
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+        <version>${spring-boot.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
 
       <dependency>
@@ -512,6 +561,16 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-event-attribution</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-process-attribution</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-tool-crawler</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -615,6 +674,11 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-agent-gateway-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-openclaw</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -711,6 +775,123 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-postgres-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- CLI LLM integration -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-cli-llm</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- Compute graph engine modules -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-compute-graph-camel</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-compute-graph-drools</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-compute-graph-excel</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-compute-graph-n8n</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-compute-graph-scripting</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-compute-graph-xircuits</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- Graph change tracking -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-graph-change-tracking</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- Additional loader modules -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-audio</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-discord</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-gdocs</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-gmail</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-google-workspace</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- Metrics -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-metrics</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- Additional source provider modules -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-discord</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-gdocs</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-gmail</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-google-workspace</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- Additional tool modules -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-tool-camel</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-tool-graph</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-tool-graph-localization</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-tool-workflow</artifactId>
         <version>${project.version}</version>
       </dependency>
 

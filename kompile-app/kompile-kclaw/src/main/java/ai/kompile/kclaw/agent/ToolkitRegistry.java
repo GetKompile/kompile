@@ -15,7 +15,7 @@
  */
 package ai.kompile.kclaw.agent;
 
-import ai.kompile.kclaw.model.AgentDefinition;
+import ai.kompile.gateway.core.model.AgentDefinition;
 import ai.kompile.kclaw.tool.ShellExecutionTool;
 import ai.kompile.kclaw.tool.MemoryTool;
 import ai.kompile.react.context.Toolkit;

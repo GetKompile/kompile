@@ -117,6 +117,15 @@ public class ProcessDiscoveryTool {
                 item.put("totalStepCount", stepCount);
                 item.put("sourceGraphNodeIds", s.getSourceGraphNodeIds());
                 item.put("evidence", s.getEvidence());
+                if (s.getBayesianPosteriors() != null && !s.getBayesianPosteriors().isEmpty()) {
+                    item.put("bayesianPosteriors", s.getBayesianPosteriors());
+                }
+                if (s.getBayesianPriors() != null && !s.getBayesianPriors().isEmpty()) {
+                    item.put("bayesianPriors", s.getBayesianPriors());
+                }
+                if (s.getStructuredEvidence() != null && !s.getStructuredEvidence().isEmpty()) {
+                    item.put("structuredEvidence", s.getStructuredEvidence());
+                }
                 // Include phase/step details for the agent to reason about
                 if (s.getPhases() != null) {
                     List<Map<String, Object>> phases = s.getPhases().stream().map(p -> {
@@ -299,6 +308,16 @@ public class ProcessDiscoveryTool {
         if (s.getChildSuggestions() != null && !s.getChildSuggestions().isEmpty()) {
             item.put("childSuggestions", s.getChildSuggestions().stream()
                     .map(this::serializeSuggestion).collect(Collectors.toList()));
+        }
+        // Include Bayesian posteriors and priors for interpretability
+        if (s.getBayesianPosteriors() != null && !s.getBayesianPosteriors().isEmpty()) {
+            item.put("bayesianPosteriors", s.getBayesianPosteriors());
+        }
+        if (s.getBayesianPriors() != null && !s.getBayesianPriors().isEmpty()) {
+            item.put("bayesianPriors", s.getBayesianPriors());
+        }
+        if (s.getStructuredEvidence() != null && !s.getStructuredEvidence().isEmpty()) {
+            item.put("structuredEvidence", s.getStructuredEvidence());
         }
         return item;
     }

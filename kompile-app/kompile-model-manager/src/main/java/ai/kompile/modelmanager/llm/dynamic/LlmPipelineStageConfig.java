@@ -17,6 +17,8 @@
 package ai.kompile.modelmanager.llm.dynamic;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -28,6 +30,8 @@ import java.util.Map;
  * ordering, enabled state, model overrides, and stage-specific parameters.</p>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@Getter
+@Setter
 public class LlmPipelineStageConfig {
 
     private String stageId;
@@ -61,16 +65,4 @@ public class LlmPipelineStageConfig {
         }
     }
 
-    // --- Getters and Setters ---
-
-    public String getStageId() { return stageId; }
-    public void setStageId(String stageId) { this.stageId = stageId; }
-    public int getOrder() { return order; }
-    public void setOrder(int order) { this.order = order; }
-    public boolean isEnabled() { return enabled; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
-    public String getModelOverrideId() { return modelOverrideId; }
-    public void setModelOverrideId(String modelOverrideId) { this.modelOverrideId = modelOverrideId; }
-    public Map<String, Object> getParameters() { return parameters; }
-    public void setParameters(Map<String, Object> parameters) { this.parameters = parameters; }
 }

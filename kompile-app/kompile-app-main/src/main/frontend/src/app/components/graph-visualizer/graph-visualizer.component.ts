@@ -37,10 +37,13 @@ import { MatDividerModule } from '@angular/material/divider';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Subject, Subscription, takeUntil, debounceTime, interval, filter } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
+import { BayesianPanelComponent } from './bayesian-panel.component';
 
 import { GraphCanvasComponent } from './graph-canvas.component';
 import { GraphService, GraphBuildStatus, FactSheetGraphStatistics } from '../../services/graph.service';
 import { SourceWeightService } from '../../services/source-weight.service';
+import { AttributionService } from '../../services/attribution.service';
+import { AttributionResult, PredictionResult } from '../../models/attribution-models';
 import {
   D3VisualizationData,
   D3Node,
@@ -54,7 +57,8 @@ import {
   DEFAULT_FORCE_CONFIG,
   CreateEdgeRequest,
   WeightedSearchPreview,
-  NODE_COLORS
+  NODE_COLORS,
+  TemporalBounds
 } from '../../models/graph-models';
 
 @Component({
@@ -82,7 +86,8 @@ import {
     MatDividerModule,
     MatDialogModule,
     GraphCanvasComponent,
-    ConfirmDialogComponent
+    ConfirmDialogComponent,
+    BayesianPanelComponent
   ],
   template: `
     <div class="graph-visualizer">
@@ -191,6 +196,10 @@ import {
             [forceConfig]="forceConfig"
             [linkMode]="linkMode"
             [showLegend]="true"
+            [posteriorOverlay]="posteriorOverlay"
+            [priorOverlay]="priorOverlay"
+            [mebnMfragMap]="mebnMfragMap"
+            [influenceOverlayActive]="influenceOverlayActive"
             (nodeSelected)="onNodeSelected($event)"
             (nodeDoubleClicked)="onNodeDoubleClicked($event)"
             (edgeCreated)="onEdgeCreated($event)"
@@ -241,6 +250,209 @@ import {
                       Delete
                     </button>
                   </div>
+
+                  <!-- Attribution Section -->
+                  <mat-expansion-panel class="attribution-section">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>
+                        <mat-icon class="section-icon">account_tree</mat-icon>
+                        Causal Attribution
+                      </mat-panel-title>
+                    </mat-expansion-panel-header>
+                    <div class="attribution-content">
+                      <button mat-stroked-button (click)="loadAttribution()" [disabled]="attributionLoading"
+                              *ngIf="!attributionResult">
+                        <mat-icon>search</mat-icon> Explain "Why?"
+                      </button>
+                      <div *ngIf="attributionLoading" class="attr-loading">
+                        <mat-spinner diameter="24"></mat-spinner>
+                        <span>Analyzing causal chains...</span>
+                      </div>
+                      <div *ngIf="attributionResult" class="attr-results">
+                        <div class="attr-stats">
+                          <span class="stat">{{attributionResult.chains.length}} chains</span>
+                          <span class="stat">{{attributionResult.nodesVisited}} nodes / {{attributionResult.edgesExamined}} edges</span>
+                          <span class="stat">{{attributionResult.computationTimeMs}}ms</span>
+                          <span class="stat" *ngIf="attributionResult.llmUsed">
+                            <mat-icon class="stat-icon">smart_toy</mat-icon> LLM
+                          </span>
+                          <span class="stat attr-timestamp" *ngIf="attributionResult.computedAt">
+                            {{attributionResult.computedAt | slice:11:19}}
+                          </span>
+                        </div>
+                        <div *ngIf="attributionResult.synthesizedExplanation" class="attr-explanation">
+                          {{attributionResult.synthesizedExplanation}}
+                        </div>
+                        <div *ngFor="let chain of attributionResult.chains; let i = index" class="chain-card">
+                          <div class="chain-header">
+                            <span class="chain-label">Chain {{i + 1}}</span>
+                            <span class="chain-confidence" [style.color]="getConfidenceColor(chain.overallConfidence)">
+                              {{(chain.overallConfidence * 100).toFixed(0)}}% {{chain.confidenceBand}}
+                            </span>
+                            <span class="chain-timestamp" *ngIf="chain.computedAt">{{chain.computedAt | slice:11:19}}</span>
+                          </div>
+                          <div *ngIf="chain.narrative" class="chain-narrative">{{chain.narrative}}</div>
+                          <div class="chain-path">
+                            <span class="chain-root">{{chain.rootCauseTitle}}</span>
+                            <div *ngFor="let hop of chain.hops" class="chain-hop">
+                              <div class="hop-arrow">
+                                <mat-icon>arrow_downward</mat-icon>
+                                <span class="hop-type">{{formatCausalType(hop.causalType)}}</span>
+                                <span class="hop-strength" [style.color]="getConfidenceColor(hop.strength)">
+                                  {{(hop.strength * 100).toFixed(0)}}%
+                                </span>
+                              </div>
+                              <span class="hop-node">{{hop.effectTitle}}</span>
+                              <div *ngIf="posteriorOverlay && posteriorOverlay[hop.effectNodeId] != null" class="hop-bayesian">
+                                <span class="hop-bayesian-label">Post:</span>
+                                <span class="hop-bayesian-val" [style.color]="getConfidenceColor(posteriorOverlay[hop.effectNodeId])">
+                                  {{(posteriorOverlay[hop.effectNodeId] * 100).toFixed(1)}}%
+                                </span>
+                                <span *ngIf="priorOverlay && priorOverlay[hop.effectNodeId] != null" class="hop-bayesian-prior">
+                                  (Prior: {{(priorOverlay[hop.effectNodeId] * 100).toFixed(1)}}%)
+                                </span>
+                              </div>
+                              <div *ngIf="hop.evidence && hop.evidence.length > 0" class="hop-evidence">
+                                <span *ngFor="let ev of hop.evidence" class="evidence-chip"
+                                      [matTooltip]="ev.summary || ''">
+                                  {{formatEvidenceType(ev.evidenceType)}} ({{(ev.strength * 100).toFixed(0)}}%)
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <!-- Influence Scores -->
+                        <div *ngIf="attributionResult.influenceScores && getInfluenceKeysForAttr().length > 0"
+                             class="influence-section">
+                          <h4>Influence Scores</h4>
+                          <div *ngFor="let nodeId of getInfluenceKeysForAttr()" class="influence-bar-entry">
+                            <span class="influence-node" [matTooltip]="nodeId">{{nodeId | slice:0:20}}</span>
+                            <div class="influence-bar-track">
+                              <div class="influence-bar-fill"
+                                   [style.width.%]="(attributionResult.influenceScores[nodeId] || 0) * 100"
+                                   [style.background-color]="getConfidenceColor(attributionResult.influenceScores[nodeId] || 0)"></div>
+                            </div>
+                            <span class="influence-bar-val"
+                                  [style.color]="getConfidenceColor(attributionResult.influenceScores[nodeId] || 0)">
+                              {{((attributionResult.influenceScores[nodeId] || 0) * 100).toFixed(0)}}%
+                            </span>
+                          </div>
+                        </div>
+
+                        <div *ngIf="attributionResult.counterfactuals && attributionResult.counterfactuals.length > 0"
+                             class="counterfactuals">
+                          <h4>Counterfactuals</h4>
+                          <div *ngFor="let cf of attributionResult.counterfactuals" class="cf-entry">
+                            <mat-icon [class.cf-necessary]="cf.necessaryCause">
+                              {{cf.necessaryCause ? 'warning' : 'info'}}
+                            </mat-icon>
+                            <span>
+                              Remove "{{cf.removedNodeTitle}}":
+                              {{cf.targetStillReachable ? 'still reachable' : 'NOT reachable'}}
+                              ({{cf.survivingChainCount}} chains survive,
+                              delta {{(cf.confidenceDelta * 100).toFixed(1)}}%)
+                            </span>
+                            <span *ngIf="cf.explanation" class="cf-explanation">{{cf.explanation}}</span>
+                          </div>
+                        </div>
+
+                        <!-- Dead Ends -->
+                        <div *ngIf="attributionResult.deadEnds && attributionResult.deadEnds.length > 0"
+                             class="dead-ends-section">
+                          <h4>Dead Ends</h4>
+                          <div class="dead-ends-chips">
+                            <span *ngFor="let de of attributionResult.deadEnds" class="dead-end-chip"
+                                  [matTooltip]="de">{{de | slice:0:20}}</span>
+                          </div>
+                        </div>
+
+                        <button mat-stroked-button (click)="attributionResult = null" class="attr-reset">
+                          <mat-icon>refresh</mat-icon> Reset
+                        </button>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
+
+                  <!-- Prediction Section -->
+                  <mat-expansion-panel class="prediction-section">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>
+                        <mat-icon class="section-icon">trending_up</mat-icon>
+                        Predictions
+                      </mat-panel-title>
+                    </mat-expansion-panel-header>
+                    <div class="prediction-content">
+                      <button mat-stroked-button (click)="loadPrediction()" [disabled]="predictionLoading"
+                              *ngIf="!predictionResult">
+                        <mat-icon>search</mat-icon> Predict "What next?"
+                      </button>
+                      <div *ngIf="predictionLoading" class="attr-loading">
+                        <mat-spinner diameter="24"></mat-spinner>
+                        <span>Predicting outcomes...</span>
+                      </div>
+                      <div *ngIf="predictionResult" class="pred-results">
+                        <div class="attr-stats">
+                          <span class="stat">{{predictionResult.predictions.length}} predictions</span>
+                          <span class="stat">{{predictionResult.nodesVisited}} nodes</span>
+                          <span class="stat">{{predictionResult.computationTimeMs}}ms</span>
+                          <span class="stat" *ngIf="predictionResult.llmUsed">
+                            <mat-icon class="stat-icon">smart_toy</mat-icon> LLM
+                          </span>
+                          <span class="stat attr-timestamp" *ngIf="predictionResult.computedAt">
+                            {{predictionResult.computedAt | slice:11:19}}
+                          </span>
+                        </div>
+                        <div *ngIf="predictionResult.synthesizedForecast" class="attr-explanation">
+                          {{predictionResult.synthesizedForecast}}
+                        </div>
+                        <div *ngFor="let pred of predictionResult.predictions" class="pred-entry">
+                          <div class="pred-header">
+                            <span class="pred-title">{{pred.title}}</span>
+                            <span class="pred-prob" [style.color]="getConfidenceColor(pred.probability)">
+                              {{(pred.probability * 100).toFixed(1)}}%
+                            </span>
+                          </div>
+                          <div class="pred-bar">
+                            <div class="bar-fill" [style.width.%]="pred.probability * 100"
+                                 [style.background-color]="getConfidenceColor(pred.probability)"></div>
+                            <div *ngIf="priorOverlay && priorOverlay[pred.nodeId] != null"
+                                 class="bar-marker prior-marker"
+                                 [style.left.%]="priorOverlay[pred.nodeId] * 100"
+                                 [matTooltip]="'Prior: ' + (priorOverlay[pred.nodeId] * 100).toFixed(1) + '%'"></div>
+                          </div>
+                          <div *ngIf="priorOverlay && priorOverlay[pred.nodeId] != null" class="pred-prior-label">
+                            <span class="pred-prior-text">Prior: {{(priorOverlay[pred.nodeId] * 100).toFixed(1)}}%</span>
+                            <mat-icon class="pred-prior-arrow">arrow_forward</mat-icon>
+                            <span class="pred-posterior-text" [style.color]="getConfidenceColor(pred.probability)">
+                              Pred: {{(pred.probability * 100).toFixed(1)}}%
+                            </span>
+                          </div>
+                          <div class="pred-meta">
+                            <span>{{pred.hopsFromSource}} hops</span>
+                            <span *ngIf="pred.pathFromSource?.length" class="pred-path"
+                                  [matTooltip]="pred.pathFromSource.join(' → ')">
+                              Path: {{pred.pathFromSource.length}} nodes
+                            </span>
+                            <span *ngIf="pred.pathEdgeTypes?.length" class="pred-edge-types">
+                              via {{pred.pathEdgeTypes.join(', ')}}
+                            </span>
+                          </div>
+                          <div *ngIf="pred.evidence && pred.evidence.length > 0" class="hop-evidence">
+                            <span *ngFor="let ev of pred.evidence" class="evidence-chip"
+                                  [matTooltip]="ev.summary || ev.sourceSnippet || ''">
+                              {{formatEvidenceType(ev.evidenceType)}} ({{(ev.strength * 100).toFixed(0)}}%)
+                            </span>
+                          </div>
+                          <div *ngIf="pred.explanation" class="pred-explanation">
+                            {{pred.explanation}}
+                          </div>
+                        </div>
+                        <button mat-stroked-button (click)="predictionResult = null" class="attr-reset">
+                          <mat-icon>refresh</mat-icon> Reset
+                        </button>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
                 </div>
                 <div *ngIf="!selectedNode" class="no-selection">
                   <mat-icon>touch_app</mat-icon>
@@ -388,6 +600,96 @@ import {
                 </mat-slider>
                 <span class="slider-label">{{maxNodes}} nodes</span>
 
+                <h4>Time Range</h4>
+                <mat-checkbox
+                  [(ngModel)]="temporalFilterActive"
+                  (ngModelChange)="onTemporalFilterToggle()">
+                  Filter by time
+                </mat-checkbox>
+                <div *ngIf="temporalFilterActive" class="temporal-filter-row" style="margin-top: 8px;">
+                  <mat-form-field appearance="outline" style="width: 48%; margin-right: 4%;">
+                    <mat-label>From</mat-label>
+                    <input matInput type="date" [(ngModel)]="timeFrom"
+                           (ngModelChange)="onTimeRangeChange()"
+                           [attr.min]="temporalBounds?.earliest ? temporalBounds!.earliest!.substring(0,10) : null">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline" style="width: 48%;">
+                    <mat-label>To</mat-label>
+                    <input matInput type="date" [(ngModel)]="timeTo"
+                           (ngModelChange)="onTimeRangeChange()"
+                           [attr.max]="temporalBounds?.latest ? temporalBounds!.latest!.substring(0,10) : null">
+                  </mat-form-field>
+                  <p class="hint" *ngIf="temporalBounds && temporalBounds.temporalEdgeCount">
+                    {{temporalBounds.temporalEdgeCount}} edges with timestamps
+                    <span *ngIf="temporalBounds.earliest"> ({{temporalBounds.earliest!.substring(0,10)}} &mdash; {{temporalBounds.latest!.substring(0,10)}})</span>
+                  </p>
+                </div>
+
+                <!-- Timeline Snapshot Player -->
+                <div class="timeline-section" *ngIf="temporalBounds?.earliest && temporalBounds?.latest">
+                  <h4>
+                    <mat-icon class="section-icon-sm">slow_motion_video</mat-icon>
+                    Timeline Snapshots
+                  </h4>
+                  <p class="hint">Scrub through time to see how the graph evolved</p>
+
+                  <div class="timeline-controls">
+                    <button mat-icon-button (click)="timelineStepBack()" matTooltip="Step back"
+                            [disabled]="!snapshotMode || snapshotPosition <= 0">
+                      <mat-icon>skip_previous</mat-icon>
+                    </button>
+                    <button mat-icon-button (click)="timelineTogglePlay()" [matTooltip]="timelinePlaying ? 'Pause' : 'Play'">
+                      <mat-icon>{{timelinePlaying ? 'pause' : 'play_arrow'}}</mat-icon>
+                    </button>
+                    <button mat-icon-button (click)="timelineStepForward()" matTooltip="Step forward"
+                            [disabled]="!snapshotMode || snapshotPosition >= timelineSteps">
+                      <mat-icon>skip_next</mat-icon>
+                    </button>
+                    <button mat-icon-button (click)="timelineStop()" matTooltip="Stop & show full graph"
+                            [disabled]="!snapshotMode">
+                      <mat-icon>stop</mat-icon>
+                    </button>
+                  </div>
+
+                  <div class="timeline-slider" *ngIf="snapshotMode">
+                    <mat-slider [min]="0" [max]="timelineSteps" [step]="1" discrete style="width: 100%;">
+                      <input matSliderThumb [(ngModel)]="snapshotPosition"
+                             (ngModelChange)="onSnapshotPositionChange()">
+                    </mat-slider>
+                    <div class="snapshot-date-label">
+                      <mat-icon class="snapshot-icon">event</mat-icon>
+                      <span class="snapshot-date">{{ snapshotDateLabel }}</span>
+                      <span class="snapshot-stats">
+                        {{ snapshotVisibleNodes }} nodes, {{ snapshotVisibleLinks }} links
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="timeline-options" *ngIf="snapshotMode">
+                    <mat-form-field appearance="outline" class="speed-field">
+                      <mat-label>Speed</mat-label>
+                      <mat-select [(ngModel)]="timelineSpeedMs" (ngModelChange)="onTimelineSpeedChange()">
+                        <mat-option [value]="2000">Slow (2s)</mat-option>
+                        <mat-option [value]="1000">Normal (1s)</mat-option>
+                        <mat-option [value]="500">Fast (0.5s)</mat-option>
+                        <mat-option [value]="200">Very fast (0.2s)</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+                    <mat-form-field appearance="outline" class="steps-field">
+                      <mat-label>Steps</mat-label>
+                      <mat-select [(ngModel)]="timelineSteps" (ngModelChange)="onTimelineStepsChange()">
+                        <mat-option [value]="10">10</mat-option>
+                        <mat-option [value]="20">20</mat-option>
+                        <mat-option [value]="50">50</mat-option>
+                        <mat-option [value]="100">100</mat-option>
+                      </mat-select>
+                    </mat-form-field>
+                    <mat-checkbox [(ngModel)]="snapshotCumulative">
+                      Cumulative
+                    </mat-checkbox>
+                  </div>
+                </div>
+
                 <button mat-stroked-button (click)="resetFilters()">
                   <mat-icon>filter_alt_off</mat-icon>
                   Reset Filters
@@ -476,6 +778,18 @@ import {
                   <mat-icon>restart_alt</mat-icon>
                   Reset Layout
                 </button>
+              </div>
+            </mat-tab>
+
+            <!-- Attribution Tab -->
+            <mat-tab label="Attribution">
+              <div class="panel-content">
+                <app-bayesian-panel
+                  [nodeId]="selectedNode?.id || null"
+                  (posteriorOverlayChanged)="onPosteriorOverlayChanged($event)"
+                  (priorOverlayChanged)="onPriorOverlayChanged($event)"
+                  (mebnMfragMapChanged)="onMebnMfragMapChanged($event)">
+                </app-bayesian-panel>
               </div>
             </mat-tab>
           </mat-tab-group>
@@ -744,6 +1058,40 @@ import {
       font-size: 12px;
       margin-bottom: 16px;
     }
+
+    /* Timeline Snapshot Player */
+    .timeline-section {
+      margin-top: 16px; padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .timeline-section h4 {
+      display: flex; align-items: center; gap: 6px;
+      margin: 0 0 4px; font-size: 13px;
+    }
+    .section-icon-sm { font-size: 16px; width: 16px; height: 16px; }
+
+    .timeline-controls {
+      display: flex; align-items: center; gap: 4px; margin-bottom: 4px;
+    }
+    .timeline-controls button { color: var(--text-secondary, #90caf9); }
+    .timeline-controls button:disabled { color: var(--text-tertiary, #555); }
+
+    .timeline-slider { margin-bottom: 8px; }
+    .snapshot-date-label {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--text-secondary, #bbb);
+      margin-top: -4px;
+    }
+    .snapshot-icon { font-size: 14px; width: 14px; height: 14px; color: #ffb74d; }
+    .snapshot-date { font-weight: 600; color: #e0e0e0; }
+    .snapshot-stats { color: #888; font-size: 11px; margin-left: auto; }
+
+    .timeline-options {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .speed-field, .steps-field { width: 110px; }
+    .speed-field ::ng-deep .mat-mdc-form-field-infix,
+    .steps-field ::ng-deep .mat-mdc-form-field-infix { min-height: 36px; padding-top: 6px; padding-bottom: 6px; }
 
     .weight-preview {
       display: flex;
@@ -1028,6 +1376,380 @@ import {
       font-weight: 500;
     }
 
+    /* Attribution & Prediction Styles */
+    .attribution-section, .prediction-section {
+      margin-top: 16px;
+    }
+
+    .section-icon {
+      margin-right: 8px;
+      font-size: 18px;
+      height: 18px;
+      width: 18px;
+    }
+
+    .attr-loading {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 0;
+      font-size: 12px;
+      color: var(--text-secondary, #697386);
+    }
+
+    .attr-stats {
+      display: flex;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--text-secondary, #697386);
+      margin-bottom: 12px;
+    }
+
+    .attr-explanation, .pred-explanation {
+      font-size: 12px;
+      color: var(--text-primary, #1a1f36);
+      background: #f8fafc;
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      border-left: 3px solid #667eea;
+    }
+
+    .chain-card {
+      padding: 10px;
+      background: var(--bg-surface, #fff);
+      border: 1px solid var(--border-color, #e3e8ee);
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+
+    .chain-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .chain-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #667eea;
+    }
+
+    .chain-confidence {
+      font-size: 11px;
+      font-weight: 600;
+      font-family: monospace;
+    }
+
+    .chain-path {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chain-root, .hop-node {
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 8px;
+      background: #f1f5f9;
+      border-radius: 4px;
+    }
+
+    .hop-arrow {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 0 4px 12px;
+      font-size: 11px;
+      color: var(--text-secondary, #697386);
+    }
+
+    .hop-arrow mat-icon {
+      font-size: 14px;
+      height: 14px;
+      width: 14px;
+    }
+
+    .hop-type {
+      font-size: 10px;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: #667eea;
+    }
+
+    .hop-strength {
+      font-family: monospace;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .hop-bayesian {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 0 2px 20px;
+      font-size: 10px;
+    }
+
+    .hop-bayesian-label {
+      color: var(--text-secondary, #697386);
+      font-weight: 500;
+    }
+
+    .hop-bayesian-val {
+      font-family: monospace;
+      font-weight: 600;
+    }
+
+    .hop-bayesian-prior {
+      color: var(--text-secondary, #697386);
+      font-family: monospace;
+    }
+
+    .hop-evidence {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 4px 0 4px 20px;
+    }
+
+    .evidence-chip {
+      font-size: 10px;
+      padding: 2px 6px;
+      background: #eef2ff;
+      border-radius: 4px;
+      color: #4338ca;
+      cursor: default;
+    }
+
+    .counterfactuals {
+      margin-top: 12px;
+    }
+
+    .counterfactuals h4 {
+      margin: 0 0 8px !important;
+    }
+
+    .cf-entry {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 11px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border-color, #e3e8ee);
+    }
+
+    .cf-entry mat-icon {
+      font-size: 16px;
+      height: 16px;
+      width: 16px;
+      color: var(--text-secondary, #697386);
+    }
+
+    .cf-necessary {
+      color: #f59e0b !important;
+    }
+
+    .cf-explanation {
+      display: block;
+      font-size: 10px;
+      color: var(--text-secondary, #697386);
+      font-style: italic;
+      margin-top: 2px;
+    }
+
+    .chain-narrative {
+      font-size: 11px;
+      color: var(--text-secondary, #697386);
+      font-style: italic;
+      padding: 4px 8px;
+      margin-bottom: 8px;
+      background: rgba(102, 126, 234, 0.04);
+      border-radius: 4px;
+      border-left: 2px solid #667eea;
+    }
+
+    .chain-timestamp {
+      font-size: 9px;
+      color: var(--text-tertiary, #8792a2);
+      font-family: monospace;
+    }
+
+    .stat-icon {
+      font-size: 12px !important;
+      width: 12px !important;
+      height: 12px !important;
+      vertical-align: middle;
+    }
+
+    .attr-timestamp {
+      font-family: monospace;
+      color: var(--text-tertiary, #8792a2);
+    }
+
+    .pred-path {
+      font-size: 10px;
+      color: var(--text-secondary, #697386);
+      cursor: pointer;
+    }
+
+    .pred-edge-types {
+      font-size: 10px;
+      color: var(--text-tertiary, #8792a2);
+    }
+
+    .influence-section, .dead-ends-section {
+      margin-top: 12px;
+    }
+
+    .influence-section h4, .dead-ends-section h4 {
+      margin: 0 0 8px !important;
+      font-size: 13px;
+    }
+
+    .influence-bar-entry {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+
+    .influence-node {
+      color: var(--text-secondary, #697386);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100px;
+      min-width: 60px;
+      font-size: 11px;
+    }
+
+    .influence-bar-track {
+      flex: 1;
+      height: 4px;
+      background: var(--bg-body, #f3f4f6);
+      border-radius: 2px;
+    }
+
+    .influence-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+    }
+
+    .influence-bar-val {
+      font-family: monospace;
+      font-weight: 600;
+      min-width: 32px;
+      text-align: right;
+      font-size: 12px;
+    }
+
+    .dead-ends-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .dead-end-chip {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      background: rgba(239, 68, 68, 0.08);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.2);
+    }
+
+    .attr-reset {
+      margin-top: 8px;
+    }
+
+    .pred-entry {
+      padding: 8px;
+      background: var(--bg-surface, #fff);
+      border: 1px solid var(--border-color, #e3e8ee);
+      border-radius: 6px;
+      margin-bottom: 6px;
+    }
+
+    .pred-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+
+    .pred-title {
+      font-size: 12px;
+      font-weight: 500;
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pred-prob {
+      font-size: 13px;
+      font-weight: 600;
+      font-family: monospace;
+    }
+
+    .pred-bar {
+      position: relative;
+      height: 4px;
+      background: #f1f5f9;
+      border-radius: 2px;
+      margin-bottom: 4px;
+      overflow: visible;
+    }
+
+    .pred-bar .bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    .pred-bar .bar-marker {
+      position: absolute;
+      top: -2px;
+      width: 2px;
+      height: 8px;
+      background: #1a1f36;
+      border-radius: 1px;
+    }
+
+    .pred-prior-label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 4px;
+      font-size: 10px;
+    }
+
+    .pred-prior-text {
+      color: var(--text-secondary, #697386);
+      font-family: monospace;
+    }
+
+    .pred-prior-arrow {
+      font-size: 10px;
+      height: 10px;
+      width: 10px;
+      color: var(--text-secondary, #697386);
+    }
+
+    .pred-posterior-text {
+      font-family: monospace;
+      font-weight: 600;
+    }
+
+    .pred-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 10px;
+      color: var(--text-secondary, #697386);
+    }
+
     ::ng-deep .mat-mdc-tab-body-wrapper {
       flex: 1;
     }
@@ -1065,6 +1787,16 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   buildStatus: GraphBuildStatus | null = null;
   graphStatistics: FactSheetGraphStatistics | null = null;
   selectedTabIndex = 0;
+  posteriorOverlay: Record<string, number> | null = null;
+  priorOverlay: Record<string, number> | null = null;
+  mebnMfragMap: Record<string, string> | null = null;  // nodeId -> mfragName
+  influenceOverlayActive = false;  // true when posteriorOverlay contains influence scores
+
+  // Attribution & prediction state
+  attributionResult: AttributionResult | null = null;
+  attributionLoading = false;
+  predictionResult: PredictionResult | null = null;
+  predictionLoading = false;
 
   // Link mode state
   linkSourceNode: D3Node | null = null;
@@ -1095,6 +1827,26 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     edgeTypes: ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED']
   };
 
+  // Temporal filtering
+  temporalBounds: TemporalBounds | null = null;
+  timeFrom: string = '';
+  timeTo: string = '';
+  temporalFilterActive = false;
+
+  // Timeline snapshot player
+  snapshotMode = false;
+  snapshotPosition = 0;
+  timelineSteps = 20;
+  timelineSpeedMs = 1000;
+  timelinePlaying = false;
+  snapshotCumulative = true;
+  snapshotDateLabel = '';
+  snapshotVisibleNodes = 0;
+  snapshotVisibleLinks = 0;
+  private timelineTimer: any = null;
+  /** Full unfiltered data cached for snapshot scrubbing */
+  private fullGraphData: D3VisualizationData | null = null;
+
   // Weights
   sourceWeights: SourceWeight[] = [];
   previewQuery = '';
@@ -1121,6 +1873,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   constructor(
     private graphService: GraphService,
     private weightService: SourceWeightService,
+    private attributionService: AttributionService,
     private snackBar: MatSnackBar,
     private dialog: MatDialog
   ) {}
@@ -1128,6 +1881,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.loadGraph();
     this.loadSourceWeights();
+    this.loadTemporalBounds();
 
     // Debounce search input
     this.searchSubject.pipe(
@@ -1139,6 +1893,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.stopTimelineTimer();
     this.destroy$.next();
     this.destroy$.complete();
   }
@@ -1146,15 +1901,20 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   loadGraph(query?: string): void {
     this.loading = true;
 
+    const from = this.temporalFilterActive && this.timeFrom ? this.timeFrom + 'T00:00:00' : undefined;
+    const to = this.temporalFilterActive && this.timeTo ? this.timeTo + 'T23:59:59' : undefined;
+
     const loadObservable = this.factSheetId
       ? this.graphService.getFactSheetVisualizationData(this.factSheetId, this.maxNodes, this.maxNodes * 2)
-      : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes);
+      : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
 
     loadObservable
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (data) => {
-          // Apply filters
+          // Cache full data for timeline snapshots
+          this.fullGraphData = data;
+          // Apply filters (snapshot filter handled inside applyFilters)
           this.graphData = this.applyFilters(data, query);
           this.loading = false;
         },
@@ -1358,6 +2118,47 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     let nodes = data.nodes.filter(n => this.filter.nodeTypes.includes(n.type));
     let links = data.links.filter(l => this.filter.edgeTypes.includes(l.type));
 
+    // Apply temporal filter on links with occurredAt
+    if (this.temporalFilterActive && (this.timeFrom || this.timeTo)) {
+      const fromDate = this.timeFrom ? this.timeFrom + 'T00:00:00' : null;
+      const toDate = this.timeTo ? this.timeTo + 'T23:59:59' : null;
+      links = links.filter(l => {
+        if (!l.occurredAt) return true; // keep links without timestamps
+        if (fromDate && l.occurredAt < fromDate) return false;
+        if (toDate && l.occurredAt > toDate) return false;
+        return true;
+      });
+    }
+
+    // Apply timeline snapshot filter
+    if (this.snapshotMode && this.temporalBounds?.earliest && this.temporalBounds?.latest) {
+      const cutoff = this.getSnapshotCutoffDate();
+      if (cutoff) {
+        if (this.snapshotCumulative) {
+          // Cumulative: show everything up to cutoff
+          links = links.filter(l => {
+            if (!l.occurredAt) return true;
+            return l.occurredAt <= cutoff;
+          });
+          nodes = nodes.filter(n => {
+            if (!n.occurredAt) return true;
+            return n.occurredAt <= cutoff;
+          });
+        } else {
+          // Window: show only events in current step's time window
+          const windowStart = this.getSnapshotWindowStart();
+          links = links.filter(l => {
+            if (!l.occurredAt) return false;
+            return l.occurredAt >= windowStart && l.occurredAt <= cutoff;
+          });
+          nodes = nodes.filter(n => {
+            if (!n.occurredAt) return false;
+            return n.occurredAt >= windowStart && n.occurredAt <= cutoff;
+          });
+        }
+      }
+    }
+
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       nodes = nodes.filter(n =>
@@ -1365,10 +2166,16 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
         (n.title || '').toLowerCase().includes(query) ||
         (n.description || '').toLowerCase().includes(query)
       );
+    }
 
-      // Keep only links where both nodes are in filtered set
-      const nodeIds = new Set(nodes.map(n => n.id));
-      links = links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
+    // Keep only links where both nodes are in filtered set
+    const nodeIds = new Set(nodes.map(n => n.id));
+    links = links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
+
+    // Update snapshot stats
+    if (this.snapshotMode) {
+      this.snapshotVisibleNodes = nodes.length;
+      this.snapshotVisibleLinks = links.length;
     }
 
     return { nodes, links };
@@ -1393,6 +2200,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
 
     // Normal selection
     this.selectedNode = node;
+    this.attributionResult = null;
+    this.predictionResult = null;
 
     // Load relations for the selected node
     if (node) {
@@ -1400,6 +2209,19 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     } else {
       this.nodeRelations = [];
     }
+  }
+
+  onPosteriorOverlayChanged(overlay: Record<string, number> | null): void {
+    this.posteriorOverlay = overlay;
+    this.influenceOverlayActive = false;  // Bayesian posteriors are true posteriors, not influence scores
+  }
+
+  onPriorOverlayChanged(overlay: Record<string, number> | null): void {
+    this.priorOverlay = overlay;
+  }
+
+  onMebnMfragMapChanged(map: Record<string, string> | null): void {
+    this.mebnMfragMap = map;
   }
 
   onNodeDoubleClicked(node: D3Node): void {
@@ -1546,7 +2368,179 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     this.maxDepth = 2;
     this.maxNodes = 100;
     this.searchQuery = '';
+    this.temporalFilterActive = false;
+    this.timeFrom = '';
+    this.timeTo = '';
+    this.timelineStop();
     this.loadGraph();
+  }
+
+  loadTemporalBounds(): void {
+    this.graphService.getTemporalBounds()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (bounds) => {
+          this.temporalBounds = bounds;
+        },
+        error: (err) => {
+          console.error('Failed to load temporal bounds:', err);
+        }
+      });
+  }
+
+  onTemporalFilterToggle(): void {
+    if (!this.temporalFilterActive) {
+      this.timeFrom = '';
+      this.timeTo = '';
+    }
+    this.loadGraph();
+  }
+
+  onTimeRangeChange(): void {
+    if (this.temporalFilterActive) {
+      this.loadGraph();
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIMELINE SNAPSHOT PLAYER
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Compute the ISO cutoff date string for the current snapshot position.
+   * Maps snapshotPosition (0..timelineSteps) linearly across the temporal bounds.
+   */
+  private getSnapshotCutoffDate(): string {
+    if (!this.temporalBounds?.earliest || !this.temporalBounds?.latest) return '';
+    const earliest = new Date(this.temporalBounds.earliest).getTime();
+    const latest = new Date(this.temporalBounds.latest).getTime();
+    const range = latest - earliest;
+    const fraction = this.snapshotPosition / this.timelineSteps;
+    const cutoffMs = earliest + range * fraction;
+    return new Date(cutoffMs).toISOString();
+  }
+
+  /**
+   * For non-cumulative (window) mode, compute the start of the current step's window.
+   */
+  private getSnapshotWindowStart(): string {
+    if (!this.temporalBounds?.earliest || !this.temporalBounds?.latest) return '';
+    const earliest = new Date(this.temporalBounds.earliest).getTime();
+    const latest = new Date(this.temporalBounds.latest).getTime();
+    const range = latest - earliest;
+    const stepSize = range / this.timelineSteps;
+    const windowStartMs = earliest + stepSize * Math.max(0, this.snapshotPosition - 1);
+    return new Date(windowStartMs).toISOString();
+  }
+
+  /**
+   * Reapply snapshot filter using cached full data (no backend round-trip).
+   */
+  private applySnapshotFilter(): void {
+    if (!this.fullGraphData) return;
+    // Update date label
+    const cutoff = this.getSnapshotCutoffDate();
+    if (cutoff) {
+      const d = new Date(cutoff);
+      this.snapshotDateLabel = d.toLocaleDateString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    }
+    this.graphData = this.applyFilters(this.fullGraphData);
+  }
+
+  timelineTogglePlay(): void {
+    if (this.timelinePlaying) {
+      this.timelinePause();
+    } else {
+      this.timelinePlay();
+    }
+  }
+
+  timelinePlay(): void {
+    if (!this.snapshotMode) {
+      this.snapshotMode = true;
+      this.snapshotPosition = 0;
+    }
+    this.timelinePlaying = true;
+    this.applySnapshotFilter();
+    this.startTimelineTimer();
+  }
+
+  private startTimelineTimer(): void {
+    this.stopTimelineTimer();
+    this.timelineTimer = setInterval(() => {
+      if (this.snapshotPosition >= this.timelineSteps) {
+        this.timelinePause();
+        return;
+      }
+      this.snapshotPosition++;
+      this.applySnapshotFilter();
+    }, this.timelineSpeedMs);
+  }
+
+  private stopTimelineTimer(): void {
+    if (this.timelineTimer) {
+      clearInterval(this.timelineTimer);
+      this.timelineTimer = null;
+    }
+  }
+
+  timelinePause(): void {
+    this.timelinePlaying = false;
+    this.stopTimelineTimer();
+  }
+
+  timelineStop(): void {
+    this.timelinePause();
+    this.snapshotMode = false;
+    this.snapshotPosition = 0;
+    this.snapshotDateLabel = '';
+    this.snapshotVisibleNodes = 0;
+    this.snapshotVisibleLinks = 0;
+    // Restore full graph
+    if (this.fullGraphData) {
+      this.graphData = this.applyFilters(this.fullGraphData);
+    }
+  }
+
+  timelineStepForward(): void {
+    if (!this.snapshotMode) {
+      this.snapshotMode = true;
+      this.snapshotPosition = 0;
+    }
+    if (this.snapshotPosition < this.timelineSteps) {
+      this.snapshotPosition++;
+      this.applySnapshotFilter();
+    }
+  }
+
+  timelineStepBack(): void {
+    if (this.snapshotPosition > 0) {
+      this.snapshotPosition--;
+      this.applySnapshotFilter();
+    }
+  }
+
+  onSnapshotPositionChange(): void {
+    this.applySnapshotFilter();
+  }
+
+  onTimelineSpeedChange(): void {
+    if (this.timelinePlaying) {
+      this.startTimelineTimer();
+    }
+  }
+
+  onTimelineStepsChange(): void {
+    // Clamp position to new step count
+    if (this.snapshotPosition > this.timelineSteps) {
+      this.snapshotPosition = this.timelineSteps;
+    }
+    if (this.snapshotMode) {
+      this.applySnapshotFilter();
+    }
   }
 
   previewWeights(): void {
@@ -1756,6 +2750,116 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
             }
           });
       });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ATTRIBUTION & PREDICTION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  loadAttribution(): void {
+    if (!this.selectedNode) return;
+    this.attributionLoading = true;
+
+    this.attributionService.explainQuick(this.selectedNode.id, {
+      includeCounterfactuals: true
+    }).pipe(takeUntil(this.destroy$)).subscribe({
+      next: (result) => {
+        this.attributionResult = result;
+        this.attributionLoading = false;
+
+        // Merge attribution chain influence scores into posterior overlay
+        // so chain nodes are visually highlighted on the graph canvas
+        this.mergeAttributionOverlay(result);
+      },
+      error: (err) => {
+        console.error('Attribution query failed:', err);
+        this.snackBar.open('Attribution query failed', 'Dismiss', { duration: 3000 });
+        this.attributionLoading = false;
+      }
+    });
+  }
+
+  /**
+   * Merge attribution chain node influence scores into the posterior overlay
+   * so they render on the graph canvas as heat-colored nodes.
+   */
+  private mergeAttributionOverlay(result: AttributionResult): void {
+    const overlay = this.posteriorOverlay ? { ...this.posteriorOverlay } : {} as Record<string, number>;
+    let changed = false;
+
+    // Use influence scores as posterior-like values for each node
+    if (result.influenceScores) {
+      for (const [nodeId, score] of Object.entries(result.influenceScores)) {
+        if (overlay[nodeId] === undefined) {
+          overlay[nodeId] = score;
+          changed = true;
+        }
+      }
+    }
+
+    // Add chain hop nodes with their strength values
+    for (const chain of result.chains) {
+      if (chain.rootCauseNodeId && overlay[chain.rootCauseNodeId] === undefined) {
+        overlay[chain.rootCauseNodeId] = chain.overallConfidence;
+        changed = true;
+      }
+      for (const hop of chain.hops) {
+        if (hop.effectNodeId && overlay[hop.effectNodeId] === undefined) {
+          overlay[hop.effectNodeId] = hop.strength;
+          changed = true;
+        }
+        if (hop.causeNodeId && overlay[hop.causeNodeId] === undefined) {
+          overlay[hop.causeNodeId] = hop.strength;
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      this.posteriorOverlay = overlay;
+      this.influenceOverlayActive = true;
+    }
+  }
+
+  loadPrediction(): void {
+    if (!this.selectedNode) return;
+    this.predictionLoading = true;
+
+    this.attributionService.predictQuick(this.selectedNode.id).pipe(
+      takeUntil(this.destroy$)
+    ).subscribe({
+      next: (result) => {
+        this.predictionResult = result;
+        this.predictionLoading = false;
+      },
+      error: (err) => {
+        console.error('Prediction query failed:', err);
+        this.snackBar.open('Prediction query failed', 'Dismiss', { duration: 3000 });
+        this.predictionLoading = false;
+      }
+    });
+  }
+
+  getConfidenceColor(value: number): string {
+    if (value < 0.3) return '#3b82f6';
+    if (value < 0.5) return '#f59e0b';
+    if (value < 0.7) return '#f97316';
+    return '#ef4444';
+  }
+
+  formatCausalType(type: string): string {
+    return type.toLowerCase().replace(/_/g, ' ');
+  }
+
+  formatEvidenceType(type: string): string {
+    return type.toLowerCase().replace(/_/g, ' ');
+  }
+
+  getInfluenceKeysForAttr(): string[] {
+    if (!this.attributionResult?.influenceScores) return [];
+    return Object.keys(this.attributionResult.influenceScores)
+      .sort((a, b) => (this.attributionResult!.influenceScores[b] || 0) - (this.attributionResult!.influenceScores[a] || 0))
+      .slice(0, 10);
   }
 
   /**

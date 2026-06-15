@@ -59,7 +59,15 @@ public class PassthroughChatController {
         request.setInjectMcpTools(injectMcpTools);
         request.setAgentArgs(agentArgs);
 
-        sessionManager.startSession(request, emitter);
+        String sessionId = sessionManager.startSession(request, emitter);
+
+        // Clean up subprocess and session on client disconnect
+        if (sessionId != null) {
+            Runnable cleanup = () -> sessionManager.endSession(sessionId);
+            emitter.onCompletion(cleanup);
+            emitter.onTimeout(cleanup);
+            emitter.onError(e -> cleanup.run());
+        }
 
         return emitter;
     }

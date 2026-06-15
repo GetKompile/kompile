@@ -147,6 +147,24 @@ public class OSResolver {
     }
 
     /**
+     * Returns the JavaCPP platform string for the current OS and architecture.
+     * Examples: "linux-x86_64", "linux-arm64", "macosx-arm64", "windows-x86_64".
+     * This is the canonical format used by JavaCPP/nd4j for platform-specific artifacts.
+     * @return JavaCPP platform string.
+     */
+    public static String javacppPlatform() {
+        String os;
+        if (isWindows()) {
+            os = "windows";
+        } else if (isMac()) {
+            os = "macosx";
+        } else {
+            os = "linux";
+        }
+        return os + "-" + arch();
+    }
+
+    /**
      * Returns the typical shared library extension for the current OS.
      * (e.g., ".so" for Linux, ".dylib" for macOS, ".dll" for Windows).
      * @return The shared library extension string.

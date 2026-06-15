@@ -26,7 +26,7 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
  * WebSocket configuration for real-time progress updates during document ingestion.
  * Enables STOMP messaging over WebSocket for push notifications to the frontend.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @EnableWebSocketMessageBroker
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 

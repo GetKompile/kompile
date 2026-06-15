@@ -193,6 +193,117 @@ class OpenCodeParserTest {
     }
 
     // ===================================================================
+    // parseOpenCodeLine — reasoning → ThinkingChunk
+    // ===================================================================
+
+    @Test
+    void reasoningEvent_shouldProduceThinkingChunk() {
+        String line = ParserTestFixtures.openCodeReasoning("Thinking about the best approach...");
+        PassthroughEvent event = parser.parseOpenCodeLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasThinkingChunk("Thinking about the best approach...");
+    }
+
+    @Test
+    void reasoningEvent_emptyText_shouldProduceThinkingChunk() {
+        String line = ParserTestFixtures.openCodeReasoning("");
+        PassthroughEvent event = parser.parseOpenCodeLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasThinkingChunk("");
+    }
+
+    @Test
+    void reasoningEvent_longText_shouldPreserveContent() {
+        String longText = "Step 1: Read the configuration. Step 2: Validate. Step 3: Apply changes.";
+        String line = ParserTestFixtures.openCodeReasoning(longText);
+        PassthroughEvent event = parser.parseOpenCodeLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasThinkingChunk(longText);
+    }
+
+    // ===================================================================
+    // parseOpenCodeLine — ask_user tool → InteractiveQuestion
+    // ===================================================================
+
+    @Test
+    void askUserTool_shouldProduceInteractiveQuestion() {
+        String line = ParserTestFixtures.openCodeAskUser(
+                "oc-call-001", "Which file should I edit?", "foo.java", "bar.java");
+        PassthroughEvent event = parser.parseOpenCodeLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasInteractiveQuestion("Which file should I edit?");
+
+        InteractiveQuestion iq = AgentOutputAssertions.assertThat(event)
+                .firstOfType(InteractiveQuestion.class);
+        assertNotNull(iq);
+        assertEquals("oc-call-001", iq.callId());
+        assertEquals(2, iq.options().size());
+        assertEquals("foo.java", iq.options().get(0).label());
+        assertEquals("bar.java", iq.options().get(1).label());
+    }
+
+    @Test
+    void askUserTool_noOptions_shouldProduceQuestionOnly() {
+        String line = ParserTestFixtures.openCodeAskUser("oc-call-002", "What should I do next?");
+        PassthroughEvent event = parser.parseOpenCodeLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasInteractiveQuestion("What should I do next?");
+
+        InteractiveQuestion iq = AgentOutputAssertions.assertThat(event)
+                .firstOfType(InteractiveQuestion.class);
+        assertNotNull(iq);
+        assertTrue(iq.options().isEmpty());
+        assertTrue(iq.freeformAllowed());
+    }
+
+    @Test
+    void askUserQuestion_withTextField_shouldUseTextAsQuestion() {
+        String line = ParserTestFixtures.openCodeAskUserWithText(
+                "oc-call-003", "Do you want to continue?");
+        PassthroughEvent event = parser.parseOpenCodeLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasInteractiveQuestion("Do you want to continue?");
+    }
+
+    // ===================================================================
+    // parseOpenCodeLine — tool_use with description in input
+    // ===================================================================
+
+    @Test
+    void toolUseWithDescription_shouldUseDescription() {
+        String line = "{\"type\":\"tool_use\",\"part\":{\"type\":\"tool\",\"tool\":\"edit\","
+                + "\"state\":{\"input\":{\"description\":\"Fixing the bug in line 42\"}}}}";
+        PassthroughEvent event = parser.parseOpenCodeLine(line);
+
+        ToolUse toolUse = AgentOutputAssertions.assertThat(event).firstOfType(ToolUse.class);
+        assertNotNull(toolUse);
+        assertEquals("edit", toolUse.name());
+        assertEquals("Fixing the bug in line 42", toolUse.input());
+    }
+
+    // ===================================================================
+    // parseOpenCodeLine — non-JSON noise should return null
+    // ===================================================================
+
+    @Test
+    void nonJsonNoiseLine_shouldReturnNull() {
+        PassthroughEvent event = parser.parseOpenCodeLine("⣿ Thinking...");
+        assertNull(event, "TUI spinner noise should be suppressed");
+    }
+
+    // ===================================================================
     // parseOpenCodeLineMulti — edge cases
     // ===================================================================
 

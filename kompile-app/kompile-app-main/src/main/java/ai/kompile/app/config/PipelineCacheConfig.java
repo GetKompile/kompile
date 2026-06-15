@@ -42,7 +42,7 @@ import java.nio.file.Paths;
  *   <li>{@code kompile.cache.pipeline.max-size-gb} - Max cache size in GB (default: 10)</li>
  * </ul>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class PipelineCacheConfig {
 
     private static final Logger log = LoggerFactory.getLogger(PipelineCacheConfig.class);

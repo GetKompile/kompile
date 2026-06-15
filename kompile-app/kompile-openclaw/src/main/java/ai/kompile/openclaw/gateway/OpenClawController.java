@@ -17,13 +17,13 @@ package ai.kompile.openclaw.gateway;
 
 import ai.kompile.openclaw.agent.OpenClawAgentService;
 import ai.kompile.openclaw.config.OpenClawConfig;
-import ai.kompile.openclaw.model.AgentDefinition;
+import ai.kompile.gateway.core.model.AgentDefinition;
 import ai.kompile.openclaw.model.OpenClawRequest;
 import ai.kompile.openclaw.model.OpenClawResponse;
-import ai.kompile.openclaw.service.AgentRegistry;
-import ai.kompile.openclaw.service.HeartbeatScheduler;
-import ai.kompile.openclaw.service.PermissionService;
-import ai.kompile.openclaw.service.SessionService;
+import ai.kompile.gateway.core.service.AgentRegistry;
+import ai.kompile.gateway.core.service.HeartbeatScheduler;
+import ai.kompile.gateway.core.service.PermissionService;
+import ai.kompile.gateway.core.service.SessionService;
 import ai.kompile.react.model.ReActMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -49,7 +49,7 @@ public class OpenClawController {
     public OpenClawController(
             OpenClawAgentService agentService,
             AgentRegistry agentRegistry,
-            HeartbeatScheduler heartbeatScheduler,
+            @org.springframework.beans.factory.annotation.Qualifier("openclawHeartbeatScheduler") HeartbeatScheduler heartbeatScheduler,
             SessionService sessionService,
             PermissionService permissionService,
             OpenClawConfig config) {

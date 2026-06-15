@@ -39,6 +39,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.PropertySource;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Minimal Spring configuration for the ingest subprocess.
@@ -59,7 +60,7 @@ import java.util.List;
  * This prevents modules with JPA dependencies (OAuth, Orchestrator, etc.) from being loaded,
  * since their auto-configurations are never imported in the first place.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "kompile.subprocess.mode", havingValue = "true", matchIfMissing = false)
 @ComponentScan(
     basePackages = {
@@ -205,20 +206,20 @@ public class SubprocessIngestConfiguration {
     public ai.kompile.core.loaders.DocumentLoadingService subprocessDocumentLoadingService() {
         return new ai.kompile.core.loaders.DocumentLoadingService() {
             @Override
-            public java.util.List<org.springframework.ai.document.Document> loadAllConfiguredDocuments() {
-                return java.util.List.of(); // Subprocess doesn't use this
+            public List<org.springframework.ai.document.Document> loadAllConfiguredDocuments() {
+                return List.of(); // Subprocess doesn't use this
             }
 
             @Override
-            public java.util.List<org.springframework.ai.document.Document> loadDocumentsFromSource(
+            public List<org.springframework.ai.document.Document> loadDocumentsFromSource(
                     ai.kompile.core.loaders.DocumentSourceDescriptor sourceDescriptor, String loaderName) {
-                return java.util.List.of(); // Subprocess doesn't use this
+                return List.of(); // Subprocess doesn't use this
             }
 
             @Override
-            public java.util.Map<String, Object> loadDocumentsBatch(
-                    java.util.List<BatchLoadRequestItem> sourceRequests, String defaultLoaderName) {
-                return java.util.Map.of(); // Subprocess doesn't use this
+            public Map<String, Object> loadDocumentsBatch(
+                    List<BatchLoadRequestItem> sourceRequests, String defaultLoaderName) {
+                return Map.of(); // Subprocess doesn't use this
             }
         };
     }

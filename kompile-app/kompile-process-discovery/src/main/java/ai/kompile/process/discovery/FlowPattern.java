@@ -21,6 +21,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -69,6 +70,12 @@ public class FlowPattern {
     /** The type of the parent flow that contains this one, if any. */
     private String parentFlowType;
 
+    /** Earliest occurredAt across all steps in this flow */
+    private LocalDateTime earliestOccurrence;
+
+    /** Latest occurredAt across all steps in this flow */
+    private LocalDateTime latestOccurrence;
+
     @Data
     @Builder
     @NoArgsConstructor
@@ -84,5 +91,7 @@ public class FlowPattern {
         private String target;
         /** KG node ID if applicable */
         private String nodeId;
+        /** When this step occurred in the real world (from graph edge occurredAt) */
+        private LocalDateTime occurredAt;
     }
 }

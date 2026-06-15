@@ -17,6 +17,8 @@
 package ai.kompile.app.sync.convert;
 
 import ai.kompile.app.facts.domain.Note;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.Yaml;
@@ -34,6 +36,8 @@ import java.util.*;
  */
 @Component
 public class ObsidianFrontmatterConverter {
+
+    private static final Logger log = LoggerFactory.getLogger(ObsidianFrontmatterConverter.class);
 
     /**
      * Produce OFM file content: YAML frontmatter block + Markdown body.
@@ -140,7 +144,9 @@ public class ObsidianFrontmatterConverter {
         if (updatedObj instanceof String s) {
             try {
                 updatedAt = Instant.parse(s);
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.debug("Could not parse 'updated' frontmatter timestamp '{}': {}", s, e.getMessage());
+            }
         }
 
         return new ParsedObsidianNote(title, tags, body, kompileNoteId, updatedAt, frontmatter);

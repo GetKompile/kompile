@@ -38,7 +38,7 @@ import org.springframework.context.annotation.Configuration;
  * kompile.graph.matrix.initial-capacity=2048
  * </pre>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @Slf4j
 public class MatrixGraphConfig {
 

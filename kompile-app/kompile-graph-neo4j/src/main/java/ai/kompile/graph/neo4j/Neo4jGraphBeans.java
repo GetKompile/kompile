@@ -42,7 +42,7 @@ import org.springframework.context.annotation.Configuration;
  * {@code ~/.kompile/config/kg-embedding-config.json}) rather than Spring {@code @Value} properties.
  * Enable Neo4j and configure the URI/credentials via the UI under Knowledge Graph &rarr; Neo4j settings.</p>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = "org.neo4j.driver.Driver")
 @Conditional(Neo4jEnabledCondition.class)
 public class Neo4jGraphBeans {

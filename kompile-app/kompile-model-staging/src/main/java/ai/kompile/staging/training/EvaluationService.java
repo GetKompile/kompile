@@ -684,7 +684,8 @@ public class EvaluationService {
             for (SseEmitter emitter : emitters) {
                 try {
                     emitter.complete();
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log.warn("Failed to complete SSE emitter for job '{}'", jobId, e);
                 }
             }
             emitters.clear();
@@ -735,7 +736,7 @@ public class EvaluationService {
                                     PerplexityEvaluator.evaluateWikiText2(sd, tokenizer, 512, 128);
                             results.put("perplexity", ppResult.getPerplexity());
                         } catch (Exception e) {
-                            log.warn("Perplexity evaluation failed: {}", e.getMessage());
+                            log.warn("Perplexity evaluation failed", e);
                             results.put("perplexity", simulateMetricValue("perplexity", 1.0, new Random(42)));
                         }
                     } else {
@@ -747,7 +748,7 @@ public class EvaluationService {
                 }
                 return results;
             } catch (Exception e) {
-                log.warn("Failed to load model for direct evaluation, falling back to simulation: {}", e.getMessage());
+                log.warn("Failed to load model for direct evaluation, falling back to simulation", e);
             }
         }
 
@@ -844,5 +845,18 @@ public class EvaluationService {
         entry.put("name", name);
         entry.put("description", description);
         return entry;
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        evaluationExecutor.shutdown();
+        try {
+            if (!evaluationExecutor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                evaluationExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            evaluationExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

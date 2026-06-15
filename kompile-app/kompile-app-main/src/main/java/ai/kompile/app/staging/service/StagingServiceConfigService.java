@@ -20,6 +20,7 @@ import ai.kompile.app.staging.domain.StagingServiceConfig;
 import ai.kompile.app.staging.repository.StagingServiceConfigRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,11 +37,17 @@ public class StagingServiceConfigService {
 
     private static final Logger log = LoggerFactory.getLogger(StagingServiceConfigService.class);
 
-    private final StagingServiceConfigRepository repository;
+    @Autowired
+    private StagingServiceConfigRepository repository;
+
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
+    public StagingServiceConfigService() {
+    }
 
     public StagingServiceConfigService(StagingServiceConfigRepository repository) {
         this.repository = repository;
     }
+
 
     /**
      * Get all configurations.

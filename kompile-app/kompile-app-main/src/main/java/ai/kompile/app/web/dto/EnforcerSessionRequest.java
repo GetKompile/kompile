@@ -16,9 +16,14 @@
 
 package ai.kompile.app.web.dto;
 
+import lombok.Getter;
+import lombok.Setter;
+
 /**
  * Request body for creating a new enforcer session.
  */
+@Getter
+@Setter
 public class EnforcerSessionRequest {
 
     private String agentName;
@@ -30,67 +35,4 @@ public class EnforcerSessionRequest {
     private boolean injectMcpTools = true;
     private String codingProjectId;
 
-    public String getAgentName() {
-        return agentName;
-    }
-
-    public void setAgentName(String agentName) {
-        this.agentName = agentName;
-    }
-
-    public String getRules() {
-        return rules;
-    }
-
-    public void setRules(String rules) {
-        this.rules = rules;
-    }
-
-    public int getMaxCorrections() {
-        return maxCorrections;
-    }
-
-    public void setMaxCorrections(int maxCorrections) {
-        this.maxCorrections = maxCorrections;
-    }
-
-    public String getJudgeBackend() {
-        return judgeBackend;
-    }
-
-    public void setJudgeBackend(String judgeBackend) {
-        this.judgeBackend = judgeBackend;
-    }
-
-    public String getWorkingDirectory() {
-        return workingDirectory;
-    }
-
-    public void setWorkingDirectory(String workingDirectory) {
-        this.workingDirectory = workingDirectory;
-    }
-
-    public boolean isSkipPermissions() {
-        return skipPermissions;
-    }
-
-    public void setSkipPermissions(boolean skipPermissions) {
-        this.skipPermissions = skipPermissions;
-    }
-
-    public boolean isInjectMcpTools() {
-        return injectMcpTools;
-    }
-
-    public void setInjectMcpTools(boolean injectMcpTools) {
-        this.injectMcpTools = injectMcpTools;
-    }
-
-    public String getCodingProjectId() {
-        return codingProjectId;
-    }
-
-    public void setCodingProjectId(String codingProjectId) {
-        this.codingProjectId = codingProjectId;
-    }
 }

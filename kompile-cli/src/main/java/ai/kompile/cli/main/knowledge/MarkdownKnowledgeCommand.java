@@ -775,7 +775,11 @@ public class MarkdownKnowledgeCommand implements Callable<Integer> {
             }
             Process process = builder.start();
             String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            int exitCode = process.waitFor();
+            if (!process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                throw new IllegalStateException("Command timed out: " + String.join(" ", command));
+            }
+            int exitCode = process.exitValue();
             if (exitCode != 0 && !allowFailure) {
                 throw new IllegalStateException("Command failed (" + String.join(" ", command) + "): " + output.trim());
             }

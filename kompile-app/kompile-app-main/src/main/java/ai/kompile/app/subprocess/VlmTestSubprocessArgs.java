@@ -17,10 +17,8 @@
 package ai.kompile.app.subprocess;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -117,7 +115,7 @@ public record VlmTestSubprocessArgs(
     public static final int DEFAULT_OFF_HEAP_THRESHOLD_PERCENT = 80;
     public static final int DEFAULT_OFF_HEAP_CRITICAL_PERCENT = 90;
     public static final int DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT = 95;
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    // Uses SubprocessArgsIo shared mapper
 
     public VlmTestSubprocessArgs {
         if (maxNewTokens <= 0) maxNewTokens = DEFAULT_MAX_NEW_TOKENS;
@@ -161,11 +159,15 @@ public record VlmTestSubprocessArgs(
     }
 
     public static VlmTestSubprocessArgs fromFile(Path path) throws IOException {
-        return MAPPER.readValue(Files.readString(path), VlmTestSubprocessArgs.class);
+        return SubprocessArgsIo.fromFile(path, VlmTestSubprocessArgs.class);
     }
 
     public void toFile(Path path) throws IOException {
-        Files.writeString(path, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(this));
+        SubprocessArgsIo.toFile(path, this);
+    }
+
+    public Path writeToTempFile() throws IOException {
+        return SubprocessArgsIo.writeToTempFile(this, "vlm-test-args-");
     }
 
     public static Builder builder() {

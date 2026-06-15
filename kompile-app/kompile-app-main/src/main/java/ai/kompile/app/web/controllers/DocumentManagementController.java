@@ -51,6 +51,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import jakarta.annotation.PostConstruct;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -271,14 +272,20 @@ public class DocumentManagementController {
         }
 
         String pathStr = request.path().trim();
-        Path path = Paths.get(pathStr);
+        Path path = Paths.get(pathStr).normalize().toAbsolutePath();
+
+        // Block path traversal: reject paths containing ".." components
+        if (pathStr.contains("..")) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Path traversal not allowed"));
+        }
 
         if (!Files.exists(path)) {
             return ResponseEntity.badRequest().body(Map.of("error", "Path does not exist on server: " + pathStr));
         }
 
         String taskId = UUID.randomUUID().toString();
-        logger.info("Received request to ingest path: {} (Task ID: {})", pathStr, taskId);
+        String safePathStr = pathStr.replace('\n', ' ').replace('\r', ' ');
+        logger.info("Received request to ingest path: {} (Task ID: {})", safePathStr, taskId);
 
         try {
             // Trigger async processing
@@ -295,7 +302,7 @@ public class DocumentManagementController {
                     "taskId", taskId));
 
         } catch (Exception e) {
-            logger.error("Failed to start processing for path: {}", pathStr, e);
+            logger.error("Failed to start processing for path: {}", safePathStr, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to start processing: " + e.getMessage()));
         }
@@ -1207,7 +1214,7 @@ public class DocumentManagementController {
         // Build metadata - if this is a URL source, store the original URL in metadata
         // Note: pathOrUrl must point to the local file for the loader to read it
         // The source_url in metadata preserves the original URL for attribution
-        Map<String, Object> metadata = new java.util.HashMap<>();
+        Map<String, Object> metadata = new HashMap<>();
         metadata.put("upload_timestamp", System.currentTimeMillis());
         metadata.put("upload_path", filePath.toString());
         if (sourceUrl != null && !sourceUrl.isEmpty()) {
@@ -1591,10 +1598,10 @@ public class DocumentManagementController {
             // REPLACE_EXISTING)
             if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
                 logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
-                try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
-                    walk.sorted(java.util.Comparator.reverseOrder())
+                try (Stream<Path> walk = Files.walk(destinationFile)) {
+                    walk.sorted(Comparator.reverseOrder())
                             .map(Path::toFile)
-                            .forEach(java.io.File::delete);
+                            .forEach(File::delete);
                 }
             }
             // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
@@ -1657,10 +1664,7 @@ public class DocumentManagementController {
                     }
 
                     if (isPostgresMLError) {
-                        System.err.println("\n" + "!".repeat(100));
-                        System.err.println("PostgresML ERROR DETECTED IN DOCUMENT UPLOAD!");
-                        System.err.println("Error: " + e.getMessage());
-                        System.err.println("!".repeat(100));
+                        logger.error("PostgresML ERROR DETECTED IN DOCUMENT UPLOAD! Error: {}", e.getMessage());
 
                         // Quick database check using existing DataSource
                         try {
@@ -1675,29 +1679,28 @@ public class DocumentManagementController {
                                                         .getRequest().getServletContext());
                                 dataSource = context.getBean(javax.sql.DataSource.class);
                             } catch (Exception contextError) {
-                                System.err
-                                        .println("Could not get DataSource from context: " + contextError.getMessage());
+                                logger.warn("Could not get DataSource from context: {}", contextError.getMessage());
                             }
 
                             if (dataSource != null) {
                                 try (java.sql.Connection conn = dataSource.getConnection()) {
 
                                     // Check schema
-                                    System.err.println("\n1. SCHEMA CHECK:");
+                                    logger.error("1. SCHEMA CHECK:");
                                     try (java.sql.Statement stmt = conn.createStatement()) {
                                         java.sql.ResultSet rs = stmt.executeQuery(
                                                 "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'pgml'");
                                         rs.next();
 
                                         if (rs.getInt(1) > 0) {
-                                            System.err.println("   ✓ pgml schema EXISTS");
+                                            logger.error("   pgml schema EXISTS");
                                         } else {
-                                            System.err.println("   ✗ pgml schema MISSING!");
+                                            logger.error("   pgml schema MISSING!");
                                         }
                                     }
 
                                     // Check function
-                                    System.err.println("\n2. FUNCTION CHECK:");
+                                    logger.error("2. FUNCTION CHECK:");
                                     try (java.sql.Statement stmt = conn.createStatement()) {
                                         java.sql.ResultSet rs = stmt.executeQuery(
                                                 "SELECT COUNT(*) FROM information_schema.routines " +
@@ -1706,50 +1709,43 @@ public class DocumentManagementController {
 
                                         int funcCount = rs.getInt(1);
                                         if (funcCount > 0) {
-                                            System.err.println(
-                                                    "   ✓ pgml.embed function EXISTS (" + funcCount + " variants)");
+                                            logger.error("   pgml.embed function EXISTS ({} variants)", funcCount);
                                         } else {
-                                            System.err.println("   ✗ pgml.embed function MISSING!");
-                                            System.err.println("   → This is the ROOT CAUSE of the upload failure");
+                                            logger.error("   pgml.embed function MISSING! This is the ROOT CAUSE of the upload failure.");
                                         }
                                     }
 
                                     // Test function call
-                                    System.err.println("\n3. FUNCTION TEST:");
+                                    logger.error("3. FUNCTION TEST:");
                                     try (java.sql.Statement stmt = conn.createStatement()) {
-                                        System.err.println(
-                                                "   Testing: SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
+                                        logger.error("   Testing: SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
                                         stmt.executeQuery(
                                                 "SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
-                                        System.err.println("   ✓ Function call SUCCEEDED");
+                                        logger.error("   Function call SUCCEEDED");
                                     } catch (Exception testError) {
-                                        System.err.println("   ✗ Function call FAILED: " + testError.getMessage());
+                                        logger.error("   Function call FAILED: {}", testError.getMessage());
                                     }
 
                                 } catch (Exception dbError) {
-                                    System.err.println("Database connection failed: " + dbError.getMessage());
+                                    logger.error("Database connection failed: {}", dbError.getMessage());
                                 }
                             }
                         } catch (Exception debugError) {
-                            System.err.println("Debug failed: " + debugError.getMessage());
+                            logger.error("PostgresML debug check failed: {}", debugError.getMessage());
                         }
 
                         // Show fix
-                        System.err.println("\n" + "-".repeat(80));
-                        System.err.println("IMMEDIATE FIX - Run this SQL in your database:");
-                        System.err.println("-".repeat(80));
-                        System.err.println("CREATE SCHEMA IF NOT EXISTS pgml;");
-                        System.err.println("CREATE OR REPLACE FUNCTION pgml.embed(");
-                        System.err.println("  model_name character varying,");
-                        System.err.println("  text_input text,");
-                        System.err.println("  kwargs jsonb DEFAULT '{}'");
-                        System.err.println(") RETURNS FLOAT[] AS $$");
-                        System.err.println("BEGIN");
-                        System.err.println("  RAISE EXCEPTION 'PostgresML not installed';");
-                        System.err.println("END;");
-                        System.err.println("$$ LANGUAGE plpgsql;");
-                        System.err.println("-".repeat(80));
-                        System.err.println("!".repeat(100));
+                        logger.error("IMMEDIATE FIX - Run this SQL in your database:\n" +
+                                "CREATE SCHEMA IF NOT EXISTS pgml;\n" +
+                                "CREATE OR REPLACE FUNCTION pgml.embed(\n" +
+                                "  model_name character varying,\n" +
+                                "  text_input text,\n" +
+                                "  kwargs jsonb DEFAULT '{}'\n" +
+                                ") RETURNS FLOAT[] AS $$\n" +
+                                "BEGIN\n" +
+                                "  RAISE EXCEPTION 'PostgresML not installed';\n" +
+                                "END;\n" +
+                                "$$ LANGUAGE plpgsql;");
                     }
 
                     response.put("processingCompleted", false);
@@ -1842,10 +1838,10 @@ public class DocumentManagementController {
             // Save the file - handle edge case where destination might be a directory
             if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
                 logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
-                try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
-                    walk.sorted(java.util.Comparator.reverseOrder())
+                try (Stream<Path> walk = Files.walk(destinationFile)) {
+                    walk.sorted(Comparator.reverseOrder())
                             .map(Path::toFile)
-                            .forEach(java.io.File::delete);
+                            .forEach(File::delete);
                 }
             }
             // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
@@ -1972,10 +1968,10 @@ public class DocumentManagementController {
                 // Save the file - handle edge case where destination might be a directory
                 if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
                     logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
-                    try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
-                        walk.sorted(java.util.Comparator.reverseOrder())
+                    try (Stream<Path> walk = Files.walk(destinationFile)) {
+                        walk.sorted(Comparator.reverseOrder())
                                 .map(Path::toFile)
-                                .forEach(java.io.File::delete);
+                                .forEach(File::delete);
                     }
                 }
                 // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
@@ -2301,6 +2297,24 @@ public class DocumentManagementController {
 
         try {
             URI uri = new URI(urlString);
+
+            // SSRF protection: only allow http/https schemes and block internal addresses
+            String scheme = uri.getScheme();
+            if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Only http and https URLs are allowed."));
+            }
+            String host = uri.getHost();
+            if (host == null || host.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "URL must have a valid host."));
+            }
+            String hostLower = host.toLowerCase();
+            if (hostLower.equals("localhost") || hostLower.equals("127.0.0.1") || hostLower.equals("::1")
+                    || hostLower.equals("[::1]") || hostLower.startsWith("10.")
+                    || hostLower.startsWith("192.168.") || hostLower.startsWith("169.254.")
+                    || hostLower.equals("metadata.google.internal")) {
+                return ResponseEntity.badRequest().body(Map.of("error", "URLs pointing to internal/private addresses are not allowed."));
+            }
+
             if (requestedFileName == null || requestedFileName.trim().isEmpty()) {
                 Path urlPath = Paths.get(uri.getPath());
                 String nameFromUrl = (urlPath.getFileName() != null) ? urlPath.getFileName().toString() : "";
@@ -2335,10 +2349,10 @@ public class DocumentManagementController {
             // Handle edge case where destination might be a directory
             if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
                 logger.warn("Destination path exists as a directory, deleting before writing: {}", destinationFile);
-                try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
-                    walk.sorted(java.util.Comparator.reverseOrder())
+                try (Stream<Path> walk = Files.walk(destinationFile)) {
+                    walk.sorted(Comparator.reverseOrder())
                             .map(Path::toFile)
-                            .forEach(java.io.File::delete);
+                            .forEach(File::delete);
                 }
             }
             Files.writeString(destinationFile, content, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
@@ -2941,7 +2955,7 @@ public class DocumentManagementController {
                 return ResponseEntity.badRequest().body(Map.of("error", "File not found: " + fileName));
             }
 
-            logger.info("Processing specific uploaded file: {}", fileName);
+            logger.info("Processing specific uploaded file: {}", fileName.replace('\n', ' ').replace('\r', ' '));
             DocumentProcessingResult processingResult = processUploadedFile(filePath, loaderName, chunkerName);
 
             Map<String, Object> response = new HashMap<>();
@@ -3056,7 +3070,7 @@ public class DocumentManagementController {
         if (heapSize == null && timeoutMinutes == null && heartbeatSeconds == null && staleThresholdSeconds == null) {
             return null;
         }
-        Map<String, Object> options = new java.util.HashMap<>();
+        Map<String, Object> options = new HashMap<>();
         if (heapSize != null && !heapSize.isBlank()) {
             options.put("heapSize", heapSize);
         }

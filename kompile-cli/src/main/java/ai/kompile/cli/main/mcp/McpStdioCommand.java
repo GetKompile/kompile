@@ -23,14 +23,22 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import picocli.CommandLine;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 @CommandLine.Command(
     name = "mcp-stdio",
@@ -138,8 +146,8 @@ public class McpStdioCommand implements Callable<Integer> {
     /** Thread pool for executing tool calls without blocking the main event loop.
      *  This prevents long-running tools (e.g. grep ~30s) from blocking ping responses,
      *  which would cause Claude Code to drop the MCP connection. */
-    private final java.util.concurrent.ExecutorService toolExecutor =
-            java.util.concurrent.Executors.newCachedThreadPool(r -> {
+    private final ExecutorService toolExecutor =
+            Executors.newCachedThreadPool(r -> {
                 Thread t = new Thread(r, "mcp-tool-exec");
                 t.setDaemon(true);
                 return t;
@@ -155,7 +163,7 @@ public class McpStdioCommand implements Callable<Integer> {
     private volatile boolean pendingToolsListChanged = false;
 
     /** Flag indicating background tool initialization is complete. */
-    private final java.util.concurrent.atomic.AtomicBoolean toolsReady = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final AtomicBoolean toolsReady = new AtomicBoolean(false);
 
     /** Tool definitions — populated by background init thread, read by event loop. */
     private final ConcurrentHashMap<String, ToolDef> tools = new ConcurrentHashMap<>();
@@ -206,7 +214,7 @@ public class McpStdioCommand implements Callable<Integer> {
             // to stderr so that ANY library code (ND4J, Anserini, etc.) that calls
             // System.out.println() from background threads cannot corrupt the
             // JSON-RPC stream. This must happen before any background threads start.
-            java.io.PrintStream realStdout = System.out;
+            PrintStream realStdout = System.out;
             System.setOut(System.err);
 
             om = new ObjectMapper();
@@ -423,7 +431,7 @@ public class McpStdioCommand implements Callable<Integer> {
                     if (!toolsReady.get()) {
                         long deadline = System.currentTimeMillis() + 90_000;
                         while (!toolsReady.get() && System.currentTimeMillis() < deadline) {
-                            try { Thread.sleep(50); } catch (InterruptedException ignored) { break; }
+                            try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
                         }
                     }
 
@@ -487,7 +495,7 @@ public class McpStdioCommand implements Callable<Integer> {
                     if (!toolsReady.get()) {
                         long deadline = System.currentTimeMillis() + 90_000;
                         while (!toolsReady.get() && System.currentTimeMillis() < deadline) {
-                            try { Thread.sleep(50); } catch (InterruptedException ignored) { break; }
+                            try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
                         }
                     }
 
@@ -832,8 +840,8 @@ public class McpStdioCommand implements Callable<Integer> {
 
             // Read existing settings (if any)
             ObjectNode settings;
-            if (java.nio.file.Files.exists(settingsFile)) {
-                String existing = java.nio.file.Files.readString(settingsFile);
+            if (Files.exists(settingsFile)) {
+                String existing = Files.readString(settingsFile);
                 JsonNode parsed = om.readTree(existing);
                 if (parsed.isObject()) {
                     settings = (ObjectNode) parsed;
@@ -913,12 +921,12 @@ public class McpStdioCommand implements Callable<Integer> {
             // Writing unconditionally triggers an inotify event on settings.local.json,
             // which causes Claude Code to restart MCP connections — creating a death spiral
             // where each restart spawns a new MCP server that rewrites the file again.
-            java.nio.file.Files.createDirectories(settingsDir);
+            Files.createDirectories(settingsDir);
             String newContent = om.writerWithDefaultPrettyPrinter().writeValueAsString(settings);
-            String existingContent = java.nio.file.Files.exists(settingsFile)
-                    ? java.nio.file.Files.readString(settingsFile) : "";
+            String existingContent = Files.exists(settingsFile)
+                    ? Files.readString(settingsFile) : "";
             if (!newContent.equals(existingContent)) {
-                java.nio.file.Files.writeString(settingsFile, newContent);
+                Files.writeString(settingsFile, newContent);
                 System.err.println("[MCP] Auto-configured Claude Code hooks in " + settingsFile);
                 System.err.println("[MCP] Tool calls will show name, params, and timing in the terminal");
             } else {
@@ -1042,14 +1050,14 @@ public class McpStdioCommand implements Callable<Integer> {
      */
     private Set<String> loadCustomProfile(String profileName) {
         try {
-            java.nio.file.Path profilesDir = java.nio.file.Paths.get(
+            Path profilesDir = Paths.get(
                     System.getProperty("user.home"), ".kompile", "config", "mcp-profiles");
-            java.nio.file.Path profileFile = profilesDir.resolve(profileName + ".json");
-            if (!java.nio.file.Files.exists(profileFile)) {
+            Path profileFile = profilesDir.resolve(profileName + ".json");
+            if (!Files.exists(profileFile)) {
                 System.err.println("[MCP] Custom profile file not found: " + profileFile);
                 return Set.of();
             }
-            String content = java.nio.file.Files.readString(profileFile, java.nio.charset.StandardCharsets.UTF_8);
+            String content = Files.readString(profileFile, StandardCharsets.UTF_8);
             JsonNode root = om.readTree(content);
             Set<String> toolIds = new LinkedHashSet<>();
             if (root.isArray()) {
@@ -1185,7 +1193,7 @@ public class McpStdioCommand implements Callable<Integer> {
             fileWatcherService = new ai.kompile.cli.main.coordination.FileWatcherService(wd);
             fileWatcherService.start();
             registerCliTool(tools, new ai.kompile.cli.main.chat.tools.FileActivityTool(fileWatcherService), om, wd);
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             System.err.println("[MCP] Warning: FileWatcherService not available: " + e.getMessage());
         }
 
@@ -1193,7 +1201,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.BrowserTool(), om, wd);
 
         // ── Ambient memory gardening ──────────────────────────────────────
-        java.nio.file.Path memoryDir = java.nio.file.Paths.get(System.getProperty("user.home"), ".kompile", "memory");
+        Path memoryDir = Paths.get(System.getProperty("user.home"), ".kompile", "memory");
         ambientGardener = new ai.kompile.cli.main.chat.tools.AmbientMemoryGardener(memoryDir);
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.AmbientGardenTool(ambientGardener), om, wd);
 
@@ -1239,7 +1247,7 @@ public class McpStdioCommand implements Callable<Integer> {
             tools.put(resumeTool.id(), new ToolDef(resumeTool.id(), resumeTool.description(), resumeTool.parameterSchema(),
                 resumeTool.mcpAnnotations(),
                 args -> { try { return resumeTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             System.err.println("[MCP] Warning: ResumeTool not available: " + e.getMessage());
         }
 
@@ -1319,12 +1327,12 @@ public class McpStdioCommand implements Callable<Integer> {
                 if (progressLogger == null) {
                     return ai.kompile.cli.main.chat.tools.ToolResult.error("Progress logger not initialized");
                 }
-                java.nio.file.Path logFile = progressLogger.getLogFile();
-                if (!java.nio.file.Files.exists(logFile)) {
+                Path logFile = progressLogger.getLogFile();
+                if (!Files.exists(logFile)) {
                     return ai.kompile.cli.main.chat.tools.ToolResult.success("poll: log",
                             "No activity log yet. Tools will be logged to: " + logFile);
                 }
-                List<String> allLines = java.nio.file.Files.readAllLines(logFile);
+                List<String> allLines = Files.readAllLines(logFile);
                 int start = Math.max(0, allLines.size() - lines);
                 StringBuilder sb = new StringBuilder();
                 sb.append("Recent MCP activity (last ").append(Math.min(lines, allLines.size()))
@@ -1434,7 +1442,7 @@ public class McpStdioCommand implements Callable<Integer> {
 
     record ToolDef(String name, String description, JsonNode schema,
                    ai.kompile.cli.main.chat.tools.McpToolAnnotations annotations,
-                   java.util.function.Function<Map<String,Object>, ai.kompile.cli.main.chat.tools.ToolResult> executor) {}
+                   Function<Map<String,Object>, ai.kompile.cli.main.chat.tools.ToolResult> executor) {}
 
     private static final ThreadLocal<ai.kompile.cli.main.chat.tools.ToolContext> CTX = ThreadLocal.withInitial(() -> null);
 

@@ -80,7 +80,7 @@ public class IngestJobResumeController {
         } catch (IllegalStateException e) {
             return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
-            log.error("Failed to resume job {}", taskId, e);
+            log.error("Failed to resume job {}", taskId != null ? taskId.replaceAll("[\\r\\n]", "_") : "null", e);
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Failed to resume job: " + e.getMessage()));
         }
@@ -91,6 +91,10 @@ public class IngestJobResumeController {
      */
     @GetMapping("/jobs/{taskId}/checkpoint")
     public ResponseEntity<Map<String, Object>> getCheckpointStatus(@PathVariable String taskId) {
-        return ResponseEntity.ok(resumeService.getCheckpointStatus(taskId));
+        Map<String, Object> status = resumeService.getCheckpointStatus(taskId);
+        if (status == null || status.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(status);
     }
 }

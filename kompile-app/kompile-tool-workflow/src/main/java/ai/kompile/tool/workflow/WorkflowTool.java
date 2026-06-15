@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -16,6 +17,7 @@ import java.util.*;
  * Provides LLM-accessible operations for the full workflow lifecycle.
  */
 @Component
+@ConditionalOnBean(ComputeGraphEngine.class)
 public class WorkflowTool {
 
     private static final Logger log = LoggerFactory.getLogger(WorkflowTool.class);

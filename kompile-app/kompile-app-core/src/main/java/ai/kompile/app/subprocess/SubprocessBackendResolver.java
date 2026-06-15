@@ -92,8 +92,8 @@ public final class SubprocessBackendResolver {
 
         public String getResolvedBackend() { return resolvedBackend; }
         public String getSubprocessType() { return subprocessType; }
-        public List<String> getCudaJarsAdded() { return cudaJarsAdded; }
-        public List<String> getCpuEntriesRemoved() { return cpuEntriesRemoved; }
+        public List<String> getCudaJarsAdded() { return Collections.unmodifiableList(cudaJarsAdded); }
+        public List<String> getCpuEntriesRemoved() { return Collections.unmodifiableList(cpuEntriesRemoved); }
         public boolean isCudaRequested() { return cudaRequested; }
         public String getReason() { return reason; }
         public boolean isCuda() { return "CUDA".equals(resolvedBackend); }

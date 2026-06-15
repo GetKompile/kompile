@@ -29,7 +29,7 @@ import org.springframework.context.annotation.Configuration;
  * This lives in kompile-app-main because it has access to both
  * DeviceRoutingConfigService and AnseriniEmbeddingModelImpl.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class DeviceRoutingAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(DeviceRoutingAutoConfiguration.class);

@@ -195,7 +195,7 @@ public class IngestJobResumeService {
         }
         // If we can't find it yet, schedule a delayed set
         log.warn("Could not set resumedFromTaskId on {} immediately - will be set when job record appears", newTaskId);
-        new Thread(() -> {
+        Thread linker = new Thread(() -> {
             for (int i = 0; i < 10; i++) {
                 try {
                     Thread.sleep(2000);
@@ -212,7 +212,9 @@ public class IngestJobResumeService {
                     log.debug("Retry {} to set resumedFromTaskId on {}: {}", i, newTaskId, e.getMessage());
                 }
             }
-        }, "resume-linker-" + newTaskId).start();
+        }, "resume-linker-" + newTaskId);
+        linker.setDaemon(true);
+        linker.start();
     }
 
     private ResumableJobSummary toResumableSummary(IndexingJobHistory job) {

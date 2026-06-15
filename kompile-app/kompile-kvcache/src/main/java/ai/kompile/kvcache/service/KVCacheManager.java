@@ -45,9 +45,6 @@ public class KVCacheManager {
         if (!properties.isEnabled()) {
             throw new IllegalStateException("KV Cache is disabled. Enable it first via the configuration panel.");
         }
-        if (caches.containsKey(name)) {
-            throw new IllegalArgumentException("Cache with name '" + name + "' already exists");
-        }
 
         // Fill in defaults from properties
         KVCacheConfig resolved = KVCacheConfig.builder()
@@ -71,7 +68,10 @@ public class KVCacheManager {
         ManagedKVCache cache = new ManagedKVCache(name, resolved, statsCollector,
                 properties.isPriorityEvictionEnabled() ? priorityEvictionPolicy : null,
                 properties.isPrefixHashEnabled() ? contentHashPrefixIndex : null);
-        caches.put(name, cache);
+        ManagedKVCache existing = caches.putIfAbsent(name, cache);
+        if (existing != null) {
+            throw new IllegalArgumentException("Cache with name '" + name + "' already exists");
+        }
         log.info("Created KV cache '{}' (type={}, blocks={})", name, resolved.getType(), cache.getTotalBlocks());
         return cache;
     }

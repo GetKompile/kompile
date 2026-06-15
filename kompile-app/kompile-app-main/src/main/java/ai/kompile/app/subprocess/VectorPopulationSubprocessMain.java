@@ -256,9 +256,8 @@ public class VectorPopulationSubprocessMain {
                         alreadyIndexedIds = checkpointState.indexedIds();
                         cachedEmbeddings = checkpointState.orphanedEmbeddings();
 
-                        // Set static fields for progress reporting
-                        resumedFromIndexedCount = alreadyIndexedIds.size();
-                        isResumedRun = true;
+                        // Single atomic write so readers always see a consistent pair.
+                        resumeState = new ResumeState(true, alreadyIndexedIds.size());
 
                         logger.info("RESUME: Found {} already-indexed documents, {} cached embeddings to reuse",
                                 alreadyIndexedIds.size(), cachedEmbeddings.size());
@@ -615,9 +614,13 @@ public class VectorPopulationSubprocessMain {
         return documents;
     }
 
-    // Static fields to track resume state for progress reporting
-    private static volatile int resumedFromIndexedCount = 0;
-    private static volatile boolean isResumedRun = false;
+    // Resume state for progress reporting.
+    // Kept as a single volatile reference so that readers always see a
+    // consistent pair of (isResumed, indexedCount) with no torn reads.
+    private record ResumeState(boolean isResumed, int indexedCount) {
+        static final ResumeState NONE = new ResumeState(false, 0);
+    }
+    private static volatile ResumeState resumeState = ResumeState.NONE;
 
     /**
      * Report pipeline progress to the subprocess reporter.
@@ -720,9 +723,11 @@ public class VectorPopulationSubprocessMain {
                         .toList();
             }
 
+            // Snapshot the volatile field once so all reads below are consistent.
+            ResumeState rs = resumeState;
             // Include resumed count in embedded total for accurate progress display
-            int totalChunksEmbedded = progress.chunksEmbedded() + (isResumedRun ? resumedFromIndexedCount : 0);
-            int totalChunksIndexed = progress.chunksIndexed() + (isResumedRun ? resumedFromIndexedCount : 0);
+            int totalChunksEmbedded = progress.chunksEmbedded() + (rs.isResumed() ? rs.indexedCount() : 0);
+            int totalChunksIndexed = progress.chunksIndexed() + (rs.isResumed() ? rs.indexedCount() : 0);
 
             SubprocessMessage.ProgressStats stats = new SubprocessMessage.ProgressStats(
                     Math.max(0, totalLoadedDocs),     // documentsLoaded
@@ -768,10 +773,10 @@ public class VectorPopulationSubprocessMain {
                     batchHistoryEntries,              // batchHistory
                     passageTokenCounts,               // passageTokenCounts
                     // ========== Resume/Restart info ==========
-                    isResumedRun ? resumedFromIndexedCount : null,  // resumedFromChunkCount
-                    isResumedRun ? resumedFromIndexedCount : null,  // resumedFromEmbeddedCount
-                    isResumedRun ? resumedFromIndexedCount : null,  // resumedFromIndexedCount
-                    isResumedRun                                    // isResumedRun
+                    rs.isResumed() ? rs.indexedCount() : null,  // resumedFromChunkCount
+                    rs.isResumed() ? rs.indexedCount() : null,  // resumedFromEmbeddedCount
+                    rs.isResumed() ? rs.indexedCount() : null,  // resumedFromIndexedCount
+                    rs.isResumed()                              // isResumedRun
             );
 
             reporter.reportProgress(phase, progress.progressPercent(), progress.phase(),

@@ -31,7 +31,7 @@ import java.nio.file.Paths;
  * - kompile.source-storage.enabled: Whether to store copies of original documents (default: true)
  * - kompile.source-storage.path: Path to store documents (default: ~/.kompile/documents)
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class SourceDocumentStorageConfig {
 
     @Value("${kompile.source-storage.enabled:true}")

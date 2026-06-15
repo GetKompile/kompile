@@ -263,7 +263,7 @@ public class ConfluenceService {
                         .build();
             }
         } catch (Exception e) {
-            logger.error("Failed to list pages in space: {}", spaceKey, e);
+            logger.error("Failed to list pages in space: {}", sanitizeForLog(spaceKey), e);
             throw new RuntimeException("Failed to list pages: " + e.getMessage(), e);
         }
 
@@ -322,10 +322,10 @@ public class ConfluenceService {
             List<String> conditions = new ArrayList<>();
             conditions.add("type=page");
             if (spaceKey != null && !spaceKey.isEmpty()) {
-                conditions.add("space=\"" + spaceKey + "\"");
+                conditions.add("space=\"" + spaceKey.replace("\"", "\\\"") + "\"");
             }
             if (title != null && !title.isEmpty()) {
-                conditions.add("title~\"" + title + "\"");
+                conditions.add("title~\"" + title.replace("\"", "\\\"") + "\"");
             }
             searchCql = String.join(" AND ", conditions);
         }
@@ -362,7 +362,7 @@ public class ConfluenceService {
                         .build();
             }
         } catch (Exception e) {
-            logger.error("Failed to search pages with CQL: {}", searchCql, e);
+            logger.error("Failed to search pages with CQL: {}", sanitizeForLog(searchCql), e);
             throw new RuntimeException("Failed to search pages: " + e.getMessage(), e);
         }
 
@@ -461,8 +461,9 @@ public class ConfluenceService {
                             // Generate a unique task ID
                             String taskId = "confluence-" + page.getId() + "-" + System.currentTimeMillis();
 
-                            // Write content to a temp file
+                            // Write content to a temp file (auto-deleted on JVM shutdown)
                             Path tempFile = Files.createTempFile("confluence-" + page.getId() + "-", ".html");
+                            tempFile.toFile().deleteOnExit();
                             Files.writeString(tempFile, page.getBodyContent());
 
                             // Process using existing async method
@@ -508,10 +509,12 @@ public class ConfluenceService {
 
     // Helper methods
 
-    private void ensureConnected() {
-        if (currentConfig == null || !currentStatus.isConnected()) {
+    private ConfluenceConnectionConfig ensureConnected() {
+        ConfluenceConnectionConfig cfg = currentConfig;
+        if (cfg == null || !currentStatus.isConnected()) {
             throw new IllegalStateException("Not connected to Confluence. Please connect first.");
         }
+        return cfg;
     }
 
     private String normalizeBaseUrl(String baseUrl) {
@@ -557,7 +560,8 @@ public class ConfluenceService {
             if (response.getStatusCode().is2xxSuccessful()) {
                 return "server";
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            logger.debug("Could not determine Confluence server type from systemInfo endpoint: {}", e.getMessage());
         }
         return "unknown";
     }
@@ -695,5 +699,10 @@ public class ConfluenceService {
                 .replaceAll("&gt;", ">")
                 .replaceAll("&quot;", "\"")
                 .trim();
+    }
+
+    private static String sanitizeForLog(String value) {
+        if (value == null) return null;
+        return value.replace('\n', ' ').replace('\r', ' ');
     }
 }

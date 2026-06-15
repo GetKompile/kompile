@@ -15,6 +15,7 @@
  */
 package ai.kompile.orchestrator.web.controllers;
 
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.orchestrator.api.LlmIntegrationService;
 import ai.kompile.orchestrator.api.OrchestratorService;
 import ai.kompile.orchestrator.model.llm.ConversationMessage;
@@ -80,7 +81,7 @@ public class LlmController {
     @GetMapping(value = "/stream/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> streamResponse(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         log.info("Streaming LLM response for session: {}", sessionId);
         return llmService.streamResponse(sessionId);
     }
@@ -91,7 +92,7 @@ public class LlmController {
     @GetMapping("/sessions/{sessionId}")
     public ResponseEntity<LlmSession> getSession(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         return llmService.getSession(sessionId)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
@@ -119,11 +120,11 @@ public class LlmController {
     @PostMapping("/sessions/{sessionId}/cancel")
     public ResponseEntity<Map<String, Object>> cancelSession(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         log.info("Cancelling LLM session {} for orchestrator: {}", sessionId, instanceId);
         orchestratorService.cancelLlmSession(sessionId);
         return ResponseEntity.ok(Map.of(
-                "sessionId", sessionId,
+                FieldNames.SESSION_ID, sessionId,
                 "message", "Session cancellation requested"));
     }
 
@@ -165,7 +166,7 @@ public class LlmController {
     @GetMapping("/sessions/{sessionId}/conversation")
     public ResponseEntity<?> getConversationHistory(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         if (conversationHistoryService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Map.of("error", "Conversation history service not available"));
@@ -180,7 +181,7 @@ public class LlmController {
     @GetMapping("/sessions/{sessionId}/conversation/formatted")
     public ResponseEntity<?> getFormattedConversation(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         if (conversationHistoryService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Map.of("error", "Conversation history service not available"));
@@ -195,7 +196,7 @@ public class LlmController {
     @GetMapping("/sessions/{sessionId}/conversation/summary")
     public ResponseEntity<?> getConversationSummary(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         if (conversationHistoryService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Map.of("error", "Conversation history service not available"));
@@ -230,7 +231,7 @@ public class LlmController {
     @PostMapping("/sessions/{sessionId}/feedback")
     public ResponseEntity<?> continueFeedbackLoop(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId,
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId,
             @RequestBody Map<String, String> request) {
         if (taskCompletionHandler == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -250,14 +251,14 @@ public class LlmController {
 
         if (updatedSession == null) {
             return ResponseEntity.ok(Map.of(
-                    "sessionId", sessionId,
+                    FieldNames.SESSION_ID, sessionId,
                     "status", "ended",
                     "message", "Feedback loop has ended (max iterations reached or session not in feedback loop)"
             ));
         }
 
         return ResponseEntity.ok(Map.of(
-                "sessionId", sessionId,
+                FieldNames.SESSION_ID, sessionId,
                 "status", "continued",
                 "session", updatedSession
         ));
@@ -269,7 +270,7 @@ public class LlmController {
     @PostMapping("/sessions/{sessionId}/feedback/end")
     public ResponseEntity<?> endFeedbackLoop(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         if (conversationHistoryService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Map.of("error", "Conversation history service not available"));
@@ -279,7 +280,7 @@ public class LlmController {
         log.info("Ended feedback loop for session {}", sessionId);
 
         return ResponseEntity.ok(Map.of(
-                "sessionId", sessionId,
+                FieldNames.SESSION_ID, sessionId,
                 "status", "ended",
                 "message", "Feedback loop ended"
         ));
@@ -291,7 +292,7 @@ public class LlmController {
     @GetMapping("/sessions/{sessionId}/feedback/status")
     public ResponseEntity<?> getFeedbackLoopStatus(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         if (conversationHistoryService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Map.of("error", "Conversation history service not available"));
@@ -302,7 +303,7 @@ public class LlmController {
         List<ConversationMessage> feedbackMessages = conversationHistoryService.getFeedbackMessages(sessionId);
 
         return ResponseEntity.ok(Map.of(
-                "sessionId", sessionId,
+                FieldNames.SESSION_ID, sessionId,
                 "inFeedbackLoop", inLoop,
                 "currentIteration", iteration,
                 "feedbackMessages", feedbackMessages
@@ -315,7 +316,7 @@ public class LlmController {
     @GetMapping("/sessions/{sessionId}/tools")
     public ResponseEntity<?> getToolCalls(
             @PathVariable("instanceId") String instanceId,
-            @PathVariable("sessionId") Long sessionId) {
+            @PathVariable(FieldNames.SESSION_ID) Long sessionId) {
         if (conversationHistoryService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Map.of("error", "Conversation history service not available"));

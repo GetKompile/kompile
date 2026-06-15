@@ -81,7 +81,8 @@ public class NotionWebhookController {
         try {
             Map<String, Object> event = objectMapper.readValue(rawBody, Map.class);
             String type = (String) event.get("type");
-            log.info("Received Notion webhook event: {}", type);
+            String safeType = type != null ? type.replaceAll("[\\r\\n\\t]", "_") : "null";
+            log.info("Received Notion webhook event: {}", safeType);
 
             // Extract entity info to find the matching connection
             Map<String, Object> entity = (Map<String, Object>) event.get("entity");
@@ -102,6 +103,7 @@ public class NotionWebhookController {
             }
         } catch (Exception e) {
             log.error("Failed to process Notion webhook: {}", e.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of("error", "webhook processing failed"));
         }
 
         return ResponseEntity.ok(Map.of("status", "received"));

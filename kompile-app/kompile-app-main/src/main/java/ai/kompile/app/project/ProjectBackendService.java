@@ -48,6 +48,8 @@ import ai.kompile.app.ingest.domain.IndexedDocument;
 import ai.kompile.app.ingest.repository.IndexedDocumentRepository;
 import ai.kompile.app.sync.domain.NoteSyncConnection;
 import ai.kompile.app.sync.repository.NoteSyncConnectionRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -62,9 +64,13 @@ import java.util.Optional;
 
 @Service
 public class ProjectBackendService {
+
+    private static final Logger log = LoggerFactory.getLogger(ProjectBackendService.class);
     private final KompileProjectStore store = new KompileProjectStore();
-    private final CodeProjectRepository codeProjectRepository;
-    private final CodebaseIndexer codebaseIndexer;
+    @Autowired
+    private CodeProjectRepository codeProjectRepository;
+    @Autowired(required = false)
+    private CodebaseIndexer codebaseIndexer;
 
     @Autowired(required = false)
     private FactSheetService factSheetService;
@@ -85,6 +91,10 @@ public class ProjectBackendService {
         this.codeProjectRepository = codeProjectRepository;
         this.codebaseIndexer = codebaseIndexer;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected ProjectBackendService() {}
+
 
     public ProjectResponse current() {
         Path root = resolveRoot();
@@ -259,6 +269,9 @@ public class ProjectBackendService {
                     .orElseThrow(() -> new IllegalArgumentException("Fact sheet not found: " + factSheetName));
         } else {
             sheet = factSheetService.getActiveSheet();
+            if (sheet == null) {
+                throw new IllegalStateException("No active fact sheet found");
+            }
         }
         List<String> registered = new ArrayList<>();
         for (KompileProjectMarkdownEntry entry : entries) {
@@ -282,6 +295,7 @@ public class ProjectBackendService {
         return registered;
     }
 
+    @Transactional
     public void indexCodingProject(String codingProjectId, boolean forceReindex) {
         KompileProjectManifest manifest = store.load(requireProjectRoot());
         KompileCodingProject codingProject = manifest.getCodingProjects().stream()
@@ -303,7 +317,7 @@ public class ProjectBackendService {
                         .build());
         project.setName(codingProject.getName());
         project.setDescription(codingProject.getDescription());
-        project.setTags(String.join(",", codingProject.getTags()));
+        project.setTags(codingProject.getTags() != null ? String.join(",", codingProject.getTags()) : "");
         project.setAutoIndex(codingProject.isAutoIndex());
         project.setIncludePatterns(codingProject.getIncludePatterns());
         project.setExcludePatterns(codingProject.getExcludePatterns());
@@ -317,7 +331,7 @@ public class ProjectBackendService {
                 codingProject.getExcludePatterns(),
                 null,
                 codingProject.getDescription(),
-                String.join(",", codingProject.getTags()));
+                codingProject.getTags() != null ? String.join(",", codingProject.getTags()) : "");
     }
 
     /**
@@ -354,7 +368,9 @@ public class ProjectBackendService {
                     exported.add(pfs);
                 }
                 store.writeFactSheetCatalog(root, exported);
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                log.warn("Failed to export fact sheet catalog: {}", e.getMessage(), e);
+            }
         }
 
         // Export chat sessions
@@ -378,7 +394,9 @@ public class ProjectBackendService {
                     exported.add(pcs);
                 }
                 store.writeChatCatalog(root, exported);
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                log.warn("Failed to export chat session catalog: {}", e.getMessage(), e);
+            }
         }
 
         // Export note sync connections
@@ -407,7 +425,9 @@ public class ProjectBackendService {
                     exported.add(pnc);
                 }
                 store.writeNoteSyncCatalog(root, exported);
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                log.warn("Failed to export note sync connection catalog: {}", e.getMessage(), e);
+            }
         }
 
         // Export indexed documents (managed sources)
@@ -438,7 +458,9 @@ public class ProjectBackendService {
                     exported.add(pid);
                 }
                 store.writeIndexedDocumentCatalog(root, exported);
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                log.warn("Failed to export indexed document catalog: {}", e.getMessage(), e);
+            }
         }
     }
 

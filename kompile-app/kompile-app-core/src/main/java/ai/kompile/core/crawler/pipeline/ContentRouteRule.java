@@ -23,6 +23,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * A rule that maps discovered content to a specific {@link IngestPipelineDefinition}.
@@ -121,4 +122,29 @@ public class ContentRouteRule {
      * Null = no minimum confidence required.
      */
     private Double minLanguageConfidence;
+
+    /**
+     * Optional tags for categorization and metadata (e.g., "financial", "legal").
+     */
+    private List<String> tags;
+
+    /**
+     * Regex patterns matched against the text content of a document (any match triggers rule).
+     */
+    private List<String> contentPatterns;
+
+    /**
+     * Metadata key-to-regex-pattern matchers. All specified keys must match (AND logic).
+     */
+    private Map<String, String> metadataMatchers;
+
+    /**
+     * Minimum page count for PDF/document routing (null = no minimum).
+     */
+    private Integer minPages;
+
+    /**
+     * Maximum page count for PDF/document routing (null = no maximum).
+     */
+    private Integer maxPages;
 }

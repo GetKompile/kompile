@@ -23,7 +23,7 @@ import org.springframework.context.annotation.Configuration;
  * Auto-configuration for OCR integration.
  * Always enabled - runtime control via UI/API.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ComponentScan(basePackages = "ai.kompile.ocr.integration")
 public class OcrIntegrationAutoConfiguration {
     // Component scan will pick up all beans in the package

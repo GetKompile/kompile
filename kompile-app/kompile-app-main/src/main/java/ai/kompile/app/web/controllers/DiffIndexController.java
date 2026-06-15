@@ -98,7 +98,7 @@ public class DiffIndexController {
     @PostMapping("/reindex")
     public ResponseEntity<Map<String, Object>> reindex() {
         if (diffIndexService == null) {
-            return ResponseEntity.ok(Map.of("status", "error", "error", "Service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "error", "error", "Service not available"));
         }
         if (diffIndexService.isIndexing()) {
             return ResponseEntity.ok(Map.of("status", "info", "message", "Already indexing"));

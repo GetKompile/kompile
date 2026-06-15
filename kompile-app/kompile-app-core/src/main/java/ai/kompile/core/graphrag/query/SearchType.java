@@ -30,5 +30,11 @@ public enum SearchType {
      * Global search considers the entire graph, including community structures, to find broader, more contextual answers.
      * It is more comprehensive but may be slower.
      */
-    GLOBAL
+    GLOBAL,
+
+    /**
+     * Hybrid search combines local entity-centric search with global graph traversal,
+     * merging vector similarity scores with graph structure scores.
+     */
+    HYBRID
 }

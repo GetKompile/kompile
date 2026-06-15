@@ -276,6 +276,9 @@ public class IngestPipelineRunner {
             reporter.reportLog("ERROR", "pipeline", "Pipeline failed in phase " + e.getPhase() + ": " + e.getMessage());
             throw e;
         } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             logger.error("Pipeline execution failed", e);
             reporter.reportLog("ERROR", "pipeline", "Pipeline execution failed: " + e.getMessage());
             throw new PipelineException("EXECUTION", e.getMessage(), e);

@@ -836,7 +836,7 @@ public class EnvironmentController {
                     .graphOptimization(env.cudaGraphOptimization())
                     .build();
         } catch (Exception e) {
-            log.warn("Failed to read CUDA settings (backend may not support it): {}", e.getMessage());
+            log.warn("Failed to read CUDA settings (backend may not support it)", e);
             return CudaSettingsResponse.builder().available(false).build();
         }
     }
@@ -895,7 +895,7 @@ public class EnvironmentController {
                     .fuseAttentionNeighborhoods(env.tritonFuseAttentionNeighborhoods())
                     .build();
         } catch (Exception e) {
-            log.warn("Failed to read Triton settings: {}", e.getMessage());
+            log.warn("Failed to read Triton settings", e);
             return TritonSettingsResponse.builder().build();
         }
     }
@@ -917,7 +917,7 @@ public class EnvironmentController {
                     .capturePoolMaxBytes(env.dspCapturePoolMaxBytes())
                     .build();
         } catch (Exception e) {
-            log.warn("Failed to read DSP settings: {}", e.getMessage());
+            log.warn("Failed to read DSP settings", e);
             return DspSettingsResponse.builder().build();
         }
     }

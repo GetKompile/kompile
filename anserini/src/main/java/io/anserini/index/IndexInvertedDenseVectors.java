@@ -46,7 +46,7 @@ import org.apache.lucene.index.ConcurrentMergeScheduler;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
@@ -115,7 +115,7 @@ public final class IndexInvertedDenseVectors extends AbstractIndexer {
     Analyzer analyzer = new PerFieldAnalyzerWrapper(new StandardAnalyzer(), map);
 
     try {
-      final Directory dir = FSDirectory.open(Paths.get(args.index));
+      final Directory dir = new NIOFSDirectory(Paths.get(args.index));
       final IndexWriterConfig config = new IndexWriterConfig(analyzer);
       config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
       config.setRAMBufferSizeMB(args.memoryBuffer);

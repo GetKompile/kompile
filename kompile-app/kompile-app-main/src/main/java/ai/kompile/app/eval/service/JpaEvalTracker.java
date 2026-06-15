@@ -28,8 +28,11 @@ import ai.kompile.react.eval.model.EvalCase;
 import ai.kompile.react.eval.model.EvalSuite;
 import ai.kompile.react.eval.model.EvalSuiteResult;
 import ai.kompile.react.eval.model.EvalTestResult;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -47,13 +50,20 @@ import java.util.stream.Collectors;
 @Service
 @Primary
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class JpaEvalTracker implements EvalTracker {
 
+
+    @Autowired
     private final EvalCaseRepository caseRepository;
+    @Autowired
     private final EvalSuiteRepository suiteRepository;
+    @Autowired
     private final EvalTestResultRepository testResultRepository;
+    @Autowired
     private final EvalSuiteResultRepository suiteResultRepository;
+    @Autowired
     private final EvalEntityConverter converter;
 
     // ==================== Test Case Management ====================

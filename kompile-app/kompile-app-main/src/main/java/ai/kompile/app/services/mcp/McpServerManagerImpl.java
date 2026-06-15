@@ -77,10 +77,6 @@ public class McpServerManagerImpl implements McpServerManager {
             config.setId(id);
         }
 
-        if (serverConfigs.containsKey(id)) {
-            throw new IllegalArgumentException("Server with ID " + id + " already exists");
-        }
-
         config.setCreatedAt(Instant.now());
         config.setUpdatedAt(Instant.now());
         config.setStatus(McpServerConfig.ServerStatus.STOPPED);
@@ -90,7 +86,10 @@ public class McpServerManagerImpl implements McpServerManager {
             throw new IllegalArgumentException("Invalid configuration: " + String.join(", ", errors));
         }
 
-        serverConfigs.put(id, config);
+        McpServerConfig existing = serverConfigs.putIfAbsent(id, config);
+        if (existing != null) {
+            throw new IllegalArgumentException("Server with ID " + id + " already exists");
+        }
         persistConfiguration(config);
 
         logger.info("Created MCP server configuration: {} ({})", config.getName(), id);
@@ -99,11 +98,10 @@ public class McpServerManagerImpl implements McpServerManager {
 
     @Override
     public McpServerConfig updateServer(String id, McpServerConfig config) {
-        if (!serverConfigs.containsKey(id)) {
+        McpServerConfig existing = serverConfigs.get(id);
+        if (existing == null) {
             throw new IllegalArgumentException("Server with ID " + id + " not found");
         }
-
-        McpServerConfig existing = serverConfigs.get(id);
         if (existing.getStatus() == McpServerConfig.ServerStatus.RUNNING) {
             throw new IllegalStateException("Cannot update running server. Stop it first.");
         }
@@ -126,11 +124,10 @@ public class McpServerManagerImpl implements McpServerManager {
 
     @Override
     public void deleteServer(String id) {
-        if (!serverConfigs.containsKey(id)) {
+        McpServerConfig config = serverConfigs.get(id);
+        if (config == null) {
             throw new IllegalArgumentException("Server with ID " + id + " not found");
         }
-
-        McpServerConfig config = serverConfigs.get(id);
         if (config.getStatus() == McpServerConfig.ServerStatus.RUNNING) {
             throw new IllegalStateException("Cannot delete running server. Stop it first.");
         }

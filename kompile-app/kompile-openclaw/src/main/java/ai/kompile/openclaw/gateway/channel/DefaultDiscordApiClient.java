@@ -15,6 +15,7 @@
  */
 package ai.kompile.openclaw.gateway.channel;
 
+import ai.kompile.gateway.core.gateway.channel.DiscordApiClient;
 import lombok.extern.slf4j.Slf4j;
 
 import java.net.URI;

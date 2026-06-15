@@ -52,15 +52,20 @@ public class ApiAgentChatExecutor {
     private static final Logger log = LoggerFactory.getLogger(ApiAgentChatExecutor.class);
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final ExecutorService executorService = Executors.newCachedThreadPool();
-    private final ModelCapabilityService modelCapabilityService;
+    private final ExecutorService executorService = new java.util.concurrent.ThreadPoolExecutor(
+            2, 16, 60L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<>(200),
+            r -> { Thread t = new Thread(r, "api-agent-chat"); t.setDaemon(true); return t; },
+            new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ModelCapabilityService modelCapabilityService;
 
     public ApiAgentChatExecutor(ModelCapabilityService modelCapabilityService) {
         this.modelCapabilityService = modelCapabilityService;
     }
 
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
     public ApiAgentChatExecutor() {
-        this(new ModelCapabilityService(null));
     }
 
     // Track active connections for cancellation
@@ -367,9 +372,10 @@ public class ApiAgentChatExecutor {
      */
     public Map<String, Object> testEndpoint(String endpointUrl, String apiKey) {
         Map<String, Object> result = new HashMap<>();
+        HttpURLConnection connection = null;
         try {
             String url = normalizeEndpointUrl(endpointUrl) + "/models";
-            HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
+            connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(10_000);
             connection.setReadTimeout(10_000);
@@ -403,11 +409,13 @@ public class ApiAgentChatExecutor {
             } else {
                 result.put("error", readErrorStream(connection));
             }
-
-            connection.disconnect();
         } catch (Exception e) {
             result.put("reachable", false);
             result.put("error", e.getMessage());
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
         }
         return result;
     }
@@ -448,5 +456,18 @@ public class ApiAgentChatExecutor {
             index++;
         }
         return sources;
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

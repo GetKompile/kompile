@@ -71,6 +71,10 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     private volatile Thread outputReaderThread;
     private volatile Thread errorReaderThread;
 
+    // Lock for stdin writes — processStdin is volatile (reassigned on restart),
+    // so we must never synchronize on the field itself.
+    private final Object stdinLock = new Object();
+
     // Request/response correlation
     private final ConcurrentHashMap<String, CompletableFuture<EmbeddingSubprocessMessage>> pendingRequests = new ConcurrentHashMap<>();
 
@@ -718,6 +722,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
                     .findFirst()
                     .orElse(null);
             } catch (IOException e) {
+                logger.warn("Failed to find libjvm.so under JAVA_HOME={}", javaHome, e);
                 return null;
             }
         }
@@ -1287,6 +1292,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             Object result = getExecutableName.invoke(null);
             return result != null ? result.toString() : null;
         } catch (Exception e) {
+            // Expected when not running in GraalVM native image
             return null;
         }
     }
@@ -1719,6 +1725,16 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
             healthMonitor.shutdownNow();
         }
 
+        // Close I/O streams before interrupting reader threads
+        if (processStdin != null) {
+            try { processStdin.close(); } catch (Exception ignored) {}
+            processStdin = null;
+        }
+        if (processStdout != null) {
+            try { processStdout.close(); } catch (Exception ignored) {}
+            processStdout = null;
+        }
+
         // Interrupt reader threads
         if (outputReaderThread != null) {
             outputReaderThread.interrupt();
@@ -1745,7 +1761,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         // Finalise central log writer on graceful stop
         Integer stopExitCode = null;
         if (process != null) {
-            try { stopExitCode = process.exitValue(); } catch (Exception _ignored) {}
+            try { stopExitCode = process.exitValue(); } catch (IllegalThreadStateException e) {
+                logger.debug("Embedding subprocess still running when exit code was queried: {}", e.getMessage());
+            }
         }
         finaliseSubprocessLog("COMPLETED", stopExitCode, null);
 
@@ -2003,7 +2021,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         }
 
         String json = OBJECT_MAPPER.writeValueAsString(message);
-        synchronized (processStdin) {
+        synchronized (stdinLock) {
             // Double-check after acquiring lock since process may have died while waiting
             if (process == null || !process.isAlive()) {
                 throw new IOException("Subprocess process died while waiting to send message");
@@ -2450,6 +2468,10 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
                 loadModel(currentModelId, 32, 64).join();
             }
 
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            logger.warn("Restart backoff interrupted, aborting restart");
+            return;
         } catch (Exception e) {
             logger.error("Failed to restart subprocess: {}", e.getMessage());
         }

@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.ingest.domain.IndexingJobHistory;
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.app.ingest.domain.IngestEvent;
 import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.ingest.service.IngestEventService;
@@ -77,7 +78,7 @@ public class InternalIngestCallbackController {
 
         try {
             switch (callback.eventType()) {
-                case "QUEUED" -> eventService.logQueued(callback.taskId(), callback.fileName());
+                case FieldNames.JobStatusValues.QUEUED -> eventService.logQueued(callback.taskId(), callback.fileName());
 
                 case "PHASE_STARTED" -> {
                     IngestEvent.IngestPhase phase = parsePhase(callback.phase());
@@ -105,25 +106,25 @@ public class InternalIngestCallbackController {
                                                   itemsProcessed, message);
                 }
 
-                case "COMPLETED" -> {
+                case FieldNames.JobStatusValues.COMPLETED -> {
                     int totalItems = getIntFromDetails(callback.details(), "totalItemsProcessed", 0);
                     String summary = getStringFromDetails(callback.details(), "summary", "Completed");
                     eventService.logCompleted(callback.taskId(), callback.fileName(), totalItems, summary);
                 }
 
-                case "FAILED" -> {
+                case FieldNames.JobStatusValues.FAILED -> {
                     IngestEvent.IngestPhase phase = parsePhase(callback.phase());
                     eventService.logFailed(callback.taskId(), callback.fileName(), phase,
                                           callback.errorMessage(), null);
                 }
 
-                case "CANCELLED" -> {
+                case FieldNames.JobStatusValues.CANCELLED -> {
                     IngestEvent.IngestPhase phase = parsePhase(callback.phase());
                     String reason = getStringFromDetails(callback.details(), "reason", "Cancelled");
                     eventService.logCancelled(callback.taskId(), callback.fileName(), phase, reason);
                 }
 
-                case "MEMORY_KILLED" -> {
+                case FieldNames.JobStatusValues.MEMORY_KILLED -> {
                     IngestEvent.IngestPhase phase = parsePhase(callback.phase());
                     double memoryPercent = getDoubleFromDetails(callback.details(), "memoryPercent", 0);
                     int killThreshold = getIntFromDetails(callback.details(), "killThreshold", 0);
@@ -136,7 +137,7 @@ public class InternalIngestCallbackController {
                     IngestEvent.IngestPhase phase = parsePhase(callback.phase());
                     int attemptNumber = getIntFromDetails(callback.details(), "attemptNumber", 1);
                     int maxAttempts = getIntFromDetails(callback.details(), "maxAttempts", 3);
-                    String reason = getStringFromDetails(callback.details(), "reason", "UNKNOWN");
+                    String reason = getStringFromDetails(callback.details(), "reason", FieldNames.JobStatusValues.UNKNOWN);
                     long newHeapBytes = getLongFromDetails(callback.details(), "newHeapBytes", 0);
                     int newBatchSize = getIntFromDetails(callback.details(), "newBatchSize", 0);
                     int newThreadCount = getIntFromDetails(callback.details(), "newThreadCount", 0);
@@ -162,7 +163,7 @@ public class InternalIngestCallbackController {
 
                 case "RESTART_EXHAUSTED" -> {
                     int totalAttempts = getIntFromDetails(callback.details(), "totalAttempts", 0);
-                    String lastReason = getStringFromDetails(callback.details(), "lastReason", "UNKNOWN");
+                    String lastReason = getStringFromDetails(callback.details(), "lastReason", FieldNames.JobStatusValues.UNKNOWN);
                     logger.warn("All restart attempts exhausted for task {} ({} attempts, last reason: {})",
                                callback.taskId(), totalAttempts, lastReason);
                 }
@@ -197,9 +198,9 @@ public class InternalIngestCallbackController {
             // Update status if provided
             if (callback.status() != null) {
                 switch (callback.status()) {
-                    case "RUNNING" -> jobHistoryService.markJobRunning(callback.taskId());
-                    case "COMPLETED" -> jobHistoryService.markJobCompleted(callback.taskId());
-                    case "FAILED" -> {
+                    case FieldNames.JobStatusValues.RUNNING -> jobHistoryService.markJobRunning(callback.taskId());
+                    case FieldNames.JobStatusValues.COMPLETED -> jobHistoryService.markJobCompleted(callback.taskId());
+                    case FieldNames.JobStatusValues.FAILED -> {
                         IndexingJobHistory.FailureReason reason = callback.failureReason() != null ?
                             IndexingJobHistory.FailureReason.valueOf(callback.failureReason()) :
                             IndexingJobHistory.FailureReason.UNKNOWN;

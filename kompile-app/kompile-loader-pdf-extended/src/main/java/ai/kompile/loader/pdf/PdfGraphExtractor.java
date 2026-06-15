@@ -75,6 +75,8 @@ public class PdfGraphExtractor implements DocumentGraphExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(PdfGraphExtractor.class);
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private static final Pattern URL_PATTERN = Pattern.compile(
             "(?:https?|ftps?|mailto):[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+", Pattern.CASE_INSENSITIVE);
 
@@ -335,6 +337,11 @@ public class PdfGraphExtractor implements DocumentGraphExtractor {
         }
         String modificationDate = str(meta.get(META_MODIFICATION_DATE));
         if (modificationDate == null) modificationDate = lastModified;
+
+        // Compute occurredAt for all relations: prefer modificationDate > creationDate > lastModified
+        String occurredAt = modificationDate != null ? modificationDate
+                : (creationDate != null ? creationDate : lastModified);
+
         if (modificationDate != null) {
             String modDateId = entityId("date:" + modificationDate);
             if (!entityIndex.containsKey(modDateId)) {
@@ -801,8 +808,7 @@ public class PdfGraphExtractor implements DocumentGraphExtractor {
         Object tableGraphObj = meta.get(META_TABLE_GRAPH);
         if (tableGraphObj instanceof String tableGraphJson && !tableGraphJson.isBlank()) {
             try {
-                ObjectMapper mapper = new ObjectMapper();
-                Graph cellGraph = mapper.readValue(tableGraphJson, Graph.class);
+                Graph cellGraph = OBJECT_MAPPER.readValue(tableGraphJson, Graph.class);
                 if (cellGraph.getEntities() != null) {
                     for (Entity e : cellGraph.getEntities()) {
                         if (e == null || e.getId() == null || e.getTitle() == null || e.getType() == null) {
@@ -1159,7 +1165,9 @@ public class PdfGraphExtractor implements DocumentGraphExtractor {
 
                 int level = 2;
                 if (headingLevel != null) {
-                    try { level = Integer.parseInt(headingLevel); } catch (NumberFormatException ignored) {}
+                    try { level = Integer.parseInt(headingLevel); } catch (NumberFormatException e) {
+                        log.debug("Could not parse PDF heading level '{}' as integer: {}", headingLevel, e.getMessage());
+                    }
                 }
 
                 String sectionId = entityId("section:" + docEntityId + ":" + headingText.toLowerCase());
@@ -1560,6 +1568,15 @@ public class PdfGraphExtractor implements DocumentGraphExtractor {
                     }
                 }
             }
+        }
+
+        // Stamp occurredAt on every relation's properties map
+        if (occurredAt != null) {
+            relations.replaceAll(r -> {
+                Map<String, String> props = new LinkedHashMap<>(r.properties() != null ? r.properties() : Map.of());
+                props.putIfAbsent("occurredAt", occurredAt);
+                return new ExtractedRelation(r.source(), r.target(), r.type(), r.description(), r.confidence(), props);
+            });
         }
 
         entities.addAll(entityIndex.values());

@@ -54,6 +54,10 @@ import org.springframework.context.annotation.Import;
 @Import({OrchestratorAutoConfiguration.class, PipelineManagementAutoConfiguration.class})
 public class MainApplication {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected MainApplication() {}
+
+
     private static final Logger logger = LoggerFactory.getLogger(MainApplication.class);
 
     // Define constants for our custom command-line properties
@@ -68,6 +72,9 @@ public class MainApplication {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
+        // Disable Lucene MemorySegment-based MMapDirectory — Arena.ofShared is not supported in GraalVM native image
+        System.setProperty("org.apache.lucene.store.MMapDirectory.enableMemorySegments", "false");
+
         // Route to subprocess if --subprocess=TYPE flag is present.
         // This enables the unified native executable approach: a single binary
         // that can act as the main web server OR any subprocess type.
@@ -98,10 +105,11 @@ public class MainApplication {
         // specifying the SLF4J bridge provider, avoiding ServiceLoader entirely.
         System.setProperty("log4j.provider", "org.apache.logging.slf4j.SLF4JProvider");
 
-        // Configure JavaCPP for native image mode BEFORE any ND4J calls.
-        // In native image mode, JavaCPP uses the same directory as the binary
-        // for its native library cache. We must set this up first so that
-        // ND4J can find its native libraries (libnd4jcpu.so, etc.).
+        // Resolve native libraries BEFORE any ND4J calls.
+        // NativeLibraryResolver handles all modes: native image, JVM, CUDA, CPU.
+        // Resolution chain: KOMPILE_NATIVE_LIB_DIR → lib/ → ~/.javacpp/cache → ~/.kompile/native-libs → ~/.m2/repository
+        ai.kompile.app.config.NativeLibraryResolver.bootstrap();
+        // Also configure JavaCPP paths for native image mode (cachedir, pathsFirst, etc.)
         configureJavaCppForNativeImage();
 
         // Skip ND4J initialization during Spring AOT processing (no native backend available at build time)
@@ -242,8 +250,7 @@ public class MainApplication {
                 invokeSubprocessMainByReflection("ai.kompile.staging.subprocess.TrainingSubprocessMain", args);
                 break;
             default:
-                System.err.println("Unknown subprocess type: " + type);
-                System.err.println("Supported types: ingest, vector-population, embedding, model-init, vlm-test, training");
+                logger.error("Unknown subprocess type: {}. Supported types: ingest, vector-population, embedding, model-init, vlm-test, training", type);
                 System.exit(1);
         }
     }
@@ -258,8 +265,7 @@ public class MainApplication {
             java.lang.reflect.Method mainMethod = clazz.getMethod("main", String[].class);
             mainMethod.invoke(null, (Object) args);
         } catch (ClassNotFoundException e) {
-            System.err.println("Subprocess class not available: " + className);
-            System.err.println("Ensure the module is on the classpath.");
+            logger.error("Subprocess class not available: {}. Ensure the module is on the classpath.", className);
             System.exit(1);
         }
     }
@@ -786,7 +792,7 @@ public class MainApplication {
     public static class EmbeddingModelGracefulShutdownHandler {
         private static final Logger log = LoggerFactory.getLogger(EmbeddingModelGracefulShutdownHandler.class);
 
-        private final ai.kompile.core.embeddings.EmbeddingModel embeddingModel;
+        private ai.kompile.core.embeddings.EmbeddingModel embeddingModel;
 
         public EmbeddingModelGracefulShutdownHandler(
                 @org.springframework.beans.factory.annotation.Autowired(required = false) ai.kompile.core.embeddings.EmbeddingModel embeddingModel) {
@@ -951,8 +957,7 @@ public class MainApplication {
                 log.warn("ND4J cleanup steps skipped (ND4J may not be initialized): {}", e.getMessage());
             }
 
-            System.err.println("=== Cleanup complete. External process will terminate JVM in 2 seconds. ===");
-            System.err.flush();
+            log.info("=== Cleanup complete. External process will terminate JVM in 2 seconds. ===");
         }
     }
 }

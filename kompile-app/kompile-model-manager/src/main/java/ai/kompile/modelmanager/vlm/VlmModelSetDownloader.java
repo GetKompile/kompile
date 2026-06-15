@@ -276,15 +276,16 @@ public class VlmModelSetDownloader {
     public List<String> listCachedModelSets() {
         List<String> cached = new ArrayList<>();
         try {
-            Files.list(cacheDir)
-                .filter(Files::isDirectory)
-                .forEach(dir -> {
-                    String setId = dir.getFileName().toString();
-                    VlmModelSet set = VlmModelSet.getModelSet(setId);
-                    if (set != null && isModelSetCached(set)) {
-                        cached.add(setId);
-                    }
-                });
+            try (java.util.stream.Stream<Path> dirs = Files.list(cacheDir)) {
+                dirs.filter(Files::isDirectory)
+                    .forEach(dir -> {
+                        String setId = dir.getFileName().toString();
+                        VlmModelSet set = VlmModelSet.getModelSet(setId);
+                        if (set != null && isModelSetCached(set)) {
+                            cached.add(setId);
+                        }
+                    });
+            }
         } catch (IOException e) {
             log.warn("Failed to list cached model sets", e);
         }
@@ -297,15 +298,16 @@ public class VlmModelSetDownloader {
     public void deleteModelSet(VlmModelSet modelSet) throws IOException {
         Path setDir = cacheDir.resolve(modelSet.getSetId());
         if (Files.exists(setDir)) {
-            Files.walk(setDir)
-                .sorted(Comparator.reverseOrder())
-                .forEach(path -> {
-                    try {
-                        Files.delete(path);
-                    } catch (IOException e) {
-                        log.warn("Failed to delete: {}", path, e);
-                    }
-                });
+            try (java.util.stream.Stream<Path> walkStream = Files.walk(setDir)) {
+                walkStream.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.delete(path);
+                        } catch (IOException e) {
+                            log.warn("Failed to delete: {}", path, e);
+                        }
+                    });
+            }
             log.info("Deleted model set: {}", modelSet.getSetId());
         }
     }

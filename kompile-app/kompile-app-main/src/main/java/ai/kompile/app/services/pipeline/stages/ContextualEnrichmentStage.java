@@ -55,8 +55,10 @@ public class ContextualEnrichmentStage implements PipelineStage<ChunkingStage.Ch
     private final StageMetrics metrics = new StageMetrics();
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
-    // Original document texts keyed by source ID (populated from earlier stage)
-    private Map<String, String> documentTexts = new HashMap<>();
+    // Original document texts keyed by source ID (populated from earlier stage).
+    // Volatile so that the reference written by setDocumentTexts()/reset() is
+    // immediately visible to the thread executing process().
+    private volatile Map<String, String> documentTexts = new HashMap<>();
 
     public ContextualEnrichmentStage(ContextualChunkEnricher enricher,
                                       ContextualRagConfigService configService) {
@@ -259,7 +261,9 @@ public class ContextualEnrichmentStage implements PipelineStage<ChunkingStage.Ch
     public void reset() {
         cancelled.set(false);
         metrics.reset();
-        documentTexts.clear();
+        // Assign a fresh map rather than mutating the existing one so that
+        // concurrent readers always see a fully-formed (possibly empty) map.
+        documentTexts = new HashMap<>();
     }
 
     /**

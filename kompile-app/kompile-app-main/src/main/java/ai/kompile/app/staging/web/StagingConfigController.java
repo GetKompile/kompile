@@ -17,6 +17,7 @@
 package ai.kompile.app.staging.web;
 
 import ai.kompile.app.services.EmbeddingStatusBroadcaster;
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.app.staging.domain.StagingServiceConfig;
 import ai.kompile.app.staging.service.StagingClientService;
 import ai.kompile.app.staging.service.StagingServiceConfigService;
@@ -34,6 +35,14 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -282,7 +291,7 @@ public class StagingConfigController {
         }
 
         // Step 2: Get registry
-        Optional<com.fasterxml.jackson.databind.JsonNode> registry = clientService.getRegistry();
+        Optional<JsonNode> registry = clientService.getRegistry();
         if (registry.isPresent()) {
             response.put("registryAvailable", true);
             response.put("modelCount", connectionResult.modelCount());
@@ -387,7 +396,7 @@ public class StagingConfigController {
         // Update verification status in database
         configService.updateVerificationStatus(id, result.success(), result.message());
 
-        Map<String, Object> response = new java.util.HashMap<>();
+        Map<String, Object> response = new HashMap<>();
         response.put("success", result.success());
         response.put("message", result.message());
         response.put("modelCount", result.modelCount());
@@ -542,7 +551,7 @@ public class StagingConfigController {
     public ResponseEntity<?> replaceRemoteModel(
             @PathVariable String modelId,
             @RequestBody ReplaceModelRequest request) {
-        Map<String, Object> replaceRequest = new java.util.HashMap<>();
+        Map<String, Object> replaceRequest = new HashMap<>();
         replaceRequest.put("type", request.type());
         replaceRequest.put("path", request.path());
         replaceRequest.put("modelFile", request.modelFile());
@@ -587,7 +596,7 @@ public class StagingConfigController {
                 .map(active -> {
                     Map<String, Object> response = new LinkedHashMap<>();
                     response.put("active", active);
-                    response.put("types", java.util.List.of("encoder", "sparse_encoder", "cross_encoder"));
+                    response.put("types", List.of("encoder", "sparse_encoder", "cross_encoder"));
                     return ResponseEntity.ok((Object) response);
                 })
                 .orElse(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -605,7 +614,7 @@ public class StagingConfigController {
             return ResponseEntity.ok(Map.of(
                     "success", true,
                     "message", "Model activated successfully",
-                    "modelId", modelId
+                    FieldNames.MODEL_ID, modelId
             ));
         } else {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of(
@@ -636,7 +645,7 @@ public class StagingConfigController {
     public ResponseEntity<Object> uploadSdzToRemote(
             @RequestParam("modelFile") MultipartFile modelFile,
             @RequestParam(value = "vocabFile", required = false) MultipartFile vocabFile,
-            @RequestParam("modelId") String modelId,
+            @RequestParam(FieldNames.MODEL_ID) String modelId,
             @RequestParam(value = "modelType", defaultValue = "dense_encoder") String modelType,
             @RequestParam(value = "version", required = false) String version,
             @RequestParam(value = "embeddingDim", required = false) Integer embeddingDim,
@@ -731,7 +740,7 @@ public class StagingConfigController {
         Map<String, Object> response = new LinkedHashMap<>();
         String taskId = UUID.randomUUID().toString();
 
-        log.info("Download and load request for model: {} (taskId: {})", modelId, taskId);
+        log.info("Download and load request for model: {} (taskId: {})", sanitizeForLog(modelId), taskId);
 
         // Step 1: Download the model from remote staging (synchronous - fast)
         StagingClientService.DownloadModelResult downloadResult = clientService.downloadModel(modelId);
@@ -787,7 +796,7 @@ public class StagingConfigController {
         // Return immediately with loading status
         response.put("success", true);
         response.put("loading", true);
-        response.put("taskId", taskId);
+        response.put(FieldNames.TASK_ID, taskId);
         response.put("previousModel", previousModel);
         response.put("message", "Model download complete. Loading in background - check /topic/model/status for progress.");
         log.info("Model {} downloaded, async loading started (taskId: {})", modelId, taskId);
@@ -886,8 +895,8 @@ public class StagingConfigController {
         }
 
         response.put("found", true);
-        response.put("taskId", task.taskId());
-        response.put("modelId", task.modelId());
+        response.put(FieldNames.TASK_ID, task.taskId());
+        response.put(FieldNames.MODEL_ID, task.modelId());
         response.put("status", task.status());
         response.put("message", task.message());
         response.put("elapsedMs", System.currentTimeMillis() - task.startTime());
@@ -923,13 +932,13 @@ public class StagingConfigController {
     public ResponseEntity<Map<String, Object>> downloadModel(@PathVariable String modelId) {
         Map<String, Object> response = new LinkedHashMap<>();
 
-        log.info("Download request for model: {}", modelId);
+        log.info("Download request for model: {}", sanitizeForLog(modelId));
 
         StagingClientService.DownloadModelResult downloadResult = clientService.downloadModel(modelId);
 
         response.put("success", downloadResult.success());
         response.put("message", downloadResult.message());
-        response.put("modelId", downloadResult.modelId());
+        response.put(FieldNames.MODEL_ID, downloadResult.modelId());
         response.put("localPath", downloadResult.localPath() != null ? downloadResult.localPath().toString() : null);
         response.put("modelType", downloadResult.modelType());
         response.put("embeddingDim", downloadResult.embeddingDim());
@@ -952,7 +961,7 @@ public class StagingConfigController {
     public ResponseEntity<Map<String, Object>> checkModelDownloaded(@PathVariable String modelId) {
         boolean downloaded = clientService.isModelDownloaded(modelId);
         return ResponseEntity.ok(Map.of(
-                "modelId", modelId,
+                FieldNames.MODEL_ID, modelId,
                 "downloaded", downloaded
         ));
     }
@@ -1107,7 +1116,7 @@ public class StagingConfigController {
         Map<String, Object> response = new LinkedHashMap<>();
 
         try {
-            java.util.List<Map<String, Object>> models = new java.util.ArrayList<>();
+            List<Map<String, Object>> models = new ArrayList<>();
 
             // Get models from AnseriniEncoderFactory registry
             ai.kompile.embedding.anserini.AnseriniEncoderFactory.refreshRegistry();
@@ -1119,7 +1128,7 @@ public class StagingConfigController {
                     var modelInfo = entry.getValue();
 
                     Map<String, Object> modelMap = new LinkedHashMap<>();
-                    modelMap.put("modelId", modelId);
+                    modelMap.put(FieldNames.MODEL_ID, modelId);
                     modelMap.put("type", modelInfo.get("type"));
                     modelMap.put("status", modelInfo.get("status"));
                     modelMap.put("path", modelInfo.get("path"));
@@ -1151,13 +1160,13 @@ public class StagingConfigController {
 
             response.put("models", models);
             response.put("version", "1.0");
-            response.put("lastUpdated", java.time.Instant.now().toString());
+            response.put("lastUpdated", Instant.now().toString());
 
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("Failed to get local registry: {}", e.getMessage(), e);
             response.put("error", e.getMessage());
-            response.put("models", java.util.Collections.emptyList());
+            response.put("models", Collections.emptyList());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
     }
@@ -1166,9 +1175,9 @@ public class StagingConfigController {
      * Get models by type from the local registry.
      */
     @GetMapping("/registry/{type}")
-    public ResponseEntity<java.util.List<Map<String, Object>>> getLocalModelsByType(@PathVariable String type) {
+    public ResponseEntity<List<Map<String, Object>>> getLocalModelsByType(@PathVariable String type) {
         try {
-            java.util.List<Map<String, Object>> models = new java.util.ArrayList<>();
+            List<Map<String, Object>> models = new ArrayList<>();
 
             ai.kompile.embedding.anserini.AnseriniEncoderFactory.refreshRegistry();
             var registryModels = ai.kompile.embedding.anserini.AnseriniEncoderFactory.getAvailableModels();
@@ -1183,7 +1192,7 @@ public class StagingConfigController {
                             ("encoder".equalsIgnoreCase(type) && "dense_encoder".equalsIgnoreCase(modelType))) {
 
                         Map<String, Object> modelMap = new LinkedHashMap<>();
-                        modelMap.put("modelId", modelId);
+                        modelMap.put(FieldNames.MODEL_ID, modelId);
                         modelMap.put("type", modelType);
                         modelMap.put("status", modelInfo.get("status"));
                         modelMap.put("path", modelInfo.get("path"));
@@ -1195,7 +1204,7 @@ public class StagingConfigController {
             return ResponseEntity.ok(models);
         } catch (Exception e) {
             log.error("Failed to get models by type: {}", type, e);
-            return ResponseEntity.ok(java.util.Collections.emptyList());
+            return ResponseEntity.ok(Collections.emptyList());
         }
     }
 
@@ -1205,7 +1214,7 @@ public class StagingConfigController {
     @GetMapping("/registry/model/{modelId}/optimization")
     public ResponseEntity<Map<String, Object>> getOptimizationStatus(@PathVariable String modelId) {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("modelId", modelId);
+        response.put(FieldNames.MODEL_ID, modelId);
 
         try {
             ai.kompile.embedding.anserini.AnseriniEncoderFactory.refreshRegistry();
@@ -1228,7 +1237,7 @@ public class StagingConfigController {
 
             String backupFile = (String) modelInfo.get("unoptimizedBackupFile");
             boolean hasBackup = backupFile != null && !backupFile.isEmpty() &&
-                    java.nio.file.Files.exists(java.nio.file.Paths.get(backupFile));
+                    Files.exists(Paths.get(backupFile));
             response.put("hasBackup", hasBackup);
             if (hasBackup) {
                 response.put("backupFile", backupFile);
@@ -1248,7 +1257,7 @@ public class StagingConfigController {
     @GetMapping("/registry/model/{modelId}/can-optimize")
     public ResponseEntity<Map<String, Object>> canOptimize(@PathVariable String modelId) {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("modelId", modelId);
+        response.put(FieldNames.MODEL_ID, modelId);
 
         try {
             ai.kompile.embedding.anserini.AnseriniEncoderFactory.refreshRegistry();
@@ -1273,8 +1282,8 @@ public class StagingConfigController {
             String path = (String) modelInfo.get("path");
             String modelFile = (String) modelInfo.getOrDefault("modelFile", "model.fb");
             if (path != null) {
-                java.nio.file.Path fullPath = java.nio.file.Paths.get(path, modelFile);
-                if (!java.nio.file.Files.exists(fullPath)) {
+                Path fullPath = Paths.get(path, modelFile);
+                if (!Files.exists(fullPath)) {
                     response.put("canOptimize", false);
                     response.put("reason", "Model file not found: " + fullPath);
                     return ResponseEntity.ok(response);
@@ -1299,10 +1308,10 @@ public class StagingConfigController {
     @PostMapping("/registry/model/{modelId}/optimize")
     public ResponseEntity<Map<String, Object>> optimizeModel(@PathVariable String modelId) {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("modelId", modelId);
+        response.put(FieldNames.MODEL_ID, modelId);
 
         try {
-            log.info("Optimizing model: {}", modelId);
+            log.info("Optimizing model: {}", sanitizeForLog(modelId));
 
             ai.kompile.embedding.anserini.AnseriniEncoderFactory.refreshRegistry();
             var modelInfo = ai.kompile.embedding.anserini.AnseriniEncoderFactory.getModelInfoMap(modelId);
@@ -1331,16 +1340,16 @@ public class StagingConfigController {
                 return ResponseEntity.badRequest().body(response);
             }
 
-            java.nio.file.Path modelPath = java.nio.file.Paths.get(path, modelFile);
-            if (!java.nio.file.Files.exists(modelPath)) {
+            Path modelPath = Paths.get(path, modelFile);
+            if (!Files.exists(modelPath)) {
                 response.put("success", false);
                 response.put("error", "Model file not found: " + modelPath);
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
             }
 
             // Create backup
-            java.nio.file.Path backupPath = java.nio.file.Paths.get(path, modelFile + ".unoptimized");
-            java.nio.file.Files.copy(modelPath, backupPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Path backupPath = Paths.get(path, modelFile + ".unoptimized");
+            Files.copy(modelPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
             log.info("Created backup at: {}", backupPath);
 
             // Load, optimize, and save using SDZSerializer
@@ -1353,7 +1362,7 @@ public class StagingConfigController {
             }
 
             // Get model outputs for optimization
-            java.util.List<String> targetOutputs = sd.outputs();
+            List<String> targetOutputs = sd.outputs();
             if (targetOutputs == null || targetOutputs.isEmpty()) {
                 response.put("success", false);
                 response.put("error", "Model has no outputs defined");
@@ -1390,7 +1399,7 @@ public class StagingConfigController {
     @PostMapping("/registry/model/{modelId}/restore")
     public ResponseEntity<Map<String, Object>> restoreUnoptimized(@PathVariable String modelId) {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("modelId", modelId);
+        response.put(FieldNames.MODEL_ID, modelId);
 
         try {
             log.info("Restoring unoptimized version of model: {}", modelId);
@@ -1411,8 +1420,8 @@ public class StagingConfigController {
                 return ResponseEntity.badRequest().body(response);
             }
 
-            java.nio.file.Path backupPath = java.nio.file.Paths.get(backupFile);
-            if (!java.nio.file.Files.exists(backupPath)) {
+            Path backupPath = Paths.get(backupFile);
+            if (!Files.exists(backupPath)) {
                 response.put("success", false);
                 response.put("error", "Backup file does not exist: " + backupFile);
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
@@ -1421,14 +1430,14 @@ public class StagingConfigController {
             // Get model path
             String path = (String) modelInfo.get("path");
             String modelFileName = (String) modelInfo.getOrDefault("modelFile", "model.fb");
-            java.nio.file.Path modelPath = java.nio.file.Paths.get(path, modelFileName);
+            Path modelPath = Paths.get(path, modelFileName);
 
             // Restore from backup
-            java.nio.file.Files.copy(backupPath, modelPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(backupPath, modelPath, StandardCopyOption.REPLACE_EXISTING);
             log.info("Restored model from backup: {}", backupPath);
 
             // Delete backup
-            java.nio.file.Files.deleteIfExists(backupPath);
+            Files.deleteIfExists(backupPath);
             log.info("Deleted backup file: {}", backupPath);
 
             // Update registry metadata
@@ -1445,5 +1454,10 @@ public class StagingConfigController {
             response.put("error", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
+    }
+
+    private static String sanitizeForLog(String value) {
+        if (value == null) return null;
+        return value.replace('\n', ' ').replace('\r', ' ');
     }
 }

@@ -55,7 +55,7 @@ public class ExternalMcpServerManager {
     @Value("${kompile.mcp.config.path:./data}")
     private String configDirectory;
 
-    private UnifiedMcpConfig config;
+    private volatile UnifiedMcpConfig config;
 
     public ExternalMcpServerManager() {
         this.objectMapper = new ObjectMapper();

@@ -211,7 +211,9 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
                 if (!entityTextEmb.wasClosed()) {
                     entityTextEmb.close();
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("Failed to close entity text embedding for '{}': {}", node.getTitle(), e.getMessage());
+            }
 
             scoredEntities.add(new ScoredEntity(
                     node.getTitle(),
@@ -229,7 +231,9 @@ public class KGEmbeddingRetriever implements DocumentRetriever {
             if (!queryEmbedding.wasClosed()) {
                 queryEmbedding.close();
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("Failed to close query embedding: {}", e.getMessage());
+        }
 
         return scoredEntities.stream()
                 .limit(topK)

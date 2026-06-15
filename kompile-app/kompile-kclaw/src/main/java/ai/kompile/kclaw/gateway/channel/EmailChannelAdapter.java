@@ -16,6 +16,7 @@
 package ai.kompile.kclaw.gateway.channel;
 
 import ai.kompile.kclaw.agent.KClawAgentService;
+import ai.kompile.gateway.core.gateway.channel.*;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashSet;

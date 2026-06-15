@@ -18,7 +18,7 @@ package ai.kompile.kclaw.service.impl;
 import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.kclaw.model.KClawRequest;
 import ai.kompile.kclaw.model.KClawResponse;
-import ai.kompile.kclaw.service.HeartbeatScheduler;
+import ai.kompile.gateway.core.service.HeartbeatScheduler;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.*;
 import org.quartz.impl.matchers.GroupMatcher;

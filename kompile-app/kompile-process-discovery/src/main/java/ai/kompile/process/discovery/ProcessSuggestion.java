@@ -21,7 +21,10 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -35,8 +38,14 @@ import java.util.Map;
 @AllArgsConstructor
 public class ProcessSuggestion {
 
+    /** Unique identifier for this suggestion */
+    private String id;
+
     /** The fact sheet this suggestion was discovered from. */
     private Long factSheetId;
+
+    /** When this suggestion was discovered */
+    private Instant discoveredAt;
 
     /** Suggested process name */
     private String name;
@@ -63,6 +72,29 @@ public class ProcessSuggestion {
     private List<String> evidence = new ArrayList<>();
 
     /**
+     * Bayesian posterior scores from MEBN inference over the source graph nodes.
+     * Maps variable name (e.g. "isRelevant(node_42)") → posterior P(TRUE | evidence).
+     * Populated when process discovery is enhanced with probabilistic scoring.
+     */
+    @Builder.Default
+    private Map<String, Double> bayesianPosteriors = new LinkedHashMap<>();
+
+    /**
+     * Bayesian prior scores (before evidence) for the same variables as posteriors.
+     * Enables prior→posterior comparison visualization in the UI.
+     */
+    @Builder.Default
+    private Map<String, Double> bayesianPriors = new LinkedHashMap<>();
+
+    /**
+     * Structured evidence with typed entries that can be rendered in the UI.
+     * Each entry has a type (CAUSAL, TEMPORAL, STATISTICAL, BAYESIAN),
+     * a description, and an optional numeric score.
+     */
+    @Builder.Default
+    private List<StructuredEvidence> structuredEvidence = new ArrayList<>();
+
+    /**
      * Child process suggestions that are sub-processes of this one.
      * For example, an "Email-driven Budget Review" process may have a
      * "Spreadsheet Computation" child process extracted from a referenced attachment.
@@ -73,6 +105,12 @@ public class ProcessSuggestion {
     /** ID of the parent suggestion if this is a sub-process. */
     private String parentSuggestionId;
 
+    /** Whether this suggestion has been accepted and converted to a ProcessDefinition */
+    private Boolean accepted;
+
+    /** ID of the ProcessDefinition created from this suggestion */
+    private String acceptedProcessDefinitionId;
+
     @Data
     @Builder
     @NoArgsConstructor
@@ -82,6 +120,10 @@ public class ProcessSuggestion {
         private String description;
         @Builder.Default
         private List<SuggestedStep> steps = new ArrayList<>();
+        /** Earliest occurredAt across all steps in this phase */
+        private LocalDateTime earliestOccurrence;
+        /** Latest occurredAt across all steps in this phase */
+        private LocalDateTime latestOccurrence;
     }
 
     @Data
@@ -105,5 +147,23 @@ public class ProcessSuggestion {
         private Map<String, String> inputMapping = Map.of();
         /** Suggested assignee (for HUMAN/APPROVE steps) */
         private String suggestedAssignee;
+        /** When this step occurred in the real world */
+        private LocalDateTime occurredAt;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class StructuredEvidence {
+        /** Type of evidence: CAUSAL, TEMPORAL, STATISTICAL, BAYESIAN */
+        private String type;
+        /** Human-readable description */
+        private String description;
+        /** Optional numeric score (probability, correlation, frequency) */
+        private Double score;
+        /** KG node IDs that support this evidence */
+        @Builder.Default
+        private List<String> supportingNodeIds = new ArrayList<>();
     }
 }

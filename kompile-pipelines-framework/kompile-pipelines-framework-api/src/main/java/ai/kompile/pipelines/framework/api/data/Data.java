@@ -375,8 +375,10 @@ public interface Data extends Configuration {
      */
     byte[] asBytes() throws IOException;
 
-    default void putIfAbsent(String title, String s) {
-        putIfAbsent(title,s);
+    default void putIfAbsent(String key, String value) {
+        if (!has(key)) {
+            put(key, value);
+        }
     }
 
 

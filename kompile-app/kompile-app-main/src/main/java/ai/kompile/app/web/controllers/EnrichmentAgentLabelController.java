@@ -22,7 +22,7 @@ import ai.kompile.enrichment.impl.EntityCategoryServiceImpl;
 import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.kclaw.model.KClawRequest;
 import ai.kompile.kclaw.model.KClawResponse;
-import ai.kompile.kclaw.service.AgentRegistry;
+import ai.kompile.gateway.core.service.AgentRegistry;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
@@ -248,6 +248,7 @@ public class EnrichmentAgentLabelController {
             JsonNode typeNode = meta.path("entity_type");
             return typeNode.isMissingNode() || typeNode.isNull() ? null : typeNode.asText();
         } catch (Exception e) {
+            log.warn("Failed to extract entity type from metadata", e);
             return null;
         }
     }

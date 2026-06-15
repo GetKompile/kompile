@@ -50,7 +50,7 @@ class JDataValueWrapper implements Serializable {
         if (listContainerType != ValueType.LIST) {
             throw new IllegalArgumentException("This constructor is only for LIST type.");
         }
-        Objects.requireNonNull(listElementType, "listElementType cannot be null for LIST type if list is not empty or if typed empty list.");
+        // listElementType may be null for empty lists or lists with unknown element types
         this.type = ValueType.LIST; // The container type
         // Store the element type information separately if needed, or rely on JData to manage it.
         // For simplicity here, JData will store the list directly.

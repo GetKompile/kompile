@@ -237,20 +237,19 @@ public final class VlmModels {
     }
 
     /**
-     * Print cache status to stdout.
+     * Print cache status to the log.
      */
     public static void printCacheStatus() {
-        System.out.println("VLM Model Cache Status:");
-        System.out.println("========================");
+        log.info("VLM Model Cache Status:");
+        log.info("========================");
         Map<String, Boolean> status = getCacheStatus();
         for (Map.Entry<String, Boolean> entry : status.entrySet()) {
             String icon = entry.getValue() ? "[X]" : "[ ]";
             VlmModelSet set = VlmModelSet.getModelSet(entry.getKey());
             String name = set != null ? set.getDisplayName() : entry.getKey();
-            System.out.printf("%s %s (%s)%n", icon, name, entry.getKey());
+            log.info("{} {} ({})", icon, name, entry.getKey());
         }
-        System.out.println();
-        System.out.println("Cache directory: " + VlmModelSetDownloader.getCacheDirectory());
+        log.info("Cache directory: {}", VlmModelSetDownloader.getCacheDirectory());
     }
 
     /**
@@ -259,10 +258,10 @@ public final class VlmModels {
     public static void printModelInfo(String modelSetId) {
         VlmModelSet set = VlmModelSet.getModelSet(modelSetId);
         if (set == null) {
-            System.out.println("Unknown model set: " + modelSetId);
+            log.warn("Unknown model set: {}", modelSetId);
             return;
         }
-        System.out.println(set.getSummary());
+        log.info("{}", set.getSummary());
     }
 
     /**

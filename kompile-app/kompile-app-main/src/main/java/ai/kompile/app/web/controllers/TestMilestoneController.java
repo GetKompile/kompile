@@ -89,13 +89,17 @@ public class TestMilestoneController {
     @PostMapping("/record")
     public ResponseEntity<Map<String, Object>> record(@RequestBody RecordRequest request) {
         if (milestoneService == null) {
-            return ResponseEntity.ok(Map.of("status", "error", "error", "Service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "error", "error", "Service not available"));
         }
-        Path projectRoot = Paths.get(request.projectPath != null ? request.projectPath : ".");
+        String projectPathStr = request.projectPath != null ? request.projectPath : ".";
+        if (projectPathStr.contains("..")) {
+            return ResponseEntity.badRequest().body(Map.of("status", "error", "error", "Invalid project path"));
+        }
+        Path projectRoot = Paths.get(projectPathStr);
         TestMilestoneEntity milestone = milestoneService.recordMilestone(
                 projectRoot, request.moduleName, request.tags);
         if (milestone == null) {
-            return ResponseEntity.ok(Map.of("status", "error", "error", "No test results found"));
+            return ResponseEntity.status(404).body(Map.of("status", "error", "error", "No test results found"));
         }
         return ResponseEntity.ok(Map.of("status", "success", "milestone", toSummaryDto(milestone)));
     }
@@ -103,7 +107,7 @@ public class TestMilestoneController {
     @PostMapping("/record-manual")
     public ResponseEntity<Map<String, Object>> recordManual(@RequestBody ManualRecordRequest request) {
         if (milestoneService == null) {
-            return ResponseEntity.ok(Map.of("status", "error", "error", "Service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "error", "error", "Service not available"));
         }
         TestMilestoneEntity milestone = milestoneService.recordManualMilestone(
                 request.commitHash, request.branch, request.moduleName,
@@ -159,7 +163,7 @@ public class TestMilestoneController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Map<String, Object>> delete(@PathVariable String id) {
         if (milestoneService == null) {
-            return ResponseEntity.ok(Map.of("status", "error", "error", "Service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "error", "error", "Service not available"));
         }
         milestoneService.deleteMilestone(id);
         return ResponseEntity.ok(Map.of("status", "success"));

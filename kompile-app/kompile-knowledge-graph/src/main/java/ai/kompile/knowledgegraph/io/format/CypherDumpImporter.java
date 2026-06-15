@@ -11,6 +11,8 @@ package ai.kompile.knowledgegraph.io.format;
 
 import ai.kompile.knowledgegraph.io.model.PortableEdge;
 import ai.kompile.knowledgegraph.io.model.PortableNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -31,6 +33,8 @@ import java.util.regex.Pattern;
  * </ul>
  */
 public final class CypherDumpImporter {
+
+    private static final Logger log = LoggerFactory.getLogger(CypherDumpImporter.class);
 
     private static final Pattern CREATE_NODE = Pattern.compile(
             "(?i)CREATE\\s*\\(\\s*\\w*\\s*:([A-Z_]+)\\s*\\{([^}]*)\\}\\s*\\)\\s*;?");
@@ -75,7 +79,9 @@ public final class CypherDumpImporter {
                 Map<String, String> relProps = rel.group(4) == null ? Map.of() : parseProps(rel.group(4));
                 Double weight = null;
                 if (relProps.containsKey("weight")) {
-                    try { weight = Double.parseDouble(relProps.get("weight")); } catch (NumberFormatException ignored) {}
+                    try { weight = Double.parseDouble(relProps.get("weight")); } catch (NumberFormatException e) {
+                        log.debug("Invalid relationship weight '{}' in Cypher dump, treating as null: {}", relProps.get("weight"), e.getMessage());
+                    }
                 }
                 edges.add(new PortableEdge(
                         from.getOrDefault("externalId", from.get("nodeId")),

@@ -15,6 +15,7 @@
  */
 package ai.kompile.openclaw.gateway.channel;
 
+import ai.kompile.gateway.core.gateway.channel.SlackApiClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 

@@ -41,6 +41,8 @@ import java.util.stream.Collectors;
 @Transactional
 public class NoteSyncConnectionService {
 
+
+
     private static final Logger log = LoggerFactory.getLogger(NoteSyncConnectionService.class);
 
     @Autowired

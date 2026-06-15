@@ -1750,7 +1750,9 @@ public class LocalCodeIndexTool implements CliTool {
                     if (!line.isEmpty()) changed.add(line);
                 }
             }
-            proc.waitFor();
+            if (!proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly();
+            }
 
             // Also include untracked files
             ProcessBuilder pb2 = new ProcessBuilder("git", "diff", "--name-only", "--cached", gitRef);
@@ -1764,7 +1766,9 @@ public class LocalCodeIndexTool implements CliTool {
                     if (!line.isEmpty()) changed.add(line);
                 }
             }
-            proc2.waitFor();
+            if (!proc2.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc2.destroyForcibly();
+            }
 
             // Unstaged modifications (not yet added)
             ProcessBuilder pb3 = new ProcessBuilder("git", "diff", "--name-only");
@@ -1778,7 +1782,9 @@ public class LocalCodeIndexTool implements CliTool {
                     if (!line.isEmpty()) changed.add(line);
                 }
             }
-            proc3.waitFor();
+            if (!proc3.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc3.destroyForcibly();
+            }
         } catch (Exception e) {
             // Git not available or not a git repo — return empty
         }
@@ -1798,14 +1804,16 @@ public class LocalCodeIndexTool implements CliTool {
 
         // Find all pom.xml files
         List<Path> pomFiles = new ArrayList<>();
-        Files.walk(projectRoot, 10)
-                .filter(p -> p.getFileName().toString().equals("pom.xml"))
-                .filter(p -> {
-                    String rel = projectRoot.relativize(p).toString();
-                    return !rel.contains("target/") && !rel.contains("node_modules/")
-                            && !rel.contains(".git/");
-                })
-                .forEach(pomFiles::add);
+        try (java.util.stream.Stream<Path> walkStream = Files.walk(projectRoot, 10)) {
+            walkStream
+                    .filter(p -> p.getFileName().toString().equals("pom.xml"))
+                    .filter(p -> {
+                        String rel = projectRoot.relativize(p).toString();
+                        return !rel.contains("target/") && !rel.contains("node_modules/")
+                                && !rel.contains(".git/");
+                    })
+                    .forEach(pomFiles::add);
+        }
 
         if (pomFiles.isEmpty()) {
             return ToolResult.success("modules",

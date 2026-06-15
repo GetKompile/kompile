@@ -216,16 +216,16 @@ public class DynamicToolsetsMetaTool {
         if (tool.getBeanName() != null) {
             try {
                 return applicationContext.getBean(tool.getBeanName());
-            } catch (Exception ignored) {
-                // fall through to class lookup
+            } catch (Exception e) {
+                log.debug("Bean lookup by name '{}' failed, trying class lookup: {}", tool.getBeanName(), e.getMessage());
             }
         }
         if (tool.getBeanClass() != null) {
             try {
                 Class<?> clazz = Class.forName(tool.getBeanClass());
                 return applicationContext.getBean(clazz);
-            } catch (Exception ignored) {
-                // last resort below
+            } catch (Exception e) {
+                log.warn("Bean lookup by class '{}' failed: {}", tool.getBeanClass(), e.getMessage());
             }
         }
         return null;
@@ -265,7 +265,16 @@ public class DynamicToolsetsMetaTool {
     }
 
     private Object buildRecord(Class<?> recordClass, Map<String, Object> args) throws Exception {
-        RecordComponent[] components = recordClass.getRecordComponents();
+        // Wrap in try/catch(Throwable) because GraalVM native image throws
+        // com.oracle.svm.core.jdk.UnsupportedFeatureError (extends Error, not Exception)
+        // when getRecordComponents() is called without native-image reflection config.
+        RecordComponent[] components;
+        try {
+            components = recordClass.getRecordComponents();
+        } catch (Throwable t) {
+            throw new UnsupportedOperationException(
+                    "getRecordComponents() not available for " + recordClass.getName() + " in native image", t);
+        }
         Class<?>[] paramTypes = new Class<?>[components.length];
         Object[] paramValues = new Object[components.length];
         for (int i = 0; i < components.length; i++) {

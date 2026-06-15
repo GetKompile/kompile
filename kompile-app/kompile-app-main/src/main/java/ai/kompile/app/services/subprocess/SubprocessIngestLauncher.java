@@ -55,12 +55,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 // import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -84,6 +86,9 @@ import java.util.regex.Pattern;
 public class SubprocessIngestLauncher {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessIngestLauncher.class);
+
+    // Scheduling intervals
+    private static final long STALE_CHECK_INTERVAL_MS = 30_000L; // 30 seconds
 
     private static final String SUBPROCESS_MAIN_CLASS = "ai.kompile.app.subprocess.IngestSubprocessMain";
 
@@ -113,6 +118,7 @@ public class SubprocessIngestLauncher {
     private final ObjectMapper objectMapper;
 
     @Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
     private ModelLifecycleManager modelLifecycleManager;
 
     @Autowired(required = false)
@@ -122,6 +128,7 @@ public class SubprocessIngestLauncher {
     private ai.kompile.app.subprocess.SubprocessRegistry subprocessRegistry;
 
     @Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
     private ai.kompile.app.services.scheduler.ResourceAwareJobScheduler resourceScheduler;
 
     @Autowired(required = false)
@@ -290,7 +297,7 @@ public class SubprocessIngestLauncher {
             resultFuture = new CompletableFuture<>();
             // Store launch context for potential retry
             jobLaunchContexts.put(jobId, new LaunchContext(jobId, filePath, loaderName, chunkerName,
-                    options != null ? new java.util.HashMap<>(options) : new java.util.HashMap<>(), resultFuture));
+                    options != null ? new HashMap<>(options) : new HashMap<>(), resultFuture));
             // Fire any chat monitors registered for this task when it completes.
             // Attach exactly once — on the original future only, not on retries.
             resultFuture.whenComplete((result, error) -> notifyMonitorService(taskId, result, error));
@@ -320,7 +327,7 @@ public class SubprocessIngestLauncher {
             // manager
             String stagingUrl = ai.kompile.embedding.anserini.AnseriniEncoderFactory.getStagingUrl();
             String stagingApiKey = ai.kompile.embedding.anserini.AnseriniEncoderFactory.getStagingApiKey();
-            java.nio.file.Path archivePathObj = ai.kompile.embedding.anserini.AnseriniEncoderFactory
+            Path archivePathObj = ai.kompile.embedding.anserini.AnseriniEncoderFactory
                     .getLoadedArchivePath();
             String archivePath = archivePathObj != null ? archivePathObj.toString() : null;
 
@@ -397,7 +404,7 @@ public class SubprocessIngestLauncher {
             }
 
             // Build subprocess options with adaptive settings
-            Map<String, Object> effectiveOptions = new java.util.HashMap<>(options != null ? options : Map.of());
+            Map<String, Object> effectiveOptions = new HashMap<>(options != null ? options : Map.of());
             effectiveOptions.put("jobId", jobId);
             if (recoverySettings != null) {
                 effectiveOptions.put("nd4jThreads", recoverySettings.getNd4jThreads());
@@ -1127,8 +1134,13 @@ public class SubprocessIngestLauncher {
      * All stderr output is forwarded to WebSocket for UI display.
      */
     private void readStderr(SubprocessHandle handle) {
+        Process process = getProcessForHandle(handle);
+        if (process == null) {
+            logger.debug("Process not found for task {}, cannot read stderr", handle.getTaskId());
+            return;
+        }
         try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(getProcessForHandle(handle).getErrorStream()))) {
+                new InputStreamReader(process.getErrorStream()))) {
 
             String line;
             while ((line = reader.readLine()) != null) {
@@ -1233,7 +1245,14 @@ public class SubprocessIngestLauncher {
             if (process == null)
                 return;
 
-            int exitCode = process.waitFor();
+            boolean finished = process.waitFor(timeoutMinutes, TimeUnit.MINUTES);
+            if (!finished) {
+                process.destroyForcibly();
+                process.waitFor(30, TimeUnit.SECONDS);
+                logger.error("Subprocess {} timed out after {} minutes, force-killed",
+                        handle.getTaskId(), timeoutMinutes);
+            }
+            int exitCode = finished ? process.exitValue() : 137;
             logger.info("Subprocess {} exited with code: {}", handle.getTaskId(), exitCode);
 
             // Give stderr/stdout readers time to finish processing output
@@ -1266,84 +1285,104 @@ public class SubprocessIngestLauncher {
             logger.debug("Received subprocess message: type={}, taskId={}",
                     message.getClass().getSimpleName(), handle.getTaskId());
 
-            if (message instanceof SubprocessMessage.Progress progress) {
-                handle.updateProgress(progress.phase(), progress.progressPercent(), progress.message());
-                forwardProgress(handle, progress);
-            } else if (message instanceof SubprocessMessage.PhaseTransition transition) {
-                handle.setCurrentPhase(transition.toPhase());
-                handle.updateHeartbeat();
-                logger.info("Task {} phase transition: {} -> {}",
-                        handle.getTaskId(), transition.fromPhase(), transition.toPhase());
-                // Forward phase transition to UI
-                forwardPhaseTransition(handle, transition);
-                // Broadcast phase transition with duration to WebSocket
-                if (heartbeatBroadcaster != null) {
-                    heartbeatBroadcaster.broadcastPhaseTransition(handle.getTaskId(), "ingest",
-                            transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
+            SubprocessMessage.dispatch(message, new SubprocessMessage.Handler() {
+                @Override
+                public void onProgress(SubprocessMessage.Progress progress) {
+                    handle.updateProgress(progress.phase(), progress.progressPercent(), progress.message());
+                    forwardProgress(handle, progress);
                 }
-                // Forward phase transition to scheduler for GPU yield/reacquire
-                if (resourceScheduler != null) {
-                    var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.INGEST;
-                    boolean requiresGpu = profile.phaseRequiresGpu(transition.toPhase());
-                    long gpuMem = profile.gpuMemoryForPhase(transition.toPhase());
-                    resourceScheduler.reportPhaseTransition(handle.getTaskId(), transition.toPhase(), requiresGpu, gpuMem);
-                }
-            } else if (message instanceof SubprocessMessage.Heartbeat heartbeat) {
-                handle.updateMemoryFromHeartbeat(heartbeat);
-                logger.debug("Task {} heartbeat: uptime={}ms, heap={}%, offHeap={}%, gpu={}%",
-                        handle.getTaskId(), heartbeat.uptimeMs(),
-                        String.format("%.1f", heartbeat.memoryUsagePercent()),
-                        String.format("%.1f", heartbeat.offHeapUsagePercent()),
-                        String.format("%.1f", heartbeat.gpuUsagePercent()));
-                // Broadcast heartbeat memory data to WebSocket
-                if (heartbeatBroadcaster != null) {
-                    heartbeatBroadcaster.broadcastHeartbeat(handle.getTaskId(), "ingest", heartbeat);
-                }
-            } else if (message instanceof SubprocessMessage.Completed completed) {
-                logger.info("Task {} completed: {} docs, {} chunks indexed",
-                        handle.getTaskId(), completed.documentsLoaded(), completed.documentsIndexed());
-                handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.success(
-                        handle.getTaskId(), completed));
-                // Forward completion to UI
-                forwardCompletion(handle, completed);
-                taskWorkerStatuses.remove(handle.getTaskId());
-            } else if (message instanceof SubprocessMessage.Failed failed) {
-                logger.error("Task {} failed in phase {}: {}",
-                        handle.getTaskId(), failed.phase(), failed.errorMessage());
 
-                // Check if this is an OOM failure - if so, DON'T complete the future yet
-                // Let handleCompletion() trigger the adaptive retry when the process actually exits
-                boolean isOom = isOutOfMemoryError(failed.errorMessage(), failed.errorType());
-                if (isOom) {
-                    logger.info("OOM failure detected for task {} - deferring to handleCompletion for retry logic",
-                            handle.getTaskId());
-                    handle.setOomDetected(true);
-                    // Store the failure info on the handle for later use
-                    handle.setCurrentPhase(failed.phase());
-                    // DON'T complete the future - let handleCompletion do it after retry attempt
-                } else {
-                    // Non-OOM failure - complete immediately
-                    handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
-                            handle.getTaskId(), 1, failed.errorMessage(), failed.phase(), false, false));
-                    // Forward failure to UI
-                    forwardFailure(handle, failed);
+                @Override
+                public void onPhaseTransition(SubprocessMessage.PhaseTransition transition) {
+                    handle.setCurrentPhase(transition.toPhase());
+                    handle.updateHeartbeat();
+                    logger.info("Task {} phase transition: {} -> {}",
+                            handle.getTaskId(), transition.fromPhase(), transition.toPhase());
+                    // Forward phase transition to UI
+                    forwardPhaseTransition(handle, transition);
+                    // Broadcast phase transition with duration to WebSocket
+                    if (heartbeatBroadcaster != null) {
+                        heartbeatBroadcaster.broadcastPhaseTransition(handle.getTaskId(), "ingest",
+                                transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
+                    }
+                    // Forward phase transition to scheduler for GPU yield/reacquire
+                    if (resourceScheduler != null) {
+                        var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.INGEST;
+                        boolean requiresGpu = profile.phaseRequiresGpu(transition.toPhase());
+                        long gpuMem = profile.gpuMemoryForPhase(transition.toPhase());
+                        resourceScheduler.reportPhaseTransition(handle.getTaskId(), transition.toPhase(), requiresGpu, gpuMem);
+                    }
+                }
+
+                @Override
+                public void onHeartbeat(SubprocessMessage.Heartbeat heartbeat) {
+                    handle.updateMemoryFromHeartbeat(heartbeat);
+                    logger.debug("Task {} heartbeat: uptime={}ms, heap={}%, offHeap={}%, gpu={}%",
+                            handle.getTaskId(), heartbeat.uptimeMs(),
+                            String.format("%.1f", heartbeat.memoryUsagePercent()),
+                            String.format("%.1f", heartbeat.offHeapUsagePercent()),
+                            String.format("%.1f", heartbeat.gpuUsagePercent()));
+                    // Broadcast heartbeat memory data to WebSocket
+                    if (heartbeatBroadcaster != null) {
+                        heartbeatBroadcaster.broadcastHeartbeat(handle.getTaskId(), "ingest", heartbeat);
+                    }
+                }
+
+                @Override
+                public void onCompleted(SubprocessMessage.Completed completed) {
+                    logger.info("Task {} completed: {} docs, {} chunks indexed",
+                            handle.getTaskId(), completed.documentsLoaded(), completed.documentsIndexed());
+                    handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.success(
+                            handle.getTaskId(), completed));
+                    // Forward completion to UI
+                    forwardCompletion(handle, completed);
                     taskWorkerStatuses.remove(handle.getTaskId());
                 }
-            } else if (message instanceof SubprocessMessage.WorkerStatus workerStatus) {
-                // Store worker status for inclusion in progress updates
-                taskWorkerStatuses
-                        .computeIfAbsent(handle.getTaskId(), k -> new ConcurrentHashMap<>())
-                        .put(workerStatus.workerId(), workerStatus);
 
-                // Worker status updates for detailed monitoring
-                logger.debug("Task {} worker {}: {} - {} items",
-                        handle.getTaskId(), workerStatus.workerId(),
-                        workerStatus.status(), workerStatus.itemsProcessed());
-            } else if (message instanceof SubprocessMessage.Log logMsg) {
-                // Forward log messages to WebSocket for real-time display
-                handle.updateHeartbeat(); // Log activity counts as liveness signal
-                forwardLogMessage(handle, logMsg);
-            }
+                @Override
+                public void onFailed(SubprocessMessage.Failed failed) {
+                    logger.error("Task {} failed in phase {}: {}",
+                            handle.getTaskId(), failed.phase(), failed.errorMessage());
+
+                    // Check if this is an OOM failure - if so, DON'T complete the future yet
+                    // Let handleCompletion() trigger the adaptive retry when the process actually exits
+                    boolean isOom = isOutOfMemoryError(failed.errorMessage(), failed.errorType());
+                    if (isOom) {
+                        logger.info("OOM failure detected for task {} - deferring to handleCompletion for retry logic",
+                                handle.getTaskId());
+                        handle.setOomDetected(true);
+                        // Store the failure info on the handle for later use
+                        handle.setCurrentPhase(failed.phase());
+                        // DON'T complete the future - let handleCompletion do it after retry attempt
+                    } else {
+                        // Non-OOM failure - complete immediately
+                        handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+                                handle.getTaskId(), 1, failed.errorMessage(), failed.phase(), false, false));
+                        // Forward failure to UI
+                        forwardFailure(handle, failed);
+                        taskWorkerStatuses.remove(handle.getTaskId());
+                    }
+                }
+
+                @Override
+                public void onWorkerStatus(SubprocessMessage.WorkerStatus workerStatus) {
+                    // Store worker status for inclusion in progress updates
+                    taskWorkerStatuses
+                            .computeIfAbsent(handle.getTaskId(), k -> new ConcurrentHashMap<>())
+                            .put(workerStatus.workerId(), workerStatus);
+                    // Worker status updates for detailed monitoring
+                    logger.debug("Task {} worker {}: {} - {} items",
+                            handle.getTaskId(), workerStatus.workerId(),
+                            workerStatus.status(), workerStatus.itemsProcessed());
+                }
+
+                @Override
+                public void onLog(SubprocessMessage.Log logMsg) {
+                    // Forward log messages to WebSocket for real-time display
+                    handle.updateHeartbeat(); // Log activity counts as liveness signal
+                    forwardLogMessage(handle, logMsg);
+                }
+            });
         } catch (Exception e) {
             logger.warn("Failed to parse subprocess message: {}", json, e);
         }
@@ -1546,7 +1585,7 @@ public class SubprocessIngestLauncher {
      * Convert batch history from subprocess format to UI DTO format.
      */
     private List<IngestProgressUpdate.BatchHistoryEntry> convertBatchHistory(
-            java.util.List<SubprocessMessage.BatchHistoryEntry> subHistory) {
+            List<SubprocessMessage.BatchHistoryEntry> subHistory) {
         if (subHistory == null || subHistory.isEmpty()) {
             return null;
         }
@@ -1602,7 +1641,7 @@ public class SubprocessIngestLauncher {
             return Integer.parseInt(workerId);
         } catch (NumberFormatException ignore) {
             // Try extracting a numeric suffix (e.g., "embedding-0")
-            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)$").matcher(workerId);
+            Matcher matcher = Pattern.compile("(\\d+)$").matcher(workerId);
             if (matcher.find()) {
                 try {
                     return Integer.parseInt(matcher.group(1));
@@ -1624,9 +1663,9 @@ public class SubprocessIngestLauncher {
         if (currentStep == null) {
             return new int[] { 0, 0 };
         }
-        java.util.regex.Pattern batchPattern = java.util.regex.Pattern.compile(
-                "batch\\s+(\\d+)/(\\d+)", java.util.regex.Pattern.CASE_INSENSITIVE);
-        java.util.regex.Matcher matcher = batchPattern.matcher(currentStep);
+        Pattern batchPattern = Pattern.compile(
+                "batch\\s+(\\d+)/(\\d+)", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = batchPattern.matcher(currentStep);
         if (matcher.find()) {
             try {
                 return new int[] {
@@ -1646,9 +1685,9 @@ public class SubprocessIngestLauncher {
     private Integer parseTotalChunksFromStep(String currentStep) {
         if (currentStep == null)
             return null;
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
-                "(?:Indexed|Embedded)\\s+\\d+/(\\d+)", java.util.regex.Pattern.CASE_INSENSITIVE);
-        java.util.regex.Matcher matcher = pattern.matcher(currentStep);
+        Pattern pattern = Pattern.compile(
+                "(?:Indexed|Embedded)\\s+\\d+/(\\d+)", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(currentStep);
         if (matcher.find()) {
             try {
                 return Integer.parseInt(matcher.group(1));
@@ -1686,9 +1725,9 @@ public class SubprocessIngestLauncher {
 
         // Parse throughput from step string like "Embedded 50/200 chunks (12.5/sec)"
         if (currentStep != null) {
-            java.util.regex.Pattern ratePattern = java.util.regex.Pattern.compile(
-                    "\\((\\d+\\.?\\d*)/sec\\)", java.util.regex.Pattern.CASE_INSENSITIVE);
-            java.util.regex.Matcher rateMatcher = ratePattern.matcher(currentStep);
+            Pattern ratePattern = Pattern.compile(
+                    "\\((\\d+\\.?\\d*)/sec\\)", Pattern.CASE_INSENSITIVE);
+            Matcher rateMatcher = ratePattern.matcher(currentStep);
             if (rateMatcher.find()) {
                 try {
                     double rate = Double.parseDouble(rateMatcher.group(1));
@@ -1869,9 +1908,9 @@ public class SubprocessIngestLauncher {
         if (currentStep == null) {
             return null;
         }
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Indexed\\s+(\\d+)/(\\d+)",
-                java.util.regex.Pattern.CASE_INSENSITIVE);
-        java.util.regex.Matcher matcher = pattern.matcher(currentStep);
+        Pattern pattern = Pattern.compile("Indexed\\s+(\\d+)/(\\d+)",
+                Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(currentStep);
         if (matcher.find()) {
             try {
                 return Integer.parseInt(matcher.group(1));
@@ -2462,6 +2501,12 @@ public class SubprocessIngestLauncher {
                         context.originalOptions(),
                         newSettings
                 );
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                logger.warn("Retry subprocess launch interrupted for job {}", jobId);
+                context.resultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+                        taskId, exitCode, "Retry interrupted", handle.getCurrentPhase(),
+                        false, true));
             } catch (Exception e) {
                 logger.error("Failed to launch retry subprocess for job {}: {}", jobId, e.getMessage(), e);
                 // Complete the original future with failure
@@ -2740,7 +2785,7 @@ public class SubprocessIngestLauncher {
     /**
      * Scheduled task to check for stale subprocesses.
      */
-    @Scheduled(fixedRate = 30000)
+    @Scheduled(fixedRate = STALE_CHECK_INTERVAL_MS)
     public void checkStaleProcesses() {
         int staleSeconds = getEffectiveStaleThresholdSeconds();
         Duration staleThreshold = Duration.ofSeconds(staleSeconds);

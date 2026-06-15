@@ -84,11 +84,11 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
         } catch (NullPointerException e) {
             // This catches JavaCPP "Pointer address of argument X is NULL" errors
             // that can occur during ANY native operation on the INDArray
-            log.warn("Native pointer error during embedding operation: {}", e.getMessage());
+            log.warn("Native pointer error during embedding operation", e);
             return new float[0];
         } catch (IllegalStateException e) {
             // This catches "DataBuffer was already released" errors
-            log.warn("DataBuffer state error during embedding operation: {}", e.getMessage());
+            log.warn("DataBuffer state error during embedding operation", e);
             return new float[0];
         } catch (Exception e) {
             log.warn("Error during embedding operation, returning empty array", e);
@@ -158,10 +158,10 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
 
             return new EmbeddingResponse(ret);
         } catch (NullPointerException e) {
-            log.warn("Native pointer error during embedding request: {}", e.getMessage());
+            log.warn("Native pointer error during embedding request", e);
             return new EmbeddingResponse(ret);
         } catch (IllegalStateException e) {
-            log.warn("DataBuffer state error during embedding request: {}", e.getMessage());
+            log.warn("DataBuffer state error during embedding request", e);
             return new EmbeddingResponse(ret);
         } catch (Exception e) {
             log.warn("Error during embedding request, returning empty response", e);
@@ -205,10 +205,10 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
 
             return embedding.toFloatVector();
         } catch (NullPointerException e) {
-            log.warn("Native pointer error during text embedding operation: {}", e.getMessage());
+            log.warn("Native pointer error during text embedding operation", e);
             return new float[0];
         } catch (IllegalStateException e) {
-            log.warn("DataBuffer state error during text embedding operation: {}", e.getMessage());
+            log.warn("DataBuffer state error during text embedding operation", e);
             return new float[0];
         } catch (Exception e) {
             log.warn("Error during text embedding operation, returning empty array", e);
@@ -278,10 +278,10 @@ public class SpringAiEmbeddingModelAdapter implements org.springframework.ai.emb
             }
             return ret;
         } catch (NullPointerException e) {
-            log.warn("Native pointer error during batch embedding operation: {}", e.getMessage());
+            log.warn("Native pointer error during batch embedding operation", e);
             return ret;
         } catch (IllegalStateException e) {
-            log.warn("DataBuffer state error during batch embedding operation: {}", e.getMessage());
+            log.warn("DataBuffer state error during batch embedding operation", e);
             return ret;
         } catch (Exception e) {
             log.warn("Error during batch embedding operation, returning empty list", e);

@@ -62,8 +62,7 @@ public class LiteApplication {
         String subprocessType = Nd4jStartup.extractSubprocessType(args);
         if (subprocessType != null) {
             String[] forwardArgs = Nd4jStartup.stripSubprocessFlag(args);
-            logger.info("Subprocess routing not supported in lite mode: {}", subprocessType);
-            System.err.println("Subprocess routing is not supported in kompile-lite. Use kompile-app-main for subprocess features.");
+            logger.error("Subprocess routing is not supported in kompile-lite (type={}). Use kompile-app-main for subprocess features.", subprocessType);
             System.exit(1);
             return;
         }

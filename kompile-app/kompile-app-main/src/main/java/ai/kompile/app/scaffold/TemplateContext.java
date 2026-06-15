@@ -16,15 +16,22 @@
 
 package ai.kompile.app.scaffold;
 
+import lombok.Getter;
+import lombok.Setter;
+
 import java.util.HashMap;
 import java.util.Map;
 
 /**
  * Data class containing all substitution variables for mobile project templates.
  */
+@Getter
+@Setter
 public class TemplateContext {
     private String projectName;
+    @Setter(lombok.AccessLevel.NONE)
     private String packageName;
+    @Setter(lombok.AccessLevel.NONE)
     private String packagePath;
     private String modelId;
     private String modelFileName;
@@ -49,64 +56,11 @@ public class TemplateContext {
 
     public TemplateContext() {}
 
-    public String getProjectName() { return projectName; }
-    public void setProjectName(String projectName) { this.projectName = projectName; }
-
-    public String getPackageName() { return packageName; }
+    /** Custom setter: also derives packagePath from packageName. */
     public void setPackageName(String packageName) {
         this.packageName = packageName;
         this.packagePath = packageName.replace('.', '/');
     }
-
-    public String getPackagePath() { return packagePath; }
-
-    public String getModelId() { return modelId; }
-    public void setModelId(String modelId) { this.modelId = modelId; }
-
-    public String getModelFileName() { return modelFileName; }
-    public void setModelFileName(String modelFileName) { this.modelFileName = modelFileName; }
-
-    public String getSdkVersion() { return sdkVersion; }
-    public void setSdkVersion(String sdkVersion) { this.sdkVersion = sdkVersion; }
-
-    public String getInferenceMode() { return inferenceMode; }
-    public void setInferenceMode(String inferenceMode) { this.inferenceMode = inferenceMode; }
-
-    public String getApiKeyPlaceholder() { return apiKeyPlaceholder; }
-    public void setApiKeyPlaceholder(String apiKeyPlaceholder) { this.apiKeyPlaceholder = apiKeyPlaceholder; }
-
-    public String getPlatform() { return platform; }
-    public void setPlatform(String platform) { this.platform = platform; }
-
-    public String getGradleVersion() { return gradleVersion; }
-    public void setGradleVersion(String gradleVersion) { this.gradleVersion = gradleVersion; }
-
-    public String getAgpVersion() { return agpVersion; }
-    public void setAgpVersion(String agpVersion) { this.agpVersion = agpVersion; }
-
-    public String getKotlinVersion() { return kotlinVersion; }
-    public void setKotlinVersion(String kotlinVersion) { this.kotlinVersion = kotlinVersion; }
-
-    public String getComposeBomVersion() { return composeBomVersion; }
-    public void setComposeBomVersion(String composeBomVersion) { this.composeBomVersion = composeBomVersion; }
-
-    public String getRoomVersion() { return roomVersion; }
-    public void setRoomVersion(String roomVersion) { this.roomVersion = roomVersion; }
-
-    public String getMinSdk() { return minSdk; }
-    public void setMinSdk(String minSdk) { this.minSdk = minSdk; }
-
-    public String getTargetSdk() { return targetSdk; }
-    public void setTargetSdk(String targetSdk) { this.targetSdk = targetSdk; }
-
-    public String getCompileSdk() { return compileSdk; }
-    public void setCompileSdk(String compileSdk) { this.compileSdk = compileSdk; }
-
-    public String getIosDeploymentTarget() { return iosDeploymentTarget; }
-    public void setIosDeploymentTarget(String iosDeploymentTarget) { this.iosDeploymentTarget = iosDeploymentTarget; }
-
-    public String getSwiftToolsVersion() { return swiftToolsVersion; }
-    public void setSwiftToolsVersion(String swiftToolsVersion) { this.swiftToolsVersion = swiftToolsVersion; }
 
     /**
      * Converts this context to a map of variable name -> value for template substitution.

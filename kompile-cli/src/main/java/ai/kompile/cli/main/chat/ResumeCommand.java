@@ -19,12 +19,18 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import picocli.CommandLine;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Resume command - Interactive multi-tab TUI for browsing, searching, migrating,
@@ -65,7 +71,7 @@ public class ResumeCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--target-session-id", "-t"}, description = "UUID to use as the target session ID when resuming (instead of generating a new one)")
     private String targetSessionId;
 
-    @CommandLine.Option(names = {"--agent", "-a"}, description = "Target agent for resume (claude/codex/qwen/opencode/gemini)", defaultValue = "claude")
+    @CommandLine.Option(names = {"--agent", "-a"}, description = "Target agent for resume (kompile/claude/codex/qwen/opencode/gemini)", defaultValue = "claude")
     private String agent;
 
     @CommandLine.Option(names = {"--search", "-q"}, description = "Search conversations by keyword")
@@ -155,7 +161,7 @@ public class ResumeCommand implements Callable<Integer> {
      */
     private int listConversations() {
         try {
-            java.util.List<ChatHistory.ConversationSummary> conversations = ChatHistory.listConversations();
+            List<ChatHistory.ConversationSummary> conversations = ChatHistory.listConversations();
             if (conversations.isEmpty()) {
                 System.out.println("No saved conversations found.");
                 return 0;
@@ -186,15 +192,15 @@ public class ResumeCommand implements Callable<Integer> {
      */
     private int viewConversation(String sessionId) {
         try {
-            java.nio.file.Path transcriptPath = java.nio.file.Paths.get(
+            Path transcriptPath = Paths.get(
                     System.getProperty("user.home"), ".kompile", "conversations", sessionId + ".txt");
             
-            if (!java.nio.file.Files.exists(transcriptPath)) {
+            if (!Files.exists(transcriptPath)) {
                 System.err.println("Conversation not found: " + sessionId);
                 return 1;
             }
 
-            String transcript = java.nio.file.Files.readString(transcriptPath);
+            String transcript = Files.readString(transcriptPath);
             System.out.println(transcript);
             return 0;
         } catch (Exception e) {
@@ -211,16 +217,16 @@ public class ResumeCommand implements Callable<Integer> {
             ai.kompile.cli.main.chat.format.ConversationReader reader = 
                     new ai.kompile.cli.main.chat.format.ConversationReader();
             
-            java.util.List<ai.kompile.cli.main.chat.ChatHistory.Turn> turns = 
+            List<ChatHistory.Turn> turns = 
                     reader.readKompileSession(sessionId);
             
             String migrated = ai.kompile.cli.main.chat.format.ConversationFormatter.format(turns, format);
             
-            java.nio.file.Path outputPath = java.nio.file.Paths.get(
+            Path outputPath = Paths.get(
                     System.getProperty("user.home"), ".kompile", "conversations",
                     sessionId + "-migrated." + format);
             
-            java.nio.file.Files.writeString(outputPath, migrated);
+            Files.writeString(outputPath, migrated);
             
             System.out.println("✓ Conversation migrated to " + format + " format");
             System.out.println("  Saved to: " + outputPath);
@@ -237,8 +243,8 @@ public class ResumeCommand implements Callable<Integer> {
     private int searchConversations(String query, String filterAgent, String filterSource) {
         try {
             ResumeTool tool = new ResumeTool();
-            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
-            com.fasterxml.jackson.databind.node.ObjectNode params = om.createObjectNode();
+            ObjectMapper om = new ObjectMapper();
+            ObjectNode params = om.createObjectNode();
             params.put("action", "search");
             params.put("query", query);
             if (filterAgent != null && !filterAgent.isBlank()) {
@@ -277,9 +283,9 @@ public class ResumeCommand implements Callable<Integer> {
             ai.kompile.cli.main.chat.format.ConversationReader reader =
                     new ai.kompile.cli.main.chat.format.ConversationReader();
 
-            java.util.List<ai.kompile.cli.main.chat.ChatHistory.Turn> turns = null;
+            List<ChatHistory.Turn> turns = null;
             String source = "kompile";
-            java.nio.file.Path workingDirectory = java.nio.file.Path.of(System.getProperty("user.dir"))
+            Path workingDirectory = Path.of(System.getProperty("user.dir"))
                     .toAbsolutePath()
                     .normalize();
 
@@ -296,11 +302,11 @@ public class ResumeCommand implements Callable<Integer> {
                 }
 
                 Exception lastExternalError = null;
-                for (String externalSource : java.util.List.of("claude-code", "codex", "qwen", "opencode", "gemini")) {
+                for (String externalSource : List.of("claude-code", "codex", "qwen", "opencode", "gemini")) {
                     try {
-                        java.util.List<ai.kompile.cli.main.chat.ChatHistory.Turn> externalTurns =
+                        List<ChatHistory.Turn> externalTurns =
                                 reader.readExternalSession(externalSource, sessionId);
-                        java.nio.file.Path externalWorkingDirectory =
+                        Path externalWorkingDirectory =
                                 ai.kompile.cli.main.chat.format.ConversationReader
                                         .resolveExternalWorkingDirectory(externalSource, sessionId);
                         turns = externalTurns;
@@ -341,6 +347,11 @@ public class ResumeCommand implements Callable<Integer> {
             System.out.println("  Messages: " + turns.size());
             System.out.println();
 
+            // "kompile" target: launch managed TUI with the original source agent
+            if ("kompile".equalsIgnoreCase(agent)) {
+                return resumeWithKompileManagedUi(sessionId, source, workingDirectory);
+            }
+
             // Export to agent's native format
             if (targetSessionId != null && !targetSessionId.isBlank()) {
                 System.out.println("Exporting to " + agent + " native format with session " + targetSessionId + "...");
@@ -364,7 +375,7 @@ public class ResumeCommand implements Callable<Integer> {
                         ? exportResult.getWorkingDirectory()
                         : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
                 // Pre-configure Claude Code hooks BEFORE injection/launch
-                if (agent.toLowerCase(java.util.Locale.ROOT).contains("claude")) {
+                if (agent.toLowerCase(Locale.ROOT).contains("claude")) {
                     ai.kompile.cli.main.chat.mcp.McpToolInjection.ensureHooksPreConfigured(agentWorkingDir);
                 }
                 try {
@@ -376,7 +387,7 @@ public class ResumeCommand implements Callable<Integer> {
                         System.out.println(GREEN + "Kompile tools injected (" + mode + ")" + RESET
                                 + DIM + " (" + injectedSettingsFile + ")" + RESET);
                     }
-                } catch (java.io.IOException e) {
+                } catch (IOException e) {
                     System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
                 }
             }
@@ -408,10 +419,10 @@ public class ResumeCommand implements Callable<Integer> {
                     exitCode = process.waitFor();
                 } catch (InterruptedException ie) {
                     process.destroy();
-                    try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                    try { process.waitFor(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
                     if (process.isAlive()) process.destroyForcibly();
                     exitCode = 130;
-                    Thread.interrupted();
+                    Thread.currentThread().interrupt();
                 }
             } finally {
                 // Restore original settings to prevent pollution
@@ -454,7 +465,7 @@ public class ResumeCommand implements Callable<Integer> {
                         System.out.println(GREEN + "Kompile tools injected (" + mode + ")" + RESET
                                 + DIM + " (" + injectedSettingsFile + ")" + RESET);
                     }
-                } catch (java.io.IOException e) {
+                } catch (IOException e) {
                     System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
                 }
             }
@@ -480,10 +491,10 @@ public class ResumeCommand implements Callable<Integer> {
                     exitCode = process.waitFor();
                 } catch (InterruptedException ie) {
                     process.destroy();
-                    try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                    try { process.waitFor(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
                     if (process.isAlive()) process.destroyForcibly();
                     exitCode = 130;
-                    Thread.interrupted();
+                    Thread.currentThread().interrupt();
                 }
             } finally {
                 ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
@@ -501,6 +512,36 @@ public class ResumeCommand implements Callable<Integer> {
             e.printStackTrace();
             return 1;
         }
+    }
+
+    /**
+     * Launch the kompile managed TUI (EmulatedPassthroughCommand) with the original
+     * source agent. No export needed — the conversation is replayed in the TUI
+     * and the agent starts fresh so the user can continue.
+     */
+    private int resumeWithKompileManagedUi(String origSessionId, String sourceAgent, Path workingDirectory) {
+        // Map source identifier to agent binary name
+        String agentName = switch (sourceAgent.toLowerCase(Locale.ROOT)) {
+            case "claude-code" -> "claude";
+            case "codex", "qwen", "opencode", "gemini" -> sourceAgent.toLowerCase(Locale.ROOT);
+            default -> "claude";
+        };
+
+        System.out.println("Launching kompile managed UI with " + agentName + " agent...");
+
+        // Build args for EmulatedPassthroughCommand
+        List<String> args = new ArrayList<>();
+        args.add("--agent");
+        args.add(agentName);
+        args.add("--resume-session");
+        args.add(origSessionId);
+        if (workingDirectory != null) {
+            args.add("--working-dir");
+            args.add(workingDirectory.toString());
+        }
+
+        return new CommandLine(new EmulatedPassthroughCommand())
+                .execute(args.toArray(new String[0]));
     }
 
     /**

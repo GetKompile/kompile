@@ -70,22 +70,37 @@ import java.util.function.Consumer;
 @Service
 public class VectorStorePopulationService implements org.springframework.beans.factory.DisposableBean {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected VectorStorePopulationService() {}
+
+
     private static final Logger logger = LoggerFactory.getLogger(VectorStorePopulationService.class);
 
-    private final SimpMessagingTemplate messagingTemplate;
-    private final List<DocumentLoader> documentLoaders;
-    private final IndexerService indexerService;
-    private final EmbeddingModel embeddingModel;
-    private final VectorStore vectorStore;
-    private final IngestConfiguration ingestConfiguration;
-    private final AppIndexConfigService appIndexConfigService;
-    private final VectorPopulationSubprocessLauncher subprocessLauncher;
-    private final IngestProgressTracker ingestProgressTracker;
-    private final IndexingJobHistoryService jobHistoryService;
-    private final ResourceAwareJobScheduler resourceScheduler;
+    @Autowired(required = false)
+    private SimpMessagingTemplate messagingTemplate;
+    @Autowired
+    private List<DocumentLoader> documentLoaders;
+    @Autowired
+    private IndexerService indexerService;
+    @Autowired(required = false)
+    private EmbeddingModel embeddingModel;
+    @Autowired(required = false)
+    private VectorStore vectorStore;
+    @Autowired
+    private IngestConfiguration ingestConfiguration;
+    @Autowired(required = false)
+    private AppIndexConfigService appIndexConfigService;
+    @Autowired(required = false)
+    private VectorPopulationSubprocessLauncher subprocessLauncher;
+    @Autowired(required = false)
+    private IngestProgressTracker ingestProgressTracker;
+    @Autowired(required = false)
+    private IndexingJobHistoryService jobHistoryService;
+    @Autowired(required = false)
+    private ResourceAwareJobScheduler resourceScheduler;
 
     @Value("${kompile.vectorpopulation.subprocess.enabled:true}")
-    private boolean subprocessModeEnabled;
+    private volatile boolean subprocessModeEnabled;
 
     // Track active population tasks
     private final Map<String, PopulationTaskStatus> activeTasks = new ConcurrentHashMap<>();
@@ -1187,11 +1202,11 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     // ========== Result/Status classes ==========
 
     public static class PopulationResult {
-        private final String taskId;
-        private final boolean success;
-        private final long documentsIndexed;
-        private final long durationMs;
-        private final String errorMessage;
+        private String taskId;
+        private boolean success;
+        private long documentsIndexed;
+        private long durationMs;
+        private String errorMessage;
 
         public PopulationResult(String taskId, boolean success, long documentsIndexed, long durationMs,
                 String errorMessage) {
@@ -1224,9 +1239,9 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     }
 
     public static class PopulationTaskStatus {
-        private final String taskId;
-        private final long totalDocuments;
-        private final long startTime;
+        private String taskId;
+        private long totalDocuments;
+        private long startTime;
         private volatile long documentsIndexed;
         private volatile int progressPercent;
         private volatile boolean complete;

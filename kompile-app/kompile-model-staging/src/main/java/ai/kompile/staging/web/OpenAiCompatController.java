@@ -93,7 +93,9 @@ public class OpenAiCompatController {
                 response.setContentType("application/json");
                 response.getWriter().write("{\"error\":{\"message\":\"" +
                         e.getMessage().replace("\"", "\\\"") + "\",\"type\":\"server_error\"}}");
-            } catch (Exception ignored) {}
+            } catch (Exception writeEx) {
+                log.debug("Could not write error response to client (connection likely closed): {}", writeEx.getMessage());
+            }
         }
     }
 

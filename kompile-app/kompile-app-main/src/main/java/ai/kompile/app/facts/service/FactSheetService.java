@@ -43,18 +43,26 @@ import java.util.stream.Collectors;
 @Transactional
 public class FactSheetService {
 
+
+
     private static final Logger logger = LoggerFactory.getLogger(FactSheetService.class);
     private static final String DEFAULT_SHEET_NAME = "Default";
 
-    private final FactSheetRepository factSheetRepository;
-    private final FactRepository factRepository;
-    private final AppIndexConfigService appIndexConfigService;
-
     @Autowired
+    private FactSheetRepository factSheetRepository;
+    @Autowired
+    private FactRepository factRepository;
+    @Autowired(required = false)
+    private AppIndexConfigService appIndexConfigService;
+
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
+    public FactSheetService() {
+    }
+
     public FactSheetService(
             FactSheetRepository factSheetRepository,
             FactRepository factRepository,
-            @Autowired(required = false) AppIndexConfigService appIndexConfigService) {
+            AppIndexConfigService appIndexConfigService) {
         this.factSheetRepository = factSheetRepository;
         this.factRepository = factRepository;
         this.appIndexConfigService = appIndexConfigService;

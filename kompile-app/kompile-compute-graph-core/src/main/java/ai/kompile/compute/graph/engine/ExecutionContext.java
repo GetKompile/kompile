@@ -4,6 +4,7 @@ import ai.kompile.compute.graph.model.ComputeArtifact;
 import ai.kompile.compute.graph.model.ComputeGraph;
 import ai.kompile.compute.graph.store.ArtifactStore;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -44,7 +45,7 @@ public class ExecutionContext {
      * Get global state (shared across all nodes in this execution).
      */
     public Map<String, Object> getGlobalState() {
-        return globalState;
+        return Collections.unmodifiableMap(globalState);
     }
 
     /**

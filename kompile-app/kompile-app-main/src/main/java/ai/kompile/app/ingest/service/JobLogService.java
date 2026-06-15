@@ -16,6 +16,7 @@
 
 package ai.kompile.app.ingest.service;
 
+import ai.kompile.app.config.PrimaryDataSourceConfig;
 import ai.kompile.app.ingest.domain.JobLogEntry;
 import ai.kompile.app.ingest.domain.JobLogEntry.LogLevel;
 import ai.kompile.app.ingest.domain.JobLogEntry.LogSource;
@@ -63,9 +64,13 @@ import java.io.InputStreamReader;
 @Service
 public class JobLogService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected JobLogService() {}
+
+
     private static final Logger logger = LoggerFactory.getLogger(JobLogService.class);
 
-    private final JobLogRepository repository;
+    private JobLogRepository repository;
 
     // Track sequence numbers per task for log ordering
     private final Map<String, AtomicLong> sequenceCounters = new ConcurrentHashMap<>();
@@ -178,7 +183,7 @@ public class JobLogService {
     /**
      * Log an entry from standard output.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logStdout(String taskId, String message) {
         if (!isEnabled()) return;
 
@@ -190,7 +195,7 @@ public class JobLogService {
     /**
      * Log an entry from standard error.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logStderr(String taskId, String message) {
         if (!isEnabled()) return;
 
@@ -202,7 +207,7 @@ public class JobLogService {
     /**
      * Log a system message.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logSystem(String taskId, LogLevel level, String message) {
         if (!isEnabled()) return;
 
@@ -214,7 +219,7 @@ public class JobLogService {
     /**
      * Log an application-level entry.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logApplication(String taskId, LogLevel level, String message,
                                String loggerName, String threadName) {
         if (!isEnabled()) return;
@@ -227,7 +232,7 @@ public class JobLogService {
     /**
      * Log an error with exception details.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logError(String taskId, String message, Throwable exception,
                          String loggerName, String threadName) {
         if (!isEnabled()) return;
@@ -240,7 +245,7 @@ public class JobLogService {
     /**
      * Generic log entry method.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logEntry(String taskId, LogLevel level, LogSource source, String message,
                          String loggerName, String threadName) {
         if (!isEnabled()) return;
@@ -262,7 +267,7 @@ public class JobLogService {
     /**
      * Batch log multiple entries for efficiency.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logBatch(String taskId, List<JobLogEntry> entries) {
         if (!isEnabled() || entries == null || entries.isEmpty()) return;
 
@@ -306,7 +311,7 @@ public class JobLogService {
     /**
      * Get all log entries for a task.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> getLogsForTask(String taskId) {
         if (!isEnabled()) return List.of();
         return repository.findByTaskIdOrderBySequenceNumberAsc(taskId);
@@ -315,7 +320,7 @@ public class JobLogService {
     /**
      * Get log entries for a task with pagination.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<JobLogEntry> getLogsForTask(String taskId, int page, int size) {
         if (!isEnabled()) return Page.empty();
         return repository.findByTaskIdOrderBySequenceNumberAsc(taskId, PageRequest.of(page, size));
@@ -324,7 +329,7 @@ public class JobLogService {
     /**
      * Get log entries filtered by level.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> getLogsForTask(String taskId, LogLevel level) {
         if (!isEnabled()) return List.of();
         return repository.findByTaskIdAndLevelOrderBySequenceNumberAsc(taskId, level);
@@ -333,7 +338,7 @@ public class JobLogService {
     /**
      * Get log entries filtered by multiple levels.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> getLogsForTask(String taskId, List<LogLevel> levels) {
         if (!isEnabled()) return List.of();
         return repository.findByTaskIdAndLevelsOrderBySequenceNumberAsc(taskId, levels);
@@ -342,7 +347,7 @@ public class JobLogService {
     /**
      * Get log entries filtered by multiple levels with pagination.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<JobLogEntry> getLogsForTask(String taskId, List<LogLevel> levels, int page, int size) {
         if (!isEnabled()) return Page.empty();
         return repository.findByTaskIdAndLevelsOrderBySequenceNumberAsc(taskId, levels, PageRequest.of(page, size));
@@ -351,7 +356,7 @@ public class JobLogService {
     /**
      * Get log entries filtered by a single level with pagination.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<JobLogEntry> getLogsForTask(String taskId, LogLevel level, int page, int size) {
         if (!isEnabled()) return Page.empty();
         return repository.findByTaskIdAndLevelOrderBySequenceNumberAsc(taskId, level, PageRequest.of(page, size));
@@ -360,7 +365,7 @@ public class JobLogService {
     /**
      * Get log entries filtered by source.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> getLogsForTaskBySource(String taskId, LogSource source) {
         if (!isEnabled()) return List.of();
         return repository.findByTaskIdAndSourceOrderBySequenceNumberAsc(taskId, source);
@@ -370,7 +375,7 @@ public class JobLogService {
      * Get all log entries by source type with a limit.
      * Used for retrieving all embedding logs across all models.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> getLogsBySource(LogSource source, int limit) {
         if (!isEnabled()) return List.of();
         return repository.findBySourceOrderByTimestampDesc(source, PageRequest.of(0, limit));
@@ -379,7 +384,7 @@ public class JobLogService {
     /**
      * Get log entries for task IDs matching a prefix with a specific source.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> getLogsForTaskPrefixBySource(String taskIdPrefix, LogSource source, int limit) {
         if (!isEnabled()) return List.of();
         return repository.findByTaskIdPrefixAndSource(taskIdPrefix, source, PageRequest.of(0, limit));
@@ -388,7 +393,7 @@ public class JobLogService {
     /**
      * Get distinct task IDs with a specific source.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<String> getTaskIdsBySource(LogSource source) {
         if (!isEnabled()) return List.of();
         return repository.findDistinctTaskIdsBySource(source);
@@ -397,7 +402,7 @@ public class JobLogService {
     /**
      * Get the last N log entries for a task (tail).
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> tailLogs(String taskId, int lines) {
         if (!isEnabled()) return List.of();
         List<JobLogEntry> results = repository.findLastNByTaskId(taskId, PageRequest.of(0, lines));
@@ -409,7 +414,7 @@ public class JobLogService {
     /**
      * Search logs by message content.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> searchLogs(String taskId, String searchText) {
         if (!isEnabled()) return List.of();
         return repository.searchByMessage(taskId, searchText);
@@ -418,7 +423,7 @@ public class JobLogService {
     /**
      * Search logs by message content with pagination.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<JobLogEntry> searchLogs(String taskId, String searchText, int page, int size) {
         if (!isEnabled()) return Page.empty();
         return repository.searchByMessage(taskId, searchText, PageRequest.of(page, size));
@@ -428,7 +433,7 @@ public class JobLogService {
      * Search logs by message content filtered by multiple levels with pagination.
      * This is the most common case: user has level filters AND enters a search term.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<JobLogEntry> searchLogsWithLevels(String taskId, String searchText, List<LogLevel> levels, int page, int size) {
         if (!isEnabled()) return Page.empty();
         return repository.searchByMessageWithLevels(taskId, searchText, levels, PageRequest.of(page, size));
@@ -437,7 +442,7 @@ public class JobLogService {
     /**
      * Search logs by message content filtered by a single level with pagination.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<JobLogEntry> searchLogsWithLevel(String taskId, String searchText, LogLevel level, int page, int size) {
         if (!isEnabled()) return Page.empty();
         return repository.searchByMessageWithLevel(taskId, searchText, level, PageRequest.of(page, size));
@@ -446,7 +451,7 @@ public class JobLogService {
     /**
      * Get log entries with errors (have stack traces).
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> getErrorsWithStackTrace(String taskId) {
         if (!isEnabled()) return List.of();
         return repository.findErrorsWithStackTrace(taskId);
@@ -455,7 +460,7 @@ public class JobLogService {
     /**
      * Get logs in a time range.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<JobLogEntry> getLogsInTimeRange(String taskId, Instant start, Instant end) {
         if (!isEnabled()) return List.of();
         return repository.findByTaskIdAndTimestampBetweenOrderBySequenceNumberAsc(taskId, start, end);
@@ -464,7 +469,7 @@ public class JobLogService {
     /**
      * Get log count for a task.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public long getLogCount(String taskId) {
         if (!isEnabled()) return 0;
         return repository.countByTaskId(taskId);
@@ -473,7 +478,7 @@ public class JobLogService {
     /**
      * Get log counts by level for a task.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Map<LogLevel, Long> getLogCountsByLevel(String taskId) {
         if (!isEnabled()) return Map.of();
 
@@ -488,7 +493,7 @@ public class JobLogService {
     /**
      * Format all logs for a task as downloadable text.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public String formatLogsForDownload(String taskId) {
         if (!isEnabled()) return "";
 
@@ -511,7 +516,7 @@ public class JobLogService {
     /**
      * Get log statistics.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Map<String, Object> getStatistics() {
         if (!isEnabled()) {
             return Map.of("enabled", false);
@@ -541,7 +546,7 @@ public class JobLogService {
     /**
      * Get status info for monitoring.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Map<String, Object> getStatus() {
         if (!isEnabled()) {
             return Map.of(
@@ -567,7 +572,7 @@ public class JobLogService {
      * Delete all logs for a specific task.
      * Called when job history is deleted (cascade delete).
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void deleteLogsForTask(String taskId) {
         if (!isEnabled()) return;
 
@@ -579,7 +584,7 @@ public class JobLogService {
     /**
      * Enforce max entries per job limit.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void enforceMaxEntriesForTask(String taskId) {
         if (!isEnabled()) return;
 
@@ -607,7 +612,7 @@ public class JobLogService {
      * Runs daily at 3:30 AM.
      */
     @Scheduled(cron = "${kompile.ingest.job-log.cleanup-cron:0 30 3 * * ?}")
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void cleanupOldLogs() {
         if (!isEnabled()) return;
 
@@ -650,7 +655,7 @@ public class JobLogService {
     /**
      * Enforce total entries limit by removing oldest task logs.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void enforceTotalEntriesLimit() {
         if (!isEnabled()) return;
 
@@ -687,7 +692,7 @@ public class JobLogService {
      * @param hoursToKeep Number of hours of logs to retain
      * @return Number of entries deleted
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public int forceCleanup(int hoursToKeep) {
         if (!isEnabled()) return 0;
 
@@ -721,7 +726,7 @@ public class JobLogService {
      * @param taskId The task ID to archive
      * @return Path to the created archive file, or null if no logs found
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Path archiveLogsForTask(String taskId) throws IOException {
         if (!isEnabled()) return null;
 
@@ -759,7 +764,7 @@ public class JobLogService {
      * @param cutoff Archive logs older than this timestamp
      * @return Number of entries archived
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public int archiveOldLogs(Instant cutoff) throws IOException {
         if (!isEnabled()) return 0;
 
@@ -810,7 +815,7 @@ public class JobLogService {
      *
      * @return Path to the created archive file
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Path createFullArchive() throws IOException {
         if (!isEnabled()) return null;
 
@@ -1114,12 +1119,12 @@ public class JobLogService {
      * Archived log entry DTO.
      */
     public static class ArchivedLogEntry {
-        private final String taskId;
-        private final String timestamp;
-        private final String level;
-        private final String source;
-        private final String message;
-        private final long sequenceNumber;
+        private String taskId;
+        private String timestamp;
+        private String level;
+        private String source;
+        private String message;
+        private long sequenceNumber;
 
         public ArchivedLogEntry(String taskId, String timestamp, String level, String source, String message, long sequenceNumber) {
             this.taskId = taskId;

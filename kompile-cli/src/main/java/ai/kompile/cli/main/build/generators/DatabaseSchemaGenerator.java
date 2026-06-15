@@ -207,7 +207,7 @@ public class DatabaseSchemaGenerator {
             w.write("                }\n");
             w.write("            }\n");
             w.write("        } catch (SQLException e) {\n");
-            w.write("            log.error(\"Failed to ensure database exists: {}\", e.getMessage());\n");
+            w.write("            log.error(\"Failed to ensure database exists: {}\", e.getMessage(), e);\n");
             w.write("            throw new RuntimeException(\"Database setup failed\", e);\n");
             w.write("        }\n");
             w.write("    }\n\n");

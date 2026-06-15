@@ -134,15 +134,15 @@ public class A2AConfigService {
             copy.defaultTimeoutSeconds = this.defaultTimeoutSeconds;
             copy.autoDiscoverOnStartup = this.autoDiscoverOnStartup;
 
-            if (updates.containsKey("enabled"))
+            if (updates.get("enabled") != null)
                 copy.enabled = Boolean.parseBoolean(updates.get("enabled").toString());
-            if (updates.containsKey("serverEnabled"))
+            if (updates.get("serverEnabled") != null)
                 copy.serverEnabled = Boolean.parseBoolean(updates.get("serverEnabled").toString());
-            if (updates.containsKey("maxConcurrentTasks"))
+            if (updates.get("maxConcurrentTasks") != null)
                 copy.maxConcurrentTasks = Integer.parseInt(updates.get("maxConcurrentTasks").toString());
-            if (updates.containsKey("defaultTimeoutSeconds"))
+            if (updates.get("defaultTimeoutSeconds") != null)
                 copy.defaultTimeoutSeconds = Integer.parseInt(updates.get("defaultTimeoutSeconds").toString());
-            if (updates.containsKey("autoDiscoverOnStartup"))
+            if (updates.get("autoDiscoverOnStartup") != null)
                 copy.autoDiscoverOnStartup = Boolean.parseBoolean(updates.get("autoDiscoverOnStartup").toString());
 
             return copy;

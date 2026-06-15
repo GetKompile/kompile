@@ -56,16 +56,15 @@ public class TableAwareChunker implements TextChunker {
     private static final int DEFAULT_OVERLAP = 200;
     private static final int DEFAULT_MAX_TABLE_SIZE = 10000;
 
-    private final TableDetector tableDetector;
-
     @Autowired
+    private TableDetector tableDetector;
+
     public TableAwareChunker(TableDetector tableDetector) {
         this.tableDetector = tableDetector;
     }
 
-    // Constructor for testing without Spring
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
     public TableAwareChunker() {
-        this.tableDetector = new TableDetector();
     }
 
     @Override

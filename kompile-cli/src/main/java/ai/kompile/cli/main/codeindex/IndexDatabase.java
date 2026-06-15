@@ -16,7 +16,9 @@
 
 package ai.kompile.cli.main.codeindex;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.*;
 import java.time.Instant;
@@ -1221,14 +1223,14 @@ public class IndexDatabase implements AutoCloseable {
                 String relPath = rs.getString("rel_path");
                 long indexedMtime = rs.getLong("last_modified");
                 try {
-                    java.nio.file.Path filePath = projectRoot.resolve(relPath);
-                    if (java.nio.file.Files.exists(filePath)) {
-                        long diskMtime = java.nio.file.Files.getLastModifiedTime(filePath).toMillis();
+                    Path filePath = projectRoot.resolve(relPath);
+                    if (Files.exists(filePath)) {
+                        long diskMtime = Files.getLastModifiedTime(filePath).toMillis();
                         if (diskMtime > indexedMtime) {
                             stale.add(relPath);
                         }
                     }
-                } catch (java.io.IOException ignored) {
+                } catch (IOException ignored) {
                     // Can't stat the file — skip
                 }
             }
@@ -1263,14 +1265,14 @@ public class IndexDatabase implements AutoCloseable {
                         String relPath = rs.getString("rel_path");
                         long indexedMtime = rs.getLong("last_modified");
                         try {
-                            java.nio.file.Path filePath = projectRoot.resolve(relPath);
-                            if (java.nio.file.Files.exists(filePath)) {
-                                long diskMtime = java.nio.file.Files.getLastModifiedTime(filePath).toMillis();
+                            Path filePath = projectRoot.resolve(relPath);
+                            if (Files.exists(filePath)) {
+                                long diskMtime = Files.getLastModifiedTime(filePath).toMillis();
                                 if (diskMtime > indexedMtime) {
                                     stale.add(relPath);
                                 }
                             }
-                        } catch (java.io.IOException ignored) {}
+                        } catch (IOException ignored) {}
                     }
                 }
             }

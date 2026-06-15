@@ -342,8 +342,6 @@ public class SubprocessProgressReporter implements AutoCloseable {
             out.println(SubprocessMessage.MESSAGE_PREFIX + json);
             out.flush();
         } catch (JsonProcessingException e) {
-            // Log to stderr since stdout is for protocol messages
-            System.err.println("Failed to serialize subprocess message: " + e.getMessage());
             logger.error("Failed to serialize subprocess message", e);
         }
     }

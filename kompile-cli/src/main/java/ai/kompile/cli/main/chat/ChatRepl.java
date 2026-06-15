@@ -53,6 +53,7 @@ import ai.kompile.cli.main.chat.config.ModelContextWindows;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOError;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -101,7 +102,7 @@ public class ChatRepl {
     private final AgenticChatLoop agenticLoop;
     private final BackgroundProcessManager processManager;
     private final TerminalRenderer renderer;
-    private final AsciiRenderer ascii;
+    private AsciiRenderer ascii;
 
     // Mode
     private final boolean localMode;
@@ -328,6 +329,12 @@ public class ChatRepl {
 
         Terminal terminal = ChatCompleter.buildSystemTerminal();
 
+        // Re-create AsciiRenderer with actual terminal width now that the terminal is available
+        int termW = terminal.getWidth();
+        if (termW > 0) {
+            this.ascii = new AsciiRenderer(renderer, termW);
+        }
+
         Path historyFile = new File(KompileHome.homeDirectory(), "chat_input_history").toPath();
 
         LineReader reader = LineReaderBuilder.builder()
@@ -522,7 +529,7 @@ public class ChatRepl {
             AgentsMdLoader loader = new AgentsMdLoader(Paths.get(System.getProperty("user.dir")));
             List<Path> files = loader.listFiles();
             System.out.println(renderer.dim("  Loaded AGENTS.md from: " +
-                    files.stream().map(p -> p.getParent().toString()).collect(java.util.stream.Collectors.joining(", "))));
+                    files.stream().map(p -> p.getParent().toString()).collect(Collectors.joining(", "))));
         }
 
         // Show available subagents
@@ -1226,7 +1233,7 @@ public class ChatRepl {
                     .timeout(Duration.ofMinutes(10))
                     .build();
 
-            HttpResponse<java.io.InputStream> response = httpClient.send(
+            HttpResponse<InputStream> response = httpClient.send(
                     httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
             if (response.statusCode() != 200) {
@@ -1778,7 +1785,7 @@ public class ChatRepl {
             return;
         }
 
-        java.util.LinkedHashMap<String, String> configMap = new java.util.LinkedHashMap<>();
+        LinkedHashMap<String, String> configMap = new LinkedHashMap<>();
         configMap.put("Provider", renderer.cyan(chatConfig.getProvider()));
         configMap.put("Model", renderer.cyan(chatConfig.getModel()));
         configMap.put("Base URL", chatConfig.resolveBaseUrl());
@@ -1799,10 +1806,10 @@ public class ChatRepl {
                 System.out.println("No MCP tools available.");
                 return;
             }
-            java.util.List<String> headers = java.util.List.of("Tool", "Description");
-            java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+            List<String> headers = List.of("Tool", "Description");
+            List<List<String>> rows = new ArrayList<>();
             for (McpSseClient.ToolInfo tool : cachedTools) {
-                rows.add(java.util.List.of(tool.getName(), truncate(tool.getDescription(), 55)));
+                rows.add(List.of(tool.getName(), truncate(tool.getDescription(), 55)));
             }
             System.out.println(ascii.sectionHeader("MCP Tools (" + cachedTools.size() + ")"));
             System.out.println(ascii.table(headers, rows));
@@ -1816,12 +1823,12 @@ public class ChatRepl {
         if (agent == null) agent = agentRegistry.getDefault();
 
         List<CliTool> tools = toolRegistry.getToolsForAgent(agent);
-        java.util.List<String> headers = java.util.List.of("Tool", "Permission", "Description");
-        java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+        List<String> headers = List.of("Tool", "Permission", "Description");
+        List<List<String>> rows = new ArrayList<>();
         for (CliTool tool : tools) {
             String desc = tool.description();
             if (desc.length() > 55) desc = desc.substring(0, 52) + "...";
-            rows.add(java.util.List.of(tool.id(), tool.permissionKey(), desc));
+            rows.add(List.of(tool.id(), tool.permissionKey(), desc));
         }
 
         String title = "Local CLI Tools (" + tools.size() + ") — agent: " + agent.getName();
@@ -1848,8 +1855,8 @@ public class ChatRepl {
             return;
         }
 
-        java.util.List<String> headers = java.util.List.of("Agent", "Description", "Steps", "Model");
-        java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+        List<String> headers = List.of("Agent", "Description", "Steps", "Model");
+        List<List<String>> rows = new ArrayList<>();
         
         for (AgentConfig subagent : subagents) {
             String desc = subagent.getDescription();
@@ -1859,7 +1866,7 @@ public class ChatRepl {
             String model = subagent.getModelHint() != null ? subagent.getModelHint() : "default";
             String customTag = subagent.isCustom() ? " [custom]" : "";
             
-            rows.add(java.util.List.of(
+            rows.add(List.of(
                 subagent.getName() + customTag,
                 desc != null ? desc : "",
                 String.valueOf(subagent.getMaxSteps()),
@@ -1920,14 +1927,14 @@ public class ChatRepl {
     }
 
     private void listLocalAgents() {
-        java.util.List<String> agentHeaders = java.util.List.of("Agent", "Type", "Description", "Active");
-        java.util.List<java.util.List<String>> agentRows = new java.util.ArrayList<>();
+        List<String> agentHeaders = List.of("Agent", "Type", "Description", "Active");
+        List<List<String>> agentRows = new ArrayList<>();
         for (AgentConfig a : agentRegistry.getPrimaryAgents()) {
             String active = a.getName().equals(localAgentName) ? renderer.green("●") : "";
-            agentRows.add(java.util.List.of(a.getName(), "primary", a.getDisplayName(), active));
+            agentRows.add(List.of(a.getName(), "primary", a.getDisplayName(), active));
         }
         for (AgentConfig a : agentRegistry.getSubagents()) {
-            agentRows.add(java.util.List.of(a.getName(), renderer.dim("subagent"), a.getDisplayName(), ""));
+            agentRows.add(List.of(a.getName(), renderer.dim("subagent"), a.getDisplayName(), ""));
         }
 
         System.out.println(ascii.sectionHeader("Local Agents"));
@@ -1960,7 +1967,7 @@ public class ChatRepl {
         // Get the active agent's allowed models
         AgentConfig activeAgent = agentRegistry.get(localAgentName);
         if (activeAgent == null) activeAgent = agentRegistry.getDefault();
-        java.util.List<String> allowedModels = activeAgent.getAllowedModels();
+        List<String> allowedModels = activeAgent.getAllowedModels();
 
         if (rest.isEmpty()) {
             // Show current model and list available models
@@ -1975,14 +1982,14 @@ public class ChatRepl {
                 System.out.println(renderer.dim("  Use /model <model-name> to set any model."));
             } else {
                 // Merge: show all provider models + mark which are allowed for this agent
-                java.util.LinkedHashSet<String> allModels = new java.util.LinkedHashSet<>();
+                LinkedHashSet<String> allModels = new LinkedHashSet<>();
                 for (String m : providerModels) allModels.add(m);
                 if (allowedModels != null) {
                     for (String m : allowedModels) allModels.add(m);
                 }
 
-                java.util.List<String> headers = java.util.List.of("Model", "Status", "Agent Access");
-                java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+                List<String> headers = List.of("Model", "Status", "Agent Access");
+                List<List<String>> rows = new ArrayList<>();
                 for (String m : allModels) {
                     String status = m.equals(currentModel) ? renderer.green("● active") : "";
                     String access;
@@ -1993,7 +2000,7 @@ public class ChatRepl {
                     } else {
                         access = renderer.dim("not in allowlist");
                     }
-                    rows.add(java.util.List.of(m, status, access));
+                    rows.add(List.of(m, status, access));
                 }
                 System.out.println(ascii.table(headers, rows));
             }
@@ -2227,7 +2234,7 @@ public class ChatRepl {
     private void listSkills() {
         List<String> categories = skillRegistry.categories();
         List<String> headers = List.of("Skill", "Category", "Description", "Type");
-        List<List<String>> rows = new java.util.ArrayList<>();
+        List<List<String>> rows = new ArrayList<>();
 
         for (String category : categories) {
             for (SkillConfig skill : skillRegistry.getByCategory(category)) {
@@ -2343,16 +2350,16 @@ public class ChatRepl {
 
     private void handlePermissions(String rest) {
         if (rest.isBlank()) {
-            java.util.List<String> permHeaders = java.util.List.of("Tool", "Level", "Description");
-            java.util.List<java.util.List<String>> permRows = java.util.List.of(
-                    java.util.List.of("read", renderer.green("allow"), "File reading"),
-                    java.util.List.of("grep", renderer.green("allow"), "Content search"),
-                    java.util.List.of("glob", renderer.green("allow"), "File search"),
-                    java.util.List.of("list", renderer.green("allow"), "Directory listing"),
-                    java.util.List.of("edit", renderer.yellow("ask"), "File modification"),
-                    java.util.List.of("bash", renderer.yellow("ask"), "Shell execution"),
-                    java.util.List.of("webfetch", renderer.green("allow"), "URL fetching"),
-                    java.util.List.of("task", renderer.green("allow"), "Subagent spawning")
+            List<String> permHeaders = List.of("Tool", "Level", "Description");
+            List<List<String>> permRows = List.of(
+                    List.of("read", renderer.green("allow"), "File reading"),
+                    List.of("grep", renderer.green("allow"), "Content search"),
+                    List.of("glob", renderer.green("allow"), "File search"),
+                    List.of("list", renderer.green("allow"), "Directory listing"),
+                    List.of("edit", renderer.yellow("ask"), "File modification"),
+                    List.of("bash", renderer.yellow("ask"), "Shell execution"),
+                    List.of("webfetch", renderer.green("allow"), "URL fetching"),
+                    List.of("task", renderer.green("allow"), "Subagent spawning")
             );
             System.out.println(ascii.sectionHeader("Tool Permissions"));
             System.out.println(ascii.table(permHeaders, permRows));
@@ -2457,7 +2464,7 @@ public class ChatRepl {
     }
 
     private void printStatus() {
-        java.util.LinkedHashMap<String, String> statusMap = new java.util.LinkedHashMap<>();
+        LinkedHashMap<String, String> statusMap = new LinkedHashMap<>();
 
         if (localMode) {
             statusMap.put("Mode", renderer.cyan("local (direct LLM)"));
@@ -2557,13 +2564,13 @@ public class ChatRepl {
             return;
         }
 
-        java.util.List<String> headers = java.util.List.of("Session", "Started", "Agent", "Title");
-        java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+        List<String> headers = List.of("Session", "Started", "Agent", "Title");
+        List<List<String>> rows = new ArrayList<>();
         for (ChatHistory.ConversationSummary c : conversations) {
             String sid = c.sessionId().equals(sessionId)
                     ? renderer.green("● " + c.sessionId()) : c.sessionId();
             String title = c.title().isEmpty() ? renderer.dim("(empty)") : c.title();
-            rows.add(java.util.List.of(sid, c.started(), c.agent(), title));
+            rows.add(List.of(sid, c.started(), c.agent(), title));
         }
 
         System.out.println(ascii.sectionHeader("Saved Conversations"));
@@ -3701,7 +3708,7 @@ public class ChatRepl {
 
         // Read single key
         try {
-            java.io.InputStream in = System.in;
+            InputStream in = System.in;
             int b = in.read();
             while (b != -1) {
                 if (b == '\n' || b == '\r') break;

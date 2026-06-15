@@ -82,7 +82,7 @@ public class StatusBar {
     private volatile String activeAgent = null;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private Thread refreshThread;
+    private volatile Thread refreshThread;
     private int spinnerFrame = 0;
 
     /** Lock object for synchronized drawing to prevent interleaved ANSI output. */
@@ -208,7 +208,9 @@ public class StatusBar {
             refreshThread.interrupt();
             try {
                 refreshThread.join(500);
-            } catch (InterruptedException ignored) {}
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
         }
         if (enabled && renderer.isAnsiEnabled()) {
             synchronized (drawLock) {
@@ -398,10 +400,10 @@ public class StatusBar {
                 if (sa.getDescription() != null && !sa.getDescription().isEmpty()) {
                     desc = truncate(sa.getDescription(), 20);
                 }
-                segments.add(spinner + " \uD83E\uDD16 " + FG_MAGENTA + desc + RESET
+                segments.add(spinner + " ▸ " + FG_MAGENTA + desc + RESET
                         + DIM + " (" + sa.getElapsed() + ")" + RESET);
             } else {
-                segments.add(spinner + " \uD83E\uDD16 "
+                segments.add(spinner + " ▸ "
                         + FG_MAGENTA + activeSubagents.size() + " subagents" + RESET);
             }
         }
@@ -535,7 +537,7 @@ public class StatusBar {
             if (!running.isEmpty() || !done.isEmpty()) body.append("\n");
             body.append(BOLD + FG_MAGENTA + "Subagents" + RESET).append("\n");
             for (SubagentEntry sa : activeSubagents) {
-                body.append("  \uD83E\uDD16 ") // 🤖
+                body.append("  ▸ ")
                         .append("[").append(FG_MAGENTA + sa.getId() + RESET).append("]")
                         .append(" ").append(sa.getType());
                 if (sa.getDescription() != null && !sa.getDescription().isEmpty()) {

@@ -26,6 +26,8 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * Automatically initializes embedding models at startup with periodic polling.
  *
@@ -39,11 +41,16 @@ import org.springframework.stereotype.Service;
 @ConditionalOnProperty(name = "kompile.models.auto-init.enabled", havingValue = "true", matchIfMissing = true)
 public class ModelAutoInitializationService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected ModelAutoInitializationService() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(ModelAutoInitializationService.class);
 
-    private final AnseriniEmbeddingModelImpl embeddingModel;
+    private AnseriniEmbeddingModelImpl embeddingModel;
 
-    private volatile boolean embeddingInitialized = false;
+    private final AtomicBoolean embeddingInitialized = new AtomicBoolean(false);
+    private final AtomicBoolean initInProgress = new AtomicBoolean(false);
 
     @Value("${kompile.models.auto-init.embedding.enabled:true}")
     private boolean embeddingAutoInitEnabled;
@@ -61,34 +68,39 @@ public class ModelAutoInitializationService {
     @Scheduled(initialDelayString = "${kompile.models.auto-init.initial-delay-ms:10000}",
                fixedDelayString = "${kompile.models.auto-init.poll-interval-ms:60000}")
     public void checkAndInitializeModels() {
-        if (embeddingInitialized) {
+        if (embeddingInitialized.get()) {
             return;
+        }
+        if (!initInProgress.compareAndSet(false, true)) {
+            return; // Another thread is already initializing
         }
 
         try {
-            if (embeddingAutoInitEnabled && !embeddingInitialized) {
+            if (embeddingAutoInitEnabled && !embeddingInitialized.get()) {
                 tryInitializeEmbedding();
             }
 
-            if (!embeddingAutoInitEnabled || embeddingInitialized || embeddingModel == null) {
+            if (!embeddingAutoInitEnabled || embeddingInitialized.get() || embeddingModel == null) {
                 log.info("Model auto-initialization complete. Embedding: {}",
-                        embeddingInitialized ? "loaded" : "skipped/unavailable");
+                        embeddingInitialized.get() ? "loaded" : "skipped/unavailable");
             }
         } catch (Exception e) {
-            log.debug("Model auto-initialization check encountered an error: {}", e.getMessage());
+            log.warn("Model auto-initialization check encountered an error: {}", e.getMessage(), e);
+        } finally {
+            initInProgress.set(false);
         }
     }
 
     private void tryInitializeEmbedding() {
         if (embeddingModel == null) {
             log.debug("Embedding model bean not available, skipping auto-init");
-            embeddingInitialized = true;
+            embeddingInitialized.set(true);
             return;
         }
 
         try {
             if (embeddingModel.isInitialized()) {
-                embeddingInitialized = true;
+                embeddingInitialized.set(true);
                 log.info("Embedding model already initialized: {}", embeddingModel.getActiveModelId());
                 return;
             }
@@ -96,18 +108,18 @@ public class ModelAutoInitializationService {
             log.info("Attempting to auto-initialize embedding model...");
             boolean success = embeddingModel.reloadModel();
             if (success) {
-                embeddingInitialized = true;
+                embeddingInitialized.set(true);
                 log.info("Embedding model auto-initialized successfully: {} ({}D)",
                         embeddingModel.getActiveModelId(), embeddingModel.dimensions());
             } else {
                 log.debug("Embedding model auto-initialization not yet successful, will retry");
             }
         } catch (Exception e) {
-            log.debug("Embedding auto-init attempt failed: {}", e.getMessage());
+            log.warn("Embedding auto-init attempt failed: {}", e.getMessage(), e);
         }
     }
 
     public boolean isEmbeddingInitialized() {
-        return embeddingInitialized;
+        return embeddingInitialized.get();
     }
 }

@@ -424,10 +424,13 @@ public class ServingSubprocessLauncher {
                                 .description("LLM Serving: " + modelId)
                                 .resourceProfile(ai.kompile.app.services.scheduler.JobResourceProfiles.LLM_SERVING)
                                 .executor(ctx -> {
-                                    // Block until the serving process exits
+                                    // Block until the serving process exits (24h safety timeout)
                                     try {
                                         if (trackedProcess != null) {
-                                            trackedProcess.waitFor();
+                                            boolean exited = trackedProcess.waitFor(24, java.util.concurrent.TimeUnit.HOURS);
+                                            if (!exited) {
+                                                logger.warn("Serving process for model {} did not exit within 24h timeout", modelId);
+                                            }
                                         }
                                     } catch (InterruptedException e) {
                                         Thread.currentThread().interrupt();
@@ -1254,14 +1257,15 @@ public class ServingSubprocessLauncher {
 
     private static void deleteRecursively(Path dir) throws IOException {
         if (!Files.exists(dir)) return;
-        Files.walk(dir)
-                .sorted(Comparator.reverseOrder())
-                .forEach(p -> {
-                    try {
-                        Files.delete(p);
-                    } catch (IOException ignored) {
-                        // best-effort
-                    }
-                });
+        try (java.util.stream.Stream<Path> stream = Files.walk(dir)) {
+            stream.sorted(Comparator.reverseOrder())
+                    .forEach(p -> {
+                        try {
+                            Files.delete(p);
+                        } catch (IOException ignored) {
+                            // best-effort
+                        }
+                    });
+        }
     }
 }

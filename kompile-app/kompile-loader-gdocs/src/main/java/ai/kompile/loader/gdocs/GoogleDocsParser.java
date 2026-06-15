@@ -118,7 +118,9 @@ public class GoogleDocsParser {
                         ai.kompile.core.graphrag.model.Graph g = om.readValue(json, ai.kompile.core.graphrag.model.Graph.class);
                         if (g.getEntities() != null) combined.getEntities().addAll(g.getEntities());
                         if (g.getRelationships() != null) combined.getRelationships().addAll(g.getRelationships());
-                    } catch (Exception ignored) {}
+                    } catch (Exception e) {
+                        log.debug("Failed to parse table graph JSON from Google Doc: {}", e.getMessage());
+                    }
                 }
                 metadata.put(GraphConstants.META_TABLE_GRAPH, ai.kompile.core.graphrag.table.TableCellGraphBuilder.toJson(combined));
             }

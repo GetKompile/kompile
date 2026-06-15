@@ -397,7 +397,7 @@ public class SamediffBenchmarkService {
             }
             log.info("Loaded {} benchmark configs from {}", configs.size(), configsFilePath);
         } catch (IOException e) {
-            log.error("Failed to load benchmark configs: {}", e.getMessage());
+            log.error("Failed to load benchmark configs", e);
         }
     }
 
@@ -410,7 +410,7 @@ public class SamediffBenchmarkService {
             results.addAll(loaded);
             log.info("Loaded {} benchmark results from {}", results.size(), resultsFilePath);
         } catch (IOException e) {
-            log.error("Failed to load benchmark results: {}", e.getMessage());
+            log.error("Failed to load benchmark results", e);
         }
     }
 
@@ -444,10 +444,12 @@ public class SamediffBenchmarkService {
             } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                 Files.move(tempFile, filePath, StandardCopyOption.REPLACE_EXISTING);
             } finally {
-                try { Files.deleteIfExists(tempFile); } catch (IOException ignored) {}
+                try { Files.deleteIfExists(tempFile); } catch (IOException e) {
+                    log.warn("Failed to clean up temp benchmark file {}", tempFile, e);
+                }
             }
         } catch (IOException e) {
-            log.error("Failed to persist to {}: {}", filePath, e.getMessage());
+            log.error("Failed to persist to {}", filePath, e);
         }
     }
 }

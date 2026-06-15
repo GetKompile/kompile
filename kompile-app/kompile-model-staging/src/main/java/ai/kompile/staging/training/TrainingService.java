@@ -614,7 +614,8 @@ public class TrainingService implements ai.kompile.core.staging.TrainingServiceA
             for (SseEmitter emitter : emitters) {
                 try {
                     emitter.complete();
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log.warn("Failed to complete SSE emitter for job '{}'", jobId, e);
                 }
             }
             emitters.clear();
@@ -706,7 +707,20 @@ public class TrainingService implements ai.kompile.core.staging.TrainingServiceA
             File configFile = new File(jobDir, "training-config.json");
             objectMapper.writerWithDefaultPrettyPrinter().writeValue(configFile, request);
         } catch (Exception e) {
-            log.warn("Failed to persist training config for job {}: {}", jobId, e.getMessage());
+            log.warn("Failed to persist training config for job '{}'", jobId, e);
+        }
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        trainingExecutor.shutdown();
+        try {
+            if (!trainingExecutor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                trainingExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            trainingExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
 }

@@ -15,7 +15,7 @@
  */
 package ai.kompile.kclaw.gateway;
 
-import ai.kompile.kclaw.gateway.channel.ChannelManager;
+import ai.kompile.gateway.core.gateway.channel.ChannelManager;
 import ai.kompile.oauth.service.OAuthConnectionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;

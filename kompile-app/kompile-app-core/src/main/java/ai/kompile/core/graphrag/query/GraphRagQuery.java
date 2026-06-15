@@ -49,4 +49,34 @@ public class GraphRagQuery {
      */
     @Builder.Default
     private String conversationId = "default"; // Defaults to a single shared conversation
+
+    /**
+     * Number of hops to traverse from seed nodes during graph exploration.
+     */
+    @Builder.Default
+    private int hopDepth = 2;
+
+    /**
+     * Maximum number of nodes to visit during graph traversal.
+     */
+    @Builder.Default
+    private int maxTraversalNodes = 50;
+
+    /**
+     * Weight for vector similarity scores in hybrid search (0.0 to 1.0).
+     * Graph structure weight is 1.0 - vectorWeight.
+     */
+    @Builder.Default
+    private double vectorWeight = 0.5;
+
+    /**
+     * Fact sheet ID to scope the search to a specific knowledge base partition.
+     */
+    private Long factSheetId;
+
+    /**
+     * Whether to include community information in the search results.
+     */
+    @Builder.Default
+    private boolean includeCommunities = true;
 }

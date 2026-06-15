@@ -205,7 +205,7 @@ public class IngestCheckpointService {
                             }
                             state.embeddedIds.add(id);
                         } catch (Exception e) {
-                            // ignore corrupt lines
+                            logger.warn("Skipping corrupt embedding checkpoint line: {}", e.getMessage());
                         }
                     });
                 }
@@ -224,7 +224,7 @@ public class IngestCheckpointService {
                                 state.orphanedChunks.add(doc);
                             }
                         } catch (Exception e) {
-                            // ignore
+                            logger.warn("Skipping corrupt chunk checkpoint line: {}", e.getMessage());
                         }
                     });
                 }
@@ -241,12 +241,8 @@ public class IngestCheckpointService {
     }
 
     public void cleanup() {
-        try {
-            // Recursive delete of checkpoint dir on success/completion if desired
-            // For now manual or separate cleanup policy
-        } catch (Exception e) {
-            // ignore
-        }
+        // No-op: checkpoint cleanup is handled by the caller or by separate retention policy.
+        // Retained as a hook for future checkpoint directory cleanup if needed.
     }
 
     public record CheckpointState(

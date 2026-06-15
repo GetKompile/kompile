@@ -34,6 +34,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -70,10 +71,10 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
     private volatile ScoringRealtimeMonitor realtimeMonitor;
 
     // Extra CLI args to pass to the agent on every invocation (e.g. system prompt flags)
-    private volatile java.util.List<String> extraArgs = java.util.List.of();
+    private volatile List<String> extraArgs = List.of();
 
     // Extra environment variables to set on the agent subprocess (e.g. GEMINI_SYSTEM_MD)
-    private volatile java.util.Map<String, String> extraEnv = java.util.Map.of();
+    private volatile Map<String, String> extraEnv = Map.of();
 
     public AgentSubprocessClient(String agentName, String workingDir, ObjectMapper objectMapper) {
         super(new ChatConfig(agentName, null, agentName, null), objectMapper);
@@ -131,16 +132,16 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
      * Set extra CLI arguments to pass to the agent on every subprocess invocation.
      * Used for system prompt injection (e.g. --append-system-prompt-file).
      */
-    public void setExtraArgs(java.util.List<String> extraArgs) {
-        this.extraArgs = extraArgs != null ? extraArgs : java.util.List.of();
+    public void setExtraArgs(List<String> extraArgs) {
+        this.extraArgs = extraArgs != null ? extraArgs : List.of();
     }
 
     /**
      * Set extra environment variables for the agent subprocess.
      * Used for system prompt injection (e.g. GEMINI_SYSTEM_MD).
      */
-    public void setExtraEnv(java.util.Map<String, String> extraEnv) {
-        this.extraEnv = extraEnv != null ? extraEnv : java.util.Map.of();
+    public void setExtraEnv(Map<String, String> extraEnv) {
+        this.extraEnv = extraEnv != null ? extraEnv : Map.of();
     }
 
     /**
@@ -499,7 +500,7 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
 
     // ── Environment ───────────────────────────────────────────────────────
 
-    private static void inheritEnv(java.util.Map<String, String> env, String... keys) {
+    private static void inheritEnv(Map<String, String> env, String... keys) {
         for (String key : keys) {
             String val = System.getenv(key);
             if (val != null) {

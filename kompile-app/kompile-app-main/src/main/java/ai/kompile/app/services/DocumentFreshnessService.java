@@ -50,6 +50,8 @@ import java.util.List;
 @ConditionalOnProperty(name = "kompile.freshness.enabled", havingValue = "true")
 public class DocumentFreshnessService {
 
+    private static final int BUFFER_SIZE = 8192; // SHA-256 read buffer
+
     private final IndexedDocumentRepository documentRepository;
     private final DocumentFreshnessProperties properties;
 
@@ -192,7 +194,7 @@ public class DocumentFreshnessService {
 
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             try (InputStream is = Files.newInputStream(filePath)) {
-                byte[] buffer = new byte[8192];
+                byte[] buffer = new byte[BUFFER_SIZE];
                 int bytesRead;
                 while ((bytesRead = is.read(buffer)) != -1) {
                     digest.update(buffer, 0, bytesRead);

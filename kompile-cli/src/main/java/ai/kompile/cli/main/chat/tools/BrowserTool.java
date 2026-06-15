@@ -297,7 +297,9 @@ public class BrowserTool implements CliTool {
             proc.getOutputStream().write(payload.getBytes(StandardCharsets.UTF_8));
             proc.getOutputStream().close();
             String output = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            proc.waitFor();
+            if (!proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly();
+            }
             return output;
         } catch (Exception e) {
             // Fallback to python one-liner

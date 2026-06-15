@@ -511,7 +511,9 @@ public class KompileModelManager {
                     // Ensure the target modelPathInCache directory is clean or created
                     if(Files.exists(modelPathInCache) && Files.isDirectory(modelPathInCache)) {
                         // Simple cleanup, for robust solution use more careful deletion
-                        Files.walk(modelPathInCache).sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                        try (var walkStream = Files.walk(modelPathInCache)) {
+                            walkStream.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                        }
                     }
                     Files.createDirectories(modelPathInCache);
                     extractTarGz(tempDownloadPath, modelPathInCache.getParent()); // Extract into parent, then rename/move if structure differs
@@ -1469,8 +1471,8 @@ public class KompileModelManager {
         }
 
         // Check for weight files
-        try {
-            return Files.list(modelDir)
+        try (var modelFiles = Files.list(modelDir)) {
+            return modelFiles
                     .anyMatch(p -> {
                         String name = p.getFileName().toString().toLowerCase();
                         return name.endsWith(".safetensors") ||
@@ -1514,8 +1516,8 @@ public class KompileModelManager {
      * Detect the model format from cached files.
      */
     private String detectCachedModelFormat(Path modelDir) {
-        try {
-            for (Path p : (Iterable<Path>) Files.list(modelDir)::iterator) {
+        try (var dirFiles = Files.list(modelDir)) {
+            for (Path p : (Iterable<Path>) dirFiles::iterator) {
                 String name = p.getFileName().toString().toLowerCase();
                 if (name.endsWith(".safetensors")) return "SAFETENSORS";
                 if (name.endsWith(".gguf")) return "GGUF";
@@ -1602,8 +1604,8 @@ public class KompileModelManager {
             return false;
         }
 
-        try {
-            Files.walk(modelDir)
+        try (var walkStream = Files.walk(modelDir)) {
+            walkStream
                  .sorted(java.util.Comparator.reverseOrder())
                  .forEach(path -> {
                      try {
@@ -1792,8 +1794,8 @@ public class KompileModelManager {
         if (!Files.exists(sdkDir)) {
             return false;
         }
-        try {
-            return Files.list(sdkDir).findAny().isPresent();
+        try (var sdkFiles = Files.list(sdkDir)) {
+            return sdkFiles.findAny().isPresent();
         } catch (IOException e) {
             return false;
         }
@@ -1807,8 +1809,8 @@ public class KompileModelManager {
         if (!Files.exists(sdkDir)) {
             return null;
         }
-        try {
-            return Files.list(sdkDir).findFirst().orElse(null);
+        try (var sdkFiles = Files.list(sdkDir)) {
+            return sdkFiles.findFirst().orElse(null);
         } catch (IOException e) {
             return null;
         }

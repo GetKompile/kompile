@@ -169,7 +169,13 @@ public class AnseriniEmbeddingStartupInitializer {
         log.info("=======================================================================");
 
         // Run initialization asynchronously so startup completes
-        CompletableFuture.runAsync(this::initializeEmbeddingModel);
+        CompletableFuture.runAsync(this::initializeEmbeddingModel)
+                .exceptionally(ex -> {
+                    log.error("Embedding model initialization failed unexpectedly", ex);
+                    subprocessStatus = SubprocessInitStatus.FAILED;
+                    subprocessStatusMessage = ex.getMessage();
+                    return null;
+                });
     }
 
     /**
@@ -240,8 +246,7 @@ public class AnseriniEmbeddingStartupInitializer {
             }
         } catch (Exception e) {
             long elapsed = System.currentTimeMillis() - startTime;
-            log.error("Embedding model startup initialization failed after {}ms: {}", elapsed, e.getMessage());
-            log.debug("Full stack trace:", e);
+            log.error("Embedding model startup initialization failed after {}ms", elapsed, e);
 
             subprocessStatus = SubprocessInitStatus.FAILED;
             subprocessStatusMessage = e.getMessage();

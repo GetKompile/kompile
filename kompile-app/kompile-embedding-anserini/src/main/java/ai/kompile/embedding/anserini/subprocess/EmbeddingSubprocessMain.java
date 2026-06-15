@@ -66,6 +66,10 @@ public class EmbeddingSubprocessMain {
     // Original stdout for protocol messages (stderr for logging)
     private static PrintStream originalStdout;
 
+    // Lock for stdout writes — originalStdout is a non-final static field assigned
+    // in main(), so we must never synchronize on the field reference itself.
+    private static final Object stdoutLock = new Object();
+
     // Current encoder state
     private static volatile SameDiffEncoder<float[]> encoder;
     private static volatile String currentModelId;
@@ -385,13 +389,17 @@ public class EmbeddingSubprocessMain {
             if (maxThreads != null) {
                 try {
                     env.setMaxThreads(Integer.parseInt(maxThreads));
-                } catch (NumberFormatException ignored) {}
+                } catch (NumberFormatException e) {
+                    logger.warn("Invalid nd4j.environment.maxThreads value '{}': {}", maxThreads, e.getMessage());
+                }
             }
             String maxMasterThreads = System.getProperty("nd4j.environment.maxMasterThreads");
             if (maxMasterThreads != null) {
                 try {
                     env.setMaxMasterThreads(Integer.parseInt(maxMasterThreads));
-                } catch (NumberFormatException ignored) {}
+                } catch (NumberFormatException e) {
+                    logger.warn("Invalid nd4j.environment.maxMasterThreads value '{}': {}", maxMasterThreads, e.getMessage());
+                }
             }
 
             logger.info("Applied ND4J environment configuration from parent JVM");
@@ -1104,7 +1112,7 @@ public class EmbeddingSubprocessMain {
     private static void sendMessage(EmbeddingSubprocessMessage message) {
         try {
             String json = OBJECT_MAPPER.writeValueAsString(message);
-            synchronized (originalStdout) {
+            synchronized (stdoutLock) {
                 originalStdout.println(EmbeddingSubprocessMessage.MESSAGE_PREFIX + json);
                 originalStdout.flush();
             }

@@ -38,6 +38,9 @@ public class ReIngestionJob implements Job {
             var result = syncService.syncAll(factSheetId).get();
             log.info("Re-ingestion complete: {} documents, {} passages processed",
                     result.documentsProcessed(), result.passagesProcessed());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new JobExecutionException("Re-ingestion interrupted", e);
         } catch (Exception e) {
             log.error("Re-ingestion failed for fact sheet {}", factSheetId, e);
             throw new JobExecutionException(e);

@@ -67,25 +67,49 @@ import java.util.stream.Collectors;
 @Service
 public class DocumentIngestService implements org.springframework.beans.factory.DisposableBean {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected DocumentIngestService() {}
+
+
     private static final Logger logger = LoggerFactory.getLogger(DocumentIngestService.class);
+
+    // Timing constants
+    private static final long HEARTBEAT_INTERVAL_MS = 5_000L; // 5 seconds
 
     // Subprocess mode configuration - now managed via SubprocessConfigService for
     // dynamic updates
-    private final SubprocessConfigService subprocessConfigService;
+    @Autowired(required = false)
+    private SubprocessConfigService subprocessConfigService;
 
-    private final SimpMessagingTemplate messagingTemplate;
-    private final List<DocumentLoader> documentLoaders;
-    private final List<TextChunker> textChunkers;
-    private final IndexerService indexerService;
-    private final IngestConfiguration ingestConfiguration;
-    private final MemoryWatchdogService memoryWatchdogService;
-    private final TextConversionService textConversionService;
-    private final IngestEventService ingestEventService;
-    private final IndexingJobHistoryService indexingJobHistoryService;
-    private final ai.kompile.core.embeddings.EmbeddingModel embeddingModel;
-    private final LargeDocumentPreprocessor largeDocumentPreprocessor;
-    private final SubprocessIngestLauncher subprocessIngestLauncher;
-    private final ResourceAwareJobScheduler resourceScheduler;
+    @Autowired(required = false)
+    private SimpMessagingTemplate messagingTemplate;
+    @Autowired
+    private List<DocumentLoader> documentLoaders;
+    @Autowired
+    private List<TextChunker> textChunkers;
+    @Autowired
+    private List<IndexerService> indexerServices;
+    private IndexerService indexerService;
+    @Autowired
+    private IngestConfiguration ingestConfiguration;
+    @Lazy
+    @Autowired
+    private MemoryWatchdogService memoryWatchdogService;
+    @Autowired
+    private TextConversionService textConversionService;
+    @Autowired(required = false)
+    private IngestEventService ingestEventService;
+    @Autowired(required = false)
+    private IndexingJobHistoryService indexingJobHistoryService;
+    @Lazy
+    @Autowired(required = false)
+    private ai.kompile.core.embeddings.EmbeddingModel embeddingModel;
+    @Autowired(required = false)
+    private LargeDocumentPreprocessor largeDocumentPreprocessor;
+    @Autowired(required = false)
+    private SubprocessIngestLauncher subprocessIngestLauncher;
+    @Autowired(required = false)
+    private ResourceAwareJobScheduler resourceScheduler;
 
     // Track active tasks for status queries - use bounded map to prevent memory
     // leaks
@@ -120,7 +144,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     });
 
     // Executor for parallel batch processing - uses available CPU cores
-    private final ExecutorService batchExecutor;
+    private ExecutorService batchExecutor;
 
     // Progress update throttling - minimum interval between WebSocket updates (ms)
     // 100ms provides responsive updates while avoiding UI overload
@@ -253,6 +277,14 @@ public class DocumentIngestService implements org.springframework.beans.factory.
      */
     @PostConstruct
     public void init() {
+        // Resolve computed fields when using no-arg constructor (AOT/native image path)
+        if (this.indexerService == null && this.indexerServices != null && !this.indexerServices.isEmpty()) {
+            this.indexerService = indexerServices.stream()
+                    .filter(s -> !(s instanceof NoOpIndexerService))
+                    .findFirst()
+                    .orElse(indexerServices.get(0));
+        }
+
         // MEMORY LEAK FIX: Schedule periodic cleanup of stale cancelled tasks
         // This handles edge cases where cancelledTasks entries might not be cleaned up
         // (e.g., async task never ran, or unusual exception paths)
@@ -457,7 +489,10 @@ public class DocumentIngestService implements org.springframework.beans.factory.
 
         // DEBUG: Log incoming parameters
         logger.info("[Task {}] processDocumentAsync called with: filePath={}, loaderName={}, chunkerName='{}', mode={}",
-                taskId, filePath, loaderName, chunkerName, mode);
+                taskId, filePath,
+                loaderName != null ? loaderName.replaceAll("[\\r\\n]", "_") : null,
+                chunkerName != null ? chunkerName.replaceAll("[\\r\\n]", "_") : null,
+                mode);
 
         // ========== SUBPROCESS MODE DELEGATION ==========
         // Decision logic based on ProcessingMode:
@@ -619,7 +654,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                 logger.warn("[Task {}] Memory critical: {}%, waiting for memory to free up",
                         taskId, String.format("%.1f", memInfo.usagePercent()));
                 // Wait briefly and check again
-                Thread.sleep(5000);
+                Thread.sleep(HEARTBEAT_INTERVAL_MS);
                 memInfo = ingestConfiguration.getMemoryInfo();
                 if (memInfo.criticalExceeded()) {
                     throw new MemoryPressureException("System memory critical (" +
@@ -1350,8 +1385,8 @@ public class DocumentIngestService implements org.springframework.beans.factory.
      * immediately.
      */
     public static class MemoryKilledException extends RuntimeException {
-        private final double memoryPercent;
-        private final int killThreshold;
+        private double memoryPercent;
+        private int killThreshold;
 
         public MemoryKilledException(String message, double memoryPercent, int killThreshold) {
             super(message);

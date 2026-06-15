@@ -16,6 +16,7 @@
 
 package ai.kompile.app.ingest.service;
 
+import ai.kompile.app.config.PrimaryDataSourceConfig;
 import ai.kompile.app.ingest.domain.SubprocessEventHistory;
 import ai.kompile.app.ingest.domain.SubprocessEventHistory.EventType;
 import ai.kompile.app.ingest.repository.SubprocessEventHistoryRepository;
@@ -43,9 +44,13 @@ import java.util.Map;
 @Service
 public class SubprocessEventHistoryService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected SubprocessEventHistoryService() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(SubprocessEventHistoryService.class);
 
-    private final SubprocessEventHistoryRepository repository;
+    private SubprocessEventHistoryRepository repository;
 
     @Value("${kompile.subprocess.event-history.retention-days:30}")
     private int retentionDays;
@@ -64,7 +69,7 @@ public class SubprocessEventHistoryService {
     /**
      * Record a subprocess started event.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordSubprocessStarted(String modelId) {
         if (repository == null) return;
         SubprocessEventHistory event = SubprocessEventHistory.subprocessStarted(modelId);
@@ -75,7 +80,7 @@ public class SubprocessEventHistoryService {
     /**
      * Record a subprocess stopped event.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordSubprocessStopped(String modelId) {
         if (repository == null) return;
         SubprocessEventHistory event = SubprocessEventHistory.subprocessStopped(modelId);
@@ -86,7 +91,7 @@ public class SubprocessEventHistoryService {
     /**
      * Record a subprocess crashed event.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordSubprocessCrashed(String modelId, String error, Integer exitCode, String taskId) {
         if (repository == null) return;
         SubprocessEventHistory event = SubprocessEventHistory.subprocessCrashed(modelId, error, exitCode, taskId);
@@ -97,7 +102,7 @@ public class SubprocessEventHistoryService {
     /**
      * Record a subprocess restart attempt.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordRestartAttempt(String modelId, int attemptNumber, int maxAttempts,
                                       String reason, long backoffMs,
                                       long heapBytes, int batchSize, int threads,
@@ -113,7 +118,7 @@ public class SubprocessEventHistoryService {
     /**
      * Record a successful restart.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordRestartSuccess(String modelId, int attemptNumber, String taskId) {
         if (repository == null) return;
         SubprocessEventHistory event = SubprocessEventHistory.subprocessRestartSuccess(modelId, attemptNumber, taskId);
@@ -124,7 +129,7 @@ public class SubprocessEventHistoryService {
     /**
      * Record that all restart attempts were exhausted.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordRestartExhausted(String modelId, int totalAttempts, String lastReason, String taskId) {
         if (repository == null) return;
         SubprocessEventHistory event = SubprocessEventHistory.subprocessRestartExhausted(modelId, totalAttempts, lastReason, taskId);
@@ -135,7 +140,7 @@ public class SubprocessEventHistoryService {
     /**
      * Record model loaded event.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordModelLoaded(String modelId, int dimensions, String encoderType) {
         if (repository == null) return;
         SubprocessEventHistory event = SubprocessEventHistory.modelLoaded(modelId, dimensions, encoderType);
@@ -146,7 +151,7 @@ public class SubprocessEventHistoryService {
     /**
      * Record model failed event.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void recordModelFailed(String modelId, String error) {
         if (repository == null) return;
         SubprocessEventHistory event = SubprocessEventHistory.modelFailed(modelId, error);
@@ -159,7 +164,7 @@ public class SubprocessEventHistoryService {
     /**
      * Get all events ordered by timestamp.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Page<SubprocessEventHistory> getAllEvents(int page, int size) {
         if (repository == null) return Page.empty();
         return repository.findAllOrderedByTimestamp(PageRequest.of(page, size));
@@ -168,7 +173,7 @@ public class SubprocessEventHistoryService {
     /**
      * Get recent events (last 24 hours by default).
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<SubprocessEventHistory> getRecentEvents(int hours) {
         if (repository == null) return List.of();
         return repository.findRecentEvents(Instant.now().minus(hours, ChronoUnit.HOURS));
@@ -177,7 +182,7 @@ public class SubprocessEventHistoryService {
     /**
      * Get most recent N events.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<SubprocessEventHistory> getLatestEvents() {
         if (repository == null) return List.of();
         return repository.findTop100ByOrderByTimestampDesc();
@@ -186,7 +191,7 @@ public class SubprocessEventHistoryService {
     /**
      * Get restart events.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<SubprocessEventHistory> getRestartEvents() {
         if (repository == null) return List.of();
         return repository.findRestartEvents();
@@ -195,7 +200,7 @@ public class SubprocessEventHistoryService {
     /**
      * Get restart events for a specific model.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<SubprocessEventHistory> getRestartEventsForModel(String modelId) {
         if (repository == null) return List.of();
         return repository.findRestartEventsForModel(modelId);
@@ -204,7 +209,7 @@ public class SubprocessEventHistoryService {
     /**
      * Get events for a specific task.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<SubprocessEventHistory> getEventsForTask(String taskId) {
         if (repository == null) return List.of();
         return repository.findByTaskIdOrderByTimestampDesc(taskId);
@@ -213,7 +218,7 @@ public class SubprocessEventHistoryService {
     /**
      * Get a specific event by ID.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public java.util.Optional<SubprocessEventHistory> getEventById(Long id) {
         if (repository == null) return java.util.Optional.empty();
         return repository.findById(id);
@@ -222,7 +227,7 @@ public class SubprocessEventHistoryService {
     /**
      * Get crash and restart statistics.
      */
-    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Map<String, Object> getStatistics() {
         Map<String, Object> stats = new HashMap<>();
         if (repository == null) {
@@ -256,7 +261,7 @@ public class SubprocessEventHistoryService {
      * Clean up old events (scheduled task).
      */
     @Scheduled(cron = "0 0 4 * * ?") // 4 AM daily
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void cleanupOldEvents() {
         if (repository == null) return;
 
@@ -278,7 +283,7 @@ public class SubprocessEventHistoryService {
     /**
      * Force cleanup of old events.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public int forceCleanup(int olderThanDays) {
         if (repository == null) return 0;
         Instant cutoff = Instant.now().minus(olderThanDays, ChronoUnit.DAYS);

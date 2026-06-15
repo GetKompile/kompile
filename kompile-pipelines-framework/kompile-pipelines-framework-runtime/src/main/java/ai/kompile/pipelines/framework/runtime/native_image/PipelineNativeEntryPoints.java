@@ -24,6 +24,8 @@ import ai.kompile.pipelines.framework.api.data.NDArrayType;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.graalvm.nativeimage.IsolateThread;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
@@ -70,6 +72,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class PipelineNativeEntryPoints {
 
+    private static final Logger log = LoggerFactory.getLogger(PipelineNativeEntryPoints.class);
+
     private static final sun.misc.Unsafe UNSAFE;
 
     static {
@@ -111,7 +115,7 @@ public class PipelineNativeEntryPoints {
     public static int initPipeline(IsolateThread thread, PointerBase handlesPtr, CCharPointer pipelinePathPtr) {
         try {
             String pipelinePath = CTypeConversion.toJavaString(pipelinePathPtr);
-            System.out.println("[kompile-native] Initializing pipeline from: " + pipelinePath);
+            log.info("[kompile-native] Initializing pipeline from: {}", pipelinePath);
 
             ObjectMapper mapper = ObjectMappers.getJsonMapper();
             Pipeline pipeline;
@@ -135,13 +139,11 @@ public class PipelineNativeEntryPoints {
             UNSAFE.putLong(handlesAddr + H_PIPELINE, pipelineHandle);
             UNSAFE.putLong(handlesAddr + H_EXECUTOR, executorHandle);
 
-            System.out.println("[kompile-native] Pipeline initialized. Pipeline=" + pipelineHandle
-                    + " Executor=" + executorHandle);
+            log.info("[kompile-native] Pipeline initialized. Pipeline={} Executor={}", pipelineHandle, executorHandle);
             return 0;
 
         } catch (Exception e) {
-            System.err.println("[kompile-native] Failed to initialize pipeline: " + e.getMessage());
-            e.printStackTrace();
+            log.error("[kompile-native] Failed to initialize pipeline: {}", e.getMessage(), e);
             return 1;
         }
     }
@@ -159,7 +161,7 @@ public class PipelineNativeEntryPoints {
 
             PipelineExecutor executor = executors.get(executorHandle);
             if (executor == null) {
-                System.err.println("[kompile-native] No executor found for handle: " + executorHandle);
+                log.error("[kompile-native] No executor found for handle: {}", executorHandle);
                 return 1;
             }
 
@@ -169,8 +171,7 @@ public class PipelineNativeEntryPoints {
 
             return 0;
         } catch (Exception e) {
-            System.err.println("[kompile-native] Pipeline execution failed: " + e.getMessage());
-            e.printStackTrace();
+            log.error("[kompile-native] Pipeline execution failed: {}", e.getMessage(), e);
             return 1;
         }
     }
@@ -181,15 +182,14 @@ public class PipelineNativeEntryPoints {
      */
     @CEntryPoint(name = "printMetrics")
     public static void printMetrics(IsolateThread thread) {
-        System.out.println("[kompile-native] === Pipeline Metrics ===");
-        System.out.println("[kompile-native] Active pipelines: " + pipelines.size());
-        System.out.println("[kompile-native] Active executors: " + executors.size());
+        log.info("[kompile-native] === Pipeline Metrics ===");
+        log.info("[kompile-native] Active pipelines: {}", pipelines.size());
+        log.info("[kompile-native] Active executors: {}", executors.size());
         for (Map.Entry<Long, Pipeline> entry : pipelines.entrySet()) {
             Pipeline p = entry.getValue();
-            System.out.println("[kompile-native]   Pipeline " + entry.getKey() + ": id=" + p.id()
-                    + ", steps=" + p.getSteps().size());
+            log.info("[kompile-native]   Pipeline {}: id={}, steps={}", entry.getKey(), p.id(), p.getSteps().size());
         }
-        System.out.println("[kompile-native] ======================");
+        log.info("[kompile-native] ======================");
     }
 
     // --- Marshaling: C numpy_struct <-> Java Data ---

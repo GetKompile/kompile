@@ -144,7 +144,7 @@ public class ExtractionLlmServiceRegistry {
                 }
             }
         } catch (Exception e) {
-            log.debug("Could not read cli-llm-config.json: {}", e.getMessage());
+            log.warn("Could not read cli-llm-config.json: {}", e.getMessage());
         }
         return null;
     }
@@ -231,13 +231,28 @@ public class ExtractionLlmServiceRegistry {
             return candidates.stream().anyMatch(ExtractionLlmService::isAvailable);
         }
 
+        @Override
+        public void setModelOverride(String model) {
+            for (ExtractionLlmService candidate : candidates) {
+                candidate.setModelOverride(model);
+            }
+        }
+
+        @Override
+        public String getEffectiveModel() {
+            return candidates.isEmpty() ? null : candidates.get(0).getEffectiveModel();
+        }
+
         private boolean shouldFallback(String message) {
             String lower = message != null ? message.toLowerCase(Locale.ROOT) : "";
             boolean limitFailure = lower.contains("terminalquotaerror")
                     || lower.contains("insufficient_quota")
+                    || lower.contains("insufficient balance")
                     || lower.contains("quota exceeded")
                     || lower.contains("usage limit")
                     || lower.contains("rate limit")
+                    || lower.contains("429")
+                    || lower.contains("too many requests")
                     || lower.contains("capacity")
                     || lower.contains("you've hit your limit")
                     || lower.contains("you have hit your limit")
@@ -269,6 +284,26 @@ public class ExtractionLlmServiceRegistry {
     }
 
     /**
+     * Set the model for a specific provider at runtime.
+     * This is used when the user changes the model via the UI/API.
+     *
+     * @param providerId the provider ID (e.g., "claude-cli", "codex-cli")
+     * @param model the model name to set
+     * @return true if the provider was found and updated, false if provider not found
+     */
+    public boolean setProviderModel(String providerId, String model) {
+        ExtractionLlmService service = providers.get(providerId);
+        if (service != null) {
+            log.info("Setting model for provider '{}': {}", providerId, model);
+            service.setModelOverride(model);
+            return true;
+        } else {
+            log.warn("Cannot set model for unknown provider: {}", providerId);
+            return false;
+        }
+    }
+
+    /**
      * List all registered providers with their availability status.
      */
     public List<ProviderInfo> listProviders() {
@@ -277,7 +312,8 @@ public class ExtractionLlmServiceRegistry {
             result.add(new ProviderInfo(
                     service.getId(),
                     service.getDescription(),
-                    service.isAvailable()
+                    service.isAvailable(),
+                    service.getEffectiveModel()
             ));
         }
         result.sort(Comparator.comparing(ProviderInfo::id));
@@ -287,5 +323,34 @@ public class ExtractionLlmServiceRegistry {
     /**
      * Info about a registered provider.
      */
-    public record ProviderInfo(String id, String description, boolean available) {}
+    public record ProviderInfo(String id, String description, boolean available, String effectiveModel) {}
+
+    /**
+     * Configuration for fallback behavior when a preferred provider fails.
+     *
+     * @param enabled       whether fallback is enabled
+     * @param limitOnly     only fallback on limit/quota errors (not on general failures)
+     * @param providerOrder explicit provider priority ordering
+     * @param timeoutSeconds timeout for each provider attempt
+     */
+    public record FallbackConfig(boolean enabled, boolean limitOnly,
+                                  List<String> providerOrder, int timeoutSeconds) {}
+
+    private volatile FallbackConfig fallbackConfig = new FallbackConfig(true, false, List.of(), 300);
+
+    /**
+     * Set the fallback configuration.
+     */
+    public void setFallbackConfig(FallbackConfig config) {
+        this.fallbackConfig = config;
+        log.info("Updated fallback config: enabled={}, limitOnly={}, order={}, timeout={}s",
+                config.enabled(), config.limitOnly(), config.providerOrder(), config.timeoutSeconds());
+    }
+
+    /**
+     * Get the current fallback configuration.
+     */
+    public FallbackConfig getFallbackConfig() {
+        return fallbackConfig;
+    }
 }

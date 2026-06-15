@@ -16,8 +16,13 @@
 
 package ai.kompile.app.web.dto;
 
+import lombok.Getter;
+import lombok.Setter;
+
 import java.util.List;
 
+@Getter
+@Setter
 public class PassthroughSessionRequest {
 
     private String agentName;
@@ -27,51 +32,4 @@ public class PassthroughSessionRequest {
     private String sessionName;
     private List<String> agentArgs;
 
-    public String getAgentName() {
-        return agentName;
-    }
-
-    public void setAgentName(String agentName) {
-        this.agentName = agentName;
-    }
-
-    public boolean isSkipPermissions() {
-        return skipPermissions;
-    }
-
-    public void setSkipPermissions(boolean skipPermissions) {
-        this.skipPermissions = skipPermissions;
-    }
-
-    public String getWorkingDirectory() {
-        return workingDirectory;
-    }
-
-    public void setWorkingDirectory(String workingDirectory) {
-        this.workingDirectory = workingDirectory;
-    }
-
-    public boolean isInjectMcpTools() {
-        return injectMcpTools;
-    }
-
-    public void setInjectMcpTools(boolean injectMcpTools) {
-        this.injectMcpTools = injectMcpTools;
-    }
-
-    public String getSessionName() {
-        return sessionName;
-    }
-
-    public void setSessionName(String sessionName) {
-        this.sessionName = sessionName;
-    }
-
-    public List<String> getAgentArgs() {
-        return agentArgs;
-    }
-
-    public void setAgentArgs(List<String> agentArgs) {
-        this.agentArgs = agentArgs;
-    }
 }

@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * REST endpoints for discovering process patterns from knowledge graph data.
@@ -35,10 +36,16 @@ import java.util.Map;
 public class ProcessDiscoveryController {
 
     private final ProcessDiscoveryService discoveryService;
+    private ProcessSuggestionStore suggestionStore;
 
     @Autowired
     public ProcessDiscoveryController(ProcessDiscoveryService discoveryService) {
         this.discoveryService = discoveryService;
+    }
+
+    @Autowired(required = false)
+    public void setSuggestionStore(ProcessSuggestionStore suggestionStore) {
+        this.suggestionStore = suggestionStore;
     }
 
     /**
@@ -249,5 +256,79 @@ public class ProcessDiscoveryController {
         response.put("count", suggestions.size());
         response.put("suggestions", suggestions);
         return ResponseEntity.ok(response);
+    }
+
+    // ── Suggestion Store Endpoints ───────────────────────────────────────
+
+    /**
+     * List all stored process suggestions.
+     */
+    @GetMapping("/suggestions")
+    public ResponseEntity<Map<String, Object>> listSuggestions(
+            @RequestParam(required = false) Long factSheetId,
+            @RequestParam(required = false, defaultValue = "false") boolean pendingOnly) {
+        if (suggestionStore == null) {
+            return ResponseEntity.ok(Map.of("count", 0, "suggestions", List.of()));
+        }
+
+        List<ProcessSuggestion> results;
+        if (factSheetId != null) {
+            results = suggestionStore.listByFactSheet(factSheetId);
+        } else if (pendingOnly) {
+            results = suggestionStore.listPending();
+        } else {
+            results = suggestionStore.listAll();
+        }
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("count", results.size());
+        response.put("suggestions", results);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Get a specific stored suggestion by ID.
+     */
+    @GetMapping("/suggestions/{id}")
+    public ResponseEntity<ProcessSuggestion> getSuggestion(@PathVariable String id) {
+        if (suggestionStore == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Optional<ProcessSuggestion> suggestion = suggestionStore.get(id);
+        return suggestion.map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Accept a stored suggestion by ID, converting it to a ProcessDefinition.
+     */
+    @PostMapping("/suggestions/{id}/accept")
+    public ResponseEntity<ProcessDefinition> acceptStoredSuggestion(@PathVariable String id) {
+        if (suggestionStore == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Optional<ProcessSuggestion> suggestion = suggestionStore.get(id);
+        if (suggestion.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        ProcessDefinition definition = discoveryService.acceptSuggestion(suggestion.get());
+        suggestionStore.markAccepted(id, definition.getId());
+        return ResponseEntity.ok(definition);
+    }
+
+    /**
+     * Delete a stored suggestion by ID.
+     */
+    @DeleteMapping("/suggestions/{id}")
+    public ResponseEntity<Void> deleteSuggestion(@PathVariable String id) {
+        if (suggestionStore == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        suggestionStore.delete(id);
+        return ResponseEntity.noContent().build();
     }
 }

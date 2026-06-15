@@ -28,7 +28,6 @@ import ai.kompile.core.staging.StagingStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -70,7 +69,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     public StagingService(RegistryService registryService,
                           ConversionService conversionService,
                           List<DownloadService> downloadServices,
-                          @Lazy OptimizationService optimizationService) {
+                          OptimizationService optimizationService) {
         this.registryService = registryService;
         this.conversionService = conversionService;
         this.downloadServices = downloadServices;
@@ -414,7 +413,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             log.info("Vision encoder IO config probed: pixelValues={}, pixelAttentionMask={}, primaryOutput={}, outputs={}",
                     pixelValuesName, pixelAttentionMaskName, primaryOutput, outputNames);
         } catch (Exception e) {
-            log.warn("Failed to auto-probe vision encoder IO config from {}: {}", visionEncoderFile, e.getMessage());
+            log.warn("Failed to auto-probe vision encoder IO config from {}", visionEncoderFile, e);
         }
     }
 
@@ -605,7 +604,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                     }
                 } catch (IOException e) {
                     results.put(modelId, false);
-                    log.warn("Error repairing model {}: {}", modelId, e.getMessage());
+                    log.warn("Error repairing model '{}'", modelId, e);
                 }
             } else {
                 // Model is fine
@@ -701,7 +700,8 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             for (SseEmitter emitter : emitters) {
                 try {
                     emitter.complete();
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log.warn("Failed to complete SSE emitter for model '{}'", modelId, e);
                 }
             }
             emitters.clear();
@@ -782,7 +782,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             }
             log.warn("No tokenizer.json could be downloaded for model {}. LLM loading may need manual tokenizer setup.", request.getModelId());
         } catch (Exception e) {
-            log.warn("Failed to download tokenizer for model {}: {}", request.getModelId(), e.getMessage());
+            log.warn("Failed to download tokenizer for model '{}'", request.getModelId(), e);
         }
     }
 
@@ -956,6 +956,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             }
             return sb.toString();
         } catch (Exception e) {
+            log.warn("Failed to calculate checksum for {}", file, e);
             return null;
         }
     }

@@ -60,7 +60,7 @@ public class CliExtractionLlmClient implements AutoCloseable {
     private String resolvedFrom;
 
     // Managed server process (if we started one)
-    private Process managedServer;
+    private volatile Process managedServer;
 
     private CliExtractionLlmClient(ChatConfig config, String model) {
         this.llmClient = new DirectLlmClient(config, MAPPER);

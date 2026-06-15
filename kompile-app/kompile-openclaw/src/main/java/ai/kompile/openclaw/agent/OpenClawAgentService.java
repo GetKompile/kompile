@@ -15,11 +15,14 @@
  */
 package ai.kompile.openclaw.agent;
 
-import ai.kompile.openclaw.model.AgentDefinition;
+import ai.kompile.gateway.core.model.AgentDefinition;
+import ai.kompile.gateway.core.model.AgentRequest;
+import ai.kompile.gateway.core.model.AgentResponse;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import ai.kompile.openclaw.model.OpenClawRequest;
 import ai.kompile.openclaw.model.OpenClawResponse;
-import ai.kompile.openclaw.service.AgentRegistry;
-import ai.kompile.openclaw.service.SessionService;
+import ai.kompile.gateway.core.service.AgentRegistry;
+import ai.kompile.gateway.core.service.SessionService;
 import ai.kompile.react.context.Toolkit;
 import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.ReActResult;
@@ -31,7 +34,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 @Slf4j
-public class OpenClawAgentService {
+public class OpenClawAgentService implements AgentExecutor {
 
     private final ReActAgentService reActAgentService;
     private final AgentRegistry agentRegistry;
@@ -47,6 +50,34 @@ public class OpenClawAgentService {
         this.agentRegistry = agentRegistry;
         this.sessionService = sessionService;
         this.toolkitRegistry = toolkitRegistry;
+    }
+
+    /**
+     * Implements {@link AgentExecutor} so that channel adapters in
+     * kompile-agent-gateway-core can invoke this service without depending on
+     * the openclaw-specific request/response types.
+     */
+    @Override
+    public AgentResponse execute(AgentRequest request) {
+        OpenClawRequest openClawRequest = OpenClawRequest.builder()
+                .agentId(request.getAgentId())
+                .sessionKey(request.getSessionKey())
+                .message(request.getMessage())
+                .stream(request.isStream())
+                .metadata(request.getMetadata())
+                .build();
+        OpenClawResponse openClawResponse = execute(openClawRequest);
+        return AgentResponse.builder()
+                .response(openClawResponse.getResponse())
+                .sessionKey(openClawResponse.getSessionKey())
+                .agentId(openClawResponse.getAgentId())
+                .tokenUsage(openClawResponse.getTokenUsage())
+                .success(openClawResponse.isSuccess())
+                .error(openClawResponse.getError())
+                .timestamp(openClawResponse.getTimestamp())
+                .toolCalls(openClawResponse.getToolCalls())
+                .metadata(openClawResponse.getMetadata())
+                .build();
     }
 
     public OpenClawResponse execute(OpenClawRequest request) {

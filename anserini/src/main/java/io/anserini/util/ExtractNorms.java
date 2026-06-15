@@ -40,7 +40,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.apache.lucene.util.SmallFloat;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
@@ -81,7 +81,7 @@ public class ExtractNorms {
       return;
     }
 
-    Directory dir = FSDirectory.open(Paths.get(myArgs.index));
+    Directory dir = new NIOFSDirectory(Paths.get(myArgs.index));
     IndexReader reader = DirectoryReader.open(dir);
 
     PrintStream out = new PrintStream(new FileOutputStream(new File(myArgs.output)));

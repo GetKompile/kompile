@@ -38,13 +38,14 @@ class GraphNodeTest {
     @Test
     void nodeLevelContainsAllExpectedValues() {
         NodeLevel[] values = NodeLevel.values();
-        assertEquals(6, values.length);
+        assertEquals(7, values.length);
         assertNotNull(NodeLevel.valueOf("SOURCE"));
         assertNotNull(NodeLevel.valueOf("DOCUMENT"));
         assertNotNull(NodeLevel.valueOf("SNIPPET"));
         assertNotNull(NodeLevel.valueOf("ENTITY"));
         assertNotNull(NodeLevel.valueOf("TABLE"));
         assertNotNull(NodeLevel.valueOf("CUSTOM"));
+        assertNotNull(NodeLevel.valueOf("ATTACHMENT"));
     }
 
     @Test
@@ -59,7 +60,7 @@ class GraphNodeTest {
     @Test
     void edgeTypeContainsAllExpectedValues() {
         EdgeType[] values = EdgeType.values();
-        assertEquals(8, values.length);
+        assertEquals(11, values.length);
         assertNotNull(EdgeType.valueOf("HIERARCHICAL"));
         assertNotNull(EdgeType.valueOf("CONTAINS"));
         assertNotNull(EdgeType.valueOf("EMBEDDING_SIMILARITY"));
@@ -68,6 +69,9 @@ class GraphNodeTest {
         assertNotNull(EdgeType.valueOf("CITATION"));
         assertNotNull(EdgeType.valueOf("TEMPORAL"));
         assertNotNull(EdgeType.valueOf("CROSS_SOURCE"));
+        assertNotNull(EdgeType.valueOf("EXTRACTED_FROM"));
+        assertNotNull(EdgeType.valueOf("AUTHORED_BY"));
+        assertNotNull(EdgeType.valueOf("ADDRESSED_TO"));
     }
 
     @Test

@@ -79,6 +79,8 @@ public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
     private static final Pattern WIKI_LINK_PATTERN = Pattern.compile(
             "\\[\\[([^\\]|]+)(?:\\|([^\\]]+))?\\]\\]");
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     /** Matches Markdown task list items: - [ ] or - [x] */
     private static final Pattern TASK_ITEM_PATTERN = Pattern.compile(
             "^\\s*[-*+]\\s+\\[([ xX])\\]\\s+(.+)$", Pattern.MULTILINE);
@@ -563,8 +565,7 @@ public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
         Object tableGraphObj = meta.get(META_TABLE_GRAPH);
         if (tableGraphObj instanceof String tableGraphJson && !tableGraphJson.isBlank()) {
             try {
-                ObjectMapper mapper = new ObjectMapper();
-                Graph cellGraph = mapper.readValue(tableGraphJson, Graph.class);
+                Graph cellGraph = OBJECT_MAPPER.readValue(tableGraphJson, Graph.class);
                 if (cellGraph.getEntities() != null) {
                     for (Entity e : cellGraph.getEntities()) {
                         if (e == null || e.getId() == null || e.getTitle() == null || e.getType() == null) {
@@ -864,7 +865,9 @@ public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
 
                 int level = 0;
                 if (headingLevel != null) {
-                    try { level = Integer.parseInt(headingLevel); } catch (NumberFormatException ignored) {}
+                    try { level = Integer.parseInt(headingLevel); } catch (NumberFormatException e) {
+                        log.debug("Could not parse heading level '{}' as integer: {}", headingLevel, e.getMessage());
+                    }
                 }
 
                 String sectionId = entityId("section:" + docEntityId + ":" + headingText.toLowerCase());

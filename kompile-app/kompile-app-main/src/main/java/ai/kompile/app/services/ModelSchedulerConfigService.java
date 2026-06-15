@@ -62,7 +62,7 @@ public class ModelSchedulerConfigService {
                 log.info("Loaded model scheduler config from {}: enabled={}, preferredBatchSize={}",
                         configFilePath, currentConfig.isEnabled(), currentConfig.getPreferredBatchSize());
             } catch (Exception e) {
-                log.warn("Failed to load model scheduler config from {}: {}", configFilePath, e.getMessage());
+                log.warn("Failed to load model scheduler config from {}", configFilePath, e);
                 currentConfig = ModelSchedulerConfig.defaults();
             }
         } else {

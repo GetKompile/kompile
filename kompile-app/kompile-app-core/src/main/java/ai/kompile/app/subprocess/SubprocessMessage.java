@@ -471,6 +471,42 @@ public sealed interface SubprocessMessage
         }
     }
 
+    // ===================== Visitor / Dispatch Support =====================
+
+    /**
+     * Callback interface for dispatching {@link SubprocessMessage} variants.
+     * All methods are no-ops by default so callers only override what they need.
+     * Methods declare {@code throws Exception} so overrides may propagate checked exceptions;
+     * callers are expected to wrap {@link #dispatch} in a try-catch.
+     */
+    interface Handler {
+        default void onReady(Ready msg) throws Exception {}
+        default void onProgress(Progress msg) throws Exception {}
+        default void onPhaseTransition(PhaseTransition msg) throws Exception {}
+        default void onHeartbeat(Heartbeat msg) throws Exception {}
+        default void onCompleted(Completed msg) throws Exception {}
+        default void onFailed(Failed msg) throws Exception {}
+        default void onWorkerStatus(WorkerStatus msg) throws Exception {}
+        default void onLog(Log msg) throws Exception {}
+    }
+
+    /**
+     * Dispatch {@code msg} to the appropriate {@link Handler} callback.
+     * Eliminates repetitive {@code instanceof} chains in launcher classes.
+     *
+     * @throws Exception propagated from the handler callback
+     */
+    static void dispatch(SubprocessMessage msg, Handler handler) throws Exception {
+        if (msg instanceof Ready r)                handler.onReady(r);
+        else if (msg instanceof Progress p)        handler.onProgress(p);
+        else if (msg instanceof PhaseTransition t) handler.onPhaseTransition(t);
+        else if (msg instanceof Heartbeat h)       handler.onHeartbeat(h);
+        else if (msg instanceof Completed c)       handler.onCompleted(c);
+        else if (msg instanceof Failed f)          handler.onFailed(f);
+        else if (msg instanceof WorkerStatus w)    handler.onWorkerStatus(w);
+        else if (msg instanceof Log l)             handler.onLog(l);
+    }
+
     /**
      * Factory method to create a ready message.
      */

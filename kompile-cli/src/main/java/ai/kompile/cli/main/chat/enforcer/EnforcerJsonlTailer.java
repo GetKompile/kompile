@@ -62,7 +62,7 @@ public class EnforcerJsonlTailer implements AutoCloseable {
     private final ViolationHandler violationHandler;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    private Thread thread;
+    private volatile Thread thread;
     private Path jsonlFile;
     private long offset;
     private String partialLine = "";

@@ -174,7 +174,7 @@ public class DatasetController {
             DatasetInfo info = datasetService.preloadDataset(request);
             return ResponseEntity.ok(info);
         } catch (IllegalArgumentException e) {
-            log.warn("Invalid preload request: {}", e.getMessage());
+            log.warn("Invalid preload request", e);
             return ResponseEntity.badRequest().build();
         } catch (Exception e) {
             log.error("Failed to preload dataset", e);

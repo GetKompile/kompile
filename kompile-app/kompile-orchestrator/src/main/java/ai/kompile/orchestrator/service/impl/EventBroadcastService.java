@@ -15,6 +15,7 @@
  */
 package ai.kompile.orchestrator.service.impl;
 
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.orchestrator.config.OrchestratorProperties;
 import ai.kompile.orchestrator.model.event.ConversationMessageEvent;
 import ai.kompile.orchestrator.model.event.LlmSessionEvent;
@@ -79,7 +80,7 @@ public class EventBroadcastService {
         payload.put("orchestratorInstanceId", event.getOrchestratorInstanceId());
         payload.put("previousStateId", event.getPreviousStateId());
         payload.put("newStateId", event.getNewStateId());
-        payload.put("timestamp", event.getEventTimestamp());
+        payload.put(FieldNames.TIMESTAMP, event.getEventTimestamp());
         payload.put("message", event.getMessage());
 
         broadcast(TOPIC_STATE, event.getOrchestratorInstanceId(), payload);
@@ -95,7 +96,7 @@ public class EventBroadcastService {
         payload.put("taskInstanceId", event.getTaskInstanceId());
         payload.put("taskStatus", event.getStatus() != null ? event.getStatus().name() : null);
         payload.put("exitCode", event.getExitCode());
-        payload.put("timestamp", event.getEventTimestamp());
+        payload.put(FieldNames.TIMESTAMP, event.getEventTimestamp());
         payload.put("message", event.getMessage());
 
         broadcast(TOPIC_TASK, event.getOrchestratorInstanceId(), payload);
@@ -110,7 +111,7 @@ public class EventBroadcastService {
         payload.put("orchestratorInstanceId", event.getOrchestratorInstanceId());
         payload.put("taskInstanceId", event.getTaskInstanceId());
         payload.put("line", event.getOutputLine());
-        payload.put("timestamp", event.getEventTimestamp());
+        payload.put(FieldNames.TIMESTAMP, event.getEventTimestamp());
 
         // Use a task-specific topic for output streaming
         String topic = TOPIC_OUTPUT + "/" + event.getTaskInstanceId();
@@ -124,10 +125,10 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", event.getEventType().name());
         payload.put("orchestratorInstanceId", event.getOrchestratorInstanceId());
-        payload.put("sessionId", event.getSessionId());
+        payload.put(FieldNames.SESSION_ID, event.getSessionId());
         payload.put("providerId", event.getProviderId());
         payload.put("status", event.getStatus() != null ? event.getStatus().name() : null);
-        payload.put("timestamp", event.getEventTimestamp());
+        payload.put(FieldNames.TIMESTAMP, event.getEventTimestamp());
         payload.put("message", event.getMessage());
 
         broadcast(TOPIC_LLM, event.getOrchestratorInstanceId(), payload);
@@ -144,7 +145,7 @@ public class EventBroadcastService {
         payload.put("status", event.getStatus() != null ? event.getStatus().name() : null);
         payload.put("currentStep", event.getCurrentStep());
         payload.put("totalSteps", event.getTotalSteps());
-        payload.put("timestamp", event.getEventTimestamp());
+        payload.put(FieldNames.TIMESTAMP, event.getEventTimestamp());
         payload.put("message", event.getMessage());
 
         broadcast(TOPIC_WORKFLOW, event.getOrchestratorInstanceId(), payload);
@@ -166,7 +167,7 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", event.getEventType().name());
         payload.put("orchestratorInstanceId", event.getOrchestratorInstanceId());
-        payload.put("timestamp", event.getEventTimestamp());
+        payload.put(FieldNames.TIMESTAMP, event.getEventTimestamp());
         payload.put("message", event.getMessage());
 
         broadcast(TOPIC_BASE, event.getOrchestratorInstanceId(), payload);
@@ -209,7 +210,7 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>(data);
         payload.put("type", eventType);
         payload.put("orchestratorInstanceId", orchestratorInstanceId);
-        payload.put("timestamp", System.currentTimeMillis());
+        payload.put(FieldNames.TIMESTAMP, System.currentTimeMillis());
 
         broadcast(TOPIC_BASE + "/custom", orchestratorInstanceId, payload);
     }
@@ -226,7 +227,7 @@ public class EventBroadcastService {
         payload.put("entityId", entityId);
         payload.put("entityType", entityType);
         payload.put("line", line);
-        payload.put("timestamp", System.currentTimeMillis());
+        payload.put(FieldNames.TIMESTAMP, System.currentTimeMillis());
 
         broadcast(TOPIC_OUTPUT + "/" + entityType.toLowerCase() + "/" + entityId, orchestratorInstanceId, payload);
     }
@@ -240,7 +241,7 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", "HEARTBEAT");
         payload.put("orchestratorInstanceId", orchestratorInstanceId);
-        payload.put("timestamp", System.currentTimeMillis());
+        payload.put(FieldNames.TIMESTAMP, System.currentTimeMillis());
 
         broadcast(TOPIC_BASE + "/heartbeat", orchestratorInstanceId, payload);
     }
@@ -269,12 +270,12 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", event.getEventType().name());
         payload.put("orchestratorInstanceId", event.getOrchestratorInstanceId());
-        payload.put("sessionId", event.getSessionId());
+        payload.put(FieldNames.SESSION_ID, event.getSessionId());
         payload.put("messageId", event.getMessageId());
         payload.put("role", event.getRole() != null ? event.getRole().name() : null);
         payload.put("content", event.getContent());
         payload.put("sequenceNumber", event.getSequenceNumber());
-        payload.put("timestamp", event.getEventTimestamp());
+        payload.put(FieldNames.TIMESTAMP, event.getEventTimestamp());
         payload.put("message", event.getMessage());
 
         // Include tool-related fields if present
@@ -309,12 +310,12 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", event.getEventType().name());
         payload.put("orchestratorInstanceId", event.getOrchestratorInstanceId());
-        payload.put("sessionId", event.getSessionId());
+        payload.put(FieldNames.SESSION_ID, event.getSessionId());
         payload.put("token", event.getToken());
         payload.put("tokenIndex", event.getTokenIndex());
         payload.put("isComplete", event.isComplete());
         payload.put("providerId", event.getProviderId());
-        payload.put("timestamp", event.getEventTimestamp());
+        payload.put(FieldNames.TIMESTAMP, event.getEventTimestamp());
 
         // Broadcast to session-specific token topic for high-frequency updates
         String tokenTopic = TOPIC_LLM_TOKENS + "/" + event.getSessionId();
@@ -331,11 +332,11 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", "CONVERSATION_MESSAGE");
         payload.put("orchestratorInstanceId", orchestratorInstanceId);
-        payload.put("sessionId", sessionId);
+        payload.put(FieldNames.SESSION_ID, sessionId);
         payload.put("role", role);
         payload.put("content", content);
         payload.put("sequenceNumber", sequenceNumber);
-        payload.put("timestamp", System.currentTimeMillis());
+        payload.put(FieldNames.TIMESTAMP, System.currentTimeMillis());
 
         String sessionTopic = TOPIC_CONVERSATION + "/" + sessionId;
         broadcast(sessionTopic, orchestratorInstanceId, payload);
@@ -351,11 +352,11 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", isComplete ? "STREAM_COMPLETE" : "TOKEN");
         payload.put("orchestratorInstanceId", orchestratorInstanceId);
-        payload.put("sessionId", sessionId);
+        payload.put(FieldNames.SESSION_ID, sessionId);
         payload.put("token", token);
         payload.put("tokenIndex", tokenIndex);
         payload.put("isComplete", isComplete);
-        payload.put("timestamp", System.currentTimeMillis());
+        payload.put(FieldNames.TIMESTAMP, System.currentTimeMillis());
 
         String tokenTopic = TOPIC_LLM_TOKENS + "/" + sessionId;
         broadcast(tokenTopic, orchestratorInstanceId, payload);
@@ -370,9 +371,9 @@ public class EventBroadcastService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("type", "STREAM_ERROR");
         payload.put("orchestratorInstanceId", orchestratorInstanceId);
-        payload.put("sessionId", sessionId);
+        payload.put(FieldNames.SESSION_ID, sessionId);
         payload.put("error", error);
-        payload.put("timestamp", System.currentTimeMillis());
+        payload.put(FieldNames.TIMESTAMP, System.currentTimeMillis());
 
         String tokenTopic = TOPIC_LLM_TOKENS + "/" + sessionId;
         broadcast(tokenTopic, orchestratorInstanceId, payload);

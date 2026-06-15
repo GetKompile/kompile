@@ -19,6 +19,8 @@ package ai.kompile.modelmanager.vlm.dynamic;
 import ai.kompile.modelmanager.vlm.VlmExtractionConfig;
 import ai.kompile.modelmanager.vlm.VlmExtractionType;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.*;
 
@@ -70,6 +72,8 @@ import java.util.*;
  * @author Kompile Inc.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@Getter
+@Setter
 public class VlmPipelineDefinition {
 
     /**
@@ -84,10 +88,14 @@ public class VlmPipelineDefinition {
     private String displayName;
     private String description;
     private PipelineType pipelineType;
+    @Setter(lombok.AccessLevel.NONE)
     private List<VlmPipelineStageConfig> stages;
+    @Setter(lombok.AccessLevel.NONE)
     private Map<String, VlmGraphNodeConfig> graphNodes;
     private String modelSetId;
+    @Setter(lombok.AccessLevel.NONE)
     private List<String> extractionTypes;
+    @Setter(lombok.AccessLevel.NONE)
     private Map<String, Object> defaultParameters;
     private boolean isBuiltin;
     private boolean enabled;
@@ -168,110 +176,22 @@ public class VlmPipelineDefinition {
         return builder.build();
     }
 
-    // Getters and setters
-
-    public String getPipelineId() {
-        return pipelineId;
-    }
-
-    public void setPipelineId(String pipelineId) {
-        this.pipelineId = pipelineId;
-    }
-
-    public String getDisplayName() {
-        return displayName;
-    }
-
-    public void setDisplayName(String displayName) {
-        this.displayName = displayName;
-    }
-
-    public String getDescription() {
-        return description;
-    }
-
-    public void setDescription(String description) {
-        this.description = description;
-    }
-
-    public PipelineType getPipelineType() {
-        return pipelineType;
-    }
-
-    public void setPipelineType(PipelineType pipelineType) {
-        this.pipelineType = pipelineType;
-    }
-
-    public List<VlmPipelineStageConfig> getStages() {
-        return stages;
-    }
+    // Custom setters with null-safety for collection fields
 
     public void setStages(List<VlmPipelineStageConfig> stages) {
         this.stages = stages != null ? stages : new ArrayList<>();
-    }
-
-    public Map<String, VlmGraphNodeConfig> getGraphNodes() {
-        return graphNodes;
     }
 
     public void setGraphNodes(Map<String, VlmGraphNodeConfig> graphNodes) {
         this.graphNodes = graphNodes != null ? graphNodes : new LinkedHashMap<>();
     }
 
-    public String getModelSetId() {
-        return modelSetId;
-    }
-
-    public void setModelSetId(String modelSetId) {
-        this.modelSetId = modelSetId;
-    }
-
-    public List<String> getExtractionTypes() {
-        return extractionTypes;
-    }
-
     public void setExtractionTypes(List<String> extractionTypes) {
         this.extractionTypes = extractionTypes != null ? extractionTypes : new ArrayList<>();
     }
 
-    public Map<String, Object> getDefaultParameters() {
-        return defaultParameters;
-    }
-
     public void setDefaultParameters(Map<String, Object> defaultParameters) {
         this.defaultParameters = defaultParameters != null ? defaultParameters : new LinkedHashMap<>();
-    }
-
-    public boolean isBuiltin() {
-        return isBuiltin;
-    }
-
-    public void setBuiltin(boolean builtin) {
-        isBuiltin = builtin;
-    }
-
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-
-    public long getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setCreatedAt(long createdAt) {
-        this.createdAt = createdAt;
-    }
-
-    public long getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(long updatedAt) {
-        this.updatedAt = updatedAt;
     }
 
     /**

@@ -18,6 +18,8 @@ package ai.kompile.loader.email.inbox;
 
 import ai.kompile.loader.excel.graph.CellNode;
 import ai.kompile.loader.excel.graph.SpreadsheetGraph;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
@@ -31,6 +33,8 @@ import java.util.*;
  * or present suggestions for human review.</p>
  */
 public class EmailValueCellMapper {
+
+    private static final Logger log = LoggerFactory.getLogger(EmailValueCellMapper.class);
 
     /**
      * Attempts to map extracted email values to input cells in a spreadsheet.
@@ -114,7 +118,9 @@ public class EmailValueCellMapper {
                 if (ratio > 0.1 && ratio < 10.0) {
                     score += 0.15;
                 }
-            } catch (NumberFormatException ignored) { }
+            } catch (NumberFormatException e) {
+                log.trace("Cell display value '{}' is not numeric, skipping numeric compatibility check: {}", cell.getDisplayValue(), e.getMessage());
+            }
         }
 
         return Math.min(score, 1.0);

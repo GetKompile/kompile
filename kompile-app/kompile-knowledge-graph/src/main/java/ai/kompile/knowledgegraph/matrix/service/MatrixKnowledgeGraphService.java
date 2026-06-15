@@ -263,6 +263,214 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                 .collect(Collectors.toList());
     }
 
+    @Override
+    public List<GraphNode> getNodesByType(NodeLevel type, int limit) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> type.name().equals(n.getNodeType()))
+                .limit(limit)
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<GraphNode> getNodesByType(NodeLevel type) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> type.name().equals(n.getNodeType()))
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<GraphNode> getNodesByIds(List<String> nodeIds) {
+        if (nodeIds == null || nodeIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Set<String> idSet = new HashSet<>(nodeIds);
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> idSet.contains(n.getNodeId()))
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .collect(Collectors.toList());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FACT-SHEET-SCOPED NODE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public List<GraphNode> getNodesByTypeInFactSheet(Long factSheetId, NodeLevel type) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> type.name().equals(n.getNodeType()))
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<GraphNode> getNodesInFactSheet(Long factSheetId) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<GraphNode> getSourcesInFactSheet(Long factSheetId) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> "SOURCE".equals(n.getNodeType()))
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public Optional<GraphNode> getNodeByExternalIdInFactSheet(String externalId, NodeLevel type, Long factSheetId) {
+        String nodeId = type.name().toLowerCase() + "_" + externalId;
+        return graphStore.getNode(DEFAULT_GRAPH_ID, nodeId)
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .map(n -> convertToGraphNode(n, externalId));
+    }
+
+    @Override
+    public List<GraphNode> searchNodesInFactSheet(Long factSheetId, String query, int limit) {
+        String lowerQuery = query != null ? query.toLowerCase() : "";
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .filter(n -> (n.getTitle() != null && n.getTitle().toLowerCase().contains(lowerQuery))
+                        || (n.getDescription() != null && n.getDescription().toLowerCase().contains(lowerQuery)))
+                .limit(limit)
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .collect(Collectors.toList());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FACT-SHEET-SCOPED EDGE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public List<GraphEdge> getEdgesForNodeInFactSheet(String nodeId, Long factSheetId) {
+        // The matrix store doesn't track factSheetId on edges; return all edges for the node.
+        return getEdgesForNode(nodeId);
+    }
+
+    @Override
+    public boolean edgeExistsInFactSheet(String sourceNodeId, String targetNodeId, Long factSheetId) {
+        return edgeExists(sourceNodeId, targetNodeId);
+    }
+
+    @Override
+    public List<GraphEdge> getEdgesInFactSheet(Long factSheetId) {
+        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(DEFAULT_GRAPH_ID);
+        if (graphOpt.isEmpty()) {
+            return Collections.emptyList();
+        }
+        AdjacencyMatrixGraph graph = graphOpt.get();
+        List<GraphEdge> result = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (MatrixGraphNode node : graph.getAllNodes()) {
+            if (node.getFactSheetId() == null || !node.getFactSheetId().equals(factSheetId)) {
+                continue;
+            }
+            List<Map.Entry<String, Double>> neighbors = graph.getNeighbors(node.getNodeId(), null);
+            for (Map.Entry<String, Double> neighbor : neighbors) {
+                String key = node.getNodeId() + "::" + neighbor.getKey();
+                if (seen.add(key)) {
+                    result.add(createEdgeObject(node.getNodeId(), neighbor.getKey(),
+                            EdgeType.USER_DEFINED, neighbor.getValue(), null));
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public List<GraphEdge> getEdgesByTypeInFactSheet(Long factSheetId, EdgeType edgeType) {
+        String edgeTypeStr = EDGE_TYPE_MAP.getOrDefault(edgeType, "RELATED_TO");
+        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(DEFAULT_GRAPH_ID);
+        if (graphOpt.isEmpty()) {
+            return Collections.emptyList();
+        }
+        AdjacencyMatrixGraph graph = graphOpt.get();
+        List<GraphEdge> result = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (MatrixGraphNode node : graph.getAllNodes()) {
+            if (node.getFactSheetId() == null || !node.getFactSheetId().equals(factSheetId)) {
+                continue;
+            }
+            List<Map.Entry<String, Double>> neighbors = graph.getNeighbors(node.getNodeId(), edgeTypeStr);
+            for (Map.Entry<String, Double> neighbor : neighbors) {
+                String key = node.getNodeId() + "::" + neighbor.getKey();
+                if (seen.add(key)) {
+                    result.add(createEdgeObject(node.getNodeId(), neighbor.getKey(),
+                            edgeType, neighbor.getValue(), null));
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public GraphEdge findEdgeBetweenNodes(String sourceNodeId, String targetNodeId) {
+        List<Map.Entry<String, Double>> edges = graphStore.getEdges(DEFAULT_GRAPH_ID, sourceNodeId, null);
+        for (Map.Entry<String, Double> edge : edges) {
+            if (edge.getKey().equals(targetNodeId)) {
+                return createEdgeObject(sourceNodeId, targetNodeId,
+                        EdgeType.USER_DEFINED, edge.getValue(), null);
+            }
+        }
+        return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ENTITY MENTION OPERATIONS — matrix store has no mention persistence;
+    // return empty / no-op implementations that are type-correct.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public List<EntityMention> getEntityMentionsForNode(GraphNode node) {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public List<EntityMention> getEntityMentionsForNode(String nodeId) {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public Optional<EntityMention> findEntityMention(GraphNode node, String entityName) {
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<EntityMention> findEntityMentionInFactSheet(GraphNode node, String entityName, Long factSheetId) {
+        return Optional.empty();
+    }
+
+    @Override
+    public EntityMention saveEntityMention(EntityMention mention) {
+        // Matrix store is in-memory and does not persist entity mentions.
+        return mention;
+    }
+
+    @Override
+    public List<Object[]> findNodePairsWithSharedEntities(int minShared) {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public List<Object[]> findNodePairsWithSharedEntitiesInFactSheet(Long factSheetId, int minShared) {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public List<String> getEntityNamesForNode(String nodeId) {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public List<GraphNode> getNodesWithEntity(String entityName) {
+        return Collections.emptyList();
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // EDGE MANAGEMENT
     // ═══════════════════════════════════════════════════════════════════════════
@@ -736,6 +944,45 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         }
 
         return map;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COUNT / STATISTICS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public long countNodesByType(NodeLevel type) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> type.name().equals(n.getNodeType()))
+                .count();
+    }
+
+    @Override
+    public long countNodesByTypeInFactSheet(Long factSheetId, NodeLevel type) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> type.name().equals(n.getNodeType()))
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .count();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAINTENANCE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public void flushPendingNodes() {
+        // Matrix store writes are synchronous and in-memory; nothing to flush.
+    }
+
+    @Override
+    public void deleteByFactSheetId(Long factSheetId) {
+        List<MatrixGraphNode> toDelete = graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .collect(Collectors.toList());
+        for (MatrixGraphNode node : toDelete) {
+            graphStore.removeNode(DEFAULT_GRAPH_ID, node.getNodeId());
+        }
+        log.info("Deleted {} nodes for factSheetId={}", toDelete.size(), factSheetId);
     }
 
     /**

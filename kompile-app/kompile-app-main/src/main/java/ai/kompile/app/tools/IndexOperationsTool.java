@@ -260,21 +260,27 @@ public class IndexOperationsTool {
                 Map<String, Object> config = new LinkedHashMap<>();
                 config.put("implementationType", vectorStore.getClass().getSimpleName());
 
-                // Check for common configuration methods
+                // Check for common configuration methods — probe via reflection; absence is expected
                 try {
                     var method = vectorStore.getClass().getMethod("getIndexPath");
                     config.put("indexPath", method.invoke(vectorStore));
-                } catch (NoSuchMethodException ignored) {}
+                } catch (NoSuchMethodException e) {
+                    logger.debug("VectorStore {} does not expose getIndexPath()", vectorStore.getClass().getSimpleName());
+                }
 
                 try {
                     var method = vectorStore.getClass().getMethod("getSimilarityFunction");
                     config.put("similarityFunction", method.invoke(vectorStore));
-                } catch (NoSuchMethodException ignored) {}
+                } catch (NoSuchMethodException e) {
+                    logger.debug("VectorStore {} does not expose getSimilarityFunction()", vectorStore.getClass().getSimpleName());
+                }
 
                 try {
                     var method = vectorStore.getClass().getMethod("getDimensions");
                     config.put("dimensions", method.invoke(vectorStore));
-                } catch (NoSuchMethodException ignored) {}
+                } catch (NoSuchMethodException e) {
+                    logger.debug("VectorStore {} does not expose getDimensions()", vectorStore.getClass().getSimpleName());
+                }
 
                 result.put("configuration", config);
             } else {

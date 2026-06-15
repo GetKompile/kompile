@@ -35,6 +35,8 @@ import org.nd4j.linalg.learning.config.Adam;
 import org.nd4j.linalg.learning.config.IUpdater;
 import org.nd4j.linalg.lossfunctions.LossFunctions;
 import org.nd4j.linalg.schedule.ISchedule;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -50,6 +52,8 @@ import java.util.concurrent.Callable;
         description = "Generates a Deeplearning4J NeuralNetConfiguration or ComputationGraphConfiguration JSON/YAML file.",
         mixinStandardHelpOptions = true)
 public class TrainingConfigGenerator implements Callable<Integer> {
+
+    private static final Logger log = LoggerFactory.getLogger(TrainingConfigGenerator.class);
 
     @Option(names = {"-o", "--output"}, description = "Output file path for the JSON/YAML configuration.", required = true)
     private File outputFile;
@@ -130,7 +134,7 @@ public class TrainingConfigGenerator implements Callable<Integer> {
             } else if (inputTypeChannels != null && inputTypeHeight != null && inputTypeWidth != null) {
                 graphBuilder.addInputs("input1").setInputTypes(InputType.convolutional(inputTypeHeight, inputTypeWidth, inputTypeChannels));
             } else {
-                System.err.println("Warning: Input type not fully specified for graph. Add --inputTypeSize or --inputTypeChannels/Height/Width.");
+                log.warn("Input type not fully specified for graph. Add --inputTypeSize or --inputTypeChannels/Height/Width.");
                 graphBuilder.addInputs("input1"); // Default input
             }
 
@@ -169,7 +173,7 @@ public class TrainingConfigGenerator implements Callable<Integer> {
 
 
             //objectMapper.writeValue(outputFile, configuration);
-            System.out.println(format.toUpperCase() + " DL4J training configuration written to: " + outputFile.getAbsolutePath());
+            log.info("{} DL4J training configuration written to: {}", format.toUpperCase(), outputFile.getAbsolutePath());
             return 0;
         }
         return 0;

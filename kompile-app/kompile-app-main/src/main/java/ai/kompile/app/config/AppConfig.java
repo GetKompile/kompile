@@ -20,7 +20,6 @@ import ai.kompile.app.MainApplication;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.servlet.MultipartConfigElement;
-import org.apache.tomcat.util.compat.Jre12Compat;
 import org.apache.tomcat.util.compat.JreCompat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -81,12 +80,21 @@ public class AppConfig {
                     MemberCategory.INVOKE_DECLARED_CONSTRUCTORS,
                     MemberCategory.INVOKE_DECLARED_METHODS);
 
-            hints.reflection().registerType(Jre12Compat.class,
-                    MemberCategory.INTROSPECT_PUBLIC_METHODS,
-                    MemberCategory.INTROSPECT_DECLARED_CONSTRUCTORS,
-                    MemberCategory.PUBLIC_FIELDS,
-                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS,
-                    MemberCategory.INVOKE_DECLARED_METHODS);
+            // Tomcat compat subclasses — use registerIfPresent since available classes
+            // vary across Tomcat versions (e.g. Jre12Compat removed in 10.1.20+)
+            for (String compatClass : new String[]{
+                    "org.apache.tomcat.util.compat.Jre16Compat",
+                    "org.apache.tomcat.util.compat.Jre19Compat",
+                    "org.apache.tomcat.util.compat.Jre21Compat",
+                    "org.apache.tomcat.util.compat.Jre22Compat"
+            }) {
+                registerIfPresent(hints, classLoader, compatClass,
+                        MemberCategory.INTROSPECT_PUBLIC_METHODS,
+                        MemberCategory.INTROSPECT_DECLARED_CONSTRUCTORS,
+                        MemberCategory.PUBLIC_FIELDS,
+                        MemberCategory.INVOKE_DECLARED_CONSTRUCTORS,
+                        MemberCategory.INVOKE_DECLARED_METHODS);
+            }
 
             // GraalVM native image: register ND4J/JavaCPP JNI types
             registerIfPresent(hints, classLoader, "org.bytedeco.javacpp.Loader",
@@ -193,7 +201,15 @@ public class AppConfig {
 
     @Bean
     public RestTemplate restTemplate() {
-        return new RestTemplate();
+        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(30_000);
+        return new RestTemplate(factory);
+    }
+
+    @Bean
+    public ai.kompile.project.KompileProjectStore kompileProjectStore() {
+        return new ai.kompile.project.KompileProjectStore();
     }
 
     @Bean

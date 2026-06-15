@@ -84,6 +84,11 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
             String messageId = (String) metadata.get(GraphConstants.META_GMAIL_MESSAGE_ID_RAW);
             String msgEntityId = messageId != null ? entityId("gmail_message", messageId) : null;
             if (msgEntityId != null) {
+                // Build occurredAt map for URL relations using the email date from metadata
+                String urlRelDate = metadata.get("gmail.date") instanceof String d ? d
+                        : (metadata.get("gmail.internalDate") instanceof String id ? id : null);
+                Map<String, String> urlRelProps = urlRelDate != null
+                        ? Map.of(GraphConstants.PROP_OCCURRED_AT, urlRelDate) : null;
                 Set<String> seenUrls = new LinkedHashSet<>();
                 Matcher urlMatcher = URL_PATTERN.matcher(bodyContent);
                 while (urlMatcher.find() && seenUrls.size() < 50) {
@@ -96,7 +101,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                                 Map.of("url", url)));
                         relationships.add(new ExtractedRelation(
                                 msgEntityId, urlEntityId, GraphConstants.REL_HYPERLINKS_TO,
-                                "Email contains link to " + url, 0.8, null));
+                                "Email contains link to " + url, 0.8, urlRelProps));
                     }
                 }
             }
@@ -151,6 +156,17 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
         if (date != null) msgProps.put("date", date);
         String internalDate = (String) meta.get("gmail.internalDate");
         if (internalDate != null) msgProps.put("internalDate", internalDate);
+
+        // Build a reusable relation properties map that carries occurredAt for all relations
+        // produced from this Gmail message. Prefer the human-readable date over internalDate.
+        final String emailOccurredAt = date != null ? date : internalDate;
+        final Map<String, String> emailRelProps;
+        if (emailOccurredAt != null) {
+            emailRelProps = new LinkedHashMap<>();
+            emailRelProps.put(GraphConstants.PROP_OCCURRED_AT, emailOccurredAt);
+        } else {
+            emailRelProps = null;
+        }
         String rfc822Id = (String) meta.get("gmail.rfc822MessageId");
         if (rfc822Id != null) msgProps.put("rfc822MessageId", rfc822Id);
         Object sizeEstimate = meta.get("gmail.sizeEstimate");
@@ -196,7 +212,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                         GraphConstants.ENTITY_GMAIL_MESSAGE, null, null, 1.0,
                         Map.of("rfc822MessageId", rfc822Id, "messageId", messageId)));
                 relationships.add(new ExtractedRelation(msgEntityId, rfc822EntityId,
-                        GraphConstants.REL_SAME_AS, "Gmail API ID and RFC822 Message-ID for same message", 1.0, null));
+                        GraphConstants.REL_SAME_AS, "Gmail API ID and RFC822 Message-ID for same message", 1.0, emailRelProps));
             }
         }
 
@@ -207,7 +223,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                     null, "Email date: " + date, 0.9,
                     Map.of("date", date, "dateType", "sent")));
             relationships.add(new ExtractedRelation(msgEntityId, dateEntityId, GraphConstants.REL_PUBLISHED_ON,
-                    (subject != null ? subject : "Email") + " sent on " + date, 0.9, null));
+                    (subject != null ? subject : "Email") + " sent on " + date, 0.9, emailRelProps));
         }
 
         // Thread entity
@@ -215,14 +231,14 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
             String threadEntityId = entityId("gmail_thread", threadId);
             entities.add(new ExtractedEntity(threadEntityId, "Thread " + threadId,
                     GraphConstants.ENTITY_GMAIL_THREAD, null, null, 1.0, Map.of("threadId", threadId)));
-            relationships.add(new ExtractedRelation(msgEntityId, threadEntityId, GraphConstants.REL_IN_THREAD, null, 1.0, null));
+            relationships.add(new ExtractedRelation(msgEntityId, threadEntityId, GraphConstants.REL_IN_THREAD, null, 1.0, emailRelProps));
         }
 
         // From person
         if (from != null) {
             String personId = addPersonEntity(from, entities);
             if (personId != null) {
-                relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_SENT_BY, null, 1.0, null));
+                relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_SENT_BY, null, 1.0, emailRelProps));
             }
         }
 
@@ -249,13 +265,13 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                             null, "Organization (email domain): " + domain, 0.7, orgProps));
                     relationships.add(new ExtractedRelation(
                             msgEntityId, domainOrgId, GraphConstants.REL_AFFILIATED_WITH,
-                            "Email from " + domain + " organization", 0.7, null));
+                            "Email from " + domain + " organization", 0.7, emailRelProps));
                     // Link sender person to their organization
                     String senderPersonId = addPersonEntity(from, entities);
                     if (senderPersonId != null) {
                         relationships.add(new ExtractedRelation(
                                 senderPersonId, domainOrgId, GraphConstants.REL_AFFILIATED_WITH,
-                                "Sender affiliated with " + domain, 0.7, null));
+                                "Sender affiliated with " + domain, 0.7, emailRelProps));
                     }
                 }
             }
@@ -266,7 +282,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
             for (String addr : parseAddressList(to)) {
                 String personId = addPersonEntity(addr, entities);
                 if (personId != null) {
-                    relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_SENT_TO, null, 1.0, null));
+                    relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_SENT_TO, null, 1.0, emailRelProps));
                 }
             }
         }
@@ -276,7 +292,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
             for (String addr : parseAddressList(cc)) {
                 String personId = addPersonEntity(addr, entities);
                 if (personId != null) {
-                    relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_CC_TO, null, 1.0, null));
+                    relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_CC_TO, null, 1.0, emailRelProps));
                 }
             }
         }
@@ -287,7 +303,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
             for (String addr : parseAddressList(bcc)) {
                 String personId = addPersonEntity(addr, entities);
                 if (personId != null) {
-                    relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_BCC_TO, null, 0.9, null));
+                    relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_BCC_TO, null, 0.9, emailRelProps));
                 }
             }
         }
@@ -299,7 +315,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                 String personId = addPersonEntity(addr, entities);
                 if (personId != null) {
                     relationships.add(new ExtractedRelation(msgEntityId, personId, GraphConstants.REL_REPLY_TO_DIRECTED_AT,
-                            "Replies to this email should go to " + addr, 0.95, null));
+                            "Replies to this email should go to " + addr, 0.95, emailRelProps));
                 }
             }
         }
@@ -309,7 +325,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
             String repliedMsgId = entityId("gmail_rfc822", inReplyTo);
             entities.add(new ExtractedEntity(repliedMsgId, "Message " + inReplyTo,
                     GraphConstants.ENTITY_GMAIL_MESSAGE, null, null, 1.0, Map.of("rfc822MessageId", inReplyTo)));
-            relationships.add(new ExtractedRelation(msgEntityId, repliedMsgId, GraphConstants.REL_REPLIED_TO, null, 1.0, null));
+            relationships.add(new ExtractedRelation(msgEntityId, repliedMsgId, GraphConstants.REL_REPLIED_TO, null, 1.0, emailRelProps));
         }
 
         // References chain (other messages in the thread)
@@ -328,7 +344,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                 entities.add(new ExtractedEntity(refEntityId, "Message " + ref,
                         GraphConstants.ENTITY_GMAIL_MESSAGE, null, null, 0.7, Map.of("rfc822MessageId", ref)));
                 relationships.add(new ExtractedRelation(msgEntityId, refEntityId, GraphConstants.REL_REFERENCES,
-                        "Email references " + ref, 0.9, null));
+                        "Email references " + ref, 0.9, emailRelProps));
             }
         }
 
@@ -339,7 +355,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
             entities.add(new ExtractedEntity(listEntityId, listId,
                     GraphConstants.ENTITY_MAILING_LIST, null, "Mailing list: " + listId, 1.0, Map.of("listId", listId)));
             relationships.add(new ExtractedRelation(msgEntityId, listEntityId, GraphConstants.REL_POSTED_TO,
-                    "Email posted to mailing list " + listId, 1.0, null));
+                    "Email posted to mailing list " + listId, 1.0, emailRelProps));
         }
 
         // Labels
@@ -349,7 +365,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
             for (String label : labels) {
                 String labelId = entityId("gmail_label", label);
                 entities.add(new ExtractedEntity(labelId, label, GraphConstants.ENTITY_GMAIL_LABEL, null, null, 1.0, Map.of("labelId", label)));
-                relationships.add(new ExtractedRelation(msgEntityId, labelId, GraphConstants.REL_HAS_LABEL, null, 1.0, null));
+                relationships.add(new ExtractedRelation(msgEntityId, labelId, GraphConstants.REL_HAS_LABEL, null, 1.0, emailRelProps));
             }
         }
 
@@ -375,12 +391,12 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                                 "Calendar: " + filename, GraphConstants.ENTITY_CALENDAR_EVENT,
                                 null, "Calendar invite from email " + messageId, 1.0, calProps));
                         relationships.add(new ExtractedRelation(msgEntityId, calEntityId,
-                                GraphConstants.REL_HAS_CALENDAR_EVENT, null, 1.0, null));
+                                GraphConstants.REL_HAS_CALENDAR_EVENT, null, 1.0, emailRelProps));
                     } else {
                         String attEntityId = entityId("gmail_attachment", messageId + "/" + filename);
                         entities.add(new ExtractedEntity(attEntityId, filename, GraphConstants.ENTITY_GMAIL_ATTACHMENT, null, null, 1.0,
                                 Map.of("filename", filename, "mimeType", attMimeType)));
-                        relationships.add(new ExtractedRelation(msgEntityId, attEntityId, GraphConstants.REL_HAS_ATTACHMENT, null, 1.0, null));
+                        relationships.add(new ExtractedRelation(msgEntityId, attEntityId, GraphConstants.REL_HAS_ATTACHMENT, null, 1.0, emailRelProps));
                     }
                 }
             }
@@ -396,7 +412,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                     Map.of("topic", threadTopic.trim())));
             relationships.add(new ExtractedRelation(msgEntityId, topicEntityId,
                     GraphConstants.REL_HAS_CONVERSATION_TOPIC,
-                    "Email has conversation topic: " + threadTopic.trim(), 0.9, null));
+                    "Email has conversation topic: " + threadTopic.trim(), 0.9, emailRelProps));
         }
 
         // Extract href links from HTML body (invisible in plain-text version)
@@ -418,7 +434,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                             null, "URL from email HTML body", 0.8, urlProps));
                     relationships.add(new ExtractedRelation(
                             msgEntityId, urlEntityId, GraphConstants.REL_HYPERLINKS_TO,
-                            "Email HTML body contains link to " + url, 0.8, null));
+                            "Email HTML body contains link to " + url, 0.8, emailRelProps));
                 }
             }
         }
@@ -446,7 +462,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                 relationships.add(new ExtractedRelation(
                         msgEntityId, imgId, GraphConstants.REL_HAS_IMAGE,
                         (subject != null ? subject : "Email") + " has inline image: " + imgName,
-                        0.85, null));
+                        0.85, emailRelProps));
             }
         }
 
@@ -471,13 +487,13 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                 if (i == 0) {
                     relationships.add(new ExtractedRelation(msgEntityId, serverId,
                             GraphConstants.REL_ROUTED_VIA,
-                            "Email routed via " + serverName, 0.85, null));
+                            "Email routed via " + serverName, 0.85, emailRelProps));
                 }
                 // Chain hops: previous server → this server
                 if (previousServerId != null && !previousServerId.equals(serverId)) {
                     relationships.add(new ExtractedRelation(previousServerId, serverId,
                             GraphConstants.REL_ROUTED_VIA,
-                            "Mail routed from previous hop to " + serverName, 0.8, null));
+                            "Mail routed from previous hop to " + serverName, 0.8, emailRelProps));
                 }
                 previousServerId = serverId;
             }
@@ -492,7 +508,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                     Map.of("software", mailer, "headerSource", "X-Mailer")));
             relationships.add(new ExtractedRelation(msgEntityId, clientId,
                     GraphConstants.REL_SENT_WITH,
-                    "Email sent with " + mailer, 0.9, null));
+                    "Email sent with " + mailer, 0.9, emailRelProps));
         } else if (userAgent != null) {
             String clientId = entityId("email_client", userAgent.toLowerCase());
             entities.add(new ExtractedEntity(clientId, userAgent,
@@ -501,7 +517,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                     Map.of("software", userAgent, "headerSource", "User-Agent")));
             relationships.add(new ExtractedRelation(msgEntityId, clientId,
                     GraphConstants.REL_SENT_WITH,
-                    "Email sent with " + userAgent, 0.9, null));
+                    "Email sent with " + userAgent, 0.9, emailRelProps));
         }
 
         // List-Unsubscribe → EXTERNAL_RESOURCE entity + relation
@@ -520,7 +536,7 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
                         "List unsubscribe endpoint", 0.8, unsubProps));
                 relationships.add(new ExtractedRelation(msgEntityId, unsubId,
                         GraphConstants.REL_HYPERLINKS_TO,
-                        "Email has unsubscribe link: " + unsubUri, 0.8, null));
+                        "Email has unsubscribe link: " + unsubUri, 0.8, emailRelProps));
             }
         }
     }

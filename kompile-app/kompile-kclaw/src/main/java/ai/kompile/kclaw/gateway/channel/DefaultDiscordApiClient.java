@@ -15,6 +15,7 @@
  */
 package ai.kompile.kclaw.gateway.channel;
 
+import ai.kompile.gateway.core.gateway.channel.DiscordApiClient;
 import lombok.extern.slf4j.Slf4j;
 
 import java.net.URI;
@@ -115,16 +116,19 @@ public class DefaultDiscordApiClient implements DiscordApiClient {
     private void handleGatewayPayload(String text) {
         try {
             Map<String, Object> payload = objectMapper.readValue(text, Map.class);
-            int op = ((Number) payload.get("op")).intValue();
+            if (!(payload.get("op") instanceof Number opNum)) return;
+            int op = opNum.intValue();
             Object d = payload.get("d");
-            if (payload.get("s") != null) {
-                lastSequence = ((Number) payload.get("s")).intValue();
+            if (payload.get("s") instanceof Number seqNum) {
+                lastSequence = seqNum.intValue();
             }
 
             switch (op) {
                 case GATEWAY_HELLO -> {
-                    Map<String, Object> data = (Map<String, Object>) d;
-                    long heartbeatInterval = ((Number) data.get("heartbeat_interval")).longValue();
+                    if (!(d instanceof Map<?,?> rawData)) break;
+                    Map<String, Object> data = (Map<String, Object>) rawData;
+                    if (!(data.get("heartbeat_interval") instanceof Number hbNum)) break;
+                    long heartbeatInterval = hbNum.longValue();
                     startHeartbeating(heartbeatInterval);
                     sendIdentify();
                 }

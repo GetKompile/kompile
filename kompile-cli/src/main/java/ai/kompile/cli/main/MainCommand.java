@@ -48,6 +48,7 @@ import ai.kompile.cli.main.sdk.SdkMain;
 import ai.kompile.cli.main.serve.DaemonCommand;
 import ai.kompile.cli.main.serve.ServeCommand;
 import ai.kompile.cli.main.uninstall.UnInstallMain;
+import ai.kompile.cli.main.cloud.CloudCommand;
 import ai.kompile.cli.main.web.WebCommand;
 import ai.kompile.cli.plugin.api.CliCommandRegistrar;
 import org.slf4j.Logger;
@@ -99,7 +100,8 @@ import java.util.concurrent.Callable;
                 CodeIndexCommand.class,
                 EditCoordinatorCommand.class,
                 WebCommand.class,
-                RunCommand.class
+                RunCommand.class,
+                CloudCommand.class
         },
         mixinStandardHelpOptions = true,
         versionProvider = VersionProvider.class,
@@ -148,7 +150,13 @@ public class MainCommand implements Callable<Integer> {
         commandLine.addSubcommand("lite", new DelegatingCommand("kompile-lite",
                 "Kompile Lite self-contained chat + RAG + Graph RAG application."));
 
-        int exitCode = commandLine.execute(args);
+        int exitCode;
+        try {
+            exitCode = commandLine.execute(args);
+        } catch (NoClassDefFoundError e) {
+            // Shade plugin classloader can lose picocli inner classes during shutdown
+            exitCode = 0;
+        }
         if (exitCode != 0) {
             System.exit(exitCode);
         }
@@ -211,7 +219,13 @@ public class MainCommand implements Callable<Integer> {
             ProcessBuilder pb = new ProcessBuilder(cmd)
                     .inheritIO();
             Process process = pb.start();
-            return process.waitFor();
+            try {
+                return process.waitFor();
+            } catch (InterruptedException e) {
+                process.destroyForcibly();
+                Thread.currentThread().interrupt();
+                return 1;
+            }
         }
     }
 }

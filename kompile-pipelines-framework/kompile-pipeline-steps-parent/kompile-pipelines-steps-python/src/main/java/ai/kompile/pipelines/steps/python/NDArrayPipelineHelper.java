@@ -24,6 +24,8 @@ import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -36,6 +38,8 @@ import java.util.concurrent.Callable;
 @Command(name = "ndarray-pipeline-helper", mixinStandardHelpOptions = true,
         description = "Create an NDArray pipeline configuration for a Python step using Kompile Pipeline Framework.")
 public class NDArrayPipelineHelper implements Callable<Integer> {
+
+    private static final Logger log = LoggerFactory.getLogger(NDArrayPipelineHelper.class);
 
     @Option(names = {"-i", "--input-name"}, description = "Name of the primary input NDArray variable (Default: input)", defaultValue = "input")
     private String inputName;
@@ -76,7 +80,7 @@ public class NDArrayPipelineHelper implements Callable<Integer> {
         } else if (scriptPath != null && !scriptPath.isEmpty()) {
             pythonConfigBuilder.pythonCodePath(scriptPath);
         } else {
-            System.err.println("Error: Either --python-code or --script-path must be specified.");
+            log.error("Either --python-code or --script-path must be specified.");
             return 1;
         }
 
@@ -130,7 +134,7 @@ public class NDArrayPipelineHelper implements Callable<Integer> {
         } else if ("yaml".equalsIgnoreCase(format)) {
             outputString = ObjectMappers.getYamlMapper().writerWithDefaultPrettyPrinter().writeValueAsString(pipeline);
         } else {
-            System.err.println("Error: Invalid output format '" + format + "'. Choose 'json' or 'yaml'.");
+            log.error("Invalid output format '{}'. Choose 'json' or 'yaml'.", format);
             return 1;
         }
 
@@ -149,7 +153,7 @@ public class NDArrayPipelineHelper implements Callable<Integer> {
                 secondaryType = ValueType.valueOf(parts[1].trim().toUpperCase());
             }
         } catch (IllegalArgumentException e) {
-            System.err.println("Error: Invalid ValueType specified in variable spec: '" + spec + "'. " + e.getMessage());
+            log.error("Invalid ValueType specified in variable spec: '{}'. {}", spec, e.getMessage());
             return null;
         }
 

@@ -55,7 +55,9 @@ public final class Nd4jStartup {
                 try {
                     java.lang.reflect.Method getExecPath = imageInfoClass.getMethod("getExecutableName");
                     execPath = (String) getExecPath.invoke(null);
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    logger.debug("Could not get native image executable name via reflection: {}", e.getMessage());
+                }
             }
         } catch (ClassNotFoundException ignored) {
             // Not in a native image

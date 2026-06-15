@@ -91,7 +91,11 @@ public class KubernetesJobSchedulerDelegate implements ExternalJobSchedulerDeleg
                 process.getOutputStream().write(manifest.getBytes());
                 process.getOutputStream().close();
 
-                int exitCode = process.waitFor();
+                if (!process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    return new ExternalJobRef(jobName, "FAILED", "kubectl apply timed out");
+                }
+                int exitCode = process.exitValue();
                 String output;
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(process.getInputStream()))) {
@@ -125,7 +129,12 @@ public class KubernetesJobSchedulerDelegate implements ExternalJobSchedulerDeleg
                         "--ignore-not-found");
                 pb.redirectErrorStream(true);
                 Process process = pb.start();
-                int exitCode = process.waitFor();
+                if (!process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    log.warn("kubectl delete timed out for Job '{}'", externalRef);
+                    return false;
+                }
+                int exitCode = process.exitValue();
                 log.info("Cancelled Kubernetes Job '{}': exit={}", externalRef, exitCode);
                 return exitCode == 0;
             } catch (Exception e) {
@@ -153,7 +162,11 @@ public class KubernetesJobSchedulerDelegate implements ExternalJobSchedulerDeleg
                     output = reader.lines().collect(java.util.stream.Collectors.joining()).trim();
                 }
 
-                int exitCode = process.waitFor();
+                if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    return new ExternalJobStatus(externalRef, "UNKNOWN", "kubectl get timed out", Map.of());
+                }
+                int exitCode = process.exitValue();
                 if (exitCode != 0) {
                     return new ExternalJobStatus(externalRef, "UNKNOWN", "kubectl failed", Map.of());
                 }
@@ -182,8 +195,11 @@ public class KubernetesJobSchedulerDelegate implements ExternalJobSchedulerDeleg
             ProcessBuilder pb = new ProcessBuilder("kubectl", "version", "--client", "--short");
             pb.redirectErrorStream(true);
             Process process = pb.start();
-            int exitCode = process.waitFor();
-            return exitCode == 0;
+            if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return false;
+            }
+            return process.exitValue() == 0;
         } catch (Exception e) {
             log.debug("kubectl not available: {}", e.getMessage());
             return false;

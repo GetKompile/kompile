@@ -329,7 +329,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                         subprocessLauncher.configureOpTiming(desiredOpTimingEnabled, desiredOpTimingDetailedMode)
                                 .get(10, TimeUnit.SECONDS);
                     } catch (Exception e) {
-                        log.warn("Failed to enable op timing before model load: {}", e.getMessage());
+                        log.warn("Failed to enable op timing before model load", e);
                     }
                 }
 
@@ -403,7 +403,9 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                     if (!initializationErrorRetriable) {
                         try {
                             subprocessLauncher.stop();
-                        } catch (Exception ignored) {}
+                        } catch (Exception stopEx) {
+                            log.warn("Failed to stop embedding subprocess after non-retriable init error: {}", stopEx.getMessage());
+                        }
                         subprocessLauncher = null;
                     } else {
                         log.info("Keeping subprocess alive for retry (retriable error: {})", e.getMessage());
@@ -466,7 +468,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     }
 
     private void handleCrash(Exception e) {
-        log.error("[subprocess] CRASH: {}", e.getMessage());
+        log.error("[subprocess] CRASH", e);
         publishEvent(EmbeddingSubprocessEvent.subprocessCrashed(this, modelIdentifier, e.getMessage()));
         // Subprocess launcher will handle restart via RestartPolicyCallback
     }
@@ -616,7 +618,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             }
             return Nd4j.create(embedding);
         } catch (Exception e) {
-            log.error("Error embedding text via subprocess: {}", e.getMessage());
+            log.error("Error embedding text via subprocess", e);
             return Nd4j.empty(DataType.FLOAT);
         }
     }
@@ -686,7 +688,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
         } catch (Exception e) {
             long totalWallClockMs = System.currentTimeMillis() - startTime;
-            log.error("Error in embedWithTiming: {}", e.getMessage());
+            log.error("Error in embedWithTiming", e);
             return EmbedTimingResult.failure(e.getMessage(), totalWallClockMs);
         }
     }
@@ -856,7 +858,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 // Publish SUBPROCESS_STOPPED event for job history tracking
                 publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
             } catch (Exception e) {
-                log.warn("Error stopping subprocess: {}", e.getMessage());
+                log.warn("Error stopping subprocess", e);
             }
             subprocessLauncher = null;
         }
@@ -885,7 +887,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                     subprocessLauncher.stop();
                     publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
                 } catch (Exception e) {
-                    log.warn("Error stopping subprocess during preemption: {}", e.getMessage());
+                    log.warn("Error stopping subprocess during preemption", e);
                 }
                 subprocessLauncher = null;
             }
@@ -981,26 +983,35 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
      * Checks both the local state and the subprocess launcher state.
      */
     public boolean isInitialized() {
-        // Check local state first
+        // Check local state first (volatile read)
         if (initialized) {
             return true;
         }
         // Also check subprocess launcher - it may have loaded the model
-        // even if the local state hasn't been updated yet
-        if (subprocessLauncher != null && subprocessLauncher.isModelLoaded()) {
-            int subDim = subprocessLauncher.getCurrentDimensions();
+        // even if the local state hasn't been updated yet.
+        // Synchronize to prevent concurrent threads from all updating state simultaneously.
+        EmbeddingSubprocessLauncher launcher = this.subprocessLauncher;
+        if (launcher != null && launcher.isModelLoaded()) {
+            int subDim = launcher.getCurrentDimensions();
             if (subDim > 0) {
-                // Subprocess has a loaded model with valid dimensions
-                // Update local state to reflect this
-                this.embeddingDimensions = subDim;
-                this.encoderType = subprocessLauncher.getEncoderType();
-                this.modelSource = ModelSource.REGISTRY;
-                this.initialized = true;
-                // Also update loading state since model is ready
-                this.loading = false;
-                this.loadingPhase = LoadingPhase.COMPLETE;
-                this.loadingMessage = "Model loaded (synced from subprocess)";
-                this.initializationError = null;
+                synchronized (launcherLock) {
+                    // Double-check after acquiring lock
+                    if (initialized) {
+                        return true;
+                    }
+                    // Subprocess has a loaded model with valid dimensions
+                    // Update local state to reflect this
+                    this.embeddingDimensions = subDim;
+                    this.encoderType = launcher.getEncoderType();
+                    this.modelSource = ModelSource.REGISTRY;
+                    // Also update loading state since model is ready
+                    this.loading = false;
+                    this.loadingPhase = LoadingPhase.COMPLETE;
+                    this.loadingMessage = "Model loaded (synced from subprocess)";
+                    this.initializationError = null;
+                    // Set initialized last (volatile write publishes all above writes)
+                    this.initialized = true;
+                }
                 return true;
             }
         }
@@ -1017,21 +1028,9 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             return modelSource;
         }
         // Also check subprocess launcher - it may have loaded the model
-        if (subprocessLauncher != null && subprocessLauncher.isModelLoaded()) {
-            int subDim = subprocessLauncher.getCurrentDimensions();
-            if (subDim > 0) {
-                // Subprocess has a loaded model - update local state
-                this.embeddingDimensions = subDim;
-                this.encoderType = subprocessLauncher.getEncoderType();
-                this.modelSource = ModelSource.REGISTRY;
-                this.initialized = true;
-                // Also update loading state since model is ready
-                this.loading = false;
-                this.loadingPhase = LoadingPhase.COMPLETE;
-                this.loadingMessage = "Model loaded (synced from subprocess)";
-                this.initializationError = null;
-                return ModelSource.REGISTRY;
-            }
+        // Use isInitialized() to sync state under lock, avoiding duplicate logic
+        if (isInitialized()) {
+            return modelSource;
         }
         return modelSource;
     }
@@ -1169,7 +1168,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                         return false;
                     }
                 } catch (Exception e) {
-                    log.error("Error switching model: {}", e.getMessage());
+                    log.error("Error switching model", e);
                     // Publish MODEL_FAILED event
                     publishEvent(EmbeddingSubprocessEvent.modelFailed(this, newModelIdentifier, e.getMessage()));
                     return false;
@@ -1250,7 +1249,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 try {
                     subprocessLauncher.stop();
                 } catch (Exception e) {
-                    log.warn("Error stopping subprocess during restart: {}", e.getMessage());
+                    log.warn("Error stopping subprocess during restart", e);
                 }
                 subprocessLauncher = null;
             }
@@ -1345,7 +1344,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                     }
                 })
                 .exceptionally(e -> {
-                    log.error("Error configuring subprocess op timing: {}", e.getMessage());
+                    log.error("Error configuring subprocess op timing", e);
                     return false;
                 });
     }
@@ -1368,7 +1367,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
         return subprocessLauncher.flushOpTiming(topN, reset)
                 .exceptionally(e -> {
-                    log.error("Error flushing subprocess op timing: {}", e.getMessage());
+                    log.error("Error flushing subprocess op timing", e);
                     return new EmbeddingSubprocessMessage.OpTimingFlushResponse(
                             "N/A", false, 0, 0, List.of(), e.getMessage());
                 });
@@ -1408,11 +1407,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                         }
                     })
                     .exceptionally(e -> {
-                        log.error("Error applying op timing state to subprocess: {}", e.getMessage());
+                        log.error("Error applying op timing state to subprocess", e);
                         return null;
                     });
         } catch (Exception e) {
-            log.error("Exception applying op timing state: {}", e.getMessage());
+            log.error("Exception applying op timing state", e);
         }
     }
 

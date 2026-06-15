@@ -179,7 +179,13 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
      */
     private Iterator<Document> streamDocxParagraphs(File file, Consumer<PageProgress> callback) throws IOException {
         FileInputStream fis = new FileInputStream(file);
-        XWPFDocument document = new XWPFDocument(fis);
+        XWPFDocument document;
+        try {
+            document = new XWPFDocument(fis);
+        } catch (Exception e) {
+            fis.close();
+            throw e;
+        }
         List<XWPFParagraph> paragraphs = document.getParagraphs();
         int totalBatches = (paragraphs.size() + PARAGRAPH_BATCH_SIZE - 1) / PARAGRAPH_BATCH_SIZE;
 
@@ -205,37 +211,42 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
                     throw new NoSuchElementException("No more paragraph batches");
                 }
 
-                int start = currentBatch * PARAGRAPH_BATCH_SIZE;
-                int end = Math.min(start + PARAGRAPH_BATCH_SIZE, paragraphs.size());
+                try {
+                    int start = currentBatch * PARAGRAPH_BATCH_SIZE;
+                    int end = Math.min(start + PARAGRAPH_BATCH_SIZE, paragraphs.size());
 
-                StringBuilder content = new StringBuilder();
-                for (int i = start; i < end; i++) {
-                    String text = paragraphs.get(i).getText();
-                    if (text != null && !text.trim().isEmpty()) {
-                        content.append(text).append("\n");
+                    StringBuilder content = new StringBuilder();
+                    for (int i = start; i < end; i++) {
+                        String text = paragraphs.get(i).getText();
+                        if (text != null && !text.trim().isEmpty()) {
+                            content.append(text).append("\n");
+                        }
                     }
-                }
 
-                currentBatch++;
+                    currentBatch++;
 
-                if (callback != null) {
-                    callback.accept(new PageProgress(
-                        currentBatch,
-                        totalBatches,
-                        "paragraphs " + start + "-" + end
-                    ));
-                }
+                    if (callback != null) {
+                        callback.accept(new PageProgress(
+                            currentBatch,
+                            totalBatches,
+                            "paragraphs " + start + "-" + end
+                        ));
+                    }
 
-                Document doc = new Document(content.toString());
-                addMetadata(doc, file, "DOCX", currentBatch, totalBatches);
-                doc.getMetadata().put("paragraphStart", start);
-                doc.getMetadata().put("paragraphEnd", end);
+                    Document doc = new Document(content.toString());
+                    addMetadata(doc, file, "DOCX", currentBatch, totalBatches);
+                    doc.getMetadata().put("paragraphStart", start);
+                    doc.getMetadata().put("paragraphEnd", end);
 
-                if (currentBatch >= totalBatches) {
+                    if (currentBatch >= totalBatches) {
+                        closeResources();
+                    }
+
+                    return doc;
+                } catch (Exception e) {
                     closeResources();
+                    throw e;
                 }
-
-                return doc;
             }
 
             private void closeResources() {
@@ -258,7 +269,13 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
      */
     private Iterator<Document> streamXlsxSheets(File file, Consumer<PageProgress> callback) throws IOException {
         FileInputStream fis = new FileInputStream(file);
-        XSSFWorkbook workbook = new XSSFWorkbook(fis);
+        XSSFWorkbook workbook;
+        try {
+            workbook = new XSSFWorkbook(fis);
+        } catch (Exception e) {
+            fis.close();
+            throw e;
+        }
         int totalSheets = workbook.getNumberOfSheets();
 
         logger.info("Starting streaming XLSX load: {} sheets from {}", totalSheets, file.getName());
@@ -282,42 +299,47 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
                     throw new NoSuchElementException("No more sheets");
                 }
 
-                Sheet sheet = workbook.getSheetAt(currentSheet);
-                String sheetName = sheet.getSheetName();
+                try {
+                    Sheet sheet = workbook.getSheetAt(currentSheet);
+                    String sheetName = sheet.getSheetName();
 
-                StringBuilder content = new StringBuilder();
-                content.append("Sheet: ").append(sheetName).append("\n\n");
+                    StringBuilder content = new StringBuilder();
+                    content.append("Sheet: ").append(sheetName).append("\n\n");
 
-                for (Row row : sheet) {
-                    for (Cell cell : row) {
-                        String cellValue = getCellValueAsString(cell);
-                        if (!cellValue.trim().isEmpty()) {
-                            content.append(cellValue).append("\t");
+                    for (Row row : sheet) {
+                        for (Cell cell : row) {
+                            String cellValue = getCellValueAsString(cell);
+                            if (!cellValue.trim().isEmpty()) {
+                                content.append(cellValue).append("\t");
+                            }
                         }
+                        content.append("\n");
                     }
-                    content.append("\n");
-                }
 
-                currentSheet++;
+                    currentSheet++;
 
-                if (callback != null) {
-                    callback.accept(new PageProgress(
-                        currentSheet,
-                        totalSheets,
-                        "sheet: " + sheetName
-                    ));
-                }
+                    if (callback != null) {
+                        callback.accept(new PageProgress(
+                            currentSheet,
+                            totalSheets,
+                            "sheet: " + sheetName
+                        ));
+                    }
 
-                Document doc = new Document(content.toString());
-                addMetadata(doc, file, "XLSX", currentSheet, totalSheets);
-                doc.getMetadata().put("sheetName", sheetName);
-                doc.getMetadata().put("sheetIndex", currentSheet - 1);
+                    Document doc = new Document(content.toString());
+                    addMetadata(doc, file, "XLSX", currentSheet, totalSheets);
+                    doc.getMetadata().put("sheetName", sheetName);
+                    doc.getMetadata().put("sheetIndex", currentSheet - 1);
 
-                if (currentSheet >= totalSheets) {
+                    if (currentSheet >= totalSheets) {
+                        closeResources();
+                    }
+
+                    return doc;
+                } catch (Exception e) {
                     closeResources();
+                    throw e;
                 }
-
-                return doc;
             }
 
             private void closeResources() {
@@ -340,7 +362,13 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
      */
     private Iterator<Document> streamPptxSlides(File file, Consumer<PageProgress> callback) throws IOException {
         FileInputStream fis = new FileInputStream(file);
-        XMLSlideShow slideShow = new XMLSlideShow(fis);
+        XMLSlideShow slideShow;
+        try {
+            slideShow = new XMLSlideShow(fis);
+        } catch (Exception e) {
+            fis.close();
+            throw e;
+        }
         List<XSLFSlide> slides = slideShow.getSlides();
         int totalSlides = slides.size();
 
@@ -365,51 +393,56 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
                     throw new NoSuchElementException("No more slides");
                 }
 
-                XSLFSlide slide = slides.get(currentSlide);
-                String slideTitle = slide.getTitle();
+                try {
+                    XSLFSlide slide = slides.get(currentSlide);
+                    String slideTitle = slide.getTitle();
 
-                // Extract text from all shapes in the slide
-                StringBuilder content = new StringBuilder();
-                content.append("Slide ").append(currentSlide + 1);
-                if (slideTitle != null && !slideTitle.isEmpty()) {
-                    content.append(": ").append(slideTitle);
-                }
-                content.append("\n\n");
-
-                // Use slide extractor pattern
-                slide.getShapes().forEach(shape -> {
-                    if (shape instanceof org.apache.poi.xslf.usermodel.XSLFTextShape) {
-                        org.apache.poi.xslf.usermodel.XSLFTextShape textShape =
-                            (org.apache.poi.xslf.usermodel.XSLFTextShape) shape;
-                        String text = textShape.getText();
-                        if (text != null && !text.trim().isEmpty()) {
-                            content.append(text).append("\n");
-                        }
+                    // Extract text from all shapes in the slide
+                    StringBuilder content = new StringBuilder();
+                    content.append("Slide ").append(currentSlide + 1);
+                    if (slideTitle != null && !slideTitle.isEmpty()) {
+                        content.append(": ").append(slideTitle);
                     }
-                });
+                    content.append("\n\n");
 
-                currentSlide++;
+                    // Use slide extractor pattern
+                    slide.getShapes().forEach(shape -> {
+                        if (shape instanceof org.apache.poi.xslf.usermodel.XSLFTextShape) {
+                            org.apache.poi.xslf.usermodel.XSLFTextShape textShape =
+                                (org.apache.poi.xslf.usermodel.XSLFTextShape) shape;
+                            String text = textShape.getText();
+                            if (text != null && !text.trim().isEmpty()) {
+                                content.append(text).append("\n");
+                            }
+                        }
+                    });
 
-                if (callback != null) {
-                    callback.accept(new PageProgress(
-                        currentSlide,
-                        totalSlides,
-                        "slide " + currentSlide + (slideTitle != null ? ": " + slideTitle : "")
-                    ));
-                }
+                    currentSlide++;
 
-                Document doc = new Document(content.toString());
-                addMetadata(doc, file, "PPTX", currentSlide, totalSlides);
-                doc.getMetadata().put("slideNumber", currentSlide);
-                if (slideTitle != null) {
-                    doc.getMetadata().put("slideTitle", slideTitle);
-                }
+                    if (callback != null) {
+                        callback.accept(new PageProgress(
+                            currentSlide,
+                            totalSlides,
+                            "slide " + currentSlide + (slideTitle != null ? ": " + slideTitle : "")
+                        ));
+                    }
 
-                if (currentSlide >= totalSlides) {
+                    Document doc = new Document(content.toString());
+                    addMetadata(doc, file, "PPTX", currentSlide, totalSlides);
+                    doc.getMetadata().put("slideNumber", currentSlide);
+                    if (slideTitle != null) {
+                        doc.getMetadata().put("slideTitle", slideTitle);
+                    }
+
+                    if (currentSlide >= totalSlides) {
+                        closeResources();
+                    }
+
+                    return doc;
+                } catch (Exception e) {
                     closeResources();
+                    throw e;
                 }
-
-                return doc;
             }
 
             private void closeResources() {

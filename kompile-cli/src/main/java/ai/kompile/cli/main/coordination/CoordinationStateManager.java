@@ -680,7 +680,12 @@ public class CoordinationStateManager {
             }
 
             // Retry after short delay
-            Thread.sleep(LOCK_RETRY_DELAY_MS);
+            try {
+                Thread.sleep(LOCK_RETRY_DELAY_MS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while waiting for coordinator lock", ie);
+            }
         }
 
         throw new IOException("Could not acquire coordinator lock after " + LOCK_RETRY_COUNT + " retries");

@@ -236,7 +236,7 @@ public class SubprocessRegistry {
         shutdownAll();
     }
 
-    private void registerShutdownHook() {
+    private synchronized void registerShutdownHook() {
         if (!shutdownHookRegistered) {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 // In shutdown hook context, logging may not work — use stderr

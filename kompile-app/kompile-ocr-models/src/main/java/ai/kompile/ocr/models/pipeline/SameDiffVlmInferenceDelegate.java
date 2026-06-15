@@ -217,16 +217,16 @@ public class SameDiffVlmInferenceDelegate implements VlmInferenceDelegate {
         String preset = config.getSamplingPreset();
         if (preset != null) {
             switch (preset.toLowerCase()) {
-                case "creative": {
-                    SamplingConfig sc = SamplingConfig.creative();
-                    sc.setMaxNewTokens(config.getMaxNewTokens());
-                    return sc;
-                }
-                case "precise": {
-                    SamplingConfig sc = SamplingConfig.precise();
-                    sc.setMaxNewTokens(config.getMaxNewTokens());
-                    return sc;
-                }
+                case "creative":
+                    return SamplingConfig.builder()
+                            .temperature(0.9).topK(50).topP(0.95).doSample(true)
+                            .maxNewTokens(config.getMaxNewTokens())
+                            .build();
+                case "precise":
+                    return SamplingConfig.builder()
+                            .temperature(0.3).topP(0.85).doSample(true)
+                            .maxNewTokens(config.getMaxNewTokens())
+                            .build();
             }
         }
 

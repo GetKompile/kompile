@@ -132,10 +132,14 @@ public class HuggingFaceDownloader implements DownloadService {
         try {
             String url = buildDownloadUrl(request.getRepository(), "config.json", request.getRevision());
             HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setRequestMethod("HEAD");
-            conn.setConnectTimeout(CONNECTION_TIMEOUT);
-            int responseCode = conn.getResponseCode();
-            return responseCode == 200;
+            try {
+                conn.setRequestMethod("HEAD");
+                conn.setConnectTimeout(CONNECTION_TIMEOUT);
+                int responseCode = conn.getResponseCode();
+                return responseCode == 200;
+            } finally {
+                conn.disconnect();
+            }
         } catch (Exception e) {
             log.debug("Model not available: {}", request.getRepository(), e);
             return false;

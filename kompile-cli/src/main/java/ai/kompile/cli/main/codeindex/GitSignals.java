@@ -240,7 +240,9 @@ public class GitSignals {
                 commitOrdinal++;
             }
 
-            proc.waitFor();
+            if (!proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly();
+            }
 
             // Build FileSignals
             int totalCommits = commitOrdinal;

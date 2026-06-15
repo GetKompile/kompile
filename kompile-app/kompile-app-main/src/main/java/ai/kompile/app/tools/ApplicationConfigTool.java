@@ -156,7 +156,8 @@ public class ApplicationConfigTool {
                             pkg = "other";
                         }
                         beanCounts.merge(pkg, 1, Integer::sum);
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
+                        logger.debug("Skipping bean '{}' during package count (bean not accessible): {}", beanName, e.getMessage());
                     }
                 }
                 result.put("beanCountsByPackage", beanCounts);
@@ -277,7 +278,8 @@ public class ApplicationConfigTool {
                             try {
                                 Object bean = applicationContext.getBean(beanName);
                                 implementations.add(bean.getClass().getSimpleName());
-                            } catch (Exception ignored) {
+                            } catch (Exception e) {
+                                logger.debug("Could not introspect bean '{}' for component listing: {}", beanName, e.getMessage());
                             }
                         }
                         componentInfo.put("implementations", implementations);
@@ -294,11 +296,11 @@ public class ApplicationConfigTool {
 
             // Overall health
             boolean hasEmbedding = components.containsKey("EmbeddingModel") &&
-                    (boolean) ((Map<?, ?>) components.get("EmbeddingModel")).get("available");
+                    Boolean.TRUE.equals(((Map<?, ?>) components.get("EmbeddingModel")).get("available"));
             boolean hasVectorStore = components.containsKey("VectorStore") &&
-                    (boolean) ((Map<?, ?>) components.get("VectorStore")).get("available");
+                    Boolean.TRUE.equals(((Map<?, ?>) components.get("VectorStore")).get("available"));
             boolean hasRetriever = components.containsKey("DocumentRetriever") &&
-                    (boolean) ((Map<?, ?>) components.get("DocumentRetriever")).get("available");
+                    Boolean.TRUE.equals(((Map<?, ?>) components.get("DocumentRetriever")).get("available"));
 
             Map<String, Object> health = new LinkedHashMap<>();
             health.put("ragCapable", hasEmbedding && hasVectorStore && hasRetriever);

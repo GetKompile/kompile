@@ -170,7 +170,7 @@ public class IndexStatusService {
      * Gets the current index status.
      * Results are cached for 5 seconds to avoid expensive checks on every request.
      */
-    public IndexStatus getStatus() {
+    public synchronized IndexStatus getStatus() {
         long now = System.currentTimeMillis();
         if (cachedStatus != null && (now - statusCacheTime) < STATUS_CACHE_TTL_MS) {
             return cachedStatus;
@@ -185,7 +185,7 @@ public class IndexStatusService {
     /**
      * Forces a refresh of the status cache.
      */
-    public IndexStatus refreshStatus() {
+    public synchronized IndexStatus refreshStatus() {
         cachedStatus = null;
         statusCacheTime = 0;
         return getStatus();

@@ -101,9 +101,9 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             + "-" + System.currentTimeMillis();
 
     private String indexPath;
-    private final EmbeddingModel embeddingModel; // Kompile's interface, not Spring AI's
-    private final AnseriniVectorStoreProperties properties;
-    private final RerankerService rerankerService;
+    private EmbeddingModel embeddingModel; // Kompile's interface, not Spring AI's
+    private AnseriniVectorStoreProperties properties;
+    private RerankerService rerankerService;
     private Directory directory;
     private IndexWriter indexWriter;
     private IndexReader cachedReader; // Cached reader for document retrieval
@@ -185,6 +185,10 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         }
     }
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected AnseriniVectorStoreImpl() {}
+
+
     /**
      * Register a JVM shutdown hook to ensure resources are cleaned up even on
      * abnormal termination.
@@ -261,7 +265,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                 if (this.directory != null) {
                     try {
                         this.directory.close();
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
+                        log.warn("Failed to close previous Lucene directory before retry: {}", e.getMessage());
                     }
                 }
                 this.directory = NativeCompatibleDirectoryFactory.open(path, NoLockFactory.INSTANCE);
@@ -282,7 +287,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                 if (directory != null) {
                     try {
                         directory.close();
-                    } catch (Exception ignored) {
+                    } catch (Exception closeEx) {
+                        log.warn("Failed to close Lucene directory during retry cleanup: {}", closeEx.getMessage());
                     }
                     directory = null;
                 }
@@ -318,7 +324,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         if (directory != null) {
             try {
                 directory.close();
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.warn("Failed to close locked Lucene directory before fallback: {}", e.getMessage());
             }
             directory = null;
         }
@@ -424,16 +431,22 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         // Approach 4: Try using ProcessBuilder to force-remove on Unix systems
         String os = System.getProperty("os.name").toLowerCase();
         if (os.contains("linux") || os.contains("mac") || os.contains("unix")) {
+            Process p = null;
             try {
                 ProcessBuilder pb = new ProcessBuilder("rm", "-f", lockFile.toString());
-                Process p = pb.start();
-                int exitCode = p.waitFor();
-                if (exitCode == 0 && !Files.exists(lockFile)) {
+                p = pb.start();
+                boolean finished = p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS);
+                if (!finished) {
+                    p.destroyForcibly();
+                    log.debug("System rm command timed out");
+                } else if (p.exitValue() == 0 && !Files.exists(lockFile)) {
                     log.info("Successfully cleared lock file via system rm command");
                     return;
                 }
             } catch (Exception e) {
                 log.debug("System rm command failed: {}", e.getMessage());
+            } finally {
+                if (p != null) p.destroyForcibly();
             }
         }
 
@@ -570,7 +583,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                         if (embeddingMatrix != null && !embeddingMatrix.wasClosed()) {
                             try {
                                 embeddingMatrix.close();
-                            } catch (Exception ignored) {
+                            } catch (Exception e) {
+                                log.warn("Failed to close bulk embedding matrix: {}", e.getMessage());
                             }
                         }
                     }
@@ -783,7 +797,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                         if (embeddingMatrix != null && !embeddingMatrix.wasClosed()) {
                             try {
                                 embeddingMatrix.close();
-                            } catch (Exception ignored) {
+                            } catch (Exception e) {
+                                log.warn("Failed to close bulk embedding matrix: {}", e.getMessage());
                             }
                         }
                     }
@@ -1606,15 +1621,16 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             Path fallbackPath = Paths.get(indexPath);
             if (Files.exists(fallbackPath)) {
                 // Delete all files in the directory
-                Files.walk(fallbackPath)
-                        .sorted((a, b) -> b.compareTo(a)) // Reverse order to delete files before directories
-                        .forEach(path -> {
-                            try {
-                                Files.deleteIfExists(path);
-                            } catch (IOException e) {
-                                log.debug("Could not delete fallback index file: {}", path);
-                            }
-                        });
+                try (java.util.stream.Stream<Path> walkStream = Files.walk(fallbackPath)) {
+                    walkStream.sorted((a, b) -> b.compareTo(a)) // Reverse order to delete files before directories
+                            .forEach(path -> {
+                                try {
+                                    Files.deleteIfExists(path);
+                                } catch (IOException e) {
+                                    log.debug("Could not delete fallback index file: {}", path);
+                                }
+                            });
+                }
                 log.info("Cleaned up temporary fallback index at: {}", indexPath);
             }
         } catch (Exception e) {

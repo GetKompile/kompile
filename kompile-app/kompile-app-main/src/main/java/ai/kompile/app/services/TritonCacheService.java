@@ -75,7 +75,7 @@ public class TritonCacheService {
             log.info("Triton cache imported successfully for '{}'", modelId);
             return true;
         } catch (Exception e) {
-            log.warn("Failed to import Triton cache for '{}': {}", modelId, e.getMessage());
+            log.warn("Failed to import Triton cache for '{}'", modelId, e);
             return false;
         }
     }
@@ -110,7 +110,7 @@ public class TritonCacheService {
             log.info("Triton cache exported for '{}': {} bytes", modelId, sizeBytes);
             return true;
         } catch (Exception e) {
-            log.warn("Failed to export Triton cache for '{}': {}", modelId, e.getMessage());
+            log.warn("Failed to export Triton cache for '{}'", modelId, e);
             return false;
         }
     }
@@ -127,7 +127,7 @@ public class TritonCacheService {
                     .invalidateTritonCache();
             log.info("Triton cache invalidated");
         } catch (Exception e) {
-            log.warn("Failed to invalidate Triton cache: {}", e.getMessage());
+            log.warn("Failed to invalidate Triton cache", e);
         }
     }
 
@@ -183,7 +183,7 @@ public class TritonCacheService {
         try {
             return listBundlesInternal(cacheDirPath);
         } catch (IOException e) {
-            log.warn("Failed to list Triton cache bundles: {}", e.getMessage());
+            log.warn("Failed to list Triton cache bundles", e);
             return Collections.emptyList();
         }
     }

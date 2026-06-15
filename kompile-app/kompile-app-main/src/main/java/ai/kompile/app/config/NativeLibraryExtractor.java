@@ -44,7 +44,7 @@ public class NativeLibraryExtractor {
     private static final String OS_ARCH = System.getProperty("os.arch").toLowerCase();
 
     // Library configurations based on your detected resources
-    private static final List<LibraryConfig> LIBRARY_CONFIGS = new ArrayList<>();
+    private static final List<LibraryConfig> LIBRARY_CONFIGS = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     static {
         // Initialize library configurations based on your runtime hints

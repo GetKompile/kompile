@@ -44,11 +44,17 @@ public class NoteService {
 
     private static final Logger logger = LoggerFactory.getLogger(NoteService.class);
 
-    private final NoteRepository noteRepository;
-    private final NoteSourceLinkRepository noteSourceLinkRepository;
-    private final NoteEmbeddingService noteEmbeddingService;
-
     @Autowired
+    private NoteRepository noteRepository;
+    @Autowired
+    private NoteSourceLinkRepository noteSourceLinkRepository;
+    @Autowired
+    private NoteEmbeddingService noteEmbeddingService;
+
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
+    public NoteService() {
+    }
+
     public NoteService(
             NoteRepository noteRepository,
             NoteSourceLinkRepository noteSourceLinkRepository,
@@ -57,6 +63,8 @@ public class NoteService {
         this.noteSourceLinkRepository = noteSourceLinkRepository;
         this.noteEmbeddingService = noteEmbeddingService;
     }
+
+
 
     // ──────────────────────────────────────────────────────────────────────────
     // CRUD

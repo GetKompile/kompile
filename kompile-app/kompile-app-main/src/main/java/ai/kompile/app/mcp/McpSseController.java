@@ -216,9 +216,22 @@ public class McpSseController {
      */
     public record McpStatus(boolean enabled, int activeSessions, String message) {}
 
+    private static final int MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
     private String readRequestBody(HttpServletRequest request) {
         try (BufferedReader reader = request.getReader()) {
-            return reader.lines().collect(Collectors.joining("\n"));
+            StringBuilder sb = new StringBuilder();
+            char[] buf = new char[8192];
+            int read;
+            int total = 0;
+            while ((read = reader.read(buf)) != -1) {
+                total += read;
+                if (total > MAX_REQUEST_BODY_BYTES) {
+                    throw new RuntimeException("Request body exceeds " + MAX_REQUEST_BODY_BYTES + " byte limit");
+                }
+                sb.append(buf, 0, read);
+            }
+            return sb.toString();
         } catch (IOException e) {
             log.error("Failed to read request body", e);
             throw new RuntimeException("Failed to read request body", e);

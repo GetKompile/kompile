@@ -28,6 +28,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -63,8 +64,10 @@ public class CrossDocumentRelationExtractor {
             "(_v\\d+|_FINAL|_final|_DRAFT|_draft|_Q\\d|_\\d{4}-\\d{2}-\\d{2}|_\\d{8})$"
     );
 
-    private final KnowledgeGraphService knowledgeGraphService;
-    private final GraphNodeRepository graphNodeRepository;
+    @Autowired(required = false)
+    private KnowledgeGraphService knowledgeGraphService;
+    @Autowired(required = false)
+    private GraphNodeRepository graphNodeRepository;
 
     public CrossDocumentRelationExtractor(
             KnowledgeGraphService knowledgeGraphService,
@@ -72,6 +75,10 @@ public class CrossDocumentRelationExtractor {
         this.knowledgeGraphService = knowledgeGraphService;
         this.graphNodeRepository = graphNodeRepository;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected CrossDocumentRelationExtractor() {}
+
 
     /**
      * Extracts cross-document relationships from a batch of loaded documents.

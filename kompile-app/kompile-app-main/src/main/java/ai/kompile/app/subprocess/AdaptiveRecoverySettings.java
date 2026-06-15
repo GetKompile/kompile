@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess;
 
+import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,6 +37,7 @@ import java.util.regex.Pattern;
  * The goal is to maintain performance while finding stable settings.
  * Each adjustment is logged with rationale.
  */
+@Getter
 public class AdaptiveRecoverySettings {
 
     private static final Logger logger = LoggerFactory.getLogger(AdaptiveRecoverySettings.class);
@@ -61,6 +63,7 @@ public class AdaptiveRecoverySettings {
 
     // === Computed ===
     private long heapBytes;
+    @Getter(value = lombok.AccessLevel.NONE)
     private boolean shouldGiveUp;
     private String giveUpReason;
 
@@ -256,19 +259,10 @@ public class AdaptiveRecoverySettings {
                 heapSize, batchSize, nd4jThreads, ompThreads, embeddingWorkers, retryAttempt, MAX_RETRY_ATTEMPTS);
     }
 
-    // === Getters ===
-
-    public String getHeapSize() { return heapSize; }
-    public int getBatchSize() { return batchSize; }
-    public int getNd4jThreads() { return nd4jThreads; }
-    public int getOmpThreads() { return ompThreads; }
-    public int getEmbeddingWorkers() { return embeddingWorkers; }
-    public int getRetryAttempt() { return retryAttempt; }
-    public long getHeapBytes() { return heapBytes; }
+    // Manual getter for shouldGiveUp
     public boolean isShouldGiveUp() { return shouldGiveUp; }
-    public String getGiveUpReason() { return giveUpReason; }
 
-    // === Setters for builder pattern ===
+    // === Setters for builder pattern (fluent-style, non-trivial) ===
 
     public AdaptiveRecoverySettings heapSize(String heapSize) {
         this.heapSize = heapSize;

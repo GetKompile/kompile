@@ -23,6 +23,8 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,6 +34,8 @@ import java.util.UUID;
  * Parses HTML output (e.g., from PaddleOCR SLANet) into document entities.
  */
 public class HtmlParser {
+
+    private static final Logger log = LoggerFactory.getLogger(HtmlParser.class);
 
     /**
      * Parses HTML content into entities.
@@ -148,12 +152,16 @@ public class HtmlParser {
                     if (!colspanAttr.isEmpty()) {
                         try {
                             colspan = Integer.parseInt(colspanAttr);
-                        } catch (NumberFormatException ignored) {}
+                        } catch (NumberFormatException e) {
+                            log.debug("Invalid colspan attribute '{}': {}", colspanAttr, e.getMessage());
+                        }
                     }
                     if (!rowspanAttr.isEmpty()) {
                         try {
                             rowspan = Integer.parseInt(rowspanAttr);
-                        } catch (NumberFormatException ignored) {}
+                        } catch (NumberFormatException e) {
+                            log.debug("Invalid rowspan attribute '{}': {}", rowspanAttr, e.getMessage());
+                        }
                     }
                 }
 
@@ -238,7 +246,8 @@ public class HtmlParser {
             int commaIndex = src.indexOf(',');
             if (commaIndex > 0) {
                 String metadata = src.substring(5, commaIndex);
-                String format = metadata.split(";")[0].split("/")[1];
+                String[] mimeParts = metadata.split(";")[0].split("/");
+                String format = mimeParts.length > 1 ? mimeParts[1] : "png";
                 String data = src.substring(commaIndex + 1);
                 builder.imageFormat(format);
                 builder.imageData(data);

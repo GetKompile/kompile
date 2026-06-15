@@ -51,23 +51,24 @@ public class RagController {
             return ResponseEntity.badRequest().body(Map.of("error", "Query cannot be empty."));
         }
         try {
-            logger.info("RagController received RAG query: '{}', useToolCalling: {}", query.getQuery(), query.isUseToolCalling());
+            String safeQuery = query.getQuery().replace('\n', ' ').replace('\r', ' ');
+            logger.info("RagController received RAG query: '{}', useToolCalling: {}", safeQuery, query.isUseToolCalling());
             RagResult answer = ragService.answerQuery(query); // Calls the interface method
 
             if (answer == null) { // Handle case where service might return null
-                logger.error("RagService returned a null answer for query: {}", query.getQuery());
+                logger.error("RagService returned a null answer for query: {}", safeQuery);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("query", query.getQuery(), "error", "Received null answer from RAG service."));
             }
 
             if (answer.getAnswer().startsWith("Error:")) {
-                logger.warn("RagService indicated an error for query [{}]: {}", query.getQuery(), answer);
+                logger.warn("RagService indicated an error for query [{}]: {}", safeQuery, answer);
                 // Consider if all errors from service should be 500, or if some are user errors (4xx)
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("query", query.getQuery(), "error", answer));
             }
-            logger.info("RagController successfully processed query: {}", query.getQuery());
+            logger.info("RagController successfully processed query: {}", safeQuery);
             return ResponseEntity.ok(Map.of("query", query.getQuery(), "answer", answer));
         } catch (Exception e) {
-            logger.error("Unexpected error processing RAG query [{}] in RagController: {}", query.getQuery(), e.getMessage(), e);
+            logger.error("Unexpected error processing RAG query in RagController: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to process RAG query due to an unexpected internal error."));
         }

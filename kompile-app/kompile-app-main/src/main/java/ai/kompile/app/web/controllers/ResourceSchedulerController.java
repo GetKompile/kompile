@@ -125,7 +125,7 @@ public class ResourceSchedulerController {
                     config.isEnabled(), config.getSchedulingAlgorithm());
             return ResponseEntity.ok(configService.getConfiguration());
         } catch (Exception e) {
-            log.error("Failed to update scheduler config: {}", e.getMessage());
+            log.error("Failed to update scheduler config", e);
             return ResponseEntity.internalServerError().build();
         }
     }
@@ -137,7 +137,7 @@ public class ResourceSchedulerController {
             log.info("Scheduler config reset to defaults via REST");
             return ResponseEntity.ok(configService.getConfiguration());
         } catch (Exception e) {
-            log.error("Failed to reset scheduler config: {}", e.getMessage());
+            log.error("Failed to reset scheduler config", e);
             return ResponseEntity.internalServerError().build();
         }
     }
@@ -232,7 +232,7 @@ public class ResourceSchedulerController {
                     "cancelled", cancelled
             ));
         } catch (Exception e) {
-            log.error("Error cancelling external job '{}': {}", jobId, e.getMessage());
+            log.error("Error cancelling external job '{}'", jobId, e);
             return ResponseEntity.internalServerError().body(Map.of(
                     "error", e.getMessage(),
                     "jobId", jobId

@@ -330,6 +330,12 @@ public class FactSheetController {
      */
     @GetMapping("/active/facts/search")
     public ResponseEntity<List<FactDto>> searchFacts(@RequestParam(name = "q") String q) {
+        if (q == null || q.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        if (q.length() > 500) {
+            return ResponseEntity.badRequest().build();
+        }
         List<Fact> facts = factSheetService.searchFacts(q);
         List<FactDto> dtos = facts.stream()
             .map(this::toFactDto)

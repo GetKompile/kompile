@@ -21,6 +21,8 @@ import org.apache.commons.io.FileUtils;
 
 import org.nd4j.linalg.learning.config.*;
 import org.nd4j.linalg.schedule.ISchedule;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -29,6 +31,8 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 @CommandLine.Command(name = "generate-updater-config",mixinStandardHelpOptions = false,description = "Generates an updater configuration. Used in combination with samediff training to specify an updater to use.")
 public class UpdaterGenerator implements Callable<Integer> {
+
+    private static final Logger log = LoggerFactory.getLogger(UpdaterGenerator.class);
     @CommandLine.Option(names = {"--updaterType"},description = "The updater type: amsgrad,adabelief,adadelta,adagrad,adamax,adam,nadam,nesterovs,noop,rmsprop,sgd",required = true)
     private String updaterType;
     @CommandLine.Option(names = {"--beta1"},description = "The beta1 parameter. Decay factor for first momentum. Used in various adam derivative updaters: amsgrad,adabelief,adadelta,adamax,adam,nadam ",required = false)
@@ -63,32 +67,32 @@ public class UpdaterGenerator implements Callable<Integer> {
     public Integer call() throws Exception {
         //amsgrad,adabelief,adadelta,adagrad,adamax,adam,nadam,nesterovs,noop,rmsprop,sgd
         if(!validateBeta1()) {
-            System.err.println("Beta1 parameter specified but wrong updater type: " + updaterType);
+            log.error("Beta1 parameter specified but wrong updater type: {}", updaterType);
             return 1;
         }
 
         if(!validateBeta2()) {
-            System.err.println("Beta2 parameter specified but wrong updater type: " + updaterType);
+            log.error("Beta2 parameter specified but wrong updater type: {}", updaterType);
             return 1;
         }
 
         if(!validateEpsilon()) {
-            System.err.println("Epsilon parameter specified but wrong updater type: " + updaterType);
+            log.error("Epsilon parameter specified but wrong updater type: {}", updaterType);
             return 1;
         }
 
         if(!validateRho()) {
-            System.err.println("Rho parameter specified but wrong updater type: " + updaterType);
+            log.error("Rho parameter specified but wrong updater type: {}", updaterType);
             return 1;
         }
 
         if(!validateRmsDecay()) {
-            System.err.println("RMS Decay parameter specified but wrong updater type: " + updaterType);
+            log.error("RMS Decay parameter specified but wrong updater type: {}", updaterType);
             return 1;
         }
 
         if(!validateMomentum()) {
-            System.err.println("Momentum parameter specified but wrong updater type: " + updaterType);
+            log.error("Momentum parameter specified but wrong updater type: {}", updaterType);
             return 1;
         }
 
@@ -98,7 +102,7 @@ public class UpdaterGenerator implements Callable<Integer> {
         if(stepSchedulePath != null) {
             File schedulePath = new File(stepSchedulePath);
             if(!schedulePath.exists()) {
-                System.err.println("Step schedule file path specified, but file does not exist.");
+                log.error("Step schedule file path specified, but file does not exist: {}", stepSchedulePath);
                 return 1;
             }
 
@@ -198,7 +202,7 @@ public class UpdaterGenerator implements Callable<Integer> {
         }
 
         if(create == null) {
-            System.err.println("Invalid updater type specified. Please specify one of: amsgrad,adabelief,adadelta,adagrad,adamax,adam,nadam,nesterovs,noop,rmsprop,sgd ");
+            log.error("Invalid updater type specified: '{}'. Please specify one of: amsgrad,adabelief,adadelta,adagrad,adamax,adam,nadam,nesterovs,noop,rmsprop,sgd", updaterType);
             return 1;
         }
 

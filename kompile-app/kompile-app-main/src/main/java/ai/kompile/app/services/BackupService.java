@@ -713,15 +713,30 @@ public class BackupService {
     public Path getBackupFile(String backupName) {
         Path backupPath = Paths.get(properties.getBackupPath());
 
+        // Guard against path traversal
+        if (backupName.contains("..")) {
+            log.warn("Rejected backup name with path traversal: {}", backupName.replace('\n', ' ').replace('\r', ' '));
+            return null;
+        }
+
+        Path normalizedBackupPath = backupPath.normalize().toAbsolutePath();
+
         // Try with the given name
-        Path path = backupPath.resolve(backupName);
+        Path path = backupPath.resolve(backupName).normalize().toAbsolutePath();
+        if (!path.startsWith(normalizedBackupPath)) {
+            log.warn("Rejected backup name escaping backup directory: {}", backupName.replace('\n', ' ').replace('\r', ' '));
+            return null;
+        }
         if (Files.exists(path)) {
             return path;
         }
 
         // Try with .tar.gz extension if not present
         if (!backupName.endsWith(".tar.gz")) {
-            path = backupPath.resolve(backupName + ".tar.gz");
+            path = backupPath.resolve(backupName + ".tar.gz").normalize().toAbsolutePath();
+            if (!path.startsWith(normalizedBackupPath)) {
+                return null;
+            }
             if (Files.exists(path)) {
                 return path;
             }

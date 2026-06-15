@@ -29,12 +29,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 
+import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * Parallel ingest pipeline with separate stages for chunking, indexing, and embedding.
@@ -92,6 +94,14 @@ public class ParallelIngestPipeline implements AutoCloseable {
     private static final int DEFAULT_INDEXING_THREADS = 4;
     private static final int DEFAULT_INDEXING_BATCH_ACCUMULATION = 8; // Increased from 4
     private static final int DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 300; // 5 minutes
+
+    // Timing constants for heartbeat, GC pause, poll, and progress thresholds
+    private static final long HEARTBEAT_INTERVAL_MS = 5_000L;   // 5 seconds
+    private static final long GC_PAUSE_MS           = 2_000L;   // 2 seconds
+    private static final long POLL_INTERVAL_MS      = 100L;     // 100 ms
+    private static final long FIVE_MINUTES_MS       = 300_000L;
+    private static final long ONE_HOUR_MS           = 3_600_000L;
+    private static final int  MAX_RETRIES           = 30;
 
     // ========== PROGRESS REPORTING ==========
     private static final int PROGRESS_REPORT_INTERVAL = 5;  // Report every 5 items for finer granularity
@@ -320,8 +330,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
     // Batch history - keep last N completed batches for UI visibility
     private static final int BATCH_HISTORY_SIZE = 5;
-    private final java.util.Deque<PipelineProgress.EmbeddingBatchMetrics> batchHistory =
-            new java.util.concurrent.ConcurrentLinkedDeque<>();
+    private final Deque<PipelineProgress.EmbeddingBatchMetrics> batchHistory =
+            new ConcurrentLinkedDeque<>();
 
     // Fixed total batches - set once when total chunks is known, never changes
     private final AtomicInteger fixedTotalBatches = new AtomicInteger(-1);  // -1 means not yet set
@@ -1064,7 +1074,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                         // Queue chunks for indexing (batch them)
                         boolean queued = false;
                         int retries = 0;
-                        while (!queued && !cancelled && !Thread.currentThread().isInterrupted() && retries < 30) {
+                        while (!queued && !cancelled && !Thread.currentThread().isInterrupted() && retries < MAX_RETRIES) {
                             queued = indexingQueue.offer(chunks, 1000, TimeUnit.MILLISECONDS);
                             if (!queued) retries++;
                         }
@@ -1582,11 +1592,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
             final AtomicInteger workerProcessed = new AtomicInteger(0);
 
             futures.add(embeddingExecutor.submit(() -> {
-                System.err.println("[PIPELINE-DEBUG] Embedding worker " + workerId + " STARTED on "
-                        + Thread.currentThread().getName());
-                System.err.flush();
                 int modelBatchSize = embeddingModel != null ? embeddingModel.getOptimalBatchSize() : 32;
-                logger.info("Embedding worker {} STARTED on thread {} with model batch size={}",
+                logger.info("[PIPELINE-DEBUG] Embedding worker {} STARTED on thread {} with model batch size={}",
                         workerId, Thread.currentThread().getName(), modelBatchSize);
 
                 // Report embedding phase started immediately (before warmup)
@@ -1676,7 +1683,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                             workerProcessed.get(), 0, 0, "memory pressure pause"));
                             System.gc(); // Hint to GC
                             try {
-                                Thread.sleep(2000); // Pause to let GC run
+                                Thread.sleep(GC_PAUSE_MS); // Pause to let GC run
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
                                 break;
@@ -1742,7 +1749,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             lastWaitingProgressReportMs = currentTimeMs;
                             int embedded = chunksEmbedded.get();
                             int total = chunksCreated.get();
-                            int progressPercent = total > 0 ? Math.min(99, (embedded * 100) / total) : 0;
+                            int progressPercent = total > 0 ? Math.min(99, (int) ((embedded * 100L) / total)) : 0;
                             reportProgressWithWorkers("embedding", progressPercent,
                                     String.format("Embedded %d/%d chunks (waiting for chunking, queue=%d)",
                                             embedded, total, chunkQueue.size()));
@@ -2036,7 +2043,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             int inputTexts = batch.size();
             int totalChars = 0;
             int maxChars = 0;
-            java.util.Set<String> sourceDocuments = new java.util.LinkedHashSet<>();
+            Set<String> sourceDocuments = new LinkedHashSet<>();
 
             // Resume/Dedup logic: Filter out chunks that are already fully indexed
             List<RetrievedDoc> toEmbed = new ArrayList<>();
@@ -2087,7 +2094,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             int avgChars = inputTexts > 0 ? totalChars / inputTexts : 0;
             String sourcesStr = sourceDocuments.isEmpty() ? "unknown"
                     : (sourceDocuments.size() <= 3 ? String.join(", ", sourceDocuments)
-                            : sourceDocuments.stream().limit(2).collect(java.util.stream.Collectors.joining(", ")) +
+                            : sourceDocuments.stream().limit(2).collect(Collectors.joining(", ")) +
                                     " + " + (sourceDocuments.size() - 2) + " more");
 
             // NO ESTIMATES - will get real data from encoder when available
@@ -2264,7 +2271,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             double embeddingsPerSecond = totalBatchTime > 0 ? (outputVectors * 1000.0 / totalBatchTime) : 0;
 
             // Get model info
-            String deviceType = "CPU"; // TODO: detect CUDA if available
+            String deviceType = detectDeviceType();
 
             // Calculate heartbeat elapsed seconds and detect stuck state
             int heartbeatSecs = (int) (totalBatchTime / 1000);
@@ -2365,7 +2372,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                     batchNum, indexedIds.size());
                         }
                     }
-                } catch (java.io.IOException e) {
+                } catch (IOException e) {
                     logger.error("Batch {}: Vector store write failed: {}", batchNum, e.getMessage());
                     throw new RuntimeException("Vector store write failed", e);
                 }
@@ -2582,7 +2589,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             // Also updates currentEmbeddingBatchMetrics so the UI can show real-time
             // progress
             final Thread currentThread = Thread.currentThread();
-            final java.util.concurrent.atomic.AtomicBoolean inferenceComplete = new java.util.concurrent.atomic.AtomicBoolean(
+            final AtomicBoolean inferenceComplete = new AtomicBoolean(
                     false);
             final int batchSize = texts.size();
             final String modelName = embeddingModel.getClass().getSimpleName();
@@ -2599,7 +2606,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             final int totalChunksExpected = chunksCreated.get();
 
             // Get source documents from chunks metadata
-            final java.util.Set<String> sourceDocuments = new java.util.LinkedHashSet<>();
+            final Set<String> sourceDocuments = new LinkedHashSet<>();
             final List<String> chunkIds = new ArrayList<>();
             for (RetrievedDoc chunk : chunks) {
                 chunkIds.add(chunk.getId() != null ? chunk.getId() : "unknown");
@@ -2622,7 +2629,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             }
             final String sourcesStr = sourceDocuments.isEmpty() ? "unknown"
                     : (sourceDocuments.size() <= 3 ? String.join(", ", sourceDocuments)
-                            : sourceDocuments.stream().limit(2).collect(java.util.stream.Collectors.joining(", ")) +
+                            : sourceDocuments.stream().limit(2).collect(Collectors.joining(", ")) +
                                     " + " + (sourceDocuments.size() - 2) + " more");
 
             // Get preview of first chunk content
@@ -2632,7 +2639,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 int tick = 0;
                 while (!inferenceComplete.get() && !Thread.currentThread().isInterrupted()) {
                     try {
-                        Thread.sleep(5000); // 5 second heartbeat
+                        Thread.sleep(HEARTBEAT_INTERVAL_MS); // 5 second heartbeat
                         tick++;
                         if (!inferenceComplete.get()) {
                             long elapsed = System.currentTimeMillis() - startTime;
@@ -2640,7 +2647,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
                             // Progressive status levels based on elapsed time
                             String statusLevel;
-                            if (elapsed > 300000) { // > 5 minutes
+                            if (elapsed > FIVE_MINUTES_MS) { // > 5 minutes
                                 statusLevel = "EXTREMELY_SLOW";
                             } else if (elapsed > 120000) { // > 2 minutes
                                 statusLevel = "VERY_SLOW";
@@ -2690,8 +2697,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                 if (totalPipelineElapsed > 0 && currentBatch > 0) {
                                     long avgBatchTimeMs = totalPipelineElapsed / currentBatch;
                                     long estRemainingMs = avgBatchTimeMs * remainingBatches;
-                                    if (estRemainingMs > 3600000) { // > 1 hour
-                                        etaInfo = String.format(" | ETA: ~%dh %dm", estRemainingMs / 3600000, (estRemainingMs % 3600000) / 60000);
+                                    if (estRemainingMs > ONE_HOUR_MS) { // > 1 hour
+                                        etaInfo = String.format(" | ETA: ~%dh %dm", estRemainingMs / ONE_HOUR_MS, (estRemainingMs % ONE_HOUR_MS) / 60000);
                                     } else if (estRemainingMs > 60000) {
                                         etaInfo = String.format(" | ETA: ~%dm", estRemainingMs / 60000);
                                     } else if (estRemainingMs > 0) {
@@ -2712,7 +2719,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             if (!hasActualInfo && actualBatchInfo != null && "TOKENIZING".equals(actualBatchInfo.step())) {
                                 for (int retry = 0; retry < 3 && !hasActualInfo; retry++) {
                                     try {
-                                        Thread.sleep(100); // Brief wait for tokenization to complete
+                                        Thread.sleep(POLL_INTERVAL_MS); // Brief wait for tokenization to complete
                                     } catch (InterruptedException ie) {
                                         Thread.currentThread().interrupt();
                                         break;
@@ -2738,8 +2745,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                 if (totalPipelineElapsedForMsg > 0) {
                                     long avgBatchTimeMsForMsg = totalPipelineElapsedForMsg / currentBatch;
                                     long estRemainingMs = avgBatchTimeMsForMsg * remainingBatches;
-                                    if (estRemainingMs > 3600000) {
-                                        etaMsg = String.format("~%dh %dm remaining", estRemainingMs / 3600000, (estRemainingMs % 3600000) / 60000);
+                                    if (estRemainingMs > ONE_HOUR_MS) {
+                                        etaMsg = String.format("~%dh %dm remaining", estRemainingMs / ONE_HOUR_MS, (estRemainingMs % ONE_HOUR_MS) / 60000);
                                     } else if (estRemainingMs > 60000) {
                                         etaMsg = String.format("~%dm remaining", estRemainingMs / 60000);
                                     } else if (estRemainingMs > 0) {
@@ -2868,8 +2875,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             if (!etaInfo.isEmpty()) {
                                 logMsg.append(etaInfo);
                             }
-                            System.err.println(logMsg);
-                            System.err.flush();
+                            logger.info("{}", logMsg);
 
                             // CRITICAL: Push progress update via WebSocket so UI shows real-time heartbeat
                             // info
@@ -2905,11 +2911,11 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             try {
                                 reportProgressWithWorkers("embedding", 0, uiStatus.toString());
                             } catch (Exception e) {
-                                System.err
-                                        .println("[EMBEDDING-HEARTBEAT] Failed to report progress: " + e.getMessage());
+                                logger.warn("[EMBEDDING-HEARTBEAT] Failed to report progress: {}", e.getMessage());
                             }
                         }
                     } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                         break;
                     }
                 }
@@ -2917,10 +2923,10 @@ public class ParallelIngestPipeline implements AutoCloseable {
             heartbeat.setDaemon(true);
             heartbeat.start();
 
-            System.err.println("[EMBEDDING-METRICS] Calling embedBatch: texts=" + texts.size() +
-                    ", avgLen=" + (texts.stream().mapToInt(String::length).sum() / Math.max(1, texts.size())) +
-                    ", model=" + embeddingModel.getClass().getSimpleName());
-            System.err.flush();
+            logger.debug("[EMBEDDING-METRICS] Calling embedBatch: texts={}, avgLen={}, model={}",
+                    texts.size(),
+                    texts.stream().mapToInt(String::length).sum() / Math.max(1, texts.size()),
+                    embeddingModel.getClass().getSimpleName());
 
             List<float[]> embeddings;
 
@@ -2931,20 +2937,20 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
             // Submit embedding to a separate thread with timeout
             final List<String> finalTexts = texts;
-            java.util.concurrent.ExecutorService timeoutExecutor =
-                java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+            ExecutorService timeoutExecutor =
+                Executors.newSingleThreadExecutor(r -> {
                     Thread t = new Thread(r, "embed-batch-timeout");
                     t.setDaemon(true);
                     return t;
                 });
 
             try {
-                java.util.concurrent.Future<List<float[]>> embedFuture =
+                Future<List<float[]>> embedFuture =
                     timeoutExecutor.submit(() -> embeddingModel.embedBatch(finalTexts));
 
                 try {
                     embeddings = embedFuture.get(EMBED_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-                } catch (java.util.concurrent.TimeoutException te) {
+                } catch (TimeoutException te) {
                     // Timeout occurred - the embedding is stuck
                     embedFuture.cancel(true);  // Try to interrupt
 
@@ -2984,15 +2990,14 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     // Set lastError so it gets propagated to the user
                     lastError = errorMsg;
 
-                    System.err.println("=======================================================================");
-                    System.err.println("[EMBEDDING-TIMEOUT] FATAL ERROR - " + errorMsg);
-                    System.err.println("=======================================================================");
-                    System.err.flush();
+                    logger.error("=======================================================================");
+                    logger.error("[EMBEDDING-TIMEOUT] FATAL ERROR - {}", errorMsg);
+                    logger.error("=======================================================================");
 
                     // FAIL LOUDLY: Throw exception instead of silently skipping
                     // This will cause the pipeline to fail and report the error to the user
                     throw new RuntimeException(errorMsg, te);
-                } catch (java.util.concurrent.ExecutionException ee) {
+                } catch (ExecutionException ee) {
                     Throwable cause = ee.getCause();
                     if (cause instanceof OutOfMemoryError oom) {
                         // FAIL FAST: In-process OOM recovery is unreliable.
@@ -3020,12 +3025,12 @@ public class ParallelIngestPipeline implements AutoCloseable {
             }
 
             long elapsed = System.currentTimeMillis() - startTime;
-            System.err.println("[EMBEDDING-METRICS] embedBatch returned: embeddings=" +
-                    (embeddings != null ? embeddings.size() : "null") + ", elapsed=" + elapsed + "ms" +
-                    (embeddings != null && !embeddings.isEmpty() && embeddings.get(0) != null
+            logger.debug("[EMBEDDING-METRICS] embedBatch returned: embeddings={}, elapsed={}ms{}",
+                    embeddings != null ? embeddings.size() : "null",
+                    elapsed,
+                    embeddings != null && !embeddings.isEmpty() && embeddings.get(0) != null
                             ? ", dim=" + embeddings.get(0).length
-                            : ""));
-            System.err.flush();
+                            : "");
 
             logger.info("generateEmbeddingsOptimized: embedBatch returned {} embeddings in {}ms",
                     embeddings != null ? embeddings.size() : 0, elapsed);
@@ -3050,10 +3055,9 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 // Set lastError so it gets propagated to the user
                 lastError = errorMsg;
 
-                System.err.println("=======================================================================");
-                System.err.println("[EMBEDDING-FAILURE] FATAL ERROR - " + errorMsg);
-                System.err.println("=======================================================================");
-                System.err.flush();
+                logger.error("=======================================================================");
+                logger.error("[EMBEDDING-FAILURE] FATAL ERROR - {}", errorMsg);
+                logger.error("=======================================================================");
 
                 // FAIL LOUDLY: Throw exception instead of silently returning null
                 throw new RuntimeException(errorMsg);
@@ -3239,7 +3243,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             PipelineProgress.EmbeddingBatchMetrics batchMetrics = currentEmbeddingBatchMetrics;
 
             // Get batch history snapshot
-            java.util.List<PipelineProgress.EmbeddingBatchMetrics> historySnapshot = getBatchHistory();
+            List<PipelineProgress.EmbeddingBatchMetrics> historySnapshot = getBatchHistory();
 
             // Build progress object first, then calculate overall progress
             PipelineProgress progress = new PipelineProgress(
@@ -3300,7 +3304,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
     private int calculateOverallProgressPercent(String phase, int documentsProcessed, int chunksCreated,
                                                int chunksEmbedded, int chunksIndexed) {
         if (phase != null) {
-            String p = phase.trim().toLowerCase(java.util.Locale.ROOT);
+            String p = phase.trim().toLowerCase(Locale.ROOT);
             if (p.equals("completed") || p.equals("complete") || p.equals("done")) {
                 return 100;
             }
@@ -3504,8 +3508,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
     /**
      * Returns the batch history (most recent first).
      */
-    public java.util.List<PipelineProgress.EmbeddingBatchMetrics> getBatchHistory() {
-        return new java.util.ArrayList<>(batchHistory);
+    public List<PipelineProgress.EmbeddingBatchMetrics> getBatchHistory() {
+        return new ArrayList<>(batchHistory);
     }
 
     /**
@@ -3783,6 +3787,20 @@ public class ParallelIngestPipeline implements AutoCloseable {
     /**
      * Handle for managing external producer workflow.
      */
+    private static String detectDeviceType() {
+        String backend = System.getProperty("org.nd4j.backend", "");
+        if (backend.toLowerCase().contains("cuda") || backend.toLowerCase().contains("gpu")) {
+            return "CUDA";
+        }
+        // Check if CUDA backend class is loadable
+        try {
+            Class.forName("org.nd4j.linalg.jcublas.JCublasNDArrayFactory");
+            return "CUDA";
+        } catch (ClassNotFoundException e) {
+            return "CPU";
+        }
+    }
+
     public record ExternalProducerHandle(
             List<Future<?>> embeddingFutures,
             List<Future<?>> indexingFutures,

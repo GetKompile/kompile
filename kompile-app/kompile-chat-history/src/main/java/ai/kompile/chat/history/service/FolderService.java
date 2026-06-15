@@ -22,8 +22,11 @@ import ai.kompile.chat.history.domain.FolderFile;
 import ai.kompile.chat.history.repository.ChatFolderRepository;
 import ai.kompile.chat.history.repository.ChatSessionRepository;
 import ai.kompile.chat.history.repository.FolderFileRepository;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -52,12 +55,17 @@ import java.util.UUID;
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @ConditionalOnClass(name = "ai.kompile.chat.history.service.ChatHistoryService")
 @ConditionalOnProperty(name = "kompile.chat.history.enabled", havingValue = "true", matchIfMissing = true)
 public class FolderService {
 
+
+    @Autowired
     private final ChatFolderRepository folderRepository;
+    @Autowired
     private final FolderFileRepository fileRepository;
+    @Autowired
     private final ChatSessionRepository sessionRepository;
 
     @Value("${kompile.folders.base-path:./data/folders}")

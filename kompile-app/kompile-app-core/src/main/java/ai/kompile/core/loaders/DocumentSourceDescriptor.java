@@ -61,7 +61,11 @@ public class DocumentSourceDescriptor {
         GDOCS,          // Represents Google Docs via the Google APIs
         GDRIVE,           // Represents Google Drive files/folders accessed via Google OAuth
         ONEDRIVE,         // Represents Microsoft OneDrive files/folders accessed via Microsoft OAuth
-        GOOGLE_WORKSPACE  // Represents Google Workspace (Gmail, Drive, Docs, Calendar)
+        GOOGLE_WORKSPACE, // Represents Google Workspace (Gmail, Drive, Docs, Calendar)
+        S3,               // Represents an AWS S3 bucket or prefix
+        SFTP,             // Represents files accessible via SFTP
+        SQL,              // Represents a SQL database query or table
+        SMB               // Represents files accessible via SMB/CIFS network shares
     }
 
     private SourceType type;

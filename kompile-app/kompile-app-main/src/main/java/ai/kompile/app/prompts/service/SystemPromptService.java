@@ -22,8 +22,11 @@ import ai.kompile.app.facts.domain.FactSheet;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,11 +37,16 @@ import java.util.*;
  */
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class SystemPromptService {
 
+
+    @Autowired
     private final SystemPromptRepository promptRepository;
+    @Autowired
     private final FactSheetService factSheetService;
+    @Autowired
     private final ObjectMapper objectMapper;
 
     // ==================== CRUD Operations ====================

@@ -103,7 +103,9 @@ public class RelevancyGuardrail implements OutputGuardrail {
             if (end > start) {
                 return response.substring(start + 1, end);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.debug("Failed to extract reason from relevancy response: {}", e.getMessage());
+        }
         return "Response does not adequately address the query";
     }
 

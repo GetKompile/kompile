@@ -39,4 +39,30 @@ public class TrainingMetricsSnapshot {
     private double tokensPerSecond;
     private double samplesPerSecond;
     private Map<String, Double> customMetrics;
+
+    // Per-segment execution breakdown
+    private int dspSegmentsWarmup;
+    private int dspSegmentsReplayed;
+    private int dspSegmentsCaptured;
+    private int dspSegmentsSlotBySlot;
+    private int dspSegmentsFailed;
+
+    // Buffer pool stats
+    private long dspBufferPoolBytes;
+    private long dspBufferPoolReused;
+    private long dspColoringSavedBytes;
+
+    // GPU memory
+    private long gpuMemUsedBytes;
+    private long gpuMemFreeBytes;
+    private long gpuMemTotalBytes;
+    private long gpuPoolUsedBytes;
+    private long gpuPoolReservedBytes;
+    private int numGpuDevices;
+    private String gpuDeviceNames;
+
+    // JVM heap
+    private long heapUsedBytes;
+    private long heapMaxBytes;
+    private double heapUsagePercent;
 }

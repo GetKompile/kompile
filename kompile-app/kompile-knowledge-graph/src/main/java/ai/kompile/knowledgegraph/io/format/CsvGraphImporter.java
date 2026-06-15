@@ -11,6 +11,8 @@ package ai.kompile.knowledgegraph.io.format;
 
 import ai.kompile.knowledgegraph.io.model.PortableEdge;
 import ai.kompile.knowledgegraph.io.model.PortableNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -32,6 +34,8 @@ import java.util.Map;
  * neo4j-admin format is also accepted.
  */
 public final class CsvGraphImporter {
+
+    private static final Logger log = LoggerFactory.getLogger(CsvGraphImporter.class);
 
     private static final List<String> RESERVED_NODE_COLS = List.of(
             "externalid", "title", "description", "nodetype");
@@ -91,7 +95,9 @@ public final class CsvGraphImporter {
                 Double weight = null;
                 String w = cells.get("weight");
                 if (w != null && !w.isBlank()) {
-                    try { weight = Double.parseDouble(w); } catch (NumberFormatException ignored) {}
+                    try { weight = Double.parseDouble(w); } catch (NumberFormatException e) {
+                        log.debug("Invalid edge weight '{}' in CSV import, treating as null: {}", w, e.getMessage());
+                    }
                 }
                 sink.add(new PortableEdge(
                         from,

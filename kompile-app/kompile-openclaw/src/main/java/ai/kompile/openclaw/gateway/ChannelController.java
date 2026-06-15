@@ -15,9 +15,9 @@
  */
 package ai.kompile.openclaw.gateway;
 
-import ai.kompile.openclaw.gateway.channel.ChannelConfig;
-import ai.kompile.openclaw.gateway.channel.ChannelManager;
-import ai.kompile.openclaw.gateway.channel.ChannelAdapter;
+import ai.kompile.gateway.core.gateway.channel.ChannelConfig;
+import ai.kompile.gateway.core.gateway.channel.ChannelManager;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -110,7 +110,7 @@ public class ChannelController {
         
         if (config.getTelegram().getBotToken() != null) {
             telegramAdapter.setApiClient(
-                    new ai.kompile.openclaw.gateway.channel.DefaultTelegramApiClient(
+                    new ai.kompile.gateway.core.gateway.channel.DefaultTelegramApiClient(
                             config.getTelegram().getBotToken()
                     )
             );
@@ -185,8 +185,8 @@ public class ChannelController {
         
         ChannelConfig.EmailConfig email = config.getEmail();
         
-        ai.kompile.openclaw.gateway.channel.EmailClient.EmailConfig emailClientConfig = 
-                new ai.kompile.openclaw.gateway.channel.EmailClient.EmailConfig(
+        ai.kompile.gateway.core.gateway.channel.EmailClient.EmailConfig emailClientConfig = 
+                new ai.kompile.gateway.core.gateway.channel.EmailClient.EmailConfig(
                         email.getImapHost(),
                         email.getImapPort(),
                         email.getUsername(),
@@ -203,7 +203,7 @@ public class ChannelController {
         
         emailAdapter.setEmailConfig(emailClientConfig);
         emailAdapter.setEmailClient(
-                new ai.kompile.openclaw.gateway.channel.DefaultEmailClient()
+                new ai.kompile.gateway.core.gateway.channel.DefaultEmailClient()
         );
         
         email.getAllowedSenders()

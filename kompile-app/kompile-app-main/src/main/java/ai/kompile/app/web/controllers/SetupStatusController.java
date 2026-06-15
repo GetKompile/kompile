@@ -141,8 +141,8 @@ public class SetupStatusController {
             String result = stagingServerLifecycleService.stageModelFromCatalog(port, modelId);
             return ResponseEntity.ok(Map.of("success", true, "result", result));
         } catch (Exception e) {
-            log.error("Failed to stage model {}: {}", modelId, e.getMessage());
-            return ResponseEntity.ok(Map.of("success", false, "message", e.getMessage()));
+            log.error("Failed to stage model {}", modelId, e);
+            return ResponseEntity.internalServerError().body(Map.of("success", false, "message", e.getMessage()));
         }
     }
 
@@ -162,7 +162,8 @@ public class SetupStatusController {
             String catalog = stagingServerLifecycleService.getCatalog(port);
             return ResponseEntity.ok(catalog);
         } catch (Exception e) {
-            return ResponseEntity.ok(Map.of("success", false, "message", e.getMessage()));
+            log.error("Failed to get staging catalog", e);
+            return ResponseEntity.internalServerError().body(Map.of("success", false, "message", e.getMessage()));
         }
     }
 }

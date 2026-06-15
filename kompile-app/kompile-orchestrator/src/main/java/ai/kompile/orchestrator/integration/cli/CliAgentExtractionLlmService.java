@@ -300,6 +300,7 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
     /**
      * Shut down the process pool and destroy any remaining pre-spawned processes.
      */
+    @jakarta.annotation.PreDestroy
     public void shutdown() {
         log.info("Shutting down extraction process pool for {} ({} processes)", agentName, processPool.size());
         poolReplenisher.shutdownNow();
@@ -309,7 +310,9 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
                 if (p.isAlive()) {
                     p.destroyForcibly();
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                log.warn("Error destroying pooled extraction process during shutdown: {}", e.getMessage());
+            }
         }
     }
 

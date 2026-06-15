@@ -99,6 +99,23 @@ public interface GraphConstructor {
     }
 
     /**
+     * Listener for retry and parse-failure events during graph extraction.
+     *
+     * <p>Implementations can use this to update job counters ({@link ai.kompile.core.crawl.graph.UnifiedCrawlJob})
+     * or collect metrics.</p>
+     */
+    @FunctionalInterface
+    interface RetryStatsListener {
+        /**
+         * Called when a retry or parse-failure event occurs during graph extraction.
+         *
+         * @param retryAttempt the retry attempt number (1-based), or 0 for a final parse failure
+         * @param parseFailure true if all retries were exhausted (final failure), false if a retry
+         */
+        void onRetryEvent(int retryAttempt, boolean parseFailure);
+    }
+
+    /**
      * Status of a single document extraction within a batch.
      */
     enum DocumentExtractionStatus {

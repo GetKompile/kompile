@@ -36,8 +36,8 @@ import java.util.*;
 @Slf4j
 public class NamedGraphServiceImpl implements NamedGraphService {
 
-    private final NamedGraphRepository namedGraphRepository;
-    private final GraphNodeRepository graphNodeRepository;
+    private NamedGraphRepository namedGraphRepository;
+    private GraphNodeRepository graphNodeRepository;
 
     @Autowired
     public NamedGraphServiceImpl(NamedGraphRepository namedGraphRepository,
@@ -45,6 +45,10 @@ public class NamedGraphServiceImpl implements NamedGraphService {
         this.namedGraphRepository = namedGraphRepository;
         this.graphNodeRepository = graphNodeRepository;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected NamedGraphServiceImpl() {}
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CRUD OPERATIONS

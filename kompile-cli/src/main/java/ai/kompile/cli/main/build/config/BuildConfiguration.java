@@ -167,11 +167,11 @@ public final class BuildConfiguration {
         private boolean buildNative = true;
         private boolean skipTests = true;
         private boolean cleanBuild = true;
-        private String javacppPlatform = "linux-x86_64";
+        private String javacppPlatform = ai.kompile.cli.main.util.OSResolver.javacppPlatform();
         private String javacppExtension;
         private String device = "CPU";
-        private String cudaVersion;
-        private String backend = "nd4j-cuda-12.9";
+        private String cudaVersion = "12.9";
+        private String backend = "nd4j-cuda-${nd4j.cuda.version}";
         private File mavenHome;
         private File graalVmHome;
         private String appTitle = "Kompile RAG Console";

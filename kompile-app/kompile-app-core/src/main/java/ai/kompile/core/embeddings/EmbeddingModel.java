@@ -17,6 +17,8 @@
 package ai.kompile.core.embeddings;
 
 import org.nd4j.linalg.api.ndarray.INDArray;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 
 import java.util.List;
@@ -26,6 +28,8 @@ import java.util.List;
  * Implements AutoCloseable to ensure native resources can be properly released.
  */
 public interface EmbeddingModel extends AutoCloseable {
+
+    Logger EMBEDDING_MODEL_LOG = LoggerFactory.getLogger(EmbeddingModel.class);
 
     /**
      * Generates a single vector embedding for a given text.
@@ -105,7 +109,9 @@ public interface EmbeddingModel extends AutoCloseable {
         } finally {
             // Clean up original matrix
             if (!matrix.wasClosed()) {
-                try { matrix.close(); } catch (Exception ignored) {}
+                try { matrix.close(); } catch (Exception e) {
+                    EMBEDDING_MODEL_LOG.warn("Failed to close embedding matrix: {}", e.getMessage());
+                }
             }
         }
 

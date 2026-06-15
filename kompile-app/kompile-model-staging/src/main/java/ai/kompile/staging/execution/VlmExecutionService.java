@@ -108,7 +108,7 @@ public class VlmExecutionService {
                     models.add(model);
                 }
             } catch (Exception e) {
-                log.warn("Failed to query registry for VLM models: {}", e.getMessage());
+                log.warn("Failed to query registry for VLM models", e);
             }
         }
 
@@ -134,7 +134,7 @@ public class VlmExecutionService {
                     }
                 }
             } catch (Exception e) {
-                log.warn("Failed to scan VLM model directories: {}", e.getMessage());
+                log.warn("Failed to scan VLM model directories", e);
             }
         }
 
@@ -619,7 +619,7 @@ public class VlmExecutionService {
                 .structuredElements(structuredElements)
                 .build();
         } catch (Exception e) {
-            log.warn("DocTagsParser failed, using basic parsing: {}", e.getMessage());
+            log.warn("DocTagsParser failed, using basic parsing", e);
 
             String markdown = convertDocTagsToMarkdownBasic(rawDocTags);
             String html = convertDocTagsToHtmlBasic(rawDocTags);
@@ -727,7 +727,7 @@ public class VlmExecutionService {
                 vlmModel.resetSessions();
                 vlmModel.close();
             } catch (Exception e) {
-                log.warn("Error closing VLM model: {}", e.getMessage());
+                log.warn("Error closing VLM model", e);
             }
             vlmModel = null;
         }
@@ -905,4 +905,19 @@ public class VlmExecutionService {
                    .replace("\"", "&quot;");
     }
 
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        if (pendingUnload != null) {
+            pendingUnload.cancel(false);
+        }
+        unloadScheduler.shutdown();
+        try {
+            if (!unloadScheduler.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                unloadScheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            unloadScheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 }

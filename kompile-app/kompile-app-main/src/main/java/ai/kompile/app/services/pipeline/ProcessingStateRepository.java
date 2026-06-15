@@ -21,7 +21,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Repository;
+import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -56,7 +56,7 @@ import java.util.stream.Stream;
  * directory.
  * </p>
  */
-@Repository
+@Component
 public class ProcessingStateRepository {
 
     private static final Logger logger = LoggerFactory.getLogger(ProcessingStateRepository.class);
@@ -314,7 +314,8 @@ public class ProcessingStateRepository {
             // Try to clean up temp file
             try {
                 Files.deleteIfExists(tempPath);
-            } catch (IOException ignored) {
+            } catch (IOException cleanupEx) {
+                logger.warn("Failed to clean up temp file {} after save failure: {}", tempPath, cleanupEx.getMessage());
             }
         }
     }

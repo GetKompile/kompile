@@ -60,7 +60,7 @@ import org.apache.lucene.search.TotalHitCountCollector;
 import org.apache.lucene.search.similarities.BM25Similarity;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
@@ -191,7 +191,7 @@ public class IndexReaderUtils {
    * @throws IOException if any errors are encountered
    */
   public static IndexReader getReader(String path) throws IOException {
-    Directory dir = FSDirectory.open(Paths.get(path));
+    Directory dir = new NIOFSDirectory(Paths.get(path));
     return DirectoryReader.open(dir);
   }
 

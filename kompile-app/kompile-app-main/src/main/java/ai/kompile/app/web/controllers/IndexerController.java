@@ -48,13 +48,14 @@ public class IndexerController {
         // yes this looks weird. Graalvm doesn't seem to like spring's
         // conditional injection though qualifiers are also very brittle
         if (indexerService.size() > 1) {
+            IndexerService fallback = indexerService.get(0);
             for (IndexerService indexerService1 : indexerService) {
-                if (indexerService1 instanceof NoOpIndexerService) {
-                    continue;
-                } else {
-                    this.indexerService = indexerService1;
+                if (!(indexerService1 instanceof NoOpIndexerService)) {
+                    fallback = indexerService1;
+                    break;
                 }
             }
+            this.indexerService = fallback;
         } else {
             this.indexerService = indexerService.get(0);
         }

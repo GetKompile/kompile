@@ -205,6 +205,11 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-model-manager</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- Test Dependencies -->
         <dependency>

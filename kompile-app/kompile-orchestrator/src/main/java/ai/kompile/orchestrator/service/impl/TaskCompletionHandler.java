@@ -28,6 +28,8 @@ import ai.kompile.orchestrator.model.llm.LlmSessionRequest;
 import ai.kompile.orchestrator.model.task.*;
 import ai.kompile.orchestrator.repository.TaskDefinitionRepository;
 import ai.kompile.orchestrator.repository.TaskInstanceRepository;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -62,13 +64,21 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 @Slf4j
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 public class TaskCompletionHandler {
 
+
+    @Autowired
     private final TaskDefinitionRepository taskDefinitionRepository;
+    @Autowired
     private final TaskInstanceRepository taskInstanceRepository;
+    @Autowired
     private final TaskExecutionService taskExecutionService;
+    @Autowired
     private final StateMachineService stateMachineService;
+    @Autowired
     private final LlmIntegrationService llmIntegrationService;
+    @Autowired
     private final AuditService auditService;
 
     @Autowired(required = false)

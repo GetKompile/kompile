@@ -31,7 +31,7 @@ public class KompileLocalModelService {
     private final AgentRegistryService agentRegistryService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private String stagingUrl = KompileServerConstants.DEFAULT_STAGING_URL;
+    private volatile String stagingUrl = KompileServerConstants.DEFAULT_STAGING_URL;
 
     private volatile boolean connected = false;
     private volatile String currentModelId = null;
@@ -63,9 +63,10 @@ public class KompileLocalModelService {
      */
     public Map<String, Object> discoverAndRegister() {
         Map<String, Object> result = new LinkedHashMap<>();
+        HttpURLConnection conn = null;
         try {
             String modelsUrl = stagingUrl + "/v1/models";
-            HttpURLConnection conn = (HttpURLConnection) new URL(modelsUrl).openConnection();
+            conn = (HttpURLConnection) new URL(modelsUrl).openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
             conn.setReadTimeout(READ_TIMEOUT_MS);
@@ -125,6 +126,10 @@ public class KompileLocalModelService {
             result.put("message", "Discovery failed: " + e.getMessage());
             log.debug("kompile-local discovery failed: {}", e.getMessage());
             return result;
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
     }
 

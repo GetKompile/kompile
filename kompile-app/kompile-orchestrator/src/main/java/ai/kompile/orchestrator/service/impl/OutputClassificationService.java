@@ -18,8 +18,11 @@ package ai.kompile.orchestrator.service.impl;
 import ai.kompile.orchestrator.model.output.*;
 import ai.kompile.orchestrator.repository.ClassificationRuleRepository;
 import ai.kompile.orchestrator.repository.OutputClassifierRepository;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,9 +39,13 @@ import java.util.regex.PatternSyntaxException;
 @Service
 @Slf4j
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 public class OutputClassificationService {
 
+
+    @Autowired
     private final OutputClassifierRepository classifierRepository;
+    @Autowired
     private final ClassificationRuleRepository ruleRepository;
 
     // ==================== Classifier CRUD ====================

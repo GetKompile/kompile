@@ -215,10 +215,18 @@ public class AgentRegistryService {
      * Check if a specific agent is available (CLI installed and accessible).
      */
     public boolean checkAgentAvailability(AgentProvider agent) {
+        Process process = null;
         try {
             ProcessBuilder pb = new ProcessBuilder(agent.getCommand(), "--version");
             pb.redirectErrorStream(true);
-            Process process = pb.start();
+            process = pb.start();
+
+            // Drain stdout before waitFor to prevent pipe buffer deadlock
+            String version = null;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                version = reader.readLine();
+            }
 
             boolean completed = process.waitFor(5, TimeUnit.SECONDS);
             if (!completed) {
@@ -227,12 +235,8 @@ public class AgentRegistryService {
             }
 
             if (process.exitValue() == 0) {
-                try (BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(process.getInputStream()))) {
-                    String version = reader.readLine();
-                    if (version != null) {
-                        log.info("Agent '{}' available: {}", agent.getName(), version.trim());
-                    }
+                if (version != null) {
+                    log.info("Agent '{}' available: {}", agent.getName(), version.trim());
                 }
                 return true;
             }
@@ -240,6 +244,10 @@ public class AgentRegistryService {
         } catch (Exception e) {
             log.debug("Agent '{}' not available: {}", agent.getName(), e.getMessage());
             return false;
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
         }
     }
 
@@ -457,7 +465,7 @@ public class AgentRegistryService {
 
             log.info("Loaded {} API agents from config", configs.size());
         } catch (Exception e) {
-            log.error("Failed to load API agents config: {}", e.getMessage());
+            log.error("Failed to load API agents config", e);
         }
     }
 
@@ -491,7 +499,7 @@ public class AgentRegistryService {
 
             log.info("Saved {} API agents to config", configs.size());
         } catch (Exception e) {
-            log.error("Failed to save API agents config: {}", e.getMessage());
+            log.error("Failed to save API agents config", e);
         }
     }
 
@@ -537,7 +545,7 @@ public class AgentRegistryService {
             }
             log.info("Loaded agent permission overrides for {} agents", perms.size());
         } catch (Exception e) {
-            log.error("Failed to load agent permissions: {}", e.getMessage());
+            log.error("Failed to load agent permissions", e);
         }
     }
 
@@ -554,7 +562,7 @@ public class AgentRegistryService {
                     .writeValue(getAgentPermissionsPath().toFile(), perms);
             log.debug("Saved agent permissions");
         } catch (Exception e) {
-            log.error("Failed to save agent permissions: {}", e.getMessage());
+            log.error("Failed to save agent permissions", e);
         }
     }
 

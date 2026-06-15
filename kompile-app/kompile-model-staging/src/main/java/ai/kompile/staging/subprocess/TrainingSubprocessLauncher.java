@@ -320,7 +320,7 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
                     }
                 }
             } catch (Exception e) {
-                log.warn("Error reading training subprocess stdout for {}: {}", jobId, e.getMessage());
+                log.warn("Error reading training subprocess stdout for '{}'", jobId, e);
             }
         }, "training-stdout-" + jobId);
         reader.setDaemon(true);
@@ -350,7 +350,7 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
                     }
                 }
             } catch (Exception e) {
-                log.warn("Error reading training subprocess stderr for {}: {}", jobId, e.getMessage());
+                log.warn("Error reading training subprocess stderr for '{}'", jobId, e);
             }
         }, "training-stderr-" + jobId);
         reader.setDaemon(true);
@@ -360,7 +360,12 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     private void startCompletionWatcher(String jobId, Process process) {
         Thread watcher = new Thread(() -> {
             try {
-                int exitCode = process.waitFor();
+                boolean completed = process.waitFor(24, java.util.concurrent.TimeUnit.HOURS);
+                if (!completed) {
+                    log.warn("Training subprocess {} timed out after 24 hours, destroying", jobId);
+                    process.destroyForcibly();
+                }
+                int exitCode = process.exitValue();
                 log.info("Training subprocess {} exited with code {}", jobId, exitCode);
                 SubprocessHandle handle = activeProcesses.remove(jobId);
 
@@ -428,7 +433,7 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
                 handlePhaseTransition(jobId, pt);
             }
         } catch (Exception e) {
-            log.warn("Failed to parse training message for {}: {}", jobId, e.getMessage());
+            log.warn("Failed to parse training message for '{}'", jobId, e);
         }
     }
 
@@ -523,6 +528,28 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
                 .tokensPerSecond(m.tokensPerSecond())
                 .samplesPerSecond(m.samplesPerSecond())
                 .customMetrics(m.customMetrics())
+                // Per-segment execution breakdown
+                .dspSegmentsWarmup(m.dspSegmentsWarmup())
+                .dspSegmentsReplayed(m.dspSegmentsReplayed())
+                .dspSegmentsCaptured(m.dspSegmentsCaptured())
+                .dspSegmentsSlotBySlot(m.dspSegmentsSlotBySlot())
+                .dspSegmentsFailed(m.dspSegmentsFailed())
+                // Buffer pool stats
+                .dspBufferPoolBytes(m.dspBufferPoolBytes())
+                .dspBufferPoolReused(m.dspBufferPoolReused())
+                .dspColoringSavedBytes(m.dspColoringSavedBytes())
+                // GPU memory
+                .gpuMemUsedBytes(m.gpuMemUsedBytes())
+                .gpuMemFreeBytes(m.gpuMemFreeBytes())
+                .gpuMemTotalBytes(m.gpuMemTotalBytes())
+                .gpuPoolUsedBytes(m.gpuPoolUsedBytes())
+                .gpuPoolReservedBytes(m.gpuPoolReservedBytes())
+                .numGpuDevices(m.numGpuDevices())
+                .gpuDeviceNames(m.gpuDeviceNames())
+                // JVM heap
+                .heapUsedBytes(m.heapUsedBytes())
+                .heapMaxBytes(m.heapMaxBytes())
+                .heapUsagePercent(m.heapUsagePercent())
                 .build();
 
         List<TrainingMetricsSnapshot> metrics = jobMetrics.computeIfAbsent(jobId, k -> new CopyOnWriteArrayList<>());
@@ -602,7 +629,8 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         List<SseEmitter> emitters = jobEmitters.get(jobId);
         if (emitters != null) {
             for (SseEmitter emitter : emitters) {
-                try { emitter.complete(); } catch (Exception ignored) {}
+                try { emitter.complete(); }
+                catch (Exception e) { log.debug("Failed to complete training job SSE emitter for job {}: {}", jobId, e.getMessage()); }
             }
             emitters.clear();
         }

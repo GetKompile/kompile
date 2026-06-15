@@ -36,6 +36,7 @@ import {
   WorkflowRun,
   StepExecution
 } from '../../services/process-engine.service';
+import { ProcessAttributionService, ProcessRiskAssessment } from '../../services/process-attribution.service';
 import { ProcessRunDetailComponent } from './process-run-detail.component';
 
 @Component({
@@ -133,6 +134,11 @@ import { ProcessRunDetailComponent } from './process-run-detail.component';
                 <mat-chip [class]="'status-chip status-' + (run.status || 'RUNNING').toLowerCase()">
                   {{ run.status || 'RUNNING' }}
                 </mat-chip>
+                <mat-chip *ngIf="runRiskLevels[run.id || '']"
+                          [class]="'risk-chip risk-chip-' + runRiskLevels[run.id || ''].level.toLowerCase()">
+                  <mat-icon class="risk-chip-icon">security</mat-icon>
+                  {{ runRiskLevels[run.id || ''].level }}
+                </mat-chip>
               </mat-chip-set>
             </div>
             <div class="run-progress-info">
@@ -190,6 +196,12 @@ import { ProcessRunDetailComponent } from './process-run-detail.component';
                     matTooltip="Complete the pending human step">
               <mat-icon>task_alt</mat-icon> Complete Step
             </button>
+            <button mat-stroked-button (click)="loadRunRisk(run); $event.stopPropagation()"
+                    *ngIf="run.id && !runRiskLevels[run.id] && !riskLoadingRuns.has(run.id)"
+                    matTooltip="Assess run risk">
+              <mat-icon>security</mat-icon> Risk
+            </button>
+            <span *ngIf="run.id && riskLoadingRuns.has(run.id)" class="risk-loading-inline">Assessing...</span>
           </div>
 
           <!-- Complete Step Form (inline) -->
@@ -382,6 +394,14 @@ import { ProcessRunDetailComponent } from './process-run-detail.component';
     .graph-nodes-section { margin-top: 8px; }
     .graph-node-chip { background: rgba(206,147,216,0.15) !important; color: #ce93d8 !important; font-size: 11px !important; min-height: 22px !important; font-family: monospace; }
 
+    /* Risk chips */
+    .risk-chip { font-size: 10px !important; min-height: 20px !important; font-weight: 600 !important; }
+    .risk-chip-icon { font-size: 12px !important; width: 12px !important; height: 12px !important; margin-right: 2px; }
+    .risk-chip-critical, .risk-chip-high { background: rgba(239,83,80,0.2) !important; color: #ef5350 !important; }
+    .risk-chip-medium { background: rgba(255,183,77,0.2) !important; color: #ffb74d !important; }
+    .risk-chip-low, .risk-chip-info { background: rgba(129,199,132,0.15) !important; color: #81c784 !important; }
+    .risk-loading-inline { font-size: 11px; color: #888; padding: 0 8px; }
+
     /* Button Toggle Group */
     mat-button-toggle-group { font-size: 12px; }
   `]
@@ -404,10 +424,15 @@ export class ProcessRunsComponent implements OnInit, OnDestroy {
   completeStepOutputs = '';
   completingStep = false;
 
+  // Risk assessment cache per run
+  runRiskLevels: Record<string, { level: string; score: number }> = {};
+  riskLoadingRuns: Set<string> = new Set();
+
   private destroy$ = new Subject<void>();
 
   constructor(
     private processEngineService: ProcessEngineService,
+    private processAttributionService: ProcessAttributionService,
     private snackBar: MatSnackBar
   ) {}
 
@@ -594,6 +619,22 @@ export class ProcessRunsComponent implements OnInit, OnDestroy {
     const sec = Math.floor(ms / 1000);
     if (sec < 60) return `${sec}s`;
     return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+  }
+
+  loadRunRisk(run: WorkflowRun): void {
+    if (!run.id) return;
+    this.riskLoadingRuns.add(run.id);
+    this.processAttributionService.assessRunRisk(run.id, false)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (result) => {
+          this.runRiskLevels[run.id!] = { level: result.riskLevel, score: result.overallRiskScore };
+          this.riskLoadingRuns.delete(run.id!);
+        },
+        error: () => {
+          this.riskLoadingRuns.delete(run.id!);
+        }
+      });
   }
 
   onNavigateToGraph(nodeId: string): void {

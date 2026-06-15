@@ -499,7 +499,7 @@ public class JData implements Data {
             // This relies on the generic put(String, Object) to correctly infer types
             // from the 'other' Data object when its raw values are retrieved.
             // Or, we could inspect other.type(key) and call specific put methods.
-            this.put(key, Optional.ofNullable(other.get(key)));
+            this.put(key, other.get(key));
             if (other.type(key) == ValueType.LIST) {
                 this.listElementTypes.put(key, other.listType(key));
             }

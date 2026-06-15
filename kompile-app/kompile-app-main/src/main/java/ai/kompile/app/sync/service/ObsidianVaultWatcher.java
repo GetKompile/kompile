@@ -167,7 +167,8 @@ public class ObsidianVaultWatcher implements DisposableBean {
     public void destroy() {
         debounceExecutor.shutdownNow();
         watchers.values().forEach(w -> {
-            try { w.close(); } catch (Exception ignored) {}
+            try { w.close(); }
+            catch (Exception e) { log.warn("Failed to close vault watcher: {}", e.getMessage()); }
         });
         watchers.clear();
         log.info("ObsidianVaultWatcher shut down");

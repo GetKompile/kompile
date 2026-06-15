@@ -18,6 +18,8 @@ package ai.kompile.modelmanager.llm.dynamic;
 
 import ai.kompile.modelmanager.llm.LlmModelComponent;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.*;
 
@@ -28,6 +30,8 @@ import java.util.*;
  * local paths, or custom URLs.</p>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@Getter
+@Setter
 public class LlmCustomModelSet {
 
     public enum ModelSource { HUGGINGFACE, LOCAL, CUSTOM_URL }
@@ -70,27 +74,6 @@ public class LlmCustomModelSet {
             return set;
         }
     }
-
-    // --- Getters and Setters ---
-
-    public String getSetId() { return setId; }
-    public void setSetId(String setId) { this.setId = setId; }
-    public String getDisplayName() { return displayName; }
-    public void setDisplayName(String displayName) { this.displayName = displayName; }
-    public String getDescription() { return description; }
-    public void setDescription(String description) { this.description = description; }
-    public ModelSource getSource() { return source; }
-    public void setSource(ModelSource source) { this.source = source; }
-    public String getSourceUri() { return sourceUri; }
-    public void setSourceUri(String sourceUri) { this.sourceUri = sourceUri; }
-    public List<LlmModelComponent> getComponents() { return components; }
-    public void setComponents(List<LlmModelComponent> components) { this.components = components; }
-    public Map<String, Object> getPipelineConfig() { return pipelineConfig; }
-    public void setPipelineConfig(Map<String, Object> pipelineConfig) { this.pipelineConfig = pipelineConfig; }
-    public String getCreatedAt() { return createdAt; }
-    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
-    public String getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(String updatedAt) { this.updatedAt = updatedAt; }
 
     public void touch() {
         this.updatedAt = java.time.Instant.now().toString();

@@ -118,6 +118,22 @@ public class UnifiedCrawlJob {
     @Builder.Default
     private AtomicInteger relationshipsExtracted = new AtomicInteger(0);
 
+    /** Documents that have been preprocessed (e.g., translated, cleaned) */
+    @Builder.Default
+    private AtomicInteger documentsPreprocessed = new AtomicInteger(0);
+
+    /** Documents that have been translated to a target language */
+    @Builder.Default
+    private AtomicInteger documentsTranslated = new AtomicInteger(0);
+
+    /** Number of graph extraction LLM retries across all batches */
+    @Builder.Default
+    private AtomicInteger graphExtractionRetries = new AtomicInteger(0);
+
+    /** Number of graph extraction batches that ultimately failed to parse (all retries exhausted) */
+    @Builder.Default
+    private AtomicInteger graphExtractionParseFailures = new AtomicInteger(0);
+
     /** Per-entity-type counts accumulated during extraction (e.g. REGIONAL_FORECAST: 50, CELL: 200) */
     @Builder.Default
     private Map<String, AtomicLong> entityTypeCounts = new ConcurrentHashMap<>();
@@ -245,6 +261,104 @@ public class UnifiedCrawlJob {
     @Builder.Default
     private AtomicReference<String> currentBatchStep = new AtomicReference<>(null);
 
+    // ---- Work-stealing scheduler stats ----
+
+    /** Total tasks stolen by idle workers from busy workers' deques */
+    @Builder.Default
+    private AtomicLong workStealCount = new AtomicLong(0);
+
+    /** Failed steal attempts (victim deque was empty) */
+    @Builder.Default
+    private AtomicLong workStealFailures = new AtomicLong(0);
+
+    /** Total tasks dispatched locally (no steal needed) */
+    @Builder.Default
+    private AtomicLong localDispatchCount = new AtomicLong(0);
+
+    /** Peak worker imbalance ratio observed (max/min queue depth) */
+    @Builder.Default
+    private AtomicLong workImbalanceRatioX100 = new AtomicLong(100);
+
+    // ---- Dynamic batch sizing stats ----
+
+    /** Current adaptive batch size (adjusted dynamically based on memory/throughput) */
+    @Builder.Default
+    private AtomicInteger adaptiveBatchSize = new AtomicInteger(0);
+
+    /** Number of batch size adjustments made during this job */
+    @Builder.Default
+    private AtomicInteger batchSizeAdjustments = new AtomicInteger(0);
+
+    /** Direction of last batch size adjustment: UP, DOWN, or HOLD */
+    @Builder.Default
+    private AtomicReference<String> lastBatchAdjustDirection = new AtomicReference<>("HOLD");
+
+    /** Reason for last batch size adjustment */
+    @Builder.Default
+    private AtomicReference<String> lastBatchAdjustReason = new AtomicReference<>(null);
+
+    /** EMA of batch processing time in milliseconds (x100 for precision) */
+    @Builder.Default
+    private AtomicLong batchEmaLatencyMsX100 = new AtomicLong(0);
+
+    /** Best observed throughput in items/sec (x100 for precision) */
+    @Builder.Default
+    private AtomicLong peakThroughputX100 = new AtomicLong(0);
+
+    // ---- Token budget / CLI usage stats ----
+
+    /** Total input tokens consumed across all LLM backends */
+    @Builder.Default
+    private AtomicLong totalInputTokens = new AtomicLong(0);
+
+    /** Total output tokens consumed across all LLM backends */
+    @Builder.Default
+    private AtomicLong totalOutputTokens = new AtomicLong(0);
+
+    /** Estimated cost in USD cents (x100 for sub-cent precision) */
+    @Builder.Default
+    private AtomicLong estimatedCostCentsX100 = new AtomicLong(0);
+
+    /** Per-backend token usage and routing stats */
+    @Builder.Default
+    private Map<String, BackendRoutingStats> backendStats = new ConcurrentHashMap<>();
+
+    // ---- Workload rerouting stats ----
+
+    /** Total work items rerouted from one backend to another */
+    @Builder.Default
+    private AtomicLong reroutedItems = new AtomicLong(0);
+
+    /** Total work items dropped after all backends exhausted */
+    @Builder.Default
+    private AtomicLong droppedItems = new AtomicLong(0);
+
+    /** Recent rerouting events for UI visibility (bounded to last 20) */
+    @Builder.Default
+    private List<RerouteEvent> recentRerouteEvents = new CopyOnWriteArrayList<>();
+
+    // ---- Retry / fallback stats ----
+
+    /** Total batches retried across all pipeline stages */
+    @Builder.Default
+    private AtomicLong retriedBatches = new AtomicLong(0);
+
+    /** Total individual items retried */
+    @Builder.Default
+    private AtomicLong retriedItems = new AtomicLong(0);
+
+    /** Items in the dead-letter queue (permanently failed after all retries) */
+    @Builder.Default
+    private AtomicInteger deadLetterCount = new AtomicInteger(0);
+
+    /** Backends currently in cooldown (count) */
+    @Builder.Default
+    private AtomicInteger backendsCoolingDown = new AtomicInteger(0);
+
+    /** Recent retry events for UI visibility (bounded to last 20) */
+    @Builder.Default
+    private List<RetryEvent> recentRetryEvents = new CopyOnWriteArrayList<>();
+
     /** Rolling list of recently discovered file/URL names (bounded to last 50) for live UI feed */
     @Builder.Default
     private List<DiscoveredItem> recentlyDiscoveredItems = new CopyOnWriteArrayList<>();
@@ -267,7 +381,7 @@ public class UnifiedCrawlJob {
 
     /** Per-source progress */
     @Builder.Default
-    private List<SourceProgress> sourceProgress = new ArrayList<>();
+    private List<SourceProgress> sourceProgress = new CopyOnWriteArrayList<>();
 
     /** The assembled graph result (populated on completion) */
     private Graph resultGraph;
@@ -371,6 +485,85 @@ public class UnifiedCrawlJob {
         private Instant startedAt;
         private Instant updatedAt;
         private Instant completedAt;
+    }
+
+    /**
+     * Per-backend routing and token usage statistics.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class BackendRoutingStats {
+        private String backendId;
+        private String backendType;
+        @Builder.Default
+        private long requestsDispatched = 0;
+        @Builder.Default
+        private long requestsCompleted = 0;
+        @Builder.Default
+        private long requestsFailed = 0;
+        @Builder.Default
+        private long requestsRerouted = 0;
+        @Builder.Default
+        private long inputTokens = 0;
+        @Builder.Default
+        private long outputTokens = 0;
+        @Builder.Default
+        private long estimatedCostCentsX100 = 0;
+        /** EMA latency in ms (x100) */
+        @Builder.Default
+        private long emaLatencyMsX100 = 0;
+        /** Current active request count */
+        @Builder.Default
+        private int activeRequests = 0;
+        /** Max concurrent capacity */
+        @Builder.Default
+        private int maxConcurrent = 0;
+        /** Whether this backend is currently healthy and accepting work */
+        @Builder.Default
+        private boolean healthy = true;
+        /** Reason if unhealthy */
+        private String unhealthyReason;
+    }
+
+    /**
+     * A rerouting event recording when work was moved between backends.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RerouteEvent {
+        private Instant timestamp;
+        private String fromBackend;
+        private String toBackend;
+        private String taskType;
+        private String reason;
+        private int itemCount;
+    }
+
+    /**
+     * A retry event recording when a failed batch or item was retried.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RetryEvent {
+        private Instant timestamp;
+        private String stage;
+        private int attempt;
+        private int maxAttempts;
+        private int itemCount;
+        private int originalBatchSize;
+        private int reducedBatchSize;
+        private String failureReason;
+        private String backendId;
+        private String fallbackBackendId;
+        private long backoffMs;
+        private boolean succeeded;
+        private boolean sentToDeadLetter;
     }
 
     @Data
@@ -538,6 +731,61 @@ public class UnifiedCrawlJob {
     }
 
     /**
+     * Snapshot backend routing stats as a plain Map for serialization.
+     */
+    public Map<String, BackendRoutingStats> snapshotBackendStats() {
+        Map<String, BackendRoutingStats> snapshot = new java.util.LinkedHashMap<>();
+        backendStats.forEach((k, v) -> snapshot.put(k, BackendRoutingStats.builder()
+                .backendId(v.getBackendId())
+                .backendType(v.getBackendType())
+                .requestsDispatched(v.getRequestsDispatched())
+                .requestsCompleted(v.getRequestsCompleted())
+                .requestsFailed(v.getRequestsFailed())
+                .requestsRerouted(v.getRequestsRerouted())
+                .inputTokens(v.getInputTokens())
+                .outputTokens(v.getOutputTokens())
+                .estimatedCostCentsX100(v.getEstimatedCostCentsX100())
+                .emaLatencyMsX100(v.getEmaLatencyMsX100())
+                .activeRequests(v.getActiveRequests())
+                .maxConcurrent(v.getMaxConcurrent())
+                .healthy(v.isHealthy())
+                .unhealthyReason(v.getUnhealthyReason())
+                .build()));
+        return snapshot;
+    }
+
+    /**
+     * Record a rerouting event. Maintains bounded list of last 20 events.
+     */
+    public void recordRerouteEvent(String fromBackend, String toBackend,
+                                   String taskType, String reason, int itemCount) {
+        recentRerouteEvents.add(RerouteEvent.builder()
+                .timestamp(Instant.now())
+                .fromBackend(fromBackend)
+                .toBackend(toBackend)
+                .taskType(taskType)
+                .reason(reason)
+                .itemCount(itemCount)
+                .build());
+        while (recentRerouteEvents.size() > 20) {
+            recentRerouteEvents.remove(0);
+        }
+        reroutedItems.addAndGet(itemCount);
+    }
+
+    /**
+     * Record a retry event. Maintains bounded list of last 20 events.
+     */
+    public void recordRetryEvent(RetryEvent event) {
+        recentRetryEvents.add(event);
+        while (recentRetryEvents.size() > 20) {
+            recentRetryEvents.remove(0);
+        }
+        retriedBatches.incrementAndGet();
+        retriedItems.addAndGet(event.getItemCount());
+    }
+
+    /**
      * Build a progress snapshot suitable for serialization.
      */
     public ProgressSnapshot toProgressSnapshot() {
@@ -575,6 +823,10 @@ public class UnifiedCrawlJob {
                 .documentsIndexed(documentsIndexed.get())
                 .entitiesExtracted(entitiesExtracted.get())
                 .relationshipsExtracted(relationshipsExtracted.get())
+                .documentsPreprocessed(documentsPreprocessed.get())
+                .documentsTranslated(documentsTranslated.get())
+                .graphExtractionRetries(graphExtractionRetries.get())
+                .graphExtractionParseFailures(graphExtractionParseFailures.get())
                 .errorCount(errorCount.get())
                 .currentFile(currentFile.get())
                 .currentPhase(currentPhase.get())
@@ -605,6 +857,33 @@ public class UnifiedCrawlJob {
                 .embeddingSingleDspPlan(embeddingSingleDspPlan.get())
                 .embeddingDspPlanBatchSize(embeddingDspPlanBatchSize.get())
                 .currentBatchStep(currentBatchStep.get())
+                // Work-stealing stats
+                .workStealCount(workStealCount.get())
+                .workStealFailures(workStealFailures.get())
+                .localDispatchCount(localDispatchCount.get())
+                .workImbalanceRatioX100(workImbalanceRatioX100.get())
+                // Dynamic batch sizing
+                .adaptiveBatchSize(adaptiveBatchSize.get())
+                .batchSizeAdjustments(batchSizeAdjustments.get())
+                .lastBatchAdjustDirection(lastBatchAdjustDirection.get())
+                .lastBatchAdjustReason(lastBatchAdjustReason.get())
+                .batchEmaLatencyMsX100(batchEmaLatencyMsX100.get())
+                .peakThroughputX100(peakThroughputX100.get())
+                // Token budget
+                .totalInputTokens(totalInputTokens.get())
+                .totalOutputTokens(totalOutputTokens.get())
+                .estimatedCostCentsX100(estimatedCostCentsX100.get())
+                .backendStats(backendStats.isEmpty() ? null : snapshotBackendStats())
+                // Workload rerouting
+                .reroutedItems(reroutedItems.get())
+                .droppedItems(droppedItems.get())
+                .recentRerouteEvents(recentRerouteEvents.isEmpty() ? null : new ArrayList<>(recentRerouteEvents))
+                // Retry / fallback
+                .retriedBatches(retriedBatches.get())
+                .retriedItems(retriedItems.get())
+                .deadLetterCount(deadLetterCount.get())
+                .backendsCoolingDown(backendsCoolingDown.get())
+                .recentRetryEvents(recentRetryEvents.isEmpty() ? null : new ArrayList<>(recentRetryEvents))
                 .errors(errors.isEmpty() ? null : new ArrayList<>(errors))
                 .recentEvents(recentEvents.isEmpty() ? null : new ArrayList<>(recentEvents))
                 .pipelineSteps(stepSnapshots.isEmpty() ? null : stepSnapshots)
@@ -640,6 +919,10 @@ public class UnifiedCrawlJob {
         private int documentsIndexed;
         private int entitiesExtracted;
         private int relationshipsExtracted;
+        private int documentsPreprocessed;
+        private int documentsTranslated;
+        private int graphExtractionRetries;
+        private int graphExtractionParseFailures;
         private int errorCount;
         private String currentFile;
         private String currentPhase;
@@ -683,5 +966,32 @@ public class UnifiedCrawlJob {
         private Instant startedAt;
         private Instant completedAt;
         private String errorMessage;
+        // Work-stealing stats
+        private long workStealCount;
+        private long workStealFailures;
+        private long localDispatchCount;
+        private long workImbalanceRatioX100;
+        // Dynamic batch sizing
+        private int adaptiveBatchSize;
+        private int batchSizeAdjustments;
+        private String lastBatchAdjustDirection;
+        private String lastBatchAdjustReason;
+        private long batchEmaLatencyMsX100;
+        private long peakThroughputX100;
+        // Token budget
+        private long totalInputTokens;
+        private long totalOutputTokens;
+        private long estimatedCostCentsX100;
+        private Map<String, BackendRoutingStats> backendStats;
+        // Workload rerouting
+        private long reroutedItems;
+        private long droppedItems;
+        private List<RerouteEvent> recentRerouteEvents;
+        // Retry / fallback
+        private long retriedBatches;
+        private long retriedItems;
+        private int deadLetterCount;
+        private int backendsCoolingDown;
+        private List<RetryEvent> recentRetryEvents;
     }
 }

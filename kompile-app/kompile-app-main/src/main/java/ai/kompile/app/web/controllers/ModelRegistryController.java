@@ -28,6 +28,7 @@ import ai.kompile.ocr.integration.OcrPipelineService;
 import ai.kompile.vectorstore.anserini.AnseriniVectorStoreImpl;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,7 +61,13 @@ public class ModelRegistryController {
     private static final Logger log = LoggerFactory.getLogger(ModelRegistryController.class);
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
+    {
+        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(30_000);
+        restTemplate = new RestTemplate(factory);
+    }
 
     // Optional embedding model for reload capability
     private final AnseriniEmbeddingModelImpl embeddingModel;
@@ -134,13 +141,13 @@ public class ModelRegistryController {
 
             // Get models from UI-configured staging service
             if (stagingClientService != null) {
-                Optional<com.fasterxml.jackson.databind.JsonNode> registryOpt = stagingClientService.getRegistry();
+                Optional<JsonNode> registryOpt = stagingClientService.getRegistry();
                 if (registryOpt.isPresent()) {
-                    com.fasterxml.jackson.databind.JsonNode registry = registryOpt.get();
-                    com.fasterxml.jackson.databind.JsonNode modelsNode = registry.get("models");
+                    JsonNode registry = registryOpt.get();
+                    JsonNode modelsNode = registry.get("models");
                     if (modelsNode != null && modelsNode.isObject()) {
                         modelsNode.fields().forEachRemaining(entry -> {
-                            com.fasterxml.jackson.databind.JsonNode model = entry.getValue();
+                            JsonNode model = entry.getValue();
                             String modelType = model.has("type") ? model.get("type").asText() : null;
                             // Match type
                             if (type.equalsIgnoreCase(modelType) ||
@@ -156,7 +163,7 @@ public class ModelRegistryController {
 
             return ResponseEntity.ok(models);
         } catch (Exception e) {
-            log.error("Failed to get models by type: {}", type, e);
+            log.error("Failed to get models by type: {}", type != null ? type.replaceAll("[\\r\\n]", "_") : "null", e);
             return ResponseEntity.ok(Collections.emptyList());
         }
     }
@@ -170,14 +177,14 @@ public class ModelRegistryController {
         try {
             // Get model from UI-configured staging service
             if (stagingClientService != null) {
-                Optional<com.fasterxml.jackson.databind.JsonNode> modelOpt = stagingClientService.getModel(modelId);
+                Optional<JsonNode> modelOpt = stagingClientService.getModel(modelId);
                 if (modelOpt.isPresent()) {
                     return ResponseEntity.ok(jsonToModelEntry(modelId, modelOpt.get()));
                 }
             }
             return ResponseEntity.notFound().build();
         } catch (Exception e) {
-            log.error("Failed to get model: {}", modelId, e);
+            log.error("Failed to get model: {}", modelId != null ? modelId.replaceAll("[\\r\\n]", "_") : "null", e);
             return ResponseEntity.notFound().build();
         }
     }
@@ -246,10 +253,10 @@ public class ModelRegistryController {
 
                 if (testResult.success()) {
                     try {
-                        Optional<com.fasterxml.jackson.databind.JsonNode> registryOpt = stagingClientService.getRegistry();
+                        Optional<JsonNode> registryOpt = stagingClientService.getRegistry();
                         if (registryOpt.isPresent()) {
                             List<StagingModelInfo> modelInfos = new ArrayList<>();
-                            com.fasterxml.jackson.databind.JsonNode modelsNode = registryOpt.get().get("models");
+                            JsonNode modelsNode = registryOpt.get().get("models");
                             if (modelsNode != null && modelsNode.isObject()) {
                                 modelsNode.fieldNames().forEachRemaining(modelId -> {
                                     StagingModelInfo info = new StagingModelInfo();
@@ -293,9 +300,9 @@ public class ModelRegistryController {
                 if (activeConfig.isPresent()) {
                     sourceType = "staging";
                     try {
-                        Optional<com.fasterxml.jackson.databind.JsonNode> registryOpt = stagingClientService.getRegistry();
+                        Optional<JsonNode> registryOpt = stagingClientService.getRegistry();
                         if (registryOpt.isPresent()) {
-                            com.fasterxml.jackson.databind.JsonNode modelsNode = registryOpt.get().get("models");
+                            JsonNode modelsNode = registryOpt.get().get("models");
                             if (modelsNode != null && modelsNode.isObject()) {
                                 totalModels = modelsNode.size();
                             }
@@ -839,14 +846,14 @@ public class ModelRegistryController {
 
             // Get models from UI-configured staging service
             if (stagingClientService != null) {
-                Optional<com.fasterxml.jackson.databind.JsonNode> registryOpt = stagingClientService.getRegistry();
+                Optional<JsonNode> registryOpt = stagingClientService.getRegistry();
                 if (registryOpt.isPresent()) {
-                    com.fasterxml.jackson.databind.JsonNode registry = registryOpt.get();
-                    com.fasterxml.jackson.databind.JsonNode modelsNode = registry.get("models");
+                    JsonNode registry = registryOpt.get();
+                    JsonNode modelsNode = registry.get("models");
                     if (modelsNode != null && modelsNode.isObject()) {
                         modelsNode.fields().forEachRemaining(entry -> {
-                            com.fasterxml.jackson.databind.JsonNode model = entry.getValue();
-                            com.fasterxml.jackson.databind.JsonNode metadata = model.get("metadata");
+                            JsonNode model = entry.getValue();
+                            JsonNode metadata = model.get("metadata");
                             if (metadata != null) {
                                 String ragRole = metadata.has("rag_role") ? metadata.get("rag_role").asText() : null;
                                 if (role.equalsIgnoreCase(ragRole)) {
@@ -1031,10 +1038,10 @@ public class ModelRegistryController {
 
         // Use UI-configured staging service (from database)
         if (stagingClientService != null) {
-            Optional<com.fasterxml.jackson.databind.JsonNode> registryOpt = stagingClientService.getRegistry();
+            Optional<JsonNode> registryOpt = stagingClientService.getRegistry();
             if (registryOpt.isPresent()) {
-                com.fasterxml.jackson.databind.JsonNode remoteRegistry = registryOpt.get();
-                com.fasterxml.jackson.databind.JsonNode modelsNode = remoteRegistry.get("models");
+                JsonNode remoteRegistry = registryOpt.get();
+                JsonNode modelsNode = remoteRegistry.get("models");
                 if (modelsNode != null && modelsNode.isObject()) {
                     modelsNode.fields().forEachRemaining(entry -> {
                         registry.models.put(entry.getKey(), jsonToModelEntry(entry.getKey(), entry.getValue()));
@@ -1056,7 +1063,7 @@ public class ModelRegistryController {
     /**
      * Convert a JSON model node to ModelEntry.
      */
-    private ModelEntry jsonToModelEntry(String modelId, com.fasterxml.jackson.databind.JsonNode json) {
+    private ModelEntry jsonToModelEntry(String modelId, JsonNode json) {
         ModelEntry entry = new ModelEntry();
         entry.modelId = modelId;
         entry.type = json.has("type") ? json.get("type").asText() : null;
@@ -1067,7 +1074,7 @@ public class ModelRegistryController {
         entry.status = json.has("status") ? json.get("status").asText() : null;
         entry.promotedAt = json.has("promoted_at") ? json.get("promoted_at").asText() : null;
 
-        com.fasterxml.jackson.databind.JsonNode metadataNode = json.get("metadata");
+        JsonNode metadataNode = json.get("metadata");
         if (metadataNode != null && metadataNode.isObject()) {
             ModelMetadata metadata = new ModelMetadata();
             metadata.embeddingDim = metadataNode.has("embedding_dim") ? metadataNode.get("embedding_dim").asInt() : null;
@@ -1084,7 +1091,7 @@ public class ModelRegistryController {
             entry.metadata = metadata;
         }
 
-        com.fasterxml.jackson.databind.JsonNode tokenizerNode = json.get("tokenizer");
+        JsonNode tokenizerNode = json.get("tokenizer");
         if (tokenizerNode != null && tokenizerNode.isObject()) {
             TokenizerConfig tokenizer = new TokenizerConfig();
             tokenizer.doLowerCase = tokenizerNode.has("do_lower_case") ? tokenizerNode.get("do_lower_case").asBoolean() : null;
@@ -1530,12 +1537,12 @@ public class ModelRegistryController {
                     // Get available models from staging registry
                     if (connStatus.connected()) {
                         try {
-                            Optional<com.fasterxml.jackson.databind.JsonNode> registryOpt = stagingClientService.getRegistry();
+                            Optional<JsonNode> registryOpt = stagingClientService.getRegistry();
                             if (registryOpt.isPresent()) {
-                                com.fasterxml.jackson.databind.JsonNode modelsNode = registryOpt.get().get("models");
+                                JsonNode modelsNode = registryOpt.get().get("models");
                                 if (modelsNode != null && modelsNode.isObject()) {
                                     modelsNode.fieldNames().forEachRemaining(modelId -> {
-                                        com.fasterxml.jackson.databind.JsonNode model = modelsNode.get(modelId);
+                                        JsonNode model = modelsNode.get(modelId);
                                         String type = model.path("type").asText("");
                                         if ("dense_encoder".equalsIgnoreCase(type) || "encoder".equalsIgnoreCase(type)) {
                                             availableEmbeddingModels.add(modelId);

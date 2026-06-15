@@ -411,6 +411,34 @@ describe('ProcessEngineService', () => {
     });
   });
 
+  describe('listProcessDefinitions()', () => {
+    it('should GET /process/definition and return a list of definitions', () => {
+      const mockDefs = [
+        makeProcessDefinition({ id: 'proc-001', name: 'Transaction Review' }),
+        makeProcessDefinition({ id: 'proc-002', name: 'Invoice Processing' })
+      ];
+
+      service.listProcessDefinitions().subscribe(result => {
+        expect(result.length).toBe(2);
+        expect(result[0].id).toBe('proc-001');
+        expect(result[1].name).toBe('Invoice Processing');
+      });
+
+      const req = httpMock.expectOne(`${baseUrl}/definition`);
+      expect(req.request.method).toBe('GET');
+      req.flush(mockDefs);
+    });
+
+    it('should return empty list when no definitions exist', () => {
+      service.listProcessDefinitions().subscribe(result => {
+        expect(result.length).toBe(0);
+      });
+
+      const req = httpMock.expectOne(`${baseUrl}/definition`);
+      req.flush([]);
+    });
+  });
+
   // ── Workflow Runs ──────────────────────────────────────────────────────────
 
   describe('startRun()', () => {
@@ -501,6 +529,31 @@ describe('ProcessEngineService', () => {
 
       const req = httpMock.expectOne(`${baseUrl}/run/active`);
       req.flush([]);
+    });
+  });
+
+  describe('cancelRun()', () => {
+    it('should POST to /process/run/:runId/cancel and return the cancelled run', () => {
+      const mockRun = makeWorkflowRun({ status: 'CANCELLED' });
+
+      service.cancelRun('run-001').subscribe(result => {
+        expect(result.id).toBe('run-001');
+        expect(result.status).toBe('CANCELLED');
+      });
+
+      const req = httpMock.expectOne(`${baseUrl}/run/run-001/cancel`);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({});
+      req.flush(mockRun);
+    });
+
+    it('should handle 404 when run does not exist', () => {
+      service.cancelRun('nonexistent').subscribe({
+        error: err => expect(err).toBeTruthy()
+      });
+
+      const req = httpMock.expectOne(`${baseUrl}/run/nonexistent/cancel`);
+      req.flush('Not Found', { status: 404, statusText: 'Not Found' });
     });
   });
 
@@ -1033,6 +1086,100 @@ describe('ProcessEngineService', () => {
       expect(req.request.method).toBe('POST');
       expect(req.request.body.expression).toBe('#amount * 2');
       req.flush(mockResult);
+    });
+  });
+
+  // ── Cross-Document Flows ───────────────────��──────────────────────────────
+
+  describe('analyzeCrossDocumentFlows()', () => {
+    it('should POST to /process/discovery/cross-document-flows', (done) => {
+      const nodeIds = ['node-1', 'node-2'];
+      const mockResponse = { suggestions: [{ name: 'Cross-doc flow' }] };
+
+      service.analyzeCrossDocumentFlows(nodeIds).subscribe(res => {
+        expect(res).toEqual(mockResponse);
+        done();
+      });
+
+      const req = httpMock.expectOne(`${backendUrl}/process/discovery/cross-document-flows`);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body.graphNodeIds).toEqual(nodeIds);
+      req.flush(mockResponse);
+    });
+  });
+
+  // ── Stored Suggestions CRUD ───────────────────────────────────────────────
+
+  describe('listStoredSuggestions()', () => {
+    it('should GET /process/discovery/suggestions with no params', (done) => {
+      const mockResponse = { suggestions: [{ id: 'sug-1', name: 'Test' }] };
+
+      service.listStoredSuggestions().subscribe(res => {
+        expect(res).toEqual(mockResponse);
+        done();
+      });
+
+      const req = httpMock.expectOne(r =>
+        r.url === `${backendUrl}/process/discovery/suggestions` && r.method === 'GET'
+      );
+      req.flush(mockResponse);
+    });
+
+    it('should pass factSheetId and pendingOnly params', (done) => {
+      service.listStoredSuggestions(42, true).subscribe(res => {
+        expect(res).toBeTruthy();
+        done();
+      });
+
+      const req = httpMock.expectOne(r =>
+        r.url === `${backendUrl}/process/discovery/suggestions` &&
+        r.params.get('factSheetId') === '42' &&
+        r.params.get('pendingOnly') === 'true'
+      );
+      req.flush({ suggestions: [] });
+    });
+  });
+
+  describe('getStoredSuggestion()', () => {
+    it('should GET /process/discovery/suggestions/:id', (done) => {
+      const mockSuggestion = { id: 'sug-1', name: 'Invoice Flow', confidence: 0.85 };
+
+      service.getStoredSuggestion('sug-1').subscribe(res => {
+        expect(res).toEqual(mockSuggestion);
+        done();
+      });
+
+      const req = httpMock.expectOne(`${backendUrl}/process/discovery/suggestions/sug-1`);
+      expect(req.request.method).toBe('GET');
+      req.flush(mockSuggestion);
+    });
+  });
+
+  describe('acceptStoredSuggestion()', () => {
+    it('should POST /process/discovery/suggestions/:id/accept', (done) => {
+      const mockDef = { id: 'proc-001', name: 'Invoice Processing' };
+
+      service.acceptStoredSuggestion('sug-1').subscribe(res => {
+        expect(res).toEqual(mockDef);
+        done();
+      });
+
+      const req = httpMock.expectOne(`${backendUrl}/process/discovery/suggestions/sug-1/accept`);
+      expect(req.request.method).toBe('POST');
+      req.flush(mockDef);
+    });
+  });
+
+  describe('deleteStoredSuggestion()', () => {
+    it('should DELETE /process/discovery/suggestions/:id', (done) => {
+      service.deleteStoredSuggestion('sug-1').subscribe(res => {
+        expect(res).toBeTruthy();
+        done();
+      });
+
+      const req = httpMock.expectOne(`${backendUrl}/process/discovery/suggestions/sug-1`);
+      expect(req.request.method).toBe('DELETE');
+      req.flush({});
     });
   });
 });

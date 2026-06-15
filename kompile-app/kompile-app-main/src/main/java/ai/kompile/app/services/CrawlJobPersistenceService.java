@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.app.config.PrimaryDataSourceConfig;
 import ai.kompile.app.ingest.domain.CrawlJobRecord;
 import ai.kompile.app.ingest.domain.CrawlJobRecord.CrawlJobStatus;
 import ai.kompile.app.ingest.repository.CrawlJobRecordRepository;
@@ -29,6 +30,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,24 +48,35 @@ public class CrawlJobPersistenceService {
 
     private static final Logger log = LoggerFactory.getLogger(CrawlJobPersistenceService.class);
 
-    private final CrawlJobRecordRepository repository;
-    private final ObjectMapper objectMapper;
+    @Autowired
+    private CrawlJobRecordRepository repository;
+    private ObjectMapper objectMapper;
 
     public CrawlJobPersistenceService(CrawlJobRecordRepository repository) {
         this.repository = repository;
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        // Don't fail on unknown properties when deserializing configs from older versions
-        this.objectMapper.configure(
-                com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.objectMapper = createObjectMapper();
     }
+
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
+    protected CrawlJobPersistenceService() {
+        this.objectMapper = createObjectMapper();
+    }
+
+    private static ObjectMapper createObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JavaTimeModule());
+        mapper.configure(
+                com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        return mapper;
+    }
+
 
     /**
      * On startup, mark any RUNNING or PAUSED crawl records as INTERRUPTED.
      * These represent jobs that were active when the application was killed.
      */
     @PostConstruct
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void markInterruptedOnStartup() {
         List<CrawlJobRecord> activeOnStartup = repository.findActiveOnStartup();
         if (activeOnStartup.isEmpty()) {
@@ -84,7 +97,7 @@ public class CrawlJobPersistenceService {
     /**
      * Create a new DB record when a crawl job starts.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public CrawlJobRecord createRecord(CrawlJob job, CrawlConfig config, String historyTaskId) {
         String configJson = null;
         try {
@@ -115,7 +128,7 @@ public class CrawlJobPersistenceService {
     /**
      * Save a periodic checkpoint for a running crawl job.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void saveCheckpoint(String crawlJobId, CrawlState state, CrawlProgress progress) {
         repository.findByCrawlJobId(crawlJobId).ifPresent(record -> {
             try {
@@ -145,7 +158,7 @@ public class CrawlJobPersistenceService {
     /**
      * Mark a crawl job as completed/failed/cancelled with final state.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void finalizeRecord(String crawlJobId, CrawlJobStatus status,
                                CrawlState finalState, CrawlProgress finalProgress,
                                String errorMessage) {
@@ -188,7 +201,7 @@ public class CrawlJobPersistenceService {
     /**
      * Set the resumedFromJobId on a crawl job record to track resume lineage.
      */
-    @Transactional("ingestEventTransactionManager")
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void setResumedFromJobId(String crawlJobId, String originalJobId) {
         repository.findByCrawlJobId(crawlJobId).ifPresent(record -> {
             record.setResumedFromJobId(originalJobId);

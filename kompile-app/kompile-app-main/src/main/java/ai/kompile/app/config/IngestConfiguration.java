@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Configuration for document ingest processing settings.
  * These settings control concurrency, batch sizes, and memory thresholds.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConfigurationProperties(prefix = "kompile.ingest")
 public class IngestConfiguration {
 

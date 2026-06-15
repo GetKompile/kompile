@@ -53,6 +53,9 @@ public class CodeGraphBuilder {
     private final CodeRelationRepository relationRepository;
     private final KnowledgeGraphService knowledgeGraphService;
     private final TestCoverageAnalyzer testCoverageAnalyzer;
+    private final GitHistoryGraphBuilder gitHistoryGraphBuilder;
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /** Maps CodeRelationType → knowledge graph EdgeType for relation promotion. */
     private static final Map<CodeRelationType, EdgeType> RELATION_EDGE_TYPE_MAP;
@@ -74,13 +77,15 @@ public class CodeGraphBuilder {
                             CodeEntityRepository entityRepository,
                             CodeRelationRepository relationRepository,
                             @Autowired(required = false) KnowledgeGraphService knowledgeGraphService,
-                            TestCoverageAnalyzer testCoverageAnalyzer) {
+                            TestCoverageAnalyzer testCoverageAnalyzer,
+                            @Autowired(required = false) GitHistoryGraphBuilder gitHistoryGraphBuilder) {
         this.codebaseIndexer = codebaseIndexer;
         this.codeSearchService = codeSearchService;
         this.entityRepository = entityRepository;
         this.relationRepository = relationRepository;
         this.knowledgeGraphService = knowledgeGraphService;
         this.testCoverageAnalyzer = testCoverageAnalyzer;
+        this.gitHistoryGraphBuilder = gitHistoryGraphBuilder;
     }
 
     // ── Main graph construction ───────────────────────────────────────────────
@@ -102,6 +107,12 @@ public class CodeGraphBuilder {
 
         int edgesAdded = ensureConnectivity(projectId);
         result.put("connectivityEdgesAdded", edgesAdded);
+
+        // Extract git commit history as temporal edges
+        if (gitHistoryGraphBuilder != null) {
+            Map<String, Object> gitResult = gitHistoryGraphBuilder.buildGitHistory(projectId);
+            result.put("gitHistory", gitResult);
+        }
 
         log.info("Graph build complete: projectId={}, edgesAdded={}", projectId, edgesAdded);
         return result;
@@ -815,7 +826,7 @@ public class CodeGraphBuilder {
                     "filename", "local-graph-" + safeLabel + ".html");
             case "json" -> {
                 try {
-                    byte[] jsonBytes = new ObjectMapper().writerWithDefaultPrettyPrinter()
+                    byte[] jsonBytes = OBJECT_MAPPER.writerWithDefaultPrettyPrinter()
                             .writeValueAsBytes(graph);
                     yield Map.of(
                             "data", jsonBytes,
@@ -1189,7 +1200,7 @@ public class CodeGraphBuilder {
                     "filename", "code-graph-" + projectId + ".html");
             case "json" -> {
                 try {
-                    byte[] jsonBytes = new ObjectMapper().writerWithDefaultPrettyPrinter()
+                    byte[] jsonBytes = OBJECT_MAPPER.writerWithDefaultPrettyPrinter()
                             .writeValueAsBytes(graph);
                     yield Map.of(
                             "data", jsonBytes,

@@ -205,7 +205,10 @@ public class ComprehensiveDiagnosticsController {
             try {
                 String leakReportDir = "./leak_reports";
                 if (Files.exists(Paths.get(leakReportDir))) {
-                    long fileCount = Files.list(Paths.get(leakReportDir)).count();
+                    long fileCount;
+                    try (var leakFiles = Files.list(Paths.get(leakReportDir))) {
+                        fileCount = leakFiles.count();
+                    }
                     leakReports.put("directory", leakReportDir);
                     leakReports.put("reportCount", fileCount);
                     leakReports.put("exists", true);
@@ -221,10 +224,10 @@ public class ComprehensiveDiagnosticsController {
 
             // 7. Summary
             Map<String, String> summary = new LinkedHashMap<>();
-            summary.put("lifecycleTracking", lifecycleConfig.get("enabled").toString());
+            summary.put("lifecycleTracking", String.valueOf(lifecycleConfig.get("enabled")));
             summary.put("allocationLogging", allocationLogging.getOrDefault("enabled", false).toString());
             summary.put("operationLogging", opExecutionLogging.getOrDefault("enabled", false).toString());
-            summary.put("cacheMemoryUsageMB", cacheStats.get("totalMB").toString());
+            summary.put("cacheMemoryUsageMB", String.valueOf(cacheStats.get("totalMB")));
 
             if (allocationLogging.containsKey("summary")) {
                 AllocationLogSummary allocSummary = (AllocationLogSummary) allocationLogging.get("summary");

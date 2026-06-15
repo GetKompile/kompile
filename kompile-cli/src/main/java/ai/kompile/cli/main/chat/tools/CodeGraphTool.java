@@ -554,15 +554,15 @@ public class CodeGraphTool implements CliTool {
      */
     private ToolResult executeLocal(String action, JsonNode params, String projectId, String cwd, ToolContext context) {
         try {
-            ai.kompile.cli.main.codeindex.LocalCodeIndexer localIndexer =
-                    new ai.kompile.cli.main.codeindex.LocalCodeIndexer();
+            LocalCodeIndexer localIndexer =
+                    new LocalCodeIndexer();
 
             return switch (action) {
                 case "build", "add_directory" -> {
                     String dirPath = params.path("directory_path").asText("");
                     if (dirPath.isEmpty()) dirPath = cwd;
-                    ai.kompile.cli.main.codeindex.LocalCodeIndexer.IndexResult result =
-                            localIndexer.index(java.nio.file.Path.of(dirPath), projectId,
+                    LocalCodeIndexer.IndexResult result =
+                            localIndexer.index(Path.of(dirPath), projectId,
                                     params.path("include_patterns").asText(null),
                                     params.path("exclude_patterns").asText(null),
                                     ProgressPrintStream.from(context));
@@ -575,9 +575,9 @@ public class CodeGraphTool implements CliTool {
                     if (result.errors() > 0) sb.append("- **Errors**: ").append(result.errors()).append("\n");
 
                     // Report relation counts from the graph
-                    try (ai.kompile.cli.main.codeindex.IndexDatabase gdb =
-                             ai.kompile.cli.main.codeindex.IndexDatabase.open(
-                                     ai.kompile.cli.main.codeindex.LocalCodeIndexer.getIndexDir(projectId))) {
+                    try (IndexDatabase gdb =
+                             IndexDatabase.open(
+                                     LocalCodeIndexer.getIndexDir(projectId))) {
                         Map<String, Object> gStats = gdb.getGraphStats();
                         sb.append("- **Relations**: ").append(gStats.getOrDefault("totalRelations", 0)).append("\n");
                         @SuppressWarnings("unchecked")
@@ -601,7 +601,7 @@ public class CodeGraphTool implements CliTool {
                     if (query.isEmpty()) yield ToolResult.error("query is required");
                     String entityType = params.path("entity_type").asText("");
                     int maxResults = params.path("max_results").asInt(10);
-                    java.util.List<Map<String, Object>> results =
+                    List<Map<String, Object>> results =
                             localIndexer.search(projectId, query,
                                     entityType.isEmpty() ? null : entityType, maxResults);
                     if (results.isEmpty()) {
@@ -651,7 +651,7 @@ public class CodeGraphTool implements CliTool {
                     yield ToolResult.success("code_stats: " + projectId, sb.toString());
                 }
                 case "list_directories" -> {
-                    java.util.List<Map<String, Object>> projects = localIndexer.listProjects();
+                    List<Map<String, Object>> projects = localIndexer.listProjects();
                     if (projects.isEmpty()) {
                         yield ToolResult.success("No locally indexed projects. Use action='build' to create one.");
                     }
@@ -668,24 +668,24 @@ public class CodeGraphTool implements CliTool {
                     if (fqn.isEmpty()) yield ToolResult.error("fqn is required for symbol action");
                     int depth = params.path("depth").asInt(2);
 
-                    java.nio.file.Path indexDir = ai.kompile.cli.main.codeindex.LocalCodeIndexer.getIndexDir(projectId);
-                    if (!java.nio.file.Files.exists(indexDir.resolve("index.db"))) {
+                    Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
+                    if (!Files.exists(indexDir.resolve("index.db"))) {
                         yield ToolResult.error("No index found for project '" + projectId +
                                 "'. Run action='build' first.");
                     }
 
-                    try (ai.kompile.cli.main.codeindex.IndexDatabase db =
-                             ai.kompile.cli.main.codeindex.IndexDatabase.open(indexDir)) {
+                    try (IndexDatabase db =
+                             IndexDatabase.open(indexDir)) {
                         Map<String, Object> graph = db.getSymbolGraph(fqn, depth);
 
                         @SuppressWarnings("unchecked")
                         Map<String, Object> entity = (Map<String, Object>) graph.get("entity");
                         @SuppressWarnings("unchecked")
-                        java.util.List<Map<String, Object>> nodes =
-                                (java.util.List<Map<String, Object>>) graph.get("nodes");
+                        List<Map<String, Object>> nodes =
+                                (List<Map<String, Object>>) graph.get("nodes");
                         @SuppressWarnings("unchecked")
-                        java.util.List<Map<String, Object>> edges =
-                                (java.util.List<Map<String, Object>>) graph.get("edges");
+                        List<Map<String, Object>> edges =
+                                (List<Map<String, Object>>) graph.get("edges");
                         @SuppressWarnings("unchecked")
                         Map<String, Object> metadata = (Map<String, Object>) graph.get("metadata");
 
@@ -757,25 +757,25 @@ public class CodeGraphTool implements CliTool {
                     String filePath = params.path("file_path").asText("");
                     if (filePath.isEmpty()) yield ToolResult.error("file_path is required for file action");
 
-                    java.nio.file.Path indexDir = ai.kompile.cli.main.codeindex.LocalCodeIndexer.getIndexDir(projectId);
-                    if (!java.nio.file.Files.exists(indexDir.resolve("index.db"))) {
+                    Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
+                    if (!Files.exists(indexDir.resolve("index.db"))) {
                         yield ToolResult.error("No index found for project '" + projectId +
                                 "'. Run action='build' first.");
                     }
 
-                    try (ai.kompile.cli.main.codeindex.IndexDatabase db =
-                             ai.kompile.cli.main.codeindex.IndexDatabase.open(indexDir)) {
+                    try (IndexDatabase db =
+                             IndexDatabase.open(indexDir)) {
                         Map<String, Object> graph = db.getFileGraph(filePath);
 
                         @SuppressWarnings("unchecked")
-                        java.util.List<Map<String, Object>> entities =
-                                (java.util.List<Map<String, Object>>) graph.get("entities");
+                        List<Map<String, Object>> entities =
+                                (List<Map<String, Object>>) graph.get("entities");
                         @SuppressWarnings("unchecked")
-                        java.util.List<Map<String, Object>> outRels =
-                                (java.util.List<Map<String, Object>>) graph.get("outgoingRelations");
+                        List<Map<String, Object>> outRels =
+                                (List<Map<String, Object>>) graph.get("outgoingRelations");
                         @SuppressWarnings("unchecked")
-                        java.util.List<Map<String, Object>> inRels =
-                                (java.util.List<Map<String, Object>>) graph.get("incomingRelations");
+                        List<Map<String, Object>> inRels =
+                                (List<Map<String, Object>>) graph.get("incomingRelations");
 
                         StringBuilder sb = new StringBuilder();
                         sb.append("File graph: ").append(filePath).append("\n\n");
@@ -836,14 +836,14 @@ public class CodeGraphTool implements CliTool {
                     }
                 }
                 case "connectivity" -> {
-                    java.nio.file.Path indexDir = ai.kompile.cli.main.codeindex.LocalCodeIndexer.getIndexDir(projectId);
-                    if (!java.nio.file.Files.exists(indexDir.resolve("index.db"))) {
+                    Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
+                    if (!Files.exists(indexDir.resolve("index.db"))) {
                         yield ToolResult.error("No index found for project '" + projectId +
                                 "'. Run action='build' first.");
                     }
 
-                    try (ai.kompile.cli.main.codeindex.IndexDatabase db =
-                             ai.kompile.cli.main.codeindex.IndexDatabase.open(indexDir)) {
+                    try (IndexDatabase db =
+                             IndexDatabase.open(indexDir)) {
                         db.beginTransaction();
                         int resolved = db.ensureConnectivity();
                         db.commit();

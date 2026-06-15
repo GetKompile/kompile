@@ -174,7 +174,7 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
                 return Mono.error(new IllegalStateException("Session not initialized"));
             }
         } catch (JsonProcessingException e) {
-            log.error("Failed to parse message for session {}: {}", sessionId, e.getMessage());
+            log.error("Failed to parse message for session {}", sessionId, e);
             return Mono.error(e);
         }
     }
@@ -223,6 +223,7 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
         // Set up emitter callbacks
         emitter.onCompletion(() -> {
             log.debug("Streamable HTTP connection completed for session: {}", sessionId);
+            removeSession(sessionId);
         });
 
         emitter.onTimeout(() -> {
@@ -251,14 +252,16 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
             if (session != null) {
                 session.handle(message).subscribe(
                     v -> log.debug("Initial message processed for session {}", sessionId),
-                    ex -> log.error("Error processing initial message for session {}: {}", sessionId, ex.getMessage())
+                    ex -> log.error("Error processing initial message for session {}", sessionId, ex)
                 );
             }
         } catch (JsonProcessingException e) {
-            log.error("Failed to parse initial message for session {}: {}", sessionId, e.getMessage());
+            log.error("Failed to parse initial message for session {}", sessionId, e);
             try {
                 emitter.completeWithError(e);
-            } catch (Exception ignored) {}
+            } catch (Exception ex) {
+                log.debug("Failed to signal parse error on SSE emitter for session {}: {}", sessionId, ex.getMessage());
+            }
         }
 
         return new StreamableHttpResult(sessionId, emitter);
@@ -313,16 +316,20 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
                         sessionTransport.setResponseEmitter(null);
                         try {
                             responseEmitter.completeWithError(ex);
-                        } catch (Exception ignored) {}
+                        } catch (Exception signalEx) {
+                            log.debug("Failed to signal processing error on SSE response emitter for session {}: {}", sessionId, signalEx.getMessage());
+                        }
                     }
                 );
             }
         } catch (JsonProcessingException e) {
-            log.error("Failed to parse message for session {}: {}", sessionId, e.getMessage());
+            log.error("Failed to parse message for session {}", sessionId, e);
             sessionTransport.setResponseEmitter(null);
             try {
                 responseEmitter.completeWithError(e);
-            } catch (Exception ignored) {}
+            } catch (Exception signalEx) {
+                log.debug("Failed to signal parse error on SSE response emitter for session {}: {}", sessionId, signalEx.getMessage());
+            }
             throw new RuntimeException("Failed to parse message", e);
         }
 
@@ -488,7 +495,7 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
                         }
                     }
                 } catch (IOException e) {
-                    log.error("Failed to send message to session {}: {}", sessionId, e.getMessage());
+                    log.error("Failed to send message to session {}", sessionId, e);
                     throw new RuntimeException("Failed to send message", e);
                 }
             });

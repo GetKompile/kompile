@@ -179,7 +179,7 @@ public class TranscriptIndexingService {
                 logger.info("Transcript backfill indexed {} tool calls: {}", indexed, result.get("bySource"));
             }
         } catch (Exception e) {
-            logger.debug("Scheduled transcript backfill failed: {}", e.getMessage());
+            logger.warn("Scheduled transcript backfill failed: {}", e.getMessage(), e);
         }
     }
 
@@ -196,7 +196,9 @@ public class TranscriptIndexingService {
                     if ("transcript".equals(node.path("source").asText(""))) {
                         ids.add(node.path("sessionId").asText(""));
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception e) {
+                    logger.debug("Skipping malformed index line: {}", e.getMessage());
+                }
             }
         } catch (IOException e) {
             logger.warn("Error reading index for dedup: {}", e.getMessage());

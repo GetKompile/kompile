@@ -213,7 +213,9 @@ public class AgentTaskService {
     // ── Persistence ──────────────────────────────────────────────────────────
 
     private Path sessionDir(String sessionId) {
-        return baseDir.resolve(sessionId);
+        // Sanitize sessionId to prevent path traversal
+        String safe = sessionId.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return baseDir.resolve(safe);
     }
 
     private Path taskFile(String sessionId, long id) {
@@ -224,7 +226,9 @@ public class AgentTaskService {
         try {
             Path dir = sessionDir(sessionId);
             Files.createDirectories(dir);
-            mapper.writeValue(taskFile(sessionId, task.getId()).toFile(), task);
+            Path tmpFile = dir.resolve("task-" + task.getId() + ".json.tmp");
+            mapper.writeValue(tmpFile.toFile(), task);
+            Files.move(tmpFile, taskFile(sessionId, task.getId()), java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             log.error("Failed to persist task {}/{}: {}", sessionId, task.getId(), e.getMessage(), e);
         }

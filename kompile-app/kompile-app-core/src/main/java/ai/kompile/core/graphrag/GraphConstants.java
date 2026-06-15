@@ -856,6 +856,26 @@ public final class GraphConstants {
     public static final String META_CONTENT_TYPE = "content_type";
     public static final String META_SOURCE_PATH = "source_path";
 
+    // SQL crawler metadata
+    public static final String META_SQL_TABLE_NAME = "sql.tableName";
+    public static final String META_SQL_ROW_ID = "sql.rowId";
+    public static final String META_SQL_ROW_INDEX = "sql.rowIndex";
+    public static final String META_SQL_COLUMN_COUNT = "sql.columnCount";
+    public static final String META_SQL_COLUMN_NAMES = "sql.columnNames";
+    public static final String META_SQL_JDBC_URL = "sql.jdbcUrl";
+    public static final String META_SQL_DATABASE_PRODUCT = "sql.databaseProduct";
+    public static final String META_SQL_PRIMARY_KEY = "sql.primaryKey";
+    public static final String META_SQL_QUERY = "sql.query";
+
+    // ── Temporal Property Keys ──────────────────────────────────────────
+
+    /**
+     * Property key for when the real-world event represented by a relation occurred.
+     * Value should be an ISO-8601 datetime string (e.g., Instant.toString()).
+     * Used by graph extractors to propagate source timestamps to edge.occurredAt.
+     */
+    public static final String PROP_OCCURRED_AT = "occurredAt";
+
     // ── Entity Source Identifiers ───────────────────────────────────────
 
     public static final String SOURCE_TABLE_CELL_GRAPH_BUILDER = "table-cell-graph-builder";

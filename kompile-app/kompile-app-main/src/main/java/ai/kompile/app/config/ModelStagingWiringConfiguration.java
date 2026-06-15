@@ -36,7 +36,7 @@ import java.util.Optional;
  * When the app starts, this reads the active staging config from the database.
  * If no DB config exists, falls back to kompile.staging.url property.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class ModelStagingWiringConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(ModelStagingWiringConfiguration.class);

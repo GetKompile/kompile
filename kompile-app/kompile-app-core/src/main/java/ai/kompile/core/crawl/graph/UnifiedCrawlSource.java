@@ -70,4 +70,16 @@ public class UnifiedCrawlSource {
     /** Source-specific properties (e.g., IMAP host/port, OAuth tokens) */
     @Builder.Default
     private Map<String, Object> properties = new HashMap<>();
+
+    /**
+     * Optional override for the document loader to use for this source
+     * (null = auto-detect from content type / global config).
+     */
+    private String loaderName;
+
+    /**
+     * Optional override for the text chunker to use for this source
+     * (null = use pipeline or global default).
+     */
+    private String chunkerName;
 }

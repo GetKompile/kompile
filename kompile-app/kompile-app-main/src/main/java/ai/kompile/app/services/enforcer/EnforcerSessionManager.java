@@ -80,7 +80,7 @@ public class EnforcerSessionManager {
         final Thread readerThread;
         final List<SseEmitter> eventSubscribers = new CopyOnWriteArrayList<>();
         final AtomicBoolean running = new AtomicBoolean(true);
-        final StringBuilder responseBuffer = new StringBuilder();
+        final StringBuffer responseBuffer = new StringBuffer();
 
         ManagedEnforcerSession(EnforcerSessionState state, Process process,
                                 Thread readerThread) {
@@ -298,7 +298,9 @@ public class EnforcerSessionManager {
         if (session.process != null) {
             try {
                 session.stdin.close();
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                log.warn("Failed to close stdin for enforcer session {}: {}", sessionId, e.getMessage());
+            }
 
             try {
                 if (!session.process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
@@ -316,7 +318,9 @@ public class EnforcerSessionManager {
         for (SseEmitter emitter : session.eventSubscribers) {
             try {
                 emitter.complete();
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.debug("Failed to complete SSE emitter for enforcer session {}: {}", sessionId, e.getMessage());
+            }
         }
         session.eventSubscribers.clear();
 
@@ -390,7 +394,7 @@ public class EnforcerSessionManager {
         for (ManagedEnforcerSession session : sessions.values()) {
             result.add(session.state.toSummaryMap());
         }
-        result.sort(Comparator.comparing(m -> m.get("startedAt").toString()));
+        result.sort(Comparator.comparing(m -> String.valueOf(m.get("startedAt"))));
         return result;
     }
 
@@ -408,7 +412,7 @@ public class EnforcerSessionManager {
                 result.add(toProcessMap(session, "judge"));
             }
         }
-        result.sort(Comparator.comparing(m -> m.get("startedAt").toString()));
+        result.sort(Comparator.comparing(m -> String.valueOf(m.get("startedAt"))));
         return result;
     }
 
@@ -486,6 +490,9 @@ public class EnforcerSessionManager {
             session.running.set(false);
             session.state.setActive(false);
             broadcastEvent(sessionId, "session_ended", Map.of("sessionId", sessionId));
+            // Remove dead session from tracking map to prevent unbounded growth
+            sessions.remove(sessionId);
+            log.debug("Removed ended enforcer session {} from tracking", sessionId);
         }
     }
 

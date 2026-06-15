@@ -19,6 +19,8 @@ package ai.kompile.cli.main.updater;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import org.apache.commons.io.FileUtils;
 import org.nd4j.linalg.schedule.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -28,6 +30,8 @@ import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "generate-schedule-config",mixinStandardHelpOptions = false,description = "Generates an updater configuration. Used in combination with samediff training to specify an updater to use.")
 public class ScheduleGenerator implements Callable<Integer> {
+
+    private static final Logger log = LoggerFactory.getLogger(ScheduleGenerator.class);
     @CommandLine.Option(names = {"--scheduler"},description = "The scheduler type: cycle,exponential,fixed,inverse,poly,ramp,sigmoid,step",required = false)
     private String scheduler;
     @CommandLine.Option(names = {"--scheduleType"},description = "The schedule type. Decay per step or epoch. Values are: EPOCH,ITERATION",required = false)
@@ -93,7 +97,7 @@ public class ScheduleGenerator implements Callable<Integer> {
             case "ramp":
                 File rampSchedule = new File(rampSchedulePath);
                 if(!rampSchedule.exists()) {
-                    System.err.println("No ramp schedule class found.");
+                    log.error("No ramp schedule file found at: {}", rampSchedulePath);
                 }
                 String json = FileUtils.readFileToString(rampSchedule, Charset.defaultCharset());
                 ISchedule rampSchedule2 = ObjectMappers.getJsonMapper().convertValue(json,ISchedule.class);

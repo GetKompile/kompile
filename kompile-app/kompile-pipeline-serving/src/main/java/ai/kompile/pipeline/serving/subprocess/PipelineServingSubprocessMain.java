@@ -23,6 +23,8 @@ import ai.kompile.pipelines.framework.api.data.Data;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -49,6 +51,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * </ol>
  */
 public class PipelineServingSubprocessMain {
+
+    private static final Logger log = LoggerFactory.getLogger(PipelineServingSubprocessMain.class);
 
     // Capture the real stdout BEFORE redirecting
     private static final PrintStream ORIGINAL_STDOUT = System.out;
@@ -122,8 +126,7 @@ public class PipelineServingSubprocessMain {
             System.exit(0);
 
         } catch (Throwable t) {
-            System.err.println("Pipeline subprocess fatal error: " + t.getMessage());
-            t.printStackTrace(System.err);
+            log.error("Pipeline subprocess fatal error: {}", t.getMessage(), t);
             if (reporter != null) {
                 reporter.reportFailed(
                         "INITIALIZATION",
@@ -275,7 +278,7 @@ public class PipelineServingSubprocessMain {
         // Report readiness
         reporter.reportReady(definition.getPipelineId(), kind, port, pid);
 
-        System.err.println("Pipeline serving on port " + port + " (pid=" + pid + ")");
+        log.info("Pipeline serving on port {} (pid={})", port, pid);
 
         // Block until shutdown
         shutdownLatch.await();

@@ -22,7 +22,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,11 +37,14 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 /**
@@ -63,7 +68,7 @@ public class ConversationExporter {
 
     /** Supported export targets */
     public static final List<String> SUPPORTED_AGENTS = List.of(
-            "claude-code", "codex", "qwen", "opencode", "gemini"
+            "kompile", "claude-code", "codex", "qwen", "opencode", "gemini"
     );
 
     /**
@@ -110,6 +115,11 @@ public class ConversationExporter {
         System.err.println("[ConversationExporter] Resolved provider=" + providerId + " model=" + modelId + " for source=" + sourceAgent);
 
         switch (agent.toLowerCase()) {
+            case "kompile":
+                // "kompile" target does not need format export — the caller should
+                // launch EmulatedPassthroughCommand directly with the source agent.
+                throw new IOException("The 'kompile' target resumes with the original agent " +
+                        "wrapped by kompile's managed UI. Use 'kompile chat --agent <agent>' instead of exporting.");
             case "claude-code":
             case "claude":
                 return exportToClaude(turns, effectiveSessionId, effectiveWorkingDirectory);
@@ -551,9 +561,9 @@ public class ConversationExporter {
 
         // Create date-based directory structure
         Instant now = Instant.now();
-        String year = String.valueOf(now.atZone(java.time.ZoneId.systemDefault()).getYear());
-        String month = String.format("%02d", now.atZone(java.time.ZoneId.systemDefault()).getMonthValue());
-        String day = String.format("%02d", now.atZone(java.time.ZoneId.systemDefault()).getDayOfMonth());
+        String year = String.valueOf(now.atZone(ZoneId.systemDefault()).getYear());
+        String month = String.format("%02d", now.atZone(ZoneId.systemDefault()).getMonthValue());
+        String day = String.format("%02d", now.atZone(ZoneId.systemDefault()).getDayOfMonth());
 
         Path dateDir = codexDir.resolve(year).resolve(month).resolve(day);
         Files.createDirectories(dateDir);
@@ -816,10 +826,10 @@ public class ConversationExporter {
         String slug = generateOpenCodeSlug();
 
         // Build export JSON matching OpenCode's Session.Info schema EXACTLY
-        com.fasterxml.jackson.databind.node.ObjectNode exportJson = MAPPER.createObjectNode();
+        ObjectNode exportJson = MAPPER.createObjectNode();
 
         // ── Session info (matches Session.Info Zod schema) ──
-        com.fasterxml.jackson.databind.node.ObjectNode info = exportJson.putObject("info");
+        ObjectNode info = exportJson.putObject("info");
         info.put("id", sessId);
         info.put("slug", slug);
         info.put("projectID", actualProjectId);
@@ -838,20 +848,20 @@ public class ConversationExporter {
         info.put("version", "1.3.17");
 
         // Summary (optional but recommended)
-        com.fasterxml.jackson.databind.node.ObjectNode sessionSummary = info.putObject("summary");
+        ObjectNode sessionSummary = info.putObject("summary");
         sessionSummary.put("additions", 0);
         sessionSummary.put("deletions", 0);
         sessionSummary.put("files", 0);
 
         // Time object (required - milliseconds)
         long now = Instant.now().toEpochMilli();
-        com.fasterxml.jackson.databind.node.ObjectNode time = info.putObject("time");
+        ObjectNode time = info.putObject("time");
         time.put("created", now);
         // updated will be set after the message loop to the actual last timestamp
         time.put("updated", now);
 
         // ── Messages array ──
-        com.fasterxml.jackson.databind.node.ArrayNode messagesArray = exportJson.putArray("messages");
+        ArrayNode messagesArray = exportJson.putArray("messages");
 
         // Resolve once: both fields are invocation-scoped, not per-turn.
         String effectiveProviderId = providerId != null && !providerId.isEmpty() ? providerId : "opencode";
@@ -867,28 +877,28 @@ public class ConversationExporter {
         boolean needsSyntheticUser = !turns.isEmpty() && "assistant".equals(turns.get(0).role());
         if (needsSyntheticUser) {
             String syntheticUserId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
-            com.fasterxml.jackson.databind.node.ObjectNode syntheticMsg = MAPPER.createObjectNode();
+            ObjectNode syntheticMsg = MAPPER.createObjectNode();
             syntheticMsg.put("role", "user");
-            com.fasterxml.jackson.databind.node.ObjectNode synthInfo = syntheticMsg.putObject("info");
+            ObjectNode synthInfo = syntheticMsg.putObject("info");
             synthInfo.put("id", syntheticUserId);
             synthInfo.put("sessionID", sessId);
             synthInfo.put("role", "user");
             synthInfo.put("agent", "general");
-            com.fasterxml.jackson.databind.node.ObjectNode synthModel = synthInfo.putObject("model");
+            ObjectNode synthModel = synthInfo.putObject("model");
             synthModel.put("providerID", effectiveProviderId);
             synthModel.put("modelID", effectiveModelId);
             synthInfo.putObject("summary").putArray("diffs");
-            com.fasterxml.jackson.databind.node.ObjectNode synthTools = synthInfo.putObject("tools");
+            ObjectNode synthTools = synthInfo.putObject("tools");
             synthTools.put("task", false);
             synthInfo.putObject("time").put("created", msgTimestamp);
-            com.fasterxml.jackson.databind.node.ArrayNode synthParts = syntheticMsg.putArray("parts");
-            com.fasterxml.jackson.databind.node.ObjectNode synthPart = MAPPER.createObjectNode();
+            ArrayNode synthParts = syntheticMsg.putArray("parts");
+            ObjectNode synthPart = MAPPER.createObjectNode();
             synthPart.put("type", "text");
             synthPart.put("text", "[Imported conversation — original user prompt not available]");
             synthPart.put("id", "prt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26));
             synthPart.put("sessionID", sessId);
             synthPart.put("messageID", syntheticUserId);
-            com.fasterxml.jackson.databind.node.ObjectNode synthPartTime = synthPart.putObject("time");
+            ObjectNode synthPartTime = synthPart.putObject("time");
             synthPartTime.put("start", msgTimestamp);
             synthPartTime.put("end", msgTimestamp + 1000);
             synthParts.add(synthPart);
@@ -907,30 +917,30 @@ public class ConversationExporter {
             String msgId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
             String role = "assistant".equals(turn.role()) ? "assistant" : "user";
 
-            com.fasterxml.jackson.databind.node.ObjectNode msgObj = MAPPER.createObjectNode();
+            ObjectNode msgObj = MAPPER.createObjectNode();
             msgObj.put("role", role);
 
             // Message info
-            com.fasterxml.jackson.databind.node.ObjectNode msgInfo = msgObj.putObject("info");
+            ObjectNode msgInfo = msgObj.putObject("info");
             msgInfo.put("id", msgId);
             msgInfo.put("sessionID", sessId);
             msgInfo.put("role", role);
 
             if ("user".equals(role)) {
                 msgInfo.put("agent", "general");
-                com.fasterxml.jackson.databind.node.ObjectNode model = msgInfo.putObject("model");
+                ObjectNode model = msgInfo.putObject("model");
                 model.put("providerID", effectiveProviderId);
                 model.put("modelID", effectiveModelId);
 
                 // Summary with diffs array (required for user messages)
-                com.fasterxml.jackson.databind.node.ObjectNode msgSummary = msgInfo.putObject("summary");
+                ObjectNode msgSummary = msgInfo.putObject("summary");
                 msgSummary.putArray("diffs");
 
-                com.fasterxml.jackson.databind.node.ObjectNode tools = msgInfo.putObject("tools");
+                ObjectNode tools = msgInfo.putObject("tools");
                 tools.put("task", false);
 
                 // Time
-                com.fasterxml.jackson.databind.node.ObjectNode msgTime = msgInfo.putObject("time");
+                ObjectNode msgTime = msgInfo.putObject("time");
                 msgTime.put("created", msgTimestamp);
                 lastUserMsgId = msgId;
             } else {
@@ -940,7 +950,7 @@ public class ConversationExporter {
                 msgInfo.put("agent", "general");
 
                 // Path (required for assistant messages)
-                com.fasterxml.jackson.databind.node.ObjectNode path = msgInfo.putObject("path");
+                ObjectNode path = msgInfo.putObject("path");
                 path.put("cwd", cwd);
                 path.put("root", cwd);
 
@@ -949,17 +959,17 @@ public class ConversationExporter {
                 msgInfo.put("modelID", effectiveModelId);
                 msgInfo.put("providerID", effectiveProviderId);
 
-                com.fasterxml.jackson.databind.node.ObjectNode tokens = msgInfo.putObject("tokens");
+                ObjectNode tokens = msgInfo.putObject("tokens");
                 tokens.put("input", 0);
                 tokens.put("output", 0);
                 tokens.put("reasoning", 0);
                 tokens.put("total", 0);
-                com.fasterxml.jackson.databind.node.ObjectNode cache = tokens.putObject("cache");
+                ObjectNode cache = tokens.putObject("cache");
                 cache.put("read", 0);
                 cache.put("write", 0);
 
                 // Time
-                com.fasterxml.jackson.databind.node.ObjectNode msgTime = msgInfo.putObject("time");
+                ObjectNode msgTime = msgInfo.putObject("time");
                 msgTime.put("created", msgTimestamp);
                 msgTime.put("completed", msgTimestamp + 5000);
                 msgInfo.put("finish", "stop");
@@ -967,14 +977,14 @@ public class ConversationExporter {
             lastMsgId = msgId;
 
             // Parts array - text only
-            com.fasterxml.jackson.databind.node.ArrayNode partsArray = msgObj.putArray("parts");
-            com.fasterxml.jackson.databind.node.ObjectNode part = MAPPER.createObjectNode();
+            ArrayNode partsArray = msgObj.putArray("parts");
+            ObjectNode part = MAPPER.createObjectNode();
             part.put("type", "text");
             part.put("text", content);
             part.put("id", "prt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26));
             part.put("sessionID", sessId);
             part.put("messageID", msgId);
-            com.fasterxml.jackson.databind.node.ObjectNode partTime = part.putObject("time");
+            ObjectNode partTime = part.putObject("time");
             partTime.put("start", msgTimestamp);
             partTime.put("end", msgTimestamp + 3000);
             partsArray.add(part);
@@ -1004,7 +1014,7 @@ public class ConversationExporter {
 
             // Capture all output
             String output;
-            try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream()))) {
+            try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 StringBuilder sb = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) {
@@ -1264,7 +1274,7 @@ public class ConversationExporter {
     private static String generateOpenCodeSlug() {
         String[] adjectives = {"nimble", "swift", "bright", "calm", "eager", "fine", "gentle", "happy", "jolly", "kind", "lively", "merry", "nice", "proud", "quick", "quiet", "smart", "steady", "upright", "wise"};
         String[] nouns = {"squid", "otter", "panda", "tiger", "lion", "eagle", "dolphin", "shark", "whale", "raven", "wolf", "fox", "bear", "hawk", "owl", "deer", "elk", "goose", "duck", "swan"};
-        java.util.Random rand = new java.util.Random();
+        Random rand = new Random();
         return adjectives[rand.nextInt(adjectives.length)] + "-" + nouns[rand.nextInt(nouns.length)];
     }
 
@@ -1336,7 +1346,7 @@ public class ConversationExporter {
             Process process = pb.start();
 
             String output;
-            try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream()))) {
+            try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 StringBuilder sb = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) {
@@ -1346,7 +1356,7 @@ public class ConversationExporter {
             }
 
             // Wait briefly - --list-sessions should exit quickly
-            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            process.waitFor(5, TimeUnit.SECONDS);
 
             // Parse lines like: "  1. Title text... [UUID]" or "  2. Another title... [UUID]"
             for (String line : output.split("\n")) {
@@ -1528,7 +1538,7 @@ public class ConversationExporter {
 
                 // Create message data JSON - matching OpenCode's actual schema
                 String role = "user".equals(turn.role()) ? "user" : "assistant";
-                com.fasterxml.jackson.databind.node.ObjectNode msgData = MAPPER.createObjectNode();
+                ObjectNode msgData = MAPPER.createObjectNode();
                 msgData.put("role", role);
                 
                 // Mode matches OpenCode format (use "build" as default mode)
@@ -1536,7 +1546,7 @@ public class ConversationExporter {
                 msgData.put("agent", "build");
                 
                 // Model in nested object format (not flat fields)
-                com.fasterxml.jackson.databind.node.ObjectNode model = msgData.putObject("model");
+                ObjectNode model = msgData.putObject("model");
                 model.put("providerID", "opencode");
                 model.put("modelID", modelId);
                 
@@ -1544,7 +1554,7 @@ public class ConversationExporter {
                 msgData.put("variant", "high");
                 
                 // Path is required
-                com.fasterxml.jackson.databind.node.ObjectNode path = msgData.putObject("path");
+                ObjectNode path = msgData.putObject("path");
                 path.put("cwd", System.getProperty("user.dir"));
                 path.put("root", System.getProperty("user.dir"));
 
@@ -1553,22 +1563,22 @@ public class ConversationExporter {
                 msgData.put("finish", "stop");
 
                 // Tokens structure - with total
-                com.fasterxml.jackson.databind.node.ObjectNode tokens = msgData.putObject("tokens");
+                ObjectNode tokens = msgData.putObject("tokens");
                 tokens.put("input", 0);
                 tokens.put("output", 0);
                 tokens.put("reasoning", 0);
                 tokens.put("total", 0);
-                com.fasterxml.jackson.databind.node.ObjectNode cache = tokens.putObject("cache");
+                ObjectNode cache = tokens.putObject("cache");
                 cache.put("read", 0);
                 cache.put("write", 0);
 
                 // Time - just "created" (milliseconds) matching normal sessions
-                com.fasterxml.jackson.databind.node.ObjectNode timeObj = msgData.putObject("time");
+                ObjectNode timeObj = msgData.putObject("time");
                 timeObj.put("created", msgTime * 1000);
                 
                 // Summary for user messages (required by OpenCode)
                 if ("user".equals(role)) {
-                    com.fasterxml.jackson.databind.node.ObjectNode summary = msgData.putObject("summary");
+                    ObjectNode summary = msgData.putObject("summary");
                     summary.putArray("diffs");
                 }
 
@@ -1583,10 +1593,10 @@ public class ConversationExporter {
 
                 // Insert part - use JSON data column instead of individual columns
                 String partId = "part_" + UUID.randomUUID().toString().substring(0, 8);
-                com.fasterxml.jackson.databind.node.ObjectNode partData = MAPPER.createObjectNode();
+                ObjectNode partData = MAPPER.createObjectNode();
                 partData.put("type", "text");
                 partData.put("text", turn.content());
-                com.fasterxml.jackson.databind.node.ObjectNode partTime = partData.putObject("time");
+                ObjectNode partTime = partData.putObject("time");
                 partTime.put("start", msgTime);
                 partTime.put("end", msgTime + 3);
 

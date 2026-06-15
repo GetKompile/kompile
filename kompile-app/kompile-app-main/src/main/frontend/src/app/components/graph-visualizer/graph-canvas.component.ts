@@ -87,8 +87,10 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
           </marker>
         </defs>
         <g class="zoom-container">
+          <g class="mfrag-regions"></g>
           <g class="links"></g>
           <g class="nodes"></g>
+          <g class="prior-rings"></g>
           <g class="labels"></g>
         </g>
       </svg>
@@ -110,6 +112,25 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
                 [style.border-style]="getEdgeBorderStyle(edgeType)"></span>
           <span class="legend-label">{{formatEdgeType(edgeType)}}</span>
         </div>
+        <ng-container *ngIf="posteriorOverlay || priorOverlay || mebnMfragMap">
+          <div class="legend-title">Bayesian</div>
+          <div class="legend-item" *ngIf="priorOverlay">
+            <span class="legend-ring"></span>
+            <span class="legend-label">Prior ring (dashed)</span>
+          </div>
+          <div class="legend-item" *ngIf="posteriorOverlay && !influenceOverlayActive">
+            <span class="legend-heat-swatch"></span>
+            <span class="legend-label">Posterior heat</span>
+          </div>
+          <div class="legend-item" *ngIf="posteriorOverlay && influenceOverlayActive">
+            <span class="legend-influence-swatch"></span>
+            <span class="legend-label">Influence score</span>
+          </div>
+          <div class="legend-item" *ngIf="mebnMfragMap">
+            <span class="legend-mfrag-swatch"></span>
+            <span class="legend-label">MFrag region</span>
+          </div>
+        </ng-container>
       </div>
     </div>
   `,
@@ -222,6 +243,36 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
       white-space: nowrap;
       overflow: visible;
     }
+
+    .legend-ring {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px dashed rgba(255,255,255,0.5);
+      background: transparent;
+    }
+
+    .legend-heat-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #ef5350 0%, #66bb6a 100%);
+    }
+
+    .legend-influence-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #ce93d8 0%, #7e57c2 100%);
+    }
+
+    .legend-mfrag-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      background: rgba(144, 202, 249, 0.1);
+      border: 1.5px dashed rgba(144, 202, 249, 0.3);
+    }
   `]
 })
 export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
@@ -232,6 +283,10 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   @Input() forceConfig: ForceConfig = DEFAULT_FORCE_CONFIG;
   @Input() showLegend: boolean = true;
   @Input() linkMode: boolean = false;
+  @Input() posteriorOverlay: Record<string, number> | null = null;
+  @Input() priorOverlay: Record<string, number> | null = null;
+  @Input() mebnMfragMap: Record<string, string> | null = null;  // nodeId -> mfragName
+  @Input() influenceOverlayActive: boolean = false;  // true when posteriorOverlay contains influence scores (not true posteriors)
 
   @Output() nodeSelected = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
@@ -248,6 +303,8 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   private zoomContainer!: d3.Selection<SVGGElement, unknown, null, undefined>;
   private linksGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
   private nodesGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
+  private priorRingsGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
+  private mfragRegionsGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
   private labelsGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
 
   private simulation!: d3.Simulation<SimulationNode, SimulationLink>;
@@ -257,6 +314,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   private links: SimulationLink[] = [];
   private selectedNode: SimulationNode | null = null;
   private linkSourceNode: SimulationNode | null = null;
+  private mfragTickCounter = 0;
 
   private resizeObserver!: ResizeObserver;
   private width = 0;
@@ -281,6 +339,15 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     if (changes['forceConfig'] && this.simulation) {
       this.updateForces();
     }
+    if (changes['posteriorOverlay'] && this.nodesGroup) {
+      this.updatePosteriorOverlay();
+    }
+    if (changes['priorOverlay'] && this.priorRingsGroup) {
+      this.updatePriorRings();
+    }
+    if (changes['mebnMfragMap'] && this.mfragRegionsGroup) {
+      this.updateMfragRegions();
+    }
   }
 
   ngOnDestroy(): void {
@@ -297,6 +364,8 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     this.zoomContainer = this.svg.select('.zoom-container') as d3.Selection<SVGGElement, unknown, null, undefined>;
     this.linksGroup = this.zoomContainer.select('.links') as d3.Selection<SVGGElement, unknown, null, undefined>;
     this.nodesGroup = this.zoomContainer.select('.nodes') as d3.Selection<SVGGElement, unknown, null, undefined>;
+    this.priorRingsGroup = this.zoomContainer.select('.prior-rings') as d3.Selection<SVGGElement, unknown, null, undefined>;
+    this.mfragRegionsGroup = this.zoomContainer.select('.mfrag-regions') as d3.Selection<SVGGElement, unknown, null, undefined>;
     this.labelsGroup = this.zoomContainer.select('.labels') as d3.Selection<SVGGElement, unknown, null, undefined>;
 
     const rect = this.containerRef.nativeElement.getBoundingClientRect();
@@ -471,10 +540,23 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       .attr('cx', d => d.x)
       .attr('cy', d => d.y);
 
+    // Update prior ring positions
+    this.priorRingsGroup.selectAll<SVGCircleElement, SimulationNode>('circle')
+      .attr('cx', d => d.x)
+      .attr('cy', d => d.y);
+
     // Update label positions
     this.labelsGroup.selectAll<SVGTextElement, SimulationNode>('text')
       .attr('x', d => d.x)
       .attr('y', d => d.y);
+
+    // Update MFrag region positions (throttled to every 5th tick for performance)
+    if (this.mebnMfragMap) {
+      this.mfragTickCounter++;
+      if (this.mfragTickCounter % 5 === 0) {
+        this.updateMfragRegions();
+      }
+    }
   }
 
   private drag(): d3.DragBehavior<SVGCircleElement, SimulationNode, SimulationNode | d3.SubjectPosition> {
@@ -631,5 +713,151 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
 
   formatEdgeType(edgeType: EdgeType): string {
     return edgeType.toLowerCase().replace(/_/g, ' ');
+  }
+
+  private updatePosteriorOverlay(): void {
+    if (!this.nodesGroup) return;
+
+    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle')
+      .attr('fill', (d: SimulationNode) => {
+        if (this.posteriorOverlay && this.posteriorOverlay[d.id] !== undefined) {
+          return this.getPosteriorHeatColor(this.posteriorOverlay[d.id]);
+        }
+        return NODE_COLORS[d.type] || '#999';
+      })
+      .attr('stroke', (d: SimulationNode) => {
+        if (this.posteriorOverlay && this.posteriorOverlay[d.id] !== undefined) {
+          return '#1a1f36';
+        }
+        return 'white';
+      })
+      .attr('stroke-width', (d: SimulationNode) => {
+        if (this.posteriorOverlay && this.posteriorOverlay[d.id] !== undefined) {
+          return 2;
+        }
+        return 1.5;
+      });
+  }
+
+  private getPosteriorHeatColor(value: number): string {
+    // Interpolate from cool blue (0.0) through yellow (0.5) to hot red (1.0)
+    const r = value < 0.5 ? Math.round(value * 2 * 255) : 255;
+    const g = value < 0.5 ? Math.round(100 + value * 2 * 155) : Math.round(255 - (value - 0.5) * 2 * 200);
+    const b = value < 0.5 ? Math.round(255 - value * 2 * 200) : Math.round(55 - (value - 0.5) * 2 * 55);
+    return `rgb(${r}, ${g}, ${b})`;
+  }
+
+  private updatePriorRings(): void {
+    if (!this.priorRingsGroup) return;
+
+    // Remove all existing prior rings
+    this.priorRingsGroup.selectAll('circle').remove();
+
+    if (!this.priorOverlay) return;
+
+    // Add a dashed ring for each node with a prior value
+    for (const node of this.nodes) {
+      const prior = this.priorOverlay[node.id];
+      if (prior === undefined) continue;
+
+      const baseRadius = (node as any).r || NODE_SIZES[node.type] || 10;
+      // Ring radius scales with prior — outer ring at base+4, proportional fill
+      const ringRadius = baseRadius + 4;
+
+      this.priorRingsGroup.append('circle')
+        .datum(node)
+        .attr('cx', node.x || 0)
+        .attr('cy', node.y || 0)
+        .attr('r', ringRadius)
+        .attr('fill', 'none')
+        .attr('stroke', this.getPosteriorHeatColor(prior))
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '4 2')
+        .attr('opacity', 0.7)
+        .attr('pointer-events', 'none');
+    }
+  }
+
+  private readonly MFRAG_COLORS = [
+    'rgba(102, 126, 234, 0.08)',  // indigo
+    'rgba(34, 197, 94, 0.08)',    // green
+    'rgba(245, 158, 11, 0.08)',   // amber
+    'rgba(139, 92, 246, 0.08)',   // purple
+    'rgba(239, 68, 68, 0.08)',    // red
+    'rgba(14, 165, 233, 0.08)',   // sky
+    'rgba(236, 72, 153, 0.08)',   // pink
+  ];
+
+  private readonly MFRAG_BORDER_COLORS = [
+    'rgba(102, 126, 234, 0.3)',
+    'rgba(34, 197, 94, 0.3)',
+    'rgba(245, 158, 11, 0.3)',
+    'rgba(139, 92, 246, 0.3)',
+    'rgba(239, 68, 68, 0.3)',
+    'rgba(14, 165, 233, 0.3)',
+    'rgba(236, 72, 153, 0.3)',
+  ];
+
+  private updateMfragRegions(): void {
+    if (!this.mfragRegionsGroup) return;
+
+    this.mfragRegionsGroup.selectAll('*').remove();
+    if (!this.mebnMfragMap) return;
+
+    // Group nodes by MFrag name
+    const mfragGroups = new Map<string, SimulationNode[]>();
+    for (const node of this.nodes) {
+      const mfrag = this.mebnMfragMap[node.id];
+      if (!mfrag) continue;
+      if (!mfragGroups.has(mfrag)) mfragGroups.set(mfrag, []);
+      mfragGroups.get(mfrag)!.push(node);
+    }
+
+    let colorIndex = 0;
+    for (const [mfragName, groupNodes] of mfragGroups) {
+      if (groupNodes.length < 1) continue;
+
+      // Compute bounding box with padding, accounting for node radius
+      const padding = 30;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const n of groupNodes) {
+        const x = n.x || 0;
+        const y = n.y || 0;
+        const r = NODE_SIZES[n.type] || 10;
+        if (x - r < minX) minX = x - r;
+        if (y - r < minY) minY = y - r;
+        if (x + r > maxX) maxX = x + r;
+        if (y + r > maxY) maxY = y + r;
+      }
+
+      const fill = this.MFRAG_COLORS[colorIndex % this.MFRAG_COLORS.length];
+      const stroke = this.MFRAG_BORDER_COLORS[colorIndex % this.MFRAG_BORDER_COLORS.length];
+      colorIndex++;
+
+      // Draw rounded rect background
+      this.mfragRegionsGroup.append('rect')
+        .attr('x', minX - padding)
+        .attr('y', minY - padding)
+        .attr('width', maxX - minX + padding * 2)
+        .attr('height', maxY - minY + padding * 2)
+        .attr('rx', 12)
+        .attr('ry', 12)
+        .attr('fill', fill)
+        .attr('stroke', stroke)
+        .attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '6 3')
+        .attr('pointer-events', 'none');
+
+      // Label
+      this.mfragRegionsGroup.append('text')
+        .attr('x', minX - padding + 8)
+        .attr('y', minY - padding + 14)
+        .attr('fill', stroke.replace('0.3', '0.8'))
+        .attr('font-size', '10px')
+        .attr('font-weight', '600')
+        .attr('letter-spacing', '0.5px')
+        .attr('pointer-events', 'none')
+        .text(mfragName);
+    }
   }
 }

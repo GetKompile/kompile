@@ -59,37 +59,37 @@ public class TerminalRenderer {
     private static final String[] SPINNER_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"};
     private static final int MAX_CONTEXT_TOOL_BUCKETS = 4;
 
-    // Tool icons (Unicode) — keys are lowercase short names (no MCP prefix)
+    // Tool markers — bold white text, no emojis
     private static final Map<String, String> TOOL_ICONS = Map.ofEntries(
-            Map.entry("read", "📖"),
-            Map.entry("write", "✏️"),
-            Map.entry("edit", "✏️"),
-            Map.entry("patch", "🩹"),
-            Map.entry("bash", "⚡"),
-            Map.entry("grep", "🔍"),
-            Map.entry("glob", "📂"),
-            Map.entry("list", "📋"),
-            Map.entry("webfetch", "🌐"),
-            Map.entry("websearch", "🔎"),
-            Map.entry("task", "🤖"),
-            Map.entry("multi_task", "🤖"),
-            Map.entry("quorum_task", "🤖"),
-            Map.entry("todowrite", "📝"),
-            Map.entry("todoread", "📝"),
-            Map.entry("exit_plan_mode", "✅"),
-            Map.entry("code_search", "🔍"),
-            Map.entry("code_graph", "🔗"),
-            Map.entry("rag_search", "📚"),
-            Map.entry("graph_search", "🔗"),
-            Map.entry("memory", "🧠"),
-            Map.entry("semantic_memory", "🧠"),
-            Map.entry("explore", "🗺️"),
-            Map.entry("process", "⚙️"),
-            Map.entry("browser", "🌐"),
-            Map.entry("edit_coordinator", "🔒"),
-            Map.entry("toolsearch", "🔍"),
-            Map.entry("agent", "🤖"),
-            Map.entry("exec", "⚡")
+            Map.entry("read", "▸"),
+            Map.entry("write", "▸"),
+            Map.entry("edit", "▸"),
+            Map.entry("patch", "▸"),
+            Map.entry("bash", "▸"),
+            Map.entry("grep", "▸"),
+            Map.entry("glob", "▸"),
+            Map.entry("list", "▸"),
+            Map.entry("webfetch", "▸"),
+            Map.entry("websearch", "▸"),
+            Map.entry("task", "▸"),
+            Map.entry("multi_task", "▸"),
+            Map.entry("quorum_task", "▸"),
+            Map.entry("todowrite", "▸"),
+            Map.entry("todoread", "▸"),
+            Map.entry("exit_plan_mode", "▸"),
+            Map.entry("code_search", "▸"),
+            Map.entry("code_graph", "▸"),
+            Map.entry("rag_search", "▸"),
+            Map.entry("graph_search", "▸"),
+            Map.entry("memory", "▸"),
+            Map.entry("semantic_memory", "▸"),
+            Map.entry("explore", "▸"),
+            Map.entry("process", "▸"),
+            Map.entry("browser", "▸"),
+            Map.entry("edit_coordinator", "▸"),
+            Map.entry("toolsearch", "▸"),
+            Map.entry("agent", "▸"),
+            Map.entry("exec", "▸")
     );
 
     /** Shared Jackson mapper for JSON input parsing. */
@@ -146,12 +146,12 @@ public class TerminalRenderer {
      * <p>
      * Example: {@code mcp__kompile__read} with input
      * {@code {"file_path":"src/app/foo.ts"}} renders as:
-     * <pre>  📖 Read src/app/foo.ts</pre>
+     * <pre>  ▸ Read src/app/foo.ts</pre>
      */
     public String renderToolCallStart(String toolName, String description) {
         String cleanName = stripMcpPrefix(toolName);
         String displayName = prettifyToolName(toolName);
-        String icon = TOOL_ICONS.getOrDefault(cleanName, "🔧");
+        String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
 
         // Try to prettify JSON input into a readable summary
         String prettyDesc = prettifyToolInput(cleanName, description, 80);
@@ -175,7 +175,7 @@ public class TerminalRenderer {
     public String renderToolCallComplete(String toolName, ToolResult result) {
         String cleanName = stripMcpPrefix(toolName);
         String displayName = prettifyToolName(toolName);
-        String icon = TOOL_ICONS.getOrDefault(cleanName, "🔧");
+        String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
         StringBuilder sb = new StringBuilder();
 
         if (result.isError()) {
@@ -217,7 +217,7 @@ public class TerminalRenderer {
     public String renderToolCallDenied(String toolName, String reason) {
         String cleanName = stripMcpPrefix(toolName);
         String displayName = prettifyToolName(toolName);
-        String icon = TOOL_ICONS.getOrDefault(cleanName, "🔧");
+        String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
         return "  " + icon + " " + bold(yellow(displayName)) + " " + yellow("⊘ denied") +
                 (reason != null ? " " + dim(reason) : "");
     }
@@ -241,7 +241,7 @@ public class TerminalRenderer {
     public String renderSubagentToolCall(String toolName, boolean isError) {
         String cleanName = stripMcpPrefix(toolName);
         String displayName = prettifyToolName(toolName);
-        String icon = TOOL_ICONS.getOrDefault(cleanName, "🔧");
+        String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
         String status = isError ? red("✗") : green("✓");
         return "  " + magenta("│") + "  " + icon + " " + cyan(displayName) + " " + status;
     }
@@ -515,17 +515,30 @@ public class TerminalRenderer {
     public static class SpinnerHandle {
         private final AtomicBoolean running;
         /** Volatile phase override — spinner thread reads this each frame. */
-        private volatile String phaseOverride;
+        volatile String phaseOverride;
+        /** Reference to the spinner thread so stop() can join it. */
+        public volatile Thread spinnerThread;
+        /** Optional: row to pin the spinner to (absolute positioning). -1 = use \r. */
+        volatile int pinnedRow = -1;
 
-        SpinnerHandle(AtomicBoolean running) {
+        public SpinnerHandle(AtomicBoolean running) {
             this.running = running;
         }
 
         public void stop() {
             if (running != null) {
                 running.set(false);
-                // Clear the spinner line
-                System.out.print("\r" + ESC + "2K");
+                // Wait for the spinner thread to exit so it can't print after we clear
+                Thread t = spinnerThread;
+                if (t != null) {
+                    try { t.join(200); } catch (InterruptedException ignored) {}
+                }
+                // Clear the spinner line using absolute positioning if pinned
+                if (pinnedRow > 0) {
+                    System.out.printf("\033[%d;1H\033[2K", pinnedRow);
+                } else {
+                    System.out.print("\r" + ESC + "2K");
+                }
                 System.out.flush();
             }
         }
@@ -562,15 +575,15 @@ public class TerminalRenderer {
     public SpinnerHandle startStaticSpinner(String chainInfo) {
         if (chainInfo == null) chainInfo = "";
         final String chain = chainInfo;
-        setTerminalTitle("⏳ Generating..." + (chain.isEmpty() ? "" : " " + chain));
+        setTerminalTitle("⏳ Kompiling..." + (chain.isEmpty() ? "" : " " + chain));
 
         if (ansiEnabled) {
             System.out.print("\r" + ESC + "2K"
-                    + "  " + DIM + "Generating..." + RESET + chain
+                    + "  " + DIM + "Kompiling..." + RESET + chain
                     + DIM + "  (Esc to cancel, Ctrl+B to background)" + RESET);
             System.out.flush();
         } else {
-            System.out.println("  Generating..." + chain + "  (Esc to cancel, Ctrl+B to background)");
+            System.out.println("  Kompiling..." + chain + "  (Esc to cancel, Ctrl+B to background)");
             System.out.flush();
         }
 
@@ -610,10 +623,10 @@ public class TerminalRenderer {
         final String chain = chainInfo;
 
         // Set terminal title to show generating state
-        setTerminalTitle("⏳ Generating..." + (chain.isEmpty() ? "" : " " + chain));
+        setTerminalTitle("⏳ Kompiling..." + (chain.isEmpty() ? "" : " " + chain));
 
         if (!ansiEnabled) {
-            System.out.println("  Generating..." + chain + "  (Esc to cancel, Ctrl+B to background)");
+            System.out.println("  Kompiling..." + chain + "  (Esc to cancel, Ctrl+B to background)");
             System.out.flush();
             return new SpinnerHandle(null) {
                 @Override
@@ -634,7 +647,7 @@ public class TerminalRenderer {
         Thread spinnerThread = new Thread(() -> {
             int frame = 0;
             String[][] phasesets = {
-                {"Generating", "Generating.", "Generating..", "Generating..."},
+                {"Kompiling", "Kompiling.", "Kompiling..", "Kompiling..."},
                 {"Thinking", "Thinking.", "Thinking..", "Thinking..."},
             };
             String[] currentPhases = phasesets[0];
@@ -662,8 +675,86 @@ public class TerminalRenderer {
                     break;
                 }
             }
-        }, "generating-spinner");
+        }, "kompiling-spinner");
         spinnerThread.setDaemon(true);
+        handle.spinnerThread = spinnerThread;
+        spinnerThread.start();
+
+        return handle;
+    }
+
+    /**
+     * Start a spinner pinned to a specific terminal row using absolute positioning.
+     * Unlike {@link #startGeneratingSpinner}, this does NOT use \r (carriage return)
+     * which depends on the cursor being on the correct row. Instead, every frame
+     * explicitly moves to the given row. Use this when a scroll region is active
+     * and the cursor position may be unpredictable.
+     *
+     * @param row       1-indexed terminal row to pin the spinner to
+     * @param chainInfo optional label (e.g., " (claude)")
+     * @return handle to stop the spinner
+     */
+    public SpinnerHandle startPinnedSpinner(int row, String chainInfo) {
+        if (chainInfo == null) chainInfo = "";
+        final String chain = chainInfo;
+
+        setTerminalTitle("⏳ Kompiling..." + (chain.isEmpty() ? "" : " " + chain));
+
+        if (!ansiEnabled) {
+            System.out.println("  Kompiling..." + chain);
+            System.out.flush();
+            return new SpinnerHandle(null) {
+                @Override
+                public void stop() {
+                    resetTerminalTitle();
+                }
+            };
+        }
+
+        AtomicBoolean running = new AtomicBoolean(true);
+        SpinnerHandle handle = new SpinnerHandle(running) {
+            @Override
+            public void stop() {
+                super.stop();
+                resetTerminalTitle();
+            }
+        };
+        handle.pinnedRow = row;
+
+        Thread spinnerThread = new Thread(() -> {
+            int frame = 0;
+            String[][] phasesets = {
+                {"Kompiling", "Kompiling.", "Kompiling..", "Kompiling..."},
+                {"Thinking", "Thinking.", "Thinking..", "Thinking..."},
+            };
+            String[] currentPhases = phasesets[0];
+            while (running.get()) {
+                String override = handle.phaseOverride;
+                if (override != null) {
+                    if ("Thinking".equals(override)) {
+                        currentPhases = phasesets[1];
+                    } else {
+                        currentPhases = phasesets[0];
+                    }
+                }
+                String spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+                String phase = currentPhases[(frame / 3) % currentPhases.length];
+                // Absolute positioning — immune to cursor drift
+                System.out.printf("\033[%d;1H\033[2K  %s %s%s%s%s%s  (Esc to cancel)%s",
+                        row,
+                        yellow(spinner), DIM, phase, RESET,
+                        chain, DIM, RESET);
+                System.out.flush();
+                frame++;
+                try {
+                    Thread.sleep(80);
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        }, "kompiling-spinner");
+        spinnerThread.setDaemon(true);
+        handle.spinnerThread = spinnerThread;
         spinnerThread.start();
 
         return handle;
@@ -842,9 +933,10 @@ public class TerminalRenderer {
 
     private boolean shouldShowPreview(String toolName, Map<String, Object> meta) {
         // Show preview for bash (command output), errors, and short results
-        return "bash".equals(toolName) ||
-                "grep".equals(toolName) ||
-                "glob".equals(toolName);
+        String lower = toolName != null ? toolName.toLowerCase() : "";
+        return "bash".equals(lower) ||
+                "grep".equals(lower) ||
+                "glob".equals(lower);
     }
 
     private String renderMetadata(Map<String, Object> meta) {

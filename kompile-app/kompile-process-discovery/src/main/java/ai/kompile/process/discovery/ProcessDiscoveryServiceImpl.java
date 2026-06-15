@@ -17,6 +17,8 @@
 package ai.kompile.process.discovery;
 
 import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
+import ai.kompile.event.attribution.domain.BayesianInferenceResult;
+import ai.kompile.event.attribution.service.BayesianNetworkService;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -49,15 +51,21 @@ import java.util.stream.Collectors;
 @ConditionalOnBean(KnowledgeGraphService.class)
 public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
 
-    private final KnowledgeGraphService knowledgeGraphService;
+    private KnowledgeGraphService knowledgeGraphService;
     private GraphNodeRepository graphNodeRepository;
     private ProcessEngineService processEngineService;
     private LlmProcessDiscoveryService llmProcessDiscoveryService;
+    private BayesianNetworkService bayesianNetworkService;
+    private ProcessSuggestionStore suggestionStore;
 
     @Autowired
     public ProcessDiscoveryServiceImpl(KnowledgeGraphService knowledgeGraphService) {
         this.knowledgeGraphService = knowledgeGraphService;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected ProcessDiscoveryServiceImpl() {}
+
 
     @Autowired(required = false)
     public void setGraphNodeRepository(GraphNodeRepository graphNodeRepository) {
@@ -72,6 +80,16 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
     @Autowired(required = false)
     public void setLlmProcessDiscoveryService(LlmProcessDiscoveryService llmProcessDiscoveryService) {
         this.llmProcessDiscoveryService = llmProcessDiscoveryService;
+    }
+
+    @Autowired(required = false)
+    public void setBayesianNetworkService(BayesianNetworkService bayesianNetworkService) {
+        this.bayesianNetworkService = bayesianNetworkService;
+    }
+
+    @Autowired(required = false)
+    public void setSuggestionStore(ProcessSuggestionStore suggestionStore) {
+        this.suggestionStore = suggestionStore;
     }
 
     /**
@@ -157,6 +175,13 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
 
         // Sort by confidence descending
         suggestions.sort(Comparator.comparingDouble(ProcessSuggestion::getConfidence).reversed());
+
+        // Persist to suggestion store for later retrieval/acceptance
+        if (suggestionStore != null && !suggestions.isEmpty()) {
+            suggestionStore.saveAll(suggestions);
+            log.info("Persisted {} process suggestions to store", suggestions.size());
+        }
+
         return suggestions;
     }
 
@@ -166,7 +191,21 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
             log.warn("LLM process discovery not available — no LLM provider configured");
             return List.of();
         }
-        return llmProcessDiscoveryService.discoverProcesses(graphNodeIds, options != null ? options : Map.of());
+        List<ProcessSuggestion> suggestions = llmProcessDiscoveryService.discoverProcesses(
+                graphNodeIds, options != null ? options : Map.of());
+
+        // Enrich with Bayesian data
+        for (ProcessSuggestion s : suggestions) {
+            enrichWithBayesian(s);
+        }
+
+        // Persist to suggestion store
+        if (suggestionStore != null && !suggestions.isEmpty()) {
+            suggestionStore.saveAll(suggestions);
+            log.info("Persisted {} LLM-discovered suggestions to store", suggestions.size());
+        }
+
+        return suggestions;
     }
 
     @Override
@@ -212,16 +251,18 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
         // Each repeated sender→recipient pair with attachments is a potential flow
         for (Map.Entry<String, List<GraphEdge>> entry : emailPairs.entrySet()) {
             if (entry.getValue().size() >= 2) {
+                List<FlowPattern.FlowStep> steps = buildEmailFlowSteps(entry.getValue());
                 FlowPattern pattern = FlowPattern.builder()
                         .type("EMAIL_FLOW")
                         .description("Recurring email exchange: " + entry.getKey())
                         .occurrenceCount(entry.getValue().size())
                         .confidence(Math.min(0.5 + (entry.getValue().size() * 0.1), 0.9))
-                        .steps(buildEmailFlowSteps(entry.getValue()))
+                        .steps(steps)
                         .involvedNodeIds(entry.getValue().stream()
                                 .flatMap(e -> List.of(e.getSourceNode().getNodeId(), e.getTargetNode().getNodeId()).stream())
                                 .distinct().collect(Collectors.toList()))
                         .build();
+                computeTemporalBounds(pattern);
                 patterns.add(pattern);
             }
         }
@@ -390,6 +431,11 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
             List<GraphNode> authoredDocs = entry.getValue();
             if (authoredDocs.size() < 2) continue;
 
+            // Sort documents by occurredAt for correct temporal ordering
+            authoredDocs.sort(Comparator.comparing(
+                    GraphNode::getOccurredAt,
+                    Comparator.nullsLast(Comparator.naturalOrder())));
+
             String authorName = knowledgeGraphService.getNode(entry.getKey())
                     .map(GraphNode::getTitle).orElse("Unknown Author");
 
@@ -401,6 +447,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                         .action("TRANSFORM")
                         .target(doc.getTitle())
                         .nodeId(doc.getNodeId())
+                        .occurredAt(doc.getOccurredAt())
                         .build());
             }
             // Add review step
@@ -411,7 +458,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .target(authorName + "'s documents")
                     .build());
 
-            patterns.add(FlowPattern.builder()
+            FlowPattern pattern = FlowPattern.builder()
                     .type("DOCUMENT_AUTHORING")
                     .description("Document authoring pipeline by " + authorName
                             + " (" + authoredDocs.size() + " documents)")
@@ -420,7 +467,9 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .steps(steps)
                     .involvedNodeIds(authoredDocs.stream()
                             .map(GraphNode::getNodeId).collect(Collectors.toList()))
-                    .build());
+                    .build();
+            computeTemporalBounds(pattern);
+            patterns.add(pattern);
         }
 
         return patterns;
@@ -451,6 +500,11 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
             }
 
             if (versionChain.size() >= 2) {
+                // Sort version chain by occurredAt for correct temporal ordering
+                versionChain.sort(Comparator.comparing(
+                        GraphNode::getOccurredAt,
+                        Comparator.nullsLast(Comparator.naturalOrder())));
+
                 List<FlowPattern.FlowStep> steps = new ArrayList<>();
                 // Draft step
                 steps.add(FlowPattern.FlowStep.builder()
@@ -459,6 +513,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                         .action("TRANSFORM")
                         .target(versionChain.get(0).getTitle())
                         .nodeId(versionChain.get(0).getNodeId())
+                        .occurredAt(versionChain.get(0).getOccurredAt())
                         .build());
                 // Review/revision steps for intermediate versions
                 for (int i = 1; i < versionChain.size(); i++) {
@@ -468,10 +523,11 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                             .action("APPROVE")
                             .target(versionChain.get(i).getTitle())
                             .nodeId(versionChain.get(i).getNodeId())
+                            .occurredAt(versionChain.get(i).getOccurredAt())
                             .build());
                 }
 
-                patterns.add(FlowPattern.builder()
+                FlowPattern pattern = FlowPattern.builder()
                         .type("DOCUMENT_REVIEW_CYCLE")
                         .description("Document review/revision cycle: " + doc.getTitle()
                                 + " (" + versionChain.size() + " versions)")
@@ -480,7 +536,9 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                         .steps(steps)
                         .involvedNodeIds(versionChain.stream()
                                 .map(GraphNode::getNodeId).collect(Collectors.toList()))
-                        .build());
+                        .build();
+                computeTemporalBounds(pattern);
+                patterns.add(pattern);
             }
         }
 
@@ -696,6 +754,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
 
             // Build the parent email-driven process
             List<FlowPattern.FlowStep> parentSteps = new ArrayList<>();
+            java.time.LocalDateTime emailTime = emailNode.getOccurredAt();
 
             // Step 1: Receive email
             String senderName = senders.isEmpty() ? "sender" : senders.get(0).getTitle();
@@ -706,6 +765,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .action("SEND")
                     .target(recipientName)
                     .nodeId(emailNode.getNodeId())
+                    .occurredAt(emailTime)
                     .build());
 
             // Step 2: Open and review instructions in email
@@ -715,6 +775,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .action("INPUT")
                     .target(emailNode.getTitle())
                     .nodeId(emailNode.getNodeId())
+                    .occurredAt(emailTime)
                     .build());
 
             // Step 3: Execute sub-process(es) for each spreadsheet
@@ -726,6 +787,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                         .action("COMPUTE")
                         .target(ss.getTitle())
                         .nodeId(ss.getNodeId())
+                        .occurredAt(ss.getOccurredAt())
                         .build());
             }
 
@@ -752,6 +814,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .involvedNodeIds(allInvolvedIds.stream().distinct().collect(Collectors.toList()))
                     .childPatterns(childPatterns)
                     .build();
+            computeTemporalBounds(parentPattern);
             patterns.add(parentPattern);
         }
 
@@ -828,6 +891,11 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
 
             processedDocIds.add(doc.getNodeId());
 
+            // Sort referenced docs by occurredAt for correct temporal ordering
+            referencedDocs.sort(Comparator.comparing(
+                    GraphNode::getOccurredAt,
+                    Comparator.nullsLast(Comparator.naturalOrder())));
+
             List<FlowPattern.FlowStep> parentSteps = new ArrayList<>();
             parentSteps.add(FlowPattern.FlowStep.builder()
                     .description("Review parent document: " + doc.getTitle())
@@ -835,6 +903,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .action("INPUT")
                     .target(doc.getTitle())
                     .nodeId(doc.getNodeId())
+                    .occurredAt(doc.getOccurredAt())
                     .build());
 
             for (GraphNode refDoc : referencedDocs) {
@@ -845,6 +914,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                         .action(action)
                         .target(refDoc.getTitle())
                         .nodeId(refDoc.getNodeId())
+                        .occurredAt(refDoc.getOccurredAt())
                         .build());
             }
 
@@ -867,6 +937,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .involvedNodeIds(allInvolvedIds.stream().distinct().collect(Collectors.toList()))
                     .childPatterns(childPatterns)
                     .build();
+            computeTemporalBounds(pattern);
             patterns.add(pattern);
         }
 
@@ -959,6 +1030,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .action("INPUT")
                     .target(email.getTitle())
                     .nodeId(email.getNodeId())
+                    .occurredAt(email.getOccurredAt())
                     .build());
             for (GraphNode ss : matchedSpreadsheets) {
                 steps.add(FlowPattern.FlowStep.builder()
@@ -967,6 +1039,7 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                         .action("COMPUTE")
                         .target(ss.getTitle())
                         .nodeId(ss.getNodeId())
+                        .occurredAt(ss.getOccurredAt())
                         .build());
             }
             steps.add(FlowPattern.FlowStep.builder()
@@ -987,10 +1060,34 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .involvedNodeIds(allInvolvedIds.stream().distinct().collect(Collectors.toList()))
                     .childPatterns(childPatterns)
                     .build();
+            computeTemporalBounds(pattern);
             patterns.add(pattern);
         }
 
         return patterns;
+    }
+
+    // ── Temporal helpers ────────────────────────────────────────────────────
+
+    /**
+     * Scans all steps in a FlowPattern and sets earliestOccurrence / latestOccurrence
+     * from the step-level occurredAt values.
+     */
+    private void computeTemporalBounds(FlowPattern pattern) {
+        java.time.LocalDateTime earliest = null;
+        java.time.LocalDateTime latest = null;
+        for (FlowPattern.FlowStep step : pattern.getSteps()) {
+            if (step.getOccurredAt() != null) {
+                if (earliest == null || step.getOccurredAt().isBefore(earliest)) {
+                    earliest = step.getOccurredAt();
+                }
+                if (latest == null || step.getOccurredAt().isAfter(latest)) {
+                    latest = step.getOccurredAt();
+                }
+            }
+        }
+        pattern.setEarliestOccurrence(earliest);
+        pattern.setLatestOccurrence(latest);
     }
 
     // ── Sub-process builders ────────────────────────────────────────────────
@@ -1213,6 +1310,12 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
         meta.put("discoveryConfidence", suggestion.getConfidence());
         meta.put("sourceGraphNodeIds", suggestion.getSourceGraphNodeIds());
         meta.put("evidence", suggestion.getEvidence());
+        if (suggestion.getBayesianPosteriors() != null && !suggestion.getBayesianPosteriors().isEmpty()) {
+            meta.put("bayesianPosteriors", suggestion.getBayesianPosteriors());
+        }
+        if (suggestion.getStructuredEvidence() != null && !suggestion.getStructuredEvidence().isEmpty()) {
+            meta.put("structuredEvidence", suggestion.getStructuredEvidence());
+        }
 
         String definitionId = "discovered-" + UUID.randomUUID().toString().substring(0, 8);
 
@@ -1280,16 +1383,36 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                     .description(fs.getDescription())
                     .graphNodeIds(fs.getNodeId() != null ? List.of(fs.getNodeId()) : List.of())
                     .suggestedAssignee(fs.getActor())
+                    .occurredAt(fs.getOccurredAt())
                     .build());
+        }
+
+        // Compute phase temporal bounds from step timestamps
+        java.time.LocalDateTime phaseEarliest = null;
+        java.time.LocalDateTime phaseLatest = null;
+        for (ProcessSuggestion.SuggestedStep s : steps) {
+            if (s.getOccurredAt() != null) {
+                if (phaseEarliest == null || s.getOccurredAt().isBefore(phaseEarliest)) {
+                    phaseEarliest = s.getOccurredAt();
+                }
+                if (phaseLatest == null || s.getOccurredAt().isAfter(phaseLatest)) {
+                    phaseLatest = s.getOccurredAt();
+                }
+            }
         }
 
         ProcessSuggestion.SuggestedPhase phase = ProcessSuggestion.SuggestedPhase.builder()
                 .name(flow.getType().toLowerCase().replace("_", " "))
                 .description(flow.getDescription())
                 .steps(steps)
+                .earliestOccurrence(phaseEarliest)
+                .latestOccurrence(phaseLatest)
                 .build();
 
-        return ProcessSuggestion.builder()
+        List<String> evidence = new ArrayList<>();
+        evidence.add(flow.getOccurrenceCount() + " occurrences observed");
+
+        ProcessSuggestion suggestion = ProcessSuggestion.builder()
                 .factSheetId(flow.getFactSheetId())
                 .name("Suggested: " + flow.getDescription())
                 .description(flow.getDescription())
@@ -1297,19 +1420,137 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
                 .confidence(flow.getConfidence())
                 .phases(List.of(phase))
                 .sourceGraphNodeIds(flow.getInvolvedNodeIds())
-                .evidence(List.of(flow.getOccurrenceCount() + " occurrences observed"))
+                .evidence(evidence)
                 .build();
+
+        // Add TEMPORAL structured evidence if the flow has temporal bounds
+        if (flow.getEarliestOccurrence() != null || flow.getLatestOccurrence() != null) {
+            List<ProcessSuggestion.StructuredEvidence> structured = new ArrayList<>();
+            String temporalDesc;
+            if (flow.getEarliestOccurrence() != null && flow.getLatestOccurrence() != null) {
+                long stepsWithTime = flow.getSteps().stream()
+                        .filter(s -> s.getOccurredAt() != null).count();
+                temporalDesc = String.format("Temporal span: %s to %s (%d/%d steps have timestamps)",
+                        flow.getEarliestOccurrence(), flow.getLatestOccurrence(),
+                        stepsWithTime, flow.getSteps().size());
+            } else if (flow.getEarliestOccurrence() != null) {
+                temporalDesc = "Earliest occurrence: " + flow.getEarliestOccurrence();
+            } else {
+                temporalDesc = "Latest occurrence: " + flow.getLatestOccurrence();
+            }
+            structured.add(ProcessSuggestion.StructuredEvidence.builder()
+                    .type("TEMPORAL")
+                    .description(temporalDesc)
+                    .score(flow.getConfidence())
+                    .supportingNodeIds(flow.getInvolvedNodeIds())
+                    .build());
+            suggestion.setStructuredEvidence(structured);
+        }
+
+        enrichWithBayesian(suggestion);
+        return suggestion;
+    }
+
+    /**
+     * Enriches a process suggestion with Bayesian posteriors and structured evidence
+     * from the event attribution system. Builds a Bayesian network from the suggestion's
+     * source graph node IDs and computes posteriors + priors for each node.
+     */
+    private void enrichWithBayesian(ProcessSuggestion suggestion) {
+        if (bayesianNetworkService == null) return;
+
+        List<String> nodeIds = suggestion.getSourceGraphNodeIds();
+        if (nodeIds == null || nodeIds.isEmpty()) return;
+
+        try {
+            BayesianInferenceResult result = bayesianNetworkService.queryAllPosteriors(
+                    nodeIds, Map.of(), 2, 50);
+
+            if (result.getPosteriors() != null && !result.getPosteriors().isEmpty()) {
+                // Translate BN variable names back to KG node IDs for the posteriors map
+                Map<String, Double> posteriorsByNodeId = new LinkedHashMap<>();
+                Map<String, String> varToNodeId = result.getVariableToNodeId();
+                Map<String, String> varToTitle = result.getVariableToTitle();
+
+                for (Map.Entry<String, Double> entry : result.getPosteriors().entrySet()) {
+                    String varName = entry.getKey();
+                    String kgNodeId = varToNodeId != null ? varToNodeId.get(varName) : varName;
+                    posteriorsByNodeId.put(kgNodeId != null ? kgNodeId : varName, entry.getValue());
+                }
+                suggestion.setBayesianPosteriors(posteriorsByNodeId);
+
+                // Build structured evidence entries from priors vs posteriors
+                List<ProcessSuggestion.StructuredEvidence> structured = new ArrayList<>();
+
+                Map<String, Double> priors = result.getPriors();
+
+                // Populate priors map keyed by KG node ID
+                if (priors != null && !priors.isEmpty()) {
+                    Map<String, Double> priorsByNodeId = new LinkedHashMap<>();
+                    for (Map.Entry<String, Double> pe : priors.entrySet()) {
+                        String kgId = varToNodeId != null ? varToNodeId.get(pe.getKey()) : pe.getKey();
+                        priorsByNodeId.put(kgId != null ? kgId : pe.getKey(), pe.getValue());
+                    }
+                    suggestion.setBayesianPriors(priorsByNodeId);
+                }
+                if (priors != null) {
+                    for (Map.Entry<String, Double> entry : result.getPosteriors().entrySet()) {
+                        String varName = entry.getKey();
+                        double posterior = entry.getValue();
+                        Double prior = priors.get(varName);
+                        if (prior == null) continue;
+
+                        double shift = posterior - prior;
+                        if (Math.abs(shift) < 0.01) continue; // skip negligible shifts
+
+                        String kgNodeId = varToNodeId != null ? varToNodeId.get(varName) : varName;
+                        String title = varToTitle != null ? varToTitle.get(varName) : varName;
+
+                        structured.add(ProcessSuggestion.StructuredEvidence.builder()
+                                .type("BAYESIAN")
+                                .description(String.format("%s: prior=%.2f → posterior=%.2f (shift %+.2f)",
+                                        title, prior, posterior, shift))
+                                .score(posterior)
+                                .supportingNodeIds(kgNodeId != null ? List.of(kgNodeId) : List.of())
+                                .build());
+                    }
+                }
+
+                // Add inference trace summary as CAUSAL evidence
+                if (result.getInferenceTrace() != null && !result.getInferenceTrace().isEmpty()) {
+                    structured.add(ProcessSuggestion.StructuredEvidence.builder()
+                            .type("CAUSAL")
+                            .description(String.format("Bayesian inference: %d elimination steps, %d network nodes",
+                                    result.getInferenceTrace().size(),
+                                    result.getNetworkStats() != null ?
+                                            result.getNetworkStats().getOrDefault("nodeCount", 0) : 0))
+                            .score(suggestion.getConfidence())
+                            .build());
+                }
+
+                suggestion.setStructuredEvidence(structured);
+            }
+        } catch (Exception e) {
+            log.debug("Bayesian enrichment skipped for '{}': {}", suggestion.getName(), e.getMessage());
+        }
     }
 
     private List<FlowPattern.FlowStep> buildEmailFlowSteps(List<GraphEdge> edges) {
+        // Sort edges chronologically by occurredAt so process steps reflect real temporal order
+        List<GraphEdge> sorted = new ArrayList<>(edges);
+        sorted.sort(Comparator.comparing(
+                GraphEdge::getOccurredAt,
+                Comparator.nullsLast(Comparator.naturalOrder())));
+
         List<FlowPattern.FlowStep> steps = new ArrayList<>();
-        for (GraphEdge edge : edges) {
+        for (GraphEdge edge : sorted) {
             steps.add(FlowPattern.FlowStep.builder()
                     .description(edge.getDescription())
                     .actor(edge.getSourceNode().getTitle())
                     .action(edge.getLabel() != null ? edge.getLabel() : "EMAIL")
                     .target(edge.getTargetNode().getTitle())
                     .nodeId(edge.getSourceNode().getNodeId())
+                    .occurredAt(edge.getOccurredAt())
                     .build());
         }
         return steps;
@@ -1438,6 +1679,13 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
         }
 
         suggestions.sort(Comparator.comparingDouble(ProcessSuggestion::getConfidence).reversed());
+
+        // Persist to suggestion store for later retrieval/acceptance
+        if (suggestionStore != null && !suggestions.isEmpty()) {
+            suggestionStore.saveAll(suggestions);
+            log.info("Persisted {} process suggestions for factSheetId={} to store", suggestions.size(), factSheetId);
+        }
+
         log.info("Process discovery for factSheetId={} found {} suggestions", factSheetId, suggestions.size());
         return suggestions;
     }
@@ -1482,7 +1730,18 @@ public class ProcessDiscoveryServiceImpl implements ProcessDiscoveryService {
         }
         List<ProcessSuggestion> suggestions = llmProcessDiscoveryService
                 .discoverProcessesForFactSheet(factSheetId, options != null ? options : Map.of());
-        suggestions.forEach(s -> s.setFactSheetId(factSheetId));
+        suggestions.forEach(s -> {
+            s.setFactSheetId(factSheetId);
+            enrichWithBayesian(s);
+        });
+
+        // Persist to suggestion store
+        if (suggestionStore != null && !suggestions.isEmpty()) {
+            suggestionStore.saveAll(suggestions);
+            log.info("Persisted {} LLM-discovered suggestions for factSheetId={} to store",
+                    suggestions.size(), factSheetId);
+        }
+
         return suggestions;
     }
 }

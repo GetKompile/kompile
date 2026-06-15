@@ -77,16 +77,20 @@ import java.util.stream.Collectors;
 @Component
 public class McpToolRegistry {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected McpToolRegistry() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(McpToolRegistry.class);
 
-    private final ObjectMapper objectMapper;
-    private final McpActionLogService actionLogService;
-    private final ToolDefinitionService toolDefinitionService;
+    private ObjectMapper objectMapper;
+    private McpActionLogService actionLogService;
+    private ToolDefinitionService toolDefinitionService;
     private final List<Object> toolBeans = new ArrayList<>();
-    private int toolCount = 0;
+    private volatile int toolCount = 0;
 
     // Cache of enhanced tool definitions for agent discovery
-    private final Map<String, EnhancedToolDefinition> toolDefinitions = new LinkedHashMap<>();
+    private final Map<String, EnhancedToolDefinition> toolDefinitions = new java.util.concurrent.ConcurrentHashMap<>();
 
     // Core tools from kompile-tool modules
     @Autowired(required = false)
@@ -296,7 +300,7 @@ public class McpToolRegistry {
                 server.addTool(toolSpec);
                 log.debug("Registered MCP tool: {}", toolSpec.tool().name());
             } catch (Exception e) {
-                log.error("Failed to register tool {}: {}", toolSpec.tool().name(), e.getMessage());
+                log.error("Failed to register tool {}", toolSpec.tool().name(), e);
             }
         }
 
@@ -593,7 +597,7 @@ public class McpToolRegistry {
                                 log.info("Tool gateway rewrote args for '{}': rule={}", toolName, decision.matchedRuleId());
                             }
                         } catch (Exception ge) {
-                            log.error("Tool gateway evaluation error for '{}': {}", toolName, ge.getMessage());
+                            log.error("Tool gateway evaluation error for '{}'", toolName, ge);
                             // Fail-open/close is handled inside ToolGatewayService;
                             // if it propagates here, treat as pass-through.
                         }
@@ -645,8 +649,17 @@ public class McpToolRegistry {
 
             // Check if parameter is a record (input DTO)
             if (paramType.isRecord()) {
-                // Extract properties from record components
-                RecordComponent[] components = paramType.getRecordComponents();
+                // Extract properties from record components.
+                // Wrap in try/catch(Throwable) because GraalVM native image throws
+                // com.oracle.svm.core.jdk.UnsupportedFeatureError (extends Error, not Exception)
+                // when getRecordComponents() is called without native-image reflection config.
+                RecordComponent[] components;
+                try {
+                    components = paramType.getRecordComponents();
+                } catch (Throwable t) {
+                    log.warn("getRecordComponents() not available for {} in native image; skipping record fields", paramType.getName());
+                    components = new RecordComponent[0];
+                }
                 for (RecordComponent component : components) {
                     ObjectNode propSchema = createPropertySchema(component.getType(), component.getName());
 
@@ -748,7 +761,16 @@ public class McpToolRegistry {
      * Create a record instance from a map of arguments.
      */
     private Object createRecordInstance(Class<?> recordClass, Map<String, Object> args) throws Exception {
-        RecordComponent[] components = recordClass.getRecordComponents();
+        // Wrap in try/catch(Throwable) because GraalVM native image throws
+        // com.oracle.svm.core.jdk.UnsupportedFeatureError (extends Error, not Exception)
+        // when getRecordComponents() is called without native-image reflection config.
+        RecordComponent[] components;
+        try {
+            components = recordClass.getRecordComponents();
+        } catch (Throwable t) {
+            throw new UnsupportedOperationException(
+                    "getRecordComponents() not available for " + recordClass.getName() + " in native image", t);
+        }
         Class<?>[] paramTypes = new Class<?>[components.length];
         Object[] paramValues = new Object[components.length];
 

@@ -185,8 +185,8 @@ public class LlmModelSetDownloader {
         }
 
         try {
-            Files.walk(modelDir)
-                    .sorted(Comparator.reverseOrder())
+            try (java.util.stream.Stream<Path> walkStream = Files.walk(modelDir)) {
+                walkStream.sorted(Comparator.reverseOrder())
                     .forEach(path -> {
                         try {
                             Files.deleteIfExists(path);
@@ -194,6 +194,7 @@ public class LlmModelSetDownloader {
                             log.warn("Failed to delete: {}", path, e);
                         }
                     });
+            }
             return true;
         } catch (IOException e) {
             log.error("Failed to delete model set directory: {}", modelDir, e);
@@ -216,38 +217,44 @@ public class LlmModelSetDownloader {
 
         try {
             HttpURLConnection conn = (HttpURLConnection) new URL(downloadUrl).openConnection();
-            conn.setConnectTimeout(CONNECT_TIMEOUT);
-            conn.setReadTimeout(READ_TIMEOUT);
-            conn.setRequestProperty("User-Agent", "Kompile-ModelManager/1.0");
+            try {
+                conn.setConnectTimeout(CONNECT_TIMEOUT);
+                conn.setReadTimeout(READ_TIMEOUT);
+                conn.setRequestProperty("User-Agent", "Kompile-ModelManager/1.0");
 
-            int responseCode = conn.getResponseCode();
-            if (responseCode != 200) {
-                throw new IOException("HTTP " + responseCode + " downloading " + downloadUrl);
-            }
+                int responseCode = conn.getResponseCode();
+                if (responseCode != 200) {
+                    throw new IOException("HTTP " + responseCode + " downloading " + downloadUrl);
+                }
 
-            long totalSize = conn.getContentLengthLong();
-            long downloaded = 0;
+                long totalSize = conn.getContentLengthLong();
+                long downloaded = 0;
 
-            try (InputStream in = conn.getInputStream();
-                 OutputStream out = new BufferedOutputStream(Files.newOutputStream(tempPath))) {
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int bytesRead;
-                while ((bytesRead = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, bytesRead);
-                    downloaded += bytesRead;
-                    if (progressCallback != null && totalSize > 0) {
-                        progressCallback.accept(component, (double) downloaded / totalSize);
+                try (InputStream in = conn.getInputStream();
+                     OutputStream out = new BufferedOutputStream(Files.newOutputStream(tempPath))) {
+                    byte[] buffer = new byte[BUFFER_SIZE];
+                    int bytesRead;
+                    while ((bytesRead = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, bytesRead);
+                        downloaded += bytesRead;
+                        if (progressCallback != null && totalSize > 0) {
+                            progressCallback.accept(component, (double) downloaded / totalSize);
+                        }
                     }
                 }
-            }
 
-            // Atomic move temp -> target
-            Files.move(tempPath, targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            log.info("Downloaded component: {} ({} bytes)", component.getFileName(), downloaded);
+                // Atomic move temp -> target
+                Files.move(tempPath, targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                log.info("Downloaded component: {} ({} bytes)", component.getFileName(), downloaded);
+            } finally {
+                conn.disconnect();
+            }
 
         } catch (IOException e) {
             // Clean up temp file on failure
-            try { Files.deleteIfExists(tempPath); } catch (IOException ignored) {}
+            try { Files.deleteIfExists(tempPath); } catch (IOException cleanupEx) {
+                log.warn("Failed to clean up temp download file {} after failure: {}", tempPath, cleanupEx.getMessage());
+            }
             throw e;
         }
     }

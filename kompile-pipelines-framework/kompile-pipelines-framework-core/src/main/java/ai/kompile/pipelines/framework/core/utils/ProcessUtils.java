@@ -58,7 +58,11 @@ public class ProcessUtils {
             String output = getProcessOutput(process);
             String errorOutput = getProcessErrorOutput(process);
 
-            int errorCode = process.waitFor();
+            if (!process.waitFor(300, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                throw new IOException("Process timed out after 300 seconds");
+            }
+            int errorCode = process.exitValue();
             Preconditions.checkState(0 == errorCode,
                     String.format("Process exited with non-zero (%s) exit code. Details: %n%s%n%s", errorCode, output, errorOutput)
             );

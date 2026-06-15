@@ -47,13 +47,17 @@ public class GraphDataPatchService {
     private static final TypeReference<LinkedHashMap<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final int SAMPLE_LIMIT = 25;
 
-    private final GraphNodeRepository nodeRepository;
-    private final ObjectMapper objectMapper;
+    private GraphNodeRepository nodeRepository;
+    private ObjectMapper objectMapper;
 
     public GraphDataPatchService(GraphNodeRepository nodeRepository, ObjectMapper objectMapper) {
         this.nodeRepository = nodeRepository;
         this.objectMapper = objectMapper;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected GraphDataPatchService() {}
+
 
     @Transactional
     public PatchResult patchNodeMetadata(PatchRequest request) {

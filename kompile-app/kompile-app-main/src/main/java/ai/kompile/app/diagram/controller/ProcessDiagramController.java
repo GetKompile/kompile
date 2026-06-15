@@ -62,12 +62,24 @@ public class ProcessDiagramController {
                 request.agentName, request.factSheetId,
                 request.prompt != null ? request.prompt.length() : 0);
 
+        if (request.prompt == null || request.prompt.isBlank()) {
+            SseEmitter errorEmitter = new SseEmitter(SSE_TIMEOUT);
+            try {
+                errorEmitter.send(SseEmitter.event().name("error").data(Map.of("error", "prompt is required")));
+                errorEmitter.complete();
+            } catch (Exception e) {
+                errorEmitter.completeWithError(e);
+            }
+            return errorEmitter;
+        }
+
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
         emitter.onCompletion(() -> log.debug("Diagram SSE connection completed"));
         emitter.onTimeout(() -> {
             log.warn("Diagram SSE connection timed out");
             emitter.complete();
         });
+        emitter.onError(e -> log.warn("Diagram SSE error: {}", e.getMessage()));
 
         DiagramSession session = diagramService.startGeneration(
                 request.prompt, request.agentName, request.factSheetId, emitter);

@@ -140,8 +140,10 @@ public class BuiltInToolDiscoveryService {
                                 tool.getName(), beanClass.getSimpleName(), method.getName());
                     }
                 }
-            } catch (Exception e) {
-                // Skip beans that can't be introspected
+            } catch (Throwable e) {
+                // Skip beans that can't be introspected.
+                // In native image, UnsupportedFeatureError (extends Error) may be thrown
+                // for records missing reflection config.
                 logger.debug("Could not introspect bean {}: {}", beanName, e.getMessage());
             }
         }
@@ -567,11 +569,16 @@ public class BuiltInToolDiscoveryService {
 
         // Check for record components first
         if (clazz.isRecord()) {
-            for (var component : clazz.getRecordComponents()) {
-                ObjectNode propSchema = properties.putObject(component.getName());
-                propSchema.put("type", getJsonType(component.getType()));
-                // Assume all record components are required
-                required.add(component.getName());
+            try {
+                for (var component : clazz.getRecordComponents()) {
+                    ObjectNode propSchema = properties.putObject(component.getName());
+                    propSchema.put("type", getJsonType(component.getType()));
+                    // Assume all record components are required
+                    required.add(component.getName());
+                }
+            } catch (Throwable t) {
+                // In GraalVM native image, getRecordComponents() throws UnsupportedFeatureError
+                // if the record's reflection config is missing. Fall back to getter methods.
             }
         } else {
             // Fall back to getter methods
@@ -618,12 +625,17 @@ public class BuiltInToolDiscoveryService {
         List<ToolParameter> params = new ArrayList<>();
 
         if (clazz.isRecord()) {
-            for (var component : clazz.getRecordComponents()) {
-                ToolParameter param = new ToolParameter();
-                param.setName(component.getName());
-                param.setType(getJsonType(component.getType()));
-                param.setRequired(true);
-                params.add(param);
+            try {
+                for (var component : clazz.getRecordComponents()) {
+                    ToolParameter param = new ToolParameter();
+                    param.setName(component.getName());
+                    param.setType(getJsonType(component.getType()));
+                    param.setRequired(true);
+                    params.add(param);
+                }
+            } catch (Throwable t) {
+                // In GraalVM native image, getRecordComponents() throws UnsupportedFeatureError
+                // if the record's reflection config is missing. Skip this record's params.
             }
         } else {
             for (Method getter : clazz.getDeclaredMethods()) {

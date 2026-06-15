@@ -146,7 +146,9 @@ public class CliTranscriptService {
             try {
                 String resolved = adapter.resolveTitle(sessionId);
                 if (resolved != null && !resolved.equals(sessionId)) title = resolved;
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.debug("Could not resolve title for session {}: {}", sessionId, e.getMessage());
+            }
 
             return new CliTranscriptDetail(sessionId, source, title, agent, parsed);
         } catch (IOException e) {

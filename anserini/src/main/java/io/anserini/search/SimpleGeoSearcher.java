@@ -40,7 +40,7 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -92,7 +92,7 @@ public class SimpleGeoSearcher extends SimpleSearcher implements Closeable {
       throw new IllegalArgumentException(indexDir + " does not exist or is not a directory.");
     }
 
-    reader = DirectoryReader.open(FSDirectory.open(indexPath));
+    reader = DirectoryReader.open(new NIOFSDirectory(indexPath));
     searcher = new IndexSearcher(reader);
   }
 }

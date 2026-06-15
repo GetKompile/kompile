@@ -62,9 +62,13 @@ public class DocumentIngestionTool {
         try {
             if (documentIngestService == null) return Map.of("status", "error", "error", "DocumentIngestService not available");
             if (input.text() == null || input.text().isBlank()) return Map.of("status", "error", "error", "text is required");
+            if (input.text().length() > 10_000_000) return Map.of("status", "error", "error", "text exceeds 10MB limit");
             String fileName = input.fileName() != null ? input.fileName() : "text-input-" + System.currentTimeMillis() + ".txt";
+            // Sanitize fileName: strip path separators to prevent path traversal in temp file suffix
+            fileName = fileName.replace('/', '_').replace('\\', '_').replace('\0', '_');
 
             Path tempFile = Files.createTempFile("ingest-", "-" + fileName);
+            tempFile.toFile().deleteOnExit();
             Files.writeString(tempFile, input.text());
 
             String taskId = progressTracker != null ? progressTracker.generateTaskId() : UUID.randomUUID().toString();
@@ -148,6 +152,7 @@ public class DocumentIngestionTool {
 
             String text = transcript.getTranscript();
             Path tempFile = Files.createTempFile("youtube-", "-" + videoId + ".txt");
+            tempFile.toFile().deleteOnExit();
             Files.writeString(tempFile, text);
 
             String taskId = progressTracker != null ? progressTracker.generateTaskId() : UUID.randomUUID().toString();

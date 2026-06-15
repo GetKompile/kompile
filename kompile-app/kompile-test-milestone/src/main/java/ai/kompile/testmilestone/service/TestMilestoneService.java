@@ -3,8 +3,11 @@ package ai.kompile.testmilestone.service;
 import ai.kompile.testmilestone.domain.*;
 import ai.kompile.testmilestone.repository.TestCaseResultRepository;
 import ai.kompile.testmilestone.repository.TestMilestoneRepository;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -21,10 +24,14 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class TestMilestoneService {
 
+
+    @Autowired
     private final TestMilestoneRepository milestoneRepository;
+    @Autowired
     private final TestCaseResultRepository testCaseResultRepository;
 
     /**
@@ -327,18 +334,30 @@ public class TestMilestoneService {
     }
 
     private String runGitCommand(Path workDir, String... command) {
+        Process process = null;
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(workDir.toFile());
             pb.redirectErrorStream(true);
-            Process process = pb.start();
+            process = pb.start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line = reader.readLine();
-                process.waitFor();
+                if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    return "";
+                }
                 return line != null ? line.trim() : "";
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            if (process != null) process.destroyForcibly();
+            return "";
         } catch (Exception e) {
             return "";
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
         }
     }
 

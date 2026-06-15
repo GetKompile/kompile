@@ -46,7 +46,7 @@ import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.ClassicSimilarity;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.kohsuke.args4j.Option;
 
 import javax.annotation.Nullable;
@@ -110,7 +110,7 @@ public class InvertedDenseSearcher<K extends Comparable<K>> extends BaseSearcher
     // to corrupt index. Gather all possible exceptions together as an unchecked exception to make initialization and
     // error reporting clearer.
     try {
-      this.reader = DirectoryReader.open(FSDirectory.open(Paths.get(args.index)));
+      this.reader = DirectoryReader.open(new NIOFSDirectory(Paths.get(args.index)));
     } catch (IOException e) {
       throw new IllegalArgumentException(String.format("\"%s\" does not appear to be a valid index.", args.index));
     }

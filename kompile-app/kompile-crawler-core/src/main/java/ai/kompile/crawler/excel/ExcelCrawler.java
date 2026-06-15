@@ -195,7 +195,9 @@ public class ExcelCrawler extends AbstractCrawler {
             metadata.put(GraphConstants.META_FILE_SIZE, attrs.size());
             metadata.put(GraphConstants.META_LAST_MODIFIED, attrs.lastModifiedTime().toMillis());
             metadata.put("createdAt", attrs.creationTime().toMillis());
-        } catch (IOException ignored) {}
+        } catch (IOException e) {
+            logger.warn("Could not read file attributes for {}: {}", absolutePath, e.getMessage());
+        }
 
         metadata.put(GraphConstants.META_CONTENT_TYPE, "spreadsheet");
         metadata.put(GraphConstants.META_FILE_NAME, fileName);

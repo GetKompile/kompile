@@ -578,6 +578,7 @@ public class GpuResourceManager {
             );
             pb.redirectErrorStream(true);
             Process process = pb.start();
+            try {
 
             List<String> lines = new ArrayList<>();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
@@ -587,7 +588,13 @@ public class GpuResourceManager {
                 }
             }
 
-            int exitCode = process.waitFor();
+            boolean exited = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
+            if (!exited) {
+                process.destroyForcibly();
+                log.warn("nvidia-smi timed out after 30s, GPU status unavailable");
+                return;
+            }
+            int exitCode = process.exitValue();
             if (exitCode != 0) {
                 log.warn("nvidia-smi exited with code {} — no GPU devices registered", exitCode);
                 return;
@@ -673,6 +680,9 @@ public class GpuResourceManager {
 
             log.info("Discovered {} GPU device(s) via nvidia-smi", devices.size());
 
+            } finally {
+                process.destroyForcibly();
+            }
         } catch (Exception e) {
             log.warn("Failed to discover GPUs via nvidia-smi: {}. No GPU devices registered.", e.getMessage());
         }

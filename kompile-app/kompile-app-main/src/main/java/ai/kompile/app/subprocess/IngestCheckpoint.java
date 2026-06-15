@@ -19,6 +19,8 @@ package ai.kompile.app.subprocess;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import lombok.Getter;
+import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,6 +46,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * consistency even if the process crashes mid-write.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
+@Getter
+@Setter
 public class IngestCheckpoint {
 
     private static final Logger logger = LoggerFactory.getLogger(IngestCheckpoint.class);
@@ -74,9 +78,11 @@ public class IngestCheckpoint {
     private int totalChunks;
 
     /** Set of chunk indices that have been successfully embedded */
+    @Setter(lombok.AccessLevel.NONE)
     private Set<Integer> embeddedChunkIndices;
 
     /** Set of chunk indices that have been successfully indexed */
+    @Setter(lombok.AccessLevel.NONE)
     private Set<Integer> indexedChunkIndices;
 
     /** Last successfully completed batch number */
@@ -108,6 +114,7 @@ public class IngestCheckpoint {
     private int oomFailureCount;
 
     /** History of settings that caused OOM */
+    @Setter(lombok.AccessLevel.NONE)
     private List<FailedSettings> failedSettingsHistory;
 
     /** Last error message if failed */
@@ -297,81 +304,21 @@ public class IngestCheckpoint {
         this.updatedAt = Instant.now();
     }
 
-    // === Getters and Setters ===
+    // === Custom Setters for collection fields (preserve ConcurrentHashMap semantics) ===
 
-    public String getJobId() { return jobId; }
-    public void setJobId(String jobId) { this.jobId = jobId; }
-
-    public String getTaskId() { return taskId; }
-    public void setTaskId(String taskId) { this.taskId = taskId; }
-
-    public String getFilePath() { return filePath; }
-    public void setFilePath(String filePath) { this.filePath = filePath; }
-
-    public String getFileChecksum() { return fileChecksum; }
-    public void setFileChecksum(String fileChecksum) { this.fileChecksum = fileChecksum; }
-
-    public String getCurrentPhase() { return currentPhase; }
-    public void setCurrentPhase(String currentPhase) { this.currentPhase = currentPhase; }
-
-    public int getTotalChunks() { return totalChunks; }
-    public void setTotalChunks(int totalChunks) { this.totalChunks = totalChunks; }
-
-    public Set<Integer> getEmbeddedChunkIndices() { return embeddedChunkIndices; }
     public void setEmbeddedChunkIndices(Set<Integer> indices) {
         this.embeddedChunkIndices = indices != null ? ConcurrentHashMap.newKeySet(indices.size()) : ConcurrentHashMap.newKeySet();
         if (indices != null) this.embeddedChunkIndices.addAll(indices);
     }
 
-    public Set<Integer> getIndexedChunkIndices() { return indexedChunkIndices; }
     public void setIndexedChunkIndices(Set<Integer> indices) {
         this.indexedChunkIndices = indices != null ? ConcurrentHashMap.newKeySet(indices.size()) : ConcurrentHashMap.newKeySet();
         if (indices != null) this.indexedChunkIndices.addAll(indices);
     }
 
-    public int getLastCompletedBatch() { return lastCompletedBatch; }
-    public void setLastCompletedBatch(int batch) { this.lastCompletedBatch = batch; }
-
-    public int getTotalBatches() { return totalBatches; }
-    public void setTotalBatches(int batches) { this.totalBatches = batches; }
-
-    public String getHeapSize() { return heapSize; }
-    public void setHeapSize(String heapSize) { this.heapSize = heapSize; }
-
-    public int getBatchSize() { return batchSize; }
-    public void setBatchSize(int batchSize) { this.batchSize = batchSize; }
-
-    public int getNd4jThreads() { return nd4jThreads; }
-    public void setNd4jThreads(int threads) { this.nd4jThreads = threads; }
-
-    public int getOmpThreads() { return ompThreads; }
-    public void setOmpThreads(int threads) { this.ompThreads = threads; }
-
-    public int getEmbeddingWorkers() { return embeddingWorkers; }
-    public void setEmbeddingWorkers(int workers) { this.embeddingWorkers = workers; }
-
-    public int getOomFailureCount() { return oomFailureCount; }
-    public void setOomFailureCount(int count) { this.oomFailureCount = count; }
-
-    public List<FailedSettings> getFailedSettingsHistory() { return failedSettingsHistory; }
     public void setFailedSettingsHistory(List<FailedSettings> history) {
         this.failedSettingsHistory = history != null ? history : new ArrayList<>();
     }
-
-    public String getLastErrorMessage() { return lastErrorMessage; }
-    public void setLastErrorMessage(String msg) { this.lastErrorMessage = msg; }
-
-    public String getLastErrorPhase() { return lastErrorPhase; }
-    public void setLastErrorPhase(String phase) { this.lastErrorPhase = phase; }
-
-    public Instant getCreatedAt() { return createdAt; }
-    public void setCreatedAt(Instant time) { this.createdAt = time; }
-
-    public Instant getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(Instant time) { this.updatedAt = time; }
-
-    public long getTotalProcessingTimeMs() { return totalProcessingTimeMs; }
-    public void setTotalProcessingTimeMs(long ms) { this.totalProcessingTimeMs = ms; }
 
     /**
      * Record of settings that caused an OOM failure.

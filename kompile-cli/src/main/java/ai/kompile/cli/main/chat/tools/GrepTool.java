@@ -173,7 +173,10 @@ public class GrepTool implements CliTool {
                 }
             }
 
-            process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
+            boolean finished = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+            }
 
             String result = output.toString().trim();
             if (result.isEmpty()) {
@@ -191,11 +194,16 @@ public class GrepTool implements CliTool {
     }
 
     private boolean isCommandAvailable(String command) {
+        Process p = null;
         try {
-            Process p = new ProcessBuilder("which", command).start();
+            p = new ProcessBuilder("which", command).start();
             return p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS) && p.exitValue() == 0;
         } catch (Exception e) {
             return false;
+        } finally {
+            if (p != null) {
+                p.destroyForcibly();
+            }
         }
     }
 }

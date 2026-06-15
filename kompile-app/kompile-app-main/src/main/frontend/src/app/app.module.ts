@@ -139,6 +139,8 @@ import { DiffIndexBrowserComponent } from './components/diff-index-browser/diff-
 import { ProjectManagerComponent } from './components/project-manager/project-manager.component';
 import { MarkdownRendererComponent } from './components/markdown-renderer/markdown-renderer.component';
 import { ProjectExplorerComponent } from './components/project-explorer/project-explorer.component';
+import { TrainingDashboardComponent } from './components/developer-hub/training-dashboard/training-dashboard.component';
+import { TrainingLaunchComponent } from './components/developer-hub/training-launch/training-launch.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -338,7 +340,9 @@ import { MatNativeDateModule } from '@angular/material/core';
     CodeGraphBuilderComponent,
     DiffIndexBrowserComponent,
     MarkdownRendererComponent,
-    ProjectExplorerComponent
+    ProjectExplorerComponent,
+    TrainingDashboardComponent,
+    TrainingLaunchComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

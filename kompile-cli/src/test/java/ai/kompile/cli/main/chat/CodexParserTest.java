@@ -272,6 +272,167 @@ class CodexParserTest {
     }
 
     // ===================================================================
+    // exec_approval_request — interactive approval
+    // ===================================================================
+
+    @Test
+    void execApprovalRequest_shouldProduceInteractiveApproval() {
+        String line = ParserTestFixtures.codexExecApproval(
+                "call-100", "turn-200", "rm -rf /tmp/old-builds",
+                "/home/user/project", "Need to clean up old build artifacts");
+        PassthroughEvent event = parser.parseCodexLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasInteractiveApproval("rm -rf /tmp/old-builds");
+
+        InteractiveApproval approval = AgentOutputAssertions.assertThat(event)
+                .firstOfType(InteractiveApproval.class);
+        assertNotNull(approval);
+        assertEquals("call-100", approval.callId());
+        assertEquals("turn-200", approval.turnId());
+        assertEquals("rm -rf /tmp/old-builds", approval.command());
+        assertEquals("/home/user/project", approval.cwd());
+        assertEquals("Need to clean up old build artifacts", approval.reason());
+        assertEquals(2, approval.decisions().size());
+        assertTrue(approval.decisions().contains("approve"));
+        assertTrue(approval.decisions().contains("deny"));
+    }
+
+    @Test
+    void execApprovalRequest_commandAsArray_shouldJoinParts() {
+        String line = ParserTestFixtures.codexExecApprovalArrayCommand(
+                "call-101", "git", "push", "origin", "main");
+        PassthroughEvent event = parser.parseCodexLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasInteractiveApproval("git push origin main");
+    }
+
+    @Test
+    void execApprovalRequest_noDecisions_shouldDefaultToApproveAndDeny() {
+        // Minimal approval request with no available_decisions field
+        String line = "{\"type\":\"exec_approval_request\",\"call_id\":\"call-102\",\"command\":\"ls\"}";
+        PassthroughEvent event = parser.parseCodexLine(line);
+
+        InteractiveApproval approval = AgentOutputAssertions.assertThat(event)
+                .firstOfType(InteractiveApproval.class);
+        assertNotNull(approval);
+        assertEquals(2, approval.decisions().size());
+        assertTrue(approval.decisions().contains("approve"));
+        assertTrue(approval.decisions().contains("deny"));
+    }
+
+    // ===================================================================
+    // request_user_input — interactive question
+    // ===================================================================
+
+    @Test
+    void requestUserInput_shouldProduceInteractiveQuestion() {
+        String line = ParserTestFixtures.codexRequestUserInput(
+                "call-200", "turn-300", "q-001", "Configuration",
+                "Which environment?",
+                new String[][]{{"production", "Live system"}, {"staging", "Test environment"}},
+                false);
+        PassthroughEvent event = parser.parseCodexLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasInteractiveQuestion("Which environment?");
+
+        InteractiveQuestion iq = AgentOutputAssertions.assertThat(event)
+                .firstOfType(InteractiveQuestion.class);
+        assertNotNull(iq);
+        assertEquals("call-200", iq.callId());
+        assertEquals("turn-300", iq.turnId());
+        assertEquals("q-001", iq.questionId());
+        assertEquals("Configuration", iq.header());
+        assertEquals("Which environment?", iq.question());
+        assertEquals(2, iq.options().size());
+        assertEquals("production", iq.options().get(0).label());
+        assertEquals("Live system", iq.options().get(0).description());
+        assertFalse(iq.freeformAllowed());
+    }
+
+    @Test
+    void requestUserInput_noQuestions_shouldReturnNull() {
+        String line = "{\"type\":\"request_user_input\",\"call_id\":\"call-201\",\"questions\":[]}";
+        PassthroughEvent event = parser.parseCodexLine(line);
+        assertNull(event, "Empty questions array should produce null");
+    }
+
+    // ===================================================================
+    // exec.started with args array instead of command string
+    // ===================================================================
+
+    @Test
+    void execStartedWithArgs_shouldProduceToolUse() {
+        String line = "{\"type\":\"exec.started\",\"args\":[\"npm\",\"install\"]}";
+        PassthroughEvent event = parser.parseCodexLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasToolUse("exec");
+
+        ToolUse toolUse = AgentOutputAssertions.assertThat(event).firstOfType(ToolUse.class);
+        assertNotNull(toolUse);
+        assertTrue(toolUse.input().contains("npm"), "Should contain args");
+    }
+
+    // ===================================================================
+    // turn.started — should return null
+    // ===================================================================
+
+    @Test
+    void turnStarted_shouldReturnNull() {
+        String line = "{\"type\":\"turn.started\"}";
+        PassthroughEvent event = parser.parseCodexLine(line);
+        assertNull(event, "turn.started should be silently skipped");
+    }
+
+    // ===================================================================
+    // response.output_text.delta — should produce TextChunk
+    // ===================================================================
+
+    @Test
+    void responseOutputTextDelta_shouldProduceTextChunk() {
+        String line = "{\"type\":\"response.output_text.delta\",\"delta\":\"streaming text\"}";
+        PassthroughEvent event = parser.parseCodexLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasTextChunk("streaming text");
+    }
+
+    // ===================================================================
+    // agent_message_delta — should produce TextChunk
+    // ===================================================================
+
+    @Test
+    void agentMessageDelta_shouldProduceTextChunk() {
+        String line = "{\"type\":\"agent_message_delta\",\"delta\":\"agent text\"}";
+        PassthroughEvent event = parser.parseCodexLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasTextChunk("agent text");
+    }
+
+    // ===================================================================
+    // Non-JSON text (not noise) → TextChunk
+    // ===================================================================
+
+    @Test
+    void nonJsonText_shouldProduceTextChunk() {
+        PassthroughEvent event = parser.parseCodexLine("Some plain text output");
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasTextContaining("Some plain text output");
+    }
+
+    // ===================================================================
     // Edge cases
     // ===================================================================
 

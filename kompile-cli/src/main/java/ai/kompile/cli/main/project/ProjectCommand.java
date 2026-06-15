@@ -60,8 +60,16 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.io.Console;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -72,11 +80,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.StandardCopyOption;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -86,6 +94,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Command(name = "project",
@@ -366,7 +375,7 @@ public class ProjectCommand implements Callable<Integer> {
             }
             // If no standard dirs found, check immediate subdirectories
             if (sources.isEmpty()) {
-                try (java.util.stream.Stream<Path> children = Files.list(projectRoot)) {
+                try (Stream<Path> children = Files.list(projectRoot)) {
                     children.filter(Files::isDirectory)
                             .filter(p -> !p.getFileName().toString().startsWith("."))
                             .filter(p -> !p.getFileName().toString().equals("target"))
@@ -380,7 +389,7 @@ public class ProjectCommand implements Callable<Integer> {
         }
 
         private static boolean containsDocuments(Path dir) {
-            try (java.util.stream.Stream<Path> files = Files.walk(dir, 2)) {
+            try (Stream<Path> files = Files.walk(dir, 2)) {
                 return files.filter(Files::isRegularFile)
                         .anyMatch(p -> isDocumentFile(p.getFileName().toString()));
             } catch (IOException e) {
@@ -447,7 +456,7 @@ public class ProjectCommand implements Callable<Integer> {
             for (String candidate : candidates) {
                 Path dir = projectRoot.resolve(candidate);
                 if (!Files.isDirectory(dir)) continue;
-                try (java.util.stream.Stream<Path> files = Files.walk(dir, 4)) {
+                try (Stream<Path> files = Files.walk(dir, 4)) {
                     files.filter(Files::isRegularFile)
                             .filter(p -> isModelFile(p.getFileName().toString()))
                             .forEach(p -> {
@@ -536,7 +545,7 @@ public class ProjectCommand implements Callable<Integer> {
          * HTML, or email files.  Plain text/markdown/csv alone return false.
          */
         private static boolean containsRichDocuments(String dirPath) {
-            try (java.util.stream.Stream<Path> files = Files.walk(Path.of(dirPath), 2)) {
+            try (Stream<Path> files = Files.walk(Path.of(dirPath), 2)) {
                 return files.filter(Files::isRegularFile).anyMatch(p -> {
                     String lower = p.getFileName().toString().toLowerCase();
                     // PDFs and images — may need VLM OCR
@@ -578,12 +587,12 @@ public class ProjectCommand implements Callable<Integer> {
                 }
             }
             // Check immediate subdirectories (skip known non-code dirs)
-            try (java.util.stream.Stream<Path> children = Files.list(projectRoot)) {
+            try (Stream<Path> children = Files.list(projectRoot)) {
                 List<Path> subdirs = children
                         .filter(Files::isDirectory)
                         .filter(p -> !CODE_DETECT_SKIP_DIRS.contains(p.getFileName().toString()))
                         .filter(p -> !p.getFileName().toString().startsWith("."))
-                        .collect(java.util.stream.Collectors.toList());
+                        .collect(Collectors.toList());
                 for (Path subdir : subdirs) {
                     for (String buildFile : BUILD_FILES) {
                         if (Files.isRegularFile(subdir.resolve(buildFile))) {
@@ -698,8 +707,8 @@ public class ProjectCommand implements Callable<Integer> {
             model.getMetadata().put("registry.framework", "onnx");
             model.getMetadata().put("registry.modelType", "dense");
             model.getMetadata().put("staging.requiresDownload", "true");
-            model.setCreatedAt(java.time.Instant.now());
-            model.setUpdatedAt(java.time.Instant.now());
+            model.setCreatedAt(Instant.now());
+            model.setUpdatedAt(Instant.now());
             return model;
         }
 
@@ -713,8 +722,8 @@ public class ProjectCommand implements Callable<Integer> {
             profile.setSources(sources);
             profile.setSourceType("DIRECTORY");
             profile.setLifecycle(KompileProjectLifecycleState.ACTIVE);
-            profile.setCreatedAt(java.time.Instant.now());
-            profile.setUpdatedAt(java.time.Instant.now());
+            profile.setCreatedAt(Instant.now());
+            profile.setUpdatedAt(Instant.now());
             return profile;
         }
 
@@ -734,8 +743,8 @@ public class ProjectCommand implements Callable<Integer> {
             cp.setRootPath(signal.root().toAbsolutePath().normalize().toString());
             cp.setAutoIndex(true);
             cp.setTags(List.of("code", signal.language().toLowerCase(), "auto-detected"));
-            cp.setCreatedAt(java.time.Instant.now());
-            cp.setUpdatedAt(java.time.Instant.now());
+            cp.setCreatedAt(Instant.now());
+            cp.setUpdatedAt(Instant.now());
             return cp;
         }
 
@@ -773,7 +782,7 @@ public class ProjectCommand implements Callable<Integer> {
          */
         private static ProjectScenario runWizard(Path rootPath, KompileProjectInitRequest request,
                                                   DetectedSignals signals) {
-            java.io.Console console = System.console();
+            Console console = System.console();
             if (console == null) {
                 System.out.println("No project files detected (non-interactive mode). Creating blank project.");
                 return ProjectScenario.WIZARD;
@@ -1023,9 +1032,9 @@ public class ProjectCommand implements Callable<Integer> {
                 state.getMetadata().put("stagingUrl", "http://localhost:" + stagingPort);
             }
             state.getMetadata().put("appJar", appJar.getAbsolutePath());
-            state.setUpdatedAt(java.time.Instant.now());
+            state.setUpdatedAt(Instant.now());
             try {
-                new com.fasterxml.jackson.databind.ObjectMapper()
+                new ObjectMapper()
                         .findAndRegisterModules()
                         .writeValue(store.openStatePath(resolved).toFile(), state);
             } catch (Exception e) {
@@ -1083,7 +1092,7 @@ public class ProjectCommand implements Callable<Integer> {
                         return;
                     }
                     // Interactive prompt
-                    java.io.Console console = System.console();
+                    Console console = System.console();
                     if (console != null) {
                         System.out.println();
                         System.out.println("  Documents detected in this project.");
@@ -1185,9 +1194,9 @@ public class ProjectCommand implements Callable<Integer> {
                 }
 
                 // Parse, update callback URL, PUT back
-                com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
-                com.fasterxml.jackson.databind.node.ObjectNode settings =
-                        (com.fasterxml.jackson.databind.node.ObjectNode) om.readTree(getResp.body());
+                ObjectMapper om = new ObjectMapper();
+                ObjectNode settings =
+                        (ObjectNode) om.readTree(getResp.body());
                 settings.put("callbackUrl", "http://localhost:" + appPort);
                 settings.put("autoReloadEnabled", true);
 
@@ -1270,13 +1279,13 @@ public class ProjectCommand implements Callable<Integer> {
         private static void addStdioUrlArg(Path mcpJsonFile, String serverName, String backendUrl) {
             if (mcpJsonFile == null || !Files.exists(mcpJsonFile)) return;
             try {
-                com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
-                com.fasterxml.jackson.databind.node.ObjectNode root =
-                        (com.fasterxml.jackson.databind.node.ObjectNode) om.readTree(Files.readString(mcpJsonFile));
-                com.fasterxml.jackson.databind.JsonNode servers = root.path("mcpServers").path(serverName);
+                ObjectMapper om = new ObjectMapper();
+                ObjectNode root =
+                        (ObjectNode) om.readTree(Files.readString(mcpJsonFile));
+                JsonNode servers = root.path("mcpServers").path(serverName);
                 if (servers.isMissingNode() || !servers.has("args")) return;
-                com.fasterxml.jackson.databind.node.ArrayNode args =
-                        (com.fasterxml.jackson.databind.node.ArrayNode) servers.get("args");
+                ArrayNode args =
+                        (ArrayNode) servers.get("args");
                 args.add("--url");
                 args.add(backendUrl);
                 Files.writeString(mcpJsonFile, om.writerWithDefaultPrettyPrinter().writeValueAsString(root));
@@ -1293,16 +1302,16 @@ public class ProjectCommand implements Callable<Integer> {
         private static void addSseEntryToMcpJson(Path mcpJsonFile, String serverName, String sseUrl) {
             if (mcpJsonFile == null || !Files.exists(mcpJsonFile)) return;
             try {
-                com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
-                com.fasterxml.jackson.databind.node.ObjectNode root =
-                        (com.fasterxml.jackson.databind.node.ObjectNode) om.readTree(Files.readString(mcpJsonFile));
-                com.fasterxml.jackson.databind.node.ObjectNode mcpServers;
+                ObjectMapper om = new ObjectMapper();
+                ObjectNode root =
+                        (ObjectNode) om.readTree(Files.readString(mcpJsonFile));
+                ObjectNode mcpServers;
                 if (root.has("mcpServers") && root.get("mcpServers").isObject()) {
-                    mcpServers = (com.fasterxml.jackson.databind.node.ObjectNode) root.get("mcpServers");
+                    mcpServers = (ObjectNode) root.get("mcpServers");
                 } else {
                     mcpServers = root.putObject("mcpServers");
                 }
-                com.fasterxml.jackson.databind.node.ObjectNode entry = mcpServers.putObject(serverName);
+                ObjectNode entry = mcpServers.putObject(serverName);
                 entry.put("type", "sse");
                 entry.put("url", sseUrl);
                 Files.writeString(mcpJsonFile, om.writerWithDefaultPrettyPrinter().writeValueAsString(root));
@@ -1329,8 +1338,8 @@ public class ProjectCommand implements Callable<Integer> {
                 meta.remove("stagingPort");
                 meta.remove("stagingUrl");
                 meta.remove("appJar");
-                state.setUpdatedAt(java.time.Instant.now());
-                new com.fasterxml.jackson.databind.ObjectMapper()
+                state.setUpdatedAt(Instant.now());
+                new ObjectMapper()
                         .findAndRegisterModules()
                         .writeValue(store.openStatePath(projectRoot).toFile(), state);
             } catch (Exception e) {
@@ -1462,7 +1471,7 @@ public class ProjectCommand implements Callable<Integer> {
                             conn.setDoOutput(true);
                             conn.setConnectTimeout(5000);
                             conn.setReadTimeout(30000);
-                            conn.getOutputStream().write(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                            conn.getOutputStream().write(json.getBytes(StandardCharsets.UTF_8));
                             int rc = conn.getResponseCode();
                             if (rc == 202 || rc == 200) {
                                 System.out.println("    " + modelId + ": staging from local path " + localModelFile);
@@ -1547,13 +1556,18 @@ public class ProjectCommand implements Callable<Integer> {
         private static void openBrowserUrl(String url) {
             try {
                 String os = System.getProperty("os.name", "").toLowerCase();
+                ProcessBuilder pb;
                 if (os.contains("mac")) {
-                    new ProcessBuilder("open", url).start();
+                    pb = new ProcessBuilder("open", url);
                 } else if (os.contains("win")) {
-                    new ProcessBuilder("rundll32", "url.dll,FileProtocolHandler", url).start();
+                    pb = new ProcessBuilder("rundll32", "url.dll,FileProtocolHandler", url);
                 } else {
-                    new ProcessBuilder("xdg-open", url).start();
+                    pb = new ProcessBuilder("xdg-open", url);
                 }
+                Process p = pb.redirectErrorStream(true).start();
+                p.getInputStream().transferTo(OutputStream.nullOutputStream());
+                p.waitFor(10, TimeUnit.SECONDS);
+                p.destroyForcibly();
             } catch (Exception ignored) {}
         }
     }
@@ -1850,7 +1864,7 @@ public class ProjectCommand implements Callable<Integer> {
                 } else {
                     process.destroy();
                     try {
-                        process.onExit().get(15, java.util.concurrent.TimeUnit.SECONDS);
+                        process.onExit().get(15, TimeUnit.SECONDS);
                     } catch (Exception e) {
                         System.out.println("    Graceful shutdown timed out, force-killing...");
                         process.destroyForcibly();
@@ -2343,8 +2357,8 @@ public class ProjectCommand implements Callable<Integer> {
                 System.err.println("No judge config found for coding project: " + cpId);
                 return 1;
             }
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper()
-                    .enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
+            ObjectMapper mapper = new ObjectMapper()
+                    .enable(SerializationFeature.INDENT_OUTPUT);
             System.out.println(mapper.writeValueAsString(config));
             return 0;
         }
@@ -3031,7 +3045,7 @@ public class ProjectCommand implements Callable<Integer> {
                 Path markdownDir = projectRoot.toAbsolutePath().normalize().resolve("data/markdown");
                 Path file = markdownDir.resolve(filePath).normalize();
                 try {
-                    System.out.println(java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8));
+                    System.out.println(Files.readString(file, StandardCharsets.UTF_8));
                 } catch (IOException e) {
                     System.err.println("Failed to read file: " + e.getMessage());
                     return 1;
@@ -5069,8 +5083,8 @@ public class ProjectCommand implements Callable<Integer> {
         if (!Files.isDirectory(target)) {
             return Optional.empty();
         }
-        try {
-            return Files.list(target)
+        try (Stream<Path> listing = Files.list(target)) {
+            return listing
                     .filter(path -> path.getFileName().toString().startsWith("kompile-model-staging-"))
                     .filter(path -> path.getFileName().toString().endsWith("-exec.jar"))
                     .filter(Files::isRegularFile)

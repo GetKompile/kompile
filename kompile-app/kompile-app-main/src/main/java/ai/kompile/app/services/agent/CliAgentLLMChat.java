@@ -292,7 +292,9 @@ public class CliAgentLLMChat implements LLMChat {
                 if (p.isAlive()) {
                     p.destroyForcibly();
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                log.warn("Error destroying pooled agent process during shutdown: {}", e.getMessage());
+            }
         }
     }
 
@@ -409,6 +411,10 @@ public class CliAgentLLMChat implements LLMChat {
                     exited ? process.exitValue() : "timeout");
             return content;
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("CLI agent '{}' execution interrupted", agent.getName());
+            return "Error executing CLI agent: interrupted";
         } catch (Exception e) {
             log.error("Error executing CLI agent '{}': {}", agent.getName(), e.getMessage(), e);
             return "Error executing CLI agent: " + e.getMessage();

@@ -681,9 +681,15 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                 );
 
                 for (Map<String, Object> edge : edges) {
-                    int source = ((Number) edge.get("source")).intValue();
-                    int target = ((Number) edge.get("target")).intValue();
-                    double weight = ((Number) edge.get("weight")).doubleValue();
+                    if (!(edge.get("source") instanceof Number srcNum)
+                            || !(edge.get("target") instanceof Number tgtNum)
+                            || !(edge.get("weight") instanceof Number wgtNum)) {
+                        log.warn("Skipping edge with missing source/target/weight fields");
+                        continue;
+                    }
+                    int source = srcNum.intValue();
+                    int target = tgtNum.intValue();
+                    double weight = wgtNum.doubleValue();
 
                     // Find node IDs by matrix index
                     String sourceId = graph.getIndexToNodeId().get(source);

@@ -953,7 +953,9 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                         break;
                     }
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                logger.debug("Failed to query direct buffer pool MXBean: {}", e.getMessage());
+            }
             directBufferMB = directBytes / (1024 * 1024);
 
             if (offHeapMaxBytes > 0) {
@@ -989,6 +991,7 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
             double usage = total > 0 ? (used * 100.0) / total : 0.0;
             return new GpuProbe(deviceId, used, total, usage);
         } catch (Exception e) {
+            logger.debug("Failed to probe GPU device {}", deviceId, e);
             return null;
         }
     }

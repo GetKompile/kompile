@@ -297,9 +297,8 @@ public class RegistryService {
             if (deleteFiles && entry.getPath() != null) {
                 Path modelPath = modelDir.resolve(entry.getPath());
                 if (Files.exists(modelPath)) {
-                    try {
-                        java.nio.file.Files.walk(modelPath)
-                                .sorted(java.util.Comparator.reverseOrder())
+                    try (java.util.stream.Stream<java.nio.file.Path> walkStream = java.nio.file.Files.walk(modelPath)) {
+                        walkStream.sorted(java.util.Comparator.reverseOrder())
                                 .forEach(p -> {
                                     try {
                                         Files.delete(p);

@@ -17,6 +17,7 @@ package ai.kompile.core.graphbuilder;
 
 import org.springframework.context.ApplicationEvent;
 
+import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -42,7 +43,7 @@ public class GraphBuildCompletedEvent extends ApplicationEvent {
         this.entitiesExtracted = entitiesExtracted;
         this.edgesCreated = edgesCreated;
         this.factSheetId = factSheetId;
-        this.entityTypeCounts = entityTypeCounts;
+        this.entityTypeCounts = entityTypeCounts != null ? Collections.unmodifiableMap(entityTypeCounts) : null;
     }
 
     public String getJobId() {

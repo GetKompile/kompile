@@ -31,17 +31,25 @@ import jakarta.servlet.AsyncContext;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import com.fasterxml.jackson.databind.JsonNode;
+
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 /**
@@ -243,7 +251,7 @@ public class McpServerRuntime {
         }
     }
 
-    private ObjectNode handleMcpRequest(String method, com.fasterxml.jackson.databind.JsonNode params, Object id) {
+    private ObjectNode handleMcpRequest(String method, JsonNode params, Object id) {
         ObjectNode response = objectMapper.createObjectNode();
         response.put("jsonrpc", "2.0");
         if (id != null) {
@@ -358,9 +366,9 @@ public class McpServerRuntime {
         return result;
     }
 
-    private ObjectNode handleCallTool(com.fasterxml.jackson.databind.JsonNode params) throws Exception {
+    private ObjectNode handleCallTool(JsonNode params) throws Exception {
         String toolName = params.has("name") ? params.get("name").asText() : null;
-        com.fasterxml.jackson.databind.JsonNode arguments = params.get("arguments");
+        JsonNode arguments = params.get("arguments");
 
         McpToolConfig toolConfig = config.getTools().stream()
                 .filter(t -> t.getName().equals(toolName))
@@ -404,7 +412,7 @@ public class McpServerRuntime {
         return result;
     }
 
-    private ObjectNode handleReadResource(com.fasterxml.jackson.databind.JsonNode params) throws Exception {
+    private ObjectNode handleReadResource(JsonNode params) throws Exception {
         String uri = params.has("uri") ? params.get("uri").asText() : null;
 
         McpResourceConfig resourceConfig = config.getResources().stream()
@@ -455,9 +463,9 @@ public class McpServerRuntime {
         return result;
     }
 
-    private ObjectNode handleGetPrompt(com.fasterxml.jackson.databind.JsonNode params) {
+    private ObjectNode handleGetPrompt(JsonNode params) {
         String promptName = params.has("name") ? params.get("name").asText() : null;
-        com.fasterxml.jackson.databind.JsonNode argumentsNode = params.get("arguments");
+        JsonNode argumentsNode = params.get("arguments");
 
         McpPromptConfig promptConfig = config.getPrompts().stream()
                 .filter(p -> p.getName().equals(promptName))
@@ -535,15 +543,15 @@ public class McpServerRuntime {
         List<String> command = new ArrayList<>();
         command.add(interpreter);
 
-        java.nio.file.Path tempScript = null;
+        Path tempScript = null;
         try {
             if (scriptConfig.getScriptPath() != null && !scriptConfig.getScriptPath().isEmpty()) {
                 command.add(scriptConfig.getScriptPath());
             } else if (scriptConfig.getScript() != null && !scriptConfig.getScript().isEmpty()) {
                 // Write inline script to temp file
                 String ext = language.contains("python") ? ".py" : language.contains("javascript") ? ".js" : ".sh";
-                tempScript = java.nio.file.Files.createTempFile("mcp-script-", ext);
-                java.nio.file.Files.writeString(tempScript, scriptConfig.getScript());
+                tempScript = Files.createTempFile("mcp-script-", ext);
+                Files.writeString(tempScript, scriptConfig.getScript());
                 command.add(tempScript.toString());
             } else {
                 throw new IllegalStateException("Script tool requires either 'script' or 'scriptPath'");
@@ -560,20 +568,20 @@ public class McpServerRuntime {
 
             // Write arguments as JSON to stdin
             String argsJson = objectMapper.writeValueAsString(arguments);
-            process.getOutputStream().write(argsJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            process.getOutputStream().write(argsJson.getBytes(StandardCharsets.UTF_8));
             process.getOutputStream().close();
 
             // Read output
             String output;
-            try (var reader = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(process.getInputStream()))) {
+            try (var reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
                 output = reader.lines().collect(Collectors.joining("\n"));
             }
 
             boolean finished = process.waitFor(scriptConfig.getTimeoutMs(), TimeUnit.MILLISECONDS);
             if (!finished) {
                 process.destroyForcibly();
-                throw new java.util.concurrent.TimeoutException(
+                throw new TimeoutException(
                         "Script execution timed out after " + scriptConfig.getTimeoutMs() + "ms");
             }
 
@@ -590,7 +598,7 @@ public class McpServerRuntime {
             }
         } finally {
             if (tempScript != null) {
-                java.nio.file.Files.deleteIfExists(tempScript);
+                Files.deleteIfExists(tempScript);
             }
         }
     }
@@ -641,7 +649,7 @@ public class McpServerRuntime {
         }
 
         // If already a Map or JsonNode, return as-is
-        if (result instanceof Map || result instanceof com.fasterxml.jackson.databind.JsonNode) {
+        if (result instanceof Map || result instanceof JsonNode) {
             return result;
         }
 
@@ -740,8 +748,8 @@ public class McpServerRuntime {
                 return resourceConfig.getStaticContent() != null ? resourceConfig.getStaticContent() : "";
             case FILE:
                 if (resourceConfig.getFileConfig() != null && resourceConfig.getFileConfig().getBasePath() != null) {
-                    return java.nio.file.Files.readString(
-                            java.nio.file.Paths.get(resourceConfig.getFileConfig().getBasePath()));
+                    return Files.readString(
+                            Paths.get(resourceConfig.getFileConfig().getBasePath()));
                 }
                 return "File path not configured";
             case HTTP:
@@ -836,8 +844,8 @@ public class McpServerRuntime {
                         @Override public java.sql.Connection getConnection(String u, String p) throws java.sql.SQLException {
                             return java.sql.DriverManager.getConnection(dataSourceName, u, p);
                         }
-                        @Override public java.io.PrintWriter getLogWriter() { return null; }
-                        @Override public void setLogWriter(java.io.PrintWriter out) {}
+                        @Override public PrintWriter getLogWriter() { return null; }
+                        @Override public void setLogWriter(PrintWriter out) {}
                         @Override public void setLoginTimeout(int seconds) {}
                         @Override public int getLoginTimeout() { return 0; }
                         @Override public java.util.logging.Logger getParentLogger() { return null; }

@@ -22,6 +22,7 @@ import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.TrainingConfig;
 import org.nd4j.autodiff.samediff.VariableType;
+import org.nd4j.autodiff.samediff.execution.DspHandle;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.dataset.MultiDataSet;
@@ -482,7 +483,7 @@ public class TrainingSubprocessMain {
                     stepMetrics.put("temperature", temperature);
                     stepMetrics.put("learning_rate", currentLr);
 
-                    reporter.reportMetrics(globalStep, epoch + 1, studentLoss, studentLoss * 1.1,
+                    reportStepMetrics(reporter, student, globalStep, epoch + 1, studentLoss, studentLoss * 1.1,
                             currentLr, 0.0, batchSize * 512.0, batchSize, stepMetrics);
                     reporter.reportLog("INFO", String.format(
                             "Step %d/%d | Student loss: %.4f | KD loss: %.4f | LR: %.2e",
@@ -638,7 +639,7 @@ public class TrainingSubprocessMain {
 
                 if (globalStep % loggingSteps == 0 || globalStep == 1) {
                     stepMetrics.put("learning_rate", currentLr);
-                    reporter.reportMetrics(globalStep, epoch + 1, loss, loss * 1.1,
+                    reportStepMetrics(reporter, sd, globalStep, epoch + 1, loss, loss * 1.1,
                             currentLr, 0.0, batchSize * 256.0, batchSize, stepMetrics);
 
                     StringBuilder sb = new StringBuilder();
@@ -858,7 +859,7 @@ public class TrainingSubprocessMain {
                     stepMetrics.put("train_loss", stepLoss);
                     stepMetrics.put("learning_rate", currentLr);
 
-                    reporter.reportMetrics(globalStep, epoch + 1, stepLoss, stepLoss * 1.1,
+                    reportStepMetrics(reporter, sd, globalStep, epoch + 1, stepLoss, stepLoss * 1.1,
                             currentLr, 0.0, batchSize * 512.0, batchSize, stepMetrics);
                     reporter.reportLog("INFO", String.format(
                             "Step %d/%d | Loss: %.4f | LR: %.2e", globalStep, totalSteps, stepLoss, currentLr));
@@ -938,7 +939,7 @@ public class TrainingSubprocessMain {
                     stepMetrics.put("learning_rate", currentLr);
                     stepMetrics.put("grad_norm", 0.5 + rng.nextDouble() * args.maxGradNorm());
 
-                    reporter.reportMetrics(globalStep, epoch + 1, currentLoss, currentLoss * 1.1,
+                    reportStepMetrics(reporter, null, globalStep, epoch + 1, currentLoss, currentLoss * 1.1,
                             currentLr, stepMetrics.get("grad_norm"),
                             batchSize * 512.0, batchSize, stepMetrics);
                     reporter.reportLog("INFO", String.format("Step %d/%d | Loss: %.4f | LR: %.2e",
@@ -1023,7 +1024,7 @@ public class TrainingSubprocessMain {
                     stepMetrics.put("temperature", temperature);
                     stepMetrics.put("learning_rate", currentLr);
 
-                    reporter.reportMetrics(globalStep, epoch + 1, combinedLoss, combinedLoss * 1.1,
+                    reportStepMetrics(reporter, null, globalStep, epoch + 1, combinedLoss, combinedLoss * 1.1,
                             currentLr, 0.0, batchSize * 512.0, batchSize, stepMetrics);
                     reporter.reportLog("INFO", String.format(
                             "Step %d/%d | Student: %.4f | KD: %.4f | Combined: %.4f",
@@ -1099,7 +1100,7 @@ public class TrainingSubprocessMain {
 
                 if (globalStep % loggingSteps == 0 || globalStep == 1) {
                     stepMetrics.put("learning_rate", currentLr);
-                    reporter.reportMetrics(globalStep, epoch + 1, loss, loss * 1.1,
+                    reportStepMetrics(reporter, null, globalStep, epoch + 1, loss, loss * 1.1,
                             currentLr, 0.0, batchSize * 256.0, batchSize, stepMetrics);
 
                     StringBuilder sb = new StringBuilder();
@@ -1398,6 +1399,126 @@ public class TrainingSubprocessMain {
             reporter.reportLog("WARN", "Training interrupted");
             throw e;
         }
+    }
+
+    // ==================== DSP/GPU/JVM Stats Collection ====================
+
+    /**
+     * Snapshot of DSP execution, GPU memory, and JVM heap stats collected from
+     * DspHandle, NativeOps, and Runtime APIs.
+     */
+    private record DspSnapshot(
+            // Per-segment execution breakdown
+            int segmentsWarmup, int segmentsReplayed, int segmentsCaptured,
+            int segmentsSlotBySlot, int segmentsFailed,
+            // Buffer pool
+            long bufferPoolBytes, long bufferPoolReused, long coloringSavedBytes,
+            // GPU memory
+            long gpuMemUsed, long gpuMemFree, long gpuMemTotal,
+            long gpuPoolUsed, long gpuPoolReserved,
+            int numDevices, String deviceNames,
+            // JVM heap
+            long heapUsed, long heapMax, double heapPercent
+    ) {}
+
+    /**
+     * Collect DSP execution stats, GPU memory, and JVM heap in a single snapshot.
+     */
+    private static DspSnapshot collectDspStats(SameDiff sd) {
+        // Per-segment from DspHandle
+        int segWarmup = 0, segReplayed = 0, segCaptured = 0, segSlotBySlot = 0, segFailed = 0;
+        long coloringSaved = 0;
+        if (sd != null) {
+            try {
+                DspHandle dsp = sd.dsp();
+                segWarmup = Math.max(0, dsp.lastExecSegmentsWarmup());
+                segReplayed = Math.max(0, dsp.lastExecSegmentsReplayed());
+                segCaptured = Math.max(0, dsp.lastExecSegmentsCaptured());
+                segSlotBySlot = Math.max(0, dsp.lastExecSegmentsSlotBySlot());
+                segFailed = Math.max(0, dsp.lastExecSegmentsFailed());
+                coloringSaved = dsp.bufferColoringBytesSaved();
+            } catch (Exception e) {
+                logger.debug("Could not collect DspHandle stats: {}", e.getMessage());
+            }
+        }
+
+        // Buffer pool from NativeOps (static, device 0)
+        long bufferPoolBytes = 0;
+        long bufferPoolReused = 0;
+        try {
+            bufferPoolBytes = DspHandle.bufferPoolPooledBytes(0);
+            bufferPoolReused = DspHandle.bufferPoolTotalReused(0);
+        } catch (Exception e) {
+            logger.debug("Could not collect buffer pool stats: {}", e.getMessage());
+        }
+
+        // GPU memory from NativeOps
+        long gpuUsed = 0, gpuFree = 0, gpuTotal = 0, poolUsed = 0, poolReserved = 0;
+        int numDevices = 0;
+        StringBuilder deviceNamesSb = new StringBuilder();
+        try {
+            var nativeOps = Nd4j.getNativeOps();
+            numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+            for (int d = 0; d < numDevices; d++) {
+                long devFree = nativeOps.getDeviceFreeMemory(d);
+                long devTotal = nativeOps.getDeviceTotalMemory(d);
+                gpuFree += devFree;
+                gpuTotal += devTotal;
+                gpuUsed += (devTotal - devFree);
+
+                // Pool stats via LongPointer
+                try {
+                    org.bytedeco.javacpp.LongPointer usedPtr = new org.bytedeco.javacpp.LongPointer(1);
+                    org.bytedeco.javacpp.LongPointer reservedPtr = new org.bytedeco.javacpp.LongPointer(1);
+                    nativeOps.getMemoryPoolStats(d, usedPtr, reservedPtr);
+                    poolUsed += usedPtr.get(0);
+                    poolReserved += reservedPtr.get(0);
+                } catch (Exception ignored) {}
+
+                if (d > 0) deviceNamesSb.append(", ");
+                try {
+                    deviceNamesSb.append("GPU ").append(d);
+                } catch (Exception ignored) {
+                    deviceNamesSb.append("GPU ").append(d);
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Could not collect GPU memory stats (CPU backend?): {}", e.getMessage());
+        }
+
+        // JVM heap
+        Runtime rt = Runtime.getRuntime();
+        long heapUsed = rt.totalMemory() - rt.freeMemory();
+        long heapMax = rt.maxMemory();
+        double heapPercent = heapMax > 0 ? (heapUsed * 100.0 / heapMax) : 0;
+
+        return new DspSnapshot(
+                segWarmup, segReplayed, segCaptured, segSlotBySlot, segFailed,
+                bufferPoolBytes, bufferPoolReused, coloringSaved,
+                gpuUsed, gpuFree, gpuTotal, poolUsed, poolReserved,
+                numDevices, deviceNamesSb.toString(),
+                heapUsed, heapMax, heapPercent
+        );
+    }
+
+    /**
+     * Report metrics with full DSP/GPU/JVM transparency stats.
+     */
+    private static void reportStepMetrics(TrainingSubprocessProgressReporter reporter,
+                                           SameDiff sd,
+                                           long step, int epoch, double trainLoss, double evalLoss,
+                                           double lr, double gradNorm,
+                                           double tokensPerSec, double samplesPerSec,
+                                           Map<String, Double> customMetrics) {
+        DspSnapshot snap = collectDspStats(sd);
+        reporter.reportMetricsWithDsp(step, epoch, trainLoss, evalLoss, lr, gradNorm,
+                tokensPerSec, samplesPerSec, customMetrics,
+                snap.segmentsWarmup(), snap.segmentsReplayed(), snap.segmentsCaptured(),
+                snap.segmentsSlotBySlot(), snap.segmentsFailed(),
+                snap.bufferPoolBytes(), snap.bufferPoolReused(), snap.coloringSavedBytes(),
+                snap.gpuMemUsed(), snap.gpuMemFree(), snap.gpuMemTotal(),
+                snap.gpuPoolUsed(), snap.gpuPoolReserved(), snap.numDevices(), snap.deviceNames(),
+                snap.heapUsed(), snap.heapMax(), snap.heapPercent());
     }
 
     // ==================== JSON Config Parsing ====================

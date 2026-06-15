@@ -352,8 +352,7 @@ public class ModelInitProgressReporter implements AutoCloseable {
             out.println(ModelInitMessage.MESSAGE_PREFIX + json);
             out.flush();
         } catch (JsonProcessingException e) {
-            System.err.println("Failed to serialize model init message: " + e.getMessage());
-            logger.error("Failed to serialize model init message", e);
+            logger.error("Failed to serialize model init message: {}", e.getMessage(), e);
         }
     }
 

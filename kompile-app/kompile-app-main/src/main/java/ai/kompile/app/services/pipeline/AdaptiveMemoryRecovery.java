@@ -405,10 +405,6 @@ public class AdaptiveMemoryRecovery {
      * Notifies the user about a memory-related event.
      */
     private void notifyUser(String message) {
-        // Always log to stderr for immediate visibility
-        System.err.println("[AdaptiveMemoryRecovery] " + message);
-        System.err.flush();
-
         // Call the callback if set
         if (userNotificationCallback != null) {
             try {

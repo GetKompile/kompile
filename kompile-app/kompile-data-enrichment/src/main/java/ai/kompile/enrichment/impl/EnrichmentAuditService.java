@@ -41,8 +41,8 @@ import java.util.*;
 public class EnrichmentAuditService {
     private static final Logger log = LoggerFactory.getLogger(EnrichmentAuditService.class);
 
-    private final EnrichmentAuditRepository auditRepository;
-    private final ObjectMapper objectMapper;
+    private EnrichmentAuditRepository auditRepository;
+    private ObjectMapper objectMapper;
 
     @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
@@ -52,6 +52,10 @@ public class EnrichmentAuditService {
         this.auditRepository = auditRepository;
         this.objectMapper = objectMapper;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected EnrichmentAuditService() {}
+
 
     // ── Logging ─────────────────────────────────────────────────
 

@@ -17,6 +17,7 @@ package ai.kompile.app.services.pipeline.stages;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -52,6 +53,7 @@ class EmbeddingStageTest {
 
     @Test
     void processEmbedsChunks() throws Exception {
+        assumeNd4jAvailable();
         INDArray batchEmbeddings = Nd4j.rand(2, 128);
         when(mockModel.embed(any(List.class))).thenReturn(batchEmbeddings);
 
@@ -70,6 +72,7 @@ class EmbeddingStageTest {
 
     @Test
     void processEmbeddedChunkHasCorrectDimensions() throws Exception {
+        assumeNd4jAvailable();
         INDArray batchEmbeddings = Nd4j.rand(1, 64);
         when(mockModel.embed(any(List.class))).thenReturn(batchEmbeddings);
 
@@ -194,6 +197,7 @@ class EmbeddingStageTest {
 
     @Test
     void metricsRecordedOnSuccess() throws Exception {
+        assumeNd4jAvailable();
         INDArray batchEmbeddings = Nd4j.rand(1, 32);
         when(mockModel.embed(any(List.class))).thenReturn(batchEmbeddings);
 
@@ -203,6 +207,15 @@ class EmbeddingStageTest {
     }
 
     // --- helpers ---
+
+    private static void assumeNd4jAvailable() {
+        try {
+            Class.forName("org.nd4j.linalg.factory.Nd4j");
+            Nd4j.scalar(1.0);
+        } catch (Throwable t) {
+            Assumptions.assumeTrue(false, "ND4J native backend not available");
+        }
+    }
 
     private ChunkingStage.ChunkingOutput chunkingOutput(List<RetrievedDoc> chunks) {
         return new ChunkingStage.ChunkingOutput(

@@ -42,7 +42,7 @@ import java.util.Properties;
  * All domain entities use this single database.
  */
 @Slf4j
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @EnableTransactionManagement
 @EnableJpaRepositories(
     basePackages = {
@@ -62,7 +62,8 @@ import java.util.Properties;
         "ai.kompile.app.diagram.repository",
         "ai.kompile.app.sync.repository",
         "ai.kompile.staging.repository",
-        "ai.kompile.testmilestone.repository"
+        "ai.kompile.testmilestone.repository",
+        "ai.kompile.codeindexer.domain"
     },
     entityManagerFactoryRef = "entityManagerFactory",
     transactionManagerRef = "transactionManager"
@@ -89,6 +90,9 @@ import java.util.Properties;
 })
 public class PrimaryDataSourceConfig {
 
+    /** Constant for the transaction manager bean name shared by all ingest-related services. */
+    public static final String INGEST_EVENT_TRANSACTION_MANAGER = "ingestEventTransactionManager";
+
     @Value("${spring.datasource.url:jdbc:h2:file:./data/kompile-db;DB_CLOSE_ON_EXIT=FALSE;AUTO_RECONNECT=TRUE}")
     private String jdbcUrl;
 
@@ -104,7 +108,9 @@ public class PrimaryDataSourceConfig {
     @Bean
     @Primary
     public DataSource dataSource() {
-        log.info("Creating primary data source: {}", jdbcUrl);
+        // Redact credentials from JDBC URL before logging
+        String safeUrl = jdbcUrl != null ? jdbcUrl.replaceAll("://[^@]+@", "://***@") : "null";
+        log.info("Creating primary data source: {}", safeUrl);
         DataSourceBuilder<?> builder = DataSourceBuilder.create();
         builder.url(jdbcUrl);
         builder.driverClassName(driverClassName);
@@ -182,7 +188,8 @@ public class PrimaryDataSourceConfig {
 
     private Properties hibernateProperties() {
         Properties properties = new Properties();
-        properties.put("hibernate.dialect", "org.hibernate.dialect.H2Dialect");
+        // H2Dialect is auto-detected from the JDBC URL - no need to set explicitly
+        // (Hibernate 6.4+ warns: HHH90000025 if set manually)
         properties.put("hibernate.hbm2ddl.auto", "update");
         properties.put("hibernate.show_sql", false);
         properties.put("hibernate.format_sql", true);

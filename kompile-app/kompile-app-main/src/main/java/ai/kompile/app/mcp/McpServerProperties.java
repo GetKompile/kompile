@@ -16,6 +16,8 @@
 
 package ai.kompile.app.mcp;
 
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -37,6 +39,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @ConfigurationProperties(prefix = "mcp.server")
+@Getter
+@Setter
 public class McpServerProperties {
 
     /**
@@ -69,57 +73,11 @@ public class McpServerProperties {
      */
     private ActionLog actionLog = new ActionLog();
 
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-
-    public String getName() {
-        return name;
-    }
-
-    public void setName(String name) {
-        this.name = name;
-    }
-
-    public String getVersion() {
-        return version;
-    }
-
-    public void setVersion(String version) {
-        this.version = version;
-    }
-
-    public String getTransport() {
-        return transport;
-    }
-
-    public void setTransport(String transport) {
-        this.transport = transport;
-    }
-
-    public Sse getSse() {
-        return sse;
-    }
-
-    public void setSse(Sse sse) {
-        this.sse = sse;
-    }
-
-    public ActionLog getActionLog() {
-        return actionLog;
-    }
-
-    public void setActionLog(ActionLog actionLog) {
-        this.actionLog = actionLog;
-    }
-
     /**
      * SSE transport configuration.
      */
+    @Getter
+    @Setter
     public static class Sse {
         /**
          * The endpoint path for SSE connections.
@@ -135,35 +93,13 @@ public class McpServerProperties {
          * SSE connection timeout in milliseconds.
          */
         private long timeout = 300000L;
-
-        public String getEndpoint() {
-            return endpoint;
-        }
-
-        public void setEndpoint(String endpoint) {
-            this.endpoint = endpoint;
-        }
-
-        public String getMessageEndpoint() {
-            return messageEndpoint;
-        }
-
-        public void setMessageEndpoint(String messageEndpoint) {
-            this.messageEndpoint = messageEndpoint;
-        }
-
-        public long getTimeout() {
-            return timeout;
-        }
-
-        public void setTimeout(long timeout) {
-            this.timeout = timeout;
-        }
     }
 
     /**
      * Action logging configuration.
      */
+    @Getter
+    @Setter
     public static class ActionLog {
         /**
          * Whether action logging is enabled.
@@ -179,29 +115,5 @@ public class McpServerProperties {
          * Hours to retain actions before cleanup.
          */
         private int retentionHours = 24;
-
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        public int getMaxEntries() {
-            return maxEntries;
-        }
-
-        public void setMaxEntries(int maxEntries) {
-            this.maxEntries = maxEntries;
-        }
-
-        public int getRetentionHours() {
-            return retentionHours;
-        }
-
-        public void setRetentionHours(int retentionHours) {
-            this.retentionHours = retentionHours;
-        }
     }
 }

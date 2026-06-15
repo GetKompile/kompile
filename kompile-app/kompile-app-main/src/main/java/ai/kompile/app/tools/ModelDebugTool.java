@@ -429,14 +429,18 @@ public class ModelDebugTool {
                     if (inputNames != null) {
                         opInfo.put("inputs", Arrays.asList(inputNames));
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    logger.debug("Could not get inputs for op {}: {}", op.getOwnName(), e.getMessage());
+                }
 
                 try {
                     String[] outputNames = sd.getOutputsForOp(op);
                     if (outputNames != null) {
                         opInfo.put("outputs", Arrays.asList(outputNames));
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    logger.debug("Could not get outputs for op {}: {}", op.getOwnName(), e.getMessage());
+                }
 
                 operations.add(opInfo);
             }
@@ -1352,7 +1356,9 @@ public class ModelDebugTool {
                             if (sd != null && !models.contains(sd)) {
                                 models.add(sd);
                             }
-                        } catch (Exception ignored) {}
+                        } catch (Exception e) {
+                            logger.debug("Could not invoke {} to extract SameDiff: {}", method.getName(), e.getMessage());
+                        }
                     }
                     else if (isSameDiffEncoder(returnType)) {
                         try {
@@ -1363,7 +1369,9 @@ public class ModelDebugTool {
                                     models.add(sd);
                                 }
                             }
-                        } catch (Exception ignored) {}
+                        } catch (Exception e) {
+                            logger.debug("Could not invoke {} to extract SameDiff encoder: {}", method.getName(), e.getMessage());
+                        }
                     }
                 }
             }
@@ -1398,7 +1406,8 @@ public class ModelDebugTool {
             if (result instanceof SameDiff) {
                 return (SameDiff) result;
             }
-        } catch (NoSuchMethodException ignored) {
+        } catch (NoSuchMethodException e) {
+            logger.debug("Encoder class {} does not have getSameDiffModel() method", encoder.getClass().getSimpleName());
         } catch (Exception e) {
             logger.debug("Error invoking getSameDiffModel: {}", e.getMessage());
         }

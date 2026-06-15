@@ -16,11 +16,16 @@
 
 package ai.kompile.app.web.dto;
 
+import lombok.Getter;
+import lombok.Setter;
+
 import java.util.List;
 
 /**
  * Request DTO for agent chat with optional RAG augmentation.
  */
+@Getter
+@Setter
 public class AgentChatRequest {
 
     private String message;
@@ -58,170 +63,11 @@ public class AgentChatRequest {
     // Timeout configuration (in seconds, 0 = no timeout)
     private int timeoutSeconds = 300; // Default 5 minutes
 
-    // Getters and Setters
-    public String getMessage() {
-        return message;
-    }
-
-    public void setMessage(String message) {
-        this.message = message;
-    }
-
-    public String getAgentName() {
-        return agentName;
-    }
-
-    public void setAgentName(String agentName) {
-        this.agentName = agentName;
-    }
-
-    public boolean isSkipPermissions() {
-        return skipPermissions;
-    }
-
-    public void setSkipPermissions(boolean skipPermissions) {
-        this.skipPermissions = skipPermissions;
-    }
-
-    public String getWorkingDirectory() {
-        return workingDirectory;
-    }
-
-    public void setWorkingDirectory(String workingDirectory) {
-        this.workingDirectory = workingDirectory;
-    }
-
-    public boolean isEnableRag() {
-        return enableRag;
-    }
-
-    public void setEnableRag(boolean enableRag) {
-        this.enableRag = enableRag;
-    }
-
-    public int getRagMaxResults() {
-        return ragMaxResults;
-    }
-
-    public void setRagMaxResults(int ragMaxResults) {
-        this.ragMaxResults = ragMaxResults;
-    }
-
-    public double getRagSimilarityThreshold() {
-        return ragSimilarityThreshold;
-    }
-
-    public void setRagSimilarityThreshold(double ragSimilarityThreshold) {
-        this.ragSimilarityThreshold = ragSimilarityThreshold;
-    }
-
-    public boolean isIncludeKeywordSearch() {
-        return includeKeywordSearch;
-    }
-
-    public void setIncludeKeywordSearch(boolean includeKeywordSearch) {
-        this.includeKeywordSearch = includeKeywordSearch;
-    }
-
-    public boolean isIncludeSemanticSearch() {
-        return includeSemanticSearch;
-    }
-
-    public void setIncludeSemanticSearch(boolean includeSemanticSearch) {
-        this.includeSemanticSearch = includeSemanticSearch;
-    }
-
-    public boolean isEnableGraphRag() {
-        return enableGraphRag;
-    }
-
-    public void setEnableGraphRag(boolean enableGraphRag) {
-        this.enableGraphRag = enableGraphRag;
-    }
-
-    public int getGraphRagMaxResults() {
-        return graphRagMaxResults;
-    }
-
-    public void setGraphRagMaxResults(int graphRagMaxResults) {
-        this.graphRagMaxResults = graphRagMaxResults;
-    }
-
-    public String getGraphRagSearchType() {
-        return graphRagSearchType;
-    }
-
-    public void setGraphRagSearchType(String graphRagSearchType) {
-        this.graphRagSearchType = graphRagSearchType;
-    }
-
-    public String getGraphRagConversationId() {
-        return graphRagConversationId;
-    }
-
-    public void setGraphRagConversationId(String graphRagConversationId) {
-        this.graphRagConversationId = graphRagConversationId;
-    }
-
-    public boolean isInjectMcpTools() {
-        return injectMcpTools;
-    }
-
-    public void setInjectMcpTools(boolean injectMcpTools) {
-        this.injectMcpTools = injectMcpTools;
-    }
-
-    public boolean isIncludeHistory() {
-        return includeHistory;
-    }
-
-    public void setIncludeHistory(boolean includeHistory) {
-        this.includeHistory = includeHistory;
-    }
-
-    public List<ChatHistoryEntry> getChatHistory() {
-        return chatHistory;
-    }
-
-    public void setChatHistory(List<ChatHistoryEntry> chatHistory) {
-        this.chatHistory = chatHistory;
-    }
-
-    public int getMaxHistoryMessages() {
-        return maxHistoryMessages;
-    }
-
-    public void setMaxHistoryMessages(int maxHistoryMessages) {
-        this.maxHistoryMessages = maxHistoryMessages;
-    }
-
-    public String getFolderId() {
-        return folderId;
-    }
-
-    public void setFolderId(String folderId) {
-        this.folderId = folderId;
-    }
-
-    public List<String> getAgentArgs() {
-        return agentArgs;
-    }
-
-    public void setAgentArgs(List<String> agentArgs) {
-        this.agentArgs = agentArgs;
-    }
-
-    public int getTimeoutSeconds() {
-        return timeoutSeconds;
-    }
-
-    public void setTimeoutSeconds(int timeoutSeconds) {
-        this.timeoutSeconds = timeoutSeconds;
-    }
-
     /**
      * Chat history entry for conversation context.
      */
+    @Getter
+    @Setter
     public static class ChatHistoryEntry {
         private String role;
         private String content;
@@ -230,22 +76,6 @@ public class AgentChatRequest {
 
         public ChatHistoryEntry(String role, String content) {
             this.role = role;
-            this.content = content;
-        }
-
-        public String getRole() {
-            return role;
-        }
-
-        public void setRole(String role) {
-            this.role = role;
-        }
-
-        public String getContent() {
-            return content;
-        }
-
-        public void setContent(String content) {
             this.content = content;
         }
     }
@@ -270,12 +100,4 @@ public class AgentChatRequest {
     // ── attachments ──────────────────────────────────────────────────────────
 
     private List<MessageAttachment> attachments;
-
-    public List<MessageAttachment> getAttachments() {
-        return attachments;
-    }
-
-    public void setAttachments(List<MessageAttachment> attachments) {
-        this.attachments = attachments;
-    }
 }

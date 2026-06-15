@@ -189,7 +189,7 @@ public class DatasetService {
                         datasets.add(info);
                     }
                 } catch (Exception e) {
-                    log.warn("Failed to read meta.json from {}: {}", subdir.getName(), e.getMessage());
+                    log.warn("Failed to read meta.json from {}", subdir.getName(), e);
                 }
             }
         }
@@ -212,7 +212,7 @@ public class DatasetService {
         try {
             return readMetaJson(metaFile);
         } catch (Exception e) {
-            log.error("Failed to read dataset {}: {}", id, e.getMessage());
+            log.error("Failed to read dataset '{}'", id, e);
             return null;
         }
     }
@@ -266,7 +266,7 @@ public class DatasetService {
                 result = previewRawLines(dataFile, rows);
             }
         } catch (Exception e) {
-            log.error("Failed to preview dataset {}: {}", id, e.getMessage());
+            log.error("Failed to preview dataset '{}'", id, e);
         }
 
         return result;
@@ -354,7 +354,8 @@ public class DatasetService {
                 if (split instanceof Number) {
                     trainSplit = ((Number) split).doubleValue();
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.debug("Could not read meta.json for dataset {}, using default trainSplit: {}", id, e.getMessage());
             }
 
             long trainSamples = (long) (totalSamples * trainSplit);
@@ -379,7 +380,7 @@ public class DatasetService {
                 meta.put("totalSamples", totalSamples);
                 objectMapper.writerWithDefaultPrettyPrinter().writeValue(metaFile, meta);
             } catch (Exception e) {
-                log.warn("Failed to update meta.json stats for dataset {}: {}", id, e.getMessage());
+                log.warn("Failed to update meta.json stats for dataset '{}'", id, e);
             }
 
             log.info("Computed stats for dataset {}: {} samples, avg token length {:.1f}",
@@ -387,7 +388,7 @@ public class DatasetService {
             return stats;
 
         } catch (Exception e) {
-            log.error("Failed to compute stats for dataset {}: {}", id, e.getMessage());
+            log.error("Failed to compute stats for dataset '{}'", id, e);
             return null;
         }
     }
@@ -693,7 +694,7 @@ public class DatasetService {
             }
             dir.delete();
         } catch (Exception e) {
-            log.warn("Failed to delete directory {}: {}", dir.getAbsolutePath(), e.getMessage());
+            log.warn("Failed to delete directory {}", dir.getAbsolutePath(), e);
         }
     }
 }
