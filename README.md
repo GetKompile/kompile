@@ -371,13 +371,37 @@ parameters, and timing for every call.
 `~/.kompile/runtime/kompile.sock` — one process serves N agent sessions instead of N
 separate JVMs.
 
-**Other commands:** `kompile model` (download, convert, list, export, import),
-`kompile agent` (workflows, tasks, channels), `kompile app` (manage a running server:
-ingest, index, crawl, jobs, graph, a2a, setup), `kompile graph` (knowledge graph: nodes,
-edges, traverse, search, communities, shell, import/export), `kompile code-index` (local
-code search with `search`, `find`, `usages`, `watch` for live re-indexing),
-`kompile perf` (model performance analytics and leaderboards),
-`kompile build dist` (build all three binaries into a distribution tarball).
+**Other commands:**
+
+| Command | Description |
+|---------|------------|
+| `kompile model` | Download, convert, list, export, import models (federated binary: `kompile-model`) |
+| `kompile agent` | Workflows, tasks, channels, logs, process discovery (federated binary: `kompile-agent`) |
+| `kompile lite` | Self-contained chat + RAG + Graph RAG app (federated binary: `kompile-lite`) |
+| `kompile app` | Manage a running server: ingest, index, crawl, jobs, graph, a2a, setup, train, schedule |
+| `kompile graph` | Knowledge graph: nodes, edges, traverse, search, communities, Cypher shell, import/export, extraction, proposals, maintenance |
+| `kompile code-index` | Local code search with `search`, `find`, `usages`, `watch`, plus code graph analysis (callers, impact, deps, components) |
+| `kompile knowledge` | Manage Markdown notes synced from local folders, Git repos, or Obsidian vaults |
+| `kompile skills` | Manage prompt template skills (list, create, delete, generate docs) |
+| `kompile eval` | Run agent evaluation suites, compare runs, track regressions |
+| `kompile perf` | Agent performance harness: reports, recommendations, leaderboards |
+| `kompile sdk` | SDX Runtime SDK: list, download, scaffold mobile apps, serve locally |
+| `kompile cloud` | Manage Kompile Cloud account, instances, apps, and build jobs |
+| `kompile manage` | Start, stop, restart, status, and logs for Kompile components |
+| `kompile web` | Launch the full web application (server + staging + UI) |
+| `kompile deploy` | Deploy a built project to `~/.kompile/instances/` |
+| `kompile init-project` | Initialize a new project with wizard, presets, and optional auto-start |
+| `kompile a2a` | Agent-to-Agent protocol: discover, ping, send tasks to remote agents |
+| `kompile resume` | Browse and resume previous conversations across agents |
+| `kompile resume-all` | Resume all tracked agent sessions in new terminal windows |
+| `kompile edit-coordinator` | Inspect and manage multi-agent edit locks and coordination state |
+| `kompile daemon` | Observe the MCP daemon: status, stop, view logs |
+| `kompile build dist` | Build all three native binaries into a distribution tarball |
+
+> **Federated CLI:** `kompile model`, `kompile agent`, and `kompile lite` are separate
+> binaries (`kompile-model`, `kompile-agent`, `kompile-lite`) resolved from PATH or
+> `~/.kompile/bin/` at runtime. Each is built from its own Maven module
+> (`kompile-model-cli`, `kompile-agent-cli`, `kompile-app-cli`).
 
 ---
 
@@ -444,7 +468,26 @@ the classpath:
 | Data sources | Slack, Confluence, Jira, Notion, Reddit, Google Drive, OneDrive, S3, SFTP, SQL, Discord |
 | Chunkers | Token, sentence, recursive-character, markdown, table-aware |
 | Graph | Neo4j knowledge graph, entity extraction, community detection |
-| Other | KV cache, OCR pipeline, guardrails, filter chain, evaluation harness, training |
+| Compute graphs | Camel, Drools, n8n, Excel, Xircuits, scripting workflow engines |
+| Other | KV cache, OCR pipeline, A2A protocol, filter chain, training |
+
+**Guardrails** — input filters (prompt injection, jailbreak, PII, toxicity, off-topic,
+business rules, competitor mention, copyright) and output filters (hallucination, relevancy,
+format). Each guardrail is individually toggleable via Settings or the REST API.
+
+**Evaluation harness** — run structured test suites against your RAG pipeline with
+`kompile eval`. Track experiments, compare runs, and schedule recurring evaluations to
+detect regressions. The tool gateway uses an LLM judge to approve/deny tool calls at
+runtime.
+
+**Agent-to-Agent (A2A)** — discover and communicate with remote agents via the A2A
+protocol. Each agent exposes a card at `/.well-known/agent-card.json`. Enable, discover,
+ping, and send tasks from the CLI (`kompile a2a`) or the REST API (`/api/a2a`).
+
+**Connected Services** — OAuth connection management for cloud data sources. Each provider
+(Google Drive, OneDrive, Gmail, Slack, Discord, Confluence, Jira, Notion, Google Workspace)
+shows connection status, token expiry, required scopes, and connect/disconnect/refresh
+actions.
 
 ---
 
@@ -664,33 +707,51 @@ kompile build dist
 
 ```
 kompile/
-  kompile-cli/                       CLI (Picocli)
+  kompile-cli/                       CLI entry point (Picocli)
+  kompile-cli-common/                Shared CLI utilities
+  kompile-cli-plugin-api/            Plugin SPI for CLI extensions
+  kompile-app-cli/                   Federated CLI: kompile app start/stop/ingest/query
+  kompile-model-cli/                 Federated CLI: kompile model download/convert/serve
+  kompile-agent-cli/                 Federated CLI: kompile agent chat/workflow/logs
+  kompile-component-cli/             Federated CLI: kompile component list/config/status
   kompile-project-store/             Project manifest read/write
+  kompile-sdk-serving/               SDX Runtime SDK serving layer
   kompile-app/                       Spring Boot RAG framework (40+ modules)
     kompile-app-core/                  Core interfaces
     kompile-app-main/                  Main application + Angular web UI
+    kompile-app-lite/                  Lightweight self-contained RAG app
     kompile-model-manager/             Model download and cache
     kompile-model-staging/             Model lifecycle service
     kompile-embedding-*/               Embedding implementations
     kompile-vectorstore-*/             Vector store implementations
     kompile-loader-*/                  Document loaders
-    kompile-source-*/                  Data sources
+    kompile-source-*/                  Data source connectors (20+)
     kompile-chunker-*/                 Chunking strategies
     kompile-tool-*/                    Spring AI / MCP tools
     kompile-kvcache/                   Paged KV cache for local LLMs
     kompile-graph-neo4j/               Graph RAG with Neo4j
+    kompile-knowledge-graph/           Knowledge graph construction
     kompile-ocr-*/                     OCR pipeline
+    kompile-guardrails/                Input/output guardrails
+    kompile-evaluation/                RAG evaluation harness
+    kompile-a2a/                       Agent-to-Agent protocol
+    kompile-kclaw/                     Agent hub (browser-based agent runner)
+    kompile-code-indexer/              Semantic code search and indexing
+    kompile-compute-graph-*/           Workflow engines (Camel, Drools, n8n, Excel, Xircuits)
+    kompile-oauth2-client/             OAuth connections for cloud sources
   kompile-pipelines-framework/       Pipeline execution engine
   anserini/                          Lucene IR toolkit + SameDiff dense encoders
   tokenizers-rust/                   HuggingFace tokenizers -> JavaCPP JNI bindings
   kompile-model-importer-*/          Model importers (TensorFlow, ONNX, Keras)
+  kompile-e2e-tests/                 End-to-end test suite
+  kompile-dist/                      Distribution assembly (native binaries + tarball)
 ```
 
 ### Key dependencies
 
-Java 17 . Spring Boot 3.2.5 . Spring AI 1.0.0 . Picocli 4.7.6 .
-ND4J 1.0.0-SNAPSHOT . Lucene (via Anserini) . JavaCPP 1.5.11 .
-GraalVM 17
+Java 17 . Spring Boot 3.2.5 . Spring AI 1.0.0 . Picocli 4.7.7 .
+ND4J 1.0.0-SNAPSHOT . Lucene (via Anserini) . JavaCPP 1.5.13 .
+Lombok 1.18.42 . GraalVM 17
 
 ### Links
 
