@@ -2,11 +2,11 @@ package ai.kompile.e2e;
 
 import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.kclaw.agent.ToolkitRegistry;
-import ai.kompile.kclaw.model.AgentDefinition;
+import ai.kompile.gateway.core.model.AgentDefinition;
 import ai.kompile.kclaw.model.KClawRequest;
 import ai.kompile.kclaw.model.KClawResponse;
-import ai.kompile.kclaw.service.AgentRegistry;
-import ai.kompile.kclaw.service.SessionService;
+import ai.kompile.gateway.core.service.AgentRegistry;
+import ai.kompile.gateway.core.service.SessionService;
 import ai.kompile.react.context.Toolkit;
 import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.ReActResult;

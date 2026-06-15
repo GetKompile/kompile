@@ -9,6 +9,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.quartz.*;
+import org.springframework.context.ApplicationContext;
 import org.quartz.impl.matchers.GroupMatcher;
 
 import java.util.Date;
@@ -31,11 +32,17 @@ class HeartbeatSchedulerTest {
     @Mock
     private Scheduler quartzScheduler;
 
+    @Mock
+    private ApplicationContext applicationContext;
+
     private QuartzHeartbeatScheduler heartbeatScheduler;
 
     @BeforeEach
-    void setUp() {
-        heartbeatScheduler = new QuartzHeartbeatScheduler(quartzScheduler);
+    void setUp() throws Exception {
+        // QuartzHeartbeatScheduler calls scheduler.getContext() in constructor
+        SchedulerContext schedulerContext = new SchedulerContext();
+        when(quartzScheduler.getContext()).thenReturn(schedulerContext);
+        heartbeatScheduler = new QuartzHeartbeatScheduler(quartzScheduler, applicationContext);
     }
 
     // ── Scheduling ──
