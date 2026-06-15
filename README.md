@@ -695,7 +695,7 @@ GraalVM 17
 ### Links
 
 - Documentation: https://kompile.gitbook.io/kompile-docs
-- Community: https://community.konduit.ai
+- Issues: https://github.com/GetKompile/kompile/issues
 - Eclipse DeepLearning4j: https://github.com/deeplearning4j/deeplearning4j
 
 ## License
