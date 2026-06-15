@@ -27,28 +27,15 @@
   <description>Parent project for Kompile CLI and Kompile Pipelines framework.</description>
 
   <modules>
-    <!-- Base modules first -->
-    <module>kompile-cli-plugin-api</module>
-    <module>kompile-cli-common</module>
     <module>kompile-project-store</module>
     <module>tokenizers-rust</module>
-
-    <!-- Model importers (dependencies) -->
-    <module>kompile-model-importer-tensorflow</module>
-    <module>kompile-model-importer-onnx</module>
-    <module>kompile-model-importer-keras</module>
-
-    <!-- Applications -->
+    <module>kompile-model-importers</module>
     <module>kompile-pipelines-framework</module>
     <!-- kompile-app must come before anserini (anserini depends on kompile-model-manager) -->
     <module>kompile-app</module>
     <module>anserini</module>
     <module>kompile-sdk-serving</module>
     <module>kompile-cli</module>
-    <module>kompile-app-cli</module>
-    <module>kompile-model-cli</module>
-    <module>kompile-agent-cli</module>
-    <module>kompile-component-cli</module>
     <module>kompile-e2e-tests</module>
   </modules>
 
@@ -146,7 +133,7 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
-        <artifactId>kompile-cli</artifactId>
+        <artifactId>kompile-cli-main</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

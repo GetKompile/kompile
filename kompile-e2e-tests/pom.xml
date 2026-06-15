@@ -55,7 +55,7 @@
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
       <groupId>ai.kompile</groupId>
-      <artifactId>kompile-cli</artifactId>
+      <artifactId>kompile-cli-main</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>

@@ -24,19 +24,15 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>kompile-cli</artifactId>
+    <artifactId>kompile-model-importers</artifactId>
     <packaging>pom</packaging>
-    <name>Kompile CLI</name>
-    <description>Parent module for all Kompile CLI modules</description>
+    <name>Kompile Model Importers</name>
+    <description>Parent module for model importer CLI tools (TensorFlow, ONNX, Keras)</description>
 
     <modules>
-        <module>kompile-cli-plugin-api</module>
-        <module>kompile-cli-common</module>
-        <module>kompile-app-cli</module>
-        <module>kompile-model-cli</module>
-        <module>kompile-agent-cli</module>
-        <module>kompile-component-cli</module>
-        <module>kompile-cli-main</module>
+        <module>kompile-model-importer-tensorflow</module>
+        <module>kompile-model-importer-onnx</module>
+        <module>kompile-model-importer-keras</module>
     </modules>
 
 </project>
