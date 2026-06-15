@@ -34,6 +34,8 @@
 
   <modules>
     <!-- Core modules -->
+    <module>kompile-data/kompile-project-store</module>
+    <module>kompile-models/kompile-model-importers</module>
     <module>kompile-models/kompile-model-manager</module>
     <module>kompile-app-parent/kompile-app-core</module>
     <module>kompile-data/kompile-search/anserini</module>

@@ -27,10 +27,7 @@
   <description>Parent project for Kompile CLI and Kompile Pipelines framework.</description>
 
   <modules>
-    <module>kompile-project-store</module>
-    <module>kompile-model-importers</module>
     <module>kompile-pipelines-framework</module>
-    <!-- kompile-app includes anserini (moved to kompile-app/kompile-search/anserini) -->
     <module>kompile-app</module>
     <module>kompile-cli</module>
     <module>kompile-e2e-tests</module>
