@@ -46,6 +46,10 @@ dist/
 hs_err_pid*.log
 *.hs_err*
 
+# Scratch/temp files
+test.txt
+convert_pytorch*.py
+
 # Kompile runtime metadata
 .kompile/
 **/.kompile/
