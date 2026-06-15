@@ -1,0 +1,14 @@
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/linux-x86_64/libtokenizers_wrapper.so.1.0.0
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/linux-x86_64/libtokenizers_wrapper.so.1
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/linux-x86_64/libtokenizers_wrapper.so
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/include/model_manager.h
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/include/tokenizer_wrapper.h
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/include/tokenizers_c.h
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/include/tokenizers_ffi.h
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so.1.0.0
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so.1
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/include/tokenizers/model_manager.h
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/include/tokenizers/tokenizer_wrapper.h
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/include/tokenizers/tokenizers_c.h
+/home/agibsonccc/Documents/GitHub/kompile/tokenizers-rust/libtokenizers/target/native/ai/kompile/tokenizers/lib64/pkgconfig/tokenizers.pc
