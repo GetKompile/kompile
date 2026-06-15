@@ -1,5 +1,13 @@
 # Kompile
 
+[![Build Native Images - Linux x86_64](https://github.com/GetKompile/kompile/actions/workflows/build-native-linux-x86_64.yml/badge.svg)](https://github.com/GetKompile/kompile/actions/workflows/build-native-linux-x86_64.yml)
+[![Build Native Images - Linux ARM64](https://github.com/GetKompile/kompile/actions/workflows/build-native-linux-arm64.yml/badge.svg)](https://github.com/GetKompile/kompile/actions/workflows/build-native-linux-arm64.yml)
+[![Build Native Images - macOS ARM64](https://github.com/GetKompile/kompile/actions/workflows/build-native-mac-arm64.yml/badge.svg)](https://github.com/GetKompile/kompile/actions/workflows/build-native-mac-arm64.yml)
+[![Build Native Images - Windows x86_64](https://github.com/GetKompile/kompile/actions/workflows/build-native-windows-x86_64.yml/badge.svg)](https://github.com/GetKompile/kompile/actions/workflows/build-native-windows-x86_64.yml)
+[![Build SDK - Linux CUDA](https://github.com/GetKompile/kompile/actions/workflows/build-native-linux-cuda.yml/badge.svg)](https://github.com/GetKompile/kompile/actions/workflows/build-native-linux-cuda.yml)
+[![Build SDK - Windows CUDA](https://github.com/GetKompile/kompile/actions/workflows/build-native-windows-cuda.yml/badge.svg)](https://github.com/GetKompile/kompile/actions/workflows/build-native-windows-cuda.yml)
+[![Publish Release](https://github.com/GetKompile/kompile/actions/workflows/publish-release.yml/badge.svg)](https://github.com/GetKompile/kompile/actions/workflows/publish-release.yml)
+
 Kompile is a self-hosted AI platform for building retrieval-augmented generation (RAG),
 agentic chat, knowledge graph, and model inference applications. It ships as native
 binaries — no JVM required — and runs entirely on your hardware. Embeddings, vector search,
@@ -686,6 +694,7 @@ GraalVM 17
 
 ### Links
 
+- Documentation: https://kompile.gitbook.io/kompile-docs
 - Community: https://community.konduit.ai
 - Eclipse DeepLearning4j: https://github.com/deeplearning4j/deeplearning4j
 
