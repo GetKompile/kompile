@@ -35,11 +35,11 @@
   <modules>
     <!-- Core modules -->
     <module>kompile-models/kompile-model-manager</module>
-    <module>kompile-app-core</module>
-    <module>kompile-search/anserini</module>
-    <module>kompile-search/kompile-app-anserini</module>
-    <module>kompile-search/kompile-app-pgml-indexer</module>
-    <module>kompile-search/kompile-postgres-common</module>
+    <module>kompile-app-parent/kompile-app-core</module>
+    <module>kompile-data/kompile-search/anserini</module>
+    <module>kompile-data/kompile-search/kompile-app-anserini</module>
+    <module>kompile-data/kompile-search/kompile-app-pgml-indexer</module>
+    <module>kompile-data/kompile-search/kompile-postgres-common</module>
     <module>kompile-data/kompile-sources/kompile-oauth2-client</module>
     <module>kompile-agents/kompile-orchestrator</module>
     <module>kompile-agents/kompile-chat-history</module>
@@ -54,13 +54,13 @@
     <module>kompile-agents/kompile-kvcache</module>
     <module>kompile-agents/kompile-a2a</module>
     <module>kompile-data/kompile-data-enrichment</module>
-    <module>kompile-code/kompile-code-indexer</module>
+    <module>kompile-data/kompile-code/kompile-code-indexer</module>
     <module>kompile-data/kompile-crawlers/kompile-crawl-graph</module>
     <module>kompile-data/kompile-crawlers/kompile-crawler-core</module>
     <module>kompile-data/kompile-langdetect</module>
     <module>kompile-middleware/kompile-metrics</module>
-    <module>kompile-test-milestone</module>
-    <module>kompile-app-lite</module>
+    <module>kompile-data/kompile-code/kompile-test-milestone</module>
+    <module>kompile-app-parent/kompile-app-lite</module>
 
     <!-- Loaders -->
     <module>kompile-data/kompile-loaders/kompile-app-loaders-orchestrator</module>
@@ -90,10 +90,10 @@
     <module>kompile-models/kompile-llm-parent/kompile-embeddings/kompile-embedding-postgresml</module>
 
     <!-- Vector stores -->
-    <module>kompile-vectorstores/kompile-vectorstore-anserini</module>
-    <module>kompile-vectorstores/kompile-vectorstore-chroma</module>
-    <module>kompile-vectorstores/kompile-vectorstore-pgvector</module>
-    <module>kompile-vectorstores/kompile-vectorstore-vespa</module>
+    <module>kompile-middleware/kompile-vectorstores/kompile-vectorstore-anserini</module>
+    <module>kompile-middleware/kompile-vectorstores/kompile-vectorstore-chroma</module>
+    <module>kompile-middleware/kompile-vectorstores/kompile-vectorstore-pgvector</module>
+    <module>kompile-middleware/kompile-vectorstores/kompile-vectorstore-vespa</module>
 
     <!-- Chunkers -->
     <module>kompile-models/kompile-llm-parent/kompile-chunkers/kompile-chunker-sentence</module>
@@ -138,11 +138,11 @@
     <module>kompile-data/kompile-sources/kompile-source-google-workspace</module>
 
     <!-- OCR -->
-    <module>kompile-ocr/kompile-ocr-core</module>
-    <module>kompile-ocr/kompile-ocr-datapipeline</module>
-    <module>kompile-ocr/kompile-ocr-postprocess</module>
-    <module>kompile-ocr/kompile-ocr-models</module>
-    <module>kompile-ocr/kompile-ocr-integration</module>
+    <module>kompile-models/kompile-ocr/kompile-ocr-core</module>
+    <module>kompile-models/kompile-ocr/kompile-ocr-datapipeline</module>
+    <module>kompile-models/kompile-ocr/kompile-ocr-postprocess</module>
+    <module>kompile-models/kompile-ocr/kompile-ocr-models</module>
+    <module>kompile-models/kompile-ocr/kompile-ocr-integration</module>
 
     <!-- Compute graph engines -->
     <module>kompile-data/kompile-compute-graphs/kompile-compute-graph-core</module>
@@ -160,10 +160,10 @@
     <module>kompile-data/kompile-graphs/kompile-graph-change-tracking</module>
 
     <!-- Process mining -->
-    <module>kompile-process/kompile-process-engine</module>
-    <module>kompile-process/kompile-process-discovery</module>
-    <module>kompile-process/kompile-event-attribution</module>
-    <module>kompile-process/kompile-process-attribution</module>
+    <module>kompile-data/kompile-process/kompile-process-engine</module>
+    <module>kompile-data/kompile-process/kompile-process-discovery</module>
+    <module>kompile-data/kompile-process/kompile-event-attribution</module>
+    <module>kompile-data/kompile-process/kompile-process-attribution</module>
 
     <!-- Pipeline management -->
     <module>kompile-data/kompile-pipelines/kompile-pipeline-management</module>
@@ -171,7 +171,7 @@
     <module>kompile-data/kompile-pipelines/kompile-rag-pipeline</module>
 
     <!-- Main application (must be last) -->
-    <module>kompile-app-main</module>
+    <module>kompile-app-parent/kompile-app-main</module>
     <module>kompile-sdk-serving</module>
   </modules>
 
