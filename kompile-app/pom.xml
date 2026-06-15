@@ -34,6 +34,7 @@
 
   <modules>
     <!-- Core modules -->
+    <module>kompile-data/kompile-pipelines-framework</module>
     <module>kompile-data/kompile-project-store</module>
     <module>kompile-models/kompile-model-importers</module>
     <module>kompile-models/kompile-model-manager</module>

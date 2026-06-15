@@ -27,7 +27,6 @@
   <description>Parent project for Kompile CLI and Kompile Pipelines framework.</description>
 
   <modules>
-    <module>kompile-pipelines-framework</module>
     <module>kompile-app</module>
     <module>kompile-cli</module>
     <module>kompile-e2e-tests</module>
