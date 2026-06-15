@@ -1,0 +1,496 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-cli</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-cli-main</artifactId>
+    <packaging>jar</packaging>
+    <name>Kompile CLI</name>
+    <description>Command Line Interface for Kompile Pipelines</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-plugin-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-project-store</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- MCP SDK for stdio server -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>0.10.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-core</artifactId>
+            <version>${project.version}</version> </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-runtime</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipeline-serving</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>plexus-utils</artifactId>
+            <version>4.0.0-alpha-5</version>
+        </dependency>
+
+        <dependency>
+            <groupId>info.picocli</groupId>
+            <artifactId>picocli</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.conscrypt</groupId>
+            <artifactId>conscrypt-openjdk-uber</artifactId>
+            <version>${conscrypt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.jgit</groupId>
+            <artifactId>org.eclipse.jgit</artifactId>
+            <version>${jgit.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.4</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>${jsoup.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>me.tongfei</groupId>
+            <artifactId>progressbar</artifactId>
+            <version>${progressbar.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.zeroturnaround</groupId>
+            <artifactId>zt-process-killer</artifactId>
+            <version>${ztprocesskiller.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.zeroturnaround</groupId>
+            <artifactId>zt-exec</artifactId>
+            <version>${ztexec.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.nativeimage</groupId>
+            <artifactId>svm</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.sdk</groupId>
+            <artifactId>graal-sdk</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.maven.shared</groupId>
+            <artifactId>maven-invoker</artifactId>
+            <version>3.3.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-model</artifactId>
+            <version>3.9.6</version>
+        </dependency>
+
+        <!-- SQLite JDBC for OpenCode session import -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.45.1.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-unix-common</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.github.microutils</groupId>
+            <artifactId>kotlin-logging-jvm</artifactId>
+            <version>3.0.5</version> </dependency>
+
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.github.classgraph</groupId>
+            <artifactId>classgraph</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.flatbuffers</groupId>
+            <artifactId>flatbuffers-java</artifactId>
+            <version>${flatbuffers.version}</version>
+        </dependency>
+
+
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-common</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+
+
+        <dependency>
+            <groupId>com.github.oshi</groupId>
+            <artifactId>oshi-core</artifactId>
+            <version>5.2.0</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-manager</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Test Dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <profile>
+            <id>native</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                            <execution>
+                                <id>test-native</id>
+                                <goals>
+                                    <goal>test</goal>
+                                </goals>
+                                <phase>test</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.cli.main.MainCommand</mainClass>
+                            <imageName>${project.artifactId}</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--verbose</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-H:DeadlockWatchdogInterval=30</buildArg>
+                                <buildArg>-H:+DeadlockWatchdogExitOnTimeout</buildArg>
+                                <buildArg>--enable-url-protocols=https,http</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.logger.debug=true</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-run-time=io.netty.channel.epoll.Epoll</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
+                                <buildArg>--initialize-at-run-time=org.jline</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.jgit.util.FS</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.jgit.internal.storage.file.WindowCache</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.jgit.transport.HttpAuthMethod</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.jgit.nls.GlobalBundleCache</buildArg>
+                                <buildArg>--initialize-at-build-time=org.sqlite.util.ProcessRunner</buildArg>
+                                <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
+                                <buildArg>-H:IncludeResources=cli-agents\.json</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/.*\.schema\.json</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/apache/pdfbox/resources/afm/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/jline/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/org/jline/.*</buildArg> </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.2.0</version>
+                <executions>
+                    <execution>
+                        <id>generateManPages</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <includeProjectDependencies>true</includeProjectDependencies>
+                    <includePluginDependencies>true</includePluginDependencies>
+                    <mainClass>picocli.codegen.docgen.manpage.ManPageGenerator</mainClass>
+                    <arguments>
+                        <argument>--outdir=${project.build.directory}/generated-picocli-docs</argument>
+                        <argument>-v</argument>
+                        <argument>--template-dir=src/docs/mantemplates</argument>
+                        <argument>ai.kompile.cli.main.MainCommand</argument>
+                        <argument>ai.kompile.cli.main.Bootstrap</argument>
+                        <argument>ai.kompile.cli.main.Info</argument>
+                        <argument>ai.kompile.cli.main.build.BuildMain</argument>
+                        <argument>ai.kompile.cli.main.build.CloneBuildComponents</argument>
+                        <argument>ai.kompile.cli.main.build.GenerateImageAndSDK</argument>
+                        <argument>ai.kompile.cli.main.build.NativeImageBuilder</argument>
+                        <argument>ai.kompile.cli.main.build.PipelineCommandGenerator</argument>
+                        <argument>ai.kompile.cli.main.build.PomGenerator</argument>
+                        <argument>ai.kompile.cli.main.build.RagPomGenerator</argument>
+                        <argument>ai.kompile.cli.main.build.BuildAppCommand</argument>
+                        <argument>ai.kompile.cli.main.build.generators.SampleProjectSync</argument>
+                        <argument>ai.kompile.cli.main.config.ConfigMain</argument>
+                        <argument>ai.kompile.cli.main.exec.ExecMain</argument>
+                        <argument>ai.kompile.cli.main.exec.InferenceServerCreate</argument>
+                        <argument>ai.kompile.cli.main.exec.PipelineGenerator</argument>
+                        <argument>ai.kompile.cli.main.exec.SequencePipelineCombiner</argument>
+                        <argument>ai.kompile.cli.main.exec.NewStepCreator</argument> <argument>ai.kompile.cli.main.install.InstallAll</argument>
+                        <argument>ai.kompile.cli.main.install.InstallGraalvm</argument>
+                        <argument>ai.kompile.cli.main.install.InstallMain</argument>
+                        <argument>ai.kompile.cli.main.install.InstallMaven</argument>
+                        <argument>ai.kompile.cli.main.install.InstallPython</argument>
+                        <argument>ai.kompile.cli.main.install.InstallSDK</argument>
+                        <argument>ai.kompile.cli.main.models.Convert</argument>
+                        <argument>ai.kompile.cli.main.models.DL4jSummary</argument>
+                        <argument>ai.kompile.cli.main.models.OnnxPrint</argument>
+                        <argument>ai.kompile.cli.main.models.samediff.SameDiffSummary</argument>
+                        <argument>ai.kompile.cli.main.models.TensorflowPrint</argument>
+                        <argument>ai.kompile.cli.main.uninstall.UnInstallAll</argument>
+                        <argument>ai.kompile.cli.main.uninstall.UnInstallGraalvm</argument>
+                        <argument>ai.kompile.cli.main.uninstall.UnInstallMain</argument>
+                        <argument>ai.kompile.cli.main.uninstall.UnInstallMaven</argument>
+                        <argument>ai.kompile.cli.main.uninstall.UnInstallPython</argument>
+                        <argument>ai.kompile.cli.main.util.ModelFileDebug</argument>
+                        <argument>ai.kompile.cli.main.chat.ChatCommand</argument>
+                    </arguments>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <groupId>info.picocli</groupId>
+                        <artifactId>picocli-codegen</artifactId>
+                        <version>${pico.version}</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+            <plugin>
+                <groupId>org.asciidoctor</groupId>
+                <artifactId>asciidoctor-maven-plugin</artifactId>
+                <version>2.2.6</version>
+                <executions>
+                    <execution>
+                        <id>output-html</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>process-asciidoc</goal>
+                        </goals>
+                        <configuration>
+                            <sourceHighlighter>coderay</sourceHighlighter>
+                            <backend>html5</backend>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>output-manpage</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>process-asciidoc</goal>
+                        </goals>
+                        <configuration>
+                            <sourceHighlighter>coderay</sourceHighlighter>
+                            <backend>manpage</backend>
+                        </configuration>
+                    </execution>
+                </executions>
+                <configuration>
+                    <sourceDirectory>${project.build.directory}/generated-picocli-docs</sourceDirectory>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>compile</id>
+                        <goals> <goal>compile</goal> </goals>
+                        <configuration>
+                            <sourceDirs>
+                                <sourceDir>${project.basedir}/src/main/stubs</sourceDir>
+                                <sourceDir>${project.basedir}/src/main/kotlin</sourceDir>
+                                <sourceDir>${project.basedir}/src/main/java</sourceDir>
+                                <sourceDir>${project.basedir}/src/main/ops</sourceDir>
+                            </sourceDirs>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>test-compile</id>
+                        <goals> <goal>test-compile</goal> </goals>
+                        <configuration>
+                            <sourceDirs>
+                                <sourceDir>${project.basedir}/src/test/stubs</sourceDir>
+                                <sourceDir>${project.basedir}/src/test/kotlin</sourceDir>
+                                <sourceDir>${project.basedir}/src/test/java</sourceDir>
+                                <sourceDir>${project.basedir}/src/test/ops</sourceDir>
+                            </sourceDirs>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <configuration>
+                    <shadedArtifactAttached>true</shadedArtifactAttached>
+                    <createDependencyReducedPom>true</createDependencyReducedPom>
+                    <filters>
+                        <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>org/datanucleus/**</exclude>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                                    <resource>reference.conf</resource>
+                                </transformer>
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>ai.kompile.cli.main.MainCommand</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
