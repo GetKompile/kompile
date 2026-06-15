@@ -4186,18 +4186,9 @@ class TuiAgentResponseTest {
             }
         }
 
-                assertTrue(stripped.contains("│"),
-                        "renderSubagentToolCall (success) must have border │ char");
-                assertTrue(success.contains("✓"),
-                        "Successful subagent tool must show ✓");
-                assertTrue(stripped.toLowerCase().contains("read"),
-                        "Subagent tool call must show tool name");
-
-                // Error case
-                String error = renderer.renderSubagentToolCall("bash", true);
-                assertTrue(error.contains("✗"),
-                        "Failed subagent tool must show ✗");
-            }
+        @Nested
+        @DisabledOnOs(OS.WINDOWS)
+        class SubagentRenderingTests {
 
             @Test
             void renderSubagentComplete_showsAgentNameAndTiming() {

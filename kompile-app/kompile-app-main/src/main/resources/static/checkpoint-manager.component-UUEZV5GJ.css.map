@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["angular:styles/component:css;9b2b0e9df84e00077421777fc2eabceb90eeddf05e6cf29994e9c626a0374cf0;/home/agibsonccc/Documents/GitHub/kompile/kompile-app/kompile-app-main/src/main/frontend/src/app/components/kvcache/checkpoint-manager.component.ts"],
-  "sourcesContent": ["\n    .controls { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }\n    .controls mat-form-field { min-width: 200px; }\n    .cp-table { width: 100%; }\n    .on-disk { color: #2e7d32; }\n    .empty-state { text-align: center; padding: 24px; color: #888; }\n  "],
-  "mappings": ";AACI,CAAC;AAAW,WAAS;AAAM,eAAa;AAAQ,OAAK;AAAM,iBAAe;AAAM,aAAW;AAAM;AACjG,CADC,SACS;AAAiB,aAAW;AAAO;AAC7C,CAAC;AAAW,SAAO;AAAM;AACzB,CAAC;AAAU,SAAO;AAAS;AAC3B,CAAC;AAAc,cAAY;AAAQ,WAAS;AAAM,SAAO;AAAM;",
-  "names": []
-}

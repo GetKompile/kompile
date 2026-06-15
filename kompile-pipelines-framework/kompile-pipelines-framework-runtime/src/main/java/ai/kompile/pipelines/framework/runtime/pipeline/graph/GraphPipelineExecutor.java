@@ -289,7 +289,7 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
                     LLMStepConfig llmConfig = (LLMStepConfig) currentStepConfig;
                     if(toolResponsesForLlmStep.has(llmConfig.getToolCallResponseInputName())){
                         stepInput.put(llmConfig.getToolCallResponseInputName(),
-                                toolResponsesForLlmStep.get(llmConfig.getToolCallResponseInputName()));
+                                (Object) toolResponsesForLlmStep.get(llmConfig.getToolCallResponseInputName()));
                     }
                 }
 
@@ -542,7 +542,7 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
 
             if (sourceOutputKeyInSourceData != null && !sourceOutputKeyInSourceData.isEmpty()) {
                 if (sourceDataBlock.has(sourceOutputKeyInSourceData)) {
-                    stepInput.put(targetInputSlotName, sourceDataBlock.get(sourceOutputKeyInSourceData));
+                    stepInput.put(targetInputSlotName, (Object) sourceDataBlock.get(sourceOutputKeyInSourceData));
                 }
             } else {
                 stepInput.put(targetInputSlotName, sourceDataBlock.dup());

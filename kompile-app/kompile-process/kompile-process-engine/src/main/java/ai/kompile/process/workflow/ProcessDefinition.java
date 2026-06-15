@@ -56,6 +56,15 @@ public class ProcessDefinition {
     /** The fact sheet this process was discovered from or belongs to. */
     private Long factSheetId;
 
+    // ── Discovery Provenance ───────────────────────────────────────────────
+
+    /** ID of the process suggestion that originated this definition. */
+    private String sourceSuggestionId;
+    /** Knowledge graph node IDs that were used as evidence during process discovery. */
+    private List<String> sourceGraphNodeIds;
+    /** Confidence score (0.0–1.0) assigned during automated process discovery. */
+    private double discoveryConfidence;
+
     // ── Process Hierarchy ──────────────────────────────────────────────────
 
     /** ID of the parent process that this process is a sub-process of. */

@@ -52,6 +52,8 @@ public class StepExecution {
     private String outputHash;
     /** Source IDs of evidence documents consulted during this step. */
     private List<String> evidenceReliedOn;
+    /** Structured evidence entries (key-value maps) attached during step execution. */
+    private List<Map<String, Object>> structuredEvidence;
     /** Knowledge graph node IDs of documents/entities accessed or produced by this step. */
     private List<String> graphNodeIds;
     /** Error message if the step failed. */

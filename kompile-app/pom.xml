@@ -33,132 +33,145 @@
   <description>Parent POM for the RAG MCP Assistant multi-module project</description>
 
   <modules>
+    <!-- Core modules -->
     <module>kompile-model-manager</module>
     <module>kompile-app-core</module>
-    <module>kompile-app-loaders-orchestrator</module>
-    <module>kompile-loader-tika</module>
-    <!-- New specialized loader modules -->
-    <module>kompile-loader-microsoft</module>
-    <module>kompile-loader-mail</module>
-    <module>kompile-loader-slack</module>
-    <module>kompile-loader-pdf-extended</module>
-    <module>kompile-loader-pdf-tables</module>
-    <module>kompile-loader-web</module>
-    <module>kompile-loader-gdrive</module>
-    <module>kompile-loader-onedrive</module>
     <module>kompile-app-anserini</module>
-    <module>kompile-app-openai-llm</module>
-    <module>kompile-app-anthropic-llm</module>
-    <module>kompile-app-gemini-llm</module>
-    <module>kompile-embedding-openai</module>
-    <module>kompile-embedding-anserini</module>
-    <module>kompile-embedding-samediff</module>
-    <module>kompile-embedding-sentence-transformer</module>
-    <module>kompile-vectorstore-chroma</module>
-    <module>kompile-vectorstore-pgvector</module>
-    <module>kompile-vectorstore-vespa</module>
-    <module>kompile-tool-filesystem</module>
-    <module>kompile-tool-rag</module>
-    <module>kompile-app-main</module>
-    <module>kompile-pipelines-app-llm</module>
-    <module>kompile-embedding-postgresml</module>
     <module>kompile-app-pgml-indexer</module>
-    <module>kompile-chunker-sentence</module>
-    <module>kompile-chunker-recursivecharacter</module>
-    <module>kompile-app-springai-llm</module>
-    <module>kompile-chunker-markdown</module>
-    <module>kompile-chunker-token</module>
-    <module>kompile-chunker-table-aware</module>
     <module>kompile-postgres-common</module>
-    <module>kompile-graph-neo4j</module>
-    <module>kompile-vectorstore-anserini</module>
-    <module>kompile-chat-history</module>
-    <module>kompile-orchestrator</module>
-    <module>kompile-knowledge-graph</module>
-    <module>kompile-graph-algorithms</module>
     <module>kompile-oauth2-client</module>
-    <!-- OAuth-dependent source provider modules -->
-    <module>kompile-source-confluence</module>
-    <module>kompile-source-jira</module>
-    <module>kompile-source-slack</module>
-    <module>kompile-source-gdrive</module>
-    <module>kompile-source-onedrive</module>
-    <module>kompile-source-notion</module>
-    <module>kompile-source-reddit</module>
-    <module>kompile-source-email</module>
-    <module>kompile-loader-email-imap</module>
+    <module>kompile-orchestrator</module>
+    <module>kompile-chat-history</module>
     <module>kompile-model-staging</module>
-    <!-- Query transformation, guardrails, and evaluation modules -->
     <module>kompile-query-transformer</module>
     <module>kompile-guardrails</module>
     <module>kompile-filter-chain</module>
     <module>kompile-evaluation</module>
-    <!-- ReAct agent for multi-step reasoning -->
     <module>kompile-react-agent</module>
-    <!-- OCR modules -->
-    <module>kompile-ocr-core</module>
-    <module>kompile-ocr-models</module>
-    <module>kompile-ocr-postprocess</module>
-    <module>kompile-ocr-integration</module>
-    <module>kompile-ocr-datapipeline</module>
-    <!-- Shared gateway code (must be before kclaw and openclaw) -->
     <module>kompile-agent-gateway-core</module>
     <module>kompile-openclaw</module>
-    <module>kompile-pipeline-management</module>
-    <module>kompile-pipeline-serving</module>
-    <module>kompile-rag-pipeline</module>
+    <module>kompile-kclaw</module>
     <module>kompile-kvcache</module>
-    <module>kompile-tool-model-staging</module>
-    <module>kompile-app-lite</module>
     <module>kompile-a2a</module>
-    <module>kompile-process-engine</module>
-    <module>kompile-tool-gateway</module>
     <module>kompile-data-enrichment</module>
-    <module>kompile-compute-graph-core</module>
     <module>kompile-code-indexer</module>
     <module>kompile-crawl-graph</module>
-    <module>kompile-process-discovery</module>
-    <module>kompile-event-attribution</module>
-    <module>kompile-process-attribution</module>
-    <module>kompile-tool-crawler</module>
-    <module>kompile-langdetect</module>
     <module>kompile-crawler-core</module>
-    <module>kompile-test-milestone</module>
-    <module>kompile-kclaw</module>
-    <module>kompile-loader-email-inbox</module>
-    <module>kompile-loader-excel</module>
-    <module>kompile-tool-knowledge</module>
-    <module>kompile-tool-table-search</module>
-    <!-- CLI LLM integration -->
-    <module>kompile-app-cli-llm</module>
-    <!-- Compute graph engine modules -->
-    <module>kompile-compute-graph-camel</module>
-    <module>kompile-compute-graph-drools</module>
-    <module>kompile-compute-graph-excel</module>
-    <module>kompile-compute-graph-n8n</module>
-    <module>kompile-compute-graph-scripting</module>
-    <module>kompile-compute-graph-xircuits</module>
-    <!-- Graph change tracking -->
-    <module>kompile-graph-change-tracking</module>
-    <!-- Additional loader modules -->
-    <module>kompile-loader-audio</module>
-    <module>kompile-loader-discord</module>
-    <module>kompile-loader-gdocs</module>
-    <module>kompile-loader-gmail</module>
-    <module>kompile-loader-google-workspace</module>
-    <!-- Metrics -->
+    <module>kompile-langdetect</module>
     <module>kompile-metrics</module>
-    <!-- Additional source provider modules -->
-    <module>kompile-source-discord</module>
-    <module>kompile-source-gdocs</module>
-    <module>kompile-source-gmail</module>
-    <module>kompile-source-google-workspace</module>
-    <!-- Additional tool modules -->
-    <module>kompile-tool-camel</module>
-    <module>kompile-tool-graph</module>
-    <module>kompile-tool-graph-localization</module>
-    <module>kompile-tool-workflow</module>
+    <module>kompile-test-milestone</module>
+    <module>kompile-app-lite</module>
 
+    <!-- Loaders -->
+    <module>kompile-loaders/kompile-app-loaders-orchestrator</module>
+    <module>kompile-loaders/kompile-loader-tika</module>
+    <module>kompile-loaders/kompile-loader-microsoft</module>
+    <module>kompile-loaders/kompile-loader-mail</module>
+    <module>kompile-loaders/kompile-loader-slack</module>
+    <module>kompile-loaders/kompile-loader-pdf-extended</module>
+    <module>kompile-loaders/kompile-loader-pdf-tables</module>
+    <module>kompile-loaders/kompile-loader-web</module>
+    <module>kompile-loaders/kompile-loader-gdrive</module>
+    <module>kompile-loaders/kompile-loader-onedrive</module>
+    <module>kompile-loaders/kompile-loader-email-imap</module>
+    <module>kompile-loaders/kompile-loader-email-inbox</module>
+    <module>kompile-loaders/kompile-loader-excel</module>
+    <module>kompile-loaders/kompile-loader-audio</module>
+    <module>kompile-loaders/kompile-loader-discord</module>
+    <module>kompile-loaders/kompile-loader-gdocs</module>
+    <module>kompile-loaders/kompile-loader-gmail</module>
+    <module>kompile-loaders/kompile-loader-google-workspace</module>
+
+    <!-- Embeddings -->
+    <module>kompile-embeddings/kompile-embedding-openai</module>
+    <module>kompile-embeddings/kompile-embedding-anserini</module>
+    <module>kompile-embeddings/kompile-embedding-samediff</module>
+    <module>kompile-embeddings/kompile-embedding-sentence-transformer</module>
+    <module>kompile-embeddings/kompile-embedding-postgresml</module>
+
+    <!-- Vector stores -->
+    <module>kompile-vectorstores/kompile-vectorstore-anserini</module>
+    <module>kompile-vectorstores/kompile-vectorstore-chroma</module>
+    <module>kompile-vectorstores/kompile-vectorstore-pgvector</module>
+    <module>kompile-vectorstores/kompile-vectorstore-vespa</module>
+
+    <!-- Chunkers -->
+    <module>kompile-chunkers/kompile-chunker-sentence</module>
+    <module>kompile-chunkers/kompile-chunker-recursivecharacter</module>
+    <module>kompile-chunkers/kompile-chunker-markdown</module>
+    <module>kompile-chunkers/kompile-chunker-token</module>
+    <module>kompile-chunkers/kompile-chunker-table-aware</module>
+
+    <!-- LLM providers -->
+    <module>kompile-llms/kompile-app-openai-llm</module>
+    <module>kompile-llms/kompile-app-anthropic-llm</module>
+    <module>kompile-llms/kompile-app-gemini-llm</module>
+    <module>kompile-llms/kompile-app-springai-llm</module>
+    <module>kompile-llms/kompile-app-cli-llm</module>
+    <module>kompile-llms/kompile-pipelines-app-llm</module>
+
+    <!-- Tools -->
+    <module>kompile-tools/kompile-tool-filesystem</module>
+    <module>kompile-tools/kompile-tool-rag</module>
+    <module>kompile-tools/kompile-tool-model-staging</module>
+    <module>kompile-tools/kompile-tool-gateway</module>
+    <module>kompile-tools/kompile-tool-crawler</module>
+    <module>kompile-tools/kompile-tool-knowledge</module>
+    <module>kompile-tools/kompile-tool-table-search</module>
+    <module>kompile-tools/kompile-tool-camel</module>
+    <module>kompile-tools/kompile-tool-graph</module>
+    <module>kompile-tools/kompile-tool-graph-localization</module>
+    <module>kompile-tools/kompile-tool-workflow</module>
+
+    <!-- Source providers -->
+    <module>kompile-sources/kompile-source-confluence</module>
+    <module>kompile-sources/kompile-source-jira</module>
+    <module>kompile-sources/kompile-source-slack</module>
+    <module>kompile-sources/kompile-source-gdrive</module>
+    <module>kompile-sources/kompile-source-onedrive</module>
+    <module>kompile-sources/kompile-source-notion</module>
+    <module>kompile-sources/kompile-source-reddit</module>
+    <module>kompile-sources/kompile-source-email</module>
+    <module>kompile-sources/kompile-source-discord</module>
+    <module>kompile-sources/kompile-source-gdocs</module>
+    <module>kompile-sources/kompile-source-gmail</module>
+    <module>kompile-sources/kompile-source-google-workspace</module>
+
+    <!-- OCR -->
+    <module>kompile-ocr/kompile-ocr-core</module>
+    <module>kompile-ocr/kompile-ocr-datapipeline</module>
+    <module>kompile-ocr/kompile-ocr-postprocess</module>
+    <module>kompile-ocr/kompile-ocr-models</module>
+    <module>kompile-ocr/kompile-ocr-integration</module>
+
+    <!-- Compute graph engines -->
+    <module>kompile-compute-graphs/kompile-compute-graph-core</module>
+    <module>kompile-compute-graphs/kompile-compute-graph-drools</module>
+    <module>kompile-compute-graphs/kompile-compute-graph-camel</module>
+    <module>kompile-compute-graphs/kompile-compute-graph-excel</module>
+    <module>kompile-compute-graphs/kompile-compute-graph-n8n</module>
+    <module>kompile-compute-graphs/kompile-compute-graph-scripting</module>
+    <module>kompile-compute-graphs/kompile-compute-graph-xircuits</module>
+
+    <!-- Graph modules -->
+    <module>kompile-graphs/kompile-knowledge-graph</module>
+    <module>kompile-graphs/kompile-graph-algorithms</module>
+    <module>kompile-graphs/kompile-graph-neo4j</module>
+    <module>kompile-graphs/kompile-graph-change-tracking</module>
+
+    <!-- Process mining -->
+    <module>kompile-process/kompile-process-engine</module>
+    <module>kompile-process/kompile-process-discovery</module>
+    <module>kompile-process/kompile-event-attribution</module>
+    <module>kompile-process/kompile-process-attribution</module>
+
+    <!-- Pipeline management -->
+    <module>kompile-pipelines/kompile-pipeline-management</module>
+    <module>kompile-pipelines/kompile-pipeline-serving</module>
+    <module>kompile-pipelines/kompile-rag-pipeline</module>
+
+    <!-- Main application (must be last) -->
+    <module>kompile-app-main</module>
   </modules>
 
   <dependencyManagement>
