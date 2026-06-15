@@ -1,5 +1,4 @@
 target/
-docs/
 kompile-cli/kompile-c
 kompile-cli/kompile-python
 kompile-python/build
