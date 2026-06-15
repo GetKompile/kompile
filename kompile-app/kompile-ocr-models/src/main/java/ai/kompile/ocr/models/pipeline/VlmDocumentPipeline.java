@@ -98,13 +98,16 @@ public class VlmDocumentPipeline implements OcrPipeline {
     private static final Logger logger = LoggerFactory.getLogger(VlmDocumentPipeline.class);
 
     // Model manager for downloading and caching models
-    private final KompileModelManager modelManager;
+    @Autowired(required = false)
+    private KompileModelManager modelManager;
 
     // Registry service for looking up model preprocessor config
-    private final RegistryService registryService;
+    @Autowired(required = false)
+    private RegistryService registryService;
 
     // Optional VLM KV cache integration for persistent managed caches
-    private final VlmKvCacheIntegrationService vlmKvCacheIntegrationService;
+    @Autowired(required = false)
+    private VlmKvCacheIntegrationService vlmKvCacheIntegrationService;
 
     // SameDiff VLM model from deeplearning4j (loaded from .sdz files)
     private VisionLanguageModel vlm;
@@ -131,22 +134,16 @@ public class VlmDocumentPipeline implements OcrPipeline {
     private Runnable tritonCacheImporter;
     private Runnable tritonCacheExporter;
 
-    @Autowired
-    public VlmDocumentPipeline(@Autowired(required = false) KompileModelManager modelManager,
-                                @Autowired(required = false) RegistryService registryService,
-                                @Autowired(required = false) VlmKvCacheIntegrationService vlmKvCacheIntegrationService) {
+    public VlmDocumentPipeline(KompileModelManager modelManager,
+                                RegistryService registryService,
+                                VlmKvCacheIntegrationService vlmKvCacheIntegrationService) {
         this.modelManager = modelManager != null ? modelManager : new KompileModelManager();
         this.registryService = registryService != null ? registryService : new RegistryService();
         this.vlmKvCacheIntegrationService = vlmKvCacheIntegrationService;
     }
 
-    /**
-     * Constructor for programmatic usage without Spring.
-     */
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
     public VlmDocumentPipeline() {
-        this.modelManager = new KompileModelManager();
-        this.registryService = new RegistryService();
-        this.vlmKvCacheIntegrationService = null;
     }
 
     /**
@@ -1606,16 +1603,16 @@ public class VlmDocumentPipeline implements OcrPipeline {
         String preset = config.getSamplingPreset();
         if (preset != null) {
             switch (preset.toLowerCase()) {
-                case "creative": {
-                    SamplingConfig sc = SamplingConfig.creative();
-                    sc.setMaxNewTokens(config.getMaxNewTokens());
-                    return sc;
-                }
-                case "precise": {
-                    SamplingConfig sc = SamplingConfig.precise();
-                    sc.setMaxNewTokens(config.getMaxNewTokens());
-                    return sc;
-                }
+                case "creative":
+                    return SamplingConfig.builder()
+                            .temperature(0.9).topK(50).topP(0.95).doSample(true)
+                            .maxNewTokens(config.getMaxNewTokens())
+                            .build();
+                case "precise":
+                    return SamplingConfig.builder()
+                            .temperature(0.3).topP(0.85).doSample(true)
+                            .maxNewTokens(config.getMaxNewTokens())
+                            .build();
                 default:
                     logger.warn("Unknown sampling preset '{}', using explicit parameters", preset);
                     break;

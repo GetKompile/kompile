@@ -68,6 +68,12 @@ export interface DiffIndexStats {
   byAgent: Record<string, number>;
   bySource: Record<string, number>;
   byDiffType: Record<string, number>;
+  indexMessage?: string;
+  indexedCount?: number;
+  sessionsScanned?: number;
+  sourcesScanned?: number;
+  indexErrors?: number;
+  indexError?: string;
 }
 
 export interface DiffSearchParams {

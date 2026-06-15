@@ -25,6 +25,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents the output of a query from the Graph RAG system.
@@ -64,4 +65,32 @@ public class GraphRagResult {
      * Source text chunks that contributed to the answer.
      */
     private List<String> sourceChunks;
+
+    /**
+     * The search type that was used to produce this result.
+     */
+    private SearchType searchType;
+
+    /**
+     * Number of graph traversal hops actually performed (0 for pure vector search).
+     */
+    private int hopsPerformed;
+
+    /**
+     * Total number of graph nodes visited during traversal.
+     */
+    private int nodesVisited;
+
+    /**
+     * Traversal paths keyed by seed entity ID.
+     * Each value is a list of entity IDs representing the path taken from that seed.
+     */
+    private Map<String, List<String>> traversalPaths;
+
+    /**
+     * Score breakdown for each entity ID encountered.
+     * Each value is a map of score component names to values
+     * (e.g., "vectorScore", "graphScore", "hopDistance", "combined").
+     */
+    private Map<String, Map<String, Double>> scoreBreakdown;
 }

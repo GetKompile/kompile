@@ -19,6 +19,8 @@ package ai.kompile.core.graphrag.table;
 import ai.kompile.core.graphrag.GraphConstants;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
@@ -37,6 +39,7 @@ import java.util.*;
  */
 public final class TableGraphAdapter {
 
+    private static final Logger log = LoggerFactory.getLogger(TableGraphAdapter.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private TableGraphAdapter() {}
@@ -53,7 +56,9 @@ public final class TableGraphAdapter {
             Map<String, Object> map = MAPPER.readValue(json, Map.class);
             if (map.containsKey("entities")) return "graph";
             if (map.containsKey("cells")) return "spreadsheet";
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.debug("Failed to parse table graph JSON for format detection: {}", e.getMessage());
+        }
         return "unknown";
     }
 

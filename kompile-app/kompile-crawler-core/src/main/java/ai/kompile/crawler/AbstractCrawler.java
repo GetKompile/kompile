@@ -130,4 +130,17 @@ public abstract class AbstractCrawler implements Crawler {
      * and {@code job.shouldStop()}.
      */
     protected abstract void executeCrawl(AbstractCrawlJob job) throws Exception;
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 }

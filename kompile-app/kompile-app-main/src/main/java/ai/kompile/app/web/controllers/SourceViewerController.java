@@ -103,6 +103,8 @@ public class SourceViewerController {
     public ResponseEntity<SourceListResponse> listSources(
             @RequestParam(value = "limit", defaultValue = "100") int limit,
             @RequestParam(value = "offset", defaultValue = "0") int offset) {
+        offset = Math.max(0, offset);
+        limit = Math.max(1, Math.min(limit, 500));
         try {
             List<SourceInfo> sources = new ArrayList<>();
 
@@ -268,6 +270,7 @@ public class SourceViewerController {
             @PathVariable String fileName,
             @RequestParam(value = "maxLines", defaultValue = "10000") int maxLines,
             @RequestParam(value = "encoding", defaultValue = "UTF-8") String encoding) {
+        maxLines = Math.max(1, Math.min(maxLines, 50000));
         try {
             // Security: Prevent path traversal
             String sanitizedFileName = Paths.get(fileName).getFileName().toString();

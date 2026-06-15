@@ -24,6 +24,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatChipsModule } from '@angular/material/chips';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatExpansionModule } from '@angular/material/expansion';
 import {
@@ -32,6 +33,7 @@ import {
   ProcessStep
 } from '../../services/process-engine.service';
 import { ProcessDiagramService } from '../../services/process-diagram.service';
+import { ProcessAttributionService, ProcessRiskAssessment } from '../../services/process-attribution.service';
 import { ProcessBuilderComponent } from './process-builder.component';
 import { MermaidRendererComponent } from './mermaid-renderer.component';
 
@@ -44,7 +46,7 @@ type ViewMode = 'list' | 'create' | 'detail';
     CommonModule, FormsModule,
     MatIconModule, MatButtonModule, MatCardModule,
     MatFormFieldModule, MatInputModule, MatSnackBarModule,
-    MatChipsModule, MatDividerModule, MatExpansionModule,
+    MatChipsModule, MatDividerModule, MatExpansionModule, MatTooltipModule,
     ProcessBuilderComponent, MermaidRendererComponent
   ],
   template: `
@@ -241,6 +243,172 @@ type ViewMode = 'list' | 'create' | 'detail';
         <div *ngIf="diagramError" class="diagram-error">
           <mat-icon>error_outline</mat-icon> {{ diagramError }}
         </div>
+
+        <!-- Risk Assessment -->
+        <mat-divider class="section-divider"></mat-divider>
+        <div class="section-heading">
+          <mat-icon>security</mat-icon>
+          <span>Risk Assessment</span>
+          <button mat-stroked-button class="diagram-toggle-btn"
+                  (click)="loadDefinitionRisk()" [disabled]="riskLoading"
+                  *ngIf="!definitionRisk">
+            <mat-icon>{{ riskLoading ? 'hourglass_empty' : 'assessment' }}</mat-icon>
+            {{ riskLoading ? 'Assessing...' : 'Assess Risk' }}
+          </button>
+          <button mat-stroked-button class="diagram-toggle-btn"
+                  (click)="definitionRisk = null"
+                  *ngIf="definitionRisk">
+            <mat-icon>close</mat-icon> Clear
+          </button>
+        </div>
+
+        <div *ngIf="definitionRisk" class="risk-panel">
+          <div class="risk-overview">
+            <div class="risk-score-card" [class]="'risk-' + definitionRisk.riskLevel?.toLowerCase()">
+              <span class="risk-score-value">{{ (definitionRisk.overallRiskScore * 100).toFixed(0) }}%</span>
+              <span class="risk-score-label">{{ definitionRisk.riskLevel }} risk</span>
+            </div>
+            <div class="risk-stats">
+              <span>{{ definitionRisk.alerts?.length || 0 }} alerts</span>
+              <span>{{ definitionRisk.highRiskStepIds?.length || 0 }} high-risk steps</span>
+            </div>
+          </div>
+
+          <div *ngIf="definitionRisk.summary" class="risk-summary">{{ definitionRisk.summary }}</div>
+
+          <div *ngIf="definitionRisk.highRiskStepIds?.length" class="high-risk-steps">
+            <span class="risk-section-label">High-Risk Steps</span>
+            <mat-chip-set>
+              <mat-chip *ngFor="let sid of definitionRisk.highRiskStepIds" class="high-risk-chip">
+                <mat-icon>warning</mat-icon> {{ sid }}
+              </mat-chip>
+            </mat-chip-set>
+          </div>
+
+          <!-- Per-step Bayesian Priors & Posteriors -->
+          <div *ngIf="definitionRisk.stepAttributionResults && hasKeys(definitionRisk.stepAttributionResults)"
+               class="risk-bayesian-steps">
+            <span class="risk-section-label">Step Bayesian Analysis</span>
+            <div *ngFor="let stepId of getObjectKeys(definitionRisk.stepAttributionResults)" class="bayesian-step-card">
+              <div class="bayesian-step-header">
+                <span class="bayesian-step-name">{{ definitionRisk.stepAttributionResults![stepId].stepName || stepId }}</span>
+                <span *ngIf="definitionRisk.stepAttributionResults![stepId].confidenceBand"
+                      class="confidence-band-chip"
+                      [class]="'band-' + definitionRisk.stepAttributionResults![stepId].confidenceBand?.toLowerCase()">
+                  {{ definitionRisk.stepAttributionResults![stepId].confidenceBand }}
+                </span>
+                <span class="bayesian-step-risk"
+                      [style.color]="getRiskColor(definitionRisk.stepAttributionResults![stepId].riskScore)">
+                  {{ (definitionRisk.stepAttributionResults![stepId].riskScore * 100).toFixed(0) }}%
+                </span>
+              </div>
+              <div *ngIf="definitionRisk.stepAttributionResults![stepId].bayesianPosteriors
+                          && hasKeys(definitionRisk.stepAttributionResults![stepId].bayesianPosteriors)"
+                   class="bayesian-node-list">
+                <div *ngFor="let nodeId of getObjectKeys(definitionRisk.stepAttributionResults![stepId].bayesianPosteriors)"
+                     class="bayesian-node-row">
+                  <span class="bayesian-node-id" [matTooltip]="nodeId">{{ nodeId | slice:0:18 }}</span>
+                  <ng-container *ngIf="definitionRisk.stepAttributionResults![stepId].mebnMeta?.[nodeId] as meta">
+                    <span class="mebn-badge-sm mfrag-sm">{{meta.mfragName}}</span>
+                    <span class="mebn-badge-sm role-sm"
+                          [class.role-sm-resident]="meta.nodeRole === 'RESIDENT'"
+                          [class.role-sm-input]="meta.nodeRole === 'INPUT'">{{meta.nodeRole}}</span>
+                    <span *ngIf="meta.entityType" class="mebn-badge-sm etype-sm">{{meta.entityType}}</span>
+                  </ng-container>
+                  <span class="bayesian-node-vals">
+                    <span class="bayesian-prior-val"
+                          *ngIf="definitionRisk.stepAttributionResults![stepId].bayesianPriors?.[nodeId] != null">
+                      {{ ((definitionRisk.stepAttributionResults![stepId].bayesianPriors[nodeId]) * 100).toFixed(1) }}%
+                    </span>
+                    <mat-icon class="bayesian-shift-arrow"
+                              *ngIf="definitionRisk.stepAttributionResults![stepId].bayesianPriors?.[nodeId] != null">
+                      arrow_forward</mat-icon>
+                    <span class="bayesian-posterior-val"
+                          [style.color]="getRiskColor(definitionRisk.stepAttributionResults![stepId].bayesianPosteriors[nodeId])">
+                      {{ (definitionRisk.stepAttributionResults![stepId].bayesianPosteriors[nodeId] * 100).toFixed(1) }}%
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div *ngIf="definitionRisk.alerts?.length" class="risk-alerts">
+            <span class="risk-section-label">Alerts</span>
+            <div *ngFor="let alert of definitionRisk.alerts" class="risk-alert-card"
+                 [class]="'alert-' + alert.severity?.toLowerCase()">
+              <div class="alert-header-row">
+                <mat-icon>{{ alert.severity === 'CRITICAL' ? 'error' :
+                  alert.severity === 'HIGH' ? 'warning' : 'info' }}</mat-icon>
+                <span class="alert-title">{{ alert.title }}</span>
+                <mat-chip class="severity-chip-sm">{{ alert.severity }}</mat-chip>
+              </div>
+              <p class="alert-text" *ngIf="alert.explanation">{{ alert.explanation }}</p>
+              <div class="def-alert-meta">
+                <span *ngIf="alert.causalChains?.length">{{alert.causalChains.length}} causal chains</span>
+                <span *ngIf="alert.predictions?.length">{{alert.predictions.length}} predictions</span>
+                <span>{{(alert.confidence * 100).toFixed(0)}}% confidence</span>
+                <span class="def-alert-type" *ngIf="alert.alertType">{{alert.alertType}}</span>
+                <span class="def-alert-id" *ngIf="alert.alertId" [matTooltip]="alert.alertId">ID: {{alert.alertId | slice:0:8}}</span>
+                <span class="def-alert-ts" *ngIf="alert.createdAt">{{alert.createdAt | slice:0:19}}</span>
+                <mat-icon *ngIf="alert.acknowledged" class="def-ack-icon" matTooltip="Acknowledged">check_circle</mat-icon>
+                <mat-icon *ngIf="alert.llmUsed" class="def-llm-icon" matTooltip="LLM-assisted">smart_toy</mat-icon>
+              </div>
+              <!-- Causal chains detail -->
+              <div *ngIf="alert.causalChains?.length" class="def-alert-chains">
+                <div *ngFor="let chain of alert.causalChains" class="def-chain-row">
+                  <span class="def-chain-node" [matTooltip]="chain.rootCauseNodeId">{{chain.rootCauseTitle || chain.rootCauseNodeId | slice:0:18}}</span>
+                  <mat-icon class="def-chain-arrow">arrow_forward</mat-icon>
+                  <span class="def-chain-node" [matTooltip]="chain.targetEventNodeId">{{chain.targetEventTitle || chain.targetEventNodeId | slice:0:18}}</span>
+                  <span class="def-chain-conf" [style.color]="getRiskColor(chain.overallConfidence)">
+                    {{(chain.overallConfidence * 100).toFixed(0)}}%
+                  </span>
+                </div>
+              </div>
+              <!-- Predictions detail -->
+              <div *ngIf="alert.predictions?.length" class="def-alert-preds">
+                <div *ngFor="let pred of alert.predictions" class="def-pred-row">
+                  <span class="def-pred-title" [matTooltip]="pred.nodeId">{{pred.title || pred.nodeId | slice:0:20}}</span>
+                  <span class="def-pred-prob" [style.color]="getRiskColor(pred.probability)">
+                    {{(pred.probability * 100).toFixed(0)}}%
+                  </span>
+                  <span class="def-pred-hops">{{pred.hopsFromSource}} hops</span>
+                </div>
+              </div>
+              <div *ngIf="alert.bayesianPosteriors && hasKeys(alert.bayesianPosteriors)"
+                   class="def-alert-bayesian">
+                <div *ngFor="let nodeId of getObjectKeys(alert.bayesianPosteriors)" class="bayesian-node-row">
+                  <span class="bayesian-node-id" [matTooltip]="nodeId">{{ nodeId | slice:0:18 }}</span>
+                  <span class="bayesian-node-vals">
+                    <span class="bayesian-prior-val"
+                          *ngIf="alert.bayesianPriors?.[nodeId] != null">
+                      {{ ((alert.bayesianPriors![nodeId]) * 100).toFixed(1) }}%
+                    </span>
+                    <mat-icon class="bayesian-shift-arrow"
+                              *ngIf="alert.bayesianPriors?.[nodeId] != null">arrow_forward</mat-icon>
+                    <span class="bayesian-posterior-val"
+                          [style.color]="getRiskColor(alert.bayesianPosteriors[nodeId])">
+                      {{ (alert.bayesianPosteriors[nodeId] * 100).toFixed(1) }}%
+                    </span>
+                  </span>
+                  <ng-container *ngIf="alert.mebnMeta?.[nodeId] as meta">
+                    <div class="def-alert-mebn-badges">
+                      <span class="def-alert-mebn mfrag-badge-sm">{{meta.mfragName}}</span>
+                      <span class="def-alert-mebn role-badge-sm"
+                            [class.role-badge-resident]="meta.nodeRole === 'RESIDENT'"
+                            [class.role-badge-input]="meta.nodeRole === 'INPUT'">{{meta.nodeRole}}</span>
+                      <span *ngIf="meta.entityType" class="def-alert-mebn etype-badge-sm">{{meta.entityType}}</span>
+                    </div>
+                  </ng-container>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div *ngIf="riskError" class="diagram-error">
+          <mat-icon>error_outline</mat-icon> {{ riskError }}
+        </div>
       </div>
     </div>
   `,
@@ -341,6 +509,81 @@ type ViewMode = 'list' | 'create' | 'detail';
     .diagram-panel { margin-top: 8px; height: 500px; }
     .diagram-error { display: flex; align-items: center; gap: 6px; color: #ef5350; font-size: 12px; margin-top: 8px; }
     .diagram-error mat-icon { font-size: 16px; width: 16px; height: 16px; }
+
+    /* Risk Assessment */
+    .risk-panel { margin-top: 8px; }
+    .risk-overview { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+    .risk-score-card { padding: 12px 16px; border-radius: 8px; text-align: center; }
+    .risk-score-value { font-size: 24px; font-weight: 700; display: block; }
+    .risk-score-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .risk-critical, .risk-high { background: rgba(239,68,68,0.15); color: #ef5350; }
+    .risk-medium { background: rgba(255,183,77,0.15); color: #ffb74d; }
+    .risk-low, .risk-info { background: rgba(102,187,106,0.15); color: #66bb6a; }
+    .risk-stats { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #888; }
+    .risk-summary { font-size: 12px; color: #bbb; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; margin-bottom: 12px; border-left: 3px solid #667eea; }
+    .risk-section-label { font-size: 11px; font-weight: 600; color: #999; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px; }
+    .high-risk-steps { margin-bottom: 12px; }
+    .risk-bayesian-steps { margin-bottom: 12px; }
+    .bayesian-step-card { padding: 8px 10px; border-radius: 6px; margin-bottom: 6px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); }
+    .bayesian-step-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .bayesian-step-name { font-size: 13px; font-weight: 500; color: #ccc; }
+    .bayesian-step-risk { font-size: 13px; font-weight: 600; font-family: monospace; }
+    .bayesian-node-list { padding-left: 8px; }
+    .bayesian-node-row { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; font-size: 12px; }
+    .bayesian-node-id { color: #aaa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; font-size: 11px; }
+    .bayesian-node-vals { display: flex; align-items: center; gap: 4px; }
+    .bayesian-prior-val { color: #888; font-size: 11px; font-family: monospace; }
+    .bayesian-shift-arrow { font-size: 12px; width: 12px; height: 12px; color: #666; }
+    .bayesian-posterior-val { font-weight: 600; font-family: monospace; }
+    .high-risk-chip { background: rgba(239,83,80,0.15) !important; color: #ef5350 !important; font-size: 11px !important; }
+    .high-risk-chip mat-icon { font-size: 14px !important; width: 14px !important; height: 14px !important; }
+    .risk-alerts { margin-bottom: 8px; }
+    .risk-alert-card { padding: 8px 10px; border-radius: 6px; margin-bottom: 6px; border: 1px solid rgba(255,255,255,0.06); }
+    .alert-critical { border-left: 3px solid #ef5350; }
+    .alert-high { border-left: 3px solid #ff7043; }
+    .alert-medium { border-left: 3px solid #ffb74d; }
+    .alert-low, .alert-info { border-left: 3px solid #66bb6a; }
+    .alert-header-row { display: flex; align-items: center; gap: 8px; }
+    .alert-header-row mat-icon { font-size: 16px; width: 16px; height: 16px; }
+    .alert-title { flex: 1; font-size: 13px; font-weight: 500; }
+    .severity-chip-sm { font-size: 10px !important; height: 20px !important; min-height: 20px !important; }
+    .alert-text { font-size: 12px; color: #bbb; margin: 4px 0 0; }
+    .def-alert-meta { display: flex; gap: 10px; font-size: 11px; color: #888; margin-top: 4px; flex-wrap: wrap; align-items: center; }
+    .def-alert-type { padding: 1px 5px; border-radius: 3px; background: rgba(144,202,249,0.12); color: #90caf9; font-size: 9px; font-weight: 500; }
+    .def-alert-id { font-family: monospace; font-size: 9px; color: #777; }
+    .def-alert-ts { font-family: monospace; font-size: 9px; color: #777; }
+    .def-ack-icon { font-size: 14px !important; width: 14px !important; height: 14px !important; color: #66bb6a; }
+    .def-llm-icon { font-size: 14px !important; width: 14px !important; height: 14px !important; color: #ce93d8; }
+    .def-alert-mebn-badges { display: flex; gap: 4px; margin-top: 2px; }
+    .def-alert-mebn { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
+    .mfrag-badge-sm { background: rgba(102,126,234,0.15); color: #90caf9; }
+    .role-badge-sm { background: rgba(255,255,255,0.06); color: #aaa; }
+    .role-badge-resident { color: #81c784; }
+    .role-badge-input { color: #ffb74d; }
+    .etype-badge-sm { background: rgba(206,147,216,0.15); color: #ce93d8; }
+    .def-alert-chains, .def-alert-preds { margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.04); }
+    .def-chain-row, .def-pred-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
+    .def-chain-node { color: #bbb; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .def-chain-arrow { font-size: 12px; width: 12px; height: 12px; color: #666; }
+    .def-chain-conf { font-weight: 600; font-family: monospace; min-width: 30px; text-align: right; }
+    .def-pred-title { color: #bbb; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .def-pred-prob { font-weight: 600; font-family: monospace; min-width: 30px; text-align: right; }
+    .def-pred-hops { color: #888; font-size: 10px; }
+    .def-alert-bayesian { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); }
+    .confidence-band-chip { font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 3px; letter-spacing: 0.3px; }
+    .band-definitive { background: rgba(239,83,80,0.12); color: #ef5350; }
+    .band-high { background: rgba(255,112,67,0.12); color: #ff7043; }
+    .band-moderate { background: rgba(255,183,77,0.12); color: #ffb74d; }
+    .band-low { background: rgba(102,187,106,0.12); color: #66bb6a; }
+    .band-insufficient { background: rgba(158,158,158,0.12); color: #9e9e9e; }
+
+    /* Small MEBN badges */
+    .mebn-badge-sm { display: inline-block; padding: 0 4px; border-radius: 3px; font-size: 9px; font-weight: 500; line-height: 16px; letter-spacing: 0.3px; margin-right: 2px; }
+    .mfrag-sm { background: rgba(144,202,249,0.12); color: #64b5f6; border: 1px solid rgba(144,202,249,0.2); }
+    .role-sm { background: rgba(206,147,216,0.12); color: #ce93d8; border: 1px solid rgba(206,147,216,0.2); }
+    .role-sm-resident { background: rgba(102,187,106,0.12); color: #66bb6a; border-color: rgba(102,187,106,0.2); }
+    .role-sm-input { background: rgba(255,183,77,0.12); color: #ffb74d; border-color: rgba(255,183,77,0.2); }
+    .etype-sm { background: rgba(245,158,11,0.1); color: #d97706; border: 1px solid rgba(245,158,11,0.2); }
   `]
 })
 export class ProcessDefinitionsComponent implements OnInit {
@@ -356,9 +599,15 @@ export class ProcessDefinitionsComponent implements OnInit {
   diagramMermaidCode: string | null = null;
   diagramError: string | null = null;
 
+  // Risk assessment state
+  definitionRisk: ProcessRiskAssessment | null = null;
+  riskLoading = false;
+  riskError: string | null = null;
+
   constructor(
     private processEngineService: ProcessEngineService,
     private diagramService: ProcessDiagramService,
+    private processAttributionService: ProcessAttributionService,
     private snackBar: MatSnackBar
   ) {}
 
@@ -422,6 +671,8 @@ export class ProcessDefinitionsComponent implements OnInit {
     this.showDiagram = false;
     this.diagramMermaidCode = null;
     this.diagramError = null;
+    this.definitionRisk = null;
+    this.riskError = null;
     if (!def.id) {
       this.selectedDef = def;
       this.viewMode = 'detail';
@@ -464,6 +715,26 @@ export class ProcessDefinitionsComponent implements OnInit {
     return (def.phases || []).reduce((sum, p) => sum + (p.steps?.length ?? 0), 0);
   }
 
+  loadDefinitionRisk(): void {
+    if (!this.selectedDef?.id) {
+      this.riskError = 'Process must be saved before assessing risk';
+      return;
+    }
+    this.riskLoading = true;
+    this.riskError = null;
+    this.processAttributionService.assessDefinitionRisk(this.selectedDef.id, this.selectedDef.version ?? 1)
+      .subscribe({
+        next: (result) => {
+          this.definitionRisk = result;
+          this.riskLoading = false;
+        },
+        error: (err) => {
+          this.riskError = 'Failed to assess risk: ' + (err.error?.message || err.message || 'Unknown error');
+          this.riskLoading = false;
+        }
+      });
+  }
+
   toggleDiagram(): void {
     if (this.showDiagram) {
       this.showDiagram = false;
@@ -486,5 +757,19 @@ export class ProcessDefinitionsComponent implements OnInit {
         this.loadingDiagram = false;
       }
     });
+  }
+
+  hasKeys(obj: any): boolean {
+    return obj && Object.keys(obj).length > 0;
+  }
+
+  getObjectKeys(obj: Record<string, any>): string[] {
+    return obj ? Object.keys(obj) : [];
+  }
+
+  getRiskColor(score: number): string {
+    if (score >= 0.7) return '#ef5350';
+    if (score >= 0.4) return '#ff9800';
+    return '#66bb6a';
   }
 }

@@ -187,7 +187,9 @@ public class EnforcerCommand implements Callable<Integer> {
         try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
             LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
             TerminalRenderer renderer = new TerminalRenderer();
-            AsciiRenderer ascii = new AsciiRenderer(renderer);
+            int termW = terminal.getWidth();
+            if (termW <= 0) termW = 120;
+            AsciiRenderer ascii = new AsciiRenderer(renderer, termW);
 
             String resolvedRules = resolveRules(reader, wd);
             if (resolvedRules == null || resolvedRules.isBlank()) {
@@ -845,7 +847,7 @@ public class EnforcerCommand implements Callable<Integer> {
         // Use the configured agent to generate the patterns
         try {
             TerminalRenderer renderer = new TerminalRenderer();
-            AsciiRenderer ascii = new AsciiRenderer(renderer);
+            AsciiRenderer ascii = new AsciiRenderer(renderer, 120);
             SubprocessAgentRunner runner = new SubprocessAgentRunner(
                     agent, wd.toString(), true, false, "", 0,
                     null, renderer, ascii);

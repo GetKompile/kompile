@@ -191,9 +191,12 @@ public class ComponentInstaller {
         ProcessBuilder pb = new ProcessBuilder("tar", "-xzf", tarGzFile.getAbsolutePath(), "-C", extractDir.getAbsolutePath());
         pb.inheritIO();
         Process process = pb.start();
-        int exitCode = process.waitFor();
-        if (exitCode != 0) {
-            throw new IOException("Failed to extract tar.gz file (exit code: " + exitCode + ")");
+        if (!process.waitFor(300, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new IOException("Tar extraction timed out after 300 seconds");
+        }
+        if (process.exitValue() != 0) {
+            throw new IOException("Failed to extract tar.gz file (exit code: " + process.exitValue() + ")");
         }
     }
 

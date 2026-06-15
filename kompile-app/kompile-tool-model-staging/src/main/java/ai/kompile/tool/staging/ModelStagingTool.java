@@ -44,6 +44,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
@@ -59,6 +60,7 @@ import java.util.stream.Collectors;
  * and pipeline management.
  */
 @Component("toolModelStagingTool")
+@ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
 public class ModelStagingTool {
 
     private static final Logger logger = LoggerFactory.getLogger(ModelStagingTool.class);

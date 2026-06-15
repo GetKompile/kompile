@@ -897,6 +897,7 @@ public class McpActionLogService {
         try {
             return Instant.parse(value);
         } catch (Exception e) {
+            logger.debug("Failed to parse instant from '{}': {}", value, e.getMessage());
             return null;
         }
     }

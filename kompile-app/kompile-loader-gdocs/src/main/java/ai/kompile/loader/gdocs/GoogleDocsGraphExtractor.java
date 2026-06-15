@@ -143,22 +143,29 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
 
         // DATE entities from creation/modification timestamps
         String createdTime = meta.get("gdocs.createdTime") != null ? String.valueOf(meta.get("gdocs.createdTime")) : null;
+        String modifiedTime = meta.get("gdocs.modifiedTime") != null ? String.valueOf(meta.get("gdocs.modifiedTime")) : null;
+
+        // Build a relation props map with occurredAt set to the best available timestamp.
+        // Use createdTime preferentially; fall back to modifiedTime.
+        final String docTimestamp = createdTime != null ? createdTime : modifiedTime;
+        final Map<String, String> docRelProps = docTimestamp != null
+                ? Map.of(GraphConstants.PROP_OCCURRED_AT, docTimestamp) : null;
+
         if (createdTime != null) {
             String dateId = entityId("date", createdTime);
             entities.add(new ExtractedEntity(dateId, createdTime, GraphConstants.ENTITY_DATE,
                     null, "Creation date: " + createdTime, 0.85,
                     Map.of("date", createdTime, "dateType", "created")));
             relationships.add(new ExtractedRelation(docEntityId, dateId, GraphConstants.REL_PUBLISHED_ON,
-                    displayTitle + " created on " + createdTime, 0.85, null));
+                    displayTitle + " created on " + createdTime, 0.85, docRelProps));
         }
-        String modifiedTime = meta.get("gdocs.modifiedTime") != null ? String.valueOf(meta.get("gdocs.modifiedTime")) : null;
         if (modifiedTime != null) {
             String modDateId = entityId("date", modifiedTime);
             entities.add(new ExtractedEntity(modDateId, modifiedTime, GraphConstants.ENTITY_DATE,
                     null, "Modification date: " + modifiedTime, 0.85,
                     Map.of("date", modifiedTime, "dateType", "modified")));
             relationships.add(new ExtractedRelation(docEntityId, modDateId, GraphConstants.REL_MODIFIED_ON,
-                    displayTitle + " modified on " + modifiedTime, 0.85, null));
+                    displayTitle + " modified on " + modifiedTime, 0.85, docRelProps));
         }
 
         // webViewLink as EXTERNAL_RESOURCE
@@ -171,7 +178,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                     Map.of("url", webViewLink)));
             relationships.add(new ExtractedRelation(docEntityId, webLinkId,
                     GraphConstants.REL_HYPERLINKS_TO,
-                    displayTitle + " viewable at " + webViewLink, 0.85, null));
+                    displayTitle + " viewable at " + webViewLink, 0.85, docRelProps));
         }
 
         // TABLE entities from table count — each table produces a placeholder node for
@@ -188,7 +195,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                         "Table " + (ti + 1) + " in " + displayTitle, 0.9, tableProps));
                 relationships.add(new ExtractedRelation(docEntityId, tableEntityId,
                         GraphConstants.REL_HAS_TABLE,
-                        displayTitle + " has Table " + (ti + 1), 0.9, null));
+                        displayTitle + " has Table " + (ti + 1), 0.9, docRelProps));
             }
         }
 
@@ -247,7 +254,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                     displayTitle + " has " + listCount + " list items", 0.85, listProps));
             relationships.add(new ExtractedRelation(docEntityId, listEntityId,
                     GraphConstants.REL_HAS_LIST,
-                    displayTitle + " has " + listCount + " list items", 0.85, null));
+                    displayTitle + " has " + listCount + " list items", 0.85, docRelProps));
         }
 
         // Owner
@@ -260,7 +267,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
             if (ownerName != null) ownerProps.put("displayName", ownerName);
             entities.add(new ExtractedEntity(ownerId, ownerName != null ? ownerName : ownerEmail,
                     GraphConstants.ENTITY_PERSON, null, null, 1.0, ownerProps));
-            relationships.add(new ExtractedRelation(docEntityId, ownerId, GraphConstants.REL_OWNED_BY, null, 1.0, null));
+            relationships.add(new ExtractedRelation(docEntityId, ownerId, GraphConstants.REL_OWNED_BY, null, 1.0, docRelProps));
         }
 
         // Additional co-owners (beyond the primary owner)
@@ -278,7 +285,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                     entities.add(new ExtractedEntity(coOwnerId, coName != null ? coName : coEmail,
                             GraphConstants.ENTITY_PERSON, null, "Co-owner", 0.9, coProps));
                     relationships.add(new ExtractedRelation(docEntityId, coOwnerId,
-                            GraphConstants.REL_OWNED_BY, "Co-owned by " + (coName != null ? coName : coEmail), 0.9, null));
+                            GraphConstants.REL_OWNED_BY, "Co-owned by " + (coName != null ? coName : coEmail), 0.9, docRelProps));
                 }
             }
         }
@@ -293,7 +300,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
             if (modifierName != null) modifierProps.put("displayName", modifierName);
             entities.add(new ExtractedEntity(modifierId, modifierName != null ? modifierName : modifierEmail,
                     GraphConstants.ENTITY_PERSON, null, null, 1.0, modifierProps));
-            relationships.add(new ExtractedRelation(docEntityId, modifierId, GraphConstants.REL_LAST_MODIFIED_BY, null, 1.0, null));
+            relationships.add(new ExtractedRelation(docEntityId, modifierId, GraphConstants.REL_LAST_MODIFIED_BY, null, 1.0, docRelProps));
         }
 
         // Parent folder
@@ -307,7 +314,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
             String folderLabel = folderName != null ? folderName : "Folder " + folderId;
             entities.add(new ExtractedEntity(folderEntityId, folderLabel,
                     GraphConstants.ENTITY_GDOCS_FOLDER, null, null, 1.0, folderProps));
-            relationships.add(new ExtractedRelation(docEntityId, folderEntityId, GraphConstants.REL_IN_FOLDER, null, 1.0, null));
+            relationships.add(new ExtractedRelation(docEntityId, folderEntityId, GraphConstants.REL_IN_FOLDER, null, 1.0, docRelProps));
         }
 
         // Headings → DOCUMENT_SECTION entities (with SUBSECTION_OF hierarchy)
@@ -335,7 +342,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 // H1 → HAS_SECTION to document; deeper → SUBSECTION_OF nearest ancestor
                 if (depth <= 1) {
                     relationships.add(new ExtractedRelation(docEntityId, sectionId, GraphConstants.REL_HAS_SECTION,
-                            (title != null ? title : "Document") + " has section: " + headingText, 0.85, null));
+                            (title != null ? title : "Document") + " has section: " + headingText, 0.85, docRelProps));
                 } else {
                     String parentSectionId = null;
                     for (int d = depth - 1; d >= 1; d--) {
@@ -346,10 +353,10 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                     }
                     if (parentSectionId != null) {
                         relationships.add(new ExtractedRelation(sectionId, parentSectionId, GraphConstants.REL_SUBSECTION_OF,
-                                headingText + " is subsection", 0.8, null));
+                                headingText + " is subsection", 0.8, docRelProps));
                     } else {
                         relationships.add(new ExtractedRelation(docEntityId, sectionId, GraphConstants.REL_HAS_SECTION,
-                                (title != null ? title : "Document") + " has section: " + headingText, 0.85, null));
+                                (title != null ? title : "Document") + " has section: " + headingText, 0.85, docRelProps));
                     }
                 }
 
@@ -379,7 +386,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 relationships.add(new ExtractedRelation(docEntityId, imgEntityId,
                         GraphConstants.REL_HAS_IMAGE,
                         (title != null ? title : "Document") + " has image: " + objectId,
-                        0.85, null));
+                        0.85, docRelProps));
                 imgIdx++;
             }
         }
@@ -401,7 +408,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 entities.add(new ExtractedEntity(linkId, linkText,
                         GraphConstants.ENTITY_HYPERLINK, null, "Link to: " + url, 0.9, linkProps));
                 relationships.add(new ExtractedRelation(docEntityId, linkId, GraphConstants.REL_HAS_HYPERLINK,
-                        (title != null ? title : "Document") + " links to: " + url, 0.9, null));
+                        (title != null ? title : "Document") + " links to: " + url, 0.9, docRelProps));
             }
         } else if (bodyText != null && !bodyText.isBlank()) {
             // Fallback: extract URLs from body text (plaintext_fallback mode)
@@ -419,7 +426,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 entities.add(new ExtractedEntity(linkId, url,
                         GraphConstants.ENTITY_HYPERLINK, null, "Link to: " + url, 0.8, linkProps));
                 relationships.add(new ExtractedRelation(docEntityId, linkId, GraphConstants.REL_HAS_HYPERLINK,
-                        (title != null ? title : "Document") + " links to: " + url, 0.8, null));
+                        (title != null ? title : "Document") + " links to: " + url, 0.8, docRelProps));
                 urlCount++;
             }
         }
@@ -448,7 +455,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 relationships.add(new ExtractedRelation(
                         docEntityId, footnoteEntityId, GraphConstants.REL_HAS_FOOTNOTE,
                         (title != null ? title : "Document") + " has footnote: " + fnLabel,
-                        0.9, null
+                        0.9, docRelProps
                 ));
             }
         }
@@ -485,7 +492,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 relationships.add(new ExtractedRelation(
                         docEntityId, editEntityId, GraphConstants.REL_HAS_SUGGESTED_EDIT,
                         (title != null ? title : "Document") + " has suggested " + (editType != null ? editType : "edit"),
-                        0.85, null
+                        0.85, docRelProps
                 ));
             }
         }
@@ -517,6 +524,10 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
         entities.add(new ExtractedEntity(commentEntityId, "Comment by " + (author != null ? author : "Unknown"),
                 GraphConstants.ENTITY_GDOCS_COMMENT, null, null, 1.0, commentProps));
 
+        // Build relation props with occurredAt set to the comment creation date.
+        final Map<String, String> commentRelProps = commentDate != null
+                ? Map.of(GraphConstants.PROP_OCCURRED_AT, commentDate) : null;
+
         // Date entity for comment creation time
         if (commentDate != null && !commentDate.isBlank()) {
             String dateEntityId = entityId("date", commentDate);
@@ -524,14 +535,14 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                     GraphConstants.ENTITY_DATE, null, "Comment creation date: " + commentDate, 0.85,
                     Map.of("date", commentDate, "dateType", "created")));
             relationships.add(new ExtractedRelation(commentEntityId, dateEntityId,
-                    GraphConstants.REL_PUBLISHED_ON, "Comment created on " + commentDate, 0.85, null));
+                    GraphConstants.REL_PUBLISHED_ON, "Comment created on " + commentDate, 0.85, commentRelProps));
         }
 
         // Document entity reference
         String docEntityId = entityId("gdocs_document", documentId);
         entities.add(new ExtractedEntity(docEntityId, "Document " + documentId,
                 GraphConstants.ENTITY_GDOCS_DOCUMENT, null, null, 1.0, Map.of("documentId", documentId)));
-        relationships.add(new ExtractedRelation(commentEntityId, docEntityId, GraphConstants.REL_COMMENTED_ON, null, 1.0, null));
+        relationships.add(new ExtractedRelation(commentEntityId, docEntityId, GraphConstants.REL_COMMENTED_ON, null, 1.0, commentRelProps));
 
         // Author as person — prefer email-based ID for cross-source identity resolution
         if (author != null) {
@@ -546,7 +557,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 authorId = entityId("person_name", author.toLowerCase());
             }
             entities.add(new ExtractedEntity(authorId, author, GraphConstants.ENTITY_PERSON, null, null, 1.0, authorProps));
-            relationships.add(new ExtractedRelation(commentEntityId, authorId, GraphConstants.REL_AUTHORED_BY, null, 1.0, null));
+            relationships.add(new ExtractedRelation(commentEntityId, authorId, GraphConstants.REL_AUTHORED_BY, null, 1.0, commentRelProps));
         }
 
         // Comment replies — create GDOCS_REPLY entities with REPLIED_TO edges
@@ -574,6 +585,10 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 entities.add(new ExtractedEntity(replyEntityId, "Reply by " + replyAuthor,
                         GraphConstants.ENTITY_GDOCS_REPLY, null, null, 0.9, replyProps));
 
+                // Build reply relation props with occurredAt from reply creation time
+                final Map<String, String> replyRelProps = replyCreatedTime != null
+                        ? Map.of(GraphConstants.PROP_OCCURRED_AT, replyCreatedTime) : null;
+
                 // DATE entity from reply creation time
                 if (replyCreatedTime != null) {
                     String dateStr = replyCreatedTime.contains("T")
@@ -584,7 +599,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                             Map.of("date", dateStr, "dateType", "replyCreated")));
                     relationships.add(new ExtractedRelation(replyEntityId, replyDateId,
                             GraphConstants.REL_PUBLISHED_ON,
-                            "Reply created on " + dateStr, 0.85, null));
+                            "Reply created on " + dateStr, 0.85, replyRelProps));
                 }
 
                 // DATE entity from reply modification time (MODIFIED_ON)
@@ -597,12 +612,12 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                             Map.of("date", modDateStr, "dateType", "replyModified")));
                     relationships.add(new ExtractedRelation(replyEntityId, replyModDateId,
                             GraphConstants.REL_MODIFIED_ON,
-                            "Reply modified on " + modDateStr, 0.85, null));
+                            "Reply modified on " + modDateStr, 0.85, replyRelProps));
                 }
 
                 // Reply → parent comment
                 relationships.add(new ExtractedRelation(replyEntityId, commentEntityId, GraphConstants.REL_REPLIED_TO,
-                        "Reply to comment", 1.0, null));
+                        "Reply to comment", 1.0, replyRelProps));
 
                 // Reply author as person — prefer email-based ID for cross-source identity resolution
                 String replyAuthorEmail = replyMap.get("authorEmail") instanceof String s2 ? s2 : null;
@@ -618,7 +633,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 entities.add(new ExtractedEntity(replyAuthorId, replyAuthor, GraphConstants.ENTITY_PERSON,
                         null, null, 1.0, replyAuthorProps));
                 relationships.add(new ExtractedRelation(replyEntityId, replyAuthorId, GraphConstants.REL_AUTHORED_BY,
-                        null, 1.0, null));
+                        null, 1.0, replyRelProps));
             }
         }
     }
@@ -647,20 +662,25 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
         // Date entity for revision modification time
         String revModTime = meta.get("gdocs.revisionModifiedTime") != null
                 ? String.valueOf(meta.get("gdocs.revisionModifiedTime")) : null;
+
+        // Build relation props with occurredAt set to the revision modification time.
+        final Map<String, String> revRelProps = revModTime != null
+                ? Map.of(GraphConstants.PROP_OCCURRED_AT, revModTime) : null;
+
         if (revModTime != null && !revModTime.isBlank()) {
             String dateEntityId = entityId("date", revModTime);
             entities.add(new ExtractedEntity(dateEntityId, revModTime,
                     GraphConstants.ENTITY_DATE, null, "Revision date: " + revModTime, 0.85,
                     Map.of("date", revModTime, "dateType", "modified")));
             relationships.add(new ExtractedRelation(revEntityId, dateEntityId,
-                    GraphConstants.REL_MODIFIED_ON, "Revision modified on " + revModTime, 0.85, null));
+                    GraphConstants.REL_MODIFIED_ON, "Revision modified on " + revModTime, 0.85, revRelProps));
         }
 
         // Document entity reference
         String docEntityId = entityId("gdocs_document", documentId);
         entities.add(new ExtractedEntity(docEntityId, "Document " + documentId,
                 GraphConstants.ENTITY_GDOCS_DOCUMENT, null, null, 1.0, Map.of("documentId", documentId)));
-        relationships.add(new ExtractedRelation(revEntityId, docEntityId, GraphConstants.REL_REVISION_OF, null, 1.0, null));
+        relationships.add(new ExtractedRelation(revEntityId, docEntityId, GraphConstants.REL_REVISION_OF, null, 1.0, revRelProps));
 
         // Modifier as person — prefer email-based ID for cross-source identity resolution
         if (modifier != null) {
@@ -675,7 +695,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                 modifierId = entityId("person_name", modifier.toLowerCase());
             }
             entities.add(new ExtractedEntity(modifierId, modifier, GraphConstants.ENTITY_PERSON, null, null, 1.0, modProps));
-            relationships.add(new ExtractedRelation(revEntityId, modifierId, GraphConstants.REL_MODIFIED_BY, null, 1.0, null));
+            relationships.add(new ExtractedRelation(revEntityId, modifierId, GraphConstants.REL_MODIFIED_BY, null, 1.0, revRelProps));
         }
 
         // Chain revisions: SUCCESSOR_OF relationship from this revision to previous
@@ -687,7 +707,7 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
                     Map.of("revisionId", previousRevisionId, "documentId", documentId)));
             relationships.add(new ExtractedRelation(revEntityId, prevRevEntityId,
                     GraphConstants.REL_SUCCESSOR_OF, "Revision " + revisionId + " succeeds " + previousRevisionId,
-                    1.0, null));
+                    1.0, revRelProps));
         }
     }
 

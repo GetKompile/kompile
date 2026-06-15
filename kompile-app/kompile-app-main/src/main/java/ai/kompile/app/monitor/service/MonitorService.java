@@ -56,13 +56,21 @@ import java.util.UUID;
 @Slf4j
 public class MonitorService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected MonitorService() {}
+
+
     static final String MONITOR_GROUP = "kompile-monitors";
     static final String JOB_DATA_MONITOR_ID = "monitorId";
 
-    private final MonitorRegistrationRepository repository;
-    private final SimpMessagingTemplate messagingTemplate;
-    private final ChatHistoryService chatHistoryService;
-    private final Scheduler scheduler;
+    @Autowired
+    private MonitorRegistrationRepository repository;
+    @Autowired(required = false)
+    private SimpMessagingTemplate messagingTemplate;
+    @Autowired(required = false)
+    private ChatHistoryService chatHistoryService;
+    @Autowired(required = false)
+    private Scheduler scheduler;
 
     public MonitorService(
             MonitorRegistrationRepository repository,

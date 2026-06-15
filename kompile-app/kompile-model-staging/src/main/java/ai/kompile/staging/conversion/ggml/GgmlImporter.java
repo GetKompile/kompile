@@ -172,7 +172,7 @@ public class GgmlImporter {
                 metadata.put(key, value);
                 log.trace("Metadata: {} = {} (type {})", key, value, valueType);
             } catch (Exception e) {
-                log.warn("Error reading metadata entry {}: {}", i, e.getMessage());
+                log.warn("Error reading metadata entry {}", i, e);
                 break;
             }
         }

@@ -37,11 +37,11 @@ import java.util.stream.Collectors;
 @Slf4j
 public class GraphBuildingServiceImpl implements GraphBuildingService {
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
-    private final EntityMentionRepository entityMentionRepository;
-    private final EntityExtractionService entityExtractionService;
-    private final KnowledgeGraphService knowledgeGraphService;
+    private GraphNodeRepository nodeRepository;
+    private GraphEdgeRepository edgeRepository;
+    private EntityMentionRepository entityMentionRepository;
+    private EntityExtractionService entityExtractionService;
+    private KnowledgeGraphService knowledgeGraphService;
 
     private final Map<String, BuildStatus> jobStatuses = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<BuildStatus>> runningJobs = new ConcurrentHashMap<>();
@@ -61,6 +61,10 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
         this.knowledgeGraphService = knowledgeGraphService;
     }
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected GraphBuildingServiceImpl() {}
+
+
     @Override
     public BuildStatus buildGraphFromAllSources(BuildConfig config) {
         String jobId = UUID.randomUUID().toString();
@@ -71,7 +75,13 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
         jobStatuses.put(jobId, status);
 
         if (config.asyncProcessing()) {
-            CompletableFuture.runAsync(() -> executeBuild(jobId, null, config));
+            CompletableFuture.runAsync(() -> executeBuild(jobId, null, config))
+                    .exceptionally(ex -> {
+                        jobStatuses.put(jobId, new BuildStatus(
+                                jobId, "FAILED", 0, 0, 0, 0, 0, 0,
+                                ex.getMessage(), System.currentTimeMillis(), null));
+                        return null;
+                    });
             return status;
         } else {
             return executeBuild(jobId, null, config);
@@ -88,7 +98,13 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
         jobStatuses.put(jobId, status);
 
         if (config.asyncProcessing()) {
-            CompletableFuture.runAsync(() -> executeBuild(jobId, sourceIds, config));
+            CompletableFuture.runAsync(() -> executeBuild(jobId, sourceIds, config))
+                    .exceptionally(ex -> {
+                        jobStatuses.put(jobId, new BuildStatus(
+                                jobId, "FAILED", sourceIds.size(), 0, 0, 0, 0, 0,
+                                ex.getMessage(), System.currentTimeMillis(), null));
+                        return null;
+                    });
             return status;
         } else {
             return executeBuild(jobId, sourceIds, config);
@@ -142,7 +158,7 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
         // Get or create document node
         GraphNode docNode = nodeRepository.findByExternalIdAndNodeType(documentId, NodeLevel.DOCUMENT)
             .orElseGet(() -> {
-                String title = metadata != null && metadata.containsKey("title") ?
+                String title = metadata != null && metadata.get("title") != null ?
                     metadata.get("title").toString() : documentId;
                 return knowledgeGraphService.createDocumentNode(
                     sourceId != null ? nodeRepository.findByNodeId(sourceId).orElse(null) : null,

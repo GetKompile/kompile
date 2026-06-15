@@ -101,10 +101,10 @@ public class DiffIndexService {
      * @return number of new entries indexed
      */
     @Async
-    public int reindexAll() {
+    public void reindexAll() {
         if (!indexing.compareAndSet(false, true)) {
             log.info("Indexing already in progress");
-            return 0;
+            return;
         }
 
         try {
@@ -122,7 +122,6 @@ public class DiffIndexService {
             }
 
             log.info("Reindex complete: {} new entries", total);
-            return total;
         } finally {
             indexing.set(false);
         }
@@ -495,7 +494,9 @@ public class DiffIndexService {
                             long numericPart = 0;
                             try {
                                 numericPart = Long.parseLong(entry.getId().replaceAll("[^0-9]", ""), 16);
-                            } catch (NumberFormatException ignored) {}
+                            } catch (NumberFormatException e) {
+                                log.trace("Could not parse numeric part of diff index entry id '{}': {}", entry.getId(), e.getMessage());
+                            }
                             if (numericPart > idCounter.get()) {
                                 idCounter.set(numericPart);
                             }

@@ -92,11 +92,11 @@ public class VlmTestSubprocessLauncher {
 
     private final Map<String, VlmTestHandle> activeTests = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> logSequenceCounters = new ConcurrentHashMap<>();
-    private final ExecutorService executor = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "vlm-test-launcher");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ExecutorService executor = new java.util.concurrent.ThreadPoolExecutor(
+            2, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<>(32),
+            r -> { Thread t = new Thread(r, "vlm-test-launcher"); t.setDaemon(true); return t; },
+            new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
 
     public VlmTestSubprocessLauncher(SubprocessExecutableConfig execConfig,
                                       ServerPortService serverPortService,
@@ -430,12 +430,19 @@ public class VlmTestSubprocessLauncher {
 
             readStdout(handle);
 
-            // Wait for process to complete
-            int exitCode = process.waitFor();
+            // Wait for process to complete with timeout
+            boolean exited = process.waitFor(60, TimeUnit.MINUTES);
             stderrFuture.cancel(true);
+            if (!exited) {
+                process.destroyForcibly();
+                throw new RuntimeException("VLM test process timed out after 60 minutes");
+            }
+            int exitCode = process.exitValue();
 
             // Clean up temp file
-            try { Files.deleteIfExists(argsFile); } catch (Exception ignored) {}
+            try { Files.deleteIfExists(argsFile); } catch (Exception e) {
+                logger.warn("Failed to delete VLM test args file {}: {}", argsFile, e.getMessage());
+            }
 
             if (exitCode == 0) {
                 VlmTestResult result = handle.buildResult("COMPLETED");
@@ -601,41 +608,50 @@ public class VlmTestSubprocessLauncher {
         try {
             SubprocessMessage message = MAPPER.readValue(json, SubprocessMessage.class);
 
-            if (message instanceof SubprocessMessage.Progress progress) {
-                handle.lastProgress = progress.progressPercent();
-                handle.lastPhase = progress.phase();
+            SubprocessMessage.dispatch(message, new SubprocessMessage.Handler() {
+                @Override
+                public void onProgress(SubprocessMessage.Progress progress) throws Exception {
+                    handle.lastProgress = progress.progressPercent();
+                    handle.lastPhase = progress.phase();
 
-                // Check for per-page result or VLM completion data
-                String msg = progress.message();
-                if (msg != null && msg.startsWith("PAGE_RESULT:")) {
-                    String pageJson = msg.substring("PAGE_RESULT:".length());
-                    Map<String, Object> pageData = MAPPER.readValue(pageJson, Map.class);
-                    handle.pageResults.add(pageData);
-                } else if (msg != null && msg.startsWith("VLM_RESULTS:")) {
-                    String resultsJson = msg.substring("VLM_RESULTS:".length());
-                    Map<String, Object> resultsData = MAPPER.readValue(resultsJson, Map.class);
-                    handle.completionData = resultsData;
+                    // Check for per-page result or VLM completion data
+                    String msg = progress.message();
+                    if (msg != null && msg.startsWith("PAGE_RESULT:")) {
+                        String pageJson = msg.substring("PAGE_RESULT:".length());
+                        Map<String, Object> pageData = MAPPER.readValue(pageJson, Map.class);
+                        handle.pageResults.add(pageData);
+                    } else if (msg != null && msg.startsWith("VLM_RESULTS:")) {
+                        String resultsJson = msg.substring("VLM_RESULTS:".length());
+                        Map<String, Object> resultsData = MAPPER.readValue(resultsJson, Map.class);
+                        handle.completionData = resultsData;
+                    }
+
+                    sendWebSocketUpdate(handle.taskId, "RUNNING",
+                            progress.progressPercent(), progress.phase(),
+                            progress.currentStep(), null);
                 }
 
-                sendWebSocketUpdate(handle.taskId, "RUNNING",
-                        progress.progressPercent(), progress.phase(),
-                        progress.currentStep(), null);
-
-            } else if (message instanceof SubprocessMessage.Completed completed) {
-                handle.phaseDurations = completed.phaseDurations();
-
-            } else if (message instanceof SubprocessMessage.Failed failed) {
-                handle.errorMessage = failed.errorMessage();
-                sendWebSocketUpdate(handle.taskId, "FAILED", 0, "ERROR",
-                        failed.errorMessage(), null);
-
-            } else if (message instanceof SubprocessMessage.Heartbeat heartbeat) {
-                handle.lastHeartbeat = System.currentTimeMillis();
-                // Broadcast heartbeat memory data to WebSocket
-                if (heartbeatBroadcaster != null) {
-                    heartbeatBroadcaster.broadcastHeartbeat(handle.taskId, "vlm", heartbeat);
+                @Override
+                public void onCompleted(SubprocessMessage.Completed completed) {
+                    handle.phaseDurations = completed.phaseDurations();
                 }
-            }
+
+                @Override
+                public void onFailed(SubprocessMessage.Failed failed) {
+                    handle.errorMessage = failed.errorMessage();
+                    sendWebSocketUpdate(handle.taskId, "FAILED", 0, "ERROR",
+                            failed.errorMessage(), null);
+                }
+
+                @Override
+                public void onHeartbeat(SubprocessMessage.Heartbeat heartbeat) {
+                    handle.lastHeartbeat = System.currentTimeMillis();
+                    // Broadcast heartbeat memory data to WebSocket
+                    if (heartbeatBroadcaster != null) {
+                        heartbeatBroadcaster.broadcastHeartbeat(handle.taskId, "vlm", heartbeat);
+                    }
+                }
+            });
         } catch (Exception e) {
             logger.warn("Failed to parse VLM test subprocess message: {}", json, e);
         }

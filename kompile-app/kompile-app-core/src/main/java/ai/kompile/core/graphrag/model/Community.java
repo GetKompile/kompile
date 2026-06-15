@@ -31,6 +31,11 @@ public class Community {
     private String id;
 
     /**
+     * A human-readable title for the community.
+     */
+    private String title;
+
+    /**
      * A list of entity IDs that belong to this community.
      */
     private List<String> entities;

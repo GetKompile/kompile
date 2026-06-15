@@ -47,10 +47,18 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- Spring Data JPA -->
+        <!-- Spring Data JPA (byte-buddy excluded: Hibernate 6.4 uses it for runtime
+             proxy generation via ServiceLoader, which fails in GraalVM native images.
+             Without it on classpath, Hibernate falls back to none.BytecodeProviderImpl.) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>net.bytebuddy</groupId>
+                    <artifactId>byte-buddy</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- H2 Database (embedded by default) -->

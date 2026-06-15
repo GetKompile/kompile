@@ -40,13 +40,13 @@ public class CodeProjectController {
 
     private static final Logger log = LoggerFactory.getLogger(CodeProjectController.class);
 
-    private final CodeProjectRepository projectRepository;
-    private final IndexedDirectoryRepository directoryRepository;
-    private final CodeEntityRepository entityRepository;
-    private final CodeRelationRepository relationRepository;
-    private final FileFingerprintRepository fingerprintRepository;
-    private final CodebaseIndexer indexer;
-    private final CodeSearchService searchService;
+    private CodeProjectRepository projectRepository;
+    private IndexedDirectoryRepository directoryRepository;
+    private CodeEntityRepository entityRepository;
+    private CodeRelationRepository relationRepository;
+    private FileFingerprintRepository fingerprintRepository;
+    private CodebaseIndexer indexer;
+    private CodeSearchService searchService;
 
     @Autowired
     public CodeProjectController(CodeProjectRepository projectRepository,
@@ -64,6 +64,10 @@ public class CodeProjectController {
         this.indexer = indexer;
         this.searchService = searchService;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected CodeProjectController() {}
+
 
     // ── CRUD ─────────────────────────────────────────────────────────
 

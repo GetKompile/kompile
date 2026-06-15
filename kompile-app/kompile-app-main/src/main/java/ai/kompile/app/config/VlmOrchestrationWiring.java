@@ -29,7 +29,7 @@ import org.springframework.context.annotation.Configuration;
  * Wires VLM orchestration config settings into the VlmDocumentPipeline.
  * Bridges kompile-app-main services to kompile-ocr-models components.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class VlmOrchestrationWiring {
 
     private static final Logger log = LoggerFactory.getLogger(VlmOrchestrationWiring.class);

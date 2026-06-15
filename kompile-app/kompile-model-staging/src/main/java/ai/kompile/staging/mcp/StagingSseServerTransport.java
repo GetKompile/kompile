@@ -175,8 +175,9 @@ public class StagingSseServerTransport implements McpServerTransportProvider {
                 );
             }
         } catch (JsonProcessingException e) {
-            log.error("Failed to parse initial message for session {}: {}", sessionId, e.getMessage());
-            try { emitter.completeWithError(e); } catch (Exception ignored) {}
+            log.error("Failed to parse initial message for session '{}'", sessionId, e);
+            try { emitter.completeWithError(e); }
+            catch (Exception signalEx) { log.debug("Failed to signal parse error on SSE emitter for session {}: {}", sessionId, signalEx.getMessage()); }
         }
 
         return new StreamableHttpResult(sessionId, emitter);
@@ -213,13 +214,15 @@ public class StagingSseServerTransport implements McpServerTransportProvider {
                     v -> sessionTransport.setResponseEmitter(null),
                     ex -> {
                         sessionTransport.setResponseEmitter(null);
-                        try { responseEmitter.completeWithError(ex); } catch (Exception ignored) {}
+                        try { responseEmitter.completeWithError(ex); }
+                        catch (Exception signalEx) { log.debug("Failed to signal processing error on SSE response emitter for session {}: {}", sessionId, signalEx.getMessage()); }
                     }
                 );
             }
         } catch (JsonProcessingException e) {
             sessionTransport.setResponseEmitter(null);
-            try { responseEmitter.completeWithError(e); } catch (Exception ignored) {}
+            try { responseEmitter.completeWithError(e); }
+            catch (Exception signalEx) { log.debug("Failed to signal parse error on SSE response emitter for session {}: {}", sessionId, signalEx.getMessage()); }
             throw new RuntimeException("Failed to parse message", e);
         }
 
@@ -326,7 +329,8 @@ public class StagingSseServerTransport implements McpServerTransportProvider {
                             .name(MESSAGE_EVENT_TYPE)
                             .data(json, MediaType.TEXT_PLAIN));
                     if (responseEmitter != null) {
-                        try { responseEmitter.complete(); } catch (Exception ignored) {}
+                        try { responseEmitter.complete(); }
+                        catch (Exception e) { log.debug("Failed to complete SSE response emitter for session {}: {}", sessionId, e.getMessage()); }
                     }
                 } catch (IOException e) {
                     throw new RuntimeException("Failed to send message", e);
@@ -345,7 +349,8 @@ public class StagingSseServerTransport implements McpServerTransportProvider {
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
-                try { emitter.complete(); } catch (Exception ignored) {}
+                try { emitter.complete(); }
+                catch (Exception e) { log.debug("Failed to complete SSE emitter on close for session {}: {}", sessionId, e.getMessage()); }
             }
         }
     }

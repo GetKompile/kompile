@@ -86,12 +86,16 @@ public class RagToolImpl {
         } else {
             this.documentRetriever = documentRetriever.get(0);
         }
+        if (this.documentRetriever instanceof NoOpDocumentRetrieverImpl) {
+            logger.warn("RagToolImpl: Only NoOp document retriever available — RAG queries will return no results");
+        }
         this.objectMapper = objectMapper;
         this.optimizationProvider = optimizationProvider != null
                 ? optimizationProvider
                 : McpOptimizationConfigProvider.ofDefaults();
         this.resultCache = resultCache;
-        logger.debug("RagToolImpl constructed with DocumentRetriever: {}", documentRetriever.getClass().getSimpleName());
+        logger.debug("RagToolImpl constructed with DocumentRetriever: {}",
+                this.documentRetriever != null ? this.documentRetriever.getClass().getSimpleName() : "null");
     }
 
     /**

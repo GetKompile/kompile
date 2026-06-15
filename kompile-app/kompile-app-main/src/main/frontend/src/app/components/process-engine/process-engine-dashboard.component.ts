@@ -22,7 +22,8 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
-import { ProcessEngineService } from '../../services/process-engine.service';
+import { ProcessEngineService, WorkflowRun } from '../../services/process-engine.service';
+import { ProcessAttributionService } from '../../services/process-attribution.service';
 import { ProcessOntologyComponent } from './process-ontology.component';
 import { ProcessDefinitionsComponent } from './process-definitions.component';
 import { ProcessRunsComponent } from './process-runs.component';
@@ -32,6 +33,7 @@ import { ProcessRunDetailComponent } from './process-run-detail.component';
 import { GraphNodePopoverComponent } from './graph-node-popover.component';
 import { ExcelArtifactComponent } from './excel-artifact.component';
 import { ProcessDiagramComponent } from './process-diagram.component';
+import { ProcessDiscoverySuggestionsComponent } from './process-discovery-suggestions.component';
 
 @Component({
   standalone: true,
@@ -48,7 +50,8 @@ import { ProcessDiagramComponent } from './process-diagram.component';
     ProcessRunDetailComponent,
     GraphNodePopoverComponent,
     ExcelArtifactComponent,
-    ProcessDiagramComponent
+    ProcessDiagramComponent,
+    ProcessDiscoverySuggestionsComponent
   ],
   template: `
     <div class="dashboard-container">
@@ -72,6 +75,11 @@ import { ProcessDiagramComponent } from './process-diagram.component';
               <mat-icon>approval</mat-icon>
               {{ pendingApprovalsCount }} pending approval{{ pendingApprovalsCount !== 1 ? 's' : '' }}
             </mat-chip>
+            <mat-chip class="badge-chip badge-risk"
+                      *ngIf="highRiskRunsCount > 0">
+              <mat-icon>warning</mat-icon>
+              {{ highRiskRunsCount }} high-risk
+            </mat-chip>
           </mat-chip-set>
         </div>
       </div>
@@ -87,6 +95,18 @@ import { ProcessDiagramComponent } from './process-diagram.component';
           </ng-template>
           <div class="tab-content">
             <app-process-ontology></app-process-ontology>
+          </div>
+        </mat-tab>
+
+        <!-- Discovery Tab -->
+        <mat-tab>
+          <ng-template mat-tab-label>
+            <mat-icon class="tab-icon">auto_awesome</mat-icon>
+            Discovery
+            <span class="tab-badge" *ngIf="pendingSuggestionsCount > 0">{{ pendingSuggestionsCount }}</span>
+          </ng-template>
+          <div class="tab-content">
+            <app-process-discovery-suggestions></app-process-discovery-suggestions>
           </div>
         </mat-tab>
 
@@ -200,6 +220,7 @@ import { ProcessDiagramComponent } from './process-diagram.component';
     .badge-chip mat-icon { font-size: 16px !important; width: 16px !important; height: 16px !important; }
     .badge-runs { background: rgba(144,202,249,0.15) !important; color: #90caf9 !important; }
     .badge-approvals { background: rgba(255,183,77,0.2) !important; color: #ffb74d !important; }
+    .badge-risk { background: rgba(239,83,80,0.2) !important; color: #ef5350 !important; }
 
     .pe-tabs { flex: 1; }
     .tab-icon { font-size: 18px; width: 18px; height: 18px; margin-right: 4px; vertical-align: middle; }
@@ -234,6 +255,8 @@ import { ProcessDiagramComponent } from './process-diagram.component';
 export class ProcessEngineDashboardComponent implements OnInit {
   activeRunsCount = 0;
   pendingApprovalsCount = 0;
+  pendingSuggestionsCount = 0;
+  highRiskRunsCount = 0;
 
   // Excel tab state
   excelGraphJsonInput = '';
@@ -241,6 +264,7 @@ export class ProcessEngineDashboardComponent implements OnInit {
 
   constructor(
     private processEngineService: ProcessEngineService,
+    private processAttributionService: ProcessAttributionService,
     private snackBar: MatSnackBar
   ) {}
 
@@ -250,7 +274,10 @@ export class ProcessEngineDashboardComponent implements OnInit {
 
   private loadCounts(): void {
     this.processEngineService.listActiveRuns().subscribe({
-      next: (runs) => { this.activeRunsCount = runs.length; },
+      next: (runs) => {
+        this.activeRunsCount = runs.length;
+        this.assessRunRisks(runs);
+      },
       error: () => { this.activeRunsCount = 0; }
     });
 
@@ -258,6 +285,42 @@ export class ProcessEngineDashboardComponent implements OnInit {
       next: (approvals) => { this.pendingApprovalsCount = approvals.length; },
       error: () => { this.pendingApprovalsCount = 0; }
     });
+
+    this.processEngineService.listStoredSuggestions(undefined, true).subscribe({
+      next: (response) => { this.pendingSuggestionsCount = response.count || 0; },
+      error: () => { this.pendingSuggestionsCount = 0; }
+    });
+  }
+
+  private assessRunRisks(runs: WorkflowRun[]): void {
+    if (runs.length === 0) {
+      this.highRiskRunsCount = 0;
+      return;
+    }
+    let highCount = 0;
+    let responded = 0;
+    const total = Math.min(runs.length, 10); // Cap at 10 to avoid overload
+    for (let i = 0; i < total; i++) {
+      const run = runs[i];
+      if (!run.id) { responded++; continue; }
+      this.processAttributionService.assessRunRisk(run.id, false).subscribe({
+        next: (result) => {
+          if (result.riskLevel === 'HIGH' || result.riskLevel === 'CRITICAL') {
+            highCount++;
+          }
+          responded++;
+          if (responded >= total) {
+            this.highRiskRunsCount = highCount;
+          }
+        },
+        error: () => {
+          responded++;
+          if (responded >= total) {
+            this.highRiskRunsCount = highCount;
+          }
+        }
+      });
+    }
   }
 
   loadExcelGraph(): void {

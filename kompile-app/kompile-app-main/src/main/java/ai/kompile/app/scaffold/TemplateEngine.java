@@ -18,6 +18,8 @@ package ai.kompile.app.scaffold;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -35,6 +37,7 @@ import java.util.regex.Pattern;
  */
 public class TemplateEngine {
 
+    private static final Logger log = LoggerFactory.getLogger(TemplateEngine.class);
     private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{(\\w+)}}");
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -69,7 +72,7 @@ public class TemplateEngine {
             try {
                 String templateContent = loadTemplate(templateResourcePath + "/" + templateFile);
                 if (templateContent == null) {
-                    System.err.println("Warning: Template file not found: " + templateFile);
+                    log.warn("Template file not found: {}", templateFile);
                     return;
                 }
 
@@ -79,7 +82,7 @@ public class TemplateEngine {
                 Files.createDirectories(fullOutputPath.getParent());
                 Files.writeString(fullOutputPath, processedContent, StandardCharsets.UTF_8);
             } catch (IOException e) {
-                System.err.println("Error processing template " + templateFile + ": " + e.getMessage());
+                log.error("Error processing template {}: {}", templateFile, e.getMessage());
             }
         });
     }

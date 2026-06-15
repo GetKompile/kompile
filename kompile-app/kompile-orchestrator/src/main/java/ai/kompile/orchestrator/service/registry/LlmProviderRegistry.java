@@ -28,12 +28,12 @@ import java.util.concurrent.ConcurrentHashMap;
 public class LlmProviderRegistry {
 
     private final Map<String, LlmProvider> providers = new ConcurrentHashMap<>();
-    private String defaultProviderId;
+    private volatile String defaultProviderId;
 
     /**
      * Register an LLM provider.
      */
-    public void register(LlmProvider provider) {
+    public synchronized void register(LlmProvider provider) {
         if (provider == null || provider.getId() == null) {
             throw new IllegalArgumentException("Provider and ID must not be null");
         }
@@ -54,7 +54,7 @@ public class LlmProviderRegistry {
     /**
      * Unregister an LLM provider.
      */
-    public void unregister(String providerId) {
+    public synchronized void unregister(String providerId) {
         providers.remove(providerId);
         if (providerId.equals(defaultProviderId)) {
             // Find new default
@@ -87,7 +87,7 @@ public class LlmProviderRegistry {
     /**
      * Set the default provider.
      */
-    public void setDefault(String providerId) {
+    public synchronized void setDefault(String providerId) {
         if (!providers.containsKey(providerId)) {
             throw new IllegalArgumentException("Provider not registered: " + providerId);
         }

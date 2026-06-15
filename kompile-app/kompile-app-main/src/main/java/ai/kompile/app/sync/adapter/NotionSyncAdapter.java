@@ -62,7 +62,13 @@ public class NotionSyncAdapter implements SyncAdapter {
     @Autowired
     private ObjectMapper objectMapper;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
+    {
+        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(30_000);
+        restTemplate = new RestTemplate(factory);
+    }
 
     @Override
     public String adapterId() {
@@ -248,7 +254,8 @@ public class NotionSyncAdapter implements SyncAdapter {
         HttpEntity<Void> entity = new HttpEntity<>(notionHeaders());
         ResponseEntity<Map> resp = restTemplate.exchange(
                 NOTION_API_BASE + path, HttpMethod.GET, entity, Map.class);
-        return resp.getBody();
+        Map<String, Object> body = resp.getBody();
+        return body != null ? body : Collections.emptyMap();
     }
 
     @SuppressWarnings("unchecked")
@@ -257,7 +264,8 @@ public class NotionSyncAdapter implements SyncAdapter {
         HttpEntity<Object> entity = new HttpEntity<>(body, notionHeaders());
         ResponseEntity<Map> resp = restTemplate.exchange(
                 NOTION_API_BASE + path, HttpMethod.POST, entity, Map.class);
-        return resp.getBody();
+        Map<String, Object> responseBody = resp.getBody();
+        return responseBody != null ? responseBody : Collections.emptyMap();
     }
 
     @SuppressWarnings("unchecked")

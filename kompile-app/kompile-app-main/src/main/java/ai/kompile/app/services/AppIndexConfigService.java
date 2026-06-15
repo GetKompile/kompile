@@ -745,7 +745,7 @@ public class AppIndexConfigService {
         } catch (NoSuchMethodException e) {
             log.debug("Vector store does not track encoder model (no setEncoderModelId method)");
         } catch (Exception e) {
-            log.warn("Error notifying vector store of model change: {}", e.getMessage());
+            log.warn("Error notifying vector store of model change", e);
         }
     }
 
@@ -788,7 +788,8 @@ public class AppIndexConfigService {
                 Method setEnabled = rerankerService.getClass().getMethod("setEnabled", boolean.class);
                 setEnabled.invoke(rerankerService, rerankingEnabled);
                 changed = true;
-            } catch (NoSuchMethodException ignored) {
+            } catch (NoSuchMethodException e) {
+                log.debug("Reranker {} does not support setEnabled(), skipping", rerankerService.getClass().getSimpleName());
             }
 
             // Set reranker type
@@ -797,7 +798,8 @@ public class AppIndexConfigService {
                     Method setRerankerType = rerankerService.getClass().getMethod("setRerankerType", String.class);
                     setRerankerType.invoke(rerankerService, rerankerType);
                     changed = true;
-                } catch (NoSuchMethodException ignored) {
+                } catch (NoSuchMethodException e) {
+                    log.debug("Reranker {} does not support setRerankerType(), skipping", rerankerService.getClass().getSimpleName());
                 }
             }
 
@@ -809,7 +811,8 @@ public class AppIndexConfigService {
                     setCrossEncoderModel.invoke(rerankerService, crossEncoderModel);
                     this.currentRerankerModelId = crossEncoderModel;
                     changed = true;
-                } catch (NoSuchMethodException ignored) {
+                } catch (NoSuchMethodException e) {
+                    log.debug("Reranker {} does not support setCrossEncoderModel(), skipping", rerankerService.getClass().getSimpleName());
                 }
             }
 
@@ -819,7 +822,8 @@ public class AppIndexConfigService {
                     Method setTopK = rerankerService.getClass().getMethod("setTopK", int.class);
                     setTopK.invoke(rerankerService, rerankTopK);
                     changed = true;
-                } catch (NoSuchMethodException ignored) {
+                } catch (NoSuchMethodException e) {
+                    log.debug("Reranker {} does not support setTopK(), skipping", rerankerService.getClass().getSimpleName());
                 }
             }
 
@@ -829,7 +833,8 @@ public class AppIndexConfigService {
                     Method setMmrLambda = rerankerService.getClass().getMethod("setMmrLambda", double.class);
                     setMmrLambda.invoke(rerankerService, mmrLambda);
                     changed = true;
-                } catch (NoSuchMethodException ignored) {
+                } catch (NoSuchMethodException e) {
+                    log.debug("Reranker {} does not support setMmrLambda(), skipping", rerankerService.getClass().getSimpleName());
                 }
             }
 

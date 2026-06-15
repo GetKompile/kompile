@@ -16,6 +16,8 @@
 
 package ai.kompile.loader.email.inbox;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 
 import java.util.*;
@@ -32,6 +34,8 @@ import java.util.regex.Pattern;
  * surrounding context for downstream mapping to spreadsheet cells.</p>
  */
 public class EmailBodyValueExtractor {
+
+    private static final Logger log = LoggerFactory.getLogger(EmailBodyValueExtractor.class);
 
     // Currency amounts: $1,234.56 or USD 1234.56 or €100 etc.
     private static final Pattern CURRENCY_PATTERN = Pattern.compile(
@@ -123,7 +127,9 @@ public class EmailBodyValueExtractor {
                 values.add(new ExtractedValue(
                         "CURRENCY", m.group(), amount,
                         getContext(text, m.start(), m.end()), 0.9));
-            } catch (NumberFormatException ignored) { }
+            } catch (NumberFormatException e) {
+                log.trace("Could not parse currency amount '{}': {}", rawNum, e.getMessage());
+            }
         }
         return values;
     }
@@ -137,7 +143,9 @@ public class EmailBodyValueExtractor {
                 values.add(new ExtractedValue(
                         "PERCENTAGE", m.group(), pct / 100.0,
                         getContext(text, m.start(), m.end()), 0.9));
-            } catch (NumberFormatException ignored) { }
+            } catch (NumberFormatException e) {
+                log.trace("Could not parse percentage '{}': {}", m.group(1), e.getMessage());
+            }
         }
         return values;
     }

@@ -16,6 +16,7 @@
 
 package ai.kompile.app.config;
 
+import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,7 +35,8 @@ import jakarta.annotation.PostConstruct;
  * These settings work with both built-in models (ModelConstants) and
  * imported models (registry.json via archive import).
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
+@Getter
 public class ModelRoleConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(ModelRoleConfiguration.class);
@@ -81,44 +83,6 @@ public class ModelRoleConfiguration {
         log.info("  Hybrid Enabled: {}", hybridEnabled);
         log.info("  Reranking Enabled: {}", rerankingEnabled);
         log.info("  Registry Refresh Interval: {} seconds", registryRefreshIntervalSeconds);
-    }
-
-    // Getters
-
-    public String getDenseRetrievalModel() {
-        return denseRetrievalModel;
-    }
-
-    public String getSparseRetrievalModel() {
-        return sparseRetrievalModel;
-    }
-
-    public String getRerankingModel() {
-        return rerankingModel;
-    }
-
-    public boolean isHybridEnabled() {
-        return hybridEnabled;
-    }
-
-    public double getHybridDenseWeight() {
-        return hybridDenseWeight;
-    }
-
-    public boolean isRerankingEnabled() {
-        return rerankingEnabled;
-    }
-
-    public int getRerankingTopK() {
-        return rerankingTopK;
-    }
-
-    public int getRegistryRefreshIntervalSeconds() {
-        return registryRefreshIntervalSeconds;
-    }
-
-    public String getRegistryPath() {
-        return registryPath;
     }
 
     // Static accessors for use in factories (where Spring DI isn't available)

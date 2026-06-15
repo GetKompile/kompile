@@ -327,12 +327,16 @@ public class ConcurrentExtractionOrchestrator implements AutoCloseable {
                 }
 
             } catch (ExecutionException e) {
-                String error = "Extractor " + extractorName + " failed: " + e.getCause().getMessage();
+                Throwable cause = e.getCause();
+                String error = "Extractor " + extractorName + " failed: " + (cause != null ? cause.getMessage() : e.getMessage());
                 errors.add(error);
-                logger.error(error, e.getCause());
+                logger.error(error, cause);
 
                 if (config.failFast()) {
-                    throw (Exception) e.getCause();
+                    if (cause instanceof Exception) {
+                        throw (Exception) cause;
+                    }
+                    throw e;
                 }
 
             } catch (InterruptedException e) {
@@ -414,7 +418,7 @@ public class ConcurrentExtractionOrchestrator implements AutoCloseable {
     private void reportProgress(String extractorName, ContentExtractor.ExtractorType type,
                                 int processed, int total) {
         if (progressCallback != null) {
-            int percent = total > 0 ? (processed * 100) / total : 0;
+            int percent = total > 0 ? (int) ((processed * 100L) / total) : 0;
             progressCallback.accept(new ExtractionProgressReport(
                     extractorName, type, "processing", percent, processed, total,
                     String.format("Processed %d/%d documents", processed, total)

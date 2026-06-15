@@ -38,8 +38,10 @@ public class CrawlFactRegistrationCallbackImpl implements CrawlFactRegistrationC
 
     private static final Logger log = LoggerFactory.getLogger(CrawlFactRegistrationCallbackImpl.class);
 
-    private final FactSheetService factSheetService;
-    private final FactRepository factRepository;
+    @Autowired
+    private FactSheetService factSheetService;
+    @Autowired
+    private FactRepository factRepository;
 
     @Autowired
     public CrawlFactRegistrationCallbackImpl(FactSheetService factSheetService,
@@ -47,6 +49,10 @@ public class CrawlFactRegistrationCallbackImpl implements CrawlFactRegistrationC
         this.factSheetService = factSheetService;
         this.factRepository = factRepository;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected CrawlFactRegistrationCallbackImpl() {}
+
 
     @Override
     @Transactional

@@ -84,16 +84,15 @@ public class BoundaryAwareChunker implements TextChunker {
         " ",       // Spaces
     };
 
-    private final BoundaryDetector boundaryDetector;
-
     @Autowired
+    private BoundaryDetector boundaryDetector;
+
     public BoundaryAwareChunker(BoundaryDetector boundaryDetector) {
         this.boundaryDetector = boundaryDetector;
     }
 
-    // Constructor for use without Spring
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
     public BoundaryAwareChunker() {
-        this.boundaryDetector = new BoundaryDetector();
     }
 
     @Override

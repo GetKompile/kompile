@@ -778,7 +778,9 @@ public class KompileApplicationBuilder {
                 sourceArtifact = assemblyFile.get();
             } else {
                 System.err.println("Assembly artifact not found in " + mavenTargetDir.getAbsolutePath() + " matching base '" + assemblyFinalNameBase + "' or '" + this.outputImageName + "'. Listing target dir:");
-                Files.list(mavenTargetDir.toPath()).forEach(f -> System.err.println("  - " + f.getFileName()));
+                try (java.util.stream.Stream<java.nio.file.Path> listing = Files.list(mavenTargetDir.toPath())) {
+                    listing.forEach(f -> System.err.println("  - " + f.getFileName()));
+                }
                 throw new IOException("Assembly artifact not found.");
             }
         } else {
@@ -800,7 +802,9 @@ public class KompileApplicationBuilder {
 
         if (sourceArtifact == null || !sourceArtifact.exists()) {
             System.err.println("Error: Final built artifact could not be definitively located in " + mavenTargetDir.getAbsolutePath() + ". Listing target dir:");
-            Files.list(mavenTargetDir.toPath()).forEach(f -> System.err.println("  - " + f.getFileName()));
+            try (java.util.stream.Stream<java.nio.file.Path> listing = Files.list(mavenTargetDir.toPath())) {
+                listing.forEach(f -> System.err.println("  - " + f.getFileName()));
+            }
             throw new IOException("Final built artifact not found for base name: " + this.outputImageName + " or " + artifactIdToSearch);
         }
 

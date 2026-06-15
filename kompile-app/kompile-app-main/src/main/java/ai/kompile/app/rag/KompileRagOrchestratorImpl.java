@@ -357,7 +357,9 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
                 if (queryEmbedding != null && !queryEmbedding.wasClosed()) {
                     try {
                         queryEmbedding.close();
-                    } catch (Exception ignored) {}
+                    } catch (Exception e) {
+                        log.warn("Failed to close query embedding array: {}", e.getMessage());
+                    }
                 }
 
                 // Build context

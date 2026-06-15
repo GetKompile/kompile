@@ -21,8 +21,11 @@ import ai.kompile.react.eval.model.EvalCase;
 import ai.kompile.react.eval.model.EvalSuite;
 import ai.kompile.react.eval.model.EvalSuiteResult;
 import ai.kompile.react.eval.model.EvalTestResult;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,10 +38,14 @@ import java.util.*;
  */
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class EvalSetService {
 
+
+    @Autowired
     private final JpaEvalTracker evalTracker;
+    @Autowired
     private final FactSheetService factSheetService;
 
     // ==================== Suite Operations ====================

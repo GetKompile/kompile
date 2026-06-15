@@ -35,7 +35,9 @@ import java.util.UUID;
     @Index(name = "idx_edge_weight", columnList = "weight"),
     @Index(name = "idx_edge_type_weight", columnList = "edgeType, weight"),
     @Index(name = "idx_edge_fact_sheet", columnList = "fact_sheet_id"),
-    @Index(name = "idx_edge_fact_sheet_type", columnList = "fact_sheet_id, edgeType")
+    @Index(name = "idx_edge_fact_sheet_type", columnList = "fact_sheet_id, edgeType"),
+    @Index(name = "idx_edge_occurred_at", columnList = "occurred_at"),
+    @Index(name = "idx_edge_fact_sheet_occurred", columnList = "fact_sheet_id, occurred_at")
 })
 @Data
 @Builder
@@ -177,6 +179,53 @@ public class GraphEdge {
      */
     @Column(name = "kg_embedding_version")
     private Long kgEmbeddingVersion;
+
+    /**
+     * Whether this edge has been soft-deleted (marked stale).
+     */
+    @Column
+    @Builder.Default
+    private Boolean stale = false;
+
+    /**
+     * When this edge was marked stale.
+     */
+    @Column(name = "stale_at")
+    private LocalDateTime staleAt;
+
+    /**
+     * Whether a user has pinned this edge (preventing automatic pruning).
+     */
+    @Column(name = "user_pinned")
+    @Builder.Default
+    private Boolean userPinned = false;
+
+    /**
+     * When this edge expires (for TTL-based sweeping).
+     */
+    @Column(name = "valid_until")
+    private LocalDateTime validUntil;
+
+    /**
+     * When this edge was last verified as still valid.
+     */
+    @Column(name = "last_verified_at")
+    private LocalDateTime lastVerifiedAt;
+
+    /**
+     * When this edge was first observed in the source.
+     */
+    @Column(name = "observed_at")
+    private LocalDateTime observedAt;
+
+    /**
+     * When the real-world event represented by this edge occurred.
+     * For example: email sent time, document edit time, commit timestamp,
+     * Google Docs modification time. Distinct from createdAt (DB insertion)
+     * and observedAt (when first seen during crawl).
+     */
+    @Column(name = "occurred_at")
+    private LocalDateTime occurredAt;
 
     @PrePersist
     protected void onCreate() {

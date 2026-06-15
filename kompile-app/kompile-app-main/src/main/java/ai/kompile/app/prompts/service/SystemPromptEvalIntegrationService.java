@@ -25,8 +25,11 @@ import ai.kompile.react.eval.model.EvalTestResult;
 import ai.kompile.react.eval.model.EvalSuiteResult;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,12 +43,18 @@ import java.util.stream.Collectors;
  */
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class SystemPromptEvalIntegrationService {
 
+
+    @Autowired
     private final SystemPromptService promptService;
+    @Autowired
     private final SystemPromptTestResultRepository testResultRepository;
+    @Autowired
     private final EvalSetService evalSetService;
+    @Autowired
     private final ObjectMapper objectMapper;
 
     /**

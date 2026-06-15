@@ -75,6 +75,10 @@ public class ModelCapabilityService {
             return new ModelCapabilities(modelId, false, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT);
         }
 
+        // Evict oldest entries if cache is too large to prevent unbounded growth
+        if (cache.size() > 500) {
+            cache.clear();
+        }
         return cache.computeIfAbsent(normalize(modelId), normalized -> {
             boolean vision = supportsVision(modelId);
 

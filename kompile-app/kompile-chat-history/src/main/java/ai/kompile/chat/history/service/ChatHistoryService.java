@@ -20,8 +20,11 @@ import ai.kompile.chat.history.domain.ChatMessage;
 import ai.kompile.chat.history.domain.ChatSession;
 import ai.kompile.chat.history.repository.ChatMessageRepository;
 import ai.kompile.chat.history.repository.ChatSessionRepository;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -39,12 +42,16 @@ import java.util.UUID;
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Transactional
 @ConditionalOnClass(name = "ai.kompile.chat.history.service.ChatHistoryService")
 @ConditionalOnProperty(name = "kompile.chat.history.enabled", havingValue = "true", matchIfMissing = true)
 public class ChatHistoryService {
 
+
+    @Autowired
     private final ChatSessionRepository sessionRepository;
+    @Autowired
     private final ChatMessageRepository messageRepository;
 
     // ═══════════════════════════════════════════════════════════════════════════════

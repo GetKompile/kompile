@@ -37,12 +37,12 @@ import java.util.stream.Collectors;
 @Slf4j
 public class FactSheetGraphServiceImpl implements FactSheetGraphService {
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
-    private final EntityMentionRepository entityMentionRepository;
-    private final KnowledgeGraphService knowledgeGraphService;
-    private final ConceptExtractor conceptExtractor;
-    private final SourceLinkingService sourceLinkingService;
+    private GraphNodeRepository nodeRepository;
+    private GraphEdgeRepository edgeRepository;
+    private EntityMentionRepository entityMentionRepository;
+    private KnowledgeGraphService knowledgeGraphService;
+    private ConceptExtractor conceptExtractor;
+    private SourceLinkingService sourceLinkingService;
 
     private final Map<String, GraphBuildStatus> jobStatuses = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<GraphBuildStatus>> runningJobs = new ConcurrentHashMap<>();
@@ -64,6 +64,10 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         this.sourceLinkingService = sourceLinkingService;
     }
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected FactSheetGraphServiceImpl() {}
+
+
     @Override
     public GraphBuildStatus buildGraphFromIndex(Long factSheetId, GraphBuildConfig config) {
         String jobId = UUID.randomUUID().toString();
@@ -75,7 +79,14 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         jobStatuses.put(jobId, status);
 
         if (config.asyncProcessing()) {
-            CompletableFuture.runAsync(() -> executeBuild(jobId, factSheetId, config));
+            CompletableFuture.runAsync(() -> executeBuild(jobId, factSheetId, config))
+                    .exceptionally(ex -> {
+                        jobStatuses.put(jobId, new GraphBuildStatus(
+                                jobId, "FactSheet-" + factSheetId, factSheetId,
+                                "FAILED", 0, 0, 0, 0, 0, ex.getMessage(),
+                                System.currentTimeMillis(), null, Map.of()));
+                        return null;
+                    });
             return status;
         } else {
             return executeBuild(jobId, factSheetId, config);
@@ -261,7 +272,7 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         }
 
         // Get or create document node
-        String title = metadata != null && metadata.containsKey("title") ?
+        String title = metadata != null && metadata.get("title") != null ?
             metadata.get("title").toString() : documentId;
 
         GraphNode docNode = nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
@@ -605,9 +616,9 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
     }
 
     private GraphNode createSourceNode(Long factSheetId, String sourceId, Map<String, Object> metadata) {
-        String title = metadata != null && metadata.containsKey("title") ?
+        String title = metadata != null && metadata.get("title") != null ?
             metadata.get("title").toString() : sourceId;
-        String sourceType = metadata != null && metadata.containsKey("sourceType") ?
+        String sourceType = metadata != null && metadata.get("sourceType") != null ?
             metadata.get("sourceType").toString() : "UNKNOWN";
 
         GraphNode node = GraphNode.builder()

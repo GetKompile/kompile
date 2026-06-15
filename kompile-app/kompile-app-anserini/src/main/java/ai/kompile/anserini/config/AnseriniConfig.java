@@ -22,6 +22,8 @@ import io.anserini.collection.JsonCollection;
 import io.anserini.index.generator.DefaultLuceneDocumentGenerator;
 import lombok.Data;
 import org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
@@ -41,6 +43,8 @@ public class AnseriniConfig {
     private String corpusPath; // This was used as the staging path for JSONs
 
     public static class AnseriniReflectionHints implements RuntimeHintsRegistrar {
+
+        private static final Logger log = LoggerFactory.getLogger(AnseriniReflectionHints.class);
 
         @Override
         public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
@@ -84,9 +88,9 @@ public class AnseriniConfig {
                     "/org/eclipse/deeplearning4j/tokenizers/" + platformInfo.getIdentifier() + "/manifest.properties"
             };
 
-            System.out.println("=== Registering Native Library Resources ===");
-            System.out.println("Platform: " + platformInfo.getIdentifier());
-            System.out.println("File Extension: " + platformInfo.getFileExtension());
+            log.debug("=== Registering Native Library Resources ===");
+            log.debug("Platform: {}", platformInfo.getIdentifier());
+            log.debug("File Extension: {}", platformInfo.getFileExtension());
 
             for (String resourcePath : resourcePaths) {
                 try {
@@ -95,24 +99,24 @@ public class AnseriniConfig {
 
                     if (resource.exists()) {
                         hints.resources().registerResource(resource);
-                        System.out.println("✓ Registered ClassPathResource: " + resourcePath);
+                        log.debug("Registered ClassPathResource: {}", resourcePath);
 
                         // Verify the resource is readable
                         try {
                             long size = resource.contentLength();
-                            System.out.println("  Size: " + size + " bytes");
+                            log.debug("  Size: {} bytes", size);
                         } catch (Exception e) {
-                            System.out.println("  Warning: Could not read size - " + e.getMessage());
+                            log.debug("  Warning: Could not read size - {}", e.getMessage());
                         }
                     } else {
-                        System.out.println("✗ Resource not found: " + resourcePath);
+                        log.debug("Resource not found: {}", resourcePath);
                     }
                 } catch (Exception e) {
-                    System.out.println("✗ Failed to register: " + resourcePath + " - " + e.getMessage());
+                    log.debug("Failed to register: {} - {}", resourcePath, e.getMessage());
                 }
             }
 
-            System.out.println("=== Native Library Resource Registration Complete ===");
+            log.debug("=== Native Library Resource Registration Complete ===");
         }
     }
 }

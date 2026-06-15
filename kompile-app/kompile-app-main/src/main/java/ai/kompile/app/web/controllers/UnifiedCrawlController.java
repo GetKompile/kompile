@@ -49,6 +49,8 @@ import java.lang.management.BufferPoolMXBean;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -74,6 +76,10 @@ import java.util.stream.Collectors;
 public class UnifiedCrawlController {
 
     private static final Logger log = LoggerFactory.getLogger(UnifiedCrawlController.class);
+
+    // Scheduling intervals
+    private static final long CRAWL_SYNC_INTERVAL_MS = 15_000L; // 15 seconds
+    private static final long CRAWL_LOG_PUBLISH_INTERVAL_MS = 2_000L; // 2 seconds
 
     private final UnifiedCrawlService unifiedCrawlService;
 
@@ -101,6 +107,9 @@ public class UnifiedCrawlController {
     @Autowired(required = false)
     private AppDocumentSourceProperties appDocumentSourceProperties;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @Autowired(required = false)
     private ai.kompile.app.services.scheduler.ResourceAwareJobScheduler resourceScheduler;
 
@@ -112,9 +121,9 @@ public class UnifiedCrawlController {
         if (appDocumentSourceProperties != null
                 && appDocumentSourceProperties.getUploadsPath() != null
                 && !appDocumentSourceProperties.getUploadsPath().trim().isEmpty()) {
-            this.uploadsPath = java.nio.file.Paths.get(appDocumentSourceProperties.getUploadsPath()).toAbsolutePath();
+            this.uploadsPath = Paths.get(appDocumentSourceProperties.getUploadsPath()).toAbsolutePath();
         } else {
-            this.uploadsPath = java.nio.file.Paths.get("./uploads").toAbsolutePath();
+            this.uploadsPath = Paths.get("./uploads").toAbsolutePath();
         }
         try {
             if (!Files.exists(this.uploadsPath)) {
@@ -126,7 +135,7 @@ public class UnifiedCrawlController {
     }
 
     /** Track which crawl jobs have been published to job history */
-    private final java.util.Set<String> publishedJobIds = ConcurrentHashMap.newKeySet();
+    private final Set<String> publishedJobIds = ConcurrentHashMap.newKeySet();
 
     /** Track crawl stage events already mirrored into the shared job log stream */
     private final Map<String, Set<String>> publishedCrawlLogEventKeys = new ConcurrentHashMap<>();
@@ -198,7 +207,8 @@ public class UnifiedCrawlController {
 
                                         // Poll until terminal, forwarding phase transitions
                                         String lastPhase = null;
-                                        while (true) {
+                                        long crawlDeadline = System.currentTimeMillis() + java.util.concurrent.TimeUnit.HOURS.toMillis(24);
+                                        while (System.currentTimeMillis() < crawlDeadline) {
                                             UnifiedCrawlJob.Status status = crawlJob.getStatus().get();
                                             if (status == UnifiedCrawlJob.Status.COMPLETED
                                                     || status == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
@@ -219,7 +229,12 @@ public class UnifiedCrawlController {
                                                         ctx.jobId(), currentPhase, gpuPhase, gpuMem);
                                                 lastPhase = currentPhase;
                                             }
-                                            Thread.sleep(1000);
+                                            try {
+                                                Thread.sleep(1000);
+                                            } catch (InterruptedException ie) {
+                                                Thread.currentThread().interrupt();
+                                                break;
+                                            }
                                         }
                                     })
                                     .metadata(Map.of(
@@ -306,8 +321,7 @@ public class UnifiedCrawlController {
             // Parse optional config
             UnifiedCrawlRequest request = new UnifiedCrawlRequest();
             if (configJson != null && !configJson.isBlank()) {
-                ObjectMapper mapper = new ObjectMapper();
-                UnifiedCrawlRequest parsed = mapper.readValue(configJson, UnifiedCrawlRequest.class);
+                UnifiedCrawlRequest parsed = objectMapper.readValue(configJson, UnifiedCrawlRequest.class);
                 request.setName(parsed.getName());
                 request.setFactSheetId(parsed.getFactSheetId());
                 request.setGraphExtraction(parsed.getGraphExtraction());
@@ -340,17 +354,22 @@ public class UnifiedCrawlController {
                 // If destination already exists as a directory, remove it
                 if (Files.exists(destination) && Files.isDirectory(destination)) {
                     try {
-                        java.nio.file.Files.walk(destination)
-                                .sorted(java.util.Comparator.reverseOrder())
-                                .forEach(p -> { try { Files.delete(p); } catch (Exception ignored) {} });
-                    } catch (Exception ignored) {}
+                        Files.walk(destination)
+                                .sorted(Comparator.reverseOrder())
+                                .forEach(p -> {
+                                    try { Files.delete(p); }
+                                    catch (Exception e) { log.warn("Failed to delete {}: {}", p, e.getMessage()); }
+                                });
+                    } catch (Exception e) {
+                        log.warn("Failed to walk and delete existing destination directory {}: {}", destination, e.getMessage());
+                    }
                 }
 
                 try (var in = file.getInputStream();
                      var out = Files.newOutputStream(destination,
-                             java.nio.file.StandardOpenOption.CREATE,
-                             java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
-                             java.nio.file.StandardOpenOption.WRITE)) {
+                             StandardOpenOption.CREATE,
+                             StandardOpenOption.TRUNCATE_EXISTING,
+                             StandardOpenOption.WRITE)) {
                     in.transferTo(out);
                 }
 
@@ -620,8 +639,10 @@ public class UnifiedCrawlController {
                 String historyTaskId = "crawl-" + jobId;
                 jobHistoryService.markJobCancelled(historyTaskId, cancelPhase, "User cancelled");
                 publishedJobIds.remove(jobId);
+                publishedCrawlLogEventKeys.remove("crawl-" + jobId);
+                crawlLogSequences.remove("crawl-" + jobId);
             } catch (Exception e) {
-                log.warn("Failed to mark crawl job {} as cancelled in history: {}", jobId, e.getMessage());
+                log.warn("Failed to mark crawl job {} as cancelled in history", jobId, e);
             }
         }
 
@@ -652,8 +673,10 @@ public class UnifiedCrawlController {
                                     IngestPhase.INDEXING, "User cancelled");
                         }
                         publishedJobIds.remove(job.getJobId());
+                        publishedCrawlLogEventKeys.remove("crawl-" + job.getJobId());
+                        crawlLogSequences.remove("crawl-" + job.getJobId());
                     } catch (Exception e) {
-                        log.debug("Failed to sync crawl job {} to history before cleanup: {}", job.getJobId(), e.getMessage());
+                        log.debug("Failed to sync crawl job {} to history before cleanup", job.getJobId(), e);
                     }
                 }
             }
@@ -708,11 +731,11 @@ public class UnifiedCrawlController {
      * Periodically sync crawl job status to the indexing job history.
      * Runs every 15 seconds to keep the job history up to date.
      */
-    @Scheduled(fixedRate = 15000)
+    @Scheduled(fixedRate = CRAWL_SYNC_INTERVAL_MS)
     public void syncCrawlJobsToHistory() {
         if (jobHistoryService == null || publishedJobIds.isEmpty()) return;
 
-        for (String jobId : new java.util.ArrayList<>(publishedJobIds)) {
+        for (String jobId : new ArrayList<>(publishedJobIds)) {
             try {
                 var optJob = unifiedCrawlService.getJob(jobId);
                 if (optJob.isEmpty()) {
@@ -722,6 +745,8 @@ public class UnifiedCrawlController {
                     log.debug("Crawl job {} no longer in memory, marking history as completed", jobId);
                     jobHistoryService.markJobCompleted(historyTaskId);
                     publishedJobIds.remove(jobId);
+                    publishedCrawlLogEventKeys.remove("crawl-" + jobId);
+                    crawlLogSequences.remove("crawl-" + jobId);
                     continue;
                 }
                 UnifiedCrawlJob job = optJob.get();
@@ -754,19 +779,25 @@ public class UnifiedCrawlController {
                 if (snap.getStatus() == UnifiedCrawlJob.Status.COMPLETED) {
                     jobHistoryService.markJobCompleted(historyTaskId);
                     publishedJobIds.remove(jobId);
+                    publishedCrawlLogEventKeys.remove(historyTaskId);
+                    crawlLogSequences.remove(historyTaskId);
                 } else if (snap.getStatus() == UnifiedCrawlJob.Status.FAILED) {
                     jobHistoryService.markJobFailed(historyTaskId,
                             IngestPhase.INDEXING,
                             snap.getErrorMessage() != null ? snap.getErrorMessage() : "Crawl job failed",
                             null, FailureReason.UNKNOWN);
                     publishedJobIds.remove(jobId);
+                    publishedCrawlLogEventKeys.remove(historyTaskId);
+                    crawlLogSequences.remove(historyTaskId);
                 } else if (snap.getStatus() == UnifiedCrawlJob.Status.CANCELLED) {
                     jobHistoryService.markJobCancelled(historyTaskId,
                             IngestPhase.INDEXING, "User cancelled");
                     publishedJobIds.remove(jobId);
+                    publishedCrawlLogEventKeys.remove(historyTaskId);
+                    crawlLogSequences.remove(historyTaskId);
                 }
             } catch (Exception e) {
-                log.debug("Failed to sync crawl job {} to history: {}", jobId, e.getMessage());
+                log.warn("Failed to sync crawl job {} to history: {}", jobId, e.getMessage(), e);
             }
         }
     }
@@ -775,7 +806,7 @@ public class UnifiedCrawlController {
      * Mirror unified crawl stage events into the existing job log infrastructure.
      * The frontend can then use the same live log viewer as subprocess/ingest jobs.
      */
-    @Scheduled(fixedRate = 2000)
+    @Scheduled(fixedRate = CRAWL_LOG_PUBLISH_INTERVAL_MS)
     public void publishCrawlEventsToJobLogs() {
         if ((jobLogService == null || !jobLogService.isEnabled()) && messagingTemplate == null) {
             return;
@@ -836,7 +867,7 @@ public class UnifiedCrawlController {
                 }
 
             } catch (Exception e) {
-                log.debug("Failed to publish crawl job logs: {}", e.getMessage());
+                log.warn("Failed to publish crawl job logs: {}", e.getMessage(), e);
             }
         }
     }
@@ -930,7 +961,7 @@ public class UnifiedCrawlController {
             m.put("errorMessage", job.getErrorMessage());
         }
         if (job.getErrors() != null && !job.getErrors().isEmpty()) {
-            m.put("errors", new java.util.ArrayList<>(job.getErrors()));
+            m.put("errors", new ArrayList<>(job.getErrors()));
         }
         m.put("elapsedMs", job.elapsedMs());
         m.put("currentPhase", job.getCurrentPhase().get());
@@ -1046,7 +1077,7 @@ public class UnifiedCrawlController {
         if (job.getDocumentProgress() != null && !job.getDocumentProgress().isEmpty()) {
             List<Map<String, Object>> topDocs = job.getDocumentProgress().values().stream()
                     .filter(dp -> dp != null)
-                    .sorted(java.util.Comparator
+                    .sorted(Comparator
                             .comparing((UnifiedCrawlJob.DocumentProgress dp) ->
                                     dp.getUpdatedAt() != null ? dp.getUpdatedAt() : java.time.Instant.EPOCH)
                             .reversed())
@@ -1494,7 +1525,9 @@ public class UnifiedCrawlController {
                         return json.substring(quoteStart + 1, quoteEnd);
                     }
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.debug("Failed to extract entity_type from metadata for node {}: {}", node.getNodeId(), e.getMessage());
+            }
         }
 
         // Categorize by externalId prefix

@@ -103,7 +103,8 @@ public class GraphValidationService {
                     if (aliases.isArray() && !aliases.isEmpty()) {
                         newTitle = aliases.get(0).asText();
                     }
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log.debug("Failed to parse aliases from entity {} metadata: {}", entity.getNodeId(), e.getMessage());
                 }
             }
 
@@ -266,7 +267,8 @@ public class GraphValidationService {
                     return value.asText();
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            log.debug("Failed to extract metadata keys {} from JSON: {}", (Object) keys, e.getMessage());
         }
         return null;
     }

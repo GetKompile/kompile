@@ -53,7 +53,12 @@ import java.util.stream.Collectors;
 @Service
 public class CodebaseIndexer {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected CodebaseIndexer() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(CodebaseIndexer.class);
+    private static final int BUFFER_SIZE = 8192; // SHA-256 read buffer
 
     private static final Set<String> IGNORED_DIRS = Set.of(
             ".git", ".svn", ".hg", "node_modules", "__pycache__", ".gradle",
@@ -62,14 +67,14 @@ public class CodebaseIndexer {
             ".next", ".nuxt", "coverage", ".cache", "bin", "obj"
     );
 
-    private final CodeEntityExtractor extractor;
-    private final CodeEntityRepository entityRepository;
-    private final CodeRelationRepository relationRepository;
-    private final IndexedDirectoryRepository directoryRepository;
-    private final FileFingerprintRepository fingerprintRepository;
-    private final KnowledgeGraphService knowledgeGraphService;
-    private final SimpMessagingTemplate messagingTemplate;
-    private final ObjectMapper objectMapper;
+    private CodeEntityExtractor extractor;
+    private CodeEntityRepository entityRepository;
+    private CodeRelationRepository relationRepository;
+    private IndexedDirectoryRepository directoryRepository;
+    private FileFingerprintRepository fingerprintRepository;
+    private KnowledgeGraphService knowledgeGraphService;
+    private SimpMessagingTemplate messagingTemplate;
+    private ObjectMapper objectMapper;
 
     private final Map<String, IndexingStatus> activeJobs = new ConcurrentHashMap<>();
 
@@ -537,7 +542,7 @@ public class CodebaseIndexer {
     private String computeFileHash(Path file) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] buffer = new byte[8192];
+            byte[] buffer = new byte[BUFFER_SIZE];
             try (InputStream is = Files.newInputStream(file)) {
                 int read;
                 while ((read = is.read(buffer)) != -1) {

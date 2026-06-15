@@ -29,12 +29,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
-@Service("pgVectorStoreImpl") // Or "chromaVectorStoreImpl"
+@Service("pgVectorStoreImpl")
+@ConditionalOnProperty(name = "spring.ai.vectorstore.pgvector.enabled", havingValue = "true")
 public class PgVectorStoreImpl implements VectorStore {
 
     private static final Logger logger = LoggerFactory.getLogger(PgVectorStoreImpl.class);
 
-    private  org.springframework.ai.vectorstore.VectorStore springAiVectorStore;
+    private org.springframework.ai.vectorstore.VectorStore springAiVectorStore;
 
     @Autowired
     public PgVectorStoreImpl(List<org.springframework.ai.vectorstore.VectorStore> springAiVectorStore) {

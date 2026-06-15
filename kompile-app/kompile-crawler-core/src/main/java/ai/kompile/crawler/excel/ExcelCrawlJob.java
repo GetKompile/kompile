@@ -20,6 +20,8 @@ import ai.kompile.core.crawler.CrawlConfig;
 import ai.kompile.core.crawler.CrawlEventListener;
 import ai.kompile.core.crawler.CrawlState;
 import ai.kompile.crawler.AbstractCrawlJob;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -37,6 +39,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * serialized and can be restored on the next crawl of the same seed directory.
  */
 public class ExcelCrawlJob extends AbstractCrawlJob {
+
+    private static final Logger log = LoggerFactory.getLogger(ExcelCrawlJob.class);
 
     /** Absolute paths already processed in this crawl run. */
     final Set<String> visitedPaths = ConcurrentHashMap.newKeySet();
@@ -76,7 +80,9 @@ public class ExcelCrawlJob extends AbstractCrawlJob {
         visitedPaths.add(absolutePath);
         try {
             lastModifiedTimes.put(absolutePath, Files.getLastModifiedTime(file).toMillis());
-        } catch (IOException ignored) {}
+        } catch (IOException e) {
+            log.warn("Could not read last-modified time for {}: {}", absolutePath, e.getMessage());
+        }
     }
 
     @Override

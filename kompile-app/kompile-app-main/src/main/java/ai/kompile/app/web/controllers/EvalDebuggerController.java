@@ -66,6 +66,9 @@ public class EvalDebuggerController {
     @Autowired(required = false)
     private ChatModel chatModel;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     // In-memory storage for test suites (in production, would use a database)
     private final Map<String, TestSuite> testSuites = new ConcurrentHashMap<>();
 
@@ -404,7 +407,7 @@ public class EvalDebuggerController {
                     results.add(resultResponse.getBody());
                 }
             } catch (Exception e) {
-                log.error("Error in batch combined evaluation for test case {}: {}", testCase.getId(), e.getMessage());
+                log.error("Error in batch combined evaluation for test case {}: {}", testCase.getId(), e.getMessage(), e);
                 results.add(CombinedEvalResult.builder()
                         .success(false)
                         .testCaseId(testCase.getId())
@@ -468,8 +471,7 @@ public class EvalDebuggerController {
             }
 
             // Parse using Jackson
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(jsonStr);
+            JsonNode root = objectMapper.readTree(jsonStr);
 
             evaluation.setPassed(root.path("passed").asBoolean(false));
             evaluation.setOverallScore(root.path("overallScore").asDouble(0.0));
@@ -559,7 +561,7 @@ public class EvalDebuggerController {
                 TestCaseResult result = executeTestCase(testCase);
                 results.add(result);
             } catch (Exception e) {
-                log.error("Error running test case {}: {}", testCase.getId(), e.getMessage());
+                log.error("Error running test case {}", testCase.getId(), e);
                 results.add(TestCaseResult.builder()
                         .testCaseId(testCase.getId())
                         .prompt(testCase.getPrompt())
@@ -594,7 +596,12 @@ public class EvalDebuggerController {
                 .timestamp(Instant.now())
                 .build();
 
-        // Store for later retrieval
+        // Store for later retrieval (evict oldest if over limit)
+        if (runResults.size() >= 100) {
+            runResults.entrySet().stream()
+                    .min(Comparator.comparing(e -> e.getValue().getTimestamp()))
+                    .ifPresent(oldest -> runResults.remove(oldest.getKey()));
+        }
         runResults.put(runId, TestRunResult.builder()
                 .runId(runId)
                 .batchResult(batchResult)

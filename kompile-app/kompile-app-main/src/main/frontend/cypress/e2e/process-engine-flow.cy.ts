@@ -224,6 +224,24 @@ describe('Process Engine UI Flows', () => {
     });
   });
 
+  // ═══════════════════ Discovery Tab ═══════════════════
+
+  describe('Discovery Tab', () => {
+    beforeEach(() => {
+      cy.get('.nav-items').contains('Tools').click();
+      cy.get('.sub-tab, button').contains('Process Engine').click();
+      cy.get('.mat-mdc-tab').contains('Discovery').click();
+    });
+
+    it('should render the discovery suggestions component', () => {
+      cy.get('app-process-discovery-suggestions').should('exist');
+    });
+
+    it('should show Discover button', () => {
+      cy.contains('button', 'Discover').should('exist');
+    });
+  });
+
   // ═══════════════════ Run Detail View ═══════════════════
 
   describe('Run Detail View', () => {
@@ -284,6 +302,25 @@ describe('Process Engine UI Flows', () => {
       cy.get('.timeline-node').should('have.length.gte', 1);
       // Should show Step Pipeline heading
       cy.contains('Step Pipeline').should('exist');
+    });
+
+    it('should show Assess Risk and Explain Step buttons in detail view', () => {
+      cy.visit('/');
+      cy.get('.nav-items').contains('Tools').click();
+      cy.get('.sub-tab, button').contains('Process Engine').click();
+      cy.get('.mat-mdc-tab').contains('Runs').click();
+      cy.get('mat-button-toggle').contains('All').click();
+      cy.wait(1000);
+
+      cy.contains('button', 'View Details').first().click();
+      cy.get('app-process-run-detail').should('exist');
+
+      // Risk assessment section should have Assess Risk button
+      cy.contains('button', 'Assess Risk').should('exist');
+
+      // Click on a step to see the explain button
+      cy.get('.timeline-node').first().click();
+      cy.contains('button', 'Explain Step').should('exist');
     });
 
     it('should show back button to return to list', () => {

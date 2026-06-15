@@ -400,4 +400,17 @@ public class A2ADelegationTool {
             CompletableFuture<A2ATask> future,
             long startTime
     ) {}
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        asyncExecutor.shutdown();
+        try {
+            if (!asyncExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                asyncExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            asyncExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 }

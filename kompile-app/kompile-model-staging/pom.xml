@@ -47,6 +47,12 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
+        <!-- Validation (jakarta.validation) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
         <!-- Spring Boot Actuator for health checks -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -57,6 +63,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>net.bytebuddy</groupId>
+                    <artifactId>byte-buddy</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- H2 embedded database for job history -->
@@ -372,28 +384,76 @@
                         <configuration>
                             <mainClass>ai.kompile.staging.ModelStagingApplication</mainClass>
                             <imageName>kompile-model-staging</imageName>
+                            <quickBuild>true</quickBuild>
+                            <metadataRepository>
+                                <enabled>true</enabled>
+                            </metadataRepository>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
+                                <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
+                                <buildArg>-H:+ReportUnsupportedElementsAtRuntime</buildArg>
+                                <buildArg>-H:+AddAllFileSystemProviders</buildArg>
+                                <buildArg>-H:+AllowVMInspection</buildArg>
                                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>-Dspring.native.remove-unused-autoconfig=true</buildArg>
+                                <buildArg>-Djava.awt.headless=true</buildArg>
+                                <buildArg>--enable-url-protocols=http,https</buildArg>
+                                <!-- Deadlock watchdog: detect and abort hung builds -->
+                                <buildArg>-H:DeadlockWatchdogInterval=30</buildArg>
+                                <buildArg>-H:+DeadlockWatchdogExitOnTimeout</buildArg>
+                                <!-- Build-time init: pure-Java logging/serialization, safe for AOT -->
                                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
-                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
-                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.shade.protobuf.UnsafeUtil</buildArg>
+                                <buildArg>--initialize-at-build-time=com.google.protobuf.UnsafeUtil</buildArg>
+                                <buildArg>--initialize-at-build-time=java.rmi.server.Operation,org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.spi.StandardLevel,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder,org.apache.logging.log4j.util.LoaderUtil,org.apache.logging.log4j.util.Constants</buildArg>
+                                <!-- Run-time init: all native/JNI code MUST init at runtime -->
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Pointer,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.bytedeco.javacpp.Pointer$NativeDeallocator,org.bytedeco.javacpp.PointerScope,org.bytedeco.javacpp.indexer</buildArg>
                                 <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
                                 <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.openblas.presets.openblas,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.openblas.global.openblas,org.bytedeco.openblas.global.openblas_nolapack</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.onnxruntime.global.onnxruntime</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.onnx.presets.onnx,org.bytedeco.onnx.global.onnx</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.opencl.presets.OpenCL,org.bytedeco.opencl.global.OpenCL</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.dnnl.presets.dnnl,org.bytedeco.dnnl.global.dnnl</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.mkldnn.presets.mklml,org.bytedeco.mkldnn.global.mklml,org.bytedeco.mkldnn.global.mkldnn</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.tensorflow.presets.tensorflow</buildArg>
+                                <buildArg>--initialize-at-run-time=org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.apache.tomcat.jni.SSL,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory</buildArg>
+                                <buildArg>--initialize-at-run-time=org.jline.nativ.JLineLibrary,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary</buildArg>
+                                <buildArg>--initialize-at-run-time=org.springframework.ai.chat.client.advisor,reactor.core.scheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.springframework.boot.loader.ref.Cleaner,org.springframework.core.io.VfsUtils</buildArg>
+                                <buildArg>--initialize-at-run-time=java.awt.event,sun.awt,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,sun.awt.X11,sun.awt.X11GraphicsConfig,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.channel.epoll.Epoll</buildArg>
+                                <buildArg>--initialize-at-run-time=org.apache.lucene.util.ScalarQuantizer</buildArg>
+                                <buildArg>--initialize-at-run-time=ai.kompile.presets.TokenizersHelper,ai.kompile.bindings.TokenizersNative</buildArg>
+                                <!-- Native-image config directory -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/staging</buildArg>
+                                <!-- Resource includes -->
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=model-sources\.yml</buildArg>
                                 <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring\.components</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
                                 <buildArg>-H:IncludeResources=static/.*</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.xml</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2-spring\.xml</buildArg>
+                                <buildArg>-H:IncludeResources=.*Log4j2Plugins\.dat$</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/tokenizers/.*\.so</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/tokenizers/.*\.dll</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/tokenizers/.*\.dylib</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.so</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.dll</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.dylib</buildArg>
+                                <!-- Debug: trace init problems -->
+                                <buildArg>--trace-object-instantiation=org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread</buildArg>
                             </buildArgs>
                         </configuration>
                     </plugin>

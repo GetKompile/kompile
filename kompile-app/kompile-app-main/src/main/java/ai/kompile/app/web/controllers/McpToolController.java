@@ -325,9 +325,18 @@ public class McpToolController {
         Map<String, Object> properties = new LinkedHashMap<>();
         List<String> required = new ArrayList<>();
 
-        // Check for record components first (Java 16+)
+        // Check for record components first (Java 16+).
+        // Wrap in try/catch(Throwable) because GraalVM native image throws
+        // com.oracle.svm.core.jdk.UnsupportedFeatureError (extends Error, not Exception)
+        // when getRecordComponents() is called without native-image reflection config.
         if (clazz.isRecord()) {
-            for (java.lang.reflect.RecordComponent component : clazz.getRecordComponents()) {
+            java.lang.reflect.RecordComponent[] components;
+            try {
+                components = clazz.getRecordComponents();
+            } catch (Throwable t) {
+                components = new java.lang.reflect.RecordComponent[0];
+            }
+            for (java.lang.reflect.RecordComponent component : components) {
                 Map<String, Object> propSchema = new LinkedHashMap<>();
                 propSchema.put("type", getJsonType(component.getType()));
                 properties.put(component.getName(), propSchema);

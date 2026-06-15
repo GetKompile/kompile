@@ -21,6 +21,8 @@ import ai.kompile.embedding.samediff.SameDiffEmbeddingModelImpl;
 import ai.kompile.embedding.samediff.pipeline.SameDiffEmbeddingStepRunnerFactory;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.factory.Nd4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -34,12 +36,15 @@ import org.springframework.context.annotation.Bean;
 @ConditionalOnProperty(prefix = "kompile.embedding.samediff", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SameDiffEmbeddingAutoConfiguration {
 
+    private static final Logger log = LoggerFactory.getLogger(SameDiffEmbeddingAutoConfiguration.class);
+
     static {
         // Eagerly load a class from ND4J to ensure backend is initialized early if needed.
         // This can sometimes help prevent issues with backend selection in complex classpath scenarios.
         try {
             Nd4j.empty();
         } catch (Throwable t) {
+            log.warn("ND4J eager initialization failed (backend may not be available yet): {}", t.getMessage());
         }
     }
 

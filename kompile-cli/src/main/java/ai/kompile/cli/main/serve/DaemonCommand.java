@@ -116,6 +116,10 @@ public class DaemonCommand implements Callable<Integer> {
                     cleanup();
                     return 0;
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Interrupted while stopping daemon");
+                return 1;
             } catch (Exception e) {
                 System.err.println("Error stopping daemon: " + e.getMessage());
                 return 1;

@@ -22,6 +22,7 @@ import ai.kompile.app.ingest.domain.IndexedPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,11 +39,16 @@ public class CrawlIndexTrackingCallbackImpl implements CrawlIndexTrackingCallbac
 
     private static final Logger log = LoggerFactory.getLogger(CrawlIndexTrackingCallbackImpl.class);
 
-    private final CrossIndexTrackingService crossIndexTrackingService;
+    @Autowired
+    private CrossIndexTrackingService crossIndexTrackingService;
 
     public CrawlIndexTrackingCallbackImpl(CrossIndexTrackingService crossIndexTrackingService) {
         this.crossIndexTrackingService = crossIndexTrackingService;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected CrawlIndexTrackingCallbackImpl() {}
+
 
     @Override
     @Transactional

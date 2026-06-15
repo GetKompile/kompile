@@ -62,6 +62,7 @@ public class StagingServerLifecycleService {
     private static final int DEFAULT_PORT = 8090;
     private static final int HEALTH_CHECK_TIMEOUT_MS = 3000;
     private static final int STARTUP_TIMEOUT_SECONDS = 120;
+    private static final long STARTUP_WAIT_MS = 2_000L; // 2 seconds between health polls
 
     @org.springframework.beans.factory.annotation.Value("${kompile.staging.auto-start:true}")
     private boolean autoStartEnabled = true;
@@ -441,7 +442,7 @@ public class StagingServerLifecycleService {
             log.info("Wrote app-main classpath ({} chars) to {}", classpath.length(), cpFile);
             return cpFile;
         } catch (IOException e) {
-            log.warn("Failed to write classpath file: {}", e.getMessage());
+            log.warn("Failed to write classpath file", e);
             return null;
         }
     }
@@ -491,7 +492,8 @@ public class StagingServerLifecycleService {
                             }
                         }
                     }
-                } catch (NoSuchMethodException ignored) {
+                } catch (NoSuchMethodException e) {
+                    log.debug("Classloader {} does not have getURLs() method: {}", cl.getClass().getName(), e.getMessage());
                 } catch (Exception e) {
                     log.debug("Could not extract URLs from classloader {}: {}", cl.getClass().getName(), e.getMessage());
                 }
@@ -605,20 +607,23 @@ public class StagingServerLifecycleService {
     public String stageModelFromCatalog(int port, String modelId) throws IOException {
         URL url = new URL("http://localhost:" + port + "/api/staging/stage/catalog/" + modelId);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("POST");
-        conn.setConnectTimeout(HEALTH_CHECK_TIMEOUT_MS);
-        conn.setReadTimeout(30_000); // staging can take a while
+        try {
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(HEALTH_CHECK_TIMEOUT_MS);
+            conn.setReadTimeout(30_000); // staging can take a while
 
-        int responseCode = conn.getResponseCode();
-        String response = new String(
-                responseCode < 400 ? conn.getInputStream().readAllBytes() : conn.getErrorStream().readAllBytes()
-        );
-        conn.disconnect();
+            int responseCode = conn.getResponseCode();
+            String response = new String(
+                    responseCode < 400 ? conn.getInputStream().readAllBytes() : conn.getErrorStream().readAllBytes()
+            );
 
-        if (responseCode >= 400) {
-            throw new IOException("Stage model failed (HTTP " + responseCode + "): " + response);
+            if (responseCode >= 400) {
+                throw new IOException("Stage model failed (HTTP " + responseCode + "): " + response);
+            }
+            return response;
+        } finally {
+            conn.disconnect();
         }
-        return response;
     }
 
     /**
@@ -627,18 +632,23 @@ public class StagingServerLifecycleService {
     public String getCatalog(int port) throws IOException {
         URL url = new URL("http://localhost:" + port + "/api/staging/catalog");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("GET");
-        conn.setConnectTimeout(HEALTH_CHECK_TIMEOUT_MS);
-        conn.setReadTimeout(HEALTH_CHECK_TIMEOUT_MS);
+        try {
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(HEALTH_CHECK_TIMEOUT_MS);
+            conn.setReadTimeout(HEALTH_CHECK_TIMEOUT_MS);
 
-        int responseCode = conn.getResponseCode();
-        String response = new String(conn.getInputStream().readAllBytes());
-        conn.disconnect();
+            int responseCode = conn.getResponseCode();
+            String response = new String(
+                    responseCode < 400 ? conn.getInputStream().readAllBytes() : conn.getErrorStream().readAllBytes()
+            );
 
-        if (responseCode >= 400) {
-            throw new IOException("Get catalog failed (HTTP " + responseCode + ")");
+            if (responseCode >= 400) {
+                throw new IOException("Get catalog failed (HTTP " + responseCode + "): " + response);
+            }
+            return response;
+        } finally {
+            conn.disconnect();
         }
-        return response;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -707,17 +717,21 @@ public class StagingServerLifecycleService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private boolean checkHealth(int port) {
+        HttpURLConnection conn = null;
         try {
             URL url = new URL("http://localhost:" + port + "/actuator/health");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(HEALTH_CHECK_TIMEOUT_MS);
             conn.setReadTimeout(HEALTH_CHECK_TIMEOUT_MS);
             int code = conn.getResponseCode();
-            conn.disconnect();
             return code == 200;
         } catch (Exception e) {
             return false;
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
     }
 
@@ -728,7 +742,7 @@ public class StagingServerLifecycleService {
                 return true;
             }
             try {
-                Thread.sleep(2000);
+                Thread.sleep(STARTUP_WAIT_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;

@@ -2795,9 +2795,8 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
 
     private <T> void loadDirectory(Path dir, Class<T> type, Consumer<T> consumer) {
         if (!Files.isDirectory(dir)) return;
-        try {
-            Files.list(dir)
-                 .filter(p -> p.toString().endsWith(".json"))
+        try (var files = Files.list(dir)) {
+            files.filter(p -> p.toString().endsWith(".json"))
                  .forEach(p -> {
                      try {
                          T value = objectMapper.readValue(p.toFile(), type);

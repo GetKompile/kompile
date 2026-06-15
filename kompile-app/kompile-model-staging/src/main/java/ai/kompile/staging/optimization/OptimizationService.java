@@ -337,7 +337,7 @@ public class OptimizationService {
                 try {
                     optimizedSd = GraphOptimizer.optimize(sd, targetOutputs, optimizers);
                 } catch (Exception e) {
-                    log.error("GraphOptimizer failed: {}. Skipping optimization.", e.getMessage());
+                    log.error("GraphOptimizer failed. Skipping optimization.", e);
                     optimizedSd = sd;
                     appliedOptimizationNames.clear();
                     appliedOptimizationNames.add("NONE (optimization failed)");
@@ -363,7 +363,7 @@ public class OptimizationService {
             try {
                 validateSavedModel(modelPath, targetOutputs, isZipFormat);
             } catch (Exception e) {
-                log.error("Saved model validation failed: {}. Restoring from backup.", e.getMessage());
+                log.error("Saved model validation failed. Restoring from backup.", e);
                 // Restore backup if validation fails
                 registryService.restoreFromBackup(modelId);
                 return OptimizationResult.failure(modelId,
@@ -596,7 +596,7 @@ public class OptimizationService {
                 return magic[0] == 0x50 && magic[1] == 0x4B;
             }
         } catch (IOException e) {
-            log.warn("Failed to read magic bytes from {}: {}", filePath, e.getMessage());
+            log.warn("Failed to read magic bytes from {}", filePath, e);
         }
         return false;
     }

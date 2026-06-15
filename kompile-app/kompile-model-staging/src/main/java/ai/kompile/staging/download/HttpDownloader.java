@@ -150,10 +150,14 @@ public class HttpDownloader implements DownloadService {
                 url = buildGitHubReleaseUrl(request);
             }
             HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setRequestMethod("HEAD");
-            conn.setConnectTimeout(CONNECTION_TIMEOUT);
-            int responseCode = conn.getResponseCode();
-            return responseCode == 200 || responseCode == 302;
+            try {
+                conn.setRequestMethod("HEAD");
+                conn.setConnectTimeout(CONNECTION_TIMEOUT);
+                int responseCode = conn.getResponseCode();
+                return responseCode == 200 || responseCode == 302;
+            } finally {
+                conn.disconnect();
+            }
         } catch (Exception e) {
             return false;
         }

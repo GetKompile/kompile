@@ -385,7 +385,7 @@ public class ComparisonService {
                 return magic[0] == 0x50 && magic[1] == 0x4B;
             }
         } catch (IOException e) {
-            log.warn("Failed to read magic bytes from {}: {}", filePath, e.getMessage());
+            log.warn("Failed to read magic bytes from {}", filePath, e);
         }
         return false;
     }

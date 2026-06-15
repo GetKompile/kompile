@@ -168,4 +168,166 @@ class ClaudeParserTest {
                 .hasTextChunk("Let me read that file.")
                 .hasToolUse("read_file");
     }
+
+    // ===================================================================
+    // AskUserQuestion — structured questions format
+    // ===================================================================
+
+    @Test
+    void askUserQuestion_structuredFormat_shouldProduceInteractiveQuestion() {
+        String line = ParserTestFixtures.claudeAskUserQuestionStructured(
+                "call-ask-001", "Choose model", "Which model do you want?",
+                new String[][]{{"gpt-4", "Most capable"}, {"gpt-3.5", "Faster"}});
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        AgentOutputAssertions.assertThat(events)
+                .hasEventCount(1)
+                .firstEventIs(InteractiveQuestion.class)
+                .hasInteractiveQuestion("Which model do you want?")
+                .hasInteractiveQuestionWithCallId("call-ask-001");
+
+        InteractiveQuestion iq = AgentOutputAssertions.assertThat(events).firstOfType(InteractiveQuestion.class);
+        assertNotNull(iq);
+        assertEquals("Choose model", iq.header());
+        assertEquals(2, iq.options().size());
+        assertEquals("gpt-4", iq.options().get(0).label());
+        assertEquals("Most capable", iq.options().get(0).description());
+        assertEquals("gpt-3.5", iq.options().get(1).label());
+        assertTrue(iq.freeformAllowed());
+    }
+
+    // ===================================================================
+    // AskUserQuestion — simple format (no questions array)
+    // ===================================================================
+
+    @Test
+    void askUserQuestion_simpleFormat_shouldProduceInteractiveQuestion() {
+        String line = ParserTestFixtures.claudeAskUserQuestionSimple(
+                "call-ask-002", "Proceed with deletion?", "Yes", "No");
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        AgentOutputAssertions.assertThat(events)
+                .hasEventCount(1)
+                .firstEventIs(InteractiveQuestion.class)
+                .hasInteractiveQuestion("Proceed with deletion?");
+
+        InteractiveQuestion iq = AgentOutputAssertions.assertThat(events).firstOfType(InteractiveQuestion.class);
+        assertNotNull(iq);
+        assertEquals("call-ask-002", iq.callId());
+        assertEquals(2, iq.options().size());
+        assertEquals("Yes", iq.options().get(0).label());
+        assertEquals("No", iq.options().get(1).label());
+    }
+
+    // ===================================================================
+    // AskUserQuestion — no input (fallback)
+    // ===================================================================
+
+    @Test
+    void askUserQuestion_noInput_shouldProduceInteractiveQuestionWithDefault() {
+        String line = ParserTestFixtures.claudeAskUserQuestionNoInput("call-ask-003");
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        AgentOutputAssertions.assertThat(events)
+                .hasEventCount(1)
+                .firstEventIs(InteractiveQuestion.class)
+                .hasInteractiveQuestion("requesting input");
+
+        InteractiveQuestion iq = AgentOutputAssertions.assertThat(events).firstOfType(InteractiveQuestion.class);
+        assertNotNull(iq);
+        assertEquals("call-ask-003", iq.callId());
+        assertTrue(iq.options().isEmpty());
+    }
+
+    // ===================================================================
+    // Text before AskUserQuestion — both events emitted
+    // ===================================================================
+
+    @Test
+    void textBeforeAskUser_shouldProduceTextThenQuestion() {
+        String line = ParserTestFixtures.claudeTextThenAskUser(
+                "I need some input from you.", "call-ask-004", "What should I do?");
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        AgentOutputAssertions.assertThat(events)
+                .hasEventCount(2)
+                .firstEventIs(TextChunk.class)
+                .lastEventIs(InteractiveQuestion.class)
+                .hasTextChunk("I need some input from you.")
+                .hasInteractiveQuestion("What should I do?");
+    }
+
+    // ===================================================================
+    // Multiple text blocks accumulated
+    // ===================================================================
+
+    @Test
+    void multipleTextBlocks_shouldAccumulate() {
+        String line = "{\"type\":\"assistant\",\"message\":{\"content\":["
+                + "{\"type\":\"text\",\"text\":\"Part one. \"},"
+                + "{\"type\":\"text\",\"text\":\"Part two.\"}"
+                + "]}}";
+
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        AgentOutputAssertions.assertThat(events)
+                .hasEventCount(1)
+                .hasTextChunk("Part one. Part two.");
+    }
+
+    // ===================================================================
+    // Multiple tool_use blocks
+    // ===================================================================
+
+    @Test
+    void multipleToolUseBlocks_shouldProduceMultipleEvents() {
+        String line = "{\"type\":\"assistant\",\"message\":{\"content\":["
+                + "{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file\":\"a.txt\"}},"
+                + "{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"b.txt\"}}"
+                + "]}}";
+
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        AgentOutputAssertions.assertThat(events)
+                .hasEventCount(2)
+                .toolSequenceIs("Read", "Write");
+    }
+
+    // ===================================================================
+    // Result with num_turns
+    // ===================================================================
+
+    @Test
+    void resultWithNumTurns_shouldPreserveValue() {
+        String line = "{\"type\":\"result\",\"duration_ms\":5000,\"cost_usd\":0.01,\"num_turns\":3}";
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        TurnComplete tc = AgentOutputAssertions.assertThat(events).firstOfType(TurnComplete.class);
+        assertNotNull(tc);
+        assertEquals(5000L, tc.durationMs());
+        assertEquals(0.01, tc.costUsd(), 1e-9);
+        assertEquals(3, tc.numTurns());
+    }
+
+    // ===================================================================
+    // Empty content array
+    // ===================================================================
+
+    @Test
+    void emptyContentArray_shouldProduceEmptyEvents() {
+        String line = "{\"type\":\"assistant\",\"message\":{\"content\":[]}}";
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+        AgentOutputAssertions.assertThat(events).isEmpty();
+    }
+
+    // ===================================================================
+    // Unknown type — should return empty
+    // ===================================================================
+
+    @Test
+    void unknownType_shouldReturnEmptyList() {
+        String line = "{\"type\":\"ping\",\"data\":\"keepalive\"}";
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+        AgentOutputAssertions.assertThat(events).isEmpty();
+    }
 }

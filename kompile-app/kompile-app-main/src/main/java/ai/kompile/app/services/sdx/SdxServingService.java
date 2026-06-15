@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.sdx;
 
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.pipelines.framework.api.PipelineExecutor;
 import ai.kompile.pipelines.framework.api.PipelineStepRunnerFactory;
 import ai.kompile.pipelines.framework.api.configschema.ParameterSchema;
@@ -74,13 +75,14 @@ public class SdxServingService {
                             String modelId = deriveModelId(modelFile);
                             if (seen.add(modelId)) {
                                 Map<String, Object> info = new LinkedHashMap<>();
-                                info.put("modelId", modelId);
+                                info.put(FieldNames.MODEL_ID, modelId);
                                 info.put("path", modelFile.toString());
                                 info.put("format", getExtension(modelFile));
                                 info.put("loaded", loadedModels.containsKey(modelId));
                                 try {
                                     info.put("sizeBytes", Files.size(modelFile));
-                                } catch (IOException ignored) {
+                                } catch (IOException e) {
+                                    log.debug("Could not read size for model file {}: {}", modelFile, e.getMessage());
                                 }
                                 models.add(info);
                             }
@@ -97,7 +99,7 @@ public class SdxServingService {
 
     public Map<String, Object> loadModel(String modelId) {
         if (loadedModels.containsKey(modelId)) {
-            return Map.of("status", "already_loaded", "modelId", modelId);
+            return Map.of("status", "already_loaded", FieldNames.MODEL_ID, modelId);
         }
 
         // Find model file
@@ -133,7 +135,7 @@ public class SdxServingService {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "loaded");
-            result.put("modelId", modelId);
+            result.put(FieldNames.MODEL_ID, modelId);
             result.put("path", modelFile.toString());
             result.put("runnerClass", runnerClass);
             return result;
@@ -166,7 +168,7 @@ public class SdxServingService {
         }
 
         Map<String, Object> schema = new LinkedHashMap<>();
-        schema.put("modelId", modelId);
+        schema.put(FieldNames.MODEL_ID, modelId);
         schema.put("runnerClass", model.runnerClass);
         schema.put("path", model.modelPath);
 
@@ -187,7 +189,7 @@ public class SdxServingService {
         }
 
         Map<String, Object> template = new LinkedHashMap<>();
-        template.put("modelId", modelId);
+        template.put(FieldNames.MODEL_ID, modelId);
 
         if (model.schema != null && model.schema.getInputs() != null) {
             Map<String, Object> inputTemplate = new LinkedHashMap<>();
@@ -218,18 +220,18 @@ public class SdxServingService {
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
-            result.put("modelId", modelId);
+            result.put(FieldNames.MODEL_ID, modelId);
             result.put("outputData", output.toMap());
-            result.put("durationMs", duration);
+            result.put(FieldNames.DURATION_MS, duration);
             return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
             log.error("Inference failed for model: {}", modelId, e);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "error");
-            result.put("modelId", modelId);
+            result.put(FieldNames.MODEL_ID, modelId);
             result.put("errorMessage", e.getMessage());
-            result.put("durationMs", duration);
+            result.put(FieldNames.DURATION_MS, duration);
             return result;
         }
     }
@@ -243,7 +245,7 @@ public class SdxServingService {
         List<Map<String, Object>> models = new ArrayList<>();
         loadedModels.forEach((id, model) -> {
             Map<String, Object> info = new LinkedHashMap<>();
-            info.put("modelId", id);
+            info.put(FieldNames.MODEL_ID, id);
             info.put("path", model.modelPath);
             info.put("runnerClass", model.runnerClass);
             info.put("loadedAt", model.loadedAt);

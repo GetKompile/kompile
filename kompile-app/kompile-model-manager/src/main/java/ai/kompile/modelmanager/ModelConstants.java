@@ -822,7 +822,7 @@ public class ModelConstants {
      * @return Set of OCR model identifiers
      */
     public static Set<String> getOcrModelIds() {
-        return OCR_MODEL_DESCRIPTORS.keySet();
+        return Collections.unmodifiableSet(OCR_MODEL_DESCRIPTORS.keySet());
     }
 
     /**

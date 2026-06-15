@@ -18,10 +18,8 @@ package ai.kompile.app.subprocess;
 
 import ai.kompile.app.config.KompileServerConstants;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
@@ -71,10 +69,12 @@ public record ServingSubprocessArgs(
         Boolean optimizerEnabled,
         Boolean optimizerFp16
 ) {
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
     public static ServingSubprocessArgs fromFile(Path path) throws IOException {
-        return MAPPER.readValue(Files.readString(path), ServingSubprocessArgs.class);
+        return SubprocessArgsIo.fromFile(path, ServingSubprocessArgs.class);
+    }
+
+    public Path writeToTempFile() throws IOException {
+        return SubprocessArgsIo.writeToTempFile(this, "serving-args-");
     }
 
     /**

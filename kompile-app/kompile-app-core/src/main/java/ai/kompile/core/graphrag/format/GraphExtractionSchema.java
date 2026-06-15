@@ -93,11 +93,21 @@ public final class GraphExtractionSchema {
             @JsonProperty("type") String type,
             @JsonProperty("description") String description,
             @JsonProperty("confidence") Double confidence,
-            @JsonProperty("properties") Map<String, String> properties
+            @JsonProperty("properties") Map<String, String> properties,
+            @JsonProperty("occurredAt") String occurredAt
     ) {
         public ExtractedRelation {
             if (confidence == null) confidence = 1.0;
             if (properties == null) properties = Map.of();
+        }
+
+        /**
+         * Backwards-compatible constructor without occurredAt.
+         */
+        public ExtractedRelation(String source, String target, String type,
+                                  String description, Double confidence,
+                                  Map<String, String> properties) {
+            this(source, target, type, description, confidence, properties, null);
         }
     }
 

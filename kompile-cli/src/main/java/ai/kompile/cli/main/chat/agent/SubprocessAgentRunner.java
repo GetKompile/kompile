@@ -125,6 +125,9 @@ public class SubprocessAgentRunner {
     // Skills injection (loaded lazily on first injectSkills() call)
     private SkillsInjection skillsInjection;
 
+    // Output consumer — when set, all text output goes through this instead of raw System.out
+    private volatile Consumer<String> outputConsumer;
+
     // ANSI
     private static final String RESET = "\033[0m";
     private static final String CYAN = "\033[36m";
@@ -181,6 +184,24 @@ public class SubprocessAgentRunner {
      */
     public void setExtraEnvironment(Map<String, String> extraEnvironment) {
         this.extraEnvironment = extraEnvironment != null ? Map.copyOf(extraEnvironment) : Map.of();
+    }
+
+    /**
+     * Set an output consumer — all streamed text output goes through this.
+     * When null, falls back to System.out.println.
+     */
+    public void setOutputConsumer(Consumer<String> outputConsumer) {
+        this.outputConsumer = outputConsumer;
+    }
+
+    /** Route a line of output through the consumer or System.out. */
+    private void emitLine(String text) {
+        Consumer<String> oc = outputConsumer;
+        if (oc != null) {
+            oc.accept(text);
+        } else {
+            System.out.println(text);
+        }
     }
 
     /**
@@ -253,7 +274,7 @@ public class SubprocessAgentRunner {
                     Path.of(workingDir), agent, sseUrl);
             if (injectedSettingsFile != null) {
                 String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
-                System.out.println(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
+                emitLine(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
                         + DIM + " (" + injectedSettingsFile + ")" + RESET);
             }
         } catch (IOException e) {
@@ -269,7 +290,7 @@ public class SubprocessAgentRunner {
             Path injectedPromptFile = systemPromptManager.injectInstructionFile(
                     agent, Path.of(workingDir).toAbsolutePath());
             if (injectedPromptFile != null) {
-                System.out.println(GREEN + "  System prompt injected" + RESET
+                emitLine(GREEN + "  System prompt injected" + RESET
                         + DIM + " (" + injectedPromptFile + ")" + RESET);
             }
         }
@@ -292,7 +313,7 @@ public class SubprocessAgentRunner {
 
             int installed = skillsInjection.installSkills(agent);
             if (installed > 0) {
-                System.out.println(GREEN + "  Skills installed (" + installed + " skills into " + agent + " native commands)" + RESET);
+                emitLine(GREEN + "  Skills installed (" + installed + " skills into " + agent + " native commands)" + RESET);
             }
         } catch (Exception e) {
             System.err.println(YELLOW + "Warning: Could not inject skills: " + e.getMessage() + RESET);
@@ -368,14 +389,12 @@ public class SubprocessAgentRunner {
      * Blocks until the subprocess exits (or response stall for TUI agents).
      */
     public String runMessage(String message, ChatHistory history, ChatSessionMetrics metrics) {
-        // Route TUI-based agents to persistent process path
-        if (agent.toLowerCase().contains("opencode")) {
-            return runTuiMessage(message, history, metrics);
-        }
+        // opencode now uses structured JSON output (opencode run --format json)
+        // and is handled by the standard subprocess pipeline below.
         String agentBinary = resolveAgentBinary(agent);
         if (agentBinary == null) {
-            System.out.println(renderer.red("  Agent '" + agent + "' not found on PATH."));
-            System.out.println(renderer.dim("  Supported agents: " + String.join(", ",
+            emitLine(renderer.red("  Agent '" + agent + "' not found on PATH."));
+            emitLine(renderer.dim("  Supported agents: " + String.join(", ",
                     ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder())));
             return "";
         }
@@ -390,7 +409,7 @@ public class SubprocessAgentRunner {
 
         List<String> agentCmd = buildCommand(agentBinary, message);
 
-        renderer.setTerminalTitle("Generating... (" + agent + ")");
+        renderer.setTerminalTitle("Kompiling... (" + agent + ")");
         TerminalRenderer.SpinnerHandle spinner = renderer.startGeneratingSpinner(agent);
 
         StringBuilder fullText = new StringBuilder();
@@ -497,7 +516,7 @@ public class SubprocessAgentRunner {
 
         } catch (Exception e) {
             if (!cancelSignal.get()) {
-                System.out.println(renderer.red("\n  Error running agent: " + e.getMessage()));
+                emitLine(renderer.red("\n  Error running agent: " + e.getMessage()));
             }
         } finally {
             spinner.stop();
@@ -507,13 +526,13 @@ public class SubprocessAgentRunner {
         long turnDuration = System.currentTimeMillis() - turnStart;
 
         if (cancelSignal.get() || monitorSoftInterrupt) {
-            System.out.println();
+            emitLine("");
             if (monitorInterruptReason != null && !monitorInterruptReason.isBlank()) {
-                System.out.println(renderer.yellow("  Interrupted by enforcer: " + monitorInterruptReason));
+                emitLine(renderer.yellow("  Interrupted by enforcer: " + monitorInterruptReason));
                 history.logSystem("Enforcer interrupted agent response after " + turnDuration
                         + "ms: " + monitorInterruptReason);
             } else if (cancelSignal.get()) {
-                System.out.println(renderer.yellow("  Cancelled."));
+                emitLine(renderer.yellow("  Cancelled."));
                 history.logSystem("User cancelled agent response after " + turnDuration + "ms");
             }
         }
@@ -524,14 +543,14 @@ public class SubprocessAgentRunner {
         }
 
         if (!toolCalls.isEmpty()) {
-            System.out.println(renderer.dim("  " + toolCalls.size() + " tool call(s): "
+            emitLine(renderer.dim("  " + toolCalls.size() + " tool call(s): "
                     + String.join(", ", toolCalls)));
         }
 
         firstMessageSent = true;
         currentToolName = null;
         updateActivity(null); // clear activity — agent is idle
-        System.out.println();
+        emitLine("");
         renderer.setTerminalTitle("kompile [" + agent + "]");
         return fullText.toString();
     }
@@ -544,8 +563,8 @@ public class SubprocessAgentRunner {
     private String runTuiMessage(String message, ChatHistory history, ChatSessionMetrics metrics) {
         String agentBinary = resolveAgentBinary(agent);
         if (agentBinary == null) {
-            System.out.println(renderer.red("  Agent '" + agent + "' not found on PATH."));
-            System.out.println(renderer.dim("  Supported agents: " + String.join(", ",
+            emitLine(renderer.red("  Agent '" + agent + "' not found on PATH."));
+            emitLine(renderer.dim("  Supported agents: " + String.join(", ",
                     ai.kompile.cli.main.chat.config.ChatConfig.getPassthroughAgentOrder())));
             return "";
         }
@@ -558,7 +577,7 @@ public class SubprocessAgentRunner {
         history.logUserMessage(message);
         metrics.recordUserTurn(message);
 
-        renderer.setTerminalTitle("Generating... (" + agent + ")");
+        renderer.setTerminalTitle("Kompiling... (" + agent + ")");
         TerminalRenderer.SpinnerHandle spinner = renderer.startGeneratingSpinner(agent);
 
         StringBuilder fullText = new StringBuilder();
@@ -659,7 +678,7 @@ public class SubprocessAgentRunner {
 
         } catch (Exception e) {
             if (!cancelSignal.get()) {
-                System.out.println(renderer.red("\n  Error running agent: " + e.getMessage()));
+                emitLine(renderer.red("\n  Error running agent: " + e.getMessage()));
             }
         } finally {
             spinner.stop();
@@ -668,11 +687,11 @@ public class SubprocessAgentRunner {
         long turnDuration = System.currentTimeMillis() - turnStart;
 
         if (cancelSignal.get() || monitorSoftInterrupt) {
-            System.out.println();
+            emitLine("");
             if (monitorInterruptReason != null && !monitorInterruptReason.isBlank()) {
-                System.out.println(renderer.yellow("  Interrupted by enforcer: " + monitorInterruptReason));
+                emitLine(renderer.yellow("  Interrupted by enforcer: " + monitorInterruptReason));
             } else if (cancelSignal.get()) {
-                System.out.println(renderer.yellow("  Cancelled."));
+                emitLine(renderer.yellow("  Cancelled."));
             }
         }
 
@@ -682,14 +701,14 @@ public class SubprocessAgentRunner {
         }
 
         if (!toolCalls.isEmpty()) {
-            System.out.println(renderer.dim("  " + toolCalls.size() + " tool call(s): "
+            emitLine(renderer.dim("  " + toolCalls.size() + " tool call(s): "
                     + String.join(", ", toolCalls)));
         }
 
         firstMessageSent = true;
         currentToolName = null;
         updateActivity(null);
-        System.out.println();
+        emitLine("");
         renderer.setTerminalTitle("kompile [" + agent + "]");
         return fullText.toString();
     }
@@ -736,9 +755,9 @@ public class SubprocessAgentRunner {
         AtomicBoolean ss = tuiSpinnerStopped;
         if (sp != null && ss != null && ss.compareAndSet(false, true)) {
             sp.stop();
-            System.out.println();
+            emitLine("");
         }
-        System.out.println("  " + stripped);
+        emitLine("  " + stripped);
         ft.append(stripped).append("\n");
     }
 
@@ -763,9 +782,9 @@ public class SubprocessAgentRunner {
                 if (!cleaned.isEmpty()) {
                     if (spinnerStopped.compareAndSet(false, true)) {
                         spinner.stop();
-                        System.out.println();
+                        emitLine("");
                     }
-                    System.out.println("  " + cleaned);
+                    emitLine("  " + cleaned);
                     fullText.append(cleaned).append("\n");
                 }
             }
@@ -828,9 +847,9 @@ public class SubprocessAgentRunner {
             }
             if (spinnerStopped.compareAndSet(false, true)) {
                 spinner.stop();
-                System.out.println();
+                emitLine("");
             }
-            System.out.println(renderer.renderToolCallStart(tu.name(), tu.input()));
+            emitLine(renderer.renderToolCallStart(tu.name(), tu.input()));
             toolCalls.add(tu.name());
             metrics.recordToolCall(tu.name(), false, 0);
             history.logToolCall(tu.name(), false, 0);
@@ -845,20 +864,20 @@ public class SubprocessAgentRunner {
             flushPendingText(pendingText, spinner, spinnerStopped);
             if (spinnerStopped.compareAndSet(false, true)) {
                 spinner.stop();
-                System.out.println();
+                emitLine("");
             }
             printExternalToolOutput(toolOutput.output());
         } else if (event instanceof PassthroughStreamParser.ToolComplete toolComplete) {
             flushPendingText(pendingText, spinner, spinnerStopped);
             if (spinnerStopped.compareAndSet(false, true)) {
                 spinner.stop();
-                System.out.println();
+                emitLine("");
             }
             printExternalToolOutput(toolComplete.output());
             String status = toolComplete.exitCode() >= 0
                     ? "exit " + toolComplete.exitCode()
                     : "completed";
-            System.out.println(renderer.dim("  [" + toolComplete.name() + " " + status + "]"));
+            emitLine(renderer.dim("  [" + toolComplete.name() + " " + status + "]"));
             currentToolName = null;
             updateActivity(getAgentDisplayName() + ": tool complete");
         } else if (event instanceof PassthroughStreamParser.TokenUsage tu) {
@@ -866,8 +885,8 @@ public class SubprocessAgentRunner {
                 metrics.recordTokenUsage(tu.inputTokens(), tu.outputTokens(),
                         tu.cacheReadTokens(), tu.cacheCreationTokens());
             }
-            System.out.println();
-            System.out.println(renderer.dim("  [tokens: " + formatNum(tu.inputTokens())
+            emitLine("");
+            emitLine(renderer.dim("  [tokens: " + formatNum(tu.inputTokens())
                     + " in / " + formatNum(tu.outputTokens()) + " out"
                     + (tu.cacheReadTokens() > 0 ? " \u00b7 " + formatNum(tu.cacheReadTokens()) + " cached" : "")
                     + "]"));
@@ -900,8 +919,8 @@ public class SubprocessAgentRunner {
                 stats.append(tc.numTurns()).append(" turn(s)");
             }
             if (stats.length() > 0) {
-                System.out.println();
-                System.out.println(renderer.dim("  [" + stats + "]"));
+                emitLine("");
+                emitLine(renderer.dim("  [" + stats + "]"));
             }
             currentToolName = null;
             updateActivity(getAgentDisplayName() + ": turn complete");
@@ -914,7 +933,7 @@ public class SubprocessAgentRunner {
         }
         for (String line : output.split("\n", -1)) {
             if (!line.isEmpty()) {
-                System.out.println(renderer.dim("    " + line));
+                emitLine(renderer.dim("    " + line));
             }
         }
     }
@@ -934,6 +953,54 @@ public class SubprocessAgentRunner {
         return summary;
     }
 
+    /**
+     * Detect system prompt / tool listing noise that should not be rendered
+     * as response text.
+     */
+    public static boolean isSystemPromptNoise(String text) {
+        if (text == null || text.length() < 20) return false;
+        if (text.contains("subordinate LLM in an enforcer-controlled chat")) return true;
+        if (text.contains("Enforcer-Controlled Task")) return true;
+        if (text.contains("Enforcer Rules") && text.contains("STOP_CMD:")) return true;
+        if (text.contains("Enforcer Rules") && text.contains("BAN_CMD:")) return true;
+        if (text.contains("Enforcer Rules") && text.contains("BAN_DIFF")) return true;
+        if (text.contains("Produce the response now. Do not mention the enforcer")) return true;
+        if (text.contains("enforcer rule wins for this task")) return true;
+        if (text.contains("Enforcer Correction") && text.contains("blocked by the enforcer")) return true;
+        if (text.matches("^\\s*(STOP_CMD|BAN_CMD|BAN_DIFF|BAN_DIFF_REGEX|BAN_TOOL|BAN|STOP):.*")) return true;
+        if (countOccurrences(text, "mcp__") >= 2) return true;
+        if (text.contains("mcp__") && text.contains("Tool Description")) return true;
+        if (countOccurrences(text, "Tool Description") >= 2) return true;
+        if (text.contains("available MCP tools") || text.contains("MCP tools from")) return true;
+        if (text.contains("kompile server") && text.contains("Tool")) return true;
+        // Category headers from MCP tool listing (garbled TUI output)
+        String[] categoryHeaders = {"File I/O", "Agent Orchestration", "Knowledge", "Execution", "DevOps"};
+        int categoryCount = 0;
+        for (String header : categoryHeaders) {
+            if (text.contains(header)) categoryCount++;
+        }
+        if (categoryCount >= 3) return true;
+        int toolPatterns = 0;
+        if (text.contains("Spawn a single subagent")) toolPatterns++;
+        if (text.contains("Spawn multiple parallel subagent")) toolPatterns++;
+        if (text.contains("Search conversation transcripts")) toolPatterns++;
+        if (text.contains("Activate/deactivate tools")) toolPatterns++;
+        if (text.contains("Fetch web page content")) toolPatterns++;
+        if (text.contains("Search the web")) toolPatterns++;
+        if (text.contains("Lock files for multi-agent editing")) toolPatterns++;
+        if (toolPatterns >= 2) return true;
+        return false;
+    }
+
+    private static int countOccurrences(String text, String pattern) {
+        int count = 0, idx = 0;
+        while ((idx = text.indexOf(pattern, idx)) >= 0) {
+            count++;
+            idx += pattern.length();
+        }
+        return count;
+    }
+
     private void flushPendingText(StringBuilder pendingText,
                                    TerminalRenderer.SpinnerHandle spinner,
                                    AtomicBoolean spinnerStopped) {
@@ -941,12 +1008,12 @@ public class SubprocessAgentRunner {
 
         if (spinnerStopped.compareAndSet(false, true)) {
             spinner.stop();
-            System.out.println();
+            emitLine("");
         }
 
         String rendered = ascii.renderMarkdown(pendingText.toString());
         for (String rl : rendered.split("\n", -1)) {
-            System.out.println("  " + rl);
+            emitLine("  " + rl);
         }
         pendingText.setLength(0);
     }
@@ -1029,7 +1096,7 @@ public class SubprocessAgentRunner {
                                          AtomicBoolean spinnerStopped) {
         if (spinnerStopped.compareAndSet(false, true)) {
             spinner.stop();
-            System.out.println();
+            emitLine("");
         }
 
         if (event instanceof PassthroughStreamParser.InteractiveQuestion iq) {
@@ -1040,7 +1107,7 @@ public class SubprocessAgentRunner {
     }
 
     private void handleInteractiveQuestion(PassthroughStreamParser.InteractiveQuestion iq) {
-        System.out.println();
+        emitLine("");
         List<PassthroughStreamParser.QuestionOption> options = iq.options();
 
         StringBuilder body = new StringBuilder();
@@ -1063,7 +1130,7 @@ public class SubprocessAgentRunner {
             }
         }
 
-        System.out.println(ascii.panel("Agent Question", body.toString()));
+        emitLine(ascii.panel("Agent Question", body.toString()));
 
         String response = readInput(options.isEmpty()
                 ? "  answer> "
@@ -1080,12 +1147,12 @@ public class SubprocessAgentRunner {
         } catch (NumberFormatException ignored) {}
 
         writeToAgentStdin(answer, iq.callId(), iq.turnId(), iq.questionId());
-        System.out.println(renderer.dim("  \u2192 Sent: " + answer));
-        System.out.println();
+        emitLine(renderer.dim("  \u2192 Sent: " + answer));
+        emitLine("");
     }
 
     private void handleInteractiveApproval(PassthroughStreamParser.InteractiveApproval ia) {
-        System.out.println();
+        emitLine("");
 
         StringBuilder body = new StringBuilder();
         body.append("The agent wants to execute:\n\n");
@@ -1106,7 +1173,7 @@ public class SubprocessAgentRunner {
                     .append(color).append(d).append(RESET).append("\n");
         }
 
-        System.out.println(ascii.panel("Approval Required", body.toString()));
+        emitLine(ascii.panel("Approval Required", body.toString()));
 
         String response = readInput("  decision [1-" + decisions.size() + "]> ");
         if (response == null || response.isBlank()) return;
@@ -1121,8 +1188,8 @@ public class SubprocessAgentRunner {
 
         writeApprovalToAgentStdin(decision, ia.callId(), ia.turnId());
         String color = decision.equalsIgnoreCase("approve") ? GREEN : YELLOW;
-        System.out.println(color + "  \u2192 " + decision + RESET);
-        System.out.println();
+        emitLine(color + "  \u2192 " + decision + RESET);
+        emitLine("");
     }
 
     /**
@@ -1294,10 +1361,17 @@ public class SubprocessAgentRunner {
             }
             cmd.add(message);
         } else if (name.contains("opencode")) {
-            // Interactive TUI mode — streams text in real time via PTY.
-            // Message is written to stdin after the TUI initializes.
-            // Note: --dangerously-skip-permissions is only valid for 'opencode run',
-            // not the base TUI command, so we don't pass it here.
+            // Structured JSON output mode: "opencode run --format json [--session <id>] <message>"
+            // This produces machine-readable JSON events identical to Claude/Gemini stream-json.
+            cmd.add("run");
+            cmd.add("--format");
+            cmd.add("json");
+            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, Path.of(workingDir));
+            if (firstMessageSent && agentSessionId != null) {
+                cmd.add("--session");
+                cmd.add(agentSessionId);
+            }
+            cmd.add(message);
         } else if (name.contains("pi")) {
             cmd.add("--mode");
             cmd.add("json");
@@ -1352,7 +1426,7 @@ public class SubprocessAgentRunner {
             }
         }
 
-        System.out.println();
+        emitLine("");
         if (!options.isEmpty()) {
             String response = readInput("  choice [1-" + options.size() + "]> ");
             if (response == null || response.isBlank()) return null;
@@ -1419,7 +1493,8 @@ public class SubprocessAgentRunner {
     private static boolean isStructuredAgent(String agentLower) {
         return agentLower.contains("claude")
                 || agentLower.contains("gemini") || agentLower.contains("qwen")
-                || agentLower.contains("codex") || agentLower.contains("pi");
+                || agentLower.contains("codex") || agentLower.contains("pi")
+                || agentLower.contains("opencode");
     }
 
     private List<PassthroughStreamParser.PassthroughEvent> parseAgentLineMulti(String agentLower, String line) {
@@ -1433,6 +1508,8 @@ public class SubprocessAgentRunner {
             return e != null ? List.of(e) : List.of();
         } else if (agentLower.contains("pi")) {
             return parser.parsePiLineMulti(line);
+        } else if (agentLower.contains("opencode")) {
+            return parser.parseOpenCodeLineMulti(line);
         }
         return List.of();
     }

@@ -77,7 +77,8 @@ public class ContextualChunkEnricher {
             @Autowired(required = false) ChatModel chatModel) {
         this.configService = configService;
         this.chatModel = chatModel;
-        this.executorService = Executors.newFixedThreadPool(10);
+        this.executorService = Executors.newFixedThreadPool(10,
+                r -> { Thread t = new Thread(r, "chunk-enricher"); t.setDaemon(true); return t; });
         log.info("ContextualChunkEnricher initialized. ChatModel available: {}", chatModel != null);
     }
 
@@ -158,7 +159,7 @@ public class ContextualChunkEnricher {
             return createEnrichedChunk(chunk, contextPrefix, documentSummary, chunkIndex, totalChunks);
 
         } catch (Exception e) {
-            log.error("Error enriching chunk {}: {}", chunkIndex, e.getMessage());
+            log.error("Error enriching chunk {}", chunkIndex, e);
             if (Boolean.TRUE.equals(config.getFallbackOnError())) {
                 return addSourceAttributionToChunk(chunk, documentTitle, chunkIndex, totalChunks);
             }
@@ -211,7 +212,7 @@ public class ContextualChunkEnricher {
             return summary;
 
         } catch (Exception e) {
-            log.warn("Failed to generate document summary: {}", e.getMessage());
+            log.warn("Failed to generate document summary", e);
             return "Document: " + documentTitle;
         }
     }
@@ -257,7 +258,7 @@ public class ContextualChunkEnricher {
                             enrichedBatch.add(enriched);
 
                         } catch (Exception e) {
-                            log.warn("Failed to enrich chunk {}, using original: {}", chunkIndex, e.getMessage());
+                            log.warn("Failed to enrich chunk {}, using original", chunkIndex, e);
                             enrichedBatch.add(addSourceAttributionToChunk(chunk, documentTitle,
                                     chunkIndex, totalChunks));
                         }
@@ -286,7 +287,7 @@ public class ContextualChunkEnricher {
                 int timeout = config.getRequestTimeoutSeconds() != null ? config.getRequestTimeoutSeconds() : 30;
                 enrichedChunks.addAll(future.get(timeout * 2L, TimeUnit.SECONDS));
             } catch (Exception e) {
-                log.error("Error waiting for batch enrichment: {}", e.getMessage());
+                log.error("Error waiting for batch enrichment", e);
                 if (!Boolean.TRUE.equals(config.getFallbackOnError())) {
                     throw new RuntimeException("Batch enrichment failed", e);
                 }
@@ -341,7 +342,7 @@ public class ContextualChunkEnricher {
             return context != null ? context.trim() : "";
 
         } catch (Exception e) {
-            log.warn("Failed to generate context for chunk {}: {}", chunkIndex, e.getMessage());
+            log.warn("Failed to generate context for chunk {}", chunkIndex, e);
             return "";
         }
     }
@@ -472,5 +473,18 @@ public class ContextualChunkEnricher {
             partitions.add(list.subList(i, Math.min(i + batchSize, list.size())));
         }
         return partitions;
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

@@ -241,7 +241,9 @@ public class DiffTrackerService {
     // ── Persistence ──────────────────────────────────────────────────────────
 
     private Path sessionDir(String sessionId) {
-        return baseDir.resolve(sessionId);
+        // Sanitize sessionId to prevent path traversal
+        String safe = sessionId.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return baseDir.resolve(safe);
     }
 
     private Path diffFile(String sessionId, long id) {
@@ -252,7 +254,9 @@ public class DiffTrackerService {
         try {
             Path dir = sessionDir(sessionId);
             Files.createDirectories(dir);
-            mapper.writeValue(diffFile(sessionId, rec.getId()).toFile(), rec);
+            Path tmpFile = dir.resolve("diff-" + rec.getId() + ".json.tmp");
+            mapper.writeValue(tmpFile.toFile(), rec);
+            Files.move(tmpFile, diffFile(sessionId, rec.getId()), java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             log.error("Failed to persist diff {}/{}: {}", sessionId, rec.getId(), e.getMessage(), e);
         }

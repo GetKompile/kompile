@@ -65,6 +65,10 @@ import java.util.concurrent.locks.ReentrantLock;
 @Service
 public class ModelLifecycleManager implements SmartLifecycle {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected ModelLifecycleManager() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(ModelLifecycleManager.class);
 
     /** Default maximum time to wait for a service to stop its subprocess (seconds) */
@@ -85,13 +89,13 @@ public class ModelLifecycleManager implements SmartLifecycle {
     private static final int LIFECYCLE_PHASE = Integer.MAX_VALUE - 100;
 
     /** Configurable eviction timeout (seconds). Defaults to {@value DEFAULT_EVICTION_TIMEOUT_SECONDS}. */
-    private final int evictionTimeoutSeconds;
+    private int evictionTimeoutSeconds;
 
     /** Configurable resume timeout (seconds). Defaults to {@value DEFAULT_RESUME_TIMEOUT_SECONDS}. */
-    private final int resumeTimeoutSeconds;
+    private int resumeTimeoutSeconds;
 
     /** Configurable stale job threshold (seconds). Defaults to {@value DEFAULT_STALE_JOB_THRESHOLD_SECONDS}. */
-    private final long staleJobThresholdSeconds;
+    private long staleJobThresholdSeconds;
 
     /**
      * Interface that GPU-managed services must implement to participate
@@ -158,9 +162,12 @@ public class ModelLifecycleManager implements SmartLifecycle {
         boolean isWarmedUp();
     }
 
-    private final GpuResourceManager gpuResourceManager;
-    private final DeviceRoutingConfigService deviceRoutingConfigService;
-    private final ApplicationEventPublisher eventPublisher;
+    @Autowired
+    private GpuResourceManager gpuResourceManager;
+    @Autowired(required = false)
+    private DeviceRoutingConfigService deviceRoutingConfigService;
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
 
     /** Registered managed services keyed by service type */
     private final Map<String, ManagedService> managedServices = new ConcurrentHashMap<>();
@@ -286,7 +293,7 @@ public class ModelLifecycleManager implements SmartLifecycle {
             try {
                 gpuResourceManager.release(hold.jobId());
             } catch (Exception e) {
-                log.warn("Error releasing GPU hold for job '{}': {}", hold.jobId(), e.getMessage());
+                log.warn("Error releasing GPU hold for job '{}'", hold.jobId(), e);
             }
         }
         activeJobHolds.clear();
@@ -305,8 +312,8 @@ public class ModelLifecycleManager implements SmartLifecycle {
                 try {
                     service.suspend("Application shutdown");
                 } catch (Exception e) {
-                    log.warn("Error suspending service '{}' during shutdown: {}",
-                            entry.getKey(), e.getMessage());
+                    log.warn("Error suspending service '{}' during shutdown",
+                            entry.getKey(), e);
                 }
             }
         }
@@ -739,8 +746,8 @@ public class ModelLifecycleManager implements SmartLifecycle {
                 gpuResourceManager.reserve(serviceType, device,
                         gpuResourceManager.getMemoryBudget(serviceType));
             } catch (IllegalStateException e) {
-                log.warn("Cannot reserve GPU memory for restored service '{}': {}",
-                        serviceType, e.getMessage());
+                log.warn("Cannot reserve GPU memory for restored service '{}'",
+                        serviceType, e);
                 // Resume anyway — the service may fall back to CPU or use less memory
             }
         }
@@ -874,7 +881,7 @@ public class ModelLifecycleManager implements SmartLifecycle {
             try {
                 eventPublisher.publishEvent(event);
             } catch (Exception e) {
-                log.warn("Failed to publish GPU lifecycle event {}: {}", event.getEventType(), e.getMessage());
+                log.warn("Failed to publish GPU lifecycle event {}", event.getEventType(), e);
             }
         }
     }

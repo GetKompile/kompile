@@ -51,7 +51,7 @@ public class NoteEmbeddingService {
 
     private static final Logger logger = LoggerFactory.getLogger(NoteEmbeddingService.class);
 
-    private final NoteRepository noteRepository;
+    private NoteRepository noteRepository;
 
     @Autowired(required = false)
     private EmbeddingModel embeddingModel;
@@ -60,6 +60,10 @@ public class NoteEmbeddingService {
     public NoteEmbeddingService(NoteRepository noteRepository) {
         this.noteRepository = noteRepository;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected NoteEmbeddingService() {}
+
 
     /**
      * Schedule embedding for a single note (async, non-blocking).
@@ -115,7 +119,7 @@ public class NoteEmbeddingService {
             }
 
             String embeddingData = serializeVector(vector);
-            try { vector.close(); } catch (Exception ignored) {}
+            try { vector.close(); } catch (Exception e) { logger.warn("Failed to close embedding vector for note {}: {}", noteId, e.getMessage()); }
 
             note.setEmbeddingData(embeddingData);
             note.markEmbedded();

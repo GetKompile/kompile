@@ -350,7 +350,7 @@ public class VespaVectorStoreImpl implements VectorStore, AutoCloseable {
             }
 
             // Also add source_id at top level if present
-            if (doc.getMetadata().containsKey(SOURCE_ID_FIELD)) {
+            if (doc.getMetadata().get(SOURCE_ID_FIELD) != null) {
                 fields.put(SOURCE_ID_FIELD, doc.getMetadata().get(SOURCE_ID_FIELD).toString());
             }
         }

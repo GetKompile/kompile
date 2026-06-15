@@ -21,8 +21,6 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.ExitCodeGenerator;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.ApplicationContext;
-import org.springframework.context.annotation.Bean;
 import picocli.CommandLine;
 import picocli.CommandLine.IFactory;
 
@@ -78,8 +76,4 @@ public class ModelStagingApplication implements CommandLineRunner, ExitCodeGener
         return exitCode;
     }
 
-    @Bean
-    public CommandLine.IFactory picocliFactory(ApplicationContext applicationContext) {
-        return new picocli.spring.PicocliSpringFactory(applicationContext);
-    }
 }

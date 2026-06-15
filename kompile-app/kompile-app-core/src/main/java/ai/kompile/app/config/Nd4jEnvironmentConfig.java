@@ -525,7 +525,9 @@ public record Nd4jEnvironmentConfig(
         String val = System.getenv(key);
         if (val == null) val = System.getProperty(key);
         if (val != null) {
-            try { return Integer.parseInt(val); } catch (NumberFormatException e) { /* ignore */ }
+            try { return Integer.parseInt(val); } catch (NumberFormatException e) {
+                System.err.println("[Nd4jEnvironmentConfig] Invalid integer value for " + key + ": '" + val + "'");
+            }
         }
         return null;
     }

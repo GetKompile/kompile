@@ -130,7 +130,29 @@ public sealed interface TrainingSubprocessMessage
             double gradNorm,
             double tokensPerSecond,
             double samplesPerSecond,
-            Map<String, Double> customMetrics
+            Map<String, Double> customMetrics,
+            // Per-segment execution breakdown
+            int dspSegmentsWarmup,
+            int dspSegmentsReplayed,
+            int dspSegmentsCaptured,
+            int dspSegmentsSlotBySlot,
+            int dspSegmentsFailed,
+            // Buffer pool stats
+            long dspBufferPoolBytes,
+            long dspBufferPoolReused,
+            long dspColoringSavedBytes,
+            // GPU memory
+            long gpuMemUsedBytes,
+            long gpuMemFreeBytes,
+            long gpuMemTotalBytes,
+            long gpuPoolUsedBytes,
+            long gpuPoolReservedBytes,
+            int numGpuDevices,
+            String gpuDeviceNames,
+            // JVM heap
+            long heapUsedBytes,
+            long heapMaxBytes,
+            double heapUsagePercent
     ) implements TrainingSubprocessMessage {
     }
 
@@ -201,7 +223,33 @@ public sealed interface TrainingSubprocessMessage
                                        double gradNorm, double tokensPerSec, double samplesPerSec,
                                        Map<String, Double> customMetrics) {
         return new MetricsUpdate(taskId, step, epoch, trainLoss, evalLoss, lr,
-                gradNorm, tokensPerSec, samplesPerSec, customMetrics);
+                gradNorm, tokensPerSec, samplesPerSec, customMetrics,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null, 0, 0, 0.0);
+    }
+
+    static MetricsUpdate metricsUpdateWithDsp(String taskId, long step, int epoch,
+                                               double trainLoss, double evalLoss, double lr,
+                                               double gradNorm, double tokensPerSec, double samplesPerSec,
+                                               Map<String, Double> customMetrics,
+                                               int dspSegmentsWarmup, int dspSegmentsReplayed,
+                                               int dspSegmentsCaptured, int dspSegmentsSlotBySlot,
+                                               int dspSegmentsFailed,
+                                               long dspBufferPoolBytes, long dspBufferPoolReused,
+                                               long dspColoringSavedBytes,
+                                               long gpuMemUsedBytes, long gpuMemFreeBytes,
+                                               long gpuMemTotalBytes, long gpuPoolUsedBytes,
+                                               long gpuPoolReservedBytes, int numGpuDevices,
+                                               String gpuDeviceNames,
+                                               long heapUsedBytes, long heapMaxBytes,
+                                               double heapUsagePercent) {
+        return new MetricsUpdate(taskId, step, epoch, trainLoss, evalLoss, lr,
+                gradNorm, tokensPerSec, samplesPerSec, customMetrics,
+                dspSegmentsWarmup, dspSegmentsReplayed, dspSegmentsCaptured,
+                dspSegmentsSlotBySlot, dspSegmentsFailed,
+                dspBufferPoolBytes, dspBufferPoolReused, dspColoringSavedBytes,
+                gpuMemUsedBytes, gpuMemFreeBytes, gpuMemTotalBytes,
+                gpuPoolUsedBytes, gpuPoolReservedBytes, numGpuDevices, gpuDeviceNames,
+                heapUsedBytes, heapMaxBytes, heapUsagePercent);
     }
 
     static Log log(String taskId, String level, String source, String message) {

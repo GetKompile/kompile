@@ -46,9 +46,9 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
 
     private static final Logger log = LoggerFactory.getLogger(GraphEdgeComputationServiceImpl.class);
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
-    private final KnowledgeGraphService knowledgeGraphService;
+    private GraphNodeRepository nodeRepository;
+    private GraphEdgeRepository edgeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     @Autowired(required = false)
     private EmbeddingModel embeddingModel;
@@ -68,6 +68,10 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
         this.edgeRepository = edgeRepository;
         this.knowledgeGraphService = knowledgeGraphService;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected GraphEdgeComputationServiceImpl() {}
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EMBEDDING SIMILARITY EDGES

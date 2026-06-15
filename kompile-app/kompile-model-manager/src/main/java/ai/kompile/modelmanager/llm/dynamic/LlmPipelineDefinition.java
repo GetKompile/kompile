@@ -17,6 +17,8 @@
 package ai.kompile.modelmanager.llm.dynamic;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.*;
 
@@ -35,6 +37,8 @@ import java.util.*;
  * </ul>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@Getter
+@Setter
 public class LlmPipelineDefinition {
 
     public enum PipelineType { SEQUENCE, GRAPH }
@@ -47,6 +51,8 @@ public class LlmPipelineDefinition {
     private List<LlmPipelineStageConfig> stages;
     private List<LlmGraphNodeConfig> graphNodes;
     private Map<String, Object> defaultParameters;
+    @Getter(value = lombok.AccessLevel.NONE)
+    @Setter(value = lombok.AccessLevel.NONE)
     private boolean isBuiltin;
     private boolean enabled;
     private String createdAt;
@@ -92,32 +98,10 @@ public class LlmPipelineDefinition {
         }
     }
 
-    // --- Getters and Setters ---
+    // --- Manual accessor for 'isBuiltin' field to avoid Lombok generating 'isIsBuiltin()' ---
 
-    public String getPipelineId() { return pipelineId; }
-    public void setPipelineId(String pipelineId) { this.pipelineId = pipelineId; }
-    public String getDisplayName() { return displayName; }
-    public void setDisplayName(String displayName) { this.displayName = displayName; }
-    public String getDescription() { return description; }
-    public void setDescription(String description) { this.description = description; }
-    public PipelineType getPipelineType() { return pipelineType; }
-    public void setPipelineType(PipelineType pipelineType) { this.pipelineType = pipelineType; }
-    public String getModelSetId() { return modelSetId; }
-    public void setModelSetId(String modelSetId) { this.modelSetId = modelSetId; }
-    public List<LlmPipelineStageConfig> getStages() { return stages; }
-    public void setStages(List<LlmPipelineStageConfig> stages) { this.stages = stages; }
-    public List<LlmGraphNodeConfig> getGraphNodes() { return graphNodes; }
-    public void setGraphNodes(List<LlmGraphNodeConfig> graphNodes) { this.graphNodes = graphNodes; }
-    public Map<String, Object> getDefaultParameters() { return defaultParameters; }
-    public void setDefaultParameters(Map<String, Object> defaultParameters) { this.defaultParameters = defaultParameters; }
     public boolean isBuiltin() { return isBuiltin; }
     public void setBuiltin(boolean builtin) { isBuiltin = builtin; }
-    public boolean isEnabled() { return enabled; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
-    public String getCreatedAt() { return createdAt; }
-    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
-    public String getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(String updatedAt) { this.updatedAt = updatedAt; }
 
     // --- Convenience ---
 

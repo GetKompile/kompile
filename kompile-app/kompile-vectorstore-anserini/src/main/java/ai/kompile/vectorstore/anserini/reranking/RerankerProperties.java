@@ -18,6 +18,8 @@ package ai.kompile.vectorstore.anserini.reranking;
 
 import ai.kompile.core.reranking.RerankerConfig;
 import ai.kompile.core.reranking.RerankerType;
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -49,6 +51,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @ConfigurationProperties(prefix = "kompile.reranker")
+@Getter
+@Setter
 public class RerankerProperties {
 
     /**
@@ -142,117 +146,4 @@ public class RerankerProperties {
                 .setUseNegative(useNegative);
     }
 
-    // Getters and Setters
-
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-
-    public String getType() {
-        return type;
-    }
-
-    public void setType(String type) {
-        this.type = type;
-    }
-
-    public int getFbDocs() {
-        return fbDocs;
-    }
-
-    public void setFbDocs(int fbDocs) {
-        this.fbDocs = fbDocs;
-    }
-
-    public int getFbTerms() {
-        return fbTerms;
-    }
-
-    public void setFbTerms(int fbTerms) {
-        this.fbTerms = fbTerms;
-    }
-
-    public float getOriginalQueryWeight() {
-        return originalQueryWeight;
-    }
-
-    public void setOriginalQueryWeight(float originalQueryWeight) {
-        this.originalQueryWeight = originalQueryWeight;
-    }
-
-    public boolean isFilterTerms() {
-        return filterTerms;
-    }
-
-    public void setFilterTerms(boolean filterTerms) {
-        this.filterTerms = filterTerms;
-    }
-
-    public boolean isOutputQuery() {
-        return outputQuery;
-    }
-
-    public void setOutputQuery(boolean outputQuery) {
-        this.outputQuery = outputQuery;
-    }
-
-    public float getK1() {
-        return k1;
-    }
-
-    public void setK1(float k1) {
-        this.k1 = k1;
-    }
-
-    public float getB() {
-        return b;
-    }
-
-    public void setB(float b) {
-        this.b = b;
-    }
-
-    public float getNewTermWeight() {
-        return newTermWeight;
-    }
-
-    public void setNewTermWeight(float newTermWeight) {
-        this.newTermWeight = newTermWeight;
-    }
-
-    public float getAlpha() {
-        return alpha;
-    }
-
-    public void setAlpha(float alpha) {
-        this.alpha = alpha;
-    }
-
-    public float getBeta() {
-        return beta;
-    }
-
-    public void setBeta(float beta) {
-        this.beta = beta;
-    }
-
-    public float getGamma() {
-        return gamma;
-    }
-
-    public void setGamma(float gamma) {
-        this.gamma = gamma;
-    }
-
-    public boolean isUseNegative() {
-        return useNegative;
-    }
-
-    public void setUseNegative(boolean useNegative) {
-        this.useNegative = useNegative;
-    }
 }

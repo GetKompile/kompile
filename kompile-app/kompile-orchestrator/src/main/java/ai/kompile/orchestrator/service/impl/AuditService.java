@@ -27,8 +27,11 @@ import ai.kompile.orchestrator.repository.AuditLogRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -46,10 +49,19 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 public class AuditService {
 
+
+    @Autowired
     private final AuditLogRepository auditRepository;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = createObjectMapper();
+
+    private static ObjectMapper createObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JavaTimeModule());
+        return mapper;
+    }
 
     // ==================== Orchestrator Lifecycle ====================
 
@@ -398,11 +410,8 @@ public class AuditService {
         Pageable pageable = PageRequest.of(0, 10000); // Limit export to 10000 records
         Page<AuditLogEntry> entries = searchAuditLogs(instanceId, criteria, pageable);
 
-        ObjectMapper exportMapper = new ObjectMapper();
-        exportMapper.registerModule(new JavaTimeModule());
-
         try {
-            return exportMapper.writerWithDefaultPrettyPrinter().writeValueAsString(entries.getContent());
+            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(entries.getContent());
         } catch (JsonProcessingException e) {
             log.error("Failed to export audit logs to JSON", e);
             return "[]";

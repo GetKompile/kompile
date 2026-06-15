@@ -243,7 +243,7 @@ public class StagingSettingsService {
                     this.settings = objectMapper.readValue(settingsFile.toFile(), StagingSettings.class);
                     log.info("Loaded staging settings from: {}", settingsFile);
                 } catch (IOException e) {
-                    log.warn("Failed to load settings from {}: {}", settingsFile, e.getMessage());
+                    log.warn("Failed to load settings from {}", settingsFile, e);
                     this.settings = StagingSettings.defaults();
                 }
             } else {
@@ -261,7 +261,7 @@ public class StagingSettingsService {
             objectMapper.writeValue(settingsFile.toFile(), settings);
             log.info("Saved staging settings to: {}", settingsFile);
         } catch (IOException e) {
-            log.error("Failed to save settings to {}: {}", settingsFile, e.getMessage());
+            log.error("Failed to save settings to {}", settingsFile, e);
         }
     }
 

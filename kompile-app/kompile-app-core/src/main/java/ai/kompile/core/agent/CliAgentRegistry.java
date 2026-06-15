@@ -17,6 +17,7 @@
 package ai.kompile.core.agent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
@@ -52,6 +53,7 @@ public final class CliAgentRegistry {
                     return Collections.emptyList();
                 }
                 ObjectMapper mapper = new ObjectMapper();
+                mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
                 List<CliAgentDef> defs = mapper.readValue(is, new TypeReference<>() {});
                 List<AgentProvider> providers = new ArrayList<>();
                 for (CliAgentDef def : defs) {
@@ -105,7 +107,9 @@ public final class CliAgentRegistry {
         return null;
     }
 
-    // JSON deserialization DTO — must be public for GraalVM native image reflection
+    // JSON deserialization DTO — must be public for GraalVM native image reflection.
+    // Fields must cover all keys in cli-agents.json; unknown keys are ignored via
+    // FAIL_ON_UNKNOWN_PROPERTIES=false for forward compatibility.
     public static class CliAgentDef {
         public String name;
         public String displayName;
@@ -113,8 +117,13 @@ public final class CliAgentRegistry {
         public String skipPermissionsFlag;
         public boolean skipPermissions;
         public List<String> args;
+        public String modelFlag;
         public boolean isDefault;
         public String description;
+        public int terminalRows;
+        public int terminalCols;
+        public String outputMode;
         public String interactivePromptPattern;
+        public List<String> modelListCommand;
     }
 }

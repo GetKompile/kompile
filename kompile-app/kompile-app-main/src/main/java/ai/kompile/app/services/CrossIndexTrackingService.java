@@ -23,8 +23,11 @@ import ai.kompile.app.ingest.domain.IndexedPassage;
 import ai.kompile.app.ingest.repository.IndexedDocumentRepository;
 import ai.kompile.app.ingest.repository.IndexedPassageRepository;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -35,6 +38,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.*;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -44,10 +49,14 @@ import java.util.stream.Collectors;
 @Service
 @Transactional
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class CrossIndexTrackingService {
 
+
+    @Autowired
     private final IndexedDocumentRepository documentRepository;
+    @Autowired
     private final IndexedPassageRepository passageRepository;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -233,6 +242,14 @@ public class CrossIndexTrackingService {
     }
 
     /**
+     * Find passages by a batch of chunk IDs (partitioned to avoid oversized IN clauses).
+     */
+    @Transactional(readOnly = true)
+    public List<IndexedPassage> findPassagesByChunkIds(Collection<String> chunkIds) {
+        return partitionedQuery(chunkIds, batch -> passageRepository.findByChunkIds(batch));
+    }
+
+    /**
      * Mark a passage as indexed in the keyword index.
      */
     public void markPassageKeywordIndexed(String chunkId, Integer luceneDocId) {
@@ -254,17 +271,19 @@ public class CrossIndexTrackingService {
     }
 
     /**
-     * Batch mark passages as vector indexed.
+     * Batch mark passages as vector indexed (partitioned to avoid oversized IN clauses).
      */
     public void markPassagesVectorIndexed(Collection<String> chunkIds) {
-        passageRepository.updateVectorStatusBatch(chunkIds, IndexStatus.INDEXED, Instant.now());
+        Instant now = Instant.now();
+        partitionedUpdate(chunkIds, batch -> passageRepository.updateVectorStatusBatch(batch, IndexStatus.INDEXED, now));
     }
 
     /**
-     * Batch mark passages as graph indexed.
+     * Batch mark passages as graph indexed (partitioned to avoid oversized IN clauses).
      */
     public void markPassagesGraphIndexed(Collection<String> chunkIds) {
-        passageRepository.updateGraphStatusBatch(chunkIds, IndexStatus.INDEXED, Instant.now());
+        Instant now = Instant.now();
+        partitionedUpdate(chunkIds, batch -> passageRepository.updateGraphStatusBatch(batch, IndexStatus.INDEXED, now));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -316,7 +335,7 @@ public class CrossIndexTrackingService {
      */
     @Transactional(readOnly = true)
     public Map<String, Boolean> checkVectorIndexStatus(Collection<String> chunkIds) {
-        List<IndexedPassage> passages = passageRepository.findByChunkIds(chunkIds);
+        List<IndexedPassage> passages = partitionedQuery(chunkIds, batch -> passageRepository.findByChunkIds(batch));
         Map<String, Boolean> result = new HashMap<>();
 
         // Initialize all as false
@@ -349,11 +368,11 @@ public class CrossIndexTrackingService {
 
         Set<String> chunkIdSet = new HashSet<>(chunkIds);
 
-        // Find passages that exist but aren't in vector store
-        Set<String> missingFromVector = passageRepository.findChunkIdsNotInVectorStore(chunkIdSet);
+        // Find passages that exist but aren't in vector store (partitioned)
+        Set<String> missingFromVector = partitionedSetQuery(chunkIdSet, passageRepository::findChunkIdsNotInVectorStore);
 
-        // Find passages that exist but aren't in graph
-        Set<String> missingFromGraph = passageRepository.findChunkIdsNotInGraph(chunkIdSet);
+        // Find passages that exist but aren't in graph (partitioned)
+        Set<String> missingFromGraph = partitionedSetQuery(chunkIdSet, passageRepository::findChunkIdsNotInGraph);
 
         // All indexed = those not in the missing sets
         List<String> allIndexed = chunkIds.stream()
@@ -555,6 +574,66 @@ public class CrossIndexTrackingService {
             log.warn("SHA-256 not available, skipping content hash");
             return null;
         }
+    }
+
+    private static final int IN_CLAUSE_BATCH_SIZE = 500;
+
+    /**
+     * Partition a collection into batches, apply a function to each batch,
+     * and collect all results into a single list.
+     */
+    private <T, R> List<R> partitionedQuery(Collection<T> items, Function<List<T>, List<R>> queryFn) {
+        if (items == null || items.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<T> itemList = (items instanceof List) ? (List<T>) items : new ArrayList<>(items);
+        if (itemList.size() <= IN_CLAUSE_BATCH_SIZE) {
+            return queryFn.apply(itemList);
+        }
+        List<R> result = new ArrayList<>();
+        for (int i = 0; i < itemList.size(); i += IN_CLAUSE_BATCH_SIZE) {
+            List<T> batch = itemList.subList(i, Math.min(i + IN_CLAUSE_BATCH_SIZE, itemList.size()));
+            result.addAll(queryFn.apply(batch));
+        }
+        return result;
+    }
+
+    /**
+     * Partition a collection into batches and apply a void operation to each batch.
+     */
+    private <T> void partitionedUpdate(Collection<T> items, Consumer<List<T>> updateFn) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        List<T> itemList = (items instanceof List) ? (List<T>) items : new ArrayList<>(items);
+        if (itemList.size() <= IN_CLAUSE_BATCH_SIZE) {
+            updateFn.accept(itemList);
+            return;
+        }
+        for (int i = 0; i < itemList.size(); i += IN_CLAUSE_BATCH_SIZE) {
+            List<T> batch = itemList.subList(i, Math.min(i + IN_CLAUSE_BATCH_SIZE, itemList.size()));
+            updateFn.accept(batch);
+        }
+    }
+
+    /**
+     * Partition a collection into batches, apply a function returning a Set to each batch,
+     * and collect all results into a single set.
+     */
+    private <T, R> Set<R> partitionedSetQuery(Collection<T> items, Function<Collection<T>, Set<R>> queryFn) {
+        if (items == null || items.isEmpty()) {
+            return Collections.emptySet();
+        }
+        List<T> itemList = (items instanceof List) ? (List<T>) items : new ArrayList<>(items);
+        if (itemList.size() <= IN_CLAUSE_BATCH_SIZE) {
+            return queryFn.apply(itemList);
+        }
+        Set<R> result = new HashSet<>();
+        for (int i = 0; i < itemList.size(); i += IN_CLAUSE_BATCH_SIZE) {
+            List<T> batch = itemList.subList(i, Math.min(i + IN_CLAUSE_BATCH_SIZE, itemList.size()));
+            result.addAll(queryFn.apply(batch));
+        }
+        return result;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

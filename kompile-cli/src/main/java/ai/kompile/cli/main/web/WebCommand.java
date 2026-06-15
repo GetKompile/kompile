@@ -326,13 +326,18 @@ public class WebCommand implements Callable<Integer> {
     private static void openBrowser(String url) {
         try {
             String os = System.getProperty("os.name", "").toLowerCase();
+            ProcessBuilder pb;
             if (os.contains("mac")) {
-                new ProcessBuilder("open", url).start();
+                pb = new ProcessBuilder("open", url);
             } else if (os.contains("win")) {
-                new ProcessBuilder("rundll32", "url.dll,FileProtocolHandler", url).start();
+                pb = new ProcessBuilder("rundll32", "url.dll,FileProtocolHandler", url);
             } else {
-                new ProcessBuilder("xdg-open", url).start();
+                pb = new ProcessBuilder("xdg-open", url);
             }
+            Process p = pb.redirectErrorStream(true).start();
+            p.getInputStream().transferTo(OutputStream.nullOutputStream());
+            p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS);
+            p.destroyForcibly();
         } catch (Exception ignored) {
             // Browser open is best-effort
         }

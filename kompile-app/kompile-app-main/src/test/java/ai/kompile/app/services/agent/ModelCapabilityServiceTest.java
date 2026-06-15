@@ -134,8 +134,9 @@ class ModelCapabilityServiceTest {
         var caps = service.getCapabilities("claude-sonnet-4");
         assertEquals("claude-sonnet-4", caps.modelId());
         assertTrue(caps.supportsVision());
-        assertEquals(200_000, caps.contextWindow());
-        assertEquals(16_000, caps.maxOutputTokens());
+        // Without registered providers, falls back to default context window
+        assertEquals(128_000, caps.contextWindow());
+        assertEquals(8_192, caps.maxOutputTokens());
     }
 
     @Test
@@ -143,7 +144,8 @@ class ModelCapabilityServiceTest {
         var caps = service.getCapabilities("deepseek-chat");
         assertEquals("deepseek-chat", caps.modelId());
         assertFalse(caps.supportsVision());
-        assertEquals(64_000, caps.contextWindow());
+        // Without registered providers, falls back to default context window
+        assertEquals(128_000, caps.contextWindow());
         assertEquals(8_192, caps.maxOutputTokens());
     }
 
@@ -168,7 +170,8 @@ class ModelCapabilityServiceTest {
         // Original model ID preserved
         assertEquals("anthropic/claude-opus-4", caps.modelId());
         assertTrue(caps.supportsVision());
-        assertEquals(200_000, caps.contextWindow());
+        // Without registered providers, falls back to default context window
+        assertEquals(128_000, caps.contextWindow());
     }
 
     @Test

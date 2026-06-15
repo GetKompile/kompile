@@ -140,14 +140,8 @@ public class AsciiRenderer {
         int maxContentWidth = terminalWidth - 4; // 2 border chars + 2 padding
         List<String> bodyLines = wrapText(body, maxContentWidth);
 
-        int contentWidth = 0;
-        for (String line : bodyLines) {
-            contentWidth = Math.max(contentWidth, stripAnsi(line).length());
-        }
-        if (title != null && !title.isEmpty()) {
-            contentWidth = Math.max(contentWidth, stripAnsi(title).length() + 2);
-        }
-        contentWidth = Math.min(contentWidth, maxContentWidth);
+        // Always span full terminal width
+        int contentWidth = maxContentWidth;
 
         StringBuilder sb = new StringBuilder();
 
@@ -834,14 +828,14 @@ public class AsciiRenderer {
      * Render a horizontal rule.
      */
     public String horizontalRule() {
-        return term.dim(repeat('─', Math.min(terminalWidth, 80)));
+        return term.dim(repeat('─', terminalWidth));
     }
 
     /**
      * Render a horizontal rule with a specific character.
      */
     public String horizontalRule(char c) {
-        return term.dim(repeat(c, Math.min(terminalWidth, 80)));
+        return term.dim(repeat(c, terminalWidth));
     }
 
     // ========================================================================

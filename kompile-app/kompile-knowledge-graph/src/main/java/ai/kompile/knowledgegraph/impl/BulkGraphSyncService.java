@@ -20,9 +20,14 @@ import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
@@ -38,11 +43,16 @@ import java.util.stream.Collectors;
  */
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class BulkGraphSyncService {
 
+
+    @Autowired
     private final GraphNodeRepository nodeRepository;
+    @Autowired
     private final GraphEdgeRepository edgeRepository;
+    @Autowired
     private final ObjectMapper objectMapper;
 
     /**
@@ -248,6 +258,7 @@ public class BulkGraphSyncService {
                     .metadataJson(metadataJson)
                     .bidirectional(true)
                     .factSheetId(factSheetId)
+                    .occurredAt(parseOccurredAt(rel))
                     .build();
 
             edgesToSave.add(edge);
@@ -400,6 +411,27 @@ public class BulkGraphSyncService {
             return objectMapper.writeValueAsString(metadata);
         } catch (Exception e) {
             return "{\"semanticType\":\"" + label + "\"}";
+        }
+    }
+
+    /**
+     * Extracts the occurredAt timestamp from relationship metadata.
+     * Looks for the "occurredAt" key which should contain an ISO-8601 datetime string.
+     */
+    private LocalDateTime parseOccurredAt(ExtractedGraphDTO.ExtractedRelationship rel) {
+        if (rel.getMetadata() == null) return null;
+        Object val = rel.getMetadata().get("occurredAt");
+        if (val == null) return null;
+        try {
+            String s = val.toString();
+            // Handle ISO instant format (e.g., "2024-03-15T10:30:00Z")
+            if (s.endsWith("Z") || s.contains("+") || s.contains("T")) {
+                return LocalDateTime.parse(s.replace("Z", "").split("\\+")[0].split("-(?=[0-9]{2}:)")[0]);
+            }
+            return LocalDateTime.parse(s);
+        } catch (Exception e) {
+            log.debug("Could not parse occurredAt '{}': {}", val, e.getMessage());
+            return null;
         }
     }
 

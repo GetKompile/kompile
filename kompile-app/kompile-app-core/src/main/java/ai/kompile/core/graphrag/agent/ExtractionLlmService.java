@@ -54,6 +54,24 @@ public interface ExtractionLlmService {
     boolean isAvailable();
 
     /**
+     * Override the model used by this provider at runtime.
+     * Default implementation is a no-op for providers that don't support model switching.
+     *
+     * @param model the model name to use, or null to reset to provider default
+     */
+    default void setModelOverride(String model) {
+        // Default no-op — providers that support model switching should override this
+    }
+
+    /**
+     * Get the effective model currently in use.
+     * Returns null if no override is set (uses provider default).
+     */
+    default String getEffectiveModel() {
+        return null;
+    }
+
+    /**
      * Exception thrown when an LLM completion fails.
      */
     class ExtractionLlmException extends RuntimeException {

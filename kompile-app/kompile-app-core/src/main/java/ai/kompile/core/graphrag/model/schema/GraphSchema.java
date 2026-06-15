@@ -69,11 +69,25 @@ public class GraphSchema {
     }
 
     /**
+     * Returns the raw list of NodeType objects.
+     */
+    public List<NodeType> getNodeTypes() {
+        return nodeTypes == null ? null : Collections.unmodifiableList(nodeTypes);
+    }
+
+    /**
      * Returns the raw list of RelationshipType objects.
      * The user prompt had this.
      */
     public List<RelationshipType> getRelationshipTypes() {
-        return relationshipTypes;
+        return relationshipTypes == null ? null : Collections.unmodifiableList(relationshipTypes);
+    }
+
+    /**
+     * Returns the raw list of pattern strings.
+     */
+    public List<String> getPatterns() {
+        return patterns == null ? null : Collections.unmodifiableList(patterns);
     }
 
     /**

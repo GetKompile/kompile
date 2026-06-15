@@ -512,7 +512,8 @@ public class FileBasedPipelineOutputCache implements PipelineOutputCache {
             log.error("Failed to write cache file {}: {}", filePath, e.getMessage());
             try {
                 Files.deleteIfExists(tempPath);
-            } catch (IOException ignored) {
+            } catch (IOException cleanupEx) {
+                log.warn("Failed to clean up temp cache file {} after write failure: {}", tempPath, cleanupEx.getMessage());
             }
         }
     }

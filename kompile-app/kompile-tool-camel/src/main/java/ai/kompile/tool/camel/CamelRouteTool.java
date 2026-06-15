@@ -11,6 +11,7 @@ import ai.kompile.compute.graph.store.InMemoryArtifactStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -26,6 +27,7 @@ import java.util.stream.Collectors;
  * Supports XML DSL, YAML DSL, and Camel Simple expressions — all native-image safe.
  */
 @Component
+@ConditionalOnBean(CamelNodeExecutor.class)
 public class CamelRouteTool {
 
     private static final Logger log = LoggerFactory.getLogger(CamelRouteTool.class);

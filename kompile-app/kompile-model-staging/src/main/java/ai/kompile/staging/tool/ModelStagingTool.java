@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.tool;
 
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.staging.catalog.CatalogModel;
 import ai.kompile.staging.catalog.CatalogService;
 import ai.kompile.staging.compiler.CompilerService;
@@ -496,7 +497,7 @@ public class ModelStagingTool {
 
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", result.isSuccess() ? "success" : "error");
-            response.put("modelId", result.getModelId());
+            response.put(FieldNames.MODEL_ID, result.getModelId());
             response.put("message", result.getMessage());
             response.put("registryRemoved", result.isRegistryRemoved());
             response.put("filesDeleted", result.isFilesDeleted());
@@ -524,7 +525,7 @@ public class ModelStagingTool {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
             result.put("message", "Model activated: " + input.modelId());
-            result.put("modelId", input.modelId());
+            result.put(FieldNames.MODEL_ID, input.modelId());
             return result;
         } catch (Exception e) {
             logger.error("Error activating model: {}", e.getMessage(), e);
@@ -710,7 +711,7 @@ public class ModelStagingTool {
             boolean success = stagingService.promoteModel(input.modelId(), null);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", success ? "success" : "error");
-            result.put("modelId", input.modelId());
+            result.put(FieldNames.MODEL_ID, input.modelId());
             result.put("message", success ? "Model promoted successfully" : "Failed to promote model");
             return result;
         } catch (Exception e) {
@@ -761,7 +762,7 @@ public class ModelStagingTool {
             boolean cancelled = stagingService.cancelStaging(input.modelId());
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", cancelled ? "success" : "error");
-            result.put("modelId", input.modelId());
+            result.put(FieldNames.MODEL_ID, input.modelId());
             result.put("message", cancelled ? "Staging cancelled" : "Could not cancel staging (not found or already complete)");
             return result;
         } catch (Exception e) {
@@ -1035,7 +1036,7 @@ public class ModelStagingTool {
 
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", result.isSuccess() ? "success" : "error");
-            response.put("modelId", result.getModelId());
+            response.put(FieldNames.MODEL_ID, result.getModelId());
             response.put("message", result.getMessage());
             if (result.isSuccess()) {
                 response.put("optimizationTimeMs", result.getOptimizationTimeMs());
@@ -1098,7 +1099,7 @@ public class ModelStagingTool {
             ComparisonService.ComparisonResult result = comparisonService.compare(input.modelId(), request);
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", result.isSuccess() ? "success" : "error");
-            response.put("modelId", result.getModelId());
+            response.put(FieldNames.MODEL_ID, result.getModelId());
             if (result.isSuccess()) {
                 response.put("speedupFactor", result.getSpeedupFactor());
                 response.put("outputsMatch", result.isOutputsMatch());
@@ -1153,7 +1154,7 @@ public class ModelStagingTool {
             CompilerOptimizeResponse result = compilerService.optimizeGraph(builder.build());
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", result.isSuccess() ? "success" : "error");
-            response.put("modelId", result.getModelId());
+            response.put(FieldNames.MODEL_ID, result.getModelId());
             response.put("message", result.getMessage());
             if (result.isSuccess()) {
                 response.put("opsRemoved", result.getOpsRemoved());
@@ -1188,7 +1189,7 @@ public class ModelStagingTool {
             GraphInfoResponse info = compilerService.getGraphInfo(input.modelId());
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", "success");
-            response.put("modelId", info.getModelId());
+            response.put(FieldNames.MODEL_ID, info.getModelId());
             response.put("totalOps", info.getTotalOps());
             response.put("totalVariables", info.getTotalVariables());
             response.put("opTypes", info.getOpTypes());
@@ -1247,7 +1248,7 @@ public class ModelStagingTool {
             CompilerOptimizeResponse result = compilerService.compileWithTriton(builder.build());
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", result.isSuccess() ? "success" : "error");
-            response.put("modelId", result.getModelId());
+            response.put(FieldNames.MODEL_ID, result.getModelId());
             response.put("message", result.getMessage());
             if (!result.isSuccess()) response.put("error", result.getError());
             return response;
@@ -1301,7 +1302,7 @@ public class ModelStagingTool {
             List<CompiledModelInfo> models = compilerService.listCompiledModels();
             List<Map<String, Object>> list = models.stream().map(m -> {
                 Map<String, Object> map = new LinkedHashMap<>();
-                map.put("modelId", m.getModelId());
+                map.put(FieldNames.MODEL_ID, m.getModelId());
                 map.put("filePath", m.getFilePath());
                 map.put("sizeBytes", m.getSizeBytes());
                 map.put("lastModified", m.getLastModified());
@@ -1507,7 +1508,7 @@ public class ModelStagingTool {
             List<TrainingLogEntry> logs = trainingService.getJobLogs(input.jobId());
             List<Map<String, Object>> list = logs.stream().map(l -> {
                 Map<String, Object> map = new LinkedHashMap<>();
-                map.put("timestamp", l.getTimestamp());
+                map.put(FieldNames.TIMESTAMP, l.getTimestamp());
                 map.put("level", l.getLevel());
                 map.put("message", l.getMessage());
                 map.put("step", l.getStep());
@@ -1699,7 +1700,7 @@ public class ModelStagingTool {
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", "success");
             response.put("evaluationId", result.getEvaluationId());
-            response.put("modelId", result.getModelId());
+            response.put(FieldNames.MODEL_ID, result.getModelId());
             response.put("metrics", result.getMetrics());
             response.put("samplesEvaluated", result.getSamplesEvaluated());
             response.put("evaluationTimeMs", result.getEvaluationTimeMs());
@@ -1720,7 +1721,7 @@ public class ModelStagingTool {
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", "success");
             response.put("evaluationId", result.getEvaluationId());
-            response.put("modelId", result.getModelId());
+            response.put(FieldNames.MODEL_ID, result.getModelId());
             response.put("metrics", result.getMetrics());
             response.put("samplesEvaluated", result.getSamplesEvaluated());
             response.put("evaluationTimeMs", result.getEvaluationTimeMs());
@@ -2403,7 +2404,7 @@ public class ModelStagingTool {
         map.put("status", "success");
         map.put("jobId", job.getJobId());
         map.put("jobStatus", job.getStatus());
-        map.put("modelId", job.getModelId());
+        map.put(FieldNames.MODEL_ID, job.getModelId());
         map.put("datasetId", job.getDatasetId());
         map.put("currentEpoch", job.getCurrentEpoch());
         map.put("totalEpochs", job.getTotalEpochs());
@@ -2423,7 +2424,7 @@ public class ModelStagingTool {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("status", "success");
         map.put("jobId", job.getJobId());
-        map.put("modelId", job.getModelId());
+        map.put(FieldNames.MODEL_ID, job.getModelId());
         map.put("jobStatus", job.getStatus());
         map.put("compilationMode", job.getCompilationMode());
         map.put("executionMode", job.getExecutionMode());
@@ -2439,7 +2440,7 @@ public class ModelStagingTool {
     private Map<String, Object> llmStatusToMap(LlmModelStatusResponse status) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("status", "success");
-        map.put("modelId", status.getModelId());
+        map.put(FieldNames.MODEL_ID, status.getModelId());
         map.put("loaded", status.isLoaded());
         map.put("memoryUsageMb", status.getMemoryUsageMb());
         map.put("kvCacheType", status.getKvCacheType());
@@ -2461,7 +2462,7 @@ public class ModelStagingTool {
 
     private Map<String, Object> modelEntryToMap(ModelEntry entry) {
         Map<String, Object> map = new LinkedHashMap<>();
-        map.put("modelId", entry.getModelId());
+        map.put(FieldNames.MODEL_ID, entry.getModelId());
         map.put("type", entry.getType() != null ? entry.getType().getValue() : null);
         map.put("typeDisplay", entry.getType() != null ? entry.getType().getDisplayName() : null);
         map.put("status", entry.getStatus() != null ? entry.getStatus().getValue() : null);
@@ -2567,7 +2568,7 @@ public class ModelStagingTool {
     private Map<String, Object> stagingModelInfoToMap(StagingModelInfo info) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("status", "success");
-        map.put("modelId", info.getModelId());
+        map.put(FieldNames.MODEL_ID, info.getModelId());
         map.put("stagingStatus", info.getStatus() != null ? info.getStatus().name() : null);
         map.put("message", info.getMessage());
         map.put("progress", info.getProgress());

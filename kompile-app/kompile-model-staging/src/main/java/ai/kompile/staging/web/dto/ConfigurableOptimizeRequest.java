@@ -16,8 +16,13 @@
 
 package ai.kompile.staging.web.dto;
 
+import lombok.Getter;
+import lombok.Setter;
+
 import java.util.List;
 
+@Getter
+@Setter
 public class ConfigurableOptimizeRequest {
     private List<String> enabledOptimizations;
     private String quantizationType;
@@ -26,16 +31,4 @@ public class ConfigurableOptimizeRequest {
     private boolean force = false;
     private String preset;
 
-    public List<String> getEnabledOptimizations() { return enabledOptimizations; }
-    public void setEnabledOptimizations(List<String> opts) { this.enabledOptimizations = opts; }
-    public String getQuantizationType() { return quantizationType; }
-    public void setQuantizationType(String type) { this.quantizationType = type; }
-    public boolean isQuantizePerChannel() { return quantizePerChannel; }
-    public void setQuantizePerChannel(boolean perChannel) { this.quantizePerChannel = perChannel; }
-    public boolean isCreateBackup() { return createBackup; }
-    public void setCreateBackup(boolean backup) { this.createBackup = backup; }
-    public boolean isForce() { return force; }
-    public void setForce(boolean force) { this.force = force; }
-    public String getPreset() { return preset; }
-    public void setPreset(String preset) { this.preset = preset; }
 }

@@ -99,6 +99,27 @@ export interface ModelProvider {
 }
 
 /**
+ * Extraction provider info for fallback configuration.
+ */
+export interface ExtractionProvider {
+  id: string;
+  description: string;
+  available: boolean;
+  effectiveModel?: string;
+}
+
+/**
+ * Fallback configuration for extraction providers.
+ */
+export interface FallbackConfig {
+  fallbackEnabled: boolean;
+  fallbackOnTimeouts: boolean;
+  extractionTimeoutSeconds: number;
+  providerOrder: string[];
+  availableProviders?: ExtractionProvider[];
+}
+
+/**
  * Service for managing graph extraction configuration via REST API.
  */
 @Injectable({
@@ -224,6 +245,18 @@ export class GraphExtractionService extends BaseService {
 
   applySchemaPreset(presetId: string): Observable<any> {
     return this.http.post(`${this.backendUrl}${this.apiPath}/schema-presets/${presetId}/apply`, {})
+      .pipe(catchError(this.handleError));
+  }
+
+  // ==================== Fallback Configuration ====================
+
+  getFallbackConfig(): Observable<FallbackConfig> {
+    return this.http.get<FallbackConfig>(`${this.backendUrl}${this.apiPath}/fallback-config`)
+      .pipe(catchError(this.handleError));
+  }
+
+  updateFallbackConfig(config: Partial<FallbackConfig>): Observable<FallbackConfig> {
+    return this.http.put<FallbackConfig>(`${this.backendUrl}${this.apiPath}/fallback-config`, config)
       .pipe(catchError(this.handleError));
   }
 }

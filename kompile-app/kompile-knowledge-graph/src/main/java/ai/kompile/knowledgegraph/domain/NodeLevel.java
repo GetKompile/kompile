@@ -48,5 +48,10 @@ public enum NodeLevel {
     /**
      * Table or spreadsheet-sheet node extracted from tabular data
      */
-    TABLE
+    TABLE,
+
+    /**
+     * Email attachment node (e.g. a file attached to an email message)
+     */
+    ATTACHMENT
 }

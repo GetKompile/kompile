@@ -24,8 +24,11 @@ import ai.kompile.orchestrator.repository.ConversationMessageRepository;
 import ai.kompile.orchestrator.repository.LlmSessionRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -54,11 +57,17 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 @Slf4j
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 public class ConversationHistoryService {
 
+
+    @Autowired
     private final ConversationMessageRepository messageRepository;
+    @Autowired
     private final LlmSessionRepository sessionRepository;
+    @Autowired
     private final ObjectMapper objectMapper;
+    @Autowired
     private final ApplicationEventPublisher eventPublisher;
 
     // Track active feedback loops: sessionId -> current iteration

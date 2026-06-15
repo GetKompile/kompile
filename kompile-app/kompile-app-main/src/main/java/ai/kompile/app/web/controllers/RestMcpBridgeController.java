@@ -30,6 +30,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URI;
 import java.util.List;
 import java.util.Map;
 
@@ -186,6 +187,10 @@ public class RestMcpBridgeController {
             return ResponseEntity.badRequest().body(Map.of("error", "openApiUrl is required"));
         }
 
+        // SSRF protection
+        ResponseEntity<?> ssrfCheck = validateUrlForSsrf(openApiUrl);
+        if (ssrfCheck != null) return ssrfCheck;
+
         logger.info("Discovering endpoints from OpenAPI: {}", openApiUrl);
         try {
             List<RestMcpBridgeConfig.EndpointMapping> mappings = bridgeManager.discoverEndpoints(openApiUrl);
@@ -209,6 +214,10 @@ public class RestMcpBridgeController {
         if (baseUrl == null || baseUrl.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "baseUrl is required"));
         }
+
+        // SSRF protection
+        ResponseEntity<?> ssrfCheck = validateUrlForSsrf(baseUrl);
+        if (ssrfCheck != null) return ssrfCheck;
 
         logger.info("Probing endpoints at: {}", baseUrl);
         try {
@@ -537,5 +546,33 @@ public class RestMcpBridgeController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to refresh: " + e.getMessage()));
         }
+    }
+
+    /**
+     * Validates a URL against SSRF attacks by checking scheme and blocking internal addresses.
+     * Returns a ResponseEntity with an error if invalid, or null if the URL is safe.
+     */
+    private ResponseEntity<?> validateUrlForSsrf(String urlString) {
+        try {
+            URI uri = URI.create(urlString);
+            String scheme = uri.getScheme();
+            if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Only http and https URLs are allowed."));
+            }
+            String host = uri.getHost();
+            if (host == null || host.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "URL must have a valid host."));
+            }
+            String hostLower = host.toLowerCase();
+            if (hostLower.equals("localhost") || hostLower.equals("127.0.0.1") || hostLower.equals("::1")
+                    || hostLower.equals("[::1]") || hostLower.startsWith("10.")
+                    || hostLower.startsWith("192.168.") || hostLower.startsWith("169.254.")
+                    || hostLower.equals("metadata.google.internal")) {
+                return ResponseEntity.badRequest().body(Map.of("error", "URLs pointing to internal/private addresses are not allowed."));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid URL: " + e.getMessage()));
+        }
+        return null;
     }
 }

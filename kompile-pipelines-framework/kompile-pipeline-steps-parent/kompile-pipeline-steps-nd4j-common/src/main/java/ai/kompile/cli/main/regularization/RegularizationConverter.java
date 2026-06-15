@@ -19,6 +19,8 @@ package ai.kompile.cli.main.regularization;
 
 import org.apache.commons.io.FileUtils;
 import org.nd4j.linalg.learning.regularization.Regularization;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -26,11 +28,14 @@ import java.nio.charset.Charset;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 
 public class RegularizationConverter implements CommandLine.ITypeConverter<Regularization> {
+
+    private static final Logger log = LoggerFactory.getLogger(RegularizationConverter.class);
+
     @Override
     public Regularization convert(String s) throws Exception {
         File regularizationConfiguration = new File(s);
         if(!regularizationConfiguration.exists()) {
-            System.err.println("Regularization configuration not found.");
+            log.error("Regularization configuration not found: {}", s);
             return null;
         }
 

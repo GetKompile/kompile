@@ -103,7 +103,14 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
                                         @Autowired(required = false) RestTemplate restTemplate) {
         this.applicationContext = applicationContext;
         this.objectMapper = objectMapper;
-        this.restTemplate = restTemplate != null ? restTemplate : new RestTemplate();
+        if (restTemplate != null) {
+            this.restTemplate = restTemplate;
+        } else {
+            var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+            factory.setConnectTimeout(10_000);
+            factory.setReadTimeout(30_000);
+            this.restTemplate = new RestTemplate(factory);
+        }
     }
 
     @Override
@@ -248,8 +255,10 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
                         toolRegistry.put(name, new ToolEntry(bean, method, name, description, category, inputSchema));
                     }
                 }
-            } catch (Exception e) {
-                // Some infrastructure beans can't be inspected — skip them
+            } catch (Throwable e) {
+                // Some infrastructure beans can't be inspected — skip them.
+                // In native image, UnsupportedFeatureError (extends Error) may be thrown
+                // for records missing reflection config.
                 log.trace("Skipping bean '{}' during tool scan: {}", beanName, e.getMessage());
             }
         }
@@ -806,7 +815,9 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
                     return fg;
                 }
             }
-        } catch (Exception ignored) { }
+        } catch (Exception e) {
+            log.debug("Failed to parse graph JSON from metadata: {}", e.getMessage());
+        }
         return null;
     }
 
@@ -914,11 +925,17 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
     private Map<String, String> buildInputSchemaMap(Method method) {
         Map<String, String> schema = new LinkedHashMap<>();
         for (Parameter param : method.getParameters()) {
-            if (param.getType().isRecord()) {
-                for (RecordComponent rc : param.getType().getRecordComponents()) {
-                    schema.put(rc.getName(), rc.getType().getSimpleName());
+            try {
+                if (param.getType().isRecord()) {
+                    for (RecordComponent rc : param.getType().getRecordComponents()) {
+                        schema.put(rc.getName(), rc.getType().getSimpleName());
+                    }
+                } else {
+                    schema.put(param.getName(), param.getType().getSimpleName());
                 }
-            } else {
+            } catch (Throwable t) {
+                // In GraalVM native image, getRecordComponents() throws UnsupportedFeatureError
+                // if the record's reflection config is missing. Fall back to parameter name.
                 schema.put(param.getName(), param.getType().getSimpleName());
             }
         }

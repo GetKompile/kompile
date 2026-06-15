@@ -34,7 +34,7 @@ import org.springframework.stereotype.Component;
  * Minimal Spring configuration for Kompile Lite.
  * Provides essential beans and shutdown handlers.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class LiteAppConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(LiteAppConfig.class);

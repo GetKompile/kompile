@@ -50,7 +50,7 @@ import org.springframework.context.annotation.Lazy;
  * - DELETE /mcp/sse - Terminate session (Streamable HTTP)
  * - GET /mcp/status - Health check
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "mcp.server.enabled", havingValue = "true", matchIfMissing = true)
 public class McpServerConfig implements ApplicationListener<ApplicationReadyEvent> {
 
@@ -173,8 +173,8 @@ public class McpServerConfig implements ApplicationListener<ApplicationReadyEven
     public void onApplicationEvent(ApplicationReadyEvent event) {
         if (!"sse".equals(properties.getTransport())) {
             if ("stdio".equals(properties.getTransport())) {
-                System.err.println("[MCP] Kompile MCP Server ready with STDIO transport");
-                System.err.println("[MCP] Server: " + properties.getName() + " v" + properties.getVersion());
+                log.info("[MCP] Kompile MCP Server ready with STDIO transport");
+                log.info("[MCP] Server: {} v{}", properties.getName(), properties.getVersion());
             }
             return;
         }

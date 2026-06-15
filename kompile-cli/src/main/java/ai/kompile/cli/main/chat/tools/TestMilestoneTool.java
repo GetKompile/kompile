@@ -1041,7 +1041,9 @@ public class TestMilestoneTool implements CliTool {
             Process process = pb.start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line = reader.readLine();
-                process.waitFor();
+                if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                }
                 return line != null ? line.trim() : null;
             }
         } catch (Exception e) {

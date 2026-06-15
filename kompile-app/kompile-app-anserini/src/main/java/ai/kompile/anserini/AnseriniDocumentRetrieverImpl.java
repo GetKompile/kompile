@@ -32,6 +32,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -107,6 +108,18 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
         } catch (Exception e) {
             logger.error("Unexpected error during Anserini SimpleSearcher initialization: {}", e.getMessage(), e);
             return false;
+        }
+    }
+
+    @PreDestroy
+    public void destroy() {
+        if (this.searcher != null) {
+            try {
+                this.searcher.close();
+                logger.info("Anserini SimpleSearcher closed successfully.");
+            } catch (IOException e) {
+                logger.warn("Error closing Anserini SimpleSearcher: {}", e.getMessage());
+            }
         }
     }
 

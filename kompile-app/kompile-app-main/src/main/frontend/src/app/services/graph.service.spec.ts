@@ -920,4 +920,53 @@ describe('GraphService', () => {
       req.flush(mockResponse);
     });
   });
+
+  // ── getNode ─────────────────────────────────────────────────────────────
+
+  describe('getNode()', () => {
+    it('should GET /knowledge-graph/nodes/:nodeId', (done) => {
+      const mockNode: GraphNode = {
+        nodeId: 'test-node-1',
+        nodeType: 'ENTITY' as any,
+        title: 'Test Entity',
+        description: 'A test entity node',
+        createdAt: '2025-01-01T00:00:00Z',
+        edgeCount: 3
+      };
+
+      service.getNode('test-node-1').subscribe(node => {
+        expect(node.nodeId).toBe('test-node-1');
+        expect(node.title).toBe('Test Entity');
+        expect(node.edgeCount).toBe(3);
+        done();
+      });
+
+      const req = httpMock.expectOne(r =>
+        r.url.endsWith('/knowledge-graph/nodes/test-node-1')
+      );
+      expect(req.request.method).toBe('GET');
+      req.flush(mockNode);
+    });
+
+    it('should handle URL-encoded node IDs', (done) => {
+      const mockNode: GraphNode = {
+        nodeId: 'node/with/slashes',
+        nodeType: 'DOCUMENT' as any,
+        title: 'Encoded Node',
+        createdAt: '2025-01-01T00:00:00Z',
+        edgeCount: 0
+      };
+
+      service.getNode('node/with/slashes').subscribe(node => {
+        expect(node.title).toBe('Encoded Node');
+        done();
+      });
+
+      const req = httpMock.expectOne(r =>
+        r.url.includes('/knowledge-graph/nodes/')
+      );
+      expect(req.request.method).toBe('GET');
+      req.flush(mockNode);
+    });
+  });
 });

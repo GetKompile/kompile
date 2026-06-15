@@ -256,7 +256,9 @@ public class LlmExecutionController {
             } catch (Exception e) {
                 try {
                     emitter.send(SseEmitter.event().name("error").data(e.getMessage()));
-                } catch (IOException ignored) {}
+                } catch (IOException sendEx) {
+                    log.debug("Could not send SSE error event (client likely disconnected): {}", sendEx.getMessage());
+                }
                 emitter.completeWithError(e);
             }
         }, "llm-stream-generate").start();
@@ -282,7 +284,9 @@ public class LlmExecutionController {
             } catch (Exception e) {
                 try {
                     emitter.send(SseEmitter.event().name("error").data(e.getMessage()));
-                } catch (IOException ignored) {}
+                } catch (IOException sendEx) {
+                    log.debug("Could not send SSE error event (client likely disconnected): {}", sendEx.getMessage());
+                }
                 emitter.completeWithError(e);
             }
         }, "llm-stream-generate").start();
@@ -324,7 +328,9 @@ public class LlmExecutionController {
             } catch (Exception e) {
                 try {
                     emitter.send(SseEmitter.event().name("error").data(e.getMessage()));
-                } catch (IOException ignored) {}
+                } catch (IOException sendEx) {
+                    log.debug("Could not send SSE error event (client likely disconnected): {}", sendEx.getMessage());
+                }
                 emitter.completeWithError(e);
             }
         }, "llm-stream-chat").start();

@@ -19,13 +19,22 @@ public record PortableEdge(
         Double weight,
         String description,
         String provenance,
-        Double confidence
+        Double confidence,
+        String occurredAt
 ) {
     /**
-     * Compact constructor for backwards-compatible creation without provenance/confidence.
+     * Compact constructor for backwards-compatible creation without provenance/confidence/occurredAt.
      */
     public PortableEdge(String fromExternalId, String toExternalId, String edgeType,
                         Double weight, String description) {
-        this(fromExternalId, toExternalId, edgeType, weight, description, null, null);
+        this(fromExternalId, toExternalId, edgeType, weight, description, null, null, null);
+    }
+
+    /**
+     * Compact constructor for backwards-compatible creation without occurredAt.
+     */
+    public PortableEdge(String fromExternalId, String toExternalId, String edgeType,
+                        Double weight, String description, String provenance, Double confidence) {
+        this(fromExternalId, toExternalId, edgeType, weight, description, provenance, confidence, null);
     }
 }

@@ -34,7 +34,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PreDestroy;
+
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -97,7 +97,6 @@ public class VectorPopulationProgressTracker implements DisposableBean {
         }
     }
 
-    @PreDestroy
     @Override
     public void destroy() {
         logger.info("Shutting down VectorPopulationProgressTracker cleanup scheduler...");

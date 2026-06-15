@@ -46,7 +46,7 @@ import org.springframework.context.annotation.Import;
  * This prevents loading REST controllers, document processors, and other
  * unrelated components that have no business in a VLM subprocess.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "kompile.subprocess.vlmtest.mode", havingValue = "true", matchIfMissing = false)
 @ComponentScan(
     basePackages = {

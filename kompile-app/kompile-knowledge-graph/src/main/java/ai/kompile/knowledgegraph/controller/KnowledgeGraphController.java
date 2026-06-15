@@ -25,9 +25,11 @@ import ai.kompile.knowledgegraph.service.SourceLinkingService.SourceLink;
 import ai.kompile.knowledgegraph.service.SourceLinkingService.TermLinkingResult;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -65,12 +67,19 @@ public class KnowledgeGraphController {
             @RequestParam(required = false, name = "query") String query,
             @RequestParam(defaultValue = "50", name = "limit") int limit) {
 
+        limit = Math.min(limit, 1000);
         List<GraphNode> nodes;
+        NodeLevel nodeType = null;
+        if (type != null) {
+            try {
+                nodeType = NodeLevel.valueOf(type.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().build();
+            }
+        }
         if (query != null && !query.isBlank()) {
-            NodeLevel nodeType = type != null ? NodeLevel.valueOf(type.toUpperCase()) : null;
             nodes = graphService.searchNodes(query, nodeType, limit);
-        } else if (type != null) {
-            NodeLevel nodeType = NodeLevel.valueOf(type.toUpperCase());
+        } else if (nodeType != null) {
             nodes = graphService.searchNodes("", nodeType, limit);
         } else {
             nodes = graphService.getAllSources();
@@ -94,6 +103,7 @@ public class KnowledgeGraphController {
     public ResponseEntity<List<GraphNode>> getConnectedNodes(
             @PathVariable("nodeId") String nodeId,
             @RequestParam(defaultValue = "2", name = "depth") int depth) {
+        depth = Math.min(depth, 5);
         return ResponseEntity.ok(graphService.getConnectedNodes(nodeId, depth));
     }
 
@@ -299,8 +309,30 @@ public class KnowledgeGraphController {
     public ResponseEntity<Map<String, Object>> getVisualizationData(
             @RequestParam(required = false, name = "rootNodeId") String rootNodeId,
             @RequestParam(defaultValue = "2", name = "depth") int depth,
-            @RequestParam(defaultValue = "100", name = "maxNodes") int maxNodes) {
+            @RequestParam(defaultValue = "100", name = "maxNodes") int maxNodes,
+            @RequestParam(required = false, name = "from") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
+            @RequestParam(required = false, name = "to") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to) {
+        if (from != null && to != null) {
+            return ResponseEntity.ok(graphService.getVisualizationDataInTimeRange(from, to, maxNodes));
+        }
         return ResponseEntity.ok(graphService.getVisualizationData(rootNodeId, depth, maxNodes));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TEMPORAL ENDPOINTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @GetMapping("/temporal/bounds")
+    public ResponseEntity<Map<String, Object>> getTemporalBounds() {
+        return ResponseEntity.ok(graphService.getTemporalBounds());
+    }
+
+    @GetMapping("/temporal/edges")
+    public ResponseEntity<List<GraphEdge>> getEdgesInTimeRange(
+            @RequestParam(name = "from") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
+            @RequestParam(name = "to") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
+            @RequestParam(defaultValue = "100", name = "limit") int limit) {
+        return ResponseEntity.ok(graphService.searchEdgesByTimeRange(from, to, limit));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

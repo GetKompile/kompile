@@ -453,7 +453,9 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
                                 entities.add(new GraphExtractionSchema.ExtractedEntity(
                                         id, name, type, List.of(), desc, null, Map.of()));
                             }
-                        } catch (Exception ignored) {}
+                        } catch (Exception e) {
+                            log.debug("Lenient parse: skipping malformed entity JSON fragment: {}", e.getMessage());
+                        }
                         objStart = -1;
                     }
                 }
@@ -484,7 +486,9 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
                                         relations.add(new GraphExtractionSchema.ExtractedRelation(
                                                 src, tgt, type, desc, null, Map.of()));
                                     }
-                                } catch (Exception ignored) {}
+                                } catch (Exception e) {
+                                    log.debug("Lenient parse: skipping malformed relation JSON fragment: {}", e.getMessage());
+                                }
                                 objStart = -1;
                             }
                         }

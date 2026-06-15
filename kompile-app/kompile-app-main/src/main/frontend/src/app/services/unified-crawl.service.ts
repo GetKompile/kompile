@@ -101,6 +101,71 @@ export interface CapacitySnapshot {
   statusMessage: string;
 }
 
+export interface TranslationConfig {
+  enabled: boolean;
+  targetLanguage?: string;
+  sourceLanguage?: string;
+  preserveOriginal?: boolean;
+  dualIndex?: boolean;
+  detectionConfidenceThreshold?: number;
+  maxCharsPerRequest?: number;
+  domainHint?: string;
+  preserveTerms?: string[];
+  customInstructions?: string;
+}
+
+export interface LanguageDetectionConfig {
+  enabled: boolean;
+  minTextLength?: number;
+  llmFallback?: boolean;
+  forceLanguage?: string;
+}
+
+export interface UnicodeNormalizationConfig {
+  enabled: boolean;
+  form?: string;
+  fixMojibake?: boolean;
+  standardizeTypography?: boolean;
+}
+
+export interface PiiRedactionConfig {
+  enabled: boolean;
+  entityTypes?: string[];
+  replacementStrategy?: string;
+  useLlm?: boolean;
+  logCounts?: boolean;
+}
+
+export interface BoilerplateRemovalConfig {
+  enabled: boolean;
+  removeWebBoilerplate?: boolean;
+  removeEmailSignatures?: boolean;
+  removeLegalDisclaimers?: boolean;
+  customPatterns?: string[];
+  minRemainingChars?: number;
+}
+
+export interface DeduplicationConfig {
+  enabled: boolean;
+  similarityThreshold?: number;
+  strategy?: string;
+  algorithm?: string;
+  trackDuplicateRelations?: boolean;
+}
+
+export interface PreprocessingConfig {
+  enabled: boolean;
+  llmProvider?: string;
+  llmModelName?: string;
+  parallelism?: number;
+  translation?: TranslationConfig;
+  languageDetection?: LanguageDetectionConfig;
+  unicodeNormalization?: UnicodeNormalizationConfig;
+  piiRedaction?: PiiRedactionConfig;
+  boilerplateRemoval?: BoilerplateRemovalConfig;
+  deduplication?: DeduplicationConfig;
+}
+
 export interface UnifiedCrawlRequest {
   name: string;
   factSheetId?: number | null;
@@ -108,6 +173,7 @@ export interface UnifiedCrawlRequest {
   graphExtraction?: GraphExtractionConfig;
   vectorIndex?: VectorIndexConfig;
   processingRoute?: ProcessingRouteConfig;
+  preprocessing?: PreprocessingConfig;
 }
 
 export interface StartJobResponse {
@@ -178,6 +244,48 @@ export interface DocumentGraphProgress {
   startedAt?: string;
   updatedAt?: string;
   completedAt?: string;
+}
+
+export interface BackendRoutingStats {
+  backendId: string;
+  backendType: string;
+  requestsDispatched: number;
+  requestsCompleted: number;
+  requestsFailed: number;
+  requestsRerouted: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostCentsX100: number;
+  emaLatencyMsX100: number;
+  activeRequests: number;
+  maxConcurrent: number;
+  healthy: boolean;
+  unhealthyReason?: string;
+}
+
+export interface RerouteEvent {
+  timestamp: string;
+  fromBackend: string;
+  toBackend: string;
+  taskType: string;
+  reason: string;
+  itemCount: number;
+}
+
+export interface RetryEvent {
+  timestamp: string;
+  stage: string;
+  attempt: number;
+  maxAttempts: number;
+  itemCount: number;
+  originalBatchSize: number;
+  reducedBatchSize: number;
+  failureReason: string;
+  backendId?: string;
+  fallbackBackendId?: string;
+  backoffMs: number;
+  succeeded: boolean;
+  sentToDeadLetter: boolean;
 }
 
 export interface JobSummary {
@@ -251,6 +359,33 @@ export interface JobSummary {
   sources?: SourceProgress[];
   recentDocuments?: RecentDocument[];
   recentlyDiscoveredItems?: DiscoveredItem[];
+  // Work-stealing stats
+  workStealCount?: number;
+  workStealFailures?: number;
+  localDispatchCount?: number;
+  workImbalanceRatioX100?: number;
+  // Dynamic batch sizing
+  adaptiveBatchSize?: number;
+  batchSizeAdjustments?: number;
+  lastBatchAdjustDirection?: string;
+  lastBatchAdjustReason?: string;
+  batchEmaLatencyMsX100?: number;
+  peakThroughputX100?: number;
+  // Token budget
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  estimatedCostCentsX100?: number;
+  backendStats?: { [backendId: string]: BackendRoutingStats };
+  // Workload rerouting
+  reroutedItems?: number;
+  droppedItems?: number;
+  recentRerouteEvents?: RerouteEvent[];
+  // Retry / fallback
+  retriedBatches?: number;
+  retriedItems?: number;
+  deadLetterCount?: number;
+  backendsCoolingDown?: number;
+  recentRetryEvents?: RetryEvent[];
 }
 
 export interface GraphSummary {
@@ -337,6 +472,33 @@ export interface JobDetail {
   vectorIndexEnabled?: boolean;
   llmProvider?: string;
   llmModel?: string;
+  // Work-stealing stats
+  workStealCount?: number;
+  workStealFailures?: number;
+  localDispatchCount?: number;
+  workImbalanceRatioX100?: number;
+  // Dynamic batch sizing
+  adaptiveBatchSize?: number;
+  batchSizeAdjustments?: number;
+  lastBatchAdjustDirection?: string;
+  lastBatchAdjustReason?: string;
+  batchEmaLatencyMsX100?: number;
+  peakThroughputX100?: number;
+  // Token budget
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  estimatedCostCentsX100?: number;
+  backendStats?: { [backendId: string]: BackendRoutingStats };
+  // Workload rerouting
+  reroutedItems?: number;
+  droppedItems?: number;
+  recentRerouteEvents?: RerouteEvent[];
+  // Retry / fallback
+  retriedBatches?: number;
+  retriedItems?: number;
+  deadLetterCount?: number;
+  backendsCoolingDown?: number;
+  recentRetryEvents?: RetryEvent[];
 }
 
 export interface RequestConfigSource {

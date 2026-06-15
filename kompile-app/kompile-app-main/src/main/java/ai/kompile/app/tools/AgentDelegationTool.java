@@ -41,7 +41,11 @@ public class AgentDelegationTool {
 
     private final AgentChatService agentChatService;
     private final AgentRegistryService agentRegistry;
-    private final ExecutorService asyncExecutor = Executors.newCachedThreadPool();
+    private final ExecutorService asyncExecutor = new ThreadPoolExecutor(
+            2, 16, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(64),
+            r -> { Thread t = new Thread(r, "agent-delegation"); t.setDaemon(true); return t; },
+            new ThreadPoolExecutor.CallerRunsPolicy());
 
     // Track async delegations
     private final Map<String, AsyncDelegation> asyncDelegations = new ConcurrentHashMap<>();
@@ -431,4 +435,17 @@ public class AgentDelegationTool {
             CompletableFuture<AgentChatService.SyncChatResult> future,
             long startTime
     ) {}
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        asyncExecutor.shutdown();
+        try {
+            if (!asyncExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                asyncExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            asyncExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 }

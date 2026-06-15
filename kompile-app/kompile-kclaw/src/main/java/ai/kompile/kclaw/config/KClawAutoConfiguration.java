@@ -19,13 +19,14 @@ import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.kclaw.agent.ToolkitRegistry;
 import ai.kompile.kclaw.gateway.KClawWebSocketHandler;
 import ai.kompile.kclaw.gateway.channel.*;
-import ai.kompile.kclaw.model.AgentDefinition;
-import ai.kompile.kclaw.service.AgentRegistry;
-import ai.kompile.kclaw.service.HeartbeatScheduler;
-import ai.kompile.kclaw.service.PermissionService;
-import ai.kompile.kclaw.service.SessionService;
-import ai.kompile.kclaw.service.impl.DefaultPermissionService;
-import ai.kompile.kclaw.service.impl.InMemoryAgentRegistry;
+import ai.kompile.gateway.core.gateway.channel.ChannelManager;
+import ai.kompile.gateway.core.model.AgentDefinition;
+import ai.kompile.gateway.core.service.AgentRegistry;
+import ai.kompile.gateway.core.service.HeartbeatScheduler;
+import ai.kompile.gateway.core.service.PermissionService;
+import ai.kompile.gateway.core.service.SessionService;
+import ai.kompile.gateway.core.service.impl.DefaultPermissionService;
+import ai.kompile.gateway.core.service.impl.InMemoryAgentRegistry;
 import ai.kompile.kclaw.service.impl.JsonlSessionService;
 import ai.kompile.kclaw.tool.MemoryTool;
 import ai.kompile.kclaw.tool.ShellExecutionTool;
@@ -46,7 +47,7 @@ import java.io.IOException;
 import java.util.List;
 
 @Slf4j
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @EnableWebSocket
 public class KClawAutoConfiguration implements WebSocketConfigurer {
 

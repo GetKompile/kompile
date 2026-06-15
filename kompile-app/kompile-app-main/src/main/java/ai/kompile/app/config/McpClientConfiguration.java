@@ -44,7 +44,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * - spring.ai.mcp.client.servers[0].name=my-server
  * - spring.ai.mcp.client.servers[0].url=http://localhost:8081
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "spring.ai.mcp.client.enabled", havingValue = "true", matchIfMissing = false)
 public class McpClientConfiguration {
 

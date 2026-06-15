@@ -45,11 +45,15 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class KGEmbeddingJobService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected KGEmbeddingJobService() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(KGEmbeddingJobService.class);
 
-    private final KGEmbeddingJobRepository jobRepository;
-    private final KGEmbeddingStorageService storageService;
-    private final SimpMessagingTemplate messagingTemplate;
+    private KGEmbeddingJobRepository jobRepository;
+    private KGEmbeddingStorageService storageService;
+    private SimpMessagingTemplate messagingTemplate;
 
     // Track running models for cancellation
     private final Map<String, KGEmbeddingModel> runningModels = new ConcurrentHashMap<>();

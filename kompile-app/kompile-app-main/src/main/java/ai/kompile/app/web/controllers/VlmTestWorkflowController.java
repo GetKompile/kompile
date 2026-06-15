@@ -16,6 +16,7 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.app.services.scheduler.JobResourceProfiles;
 import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
 import ai.kompile.app.services.scheduler.ScheduledJob;
@@ -72,7 +73,7 @@ public class VlmTestWorkflowController {
     @PostMapping("/run")
     public ResponseEntity<?> runTest(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "modelId") String modelId,
+            @RequestParam(value = FieldNames.MODEL_ID) String modelId,
             @RequestParam(value = "outputFormat", defaultValue = "DOCTAGS") String outputFormat,
             @RequestParam(value = "maxNewTokens", required = false) Integer maxNewTokens,
             @RequestParam(value = "temperature", required = false) Double temperature,
@@ -143,7 +144,9 @@ public class VlmTestWorkflowController {
                                 completedResults.put(taskId, failedResult);
                                 throw new RuntimeException("VLM failed: " + e.getCause().getMessage(), e.getCause());
                             } finally {
-                                try { Files.deleteIfExists(tempFile); } catch (Exception ignored) {}
+                                try { Files.deleteIfExists(tempFile); } catch (Exception e) {
+                                    logger.warn("Failed to delete temp VLM test file {}: {}", tempFile, e.getMessage());
+                                }
                             }
                         })
                         .priority(60)
@@ -169,17 +172,19 @@ public class VlmTestWorkflowController {
                         completedResults.put(taskId, failedResult);
                     }
                     // Clean up temp file after a delay
-                    try { Files.deleteIfExists(tempFile); } catch (Exception ignored) {}
+                    try { Files.deleteIfExists(tempFile); } catch (Exception e) {
+                        logger.warn("Failed to delete temp VLM test file {}: {}", tempFile, e.getMessage());
+                    }
                 });
 
                 logger.info("Started VLM test {} for file {} with model {}", taskId, originalName, modelId);
             }
 
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "fileName", originalName != null ? originalName : "unknown",
                     "status", "STARTED",
-                    "modelId", modelId,
+                    FieldNames.MODEL_ID, modelId,
                     "outputFormat", outputFormat
             ));
 
@@ -200,7 +205,7 @@ public class VlmTestWorkflowController {
         VlmTestResult completedResult = completedResults.get(taskId);
         if (completedResult != null) {
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "status", completedResult.status,
                     "progressPercent", 100,
                     "currentPhase", "DONE"
@@ -211,7 +216,7 @@ public class VlmTestWorkflowController {
         VlmTestStatus status = launcher.getStatus(taskId);
         if (status != null) {
             return ResponseEntity.ok(Map.of(
-                    "taskId", status.taskId(),
+                    FieldNames.TASK_ID, status.taskId(),
                     "status", status.status(),
                     "progressPercent", status.progressPercent(),
                     "currentPhase", status.currentPhase(),
@@ -224,7 +229,7 @@ public class VlmTestWorkflowController {
             var jobView = resourceScheduler.getJobView(taskId);
             if (jobView != null) {
                 return ResponseEntity.ok(Map.of(
-                        "taskId", taskId,
+                        FieldNames.TASK_ID, taskId,
                         "status", jobView.state(),
                         "progressPercent", 0,
                         "currentPhase", "QUEUED".equals(jobView.state()) ? "QUEUED" : jobView.currentPhase(),
@@ -246,7 +251,7 @@ public class VlmTestWorkflowController {
             // Check if still running
             if (launcher.isRunning(taskId)) {
                 return ResponseEntity.ok(Map.of(
-                        "taskId", taskId,
+                        FieldNames.TASK_ID, taskId,
                         "status", "RUNNING",
                         "message", "Test is still in progress"
                 ));
@@ -255,7 +260,7 @@ public class VlmTestWorkflowController {
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("taskId", result.taskId);
+        response.put(FieldNames.TASK_ID, result.taskId);
         response.put("filePath", result.filePath);
         response.put("status", result.status);
         response.put("totalTimeMs", result.totalTimeMs);
@@ -284,7 +289,7 @@ public class VlmTestWorkflowController {
         boolean cancelled = launcher.cancelTest(taskId);
         if (cancelled) {
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "status", "CANCELLED",
                     "message", "VLM test cancelled"
             ));

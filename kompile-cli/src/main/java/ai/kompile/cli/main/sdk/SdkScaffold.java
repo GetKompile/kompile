@@ -69,7 +69,13 @@ public class SdkScaffold implements Callable<Integer> {
         }
 
         Path output = outputDir != null ? outputDir.toPath() : Path.of(projectName);
-        if (Files.exists(output) && Files.list(output).findAny().isPresent()) {
+        boolean outputNonEmpty = false;
+        if (Files.exists(output)) {
+            try (java.util.stream.Stream<Path> listing = Files.list(output)) {
+                outputNonEmpty = listing.findAny().isPresent();
+            }
+        }
+        if (outputNonEmpty) {
             System.err.println("Output directory already exists and is not empty: " + output);
             System.err.println("Please specify a different directory with --output-dir or remove the existing one.");
             return 1;

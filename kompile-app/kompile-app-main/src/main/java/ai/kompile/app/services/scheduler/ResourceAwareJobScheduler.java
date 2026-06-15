@@ -56,6 +56,10 @@ import java.util.stream.Collectors;
 @Service
 public class ResourceAwareJobScheduler implements SmartLifecycle {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected ResourceAwareJobScheduler() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(ResourceAwareJobScheduler.class);
 
     /**
@@ -64,12 +68,18 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
      */
     private static final int LIFECYCLE_PHASE = Integer.MAX_VALUE - 200;
 
-    private final GpuResourceManager gpuResourceManager;
-    private final ModelLifecycleManager modelLifecycleManager;
-    private final ResourceSchedulerConfigService configService;
-    private final ApplicationEventPublisher eventPublisher;
-    private final List<ExternalJobSchedulerDelegate> externalDelegates;
-    private final JobSchedulerHistoryService historyService;
+    @Autowired
+    private GpuResourceManager gpuResourceManager;
+    @Autowired
+    private ModelLifecycleManager modelLifecycleManager;
+    @Autowired
+    private ResourceSchedulerConfigService configService;
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
+    @Autowired(required = false)
+    private List<ExternalJobSchedulerDelegate> externalDelegates;
+    @Autowired(required = false)
+    private JobSchedulerHistoryService historyService;
 
     // --- Internal state ---
     private final PriorityBlockingQueue<ScheduledJob> queue = new PriorityBlockingQueue<>();
@@ -892,15 +902,6 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
 
         // resultFuture.complete LAST — callers waiting on it see final state
         job.getResultFuture().complete(new ScheduledJob.JobResult(false, "Cancelled: " + reason, 0));
-
-        // Record cancelled job in history
-        if (historyService != null) {
-            try {
-                historyService.recordFromJob(job);
-            } catch (Exception e) {
-                log.debug("Failed to record cancelled job history for '{}': {}", job.getJobId(), e.getMessage());
-            }
-        }
 
         triggerDispatch();
         return true;

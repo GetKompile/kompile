@@ -233,7 +233,7 @@ public class CrawlerController {
             if (errors.isEmpty()) {
                 return ResponseEntity.ok(Map.of("valid", true));
             } else {
-                return ResponseEntity.ok(Map.of("valid", false, "errors", errors));
+                return ResponseEntity.badRequest().body(Map.of("valid", false, "errors", errors));
             }
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
@@ -383,8 +383,9 @@ public class CrawlerController {
             response.put("resumedUrlCount", resumedUrlCount);
             response.put("pendingUrlCount", pendingUrlCount);
 
+            String safeSeed = config.getSeed() != null ? config.getSeed().replace('\n', ' ').replace('\r', ' ') : "";
             log.info("Resumed crawl job {} from checkpoint of job {} (seed: {}, {} URLs already visited, {} pending)",
-                    newJob.getJobId(), jobId, config.getSeed(), resumedUrlCount, pendingUrlCount);
+                    newJob.getJobId(), jobId, safeSeed, resumedUrlCount, pendingUrlCount);
 
             return ResponseEntity.ok(response);
         } catch (Exception e) {
@@ -411,8 +412,8 @@ public class CrawlerController {
                     crawlJobPersistenceService.saveCheckpoint(
                             job.getJobId(), state, job.getProgress());
                 } catch (Exception e) {
-                    log.debug("Periodic checkpoint failed for crawl job {}: {}",
-                            job.getJobId(), e.getMessage());
+                    log.warn("Periodic checkpoint failed for crawl job {}: {}",
+                            job.getJobId(), e.getMessage(), e);
                 }
             }
         }
@@ -744,7 +745,7 @@ public class CrawlerController {
             public void onItemRouted(RoutedCrawlItem routedItem) {
                 IngestPipelineDefinition pipeline = routedItem.pipeline();
                 CrawlItem item = routedItem.item();
-                String url = item.getUrl();
+                String url = item.getUrl() != null ? item.getUrl().replaceAll("[\\r\\n]", " ") : "";
                 CrawlPipelineRuntimeStats stats = null;
 
                 try {

@@ -177,7 +177,7 @@ class MultiAgentGraphControllerTest {
     @Test
     void listProviders_withRegistry_returnsProviderList() throws Exception {
         List<ExtractionLlmServiceRegistry.ProviderInfo> providers = List.of(
-                new ExtractionLlmServiceRegistry.ProviderInfo("llm-chat", "Local LLM", true)
+                new ExtractionLlmServiceRegistry.ProviderInfo("llm-chat", "Local LLM", true, null)
         );
         when(llmServiceRegistry.listProviders()).thenReturn(providers);
 

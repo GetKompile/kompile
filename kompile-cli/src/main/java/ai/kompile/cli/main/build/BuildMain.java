@@ -28,7 +28,10 @@ import java.util.concurrent.Callable;
         CloneBuildComponents.class,
         GenerateDl4jBuild.class,
         BuildNd4jBackend.class,
-        SampleProjectSync.class
+        SampleProjectSync.class,
+        BuildNativeDevCommand.class,
+        BuildNativeDistCommand.class,
+        BuildDistCommand.class
 }, mixinStandardHelpOptions = false,
         description = "Commands related to building Kompile applications.\n\n" +
                 "Primary entry point:\n" +

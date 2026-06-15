@@ -131,7 +131,9 @@ public class AgentChatService {
         this.diagnosticService = diagnosticService;
         this.streamParser = streamParser;
         this.subprocessExecutor = subprocessExecutor;
-        this.executorService = Executors.newCachedThreadPool();
+        this.executorService = new java.util.concurrent.ThreadPoolExecutor(
+                2, 32, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(100));
         this.toolDiscoveryService = toolDiscoveryService;
         this.serverPortService = serverPortService;
         this.folderService = folderService;
@@ -328,10 +330,9 @@ public class AgentChatService {
                     int timeoutSeconds = request.getTimeoutSeconds();
                     boolean completed;
                     if (timeoutSeconds <= 0) {
-                        // No timeout - wait indefinitely
-                        log.info("Waiting for process completion with no timeout");
-                        runningProcess.waitFor();
-                        completed = true;
+                        // Default to 1 hour max to prevent indefinite blocking
+                        log.info("Waiting for process completion with default 1h timeout");
+                        completed = runningProcess.waitFor(3600, TimeUnit.SECONDS);
                     } else {
                         log.info("Waiting for process completion with {}s timeout", timeoutSeconds);
                         completed = runningProcess.waitFor(timeoutSeconds, TimeUnit.SECONDS);
@@ -510,7 +511,7 @@ public class AgentChatService {
 
             return graphRagService.answerQuery(graphQuery);
         } catch (Exception e) {
-            log.error("Error retrieving graph context: {}", e.getMessage());
+            log.error("Error retrieving graph context", e);
             return null;
         }
     }
@@ -625,7 +626,7 @@ public class AgentChatService {
                             keywordDocs.stream().filter(d -> d != null && d.getText() != null).count());
                 }
             } catch (Exception e) {
-                log.error("Error during keyword retrieval: {}", e.getMessage());
+                log.error("Error during keyword retrieval", e);
             }
         }
 
@@ -644,7 +645,7 @@ public class AgentChatService {
                     log.debug("Semantic search returned {} valid documents", semanticDocs.size());
                 }
             } catch (Exception e) {
-                log.error("Error during semantic retrieval: {}", e.getMessage());
+                log.error("Error during semantic retrieval", e);
             }
         }
 
@@ -953,12 +954,8 @@ public class AgentChatService {
                 }
 
                 boolean completed;
-                if (timeoutSeconds <= 0) {
-                    process.waitFor();
-                    completed = true;
-                } else {
-                    completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-                }
+                long effectiveTimeout = timeoutSeconds <= 0 ? 3600 : timeoutSeconds;
+                completed = process.waitFor(effectiveTimeout, TimeUnit.SECONDS);
 
                 if (!completed) {
                     process.destroyForcibly();
@@ -1021,5 +1018,18 @@ public class AgentChatService {
      */
     public int getRunningProcessCount() {
         return runningProcesses.size();
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

@@ -46,6 +46,9 @@ public class PassthroughSessionManager {
 
     private static final Logger log = LoggerFactory.getLogger(PassthroughSessionManager.class);
 
+    // Scheduling intervals
+    private static final long HEARTBEAT_INTERVAL_MS = 30_000L; // 30 seconds
+
     private final AgentRegistryService agentRegistry;
     private final AgentChatService agentChatService;
     private final ClaudeStreamParser streamParser;
@@ -76,7 +79,7 @@ public class PassthroughSessionManager {
         final SseEmitter emitter;
         final Thread readerThread;
         final String chatHistorySessionId;
-        final StringBuilder responseBuffer = new StringBuilder();
+        final StringBuffer responseBuffer = new StringBuffer();
         final AtomicBoolean active = new AtomicBoolean(true);
         final AtomicInteger messageCount = new AtomicInteger(0);
         final Instant startedAt = Instant.now();
@@ -226,7 +229,7 @@ public class PassthroughSessionManager {
 
             return true;
         } catch (IOException e) {
-            log.error("Failed to send message to session {}: {}", sessionId, e.getMessage());
+            log.error("Failed to send message to session {}", sessionId, e);
             return false;
         }
     }
@@ -406,7 +409,7 @@ public class PassthroughSessionManager {
     /**
      * Heartbeat to keep SSE connections alive.
      */
-    @Scheduled(fixedRate = 30000)
+    @Scheduled(fixedRate = HEARTBEAT_INTERVAL_MS)
     public void sendHeartbeats() {
         for (InteractiveSession session : sessions.values()) {
             if (session.active.get() && session.process.isAlive()) {

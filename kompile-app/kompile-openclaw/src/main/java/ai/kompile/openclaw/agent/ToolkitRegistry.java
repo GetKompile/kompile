@@ -15,7 +15,7 @@
  */
 package ai.kompile.openclaw.agent;
 
-import ai.kompile.openclaw.model.AgentDefinition;
+import ai.kompile.gateway.core.model.AgentDefinition;
 import ai.kompile.openclaw.tool.ShellExecutionTool;
 import ai.kompile.openclaw.tool.MemoryTool;
 import ai.kompile.react.context.Toolkit;

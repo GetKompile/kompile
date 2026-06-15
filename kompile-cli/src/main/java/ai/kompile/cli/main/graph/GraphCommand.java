@@ -61,7 +61,8 @@ import java.util.concurrent.Callable;
                 GraphProposalsCommand.class,
                 GraphReportCommand.class,
                 GraphSourceChunksCommand.class,
-                GraphWeightsCommand.class
+                GraphWeightsCommand.class,
+                GraphMaintenanceCommand.class
         },
         mixinStandardHelpOptions = true
 )

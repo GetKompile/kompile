@@ -130,8 +130,8 @@ public class IngestProgressTracker implements DisposableBean {
 
         if (previousStartTime != null) {
             // Task was already started - update factSheetId if provided but don't send duplicate QUEUED event
-            if (factSheetId != null && !taskFactSheetIds.containsKey(taskId)) {
-                taskFactSheetIds.put(taskId, factSheetId);
+            if (factSheetId != null) {
+                taskFactSheetIds.putIfAbsent(taskId, factSheetId);
             }
             logger.debug("[Task {}] Already started, skipping duplicate startTask call", taskId);
             return false;
@@ -175,13 +175,11 @@ public class IngestProgressTracker implements DisposableBean {
         }
 
         // Track start time if this is a new task
-        if (!taskStartTimes.containsKey(update.taskId())) {
-            taskStartTimes.put(update.taskId(), System.currentTimeMillis());
-        }
+        taskStartTimes.putIfAbsent(update.taskId(), System.currentTimeMillis());
 
         // Track factSheetId if provided and not already tracked
-        if (update.factSheetId() != null && !taskFactSheetIds.containsKey(update.taskId())) {
-            taskFactSheetIds.put(update.taskId(), update.factSheetId());
+        if (update.factSheetId() != null) {
+            taskFactSheetIds.putIfAbsent(update.taskId(), update.factSheetId());
         }
 
         // Ensure factSheetId is included if we have it
@@ -614,6 +612,7 @@ public class IngestProgressTracker implements DisposableBean {
             activeTasks.remove(taskId);
             taskStartTimes.remove(taskId);
             taskFactSheetIds.remove(taskId);
+            logSequenceCounters.remove(taskId);
         }
 
         if (!toRemove.isEmpty()) {

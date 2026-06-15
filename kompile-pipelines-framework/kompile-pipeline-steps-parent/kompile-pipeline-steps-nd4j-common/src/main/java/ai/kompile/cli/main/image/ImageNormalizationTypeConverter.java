@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.image;
 
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
 import java.util.Arrays;
@@ -38,6 +40,8 @@ import java.util.Arrays;
  * - maxValue: Optional final value. Used by SCALE, SCALE_01, INCEPTION.
  */
 public class ImageNormalizationTypeConverter implements CommandLine.ITypeConverter<ImageNormalization> {
+
+    private static final Logger log = LoggerFactory.getLogger(ImageNormalizationTypeConverter.class);
 
     @Override
     public ImageNormalization convert(String value) throws Exception {
@@ -105,7 +109,8 @@ public class ImageNormalizationTypeConverter implements CommandLine.ITypeConvert
 
             // Check for extraneous arguments
             if (split.length > currentIdx) {
-                System.err.println("Warning: Extraneous values found in ImageNormalization string after index " + (currentIdx - 1) + ": " +
+                log.warn("Extraneous values found in ImageNormalization string after index {}: {}",
+                        currentIdx - 1,
                         String.join(" ", Arrays.asList(split).subList(currentIdx, split.length)));
             }
 

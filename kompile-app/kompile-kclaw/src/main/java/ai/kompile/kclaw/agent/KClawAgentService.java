@@ -15,11 +15,14 @@
  */
 package ai.kompile.kclaw.agent;
 
-import ai.kompile.kclaw.model.AgentDefinition;
+import ai.kompile.gateway.core.model.AgentDefinition;
+import ai.kompile.gateway.core.model.AgentRequest;
+import ai.kompile.gateway.core.model.AgentResponse;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import ai.kompile.kclaw.model.KClawRequest;
 import ai.kompile.kclaw.model.KClawResponse;
-import ai.kompile.kclaw.service.AgentRegistry;
-import ai.kompile.kclaw.service.SessionService;
+import ai.kompile.gateway.core.service.AgentRegistry;
+import ai.kompile.gateway.core.service.SessionService;
 import ai.kompile.react.context.Toolkit;
 import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.ReActResult;
@@ -31,7 +34,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 @Slf4j
-public class KClawAgentService {
+public class KClawAgentService implements AgentExecutor {
 
     private final ReActAgentService reActAgentService;
     private final AgentRegistry agentRegistry;
@@ -47,6 +50,34 @@ public class KClawAgentService {
         this.agentRegistry = agentRegistry;
         this.sessionService = sessionService;
         this.toolkitRegistry = toolkitRegistry;
+    }
+
+    /**
+     * Implements {@link AgentExecutor} so that channel adapters in
+     * kompile-agent-gateway-core can invoke this service without depending on
+     * the kclaw-specific request/response types.
+     */
+    @Override
+    public AgentResponse execute(AgentRequest request) {
+        KClawRequest kclawRequest = KClawRequest.builder()
+                .agentId(request.getAgentId())
+                .sessionKey(request.getSessionKey())
+                .message(request.getMessage())
+                .stream(request.isStream())
+                .metadata(request.getMetadata())
+                .build();
+        KClawResponse kclawResponse = execute(kclawRequest);
+        return AgentResponse.builder()
+                .response(kclawResponse.getResponse())
+                .sessionKey(kclawResponse.getSessionKey())
+                .agentId(kclawResponse.getAgentId())
+                .tokenUsage(kclawResponse.getTokenUsage())
+                .success(kclawResponse.isSuccess())
+                .error(kclawResponse.getError())
+                .timestamp(kclawResponse.getTimestamp())
+                .toolCalls(kclawResponse.getToolCalls())
+                .metadata(kclawResponse.getMetadata())
+                .build();
     }
 
     public KClawResponse execute(KClawRequest request) {

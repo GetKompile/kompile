@@ -52,8 +52,10 @@ public class ProcessGraphWritebackService implements ProcessGraphCallback {
 
     private static final Logger log = LoggerFactory.getLogger(ProcessGraphWritebackService.class);
 
-    private final KnowledgeGraphService knowledgeGraphService;
-    private final ObjectMapper objectMapper;
+    @Autowired(required = false)
+    private KnowledgeGraphService knowledgeGraphService;
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Autowired(required = false)
     @org.springframework.context.annotation.Lazy
@@ -65,6 +67,12 @@ public class ProcessGraphWritebackService implements ProcessGraphCallback {
         this.knowledgeGraphService = knowledgeGraphService;
         this.objectMapper = objectMapper;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected ProcessGraphWritebackService() {
+        this.objectMapper = new ObjectMapper();
+    }
+
 
     @Override
     @Async

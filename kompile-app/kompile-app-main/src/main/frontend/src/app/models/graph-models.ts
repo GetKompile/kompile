@@ -78,6 +78,7 @@ export interface GraphEdge {
   bidirectional: boolean;
   computedAt?: string;
   createdAt?: string;
+  occurredAt?: string;
 
   // D3 link properties (added at runtime)
   source: string | GraphNode;
@@ -169,6 +170,7 @@ export interface D3Node {
   docComment?: string;
   fullyQualifiedName?: string;
   name?: string;
+  occurredAt?: string;
 }
 
 export interface CreateCompositeEntityRequest {
@@ -187,6 +189,7 @@ export interface D3Link {
   type: EdgeType;
   weight: number;
   label?: string;
+  occurredAt?: string;
 }
 
 /**
@@ -199,6 +202,17 @@ export interface GraphFilter {
   minWeight?: number;
   maxDepth?: number;
   showOrphans?: boolean;
+  timeFrom?: string;
+  timeTo?: string;
+}
+
+/**
+ * Temporal bounds for the graph (earliest/latest occurredAt timestamps)
+ */
+export interface TemporalBounds {
+  earliest?: string;
+  latest?: string;
+  temporalEdgeCount?: number;
 }
 
 /**

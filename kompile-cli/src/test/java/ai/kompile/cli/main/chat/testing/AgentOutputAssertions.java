@@ -285,6 +285,82 @@ public class AgentOutputAssertions {
         return this;
     }
 
+    /**
+     * Assert at least one {@link ThinkingChunk} with exactly the given text exists.
+     */
+    public AgentOutputAssertions hasThinkingChunk(String expectedText) {
+        boolean found = events.stream()
+                .filter(e -> e instanceof ThinkingChunk)
+                .map(e -> (ThinkingChunk) e)
+                .anyMatch(e -> expectedText.equals(e.text()));
+        if (!found) {
+            throw new AssertionError(
+                    "Expected ThinkingChunk with text '" + expectedText
+                    + "' but events were: " + formatEvents());
+        }
+        return this;
+    }
+
+    /**
+     * Assert at least one {@link InteractiveQuestion} whose question contains the substring.
+     */
+    public AgentOutputAssertions hasInteractiveQuestion(String questionSubstring) {
+        boolean found = events.stream()
+                .filter(e -> e instanceof InteractiveQuestion)
+                .map(e -> (InteractiveQuestion) e)
+                .anyMatch(e -> e.question() != null && e.question().contains(questionSubstring));
+        if (!found) {
+            throw new AssertionError(
+                    "Expected InteractiveQuestion containing '" + questionSubstring
+                    + "' but events were: " + formatEvents());
+        }
+        return this;
+    }
+
+    /**
+     * Assert at least one {@link InteractiveQuestion} with the given call ID exists.
+     */
+    public AgentOutputAssertions hasInteractiveQuestionWithCallId(String callId) {
+        boolean found = events.stream()
+                .filter(e -> e instanceof InteractiveQuestion)
+                .map(e -> (InteractiveQuestion) e)
+                .anyMatch(e -> callId.equals(e.callId()));
+        if (!found) {
+            throw new AssertionError(
+                    "Expected InteractiveQuestion with callId '" + callId
+                    + "' but events were: " + formatEvents());
+        }
+        return this;
+    }
+
+    /**
+     * Assert at least one {@link InteractiveApproval} with the given command exists.
+     */
+    public AgentOutputAssertions hasInteractiveApproval(String commandSubstring) {
+        boolean found = events.stream()
+                .filter(e -> e instanceof InteractiveApproval)
+                .map(e -> (InteractiveApproval) e)
+                .anyMatch(e -> e.command() != null && e.command().contains(commandSubstring));
+        if (!found) {
+            throw new AssertionError(
+                    "Expected InteractiveApproval containing command '" + commandSubstring
+                    + "' but events were: " + formatEvents());
+        }
+        return this;
+    }
+
+    /**
+     * Assert at least one {@link PromptDetected} event exists.
+     */
+    public AgentOutputAssertions hasPromptDetected() {
+        boolean found = events.stream().anyMatch(e -> e instanceof PromptDetected);
+        if (!found) {
+            throw new AssertionError(
+                    "Expected PromptDetected event but events were: " + formatEvents());
+        }
+        return this;
+    }
+
     // =========================================================================
     // Absence assertions
     // =========================================================================

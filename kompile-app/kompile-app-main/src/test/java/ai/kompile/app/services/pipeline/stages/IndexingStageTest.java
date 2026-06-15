@@ -17,6 +17,7 @@ package ai.kompile.app.services.pipeline.stages;
 
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -68,6 +69,11 @@ class IndexingStageTest {
 
     @Test
     void processHandsChunksWithEmbeddingsToIndexer() throws Exception {
+        try {
+            Nd4j.scalar(1.0);
+        } catch (Throwable t) {
+            Assumptions.assumeTrue(false, "ND4J native backend not available");
+        }
         INDArray embedding = Nd4j.rand(1, 64);
         RetrievedDoc chunk = new RetrievedDoc("c1", "text", Map.of());
         EmbeddingStage.EmbeddedChunk ec = new EmbeddingStage.EmbeddedChunk(chunk, embedding);

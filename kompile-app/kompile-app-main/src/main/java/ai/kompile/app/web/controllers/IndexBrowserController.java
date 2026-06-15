@@ -313,6 +313,8 @@ public class IndexBrowserController {
     public ResponseEntity<?> listIndexedDocuments(
             @RequestParam(defaultValue = "0", name = "offset") int offset,
             @RequestParam(defaultValue = "10", name = "limit") int limit) {
+        offset = Math.max(0, offset);
+        limit = Math.max(1, Math.min(limit, 500));
         try {
             logger.debug("Received request to list indexed documents. Offset: {}, Limit: {}", offset, limit);
             logger.debug("Using IndexerService implementation: {}", indexerService.getClass().getName());
@@ -491,6 +493,8 @@ public class IndexBrowserController {
     public ResponseEntity<?> listVectorStoreDocuments(
             @RequestParam(defaultValue = "0", name = "offset") int offset,
             @RequestParam(defaultValue = "10", name = "limit") int limit) {
+        offset = Math.max(0, offset);
+        limit = Math.max(1, Math.min(limit, 500));
         try {
             if (vectorStore == null) {
                 return ResponseEntity.ok(Collections.emptyList());

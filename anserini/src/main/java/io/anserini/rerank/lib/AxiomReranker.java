@@ -63,7 +63,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
@@ -296,7 +296,7 @@ public class AxiomReranker<T> implements Reranker<T> {
     if (!Files.exists(index) || !Files.isDirectory(index) || !Files.isReadable(index)) {
       throw new IllegalArgumentException(indexPath + " does not exist or is not a directory.");
     }
-    IndexReader reader = DirectoryReader.open(FSDirectory.open(index));
+    IndexReader reader = DirectoryReader.open(new NIOFSDirectory(index));
     IndexSearcher searcher = new IndexSearcher(reader);
     if (searchTweets) {
       return searcher.search(new FieldExistsQuery(TweetGenerator.TweetField.ID_LONG.name), reader.maxDoc(),
@@ -321,7 +321,7 @@ public class AxiomReranker<T> implements Reranker<T> {
       if (!Files.exists(indexPath) || !Files.isDirectory(indexPath) || !Files.isReadable(indexPath)) {
         throw new IllegalArgumentException(this.externalIndexPath + " does not exist or is not a directory.");
       }
-      IndexReader reader = DirectoryReader.open(FSDirectory.open(indexPath));
+      IndexReader reader = DirectoryReader.open(new NIOFSDirectory(indexPath));
       IndexSearcher searcher = new IndexSearcher(reader);
       searcher.setSimilarity(context.getIndexSearcher().getSimilarity());
 
@@ -375,7 +375,7 @@ public class AxiomReranker<T> implements Reranker<T> {
         if (!Files.exists(indexPath) || !Files.isDirectory(indexPath) || !Files.isReadable(indexPath)) {
           throw new IllegalArgumentException(this.externalIndexPath + " does not exist or is not a directory.");
         }
-        reader = DirectoryReader.open(FSDirectory.open(indexPath));
+        reader = DirectoryReader.open(new NIOFSDirectory(indexPath));
         searcher = new IndexSearcher(reader);
       } else {
         searcher = context.getIndexSearcher();
@@ -423,7 +423,7 @@ public class AxiomReranker<T> implements Reranker<T> {
       if (!Files.exists(indexPath) || !Files.isDirectory(indexPath) || !Files.isReadable(indexPath)) {
         throw new IllegalArgumentException(this.externalIndexPath + " does not exist or is not a directory.");
       }
-      reader = DirectoryReader.open(FSDirectory.open(indexPath));
+      reader = DirectoryReader.open(new NIOFSDirectory(indexPath));
       searcher = new IndexSearcher(reader);
     } else {
       searcher = context.getIndexSearcher();
@@ -515,7 +515,7 @@ public class AxiomReranker<T> implements Reranker<T> {
       if (!Files.exists(indexPath) || !Files.isDirectory(indexPath) || !Files.isReadable(indexPath)) {
         throw new IllegalArgumentException(this.externalIndexPath + " does not exist or is not a directory.");
       }
-      reader = DirectoryReader.open(FSDirectory.open(indexPath));
+      reader = DirectoryReader.open(new NIOFSDirectory(indexPath));
     } else {
       IndexSearcher searcher = context.getIndexSearcher();
       reader = searcher.getIndexReader();

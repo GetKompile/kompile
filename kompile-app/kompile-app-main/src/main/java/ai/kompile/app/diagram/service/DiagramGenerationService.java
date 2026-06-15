@@ -361,9 +361,9 @@ public class DiagramGenerationService {
             if (factSheetId != null) {
                 try {
                     List<GraphNode> sources = knowledgeGraphService.getAllSources();
-                    long factSheetSources = sources.stream()
+                    long factSheetSources = sources != null ? sources.stream()
                             .filter(s -> factSheetId.equals(s.getFactSheetId()))
-                            .count();
+                            .count() : 0L;
                     ctx.put("factSheetSourceCount", factSheetSources);
                 } catch (Exception e) {
                     log.debug("Failed to count fact sheet sources: {}", e.getMessage());
@@ -422,7 +422,7 @@ public class DiagramGenerationService {
         Object statsObj = ctx.get("graphStatistics");
         if (statsObj instanceof Map) {
             @SuppressWarnings("unchecked")
-            Map<String, Object> stats = (Map<String, Object>) statsObj;
+            Map<String, Object> stats = new LinkedHashMap<>((Map<String, Object>) statsObj);
             if (stats.containsKey("error")) {
                 sb.append("| Graph Statistics | ERROR: ").append(stats.get("error")).append(" |\n");
             } else {

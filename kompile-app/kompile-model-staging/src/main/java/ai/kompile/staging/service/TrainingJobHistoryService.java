@@ -79,7 +79,7 @@ public class TrainingJobHistoryService {
                 log.info("Marked orphaned training job {} as FAILED", job.getTaskId());
             }
         } catch (Exception e) {
-            log.warn("Failed to cleanup orphaned training jobs on startup: {}", e.getMessage());
+            log.warn("Failed to cleanup orphaned training jobs on startup", e);
         }
     }
 

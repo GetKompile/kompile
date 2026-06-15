@@ -17,6 +17,7 @@ package ai.kompile.knowledgegraph.service;
 
 import ai.kompile.knowledgegraph.domain.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -380,6 +381,160 @@ public interface KnowledgeGraphService {
      */
     Map<String, Double> computeNodeRelevance(String queryNodeId, List<String> candidateNodeIds);
 
+    /**
+     * Get all nodes of a specific type across the entire graph (limited).
+     */
+    List<GraphNode> getNodesByType(NodeLevel type, int limit);
+
+    /**
+     * Get all nodes of a specific type across the entire graph (no limit).
+     */
+    List<GraphNode> getNodesByType(NodeLevel type);
+
+    /**
+     * Get nodes by their internal UUIDs.
+     */
+    List<GraphNode> getNodesByIds(List<String> nodeIds);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FACT-SHEET-SCOPED NODE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Get nodes of a specific type scoped to a fact sheet.
+     */
+    List<GraphNode> getNodesByTypeInFactSheet(Long factSheetId, NodeLevel type);
+
+    /**
+     * Get all nodes belonging to a fact sheet.
+     */
+    List<GraphNode> getNodesInFactSheet(Long factSheetId);
+
+    /**
+     * Get all source nodes belonging to a fact sheet.
+     */
+    List<GraphNode> getSourcesInFactSheet(Long factSheetId);
+
+    /**
+     * Find a node by external ID and type within a specific fact sheet.
+     */
+    Optional<GraphNode> getNodeByExternalIdInFactSheet(String externalId, NodeLevel type, Long factSheetId);
+
+    /**
+     * Search nodes by text within a specific fact sheet.
+     */
+    List<GraphNode> searchNodesInFactSheet(Long factSheetId, String query, int limit);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FACT-SHEET-SCOPED EDGE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Get all edges for a node within a specific fact sheet.
+     */
+    List<GraphEdge> getEdgesForNodeInFactSheet(String nodeId, Long factSheetId);
+
+    /**
+     * Check if an edge exists between two nodes within a specific fact sheet.
+     */
+    boolean edgeExistsInFactSheet(String sourceNodeId, String targetNodeId, Long factSheetId);
+
+    /**
+     * Get all edges belonging to a fact sheet.
+     */
+    List<GraphEdge> getEdgesInFactSheet(Long factSheetId);
+
+    /**
+     * Get edges of a specific type within a fact sheet.
+     */
+    List<GraphEdge> getEdgesByTypeInFactSheet(Long factSheetId, EdgeType edgeType);
+
+    /**
+     * Find a single edge between two nodes (source → target direction).
+     * Returns null if no such edge exists.
+     */
+    GraphEdge findEdgeBetweenNodes(String sourceNodeId, String targetNodeId);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ENTITY MENTION OPERATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Get all entity mentions for a node.
+     */
+    List<EntityMention> getEntityMentionsForNode(GraphNode node);
+
+    /**
+     * Get all entity mentions for a node by node ID.
+     */
+    List<EntityMention> getEntityMentionsForNode(String nodeId);
+
+    /**
+     * Find a specific entity mention in a node.
+     */
+    Optional<EntityMention> findEntityMention(GraphNode node, String entityName);
+
+    /**
+     * Find a specific entity mention in a node within a fact sheet.
+     */
+    Optional<EntityMention> findEntityMentionInFactSheet(GraphNode node, String entityName, Long factSheetId);
+
+    /**
+     * Save (create or update) an entity mention.
+     */
+    EntityMention saveEntityMention(EntityMention mention);
+
+    /**
+     * Find pairs of nodes that share at least {@code minShared} entities.
+     * Each returned element is a 3-element Object array: [node1, node2, sharedCount].
+     */
+    List<Object[]> findNodePairsWithSharedEntities(int minShared);
+
+    /**
+     * Find pairs of nodes that share at least {@code minShared} entities within a fact sheet.
+     * Each returned element is a 3-element Object array: [node1Id (Long), node2Id (Long), sharedCount].
+     */
+    List<Object[]> findNodePairsWithSharedEntitiesInFactSheet(Long factSheetId, int minShared);
+
+    /**
+     * Get entity names mentioned in a node.
+     */
+    List<String> getEntityNamesForNode(String nodeId);
+
+    /**
+     * Get all nodes that mention a specific entity.
+     */
+    List<GraphNode> getNodesWithEntity(String entityName);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COUNT / STATISTICS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Count nodes of a specific type across the entire graph.
+     */
+    long countNodesByType(NodeLevel type);
+
+    /**
+     * Count nodes of a specific type scoped to a fact sheet.
+     */
+    long countNodesByTypeInFactSheet(Long factSheetId, NodeLevel type);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAINTENANCE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Flush any buffered/pending nodes to the underlying store.
+     * Implementations that write eagerly may treat this as a no-op.
+     */
+    void flushPendingNodes();
+
+    /**
+     * Delete all graph data (nodes, edges, mentions) associated with a fact sheet.
+     */
+    void deleteByFactSheetId(Long factSheetId);
+
     // ═══════════════════════════════════════════════════════════════════════════
     // STATISTICS & VISUALIZATION
     // ═══════════════════════════════════════════════════════════════════════════
@@ -398,4 +553,43 @@ public interface KnowledgeGraphService {
      * @return Map with "nodes" and "edges" lists
      */
     Map<String, Object> getVisualizationData(String rootNodeId, int depth, int maxNodes);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TEMPORAL QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Get visualization data filtered to a time range.
+     * Only edges with occurredAt within [from, to] are included,
+     * plus nodes connected by those edges.
+     *
+     * @param from Start of time range (inclusive)
+     * @param to End of time range (inclusive)
+     * @param maxNodes Maximum nodes to include
+     * @return Map with "nodes", "edges", and "temporalBounds"
+     */
+    default Map<String, Object> getVisualizationDataInTimeRange(LocalDateTime from, LocalDateTime to, int maxNodes) {
+        return getVisualizationData(null, 2, maxNodes);
+    }
+
+    /**
+     * Search edges by time range
+     *
+     * @param from Start of time range (inclusive)
+     * @param to End of time range (inclusive)
+     * @param limit Maximum results
+     * @return List of edges with occurredAt in the range
+     */
+    default List<GraphEdge> searchEdgesByTimeRange(LocalDateTime from, LocalDateTime to, int limit) {
+        return List.of();
+    }
+
+    /**
+     * Get the earliest and latest occurredAt timestamps in the graph.
+     *
+     * @return Map with "earliest" and "latest" LocalDateTime values, or empty if no temporal data
+     */
+    default Map<String, Object> getTemporalBounds() {
+        return Map.of();
+    }
 }

@@ -346,10 +346,15 @@ public class ObsidianSyncAdapter implements SyncAdapter {
             sc.init(null, trustAllCerts, new java.security.SecureRandom());
 
             var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+            factory.setConnectTimeout(10_000);
+            factory.setReadTimeout(30_000);
             return new RestTemplate(factory);
         } catch (Exception e) {
             log.warn("Failed to create trusting RestTemplate, using default: {}", e.getMessage());
-            return new RestTemplate();
+            var fallbackFactory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+            fallbackFactory.setConnectTimeout(10_000);
+            fallbackFactory.setReadTimeout(30_000);
+            return new RestTemplate(fallbackFactory);
         }
     }
 

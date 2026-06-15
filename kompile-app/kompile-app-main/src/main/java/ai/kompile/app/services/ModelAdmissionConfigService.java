@@ -62,7 +62,7 @@ public class ModelAdmissionConfigService {
                 log.info("Loaded model admission config from {}: enabled={}, maxLoadedModels={}",
                         configFilePath, currentConfig.isEnabled(), currentConfig.getMaxLoadedModels());
             } catch (Exception e) {
-                log.warn("Failed to load model admission config from {}: {}", configFilePath, e.getMessage());
+                log.warn("Failed to load model admission config from {}", configFilePath, e);
                 currentConfig = ModelAdmissionConfig.defaults();
             }
         } else {

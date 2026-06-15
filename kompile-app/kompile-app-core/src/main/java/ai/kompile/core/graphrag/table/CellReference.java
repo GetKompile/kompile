@@ -16,6 +16,7 @@
 
 package ai.kompile.core.graphrag.table;
 
+import lombok.Getter;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,6 +31,7 @@ import java.util.regex.Pattern;
  * This utility bridges the two ID schemes so the process engine, cell
  * resolver, and query layer can work with either format uniformly.
  */
+@Getter
 public final class CellReference {
 
     /** Matches Excel-style external IDs: wb:<workbook>/cell:<Sheet>!<ColLetter><Row> */
@@ -190,15 +192,6 @@ public final class CellReference {
         return new CellReference(Format.UNKNOWN, null, null, -1, -1, externalId, null);
     }
 
-    // --- Getters ---
-
-    public Format getFormat() { return format; }
-    public String getNamespace() { return namespace; }
-    public String getTableName() { return tableName; }
-    public int getRow() { return row; }
-    public int getCol() { return col; }
-    public String getOriginalExternalId() { return originalExternalId; }
-    public String getCellRef() { return cellRef; }
     public boolean isValid() { return format != Format.UNKNOWN; }
 
     @Override

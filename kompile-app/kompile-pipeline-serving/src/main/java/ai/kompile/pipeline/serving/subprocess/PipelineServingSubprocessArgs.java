@@ -16,11 +16,10 @@
 
 package ai.kompile.pipeline.serving.subprocess;
 
+import ai.kompile.app.subprocess.SubprocessArgsIo;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
@@ -88,8 +87,7 @@ public record PipelineServingSubprocessArgs(
      * Read args from a JSON file (subprocess entry point).
      */
     public static PipelineServingSubprocessArgs fromFile(Path path) throws IOException {
-        String json = Files.readString(path);
-        return new ObjectMapper().readValue(json, PipelineServingSubprocessArgs.class);
+        return SubprocessArgsIo.fromFile(path, PipelineServingSubprocessArgs.class);
     }
 
     /**
@@ -97,9 +95,6 @@ public record PipelineServingSubprocessArgs(
      * Returns the path to the created temp file.
      */
     public Path writeToTempFile() throws IOException {
-        Path tempFile = Files.createTempFile("pipeline-serving-args-", ".json");
-        String json = new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(this);
-        Files.writeString(tempFile, json);
-        return tempFile;
+        return SubprocessArgsIo.writeToTempFile(this, "pipeline-serving-args-");
     }
 }

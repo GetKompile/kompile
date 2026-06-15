@@ -20,6 +20,7 @@ import ai.kompile.codeindexer.domain.*;
 import ai.kompile.codeindexer.service.CodeGraphBuilder;
 import ai.kompile.codeindexer.service.CodeSearchService;
 import ai.kompile.codeindexer.service.CodebaseIndexer;
+import ai.kompile.codeindexer.service.GitHistoryGraphBuilder;
 import ai.kompile.codeindexer.service.LanguageRegistry;
 import ai.kompile.codeindexer.domain.FileFingerprintRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,20 +36,26 @@ import java.util.Map;
 @RequestMapping("/api/code-indexer")
 public class CodeIndexerController {
 
-    private final CodebaseIndexer indexer;
-    private final CodeSearchService searchService;
-    private final LanguageRegistry languageRegistry;
-    private final CodeGraphBuilder graphBuilder;
-    private final CodeEntityRepository entityRepository;
-    private final CodeRelationRepository relationRepository;
-    private final IndexedDirectoryRepository directoryRepository;
-    private final FileFingerprintRepository fingerprintRepository;
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected CodeIndexerController() {}
+
+
+    private CodebaseIndexer indexer;
+    private CodeSearchService searchService;
+    private LanguageRegistry languageRegistry;
+    private CodeGraphBuilder graphBuilder;
+    private GitHistoryGraphBuilder gitHistoryGraphBuilder;
+    private CodeEntityRepository entityRepository;
+    private CodeRelationRepository relationRepository;
+    private IndexedDirectoryRepository directoryRepository;
+    private FileFingerprintRepository fingerprintRepository;
 
     @Autowired
     public CodeIndexerController(CodebaseIndexer indexer,
                                  CodeSearchService searchService,
                                  LanguageRegistry languageRegistry,
                                  @Autowired(required = false) CodeGraphBuilder graphBuilder,
+                                 @Autowired(required = false) GitHistoryGraphBuilder gitHistoryGraphBuilder,
                                  CodeEntityRepository entityRepository,
                                  CodeRelationRepository relationRepository,
                                  IndexedDirectoryRepository directoryRepository,
@@ -57,6 +64,7 @@ public class CodeIndexerController {
         this.searchService = searchService;
         this.languageRegistry = languageRegistry;
         this.graphBuilder = graphBuilder;
+        this.gitHistoryGraphBuilder = gitHistoryGraphBuilder;
         this.entityRepository = entityRepository;
         this.relationRepository = relationRepository;
         this.directoryRepository = directoryRepository;
@@ -424,6 +432,16 @@ public class CodeIndexerController {
         }
         int added = graphBuilder.ensureConnectivity(projectId);
         return ResponseEntity.ok(Map.of("edgesAdded", added));
+    }
+
+    @PostMapping("/graph/git-history")
+    public ResponseEntity<?> buildGitHistory(
+            @RequestParam(defaultValue = "default") String projectId,
+            @RequestParam(defaultValue = "200") int maxCommits) {
+        if (gitHistoryGraphBuilder == null) {
+            return ResponseEntity.status(503).body(Map.of("error", "Git history service not available"));
+        }
+        return ResponseEntity.ok(gitHistoryGraphBuilder.buildGitHistory(projectId, maxCommits));
     }
 
     @GetMapping("/graph/visualization")

@@ -184,7 +184,9 @@ public class LlmObservabilityService {
                     && !status.get("dspCompilationStats").isNull()) {
                 try {
                     return MAPPER.treeToValue(status.get("dspCompilationStats"), Map.class);
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    logger.debug("Failed to deserialize dspCompilationStats from subprocess status: {}", e.getMessage());
+                }
             }
             return null;
         }

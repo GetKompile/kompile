@@ -277,7 +277,9 @@ public class UnifiedCrawlGraphTool {
         if (input.schemaMode() != null) {
             try {
                 b.schemaMode(SchemaEnforcementMode.valueOf(input.schemaMode().toUpperCase()));
-            } catch (IllegalArgumentException ignored) {}
+            } catch (IllegalArgumentException e) {
+                log.warn("Unknown schemaMode value '{}', using default: {}", input.schemaMode(), e.getMessage());
+            }
         }
 
         return b.build();

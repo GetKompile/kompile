@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.*;
+import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,6 +49,9 @@ class KnowledgeGraphServiceImplTest {
     @Mock
     private GraphEdgeRepository edgeRepository;
 
+    @Mock
+    private EntityMentionRepository entityMentionRepository;
+
     private KnowledgeGraphServiceImpl service;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -58,7 +62,7 @@ class KnowledgeGraphServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new KnowledgeGraphServiceImpl(nodeRepository, edgeRepository, objectMapper);
+        service = new KnowledgeGraphServiceImpl(nodeRepository, edgeRepository, entityMentionRepository, objectMapper);
         savedNodes.clear();
 
         // Default: save captures the node and returns it with an ID assigned

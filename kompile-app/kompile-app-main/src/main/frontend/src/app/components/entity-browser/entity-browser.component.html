@@ -128,6 +128,35 @@
               </td>
             </ng-container>
 
+            <!-- Bayesian Column -->
+            <ng-container matColumnDef="bayesian">
+              <th mat-header-cell *matHeaderCellDef>Bayesian</th>
+              <td mat-cell *matCellDef="let entity">
+                <div class="row-bayesian" *ngIf="entityPosteriors[entity.nodeId] != null">
+                  <span class="row-posterior-val"
+                        [style.color]="getBayesianColor(entityPosteriors[entity.nodeId])">
+                    {{ (entityPosteriors[entity.nodeId] * 100).toFixed(0) }}%
+                  </span>
+                  <div class="row-bayesian-bar">
+                    <div class="row-bar-fill"
+                         [style.width.%]="entityPosteriors[entity.nodeId] * 100"
+                         [style.background-color]="getBayesianColor(entityPosteriors[entity.nodeId])"></div>
+                    <div *ngIf="entityPriors[entity.nodeId] != null"
+                         class="row-prior-tick"
+                         [style.left.%]="entityPriors[entity.nodeId] * 100"
+                         [matTooltip]="'Prior: ' + (entityPriors[entity.nodeId] * 100).toFixed(1) + '%'"></div>
+                  </div>
+                  <div class="row-mebn-badges" *ngIf="entityMebnMetaMap[entity.nodeId] as meta">
+                    <span class="row-mebn-badge row-mfrag">{{meta.mfragName}}</span>
+                    <span class="row-mebn-badge row-role"
+                          [class.row-role-resident]="meta.nodeRole === 'RESIDENT'"
+                          [class.row-role-input]="meta.nodeRole === 'INPUT'">{{meta.nodeRole}}</span>
+                  </div>
+                </div>
+                <span class="row-no-bayesian" *ngIf="entityPosteriors[entity.nodeId] == null">&mdash;</span>
+              </td>
+            </ng-container>
+
             <!-- Connections Column -->
             <ng-container matColumnDef="connections">
               <th mat-header-cell *matHeaderCellDef>Connections</th>
@@ -191,6 +220,22 @@
                 <mat-icon>link</mat-icon>
                 {{ entity.edgeCount || 0 }} connections
               </span>
+              <span class="card-bayesian-badge" *ngIf="entityPosteriors[entity.nodeId] != null"
+                    [style.background-color]="getBayesianColor(entityPosteriors[entity.nodeId])"
+                    [matTooltip]="'Posterior: ' + (entityPosteriors[entity.nodeId] * 100).toFixed(1) + '%' + (entityPriors[entity.nodeId] != null ? ' (Prior: ' + (entityPriors[entity.nodeId] * 100).toFixed(1) + '%)' : '')">
+                <mat-icon>psychology</mat-icon>
+                {{ (entityPosteriors[entity.nodeId] * 100).toFixed(0) }}%
+                <span class="card-prior-label" *ngIf="entityPriors[entity.nodeId] != null">
+                  ({{ (entityPriors[entity.nodeId] * 100).toFixed(0) }}%)
+                </span>
+              </span>
+              <div class="card-mebn-badges" *ngIf="entityMebnMetaMap[entity.nodeId] as meta">
+                <span class="row-mebn-badge row-mfrag">{{meta.mfragName}}</span>
+                <span class="row-mebn-badge row-role"
+                      [class.row-role-resident]="meta.nodeRole === 'RESIDENT'"
+                      [class.row-role-input]="meta.nodeRole === 'INPUT'">{{meta.nodeRole}}</span>
+                <span *ngIf="meta.entityType" class="row-mebn-badge row-etype">{{meta.entityType}}</span>
+              </div>
             </div>
           </div>
 
@@ -399,6 +444,54 @@
           </mat-expansion-panel-header>
           <pre class="metadata-content">{{ selectedEntity.metadata | json }}</pre>
         </mat-expansion-panel>
+
+        <!-- MEBN / Bayesian Section -->
+        <div class="entity-bayesian" *ngIf="entityMebnData">
+          <h4>
+            <mat-icon>psychology</mat-icon>
+            Bayesian / MEBN
+          </h4>
+          <div class="bayesian-info-row" *ngIf="entityMebnData.posterior != null">
+            <span class="info-label">Posterior</span>
+            <span class="info-value bayesian-val"
+                  [style.color]="getBayesianColor(entityMebnData.posterior)">
+              {{ (entityMebnData.posterior * 100).toFixed(1) }}%
+            </span>
+          </div>
+          <div class="bayesian-info-row" *ngIf="entityMebnData.prior != null">
+            <span class="info-label">Prior</span>
+            <span class="info-value bayesian-val">
+              {{ (entityMebnData.prior * 100).toFixed(1) }}%
+            </span>
+          </div>
+          <div class="bayesian-bar" *ngIf="entityMebnData.posterior != null">
+            <div class="bayesian-bar-fill"
+                 [style.width.%]="entityMebnData.posterior * 100"
+                 [style.background-color]="getBayesianColor(entityMebnData.posterior)"></div>
+            <div *ngIf="entityMebnData.prior != null"
+                 class="bayesian-prior-marker"
+                 [style.left.%]="entityMebnData.prior * 100"
+                 [matTooltip]="'Prior: ' + (entityMebnData.prior * 100).toFixed(1) + '%'"></div>
+          </div>
+          <div class="mebn-badges" *ngIf="entityMebnData.mfragName">
+            <span class="entity-mebn-badge mfrag-badge"
+                  [matTooltip]="'MFrag: ' + entityMebnData.mfragName">
+              {{ entityMebnData.mfragName }}
+            </span>
+            <span class="entity-mebn-badge role-badge"
+                  [class.role-resident]="entityMebnData.nodeRole === 'RESIDENT'"
+                  [class.role-input]="entityMebnData.nodeRole === 'INPUT'">
+              {{ entityMebnData.nodeRole }}
+            </span>
+            <span *ngIf="entityMebnData.entityType" class="entity-mebn-badge etype-badge">
+              {{ entityMebnData.entityType }}
+            </span>
+            <span *ngIf="entityMebnData.entityId" class="entity-mebn-badge eid-badge"
+                  [matTooltip]="'Entity ID: ' + entityMebnData.entityId">
+              {{ entityMebnData.entityId }}
+            </span>
+          </div>
+        </div>
       </div>
 
       <mat-divider></mat-divider>

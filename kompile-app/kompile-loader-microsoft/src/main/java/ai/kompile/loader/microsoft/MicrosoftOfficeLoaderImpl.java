@@ -34,6 +34,8 @@ import org.apache.poi.xslf.usermodel.XMLSlideShow;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTDocument1;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTBody;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -42,9 +44,7 @@ import org.springframework.stereotype.Component;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 @Component
 public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
@@ -146,6 +146,13 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
             Document textDoc = new Document(content);
             addMetadata(textDoc, file, "Microsoft Word Document (.docx)");
             textDoc.getMetadata().put("content_type", "text");
+
+            // Extract OOXML CoreProperties (author, title, dates, etc.)
+            extractDocxCoreProperties(document, textDoc);
+
+            // Extract tracked changes (revisions)
+            extractDocxTrackedChanges(document, textDoc);
+
             documents.add(textDoc);
 
             // Extract tables as separate documents
@@ -159,6 +166,131 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
         }
 
         return documents;
+    }
+
+    /**
+     * Extracts OOXML CoreProperties from a .docx document: author, title, subject,
+     * keywords, description, creationDate, modificationDate, lastModifiedBy.
+     */
+    private void extractDocxCoreProperties(XWPFDocument document, Document doc) {
+        try {
+            var props = document.getProperties();
+            if (props == null) return;
+
+            var core = props.getCoreProperties();
+            if (core == null) return;
+
+            if (core.getCreator() != null && !core.getCreator().isBlank()) {
+                doc.getMetadata().put("author", core.getCreator());
+            }
+            if (core.getTitle() != null && !core.getTitle().isBlank()) {
+                doc.getMetadata().put("title", core.getTitle());
+            }
+            if (core.getSubject() != null && !core.getSubject().isBlank()) {
+                doc.getMetadata().put("subject", core.getSubject());
+            }
+            if (core.getKeywords() != null && !core.getKeywords().isBlank()) {
+                doc.getMetadata().put("keywords", core.getKeywords());
+            }
+            if (core.getDescription() != null && !core.getDescription().isBlank()) {
+                doc.getMetadata().put("description", core.getDescription());
+            }
+            if (core.getLastModifiedByUser() != null && !core.getLastModifiedByUser().isBlank()) {
+                doc.getMetadata().put("lastModifiedBy", core.getLastModifiedByUser());
+            }
+
+            // Timestamps
+            if (core.getCreated() != null) {
+                doc.getMetadata().put("creationDate", core.getCreated().toInstant().toString());
+            }
+            if (core.getModified() != null) {
+                doc.getMetadata().put("modificationDate", core.getModified().toInstant().toString());
+            }
+
+            // Extended properties (application, company)
+            var extProps = props.getExtendedProperties();
+            if (extProps != null) {
+                var ext = extProps.getUnderlyingProperties();
+                if (ext.getApplication() != null && !ext.getApplication().isBlank()) {
+                    doc.getMetadata().put("applicationName", ext.getApplication());
+                }
+                if (ext.getCompany() != null && !ext.getCompany().isBlank()) {
+                    doc.getMetadata().put("company", ext.getCompany());
+                }
+            }
+
+            // Custom properties
+            var customProps = props.getCustomProperties();
+            if (customProps != null && customProps.getUnderlyingProperties() != null) {
+                var customList = customProps.getUnderlyingProperties().getPropertyList();
+                if (customList != null && !customList.isEmpty()) {
+                    Map<String, String> customs = new LinkedHashMap<>();
+                    for (var prop : customList) {
+                        String name = prop.getName();
+                        String value = prop.getLpwstr() != null ? prop.getLpwstr() :
+                                       prop.getFiletime() != null ? prop.getFiletime().toString() :
+                                       String.valueOf(prop.getI4());
+                        customs.put(name, value);
+                    }
+                    doc.getMetadata().put("office.customProperties", customs);
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to extract CoreProperties from .docx", e);
+        }
+    }
+
+    /**
+     * Extracts tracked changes (revisions) from a .docx document and stores them
+     * as a JSON-serializable list in the "docx.trackedChanges" metadata key.
+     * Each entry contains: author, date, changeType, text.
+     */
+    private void extractDocxTrackedChanges(XWPFDocument document, Document doc) {
+        try {
+            List<Map<String, String>> trackedChanges = new ArrayList<>();
+
+            for (var para : document.getParagraphs()) {
+                var ctp = para.getCTP();
+                // Check for insertions
+                for (var ins : ctp.getInsList()) {
+                    Map<String, String> change = new LinkedHashMap<>();
+                    change.put("changeType", "INSERTION");
+                    if (ins.getAuthor() != null) change.put("author", ins.getAuthor());
+                    if (ins.getDate() != null) change.put("date", ins.getDate().toString());
+                    // Get the inserted text from run elements within the insertion
+                    StringBuilder text = new StringBuilder();
+                    for (var run : ins.getRList()) {
+                        for (var t : run.getTList()) {
+                            text.append(t.getStringValue());
+                        }
+                    }
+                    change.put("text", text.toString());
+                    trackedChanges.add(change);
+                }
+
+                // Check for deletions
+                for (var del : ctp.getDelList()) {
+                    Map<String, String> change = new LinkedHashMap<>();
+                    change.put("changeType", "DELETION");
+                    if (del.getAuthor() != null) change.put("author", del.getAuthor());
+                    if (del.getDate() != null) change.put("date", del.getDate().toString());
+                    StringBuilder text = new StringBuilder();
+                    for (var run : del.getRList()) {
+                        for (var delText : run.getDelTextList()) {
+                            text.append(delText.getStringValue());
+                        }
+                    }
+                    change.put("text", text.toString());
+                    trackedChanges.add(change);
+                }
+            }
+
+            if (!trackedChanges.isEmpty()) {
+                doc.getMetadata().put("docx.trackedChanges", trackedChanges);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to extract tracked changes from .docx", e);
+        }
     }
 
     /**
@@ -347,9 +479,12 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
         List<Document> documents = new ArrayList<>();
 
         PSTFile pstFile = new PSTFile(file);
-        PSTFolder rootFolder = pstFile.getRootFolder();
-        extractPstFolder(rootFolder, documents, file);
-
+        try {
+            PSTFolder rootFolder = pstFile.getRootFolder();
+            extractPstFolder(rootFolder, documents, file);
+        } finally {
+            pstFile.close();
+        }
 
         return documents;
     }

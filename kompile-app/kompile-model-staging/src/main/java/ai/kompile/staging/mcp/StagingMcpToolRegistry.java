@@ -82,8 +82,8 @@ public class StagingMcpToolRegistry {
                         }
                     }
                 }
-            } catch (Exception e) {
-                // Skip beans that can't be instantiated
+            } catch (Throwable e) {
+                // Skip beans that can't be instantiated (catches GraalVM UnsupportedFeatureError too)
             }
         }
 
@@ -92,7 +92,7 @@ public class StagingMcpToolRegistry {
                 server.addTool(toolSpec);
                 log.debug("Registered MCP tool: {}", toolSpec.tool().name());
             } catch (Exception e) {
-                log.error("Failed to register tool {}: {}", toolSpec.tool().name(), e.getMessage());
+                log.error("Failed to register tool '{}'", toolSpec.tool().name(), e);
             }
         }
 
@@ -119,7 +119,7 @@ public class StagingMcpToolRegistry {
                     try {
                         Object result = invokeToolMethod(bean, method, args);
                         return successResult(result);
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         log.error("Tool {} failed: {}", toolName, e.getMessage(), e);
                         return errorResult(e.getMessage());
                     }

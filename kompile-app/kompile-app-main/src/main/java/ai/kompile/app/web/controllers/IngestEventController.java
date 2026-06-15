@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.ingest.domain.IngestEvent;
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.app.ingest.service.IngestEventService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -44,10 +45,13 @@ public class IngestEventController {
     private static final Logger logger = LoggerFactory.getLogger(IngestEventController.class);
 
     private final IngestEventService ingestEventService;
+    private final ObjectMapper objectMapper;
 
     @Autowired
-    public IngestEventController(@Autowired(required = false) IngestEventService ingestEventService) {
+    public IngestEventController(@Autowired(required = false) IngestEventService ingestEventService,
+                                  ObjectMapper objectMapper) {
         this.ingestEventService = ingestEventService;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -97,7 +101,7 @@ public class IngestEventController {
 
         List<IngestEvent> events = ingestEventService.getEventsForTask(taskId);
         return ResponseEntity.ok(Map.of(
-                "taskId", taskId,
+                FieldNames.TASK_ID, taskId,
                 "eventCount", events.size(),
                 "events", events
         ));
@@ -117,7 +121,7 @@ public class IngestEventController {
         if (ingestEventService == null) {
             logger.warn("IngestEventService is NULL");
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "environmentCaptured", false,
                     "message", "IngestEventService is not available"
             ));
@@ -126,7 +130,7 @@ public class IngestEventController {
         if (!ingestEventService.isEnabled()) {
             logger.warn("IngestEventService is disabled");
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "environmentCaptured", false,
                     "message", "Event logging is not enabled"
             ));
@@ -146,9 +150,9 @@ public class IngestEventController {
                     taskId,
                     events.stream().map(e -> e.getEventType().name()).toList());
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "fileName", "",
-                    "timestamp", "",
+                    FieldNames.TIMESTAMP, "",
                     "environmentCaptured", false,
                     "message", "No QUEUED event found for this task. Total events: " + events.size()
             ));
@@ -157,9 +161,9 @@ public class IngestEventController {
         String snapshot = queuedEvent.getNd4jEnvironmentSnapshot();
         if (snapshot == null || snapshot.isEmpty()) {
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "fileName", queuedEvent.getFileName(),
-                    "timestamp", queuedEvent.getTimestamp().toString(),
+                    FieldNames.TIMESTAMP, queuedEvent.getTimestamp().toString(),
                     "environmentCaptured", false,
                     "message", "No ND4J environment snapshot was captured for this job"
             ));
@@ -167,22 +171,21 @@ public class IngestEventController {
 
         // Parse the JSON snapshot and return it along with metadata
         try {
-            ObjectMapper objectMapper = new ObjectMapper();
             Object environmentConfig = objectMapper.readValue(snapshot, Object.class);
 
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "fileName", queuedEvent.getFileName(),
-                    "timestamp", queuedEvent.getTimestamp().toString(),
+                    FieldNames.TIMESTAMP, queuedEvent.getTimestamp().toString(),
                     "environmentCaptured", true,
                     "nd4jEnvironment", environmentConfig
             ));
         } catch (Exception e) {
             logger.warn("Failed to parse ND4J environment snapshot for task {}: {}", taskId, e.getMessage());
             return ResponseEntity.ok(Map.of(
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "fileName", queuedEvent.getFileName(),
-                    "timestamp", queuedEvent.getTimestamp().toString(),
+                    FieldNames.TIMESTAMP, queuedEvent.getTimestamp().toString(),
                     "environmentCaptured", true,
                     "nd4jEnvironmentRaw", snapshot,
                     "parseError", e.getMessage()
@@ -332,7 +335,7 @@ public class IngestEventController {
         ingestEventService.deleteTaskEvents(taskId);
         logger.info("Deleted events for task: {}", taskId);
         return ResponseEntity.ok(Map.of(
-                "taskId", taskId,
+                FieldNames.TASK_ID, taskId,
                 "deleted", true
         ));
     }

@@ -63,7 +63,9 @@ import {
     MatSnackBarModule,
     MatSliderModule,
     MatSlideToggleModule,
-    MatSelectModule
+    MatSelectModule,
+    MatTableModule,
+    MatProgressBarModule
   ],
   templateUrl: './nd4j-environment.component.html',
   styleUrls: ['./nd4j-environment.component.css']

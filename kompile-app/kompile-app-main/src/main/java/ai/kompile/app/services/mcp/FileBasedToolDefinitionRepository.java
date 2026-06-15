@@ -24,7 +24,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Repository;
+import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
 import java.io.IOException;
@@ -40,7 +40,7 @@ import java.util.stream.Stream;
  * Persists tool definitions as JSON files in a configurable directory.
  * Each tool is stored as a separate file named {tool-name}.json.
  */
-@Repository
+@Component
 public class FileBasedToolDefinitionRepository implements ToolDefinitionRepository {
 
     private static final Logger logger = LoggerFactory.getLogger(FileBasedToolDefinitionRepository.class);

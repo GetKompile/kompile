@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Persistent metrics tracking for enforcer sessions, keyed by
@@ -84,7 +85,7 @@ public class EnforcerMetricsService {
         @JsonProperty
         public String lastUpdated;
         @JsonProperty
-        public List<MetricEvent> history = new ArrayList<>();
+        public List<MetricEvent> history = new CopyOnWriteArrayList<>();
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -291,8 +292,10 @@ public class EnforcerMetricsService {
 
     private void addHistoryEvent(AgentMetrics metrics, MetricEvent event) {
         metrics.history.add(event);
-        while (metrics.history.size() > MAX_HISTORY_ENTRIES) {
-            metrics.history.remove(0);
+        // Trim excess entries in bulk to avoid O(n) per-remove on CopyOnWriteArrayList
+        int excess = metrics.history.size() - MAX_HISTORY_ENTRIES;
+        if (excess > 0) {
+            metrics.history.subList(0, excess).clear();
         }
     }
 

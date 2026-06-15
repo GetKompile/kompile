@@ -16,11 +16,16 @@
 
 package ai.kompile.app.web.dto;
 
+import lombok.Getter;
+import lombok.Setter;
+
 import java.util.List;
 
 /**
  * Request body for pushing an interrupt event from a CLI-side enforcer.
  */
+@Getter
+@Setter
 public class EnforcerEventRequest {
 
     private String eventId;
@@ -32,67 +37,4 @@ public class EnforcerEventRequest {
     private String correctionPrompt;
     private String action;
 
-    public String getEventId() {
-        return eventId;
-    }
-
-    public void setEventId(String eventId) {
-        this.eventId = eventId;
-    }
-
-    public String getType() {
-        return type;
-    }
-
-    public void setType(String type) {
-        this.type = type;
-    }
-
-    public String getSeverity() {
-        return severity;
-    }
-
-    public void setSeverity(String severity) {
-        this.severity = severity;
-    }
-
-    public double getScore() {
-        return score;
-    }
-
-    public void setScore(double score) {
-        this.score = score;
-    }
-
-    public List<String> getViolations() {
-        return violations;
-    }
-
-    public void setViolations(List<String> violations) {
-        this.violations = violations;
-    }
-
-    public String getReason() {
-        return reason;
-    }
-
-    public void setReason(String reason) {
-        this.reason = reason;
-    }
-
-    public String getCorrectionPrompt() {
-        return correctionPrompt;
-    }
-
-    public void setCorrectionPrompt(String correctionPrompt) {
-        this.correctionPrompt = correctionPrompt;
-    }
-
-    public String getAction() {
-        return action;
-    }
-
-    public void setAction(String action) {
-        this.action = action;
-    }
 }

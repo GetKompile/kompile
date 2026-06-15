@@ -123,17 +123,20 @@ public class ContinuousBatcher {
         }
 
         String requestId = UUID.randomUUID().toString();
-        int seqIdx = activeSlots.size(); // Simple sequential assignment
-        DecodeSlot slot = new DecodeSlot(requestId, seqIdx, promptTokenIds, maxTokens);
+        DecodeSlot slot;
         totalRequestsSubmitted.incrementAndGet();
 
-        if (activeSlots.size() < config.getMaxConcurrentDecodes()) {
-            activeSlots.put(requestId, slot);
-            ensureDecodeLoop();
-        } else {
-            waitingQueue.offer(slot);
+        synchronized (activeSlots) {
+            int seqIdx = activeSlots.size();
+            slot = new DecodeSlot(requestId, seqIdx, promptTokenIds, maxTokens);
+            if (activeSlots.size() < config.getMaxConcurrentDecodes()) {
+                activeSlots.put(requestId, slot);
+            } else {
+                waitingQueue.offer(slot);
+            }
         }
 
+        ensureDecodeLoop();
         return slot.resultFuture;
     }
 
@@ -149,10 +152,12 @@ public class ContinuousBatcher {
 
         // Promote waiting requests
         ModelSchedulerConfig config = configService.getConfiguration();
-        while (activeSlots.size() < config.getMaxConcurrentDecodes() && !waitingQueue.isEmpty()) {
-            DecodeSlot next = waitingQueue.poll();
-            if (next != null) {
-                activeSlots.put(next.requestId, next);
+        synchronized (activeSlots) {
+            while (activeSlots.size() < config.getMaxConcurrentDecodes() && !waitingQueue.isEmpty()) {
+                DecodeSlot next = waitingQueue.poll();
+                if (next != null) {
+                    activeSlots.put(next.requestId, next);
+                }
             }
         }
     }

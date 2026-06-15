@@ -52,6 +52,10 @@ hs_err_pid*.log
 # Editor/tool metadata
 .opencode/
 **/.opencode/
+.claude/
+**/.claude/
+.codex/
+**/.codex/
 *.kompile-backup
 *.kompile-skills-backup
 
@@ -60,12 +64,14 @@ anserini-models/
 anserini-downloads/
 anserini-vector-index/
 kompile-app/data/
-kompile-rag-builds/kompile-sample/project/data/
+data/
+
+# Generated build output projects
+kompile-rag-builds/
 
 # Large build artifacts
 gcc-*.tar.gz
 gcc-4.9.4/
-kompile-rag-builds/kompile-sample/project/nd4j_symbols.txt
 
 # Static output files
 anserini/src/main/frontend/out/
@@ -197,3 +203,17 @@ glibc-*/
 *.h5
 *.hdf5
 *.keras
+
+# Executable/binary artifacts
+*.exe
+*.o
+*.a
+*.lib
+*.jar.original
+
+# Runtime/scratch files
+*.pid
+*.seed
+*.bak
+*.orig
+*.tmp

@@ -15,7 +15,7 @@
  */
 package ai.kompile.openclaw.service.impl;
 
-import ai.kompile.openclaw.service.HeartbeatScheduler;
+import ai.kompile.gateway.core.service.HeartbeatScheduler;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.*;
 import org.quartz.impl.matchers.GroupMatcher;

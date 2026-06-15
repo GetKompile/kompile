@@ -24,8 +24,6 @@ import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.enforcer.*;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
-import ai.kompile.cli.main.chat.render.AsciiRenderer;
-import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
@@ -46,8 +44,6 @@ import java.io.IOError;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -457,254 +453,108 @@ public class ChatCommand implements Callable<Integer> {
      * SubprocessAgentRunner, with a background judge that can score output
      * in real time and interrupt on policy violations.
      */
+    /**
+     * Enforced passthrough mode: resolves enforcer config, then delegates to
+     * EmulatedPassthroughCommand with enforcer fields set. ONE REPL, not two.
+     */
     private int runEnforcedPassthroughMode(String agent) {
         ObjectMapper objectMapper = new ObjectMapper();
         Path wd = Path.of(".").toAbsolutePath().normalize();
 
-        try (Terminal terminal = ChatCompleter.buildSystemTerminal()) {
-            LineReader reader = LineReaderBuilder.builder()
-                    .terminal(terminal)
-                    .completer(new ChatCompleter(() -> null))
-                    .build();
-            ChatCompleter.enableAutoTrigger(reader);
-            TerminalRenderer renderer = new TerminalRenderer();
-            AsciiRenderer ascii = new AsciiRenderer(renderer);
+        String rules;
+        try {
+            rules = EnforcerPolicy.resolveRules(enforcerRules, enforcerRuleFile, wd);
+        } catch (IOException e) {
+            System.err.println("Error reading enforcer rules: " + e.getMessage());
+            return 1;
+        }
+        boolean useKeywordMode = false;
+        int effectiveMaxReprompts = maxReprompts;
+        ai.kompile.cli.main.chat.enforcer.EnforcerConfig projectEnforcerConfig = null;
 
-            // Resolve enforcer rules — check CLI flags first, then project config
-            String rules = EnforcerPolicy.resolveRules(enforcerRules, enforcerRuleFile, wd);
-            boolean useKeywordMode = false;
-            int effectiveMaxReprompts = maxReprompts;
-            ai.kompile.cli.main.chat.enforcer.EnforcerConfig projectEnforcerConfig = null;
-
-            if (rules == null || rules.isBlank()) {
-                // Try project config
-                projectEnforcerConfig = ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
-                if (projectEnforcerConfig != null) {
-                    try {
-                        rules = projectEnforcerConfig.buildRulesText(wd);
-                        useKeywordMode = projectEnforcerConfig.isKeywordMode();
-                        effectiveMaxReprompts = projectEnforcerConfig.getMaxCorrections();
-                    } catch (Exception e) {
-                        rules = null;
-                    }
-                }
-            }
-
-            if (rules == null || rules.isBlank()) {
-                // Prompt for rules interactively
-                System.out.println();
-                System.out.println("Enter enforcer rules (finish with a single '.' line):");
-                StringBuilder sb = new StringBuilder();
-                while (true) {
-                    String line = reader.readLine("rules> ");
-                    if (line == null || ".".equals(line.trim())) break;
-                    sb.append(line).append('\n');
-                }
-                rules = sb.toString().trim();
-                if (rules.isBlank()) {
-                    System.err.println("Enforcer rules are required (--rules or --rule-file).");
-                    return 1;
-                }
-            }
-
-            EnforcerPolicy policy = new EnforcerPolicy(rules, effectiveMaxReprompts, false);
-            HarnessConfig harnessConfig = HarnessConfig.load(objectMapper);
-
-            // Choose evaluator: keyword mode (no LLM) or full LLM judge
-            EnforcerEvaluator evaluator;
-            EnforcerJudge judge = null;
-            if (useKeywordMode) {
-                KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, projectEnforcerConfig);
-                if (!kwEval.isAvailable()) {
-                    System.err.println("No keyword rules parsed. Use BAN:/STOP: prefixes.");
-                    return 1;
-                }
-                evaluator = kwEval;
-            } else {
-                if (judgeProvider != null && !judgeProvider.isBlank()) {
-                    harnessConfig.setJudgeProvider(judgeProvider);
-                }
-                if (judgeModel != null && !judgeModel.isBlank()) {
-                    harnessConfig.setJudgeModel(judgeModel);
-                }
-                judge = new EnforcerJudge(harnessConfig, objectMapper);
-                if (!judge.isAvailable()) {
-                    System.err.println("No enforcer judge backend available.");
-                    System.err.println("Configure ~/.kompile/harness-config.json or pass --judge-provider/--judge-model.");
-                    System.err.println("Tip: use keyword-mode in your enforcer config for simple rules without an LLM.");
-                    return 1;
-                }
-                evaluator = judge;
-            }
-
-            EnforcerService service = new EnforcerService(evaluator);
-            EnforcerRuntimePolicy runtimePolicy = EnforcerRuntimePolicy.create(wd, policy, harnessConfig, objectMapper);
-            EnforcerConversationWindow conversationWindow =
-                    new EnforcerConversationWindow(runtimePolicy.getContextFile(), objectMapper);
-
-            // Build the agent runner (emulated mode — we control the subprocess)
-            SubprocessAgentRunner runner = new SubprocessAgentRunner(
-                    agent, wd.toString(), true, true, "", 0,
-                    null, renderer, ascii);
-            runner.setExtraEnvironment(runtimePolicy.toEnvironment());
-            runner.setInputProvider(prompt -> {
+        if (rules == null || rules.isBlank()) {
+            projectEnforcerConfig = ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
+            if (projectEnforcerConfig != null) {
                 try {
-                    return reader.readLine(prompt);
+                    rules = projectEnforcerConfig.buildRulesText(wd);
+                    useKeywordMode = projectEnforcerConfig.isKeywordMode();
+                    effectiveMaxReprompts = projectEnforcerConfig.getMaxCorrections();
                 } catch (Exception e) {
-                    return null;
+                    rules = null;
                 }
-            });
-
-            String sessionId = runtimePolicy.getSessionId();
-            ChatHistory history = new ChatHistory(sessionId);
-            ChatSessionMetrics metrics = new ChatSessionMetrics(sessionId);
-            metrics.setAgentName(agent + " (enforced)");
-            Instant started = Instant.now();
-
-            history.open(rules, agent + " (enforced-passthrough)", false);
-            runner.injectMcpTools();
-            runner.injectSkills();
-
-            try {
-                // Print welcome banner
-                String body = "Agent:     " + agent + "\n"
-                        + "Judge:     " + evaluator.describe() + "\n"
-                        + "Retries:   " + effectiveMaxReprompts + "\n\n"
-                        + "Passthrough mode with real-time enforcement.\n"
-                        + "The judge monitors output as it streams and can interrupt on violations.\n\n"
-                        + "Commands: /help, /rules, /status, /quit";
-                System.out.println(ascii.panel("Kompile Enforced Passthrough", body));
-
-                // Main REPL loop
-                while (true) {
-                    String line;
-                    try {
-                        line = reader.readLine(buildEnforcedPrompt(agent));
-                    } catch (UserInterruptException | EndOfFileException e) {
-                        break;
-                    }
-
-                    if (line == null || line.isBlank()) continue;
-                    String trimmed = line.trim();
-
-                    if (trimmed.startsWith("/")) {
-                        if (trimmed.equalsIgnoreCase("/quit") || trimmed.equalsIgnoreCase("/exit")) break;
-                        if (trimmed.equalsIgnoreCase("/rules")) {
-                            System.out.println(ascii.panel("Enforcer Rules", policy.getRules()));
-                            continue;
-                        }
-                        if (trimmed.equalsIgnoreCase("/status")) {
-                            System.out.println(ascii.panel("Status",
-                                    "Agent: " + agent + "\nJudge: " + evaluator.describe()
-                                            + "\nRetries: " + effectiveMaxReprompts));
-                            continue;
-                        }
-                        if (trimmed.equalsIgnoreCase("/help")) {
-                            System.out.println(ascii.panel("Help",
-                                    "/rules   Show enforcer rules\n"
-                                            + "/status  Show judge and agent info\n"
-                                            + "/quit    Exit"));
-                            continue;
-                        }
-                        // Pass other slash commands through to the agent
-                    }
-
-                    // Run enforced turn: agent subprocess + real-time judge monitoring
-                    System.out.println();
-
-                    if (conversationWindow != null) {
-                        conversationWindow.addUserMessage(trimmed);
-                    }
-
-                    SubprocessAgentRunner.RealtimeMonitor rtMonitor;
-                    if (useKeywordMode) {
-                        KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, projectEnforcerConfig);
-                        rtMonitor = new KeywordRealtimeMonitor(kwEval, policy, conversationWindow);
-                    } else {
-                        rtMonitor = new EnforcerRealtimeMonitor(judge, policy, trimmed, conversationWindow);
-                    }
-                    runner.setRealtimeMonitor(rtMonitor);
-                    int[] attemptCounter = {0};
-
-                    EnforcerResult result;
-                    try {
-                        result = service.enforce(trimmed, policy,
-                                conversationWindow != null ? conversationWindow::snapshot : null,
-                                agentPrompt -> {
-                                    attemptCounter[0]++;
-                                    if (attemptCounter[0] > 1) {
-                                        System.out.println(renderer.yellow(
-                                                "[enforcer] violation detected, sending correction (attempt "
-                                                        + attemptCounter[0] + ")"));
-                                    }
-                                    String output = runner.runMessage(agentPrompt, history, metrics);
-                                    if (conversationWindow != null) {
-                                        conversationWindow.finishAssistantMessage(output);
-                                    }
-                                    return output;
-                                });
-                    } finally {
-                        runner.setRealtimeMonitor(null);
-                        if (rtMonitor instanceof AutoCloseable closeable) {
-                            try { closeable.close(); } catch (Exception ignored) {}
-                        }
-                    }
-
-                    // Print enforcement result
-                    if (result != null) {
-                        switch (result.getStatus()) {
-                            case ACCEPTED -> {
-                                if (result.getAttempts().size() > 1) {
-                                    System.out.println(renderer.dim("[enforcer] accepted after "
-                                            + result.getAttempts().size() + " attempts"));
-                                }
-                            }
-                            case BLOCKED -> {
-                                System.out.println(renderer.yellow("[enforcer] blocked: " + result.getMessage()));
-                                var attempts = result.getAttempts();
-                                if (!attempts.isEmpty() && attempts.get(attempts.size() - 1).decision() != null) {
-                                    for (String v : attempts.get(attempts.size() - 1).decision().getViolations()) {
-                                        System.out.println(renderer.yellow("  - " + v));
-                                    }
-                                }
-                            }
-                            case UNAVAILABLE, ERROR ->
-                                    System.out.println(renderer.red("[enforcer] " + result.getMessage()));
-                        }
-                    }
-
-                    if (result != null && !result.isAccepted()) {
-                        history.logSystem("Enforcer " + result.getStatus() + ": " + result.getMessage());
-                    }
-                }
-            } finally {
-                runner.setRealtimeMonitor(null);
-                runner.cleanup();
-                runtimePolicy.cleanup();
-                history.close();
-                renderer.resetTerminalTitle();
-                System.out.println();
-                System.out.println(renderer.dim("Enforced passthrough session " + sessionId
-                        + " ended after " + formatDuration(Duration.between(started, Instant.now()))
-                        + ". Transcript: " + history.getTranscriptFile()));
-                judge.close();
             }
+        }
 
-            return 0;
+        if (rules == null || rules.isBlank()) {
+            System.err.println("Enforcer rules are required (--rules or --rule-file, or project .kompile/enforcer.json).");
+            return 1;
+        }
+
+        EnforcerPolicy policy = new EnforcerPolicy(rules, effectiveMaxReprompts, false);
+        HarnessConfig harnessConfig = HarnessConfig.load(objectMapper);
+
+        // Choose evaluator
+        EnforcerEvaluator evaluator;
+        if (useKeywordMode) {
+            KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, projectEnforcerConfig);
+            if (!kwEval.isAvailable()) {
+                System.err.println("No keyword rules parsed. Use BAN:/STOP: prefixes.");
+                return 1;
+            }
+            evaluator = kwEval;
+        } else {
+            if (judgeProvider != null && !judgeProvider.isBlank()) {
+                harnessConfig.setJudgeProvider(judgeProvider);
+            }
+            if (judgeModel != null && !judgeModel.isBlank()) {
+                harnessConfig.setJudgeModel(judgeModel);
+            }
+            EnforcerJudge judge = new EnforcerJudge(harnessConfig, objectMapper);
+            if (!judge.isAvailable()) {
+                System.err.println("No enforcer judge backend available.");
+                System.err.println("Configure ~/.kompile/harness-config.json or pass --judge-provider/--judge-model.");
+                System.err.println("Tip: use keyword-mode in your enforcer config for simple rules without an LLM.");
+                return 1;
+            }
+            evaluator = judge;
+        }
+
+        EnforcerService service = new EnforcerService(evaluator);
+        EnforcerRuntimePolicy runtimePolicy;
+        try {
+            runtimePolicy = EnforcerRuntimePolicy.create(wd, policy, harnessConfig, objectMapper);
+        } catch (IOException e) {
+            System.err.println("Error initializing enforcer runtime: " + e.getMessage());
+            return 1;
+        }
+        EnforcerConversationWindow conversationWindow =
+                new EnforcerConversationWindow(runtimePolicy.getContextFile(), objectMapper);
+
+        try {
+            // Delegate to the single REPL with enforcer fields set
+            EmulatedPassthroughCommand passthrough = new EmulatedPassthroughCommand();
+            passthrough.agent = agent;
+            passthrough.workingDir = wd.toString();
+            passthrough.skipPermissions = true;
+            passthrough.injectTools = true;
+            passthrough.kompileUrl = "";
+            passthrough.mcpPort = 0;
+            passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
+            passthrough.enforcerEvaluator = evaluator;
+            passthrough.enforcerPolicy = policy;
+            passthrough.enforcerService = service;
+            passthrough.enforcerConversationWindow = conversationWindow;
+            passthrough.enforcerExtraEnv = runtimePolicy.toEnvironment();
+            return passthrough.call();
         } catch (Exception e) {
             System.err.println("Error in enforced passthrough: " + e.getMessage());
             return 1;
+        } finally {
+            runtimePolicy.cleanup();
+            if (evaluator instanceof AutoCloseable closeable) {
+                try { closeable.close(); } catch (Exception ignored) {}
+            }
         }
-    }
-
-    private static String buildEnforcedPrompt(String agent) {
-        return "\033[36mkompile \033[0m\033[2m[" + agent + "]\033[0m\033[36m> \033[0m";
-    }
-
-    private static String formatDuration(Duration d) {
-        long s = d.toSeconds();
-        if (s < 60) return s + "s";
-        return (s / 60) + "m " + (s % 60) + "s";
     }
 
     private int listSavedConversations() {

@@ -375,7 +375,8 @@ public class ProcessingSettingsController {
         } else {
             // Get real diagnostics from active pipelines
             Map<String, Object> diagnostics = documentIngestService.getActivePipelineDiagnostics();
-            int activePipelineCount = (Integer) diagnostics.get("activePipelineCount");
+            Object rawCount = diagnostics.get("activePipelineCount");
+            int activePipelineCount = (rawCount instanceof Number) ? ((Number) rawCount).intValue() : 0;
 
             if (activePipelineCount == 0) {
                 metrics.put("status", "idle");
@@ -403,7 +404,7 @@ public class ProcessingSettingsController {
     @GetMapping("/pipeline-diagnostics")
     public ResponseEntity<Map<String, Object>> getPipelineDiagnostics() {
         if (documentIngestService == null) {
-            return ResponseEntity.ok(Map.of("status", "unavailable", "message", "Document ingest service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "unavailable", "message", "Document ingest service not available"));
         }
         return ResponseEntity.ok(documentIngestService.getActivePipelineDiagnostics());
     }
@@ -454,7 +455,7 @@ public class ProcessingSettingsController {
         if (pipelineConfigService == null) {
             return ResponseEntity.status(503).build();
         }
-        logger.info("Applying pipeline preset: {}", preset);
+        logger.info("Applying pipeline preset: {}", preset.replaceAll("[\\r\\n]", "_"));
         return ResponseEntity.ok(pipelineConfigService.applyPreset(preset));
     }
 
@@ -533,7 +534,7 @@ public class ProcessingSettingsController {
     @GetMapping("/adaptive")
     public ResponseEntity<Map<String, Object>> getAdaptiveStatus() {
         if (adaptiveBatchingService == null) {
-            return ResponseEntity.ok(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
         }
         return ResponseEntity.ok(adaptiveBatchingService.getStatus());
     }
@@ -545,7 +546,7 @@ public class ProcessingSettingsController {
     @PutMapping("/adaptive")
     public ResponseEntity<Map<String, Object>> configureAdaptive(@RequestBody AdaptivePerformanceConfigDto config) {
         if (adaptiveBatchingService == null) {
-            return ResponseEntity.ok(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
         }
         logger.info("Configuring adaptive performance: enabled={}, preset={}",
                 config.enabled(), config.preset());
@@ -562,9 +563,9 @@ public class ProcessingSettingsController {
     @PostMapping("/adaptive/preset/{preset}")
     public ResponseEntity<Map<String, Object>> applyAdaptivePreset(@PathVariable String preset) {
         if (adaptiveBatchingService == null) {
-            return ResponseEntity.ok(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
         }
-        logger.info("Applying adaptive preset: {}", preset);
+        logger.info("Applying adaptive preset: {}", preset.replaceAll("[\\r\\n]", "_"));
 
         AdaptivePerformanceConfigDto config = AdaptivePerformanceConfigDto.fromPreset(preset);
         adaptiveBatchingService.configure(config);
@@ -578,7 +579,7 @@ public class ProcessingSettingsController {
     @PostMapping("/adaptive/start")
     public ResponseEntity<Map<String, Object>> startAdaptiveMonitoring() {
         if (adaptiveBatchingService == null) {
-            return ResponseEntity.ok(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
         }
         adaptiveBatchingService.startMonitoring();
         return ResponseEntity.ok(adaptiveBatchingService.getStatus());
@@ -590,7 +591,7 @@ public class ProcessingSettingsController {
     @PostMapping("/adaptive/stop")
     public ResponseEntity<Map<String, Object>> stopAdaptiveMonitoring() {
         if (adaptiveBatchingService == null) {
-            return ResponseEntity.ok(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "unavailable", "message", "Adaptive batching service not available"));
         }
         adaptiveBatchingService.stopMonitoring();
         return ResponseEntity.ok(adaptiveBatchingService.getStatus());
@@ -678,6 +679,7 @@ public class ProcessingSettingsController {
     @GetMapping("/adaptive/audit")
     public ResponseEntity<Map<String, Object>> getAuditEvents(
             @RequestParam(defaultValue = "100") int limit) {
+        limit = Math.min(Math.max(limit, 1), 10_000);
         if (auditService == null) {
             return ResponseEntity.ok(Map.of(
                     "events", List.of(),
@@ -731,6 +733,7 @@ public class ProcessingSettingsController {
             return ResponseEntity.ok(List.of());
         }
 
+        hours = Math.min(Math.max(hours, 1), 720);
         List<AdaptiveAuditEvent> events = auditService.getEventsSince(Duration.ofHours(hours));
 
         return ResponseEntity.ok(events.stream()
@@ -760,7 +763,7 @@ public class ProcessingSettingsController {
     @GetMapping("/adaptive/audit/statistics")
     public ResponseEntity<Map<String, Object>> getAuditStatistics() {
         if (auditService == null) {
-            return ResponseEntity.ok(Map.of("status", "unavailable", "message", "Audit service not available"));
+            return ResponseEntity.status(503).body(Map.of("status", "unavailable", "message", "Audit service not available"));
         }
         return ResponseEntity.ok(auditService.getStatistics());
     }

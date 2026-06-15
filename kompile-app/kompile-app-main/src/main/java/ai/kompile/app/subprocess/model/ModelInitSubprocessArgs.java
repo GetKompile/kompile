@@ -17,10 +17,8 @@
 package ai.kompile.app.subprocess.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
@@ -94,7 +92,7 @@ public record ModelInitSubprocessArgs(
         Map<String, Object> options             // Additional options map
 ) {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    // Uses SubprocessArgsIo shared mapper
 
     // Default values
     private static final int DEFAULT_OPTIMAL_BATCH = 32;
@@ -117,16 +115,14 @@ public record ModelInitSubprocessArgs(
      * Read args from a JSON file.
      */
     public static ModelInitSubprocessArgs readFromFile(Path path) throws IOException {
-        return OBJECT_MAPPER.readValue(path.toFile(), ModelInitSubprocessArgs.class);
+        return ai.kompile.app.subprocess.SubprocessArgsIo.fromFile(path, ModelInitSubprocessArgs.class);
     }
 
     /**
      * Write args to a temporary file and return the path.
      */
     public Path writeToTempFile() throws IOException {
-        Path tempFile = Files.createTempFile("model-init-args-", ".json");
-        OBJECT_MAPPER.writeValue(tempFile.toFile(), this);
-        return tempFile;
+        return ai.kompile.app.subprocess.SubprocessArgsIo.writeToTempFile(this, "model-init-args-");
     }
 
     /**

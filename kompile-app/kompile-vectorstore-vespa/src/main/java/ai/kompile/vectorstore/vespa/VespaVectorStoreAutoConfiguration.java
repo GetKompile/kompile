@@ -36,7 +36,7 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>Requires a running Vespa instance with an appropriate schema deployed.</p>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = "ai.kompile.vectorstore.vespa.VespaVectorStoreAutoConfiguration")
 @ConditionalOnProperty(name = "kompile.vectorstore.vespa.enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(VespaVectorStoreProperties.class)

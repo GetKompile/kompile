@@ -31,7 +31,7 @@ import java.io.IOException;
  * Handles SPA routing by forwarding non-API requests to index.html.
  * Only active when running as the standalone staging server.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "kompile.staging.ui.enabled", havingValue = "true", matchIfMissing = false)
 public class WebConfig implements WebMvcConfigurer {
 

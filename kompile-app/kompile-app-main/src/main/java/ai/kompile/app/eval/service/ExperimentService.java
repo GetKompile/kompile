@@ -20,8 +20,11 @@ import ai.kompile.app.eval.repository.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,16 +40,26 @@ import java.util.stream.Collectors;
  */
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class ExperimentService {
 
+
+    @Autowired
     private final ExperimentRepository experimentRepository;
+    @Autowired
     private final ExperimentRunRepository experimentRunRepository;
+    @Autowired
     private final EvalDatasetRepository evalDatasetRepository;
+    @Autowired
     private final EvalSuiteRepository evalSuiteRepository;
+    @Autowired
     private final EvalSuiteResultRepository evalSuiteResultRepository;
+    @Autowired
     private final EvalTestResultRepository evalTestResultRepository;
+    @Autowired
     private final EvalCaseRepository evalCaseRepository;
+    @Autowired
     private final ObjectMapper objectMapper;
 
     // ==================== Experiment CRUD ====================

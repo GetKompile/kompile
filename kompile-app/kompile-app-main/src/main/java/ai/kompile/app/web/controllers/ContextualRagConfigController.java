@@ -363,7 +363,7 @@ public class ContextualRagConfigController {
 
             // Extract the contextual prefix from metadata
             String contextPrefix = null;
-            if (enriched.getMetadata() != null && enriched.getMetadata().containsKey("contextual_prefix")) {
+            if (enriched.getMetadata() != null && enriched.getMetadata().get("contextual_prefix") != null) {
                 contextPrefix = enriched.getMetadata().get("contextual_prefix").toString();
             }
 
@@ -427,7 +427,7 @@ public class ContextualRagConfigController {
             long elapsedMs = System.currentTimeMillis() - startTime;
 
             String documentSummary = null;
-            if (enriched.getMetadata() != null && enriched.getMetadata().containsKey("document_summary")) {
+            if (enriched.getMetadata() != null && enriched.getMetadata().get("document_summary") != null) {
                 documentSummary = enriched.getMetadata().get("document_summary").toString();
             }
 
@@ -498,7 +498,7 @@ public class ContextualRagConfigController {
                 String original = i < chunks.size() ? chunks.get(i) : "";
 
                 String contextPrefix = null;
-                if (enriched.getMetadata() != null && enriched.getMetadata().containsKey("contextual_prefix")) {
+                if (enriched.getMetadata() != null && enriched.getMetadata().get("contextual_prefix") != null) {
                     contextPrefix = enriched.getMetadata().get("contextual_prefix").toString();
                 }
 

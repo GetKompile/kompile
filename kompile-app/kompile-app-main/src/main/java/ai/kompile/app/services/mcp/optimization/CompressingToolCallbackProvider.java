@@ -90,6 +90,7 @@ public class CompressingToolCallbackProvider implements ToolCallbackProvider {
             ToolDefinition def = cb.getToolDefinition();
             return def != null ? def.name() : null;
         } catch (Exception e) {
+            log.warn("Failed to resolve tool name from callback {}", cb.getClass().getSimpleName(), e);
             return null;
         }
     }

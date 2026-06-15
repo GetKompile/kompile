@@ -151,8 +151,8 @@ public class SignatureExtractor {
         if (originalLines == 0 && rootDir != null) {
             Path fullPath = rootDir.resolve(relPath);
             if (Files.exists(fullPath)) {
-                try {
-                    originalLines = (int) Files.lines(fullPath).count();
+                try (java.util.stream.Stream<String> lines = Files.lines(fullPath)) {
+                    originalLines = (int) lines.count();
                 } catch (IOException ignored) {}
             }
         }

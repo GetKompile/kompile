@@ -23,7 +23,10 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Represents a single item discovered during a crawl.
@@ -74,4 +77,8 @@ public class CrawlItem {
 
     /** How language was assigned: "detected", "header", "config", "default" */
     private String languageSource;
+
+    /** Optional tags for categorization and routing */
+    @Builder.Default
+    private Set<String> tags = new HashSet<>();
 }

@@ -32,6 +32,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.event.EventListener;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * Bridges training jobs from kompile-model-staging through the ResourceAwareJobScheduler.
  *
@@ -41,7 +43,7 @@ import org.springframework.context.event.EventListener;
  * <p>Listens for {@link TrainingJobStartedEvent} published by {@link TrainingService} and submits
  * a tracking job to the scheduler that polls the training launcher until the job is terminal.</p>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnBean(ResourceAwareJobScheduler.class)
 public class TrainingSchedulerBridge {
 
@@ -77,7 +79,8 @@ public class TrainingSchedulerBridge {
                 .description("Training: " + modelId)
                 .resourceProfile(JobResourceProfiles.TRAINING)
                 .executor(ctx -> {
-                    while (true) {
+                    long deadline = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(24);
+                    while (System.currentTimeMillis() < deadline) {
                         TrainingJobStatus status = getTrainingStatus(jobId, event.isSubprocess());
                         if (status == null) {
                             log.warn("Training job {} status is null, treating as completed", jobId);

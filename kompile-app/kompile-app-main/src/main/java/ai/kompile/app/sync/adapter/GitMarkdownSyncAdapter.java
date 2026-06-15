@@ -34,6 +34,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 /**
@@ -213,8 +214,19 @@ public class GitMarkdownSyncAdapter implements SyncAdapter {
                 builder.environment().put("KOMPILE_GIT_TOKEN", authContext.token());
             }
             Process process = builder.start();
-            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            int exitCode = process.waitFor();
+            String output;
+            int exitCode;
+            try {
+                output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                boolean finished = process.waitFor(300, TimeUnit.SECONDS);
+                if (!finished) {
+                    process.destroyForcibly();
+                    throw new IOException("Git command timed out after 300s: " + String.join(" ", command));
+                }
+                exitCode = process.exitValue();
+            } finally {
+                process.destroyForcibly();
+            }
             if (exitCode != 0 && !allowFailure) {
                 throw new IllegalStateException("Command failed (" + String.join(" ", command) + "): " + output.trim());
             }

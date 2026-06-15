@@ -70,7 +70,7 @@ public class AgentChatController {
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamChat(@RequestBody AgentChatRequest request) {
         log.info("Received chat request for agent: {}, RAG enabled: {}, timeout: {}s, message length: {}",
-                request.getAgentName(),
+                sanitizeForLog(request.getAgentName()),
                 request.isEnableRag(),
                 request.getTimeoutSeconds(),
                 request.getMessage() != null ? request.getMessage().length() : 0);
@@ -95,7 +95,7 @@ public class AgentChatController {
             emitter.complete();
         });
         emitter.onError(e -> {
-            log.error("SSE error: {}", e.getMessage());
+            log.error("SSE error", e);
             emitter.completeWithError(e);
         });
 
@@ -110,7 +110,7 @@ public class AgentChatController {
      */
     @PostMapping("/cancel/{processId}")
     public ResponseEntity<Map<String, Object>> cancelChat(@PathVariable String processId) {
-        log.info("Cancelling chat process: {}", processId);
+        log.info("Cancelling chat process: {}", sanitizeForLog(processId));
 
         boolean cancelled = chatService.cancelProcess(processId);
 
@@ -143,5 +143,10 @@ public class AgentChatController {
                 "agent", name,
                 "skipPermissions", skip
         ));
+    }
+
+    private static String sanitizeForLog(String value) {
+        if (value == null) return null;
+        return value.replace('\n', ' ').replace('\r', ' ');
     }
 }

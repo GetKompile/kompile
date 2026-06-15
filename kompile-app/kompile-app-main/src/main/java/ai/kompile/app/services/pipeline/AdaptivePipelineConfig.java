@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.pipeline;
 
+import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,6 +24,7 @@ import org.slf4j.LoggerFactory;
  * Adaptive configuration for parallel ingest pipeline.
  * Calculates optimal parallelism and batch sizes based on available system resources.
  */
+@Getter
 public class AdaptivePipelineConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(AdaptivePipelineConfig.class);
@@ -156,15 +158,6 @@ public class AdaptivePipelineConfig {
         // Limit based on memory - each document in flight consumes memory
         return Math.max(1, (int) (estimatedChunksInMemory / 100)); // Assume ~100 chunks per doc
     }
-
-    // Getters
-    public int getAvailableCores() { return availableCores; }
-    public long getMaxHeapBytes() { return maxHeapBytes; }
-    public long getAvailableBytes() { return availableBytes; }
-    public int getOptimalParallelism() { return optimalParallelism; }
-    public int getOptimalBatchSize() { return optimalBatchSize; }
-    public int getMaxConcurrentBatches() { return maxConcurrentBatches; }
-    public long getEstimatedChunksInMemory() { return estimatedChunksInMemory; }
 
     public double getMemoryUsagePercent() {
         return (currentUsedBytes * 100.0) / maxHeapBytes;

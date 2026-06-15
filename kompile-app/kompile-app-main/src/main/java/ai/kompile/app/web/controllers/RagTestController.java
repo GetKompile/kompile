@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.core.embeddings.NoOpEmbeddingModelImpl;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.embeddings.ScoredDocument;
@@ -42,6 +43,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -186,7 +190,7 @@ public class RagTestController {
 
                 if (!timingResult.success()) {
                     result.put("error", timingResult.error());
-                    result.put("durationMs", timingResult.totalWallClockMs());
+                    result.put(FieldNames.DURATION_MS, timingResult.totalWallClockMs());
                     return ResponseEntity.ok(result);
                 }
 
@@ -195,7 +199,7 @@ public class RagTestController {
                 result.put("shape", Arrays.toString(embedding.shape()));
 
                 // Total wall-clock time (what the user experiences)
-                result.put("durationMs", timingResult.totalWallClockMs());
+                result.put(FieldNames.DURATION_MS, timingResult.totalWallClockMs());
 
                 // Detailed timing breakdown
                 Map<String, Object> timing = new LinkedHashMap<>();
@@ -223,7 +227,7 @@ public class RagTestController {
 
                 result.put("dimensions", embedding.length());
                 result.put("shape", Arrays.toString(embedding.shape()));
-                result.put("durationMs", duration);
+                result.put(FieldNames.DURATION_MS, duration);
 
                 // Include first 10 values as preview
                 double[] preview = new double[Math.min(10, (int) embedding.length())];
@@ -270,7 +274,7 @@ public class RagTestController {
                 List<RetrievedDoc> docs = keywordRetriever.retrieveWithDetails(query, maxResults);
                 long duration = System.currentTimeMillis() - startTime;
 
-                keywordResult.put("durationMs", duration);
+                keywordResult.put(FieldNames.DURATION_MS, duration);
                 keywordResult.put("count", docs != null ? docs.size() : 0);
 
                 if (docs != null && !docs.isEmpty()) {
@@ -303,7 +307,7 @@ public class RagTestController {
                 List<Document> docs = vectorStore.similaritySearch(query, maxResults, threshold);
                 long duration = System.currentTimeMillis() - startTime;
 
-                semanticResult.put("durationMs", duration);
+                semanticResult.put(FieldNames.DURATION_MS, duration);
                 semanticResult.put("count", docs != null ? docs.size() : 0);
 
                 if (docs != null && !docs.isEmpty()) {
@@ -393,11 +397,11 @@ public class RagTestController {
                             } else {
                                 ((List<String>) existing.get("sources")).add("semantic");
                                 // Update score if semantic score is higher
-                                Object existingScore = existing.get("score");
-                                Object semanticScore = doc.getMetadata() != null ? doc.getMetadata().get("score") : null;
+                                Object existingScore = existing.get(FieldNames.SCORE);
+                                Object semanticScore = doc.getMetadata() != null ? doc.getMetadata().get(FieldNames.SCORE) : null;
                                 if (semanticScore instanceof Number && existingScore instanceof Number) {
                                     if (((Number) semanticScore).doubleValue() > ((Number) existingScore).doubleValue()) {
-                                        existing.put("score", semanticScore);
+                                        existing.put(FieldNames.SCORE, semanticScore);
                                     }
                                 }
                             }
@@ -421,8 +425,8 @@ public class RagTestController {
                     if (sourcesCompare != 0) return sourcesCompare;
 
                     // Then by score
-                    double scoreA = a.get("score") instanceof Number ? ((Number) a.get("score")).doubleValue() : 0.0;
-                    double scoreB = b.get("score") instanceof Number ? ((Number) b.get("score")).doubleValue() : 0.0;
+                    double scoreA = a.get(FieldNames.SCORE) instanceof Number ? ((Number) a.get(FieldNames.SCORE)).doubleValue() : 0.0;
+                    double scoreB = b.get(FieldNames.SCORE) instanceof Number ? ((Number) b.get(FieldNames.SCORE)).doubleValue() : 0.0;
                     return Double.compare(scoreB, scoreA);
                 })
                 .limit(maxResults)
@@ -716,7 +720,7 @@ public class RagTestController {
     private Map<String, Object> formatScoredDocument(ScoredDocument scoredDoc) {
         Map<String, Object> formatted = new LinkedHashMap<>();
         formatted.put("id", scoredDoc.getId());
-        formatted.put("score", scoredDoc.score());
+        formatted.put(FieldNames.SCORE, scoredDoc.score());
 
         String content = scoredDoc.getText();
         if (content != null) {
@@ -745,7 +749,7 @@ public class RagTestController {
     private Map<String, Object> formatRetrievedDoc(RetrievedDoc doc) {
         Map<String, Object> formatted = new LinkedHashMap<>();
         formatted.put("id", doc.getId());
-        formatted.put("score", doc.getScore());
+        formatted.put(FieldNames.SCORE, doc.getScore());
 
         String content = doc.getText();
         if (content != null) {
@@ -766,8 +770,8 @@ public class RagTestController {
         formatted.put("id", doc.getId());
 
         // Extract score from metadata if present
-        if (doc.getMetadata() != null && doc.getMetadata().containsKey("score")) {
-            formatted.put("score", doc.getMetadata().get("score"));
+        if (doc.getMetadata() != null && doc.getMetadata().containsKey(FieldNames.SCORE)) {
+            formatted.put(FieldNames.SCORE, doc.getMetadata().get(FieldNames.SCORE));
         }
 
         String content = doc.getText();
@@ -812,7 +816,7 @@ public class RagTestController {
             ModelDescriptor descriptor = ModelConstants.getCrossEncoderModelDescriptor(modelId);
             if (descriptor != null) {
                 Map<String, Object> modelInfo = new LinkedHashMap<>();
-                modelInfo.put("modelId", modelId);
+                modelInfo.put(FieldNames.MODEL_ID, modelId);
                 modelInfo.put("cached", modelManager.isCrossEncoderModelCached(modelId));
 
                 // Add metadata
@@ -827,7 +831,7 @@ public class RagTestController {
                 }
 
                 // Get cached path if available
-                java.nio.file.Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
+                Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
                 if (cachedPath != null) {
                     modelInfo.put("cachedPath", cachedPath.toString());
                 }
@@ -854,7 +858,7 @@ public class RagTestController {
     public ResponseEntity<Map<String, Object>> downloadCrossEncoderModel(
             @PathVariable String modelId) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("modelId", modelId);
+        result.put(FieldNames.MODEL_ID, modelId);
 
         // Check if model is valid
         if (!ModelConstants.isCrossEncoderModelAvailable(modelId)) {
@@ -874,7 +878,7 @@ public class RagTestController {
             result.put("success", true);
             result.put("wasCached", wasCached);
             result.put("modelPath", bundle.getModelPath().toString());
-            result.put("durationMs", duration);
+            result.put(FieldNames.DURATION_MS, duration);
 
             // Add bundle info
             if (bundle.getDescription() != null) {
@@ -921,7 +925,7 @@ public class RagTestController {
     public ResponseEntity<Map<String, Object>> getCrossEncoderModelInfo(
             @PathVariable String modelId) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("modelId", modelId);
+        result.put(FieldNames.MODEL_ID, modelId);
 
         // Check if model exists
         if (!ModelConstants.isCrossEncoderModelAvailable(modelId)) {
@@ -954,20 +958,23 @@ public class RagTestController {
         // Check cache status
         result.put("cached", modelManager.isCrossEncoderModelCached(modelId));
 
-        java.nio.file.Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
+        Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
         if (cachedPath != null) {
             result.put("cachedPath", cachedPath.toString());
 
             // Get file size if exists
             try {
-                java.io.File file = cachedPath.toFile();
+                File file = cachedPath.toFile();
                 if (file.exists()) {
                     if (file.isDirectory()) {
                         result.put("type", "directory");
-                        long dirSize = java.nio.file.Files.walk(cachedPath)
-                                .filter(p -> p.toFile().isFile())
-                                .mapToLong(p -> p.toFile().length())
-                                .sum();
+                        long dirSize;
+                        try (var walk = Files.walk(cachedPath)) {
+                            dirSize = walk
+                                    .filter(p -> p.toFile().isFile())
+                                    .mapToLong(p -> p.toFile().length())
+                                    .sum();
+                        }
                         result.put("sizeBytes", dirSize);
                         result.put("sizeMB", String.format("%.2f", dirSize / (1024.0 * 1024.0)));
                     } else {
@@ -994,7 +1001,7 @@ public class RagTestController {
     public ResponseEntity<Map<String, Object>> deleteCrossEncoderModel(
             @PathVariable String modelId) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("modelId", modelId);
+        result.put(FieldNames.MODEL_ID, modelId);
 
         // Check if model exists
         if (!ModelConstants.isCrossEncoderModelAvailable(modelId)) {
@@ -1003,7 +1010,7 @@ public class RagTestController {
             return ResponseEntity.status(404).body(result);
         }
 
-        java.nio.file.Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
+        Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
         if (cachedPath == null) {
             result.put("success", true);
             result.put("message", "Model was not cached");
@@ -1011,16 +1018,17 @@ public class RagTestController {
         }
 
         try {
-            java.io.File file = cachedPath.toFile();
+            File file = cachedPath.toFile();
             if (file.exists()) {
                 if (file.isDirectory()) {
                     // Delete directory recursively
-                    java.nio.file.Files.walk(cachedPath)
-                            .sorted(java.util.Comparator.reverseOrder())
-                            .map(java.nio.file.Path::toFile)
-                            .forEach(java.io.File::delete);
+                    try (var walk = Files.walk(cachedPath)) {
+                        walk.sorted(Comparator.reverseOrder())
+                                .map(Path::toFile)
+                                .forEach(File::delete);
+                    }
                 } else {
-                    java.nio.file.Files.delete(cachedPath);
+                    Files.delete(cachedPath);
                 }
                 result.put("success", true);
                 result.put("message", "Model cache deleted");
@@ -1090,7 +1098,7 @@ public class RagTestController {
             GraphRagResult graphResult = graphRagService.answerQuery(graphQuery);
             long duration = System.currentTimeMillis() - startTime;
 
-            result.put("durationMs", duration);
+            result.put(FieldNames.DURATION_MS, duration);
             result.put("answer", graphResult.getAnswer());
             result.put("context", graphResult.getFormattedContext());
 

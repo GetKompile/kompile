@@ -275,8 +275,8 @@ public class AlignmentService {
         } catch (Exception e) {
             throw new RuntimeException("Real alignment training failed: " + e.getMessage(), e);
         } finally {
-            if (sd != null) try { sd.close(); } catch (Exception ignored) {}
-            if (rewardModel != null) try { rewardModel.close(); } catch (Exception ignored) {}
+            if (sd != null) try { sd.close(); } catch (Exception e) { log.warn("Failed to close base SameDiff model after alignment", e); }
+            if (rewardModel != null) try { rewardModel.close(); } catch (Exception e) { log.warn("Failed to close reward model after alignment", e); }
         }
     }
 
@@ -545,7 +545,8 @@ public class AlignmentService {
             for (SseEmitter emitter : emitters) {
                 try {
                     emitter.complete();
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log.warn("Failed to complete SSE emitter for job '{}'", jobId, e);
                 }
             }
             emitters.clear();
@@ -645,5 +646,18 @@ public class AlignmentService {
         entry.put("name", name);
         entry.put("description", description);
         return entry;
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        alignmentExecutor.shutdown();
+        try {
+            if (!alignmentExecutor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                alignmentExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            alignmentExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

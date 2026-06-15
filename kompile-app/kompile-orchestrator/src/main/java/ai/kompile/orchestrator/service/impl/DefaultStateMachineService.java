@@ -498,6 +498,7 @@ public class DefaultStateMachineService implements StateMachineService {
     /**
      * Shutdown the polling executor.
      */
+    @jakarta.annotation.PreDestroy
     public void shutdown() {
         log.info("Shutting down state machine service");
         pollingTasks.values().forEach(f -> f.cancel(true));

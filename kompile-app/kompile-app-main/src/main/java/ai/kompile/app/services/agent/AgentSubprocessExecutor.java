@@ -278,8 +278,8 @@ public class AgentSubprocessExecutor {
 
                 boolean completed;
                 if (timeoutSeconds <= 0) {
-                    process.waitFor();
-                    completed = true;
+                    // Default to 1 hour max to prevent indefinite blocking
+                    completed = process.waitFor(3600, TimeUnit.SECONDS);
                 } else {
                     completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
                 }
@@ -420,5 +420,18 @@ public class AgentSubprocessExecutor {
                 log.debug("Failed to cleanup prompt file: {}", e.getMessage());
             }
         });
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        cleanupExecutor.shutdown();
+        try {
+            if (!cleanupExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                cleanupExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            cleanupExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

@@ -56,7 +56,7 @@ public class McpPreflightCheck {
     private static final int[] KOMPILE_APP_PORTS = {8080, 8443, 9090, 3000};
 
     // Process handle for the stdio MCP server
-    private Process stdioMcpProcess;
+    private volatile Process stdioMcpProcess;
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicReference<String> mcpConfigPath = new AtomicReference<>();
 
@@ -203,7 +203,9 @@ public class McpPreflightCheck {
         if (isRunning.compareAndSet(true, false) && stdioMcpProcess != null) {
             try {
                 stdioMcpProcess.destroy();
-                stdioMcpProcess.waitFor();
+                if (!stdioMcpProcess.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                    stdioMcpProcess.destroyForcibly();
+                }
                 System.out.println(DIM + "CLI stdio MCP server stopped" + RESET);
             } catch (Exception e) {
                 logger.error("Error stopping stdio MCP server", e);

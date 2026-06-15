@@ -88,7 +88,7 @@ public class ConversationalRagController {
 
         try {
             log.info("Processing chat request for conversation '{}': '{}'",
-                    conversationId, truncate(request.message(), 100));
+                    sanitizeForLog(conversationId), truncate(request.message(), 100));
 
             ConversationalRagOptions options = buildOptions(request);
             ConversationalRagResult result = ragService.chat(conversationId, request.message(), options);
@@ -101,7 +101,7 @@ public class ConversationalRagController {
             }
 
             log.info("Chat completed for conversation '{}': {} docs, {}ms",
-                    conversationId, result.documentCount(), result.totalTimeMs());
+                    sanitizeForLog(conversationId), result.documentCount(), result.totalTimeMs());
 
             KVCacheStats cacheStats = null;
             if (kvCacheManager != null) {
@@ -116,7 +116,7 @@ public class ConversationalRagController {
 
         } catch (Exception e) {
             log.error("Error processing chat for conversation '{}': {}",
-                    conversationId, e.getMessage(), e);
+                    sanitizeForLog(conversationId), e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(ChatResponse.error("Failed to process message: " + e.getMessage()));
         }
@@ -144,7 +144,7 @@ public class ConversationalRagController {
                 .concatWith(Flux.just("data: [DONE]\n\n"))
                 .timeout(Duration.ofMinutes(5))
                 .onErrorResume(e -> {
-                    log.error("Error in streaming chat: {}", e.getMessage());
+                    log.error("Error in streaming chat", e);
                     return Flux.just("data: {\"error\": \"" + escapeForSse(e.getMessage()) + "\"}\n\n");
                 });
     }
@@ -168,7 +168,7 @@ public class ConversationalRagController {
             return ResponseEntity.ok(new ConversationHistoryResponse(conversationId, messageDtos, null));
 
         } catch (Exception e) {
-            log.error("Error getting history for conversation '{}': {}", conversationId, e.getMessage());
+            log.error("Error getting history for conversation '{}'", sanitizeForLog(conversationId), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new ConversationHistoryResponse(conversationId, List.of(), e.getMessage()));
         }
@@ -186,14 +186,14 @@ public class ConversationalRagController {
 
         try {
             ragService.clearConversation(conversationId);
-            log.info("Cleared conversation: {}", conversationId);
+            log.info("Cleared conversation: {}", sanitizeForLog(conversationId));
             return ResponseEntity.ok(Map.of(
                     "conversationId", conversationId,
                     "cleared", true
             ));
 
         } catch (Exception e) {
-            log.error("Error clearing conversation '{}': {}", conversationId, e.getMessage());
+            log.error("Error clearing conversation '{}'", sanitizeForLog(conversationId), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", e.getMessage()));
         }
@@ -406,4 +406,9 @@ public class ConversationalRagController {
             List<MessageDto> messages,
             String error
     ) {}
+
+    private static String sanitizeForLog(String value) {
+        if (value == null) return null;
+        return value.replace('\n', ' ').replace('\r', ' ');
+    }
 }

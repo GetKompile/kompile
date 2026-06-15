@@ -19,8 +19,11 @@ package ai.kompile.chat.history.service;
 import ai.kompile.chat.history.config.ChatHistoryProperties;
 import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
 import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -38,10 +41,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @ConditionalOnProperty(name = "kompile.chat.history.cli-sync-enabled", havingValue = "true", matchIfMissing = true)
 public class CliTranscriptSyncService {
 
+
+    @Autowired
     private final CliTranscriptService cliTranscriptService;
+    @Autowired
     private final ChatHistoryProperties properties;
     private final AtomicBoolean syncInProgress = new AtomicBoolean(false);
 

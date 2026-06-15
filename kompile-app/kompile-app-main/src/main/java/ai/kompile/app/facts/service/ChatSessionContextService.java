@@ -38,12 +38,18 @@ import java.util.stream.Collectors;
 @Transactional
 public class ChatSessionContextService {
 
-    private final ChatSessionContextRepository repository;
-
     @Autowired
+    private ChatSessionContextRepository repository;
+
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
+    public ChatSessionContextService() {
+    }
+
     public ChatSessionContextService(ChatSessionContextRepository repository) {
         this.repository = repository;
     }
+
+
 
     @Transactional(readOnly = true)
     public List<ChatSessionContext> getSessionContexts(String sessionId) {

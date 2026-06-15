@@ -34,10 +34,10 @@ import java.util.stream.Collectors;
 @Slf4j
 public class SourceLinkingServiceImpl implements SourceLinkingService {
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
-    private final EntityMentionRepository entityMentionRepository;
-    private final KnowledgeGraphService knowledgeGraphService;
+    private GraphNodeRepository nodeRepository;
+    private GraphEdgeRepository edgeRepository;
+    private EntityMentionRepository entityMentionRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     @Autowired
     public SourceLinkingServiceImpl(
@@ -50,6 +50,10 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
         this.entityMentionRepository = entityMentionRepository;
         this.knowledgeGraphService = knowledgeGraphService;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected SourceLinkingServiceImpl() {}
+
 
     @Override
     @Transactional

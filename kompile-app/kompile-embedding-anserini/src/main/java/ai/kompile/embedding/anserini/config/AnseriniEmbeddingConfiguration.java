@@ -31,7 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Configuration for Anserini-based embedding models.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = "ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl")
 @ConditionalOnProperty(name = "kompile.embedding.anserini.enabled", havingValue = "true", matchIfMissing = true)
 public class AnseriniEmbeddingConfiguration {

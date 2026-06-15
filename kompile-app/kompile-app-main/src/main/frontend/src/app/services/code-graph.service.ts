@@ -67,6 +67,12 @@ export class CodeGraphService {
     return this.http.post(`${this.apiUrl}/graph/ensure-connectivity`, null, { params: { projectId } });
   }
 
+  buildGitHistory(projectId: string, maxCommits: number = 200): Observable<any> {
+    return this.http.post(`${this.apiUrl}/graph/git-history`, null, {
+      params: { projectId, maxCommits: maxCommits.toString() }
+    });
+  }
+
   // ─── Search ───────────────────────────────────────────────────────────────
 
   searchCode(projectId: string, query: string, type?: string, maxResults?: number): Observable<any[]> {

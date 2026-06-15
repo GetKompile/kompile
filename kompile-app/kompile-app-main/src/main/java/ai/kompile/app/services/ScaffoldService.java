@@ -83,8 +83,9 @@ public class ScaffoldService {
         context.setModelFileName(modelId + ".sdz");
         context.setInferenceMode(inferenceMode);
 
-        // Create temp directory for project output
+        // Create temp directory for project output (cleaned up on JVM shutdown)
         Path tempDir = Files.createTempDirectory("kompile-scaffold-");
+        tempDir.toFile().deleteOnExit();
         Path projectDir = tempDir.resolve(projectName);
         Files.createDirectories(projectDir);
 

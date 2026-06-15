@@ -35,6 +35,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -137,7 +138,7 @@ public class PassthroughCommand implements Callable<Integer> {
                             System.out.println(GREEN + "Kompile tools injected (" + mode + ")" + RESET
                                     + DIM + " (" + injectedSettingsFile + ")" + RESET);
                         }
-                    } catch (java.io.IOException e) {
+                    } catch (IOException e) {
                         System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
                     }
                 }
@@ -222,10 +223,10 @@ public class PassthroughCommand implements Callable<Integer> {
                         lastExitCode = process.waitFor();
                     } catch (InterruptedException ie) {
                         process.destroy();
-                        try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                        try { process.waitFor(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
                         if (process.isAlive()) process.destroyForcibly();
                         lastExitCode = 130;
-                        Thread.interrupted();
+                        Thread.currentThread().interrupt();
                     }
                 } catch (Exception e) {
                     System.err.println("Error running agent: " + e.getMessage());
@@ -243,7 +244,7 @@ public class PassthroughCommand implements Callable<Integer> {
                     }
                     // Remove injected enforcer rules from CLAUDE.md, AGENTS.md, and the standalone file
                     if (enforcerRulesFile != null) {
-                        try { java.nio.file.Files.deleteIfExists(enforcerRulesFile); } catch (Exception ignored) {}
+                        try { Files.deleteIfExists(enforcerRulesFile); } catch (Exception ignored) {}
                         Path projDir = Path.of(workingDir).toAbsolutePath();
                         stripEnforcerBlock(projDir.resolve("CLAUDE.md"));
                         stripEnforcerBlock(projDir.resolve("AGENTS.md"));
@@ -1422,7 +1423,7 @@ public class PassthroughCommand implements Callable<Integer> {
     private Path injectEnforcerRules(Path projectDir, String rulesText) {
         Path enforcerMd = projectDir.resolve(".kompile").resolve("enforcer-rules-injected.md");
         try {
-            java.nio.file.Files.createDirectories(enforcerMd.getParent());
+            Files.createDirectories(enforcerMd.getParent());
             StringBuilder content = new StringBuilder();
             content.append("\n\n# Kompile Enforcer Rules (AUTO-INJECTED — DO NOT EDIT)\n\n");
             content.append("You MUST follow these rules. Violations will be detected and blocked.\n");
@@ -1433,10 +1434,10 @@ public class PassthroughCommand implements Callable<Integer> {
             content.append("ALL issues you encounter (compilation errors, test failures, bugs) are YOUR\n");
             content.append("responsibility to fix regardless of their origin. Never say something is a\n");
             content.append("\"pre-existing issue\" or \"already broken\" or \"environmental\" — investigate and fix it.\n");
-            java.nio.file.Files.writeString(enforcerMd, content.toString());
+            Files.writeString(enforcerMd, content.toString());
 
             String enforcerBlock = "\n\n<!-- kompile-enforcer-start -->\n"
-                    + java.nio.file.Files.readString(enforcerMd)
+                    + Files.readString(enforcerMd)
                     + "\n<!-- kompile-enforcer-end -->\n";
 
             // Inject into CLAUDE.md
@@ -1455,22 +1456,22 @@ public class PassthroughCommand implements Callable<Integer> {
 
     private void appendEnforcerBlock(Path file, String enforcerBlock) {
         try {
-            if (java.nio.file.Files.exists(file)) {
-                String existing = java.nio.file.Files.readString(file);
+            if (Files.exists(file)) {
+                String existing = Files.readString(file);
                 if (!existing.contains("<!-- kompile-enforcer-start -->")) {
-                    java.nio.file.Files.writeString(file, existing + enforcerBlock);
+                    Files.writeString(file, existing + enforcerBlock);
                 }
             } else {
                 // Create the file with just the enforcer block
-                java.nio.file.Files.writeString(file, enforcerBlock.strip() + "\n");
+                Files.writeString(file, enforcerBlock.strip() + "\n");
             }
         } catch (Exception ignored) {}
     }
 
     private void stripEnforcerBlock(Path file) {
         try {
-            if (!java.nio.file.Files.exists(file)) return;
-            String content = java.nio.file.Files.readString(file);
+            if (!Files.exists(file)) return;
+            String content = Files.readString(file);
             int start = content.indexOf("<!-- kompile-enforcer-start -->");
             int end = content.indexOf("<!-- kompile-enforcer-end -->");
             if (start >= 0 && end >= 0) {
@@ -1480,13 +1481,13 @@ public class PassthroughCommand implements Callable<Integer> {
                 if (endIdx < content.length() && content.charAt(endIdx) == '\n') endIdx++;
                 String cleaned = content.substring(0, start) + content.substring(endIdx);
                 cleaned = cleaned.stripTrailing() + "\n";
-                java.nio.file.Files.writeString(file, cleaned);
+                Files.writeString(file, cleaned);
             }
             // If the file is now empty (we created it), remove it
-            if (java.nio.file.Files.exists(file)) {
-                String remaining = java.nio.file.Files.readString(file).strip();
+            if (Files.exists(file)) {
+                String remaining = Files.readString(file).strip();
                 if (remaining.isEmpty()) {
-                    java.nio.file.Files.deleteIfExists(file);
+                    Files.deleteIfExists(file);
                 }
             }
         } catch (Exception ignored) {}

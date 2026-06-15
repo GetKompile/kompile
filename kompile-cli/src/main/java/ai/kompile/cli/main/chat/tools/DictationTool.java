@@ -213,7 +213,10 @@ public class DictationTool implements CliTool {
     private boolean checkCommand(String cmd) {
         try {
             Process p = new ProcessBuilder("which", cmd).redirectErrorStream(true).start();
-            p.waitFor();
+            if (!p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                return false;
+            }
             return p.exitValue() == 0;
         } catch (Exception e) {
             return false;

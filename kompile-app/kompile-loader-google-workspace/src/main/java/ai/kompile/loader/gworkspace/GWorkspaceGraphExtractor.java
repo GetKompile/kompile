@@ -22,6 +22,7 @@ import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import static ai.kompile.core.graphrag.GraphConstants.*;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.*;
 import org.springframework.ai.document.Document;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -77,6 +78,7 @@ import java.util.stream.Collectors;
  * deduplication. A person who sends an email, owns a Drive file, and attends a Calendar event
  * is unified into a single GOOGLE_PERSON entity when their email matches.
  */
+@Slf4j
 @Component
 public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
 
@@ -267,6 +269,10 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
 
             // ── DATE entity from email date
             String emailDate = date != null ? date : internalDate;
+            // Build a reusable relation properties map that carries occurredAt for all
+            // relations produced from this Gmail message.
+            final Map<String, String> emailRelProps = emailDate != null
+                    ? Map.of(GraphConstants.PROP_OCCURRED_AT, emailDate) : Map.of();
             if (emailDate != null) {
                 String emailDateId = entityId("date:" + emailDate);
                 addEntity(entities, new ExtractedEntity(
@@ -277,7 +283,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         entityId("gmail:" + messageId), emailDateId,
                         GraphConstants.REL_PUBLISHED_ON,
                         (subject != null ? subject : "Email") + " sent on " + emailDate,
-                        0.9, null));
+                        0.9, emailRelProps));
             }
 
             // Message → Thread
@@ -297,7 +303,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         entityId("gmail-thread:" + threadId),
                         GraphConstants.REL_IN_THREAD,
                         "Message belongs to thread",
-                        1.0, Map.of()
+                        1.0, emailRelProps
                 ));
             }
 
@@ -312,7 +318,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         personEntityId(email),
                         GraphConstants.REL_SENT_BY,
                         "Message sent by " + (name != null ? name : email),
-                        1.0, Map.of()
+                        1.0, emailRelProps
                 ));
             }
 
@@ -328,7 +334,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             personEntityId(email),
                             GraphConstants.REL_SENT_TO,
                             "Message sent to " + (name != null ? name : email),
-                            1.0, Map.of()
+                            1.0, emailRelProps
                     ));
                 }
             }
@@ -345,7 +351,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             personEntityId(email),
                             GraphConstants.REL_CC_TO,
                             "Message CC'd to " + (name != null ? name : email),
-                            0.9, Map.of()
+                            0.9, emailRelProps
                     ));
                 }
             }
@@ -362,7 +368,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             personEntityId(email),
                             GraphConstants.REL_BCC_TO,
                             "Message BCC'd to " + (name != null ? name : email),
-                            0.9, Map.of()
+                            0.9, emailRelProps
                     ));
                 }
             }
@@ -379,7 +385,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         personEntityId(replyToEmail),
                         GraphConstants.REL_REPLY_TO,
                         "Reply-To address: " + (replyToName != null ? replyToName : replyToEmail),
-                        0.9, Map.of()
+                        0.9, emailRelProps
                 ));
             }
 
@@ -400,7 +406,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         entityId("gmail-rfc:" + replyMsgId),
                         GraphConstants.REL_REPLIED_TO,
                         "Message is a reply",
-                        1.0, Map.of()
+                        1.0, emailRelProps
                 ));
             }
 
@@ -433,7 +439,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             refEntityId,
                             GraphConstants.REL_REFERENCES,
                             "Email references " + cleanRef,
-                            0.9, Map.of()
+                            0.9, emailRelProps
                     ));
                 }
             }
@@ -452,7 +458,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         listEntityId,
                         GraphConstants.REL_POSTED_TO,
                         "Email posted to mailing list " + listId,
-                        1.0, Map.of()
+                        1.0, emailRelProps
                 ));
             }
 
@@ -491,7 +497,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             entityId("gmail-label:" + label),
                             GraphConstants.REL_HAS_LABEL,
                             "Message has label " + label,
-                            1.0, Map.of()
+                            1.0, emailRelProps
                     ));
                 }
             }
@@ -532,7 +538,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                                     entityId("gmail-cal:" + messageId + ":" + attKey),
                                     GraphConstants.REL_HAS_CALENDAR_EVENT,
                                     "Message has calendar invite",
-                                    1.0, Map.of()
+                                    1.0, emailRelProps
                             ));
                         } else {
                             addEntity(entities, new ExtractedEntity(
@@ -550,7 +556,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                                     entityId("gmail-att:" + messageId + ":" + attKey),
                                     GraphConstants.REL_HAS_ATTACHMENT,
                                     "Message has attachment " + (filename != null ? filename : ""),
-                                    1.0, Map.of()
+                                    1.0, emailRelProps
                             ));
                         }
                     }
@@ -579,7 +585,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             urlEntityId,
                             GraphConstants.REL_HYPERLINKS_TO,
                             "Email body links to " + url,
-                            0.8, Map.of()
+                            0.8, emailRelProps
                     ));
                     urlCount++;
                 }
@@ -588,6 +594,10 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
             // Attachment-only document: has parentMessageId but no messageId of its own
             String parentMessageId = str(meta.get("gworkspace.gmail.parentMessageId"));
             if (parentMessageId != null) {
+                // Build relation props with occurredAt from the parent message date (if available).
+                final String attachDate = date != null ? date : internalDate;
+                final Map<String, String> attachRelProps = attachDate != null
+                        ? Map.of(GraphConstants.PROP_OCCURRED_AT, attachDate) : Map.of();
                 // Use parentSubject (set by crawler on attachment CrawlItems) for a
                 // human-readable stub label; fall back to subject, then generic "Message <id>"
                 String parentSubject = str(meta.get("gworkspace.gmail.parentSubject"));
@@ -623,7 +633,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             entityId("gmail-thread:" + threadId),
                             GraphConstants.REL_IN_THREAD,
                             "Message belongs to thread",
-                            1.0, Map.of()
+                            1.0, attachRelProps
                     ));
                 }
 
@@ -667,7 +677,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             calEntityId,
                             GraphConstants.REL_HAS_CALENDAR_EVENT,
                             "Message has calendar invite",
-                            1.0, Map.of()
+                            1.0, attachRelProps
                     ));
                     addIcsPersonEntities(calEntityId, attProps, entities, relations);
                 } else {
@@ -686,7 +696,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             entityId("gmail-att:" + parentMessageId + ":" + attKey),
                             GraphConstants.REL_HAS_ATTACHMENT,
                             "Message has attachment " + (attFilename != null ? attFilename : ""),
-                            1.0, Map.of()
+                            1.0, attachRelProps
                     ));
                 }
             }
@@ -711,6 +721,11 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
         String createdTime = str(meta.get("gworkspace.drive.createdTime"));
         Object fileSize = meta.get("gworkspace.drive.size");
         Object shared = meta.get("gworkspace.drive.shared");
+
+        // Build relation props with occurredAt set to the best available file timestamp.
+        final String fileTimestamp = createdTime != null ? createdTime : modifiedTime;
+        final Map<String, String> fileRelProps = fileTimestamp != null
+                ? Map.of(GraphConstants.PROP_OCCURRED_AT, fileTimestamp) : Map.of();
 
         Map<String, String> fileProps = new LinkedHashMap<>();
         fileProps.put("fileId", fileId);
@@ -752,7 +767,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         entityId("drive:" + fileId),
                         GraphConstants.REL_OWNS_FILE,
                         (name != null ? name : email) + " owns file",
-                        1.0, Map.of()
+                        1.0, fileRelProps
                 ));
             }
         }
@@ -767,7 +782,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     personEntityId(lastModifierEmail),
                     GraphConstants.REL_LAST_MODIFIED_BY,
                     "File last modified by " + (lastModifierName != null ? lastModifierName : lastModifierEmail),
-                    1.0, Map.of()
+                    1.0, fileRelProps
             ));
         }
 
@@ -786,6 +801,8 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     if (email == null) continue;
 
                     addPersonEntity(entities, email, name);
+                    Map<String, String> sharedRelProps = new java.util.LinkedHashMap<>(fileRelProps);
+                    if (role != null) sharedRelProps.put("role", role);
                     relations.add(new ExtractedRelation(
                             entityId("drive:" + fileId),
                             personEntityId(email),
@@ -793,7 +810,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             "File shared with " + (name != null ? name : email)
                                     + (role != null ? " (" + role + ")" : ""),
                             0.9,
-                            role != null ? Map.of("role", role) : Map.of()
+                            sharedRelProps
                     ));
                 }
             }
@@ -818,7 +835,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     entityId("drive:" + parentFolderId),
                     GraphConstants.REL_IN_FOLDER,
                     (fileName != null ? fileName : fileId) + " is in folder " + folderLabel,
-                    1.0, Map.of()
+                    1.0, fileRelProps
             ));
         }
 
@@ -831,7 +848,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     Map.of("date", createdTime, "dateType", "created")));
             relations.add(new ExtractedRelation(entityId("drive:" + fileId), createdDateId,
                     GraphConstants.REL_PUBLISHED_ON,
-                    (fileName != null ? fileName : fileId) + " created on " + createdTime, 0.85, Map.of()));
+                    (fileName != null ? fileName : fileId) + " created on " + createdTime, 0.85, fileRelProps));
         }
         if (modifiedTime != null && !modifiedTime.isBlank()) {
             String modDateId = entityId("date:" + modifiedTime);
@@ -841,7 +858,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     Map.of("date", modifiedTime, "dateType", "modified")));
             relations.add(new ExtractedRelation(entityId("drive:" + fileId), modDateId,
                     GraphConstants.REL_MODIFIED_ON,
-                    (fileName != null ? fileName : fileId) + " modified on " + modifiedTime, 0.85, Map.of()));
+                    (fileName != null ? fileName : fileId) + " modified on " + modifiedTime, 0.85, fileRelProps));
         }
 
         // ── webViewLink as EXTERNAL_RESOURCE ──
@@ -853,7 +870,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     Map.of("url", webViewLink)));
             relations.add(new ExtractedRelation(entityId("drive:" + fileId), webLinkId,
                     GraphConstants.REL_HYPERLINKS_TO,
-                    (fileName != null ? fileName : fileId) + " viewable at " + webViewLink, 0.85, Map.of()));
+                    (fileName != null ? fileName : fileId) + " viewable at " + webViewLink, 0.85, fileRelProps));
         }
 
         // ── SPREADSHEET_SHEET from Google Sheets per-sheet documents ──
@@ -888,7 +905,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     sheetEntityId,
                     GraphConstants.REL_HAS_SHEET,
                     (fileName != null ? fileName : fileId) + " has sheet " + sheetName,
-                    1.0, Map.of()
+                    1.0, fileRelProps
             ));
         }
 
@@ -916,14 +933,14 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         entityId("drive:" + fileId), chartEntityId,
                         GraphConstants.REL_HAS_CHART,
                         (fileName != null ? fileName : fileId) + " has chart " + chartLabel,
-                        0.9, Map.of()));
+                        0.9, fileRelProps));
                 // Link chart to its sheet if known
                 if (chartSheetName != null) {
                     String chartSheetId = entityId("gsheet:" + fileId + "/sheet:" + chartSheetName);
                     relations.add(new ExtractedRelation(
                             chartSheetId, chartEntityId, GraphConstants.REL_CONTAINS,
                             chartSheetName + " contains chart " + chartLabel,
-                            0.85, Map.of()));
+                            0.85, fileRelProps));
                 }
             }
         }
@@ -949,7 +966,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         entityId("drive:" + fileId), nrEntityId,
                         GraphConstants.REL_CONTAINS,
                         (fileName != null ? fileName : fileId) + " has named range " + nrName,
-                        0.85, Map.of()));
+                        0.85, fileRelProps));
             }
         }
 
@@ -979,7 +996,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     slideEntityId,
                     GraphConstants.REL_HAS_SLIDE,
                     (fileName != null ? fileName : fileId) + " has slide " + slideTitle,
-                    1.0, Map.of()
+                    1.0, fileRelProps
             ));
 
             // Speaker notes
@@ -999,7 +1016,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         slideEntityId, noteEntityId,
                         GraphConstants.REL_HAS_SPEAKER_NOTE,
-                        slideTitle + " has speaker notes", 0.9, Map.of()));
+                        slideTitle + " has speaker notes", 0.9, fileRelProps));
             }
 
             // Slide hyperlinks
@@ -1022,7 +1039,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             slideEntityId, urlEntityId,
                             GraphConstants.REL_HYPERLINKS_TO,
-                            slideTitle + " links to " + url, 0.85, Map.of()));
+                            slideTitle + " links to " + url, 0.85, fileRelProps));
                     linkIdx++;
                 }
             }
@@ -1047,7 +1064,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             slideEntityId, imgEntityId,
                             GraphConstants.REL_CONTAINS,
-                            slideTitle + " contains image " + imgLabel, 0.8, Map.of()));
+                            slideTitle + " contains image " + imgLabel, 0.8, fileRelProps));
                     imgIdx++;
                 }
             }
@@ -1069,7 +1086,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     relations.add(new ExtractedRelation(
                             slideEntityId, bulletEntityId,
                             GraphConstants.REL_CONTAINS,
-                            slideTitle + " contains bullet point", 0.75, Map.of()));
+                            slideTitle + " contains bullet point", 0.75, fileRelProps));
                     bulletIdx++;
                 }
             }
@@ -1085,7 +1102,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                 relations.add(new ExtractedRelation(
                         slideEntityId, layoutId,
                         GraphConstants.REL_USES_LAYOUT,
-                        slideTitle + " uses layout: " + slideLayout, 0.8, Map.of()));
+                        slideTitle + " uses layout: " + slideLayout, 0.8, fileRelProps));
             }
         }
 
@@ -1168,7 +1185,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         entityId("drive:" + fileId), formulaEntityId,
                         GraphConstants.REL_HAS_FORMULA,
                         (fileName != null ? fileName : fileId) + " has formula: " + cellRef,
-                        0.85, Map.of()
+                        0.85, fileRelProps
                 ));
             }
         }
@@ -1196,7 +1213,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         urlEntityId,
                         GraphConstants.REL_HYPERLINKS_TO,
                         "Drive file links to " + url,
-                        0.8, Map.of()
+                        0.8, fileRelProps
                 ));
                 urlCount++;
             }
@@ -1216,6 +1233,10 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
         String createdTime = str(meta.get("gworkspace.drive.commentCreatedTime"));
 
         if (commentId == null || fileId == null) return;
+
+        // Build relation props with occurredAt set to the comment creation time.
+        final Map<String, String> commentRelProps = createdTime != null
+                ? Map.of(GraphConstants.PROP_OCCURRED_AT, createdTime) : Map.of();
 
         // Comment entity
         Map<String, String> commentProps = new LinkedHashMap<>();
@@ -1258,7 +1279,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                 entityId("drive:" + fileId),
                 GraphConstants.REL_COMMENTED_ON,
                 "Comment on file " + (fileName != null ? fileName : fileId),
-                1.0, Map.of()
+                1.0, commentRelProps
         ));
 
         // Comment → Author (COMMENT_BY)
@@ -1269,7 +1290,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     personEntityId(authorEmail),
                     GraphConstants.REL_COMMENT_BY,
                     "Comment by " + (authorName != null ? authorName : authorEmail),
-                    1.0, Map.of()
+                    1.0, commentRelProps
             ));
         }
 
@@ -1282,7 +1303,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     Map.of("date", createdTime, "dateType", "commentCreated")));
             relations.add(new ExtractedRelation(entityId("drive-comment:" + commentId), commentDateId,
                     GraphConstants.REL_PUBLISHED_ON,
-                    "Comment published on " + createdTime, 0.85, Map.of()));
+                    "Comment published on " + createdTime, 0.85, commentRelProps));
         }
 
         // ── Replies on this comment ───────────────────────────────────
@@ -1299,6 +1320,8 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     String replyAuthorName = replyMap.get("authorName") != null ? replyMap.get("authorName").toString() : null;
 
                     String replyEntityId = entityId("drive-reply:" + commentId + ":" + replyId);
+                    final Map<String, String> replyRelProps = replyCreatedTime != null
+                            ? Map.of(GraphConstants.PROP_OCCURRED_AT, replyCreatedTime) : Map.of();
                     Map<String, String> replyProps = new LinkedHashMap<>();
                     replyProps.put("replyId", replyId);
                     replyProps.put("commentId", commentId);
@@ -1327,7 +1350,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                             entityId("drive-comment:" + commentId),
                             GraphConstants.REL_REPLIED_TO,
                             "Reply to comment on " + (fileName != null ? fileName : fileId),
-                            0.9, Map.of()
+                            0.9, replyRelProps
                     ));
 
                     // Reply → Author (COMMENT_BY)
@@ -1338,7 +1361,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                                 personEntityId(replyAuthorEmail),
                                 GraphConstants.REL_COMMENT_BY,
                                 "Reply by " + (replyAuthorName != null ? replyAuthorName : replyAuthorEmail),
-                                0.9, Map.of()
+                                0.9, replyRelProps
                         ));
                     }
 
@@ -1351,7 +1374,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                                 Map.of("date", replyCreatedTime, "dateType", "replyCreated")));
                         relations.add(new ExtractedRelation(replyEntityId, replyDateId,
                                 GraphConstants.REL_PUBLISHED_ON,
-                                "Reply published on " + replyCreatedTime, 0.85, Map.of()));
+                                "Reply published on " + replyCreatedTime, 0.85, replyRelProps));
                     }
                 }
                 replyIdx++;
@@ -1373,6 +1396,10 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
         String status = str(meta.get("gworkspace.calendar.status"));
 
         if (eventId == null) return;
+
+        // Build relation props with occurredAt set to the event start time (best available timestamp).
+        final Map<String, String> calRelProps = startTime != null
+                ? Map.of(GraphConstants.PROP_OCCURRED_AT, startTime) : Map.of();
 
         // Event entity
         Map<String, String> eventProps = new LinkedHashMap<>();
@@ -1417,7 +1444,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     entityId("cal:" + eventId), startDateId,
                     GraphConstants.REL_STARTS_ON,
                     (summary != null ? summary : "Event") + " starts on " + startTime,
-                    0.9, null));
+                    0.9, calRelProps));
         }
         if (endTime != null) {
             String endDateId = entityId("date:" + endTime);
@@ -1429,7 +1456,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     entityId("cal:" + eventId), endDateId,
                     GraphConstants.REL_ENDS_ON,
                     (summary != null ? summary : "Event") + " ends on " + endTime,
-                    0.9, null));
+                    0.9, calRelProps));
         }
 
         // ── EXTERNAL_RESOURCE from htmlLink and conferenceUrl
@@ -1444,7 +1471,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     calEventEntityId, htmlLinkId,
                     GraphConstants.REL_HYPERLINKS_TO,
                     (summary != null ? summary : "Event") + " link: " + htmlLink,
-                    0.85, null));
+                    0.85, calRelProps));
         }
         if (conferenceUrl != null && !conferenceUrl.isBlank()) {
             String confUrlId = entityId("url:" + conferenceUrl.toLowerCase());
@@ -1456,7 +1483,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     calEventEntityId, confUrlId,
                     GraphConstants.REL_HYPERLINKS_TO,
                     (summary != null ? summary : "Event") + " conference: " + conferenceUrl,
-                    0.9, null));
+                    0.9, calRelProps));
         }
 
         // Calendar entity
@@ -1476,7 +1503,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     entityId("calendar:" + calendarId),
                     GraphConstants.REL_IN_CALENDAR,
                     "Event in calendar " + calendarId,
-                    1.0, Map.of()
+                    1.0, calRelProps
             ));
         }
 
@@ -1492,7 +1519,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     entityId("cal:" + eventId),
                     locEntityId, GraphConstants.REL_AT_LOCATION,
                     "Event at " + location,
-                    1.0, Map.of()
+                    1.0, calRelProps
             ));
         }
 
@@ -1506,7 +1533,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     personEntityId(organizerEmail),
                     GraphConstants.REL_ORGANIZED_BY,
                     "Event organized by " + (organizerName != null ? organizerName : organizerEmail),
-                    1.0, Map.of()
+                    1.0, calRelProps
             ));
         }
 
@@ -1520,7 +1547,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     personEntityId(creatorEmail),
                     GraphConstants.REL_CREATED_BY,
                     "Event created by " + (creatorName != null ? creatorName : creatorEmail),
-                    1.0, Map.of()
+                    1.0, calRelProps
             ));
         }
 
@@ -1537,7 +1564,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     String isOptional = str(att.get("optional"));
                     String isSelf = str(att.get("self"));
                     addPersonEntity(entities, email, name);
-                    Map<String, String> attRelProps = new LinkedHashMap<>();
+                    Map<String, String> attRelProps = new LinkedHashMap<>(calRelProps);
                     if (responseStatus != null) attRelProps.put("responseStatus", responseStatus);
                     if ("true".equals(isOptional)) attRelProps.put("optional", "true");
                     if ("true".equals(isSelf)) attRelProps.put("self", "true");
@@ -1572,7 +1599,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     parentEventEntityId,
                     GraphConstants.REL_INSTANCE_OF,
                     "Event instance of recurring series",
-                    1.0, Map.of()
+                    1.0, calRelProps
             ));
         }
 
@@ -1608,7 +1635,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         urlEntityId,
                         GraphConstants.REL_HYPERLINKS_TO,
                         "Calendar event links to " + url,
-                        0.8, Map.of()
+                        0.8, calRelProps
                 ));
                 urlCount++;
             }
@@ -1877,6 +1904,11 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
     private void addIcsPersonEntities(String calEntityId, Map<String, String> props,
                                        Map<String, ExtractedEntity> entities,
                                        List<ExtractedRelation> relations) {
+        // Build relation props with occurredAt from the ICS DTSTART field.
+        String icsStart = props.get("dtstart");
+        final Map<String, String> icsRelProps = icsStart != null
+                ? Map.of(GraphConstants.PROP_OCCURRED_AT, icsStart) : Map.of();
+
         // Organizer → ORGANIZED_BY
         String organizer = props.get("organizer");
         if (organizer != null && !organizer.isBlank()) {
@@ -1885,7 +1917,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     calEntityId, personEntityId(organizer),
                     GraphConstants.REL_ORGANIZED_BY,
                     "Calendar event organized by " + organizer,
-                    1.0, Map.of()
+                    1.0, icsRelProps
             ));
         }
 
@@ -1900,7 +1932,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                         calEntityId, personEntityId(attendee),
                         GraphConstants.REL_ATTENDED_BY,
                         "Calendar event attended by " + attendee,
-                        1.0, Map.of()
+                        1.0, icsRelProps
                 ));
             }
         }
@@ -1918,7 +1950,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
                     calEntityId, locEntityId,
                     GraphConstants.REL_AT_LOCATION,
                     "Calendar event at " + location,
-                    1.0, Map.of()
+                    1.0, icsRelProps
             ));
         }
     }

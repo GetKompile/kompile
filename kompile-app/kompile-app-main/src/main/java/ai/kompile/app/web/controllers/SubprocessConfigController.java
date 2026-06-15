@@ -221,31 +221,66 @@ public class SubprocessConfigController {
             ));
         }
 
+        // Validate the path is a real file, not a shell injection attempt
+        try {
+            Path resolved = Paths.get(javaPath).toRealPath();
+            String fileName = resolved.getFileName().toString().toLowerCase();
+            if (!fileName.equals("java") && !fileName.equals("java.exe")) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "valid", false,
+                        "error", "Path must point to a 'java' executable"
+                ));
+            }
+            javaPath = resolved.toString();
+        } catch (Exception e) {
+            return ResponseEntity.ok(Map.of(
+                    "valid", false,
+                    "error", "Invalid path: " + e.getMessage()
+            ));
+        }
+
+        Process process = null;
         try {
             ProcessBuilder pb = new ProcessBuilder(javaPath, "-version");
             pb.redirectErrorStream(true);
-            Process process = pb.start();
-            int exitCode = process.waitFor();
+            process = pb.start();
+            // Read output before waitFor to avoid pipe deadlock
+            String version = new String(process.getInputStream().readAllBytes());
+            if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return ResponseEntity.badRequest().body(Map.of(
+                        "valid", false,
+                        "error", "Java path validation timed out"
+                ));
+            }
+            int exitCode = process.exitValue();
 
             if (exitCode == 0) {
-                // Read version info
-                String version = new String(process.getInputStream().readAllBytes());
                 return ResponseEntity.ok(Map.of(
                         "valid", true,
                         "javaPath", javaPath,
                         "versionInfo", version.trim()
                 ));
             } else {
-                return ResponseEntity.ok(Map.of(
+                return ResponseEntity.badRequest().body(Map.of(
                         "valid", false,
                         "error", "Java path returned exit code " + exitCode
                 ));
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            if (process != null) process.destroyForcibly();
+            return ResponseEntity.status(503).body(Map.of(
+                    "valid", false,
+                    "error", "Validation interrupted"
+            ));
         } catch (Exception e) {
-            return ResponseEntity.ok(Map.of(
+            return ResponseEntity.badRequest().body(Map.of(
                     "valid", false,
                     "error", e.getMessage()
             ));
+        } finally {
+            if (process != null && process.isAlive()) process.destroyForcibly();
         }
     }
 
@@ -313,46 +348,72 @@ public class SubprocessConfigController {
 
         try {
             Path path = Paths.get(executablePath);
-            if (!Files.exists(path)) {
+
+            // Resolve symlinks and canonicalize to prevent traversal
+            Path resolved;
+            try {
+                resolved = path.toRealPath();
+            } catch (Exception e) {
                 return ResponseEntity.ok(Map.of(
                         "valid", false,
-                        "error", "File does not exist: " + executablePath
+                        "error", "File does not exist or cannot be resolved: " + executablePath
                 ));
             }
 
-            if (!Files.isExecutable(path)) {
+            // Validate executable name starts with "kompile" to prevent arbitrary command execution
+            String fileName = resolved.getFileName().toString().toLowerCase();
+            if (!fileName.startsWith("kompile")) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "valid", false,
+                        "error", "Executable must be a kompile binary (name must start with 'kompile')"
+                ));
+            }
+
+            if (!Files.isExecutable(resolved)) {
                 return ResponseEntity.ok(Map.of(
                         "valid", false,
                         "error", "File is not executable: " + executablePath
                 ));
             }
 
+            executablePath = resolved.toString();
+
             // Try to run the executable with --version or --help to verify it's valid
             ProcessBuilder pb = new ProcessBuilder(executablePath, "--version");
             pb.redirectErrorStream(true);
             Process process = pb.start();
+            try {
+                // Drain output before waitFor to avoid pipe deadlock
+                String output = new String(process.getInputStream().readAllBytes());
 
-            // Wait with timeout
-            boolean finished = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
+                boolean finished = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+                if (!finished) {
+                    process.destroyForcibly();
+                    return ResponseEntity.badRequest().body(Map.of(
+                            "valid", false,
+                            "error", "Executable timed out when running --version"
+                    ));
+                }
+
+                int exitCode = process.exitValue();
+
                 return ResponseEntity.ok(Map.of(
-                        "valid", false,
-                        "error", "Executable timed out when running --version"
+                        "valid", true,
+                        "executablePath", path.toAbsolutePath().toString(),
+                        "versionOutput", output.trim(),
+                        "exitCode", exitCode
                 ));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return ResponseEntity.status(503).body(Map.of(
+                        "valid", false,
+                        "error", "Validation interrupted"
+                ));
+            } finally {
+                if (process.isAlive()) process.destroyForcibly();
             }
-
-            String output = new String(process.getInputStream().readAllBytes());
-            int exitCode = process.exitValue();
-
-            return ResponseEntity.ok(Map.of(
-                    "valid", true,
-                    "executablePath", path.toAbsolutePath().toString(),
-                    "versionOutput", output.trim(),
-                    "exitCode", exitCode
-            ));
         } catch (Exception e) {
-            return ResponseEntity.ok(Map.of(
+            return ResponseEntity.badRequest().body(Map.of(
                     "valid", false,
                     "error", e.getMessage()
             ));
@@ -434,7 +495,7 @@ public class SubprocessConfigController {
                     String value = entry.getValue();
                     if (key != null && !key.isBlank() && value != null) {
                         System.setProperty(key, value);
-                        log.info("Set system property: {}={}", key, value);
+                        log.info("Set system property: {}={}", key, redactIfSensitive(key, value));
                     }
                 }
             }
@@ -572,7 +633,7 @@ public class SubprocessConfigController {
                     if (key != null && !key.isBlank()) {
                         if (value != null && !value.isBlank()) {
                             System.setProperty(key, value);
-                            log.info("Set: {}={}", key, value);
+                            log.info("Set: {}={}", key, redactIfSensitive(key, value));
                         } else {
                             System.clearProperty(key);
                             log.info("Cleared: {}", key);
@@ -1183,7 +1244,7 @@ public class SubprocessConfigController {
                     if (entry.getKey() != null && !entry.getKey().isBlank() && entry.getValue() != null) {
                         System.setProperty(entry.getKey(), entry.getValue());
                         systemPropsApplied.put(entry.getKey(), entry.getValue());
-                        log.info("Set system property: {}={}", entry.getKey(), entry.getValue());
+                        log.info("Set system property: {}={}", entry.getKey(), redactIfSensitive(entry.getKey(), entry.getValue()));
                     }
                 }
             }
@@ -1238,7 +1299,7 @@ public class SubprocessConfigController {
             log.info("Restarting subprocess with debug configuration...");
             log.info("Command prefix: {}", commandPrefix);
             log.info("JVM args: {}", jvmArgs);
-            log.info("Environment variables: {}", envVars);
+            log.info("Environment variables: {} keys set", envVars.size());
 
             boolean success = embeddingModel.restartWithUpdatedEnvironment();
 
@@ -1363,5 +1424,19 @@ public class SubprocessConfigController {
         public String debugMode;
         @Deprecated
         public Map<String, String> environmentVariables;
+    }
+
+    /**
+     * Redacts values for keys that look like they contain secrets (API keys, tokens, passwords).
+     */
+    private static String redactIfSensitive(String key, String value) {
+        if (key == null || value == null) return value;
+        String keyLower = key.toLowerCase();
+        if (keyLower.contains("key") || keyLower.contains("token") || keyLower.contains("secret")
+                || keyLower.contains("password") || keyLower.contains("credential")
+                || keyLower.contains("auth")) {
+            return value.length() > 4 ? value.substring(0, 4) + "****" : "****";
+        }
+        return value;
     }
 }

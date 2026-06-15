@@ -17,6 +17,8 @@
 package ai.kompile.modelmanager.llm.dynamic;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.*;
 
@@ -27,6 +29,8 @@ import java.util.*;
  * its input dependencies from other nodes.</p>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@Getter
+@Setter
 public class LlmGraphNodeConfig {
 
     private String nodeId;
@@ -68,20 +72,4 @@ public class LlmGraphNodeConfig {
         }
     }
 
-    // --- Getters and Setters ---
-
-    public String getNodeId() { return nodeId; }
-    public void setNodeId(String nodeId) { this.nodeId = nodeId; }
-    public String getStageId() { return stageId; }
-    public void setStageId(String stageId) { this.stageId = stageId; }
-    public List<String> getInputs() { return inputs; }
-    public void setInputs(List<String> inputs) { this.inputs = inputs; }
-    public boolean isEnabled() { return enabled; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
-    public String getModelOverrideId() { return modelOverrideId; }
-    public void setModelOverrideId(String modelOverrideId) { this.modelOverrideId = modelOverrideId; }
-    public Map<String, Object> getParameters() { return parameters; }
-    public void setParameters(Map<String, Object> parameters) { this.parameters = parameters; }
-    public String getCondition() { return condition; }
-    public void setCondition(String condition) { this.condition = condition; }
 }

@@ -354,7 +354,9 @@ public class SkillService {
         String maxStepsStr = fields.get("max_steps");
         if (maxStepsStr != null) {
             try { skill.maxSteps = Integer.parseInt(maxStepsStr.trim()); }
-            catch (NumberFormatException ignored) {}
+            catch (NumberFormatException e) {
+                log.debug("Invalid max_steps value '{}' in skill '{}', using default: {}", maxStepsStr, skill.name, e.getMessage());
+            }
         }
 
         String toolsStr = fields.get("tools");

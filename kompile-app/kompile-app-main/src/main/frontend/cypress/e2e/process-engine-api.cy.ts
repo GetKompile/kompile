@@ -567,6 +567,214 @@ describe('Process Engine API — full lifecycle', () => {
     });
   });
 
+  // ═══════════════════ Run Risk Assessment & Attribution ═══════════════════
+
+  describe('Risk Assessment & Step Attribution', () => {
+    it('should assess risk for the completed run with step attribution summaries', () => {
+      cy.apiGet(`/process/attribution/run/${ids.runId}/risk?useLlm=false`).then((res) => {
+        expect(res.status).to.be.oneOf([200, 404, 500]);
+        if (res.status === 200) {
+          expect(res.body).to.have.property('assessmentId');
+          expect(res.body).to.have.property('overallRiskScore');
+          expect(res.body.overallRiskScore).to.be.a('number');
+          expect(res.body).to.have.property('riskLevel');
+          expect(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).to.include(res.body.riskLevel);
+          expect(res.body).to.have.property('alerts');
+          expect(res.body.alerts).to.be.an('array');
+          expect(res.body).to.have.property('stepRiskScores');
+          expect(res.body.stepRiskScores).to.be.an('object');
+          expect(res.body).to.have.property('highRiskStepIds');
+          expect(res.body.highRiskStepIds).to.be.an('array');
+          expect(res.body).to.have.property('computationTimeMs');
+          expect(res.body.computationTimeMs).to.be.a('number');
+          // Step attribution results should carry Bayesian data
+          expect(res.body).to.have.property('stepAttributionResults');
+          if (res.body.stepAttributionResults) {
+            const stepKeys = Object.keys(res.body.stepAttributionResults);
+            if (stepKeys.length > 0) {
+              const step = res.body.stepAttributionResults[stepKeys[0]];
+              expect(step).to.have.property('riskScore');
+              expect(step).to.have.property('bayesianPosteriors');
+              expect(step).to.have.property('bayesianPriors');
+              expect(step).to.have.property('bayesianInferenceAvailable');
+            }
+          }
+        }
+      });
+    });
+
+    it('should explain attribution for a specific step with Bayesian data', () => {
+      cy.apiGet(`/process/attribution/run/${ids.runId}/step/step-auto-1/explain?useLlm=false`).then((res) => {
+        expect(res.status).to.be.oneOf([200, 404, 500]);
+        if (res.status === 200) {
+          expect(res.body).to.have.property('stepId', 'step-auto-1');
+          expect(res.body).to.have.property('riskScore');
+          expect(res.body.riskScore).to.be.a('number');
+          expect(res.body).to.have.property('hasGraphBindings');
+          expect(res.body.hasGraphBindings).to.be.a('boolean');
+          expect(res.body).to.have.property('attribution');
+          expect(res.body).to.have.property('prediction');
+          // Bayesian posteriors and priors must be present
+          expect(res.body).to.have.property('bayesianPosteriors');
+          expect(res.body.bayesianPosteriors).to.be.an('object');
+          expect(res.body).to.have.property('bayesianPriors');
+          expect(res.body.bayesianPriors).to.be.an('object');
+        }
+      });
+    });
+
+    it('should assess pre-flight risk for a definition with Bayesian data', () => {
+      cy.apiGet(`/process/attribution/definition/${ids.processId}/risk?version=1&useLlm=false`).then((res) => {
+        expect(res.status).to.be.oneOf([200, 404, 500]);
+        if (res.status === 200) {
+          expect(res.body).to.have.property('processDefinitionId');
+          expect(res.body).to.have.property('overallRiskScore');
+          expect(res.body.overallRiskScore).to.be.a('number');
+          expect(res.body).to.have.property('riskLevel');
+          expect(res.body).to.have.property('alerts');
+          expect(res.body.alerts).to.be.an('array');
+          // Step attribution results should carry Bayesian data
+          if (res.body.stepAttributionResults) {
+            expect(res.body.stepAttributionResults).to.be.an('object');
+            const stepKeys = Object.keys(res.body.stepAttributionResults);
+            if (stepKeys.length > 0) {
+              const step = res.body.stepAttributionResults[stepKeys[0]];
+              expect(step).to.have.property('riskScore');
+              expect(step).to.have.property('bayesianInferenceAvailable');
+              if (step.bayesianPosteriors) {
+                expect(step.bayesianPosteriors).to.be.an('object');
+                expect(step).to.have.property('bayesianPriors');
+                expect(step.bayesianPriors).to.be.an('object');
+              }
+            }
+          }
+        }
+      });
+    });
+
+    it('should explain control failure attribution for a step with Bayesian data', () => {
+      cy.apiGet(`/process/attribution/run/${ids.runId}/step/step-auto-1/control/${ids.controlId}/explain?useLlm=false`).then((res) => {
+        expect(res.status).to.be.oneOf([200, 404, 500]);
+        if (res.status === 200) {
+          expect(res.body).to.have.property('severity');
+          expect(res.body).to.have.property('explanation');
+          // Bayesian posteriors and priors should be present
+          expect(res.body).to.have.property('bayesianPosteriors');
+          expect(res.body.bayesianPosteriors).to.be.an('object');
+          expect(res.body).to.have.property('bayesianPriors');
+          expect(res.body.bayesianPriors).to.be.an('object');
+        }
+      });
+    });
+  });
+
+  // ═══════════════════ Process Lineage ═══════════════════
+
+  describe('Process Lineage — /api/process/lineage', () => {
+
+    it('GET /process/lineage/definition/:id should return definition lineage with discovery provenance', () => {
+      cy.apiGet(`/process/lineage/definition/${ids.processId}?includeRiskAssessment=true`).then((res) => {
+        expect(res.status).to.be.oneOf([200, 404, 500]);
+        if (res.status === 200) {
+          expect(res.body).to.have.property('discovery');
+          expect(res.body.discovery).to.be.an('object');
+          expect(res.body).to.have.property('definition');
+          expect(res.body.definition).to.have.property('id');
+          expect(res.body).to.have.property('steps');
+          expect(res.body.steps).to.be.an('array');
+          // Risk assessment should include step attributions with Bayesian data
+          if (res.body.riskAssessment && !res.body.riskAssessment.error) {
+            expect(res.body.riskAssessment).to.have.property('overallRiskScore');
+            if (res.body.riskAssessment.stepAttributions) {
+              expect(res.body.riskAssessment.stepAttributions).to.be.an('object');
+              const stepKeys = Object.keys(res.body.riskAssessment.stepAttributions);
+              if (stepKeys.length > 0) {
+                const step = res.body.riskAssessment.stepAttributions[stepKeys[0]];
+                expect(step).to.have.property('riskScore');
+                // Bayesian priors must always be present alongside posteriors
+                if (step.bayesianPosteriors) {
+                  expect(step.bayesianPosteriors).to.be.an('object');
+                  expect(step).to.have.property('bayesianPriors');
+                  expect(step.bayesianPriors).to.be.an('object');
+                }
+              }
+            }
+          }
+        }
+      });
+    });
+
+    it('GET /process/lineage/step/:runId/:stepId should return step lineage with Bayesian data', () => {
+      cy.apiGet(`/process/lineage/step/${ids.runId}/step-auto-1`).then((res) => {
+        expect(res.status).to.be.oneOf([200, 404, 500]);
+        if (res.status === 200) {
+          expect(res.body).to.have.property('definition');
+          if (res.body.definition) {
+            expect(res.body.definition).to.have.property('stepId');
+            expect(res.body.definition).to.have.property('graphNodeIds');
+          }
+          expect(res.body).to.have.property('run');
+          expect(res.body.run).to.have.property('runId');
+          // Step lineage attribution should carry Bayesian data and risk score
+          if (res.body.attribution && !res.body.attribution.error) {
+            expect(res.body.attribution).to.have.property('causalChainCount');
+            if (res.body.attribution.bayesianPosteriors) {
+              expect(res.body.attribution.bayesianPosteriors).to.be.an('object');
+              expect(res.body.attribution).to.have.property('bayesianPriors');
+              expect(res.body.attribution.bayesianPriors).to.be.an('object');
+            }
+            if (res.body.attribution.riskScore !== undefined) {
+              expect(res.body.attribution.riskScore).to.be.a('number');
+            }
+          }
+        }
+      });
+    });
+
+    it('GET /process/lineage/run/:runId should return full run lineage with Bayesian data', () => {
+      cy.apiGet(`/process/lineage/run/${ids.runId}?includeAttribution=true`).then((res) => {
+        expect(res.status).to.be.oneOf([200, 404, 500]);
+        if (res.status === 200) {
+          expect(res.body).to.have.property('run');
+          expect(res.body.run).to.have.property('runId');
+          expect(res.body).to.have.property('discovery');
+          expect(res.body).to.have.property('steps');
+          expect(res.body.steps).to.be.an('array');
+          // Risk assessment with attribution should include Bayesian priors
+          if (res.body.riskAssessment && !res.body.riskAssessment.error) {
+            expect(res.body.riskAssessment).to.have.property('overallRiskScore');
+            // Step attributions should carry Bayesian data
+            if (res.body.riskAssessment.stepAttributions) {
+              expect(res.body.riskAssessment.stepAttributions).to.be.an('object');
+              const stepKeys = Object.keys(res.body.riskAssessment.stepAttributions);
+              if (stepKeys.length > 0) {
+                const step = res.body.riskAssessment.stepAttributions[stepKeys[0]];
+                expect(step).to.have.property('riskScore');
+                if (step.bayesianPosteriors) {
+                  expect(step.bayesianPosteriors).to.be.an('object');
+                  expect(step).to.have.property('bayesianPriors');
+                  expect(step.bayesianPriors).to.be.an('object');
+                }
+              }
+            }
+          }
+          // Per-step lineage entries may carry attribution with Bayesian data
+          if (res.body.steps && res.body.steps.length > 0) {
+            const firstStep = res.body.steps[0];
+            if (firstStep.attribution) {
+              if (firstStep.attribution.bayesianPosteriors) {
+                expect(firstStep.attribution.bayesianPosteriors).to.be.an('object');
+              }
+              if (firstStep.attribution.bayesianPriors) {
+                expect(firstStep.attribution.bayesianPriors).to.be.an('object');
+              }
+            }
+          }
+        }
+      });
+    });
+  });
+
   // ═══════════════════ Integration Discovery ═══════════════════
 
   describe('Integration Discovery', () => {

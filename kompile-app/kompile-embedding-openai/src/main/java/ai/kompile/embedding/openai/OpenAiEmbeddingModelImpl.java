@@ -102,15 +102,14 @@ public class OpenAiEmbeddingModelImpl implements EmbeddingModel {
 
         List<float[]> listOfFloatArrayEmbeddings = this.springAiEmbeddingModel.embed(texts);
 
+        if (listOfFloatArrayEmbeddings == null || listOfFloatArrayEmbeddings.isEmpty()) {
+            logger.error("OpenAI embedding returned null or empty for a list of texts.");
+            return Nd4j.empty(DataType.FLOAT);
+        }
+
         float[][] arr = new float[listOfFloatArrayEmbeddings.size()][springAiEmbeddingModel.dimensions()];
         for(int i = 0; i < arr.length; i++) {
             arr[i] = listOfFloatArrayEmbeddings.get(i);
-        }
-
-        if (listOfFloatArrayEmbeddings == null) {
-            logger.error("OpenAI embedding returned null for a list of texts.");
-            return Nd4j.empty(DataType.FLOAT);
-
         }
 
         return Nd4j.create(arr);

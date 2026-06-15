@@ -16,6 +16,8 @@
 
 package ai.kompile.app.config;
 
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
@@ -39,8 +41,10 @@ import java.util.Map;
  *   <li><b>JVM Tools:</b> native-memory-tracking, verbose-jni, extensive-error-reports</li>
  * </ul>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConfigurationProperties(prefix = "kompile.subprocess.debug")
+@Getter
+@Setter
 public class SubprocessDebugConfig {
 
     /**
@@ -126,24 +130,6 @@ public class SubprocessDebugConfig {
 
     /** Environment variables to set for debugging */
     private Map<String, String> environmentVariables = new HashMap<>();
-
-    // Getters and setters
-    public DebugMode getMode() { return mode; }
-    public void setMode(DebugMode mode) { this.mode = mode; }
-
-    public String getLogDirectory() { return logDirectory; }
-    public void setLogDirectory(String logDirectory) { this.logDirectory = logDirectory; }
-
-    public boolean isDisableJit() { return disableJit; }
-    public void setDisableJit(boolean disableJit) { this.disableJit = disableJit; }
-
-    public List<String> getExtraJvmArgs() { return extraJvmArgs; }
-    public void setExtraJvmArgs(List<String> extraJvmArgs) { this.extraJvmArgs = extraJvmArgs; }
-
-    public Map<String, String> getEnvironmentVariables() { return environmentVariables; }
-    public void setEnvironmentVariables(Map<String, String> environmentVariables) {
-        this.environmentVariables = environmentVariables;
-    }
 
     /**
      * Build the command prefix for the current debug mode.

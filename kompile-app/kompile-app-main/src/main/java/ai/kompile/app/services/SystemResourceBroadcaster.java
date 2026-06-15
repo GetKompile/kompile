@@ -60,8 +60,8 @@ public class SystemResourceBroadcaster {
     private final AtomicBoolean broadcasting = new AtomicBoolean(false);
 
     // Store previous CPU measurements for calculating usage
-    private long previousCpuTime = 0;
-    private long previousTimestamp = 0;
+    private volatile long previousCpuTime = 0;
+    private volatile long previousTimestamp = 0;
 
     @Autowired
     public SystemResourceBroadcaster(@Autowired(required = false) SimpMessagingTemplate messagingTemplate) {

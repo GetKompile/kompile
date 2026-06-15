@@ -116,8 +116,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
     // PERFORMANCE: Reusable IndexWriter for incremental keyword indexing
     // Instead of rebuilding the entire index on each batch, we keep the writer open
-    private IndexWriter keywordIndexWriter;
-    private Directory keywordIndexDirectory;
+    private volatile IndexWriter keywordIndexWriter;
+    private volatile Directory keywordIndexDirectory;
     private final Object keywordWriterLock = new Object();
 
     // PERFORMANCE: Track documents added since last commit for delayed commits
@@ -1730,7 +1730,9 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             newLuceneDoc.add(new StoredField(Constants.RAW, newContent));
 
             // Preserve other metadata fields
-            Map<String, Object> metadata = (Map<String, Object>) existingDocMap.get("metadata");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> metadata = existingDocMap.get("metadata") instanceof Map<?,?> m
+                    ? (Map<String, Object>) m : null;
             if (metadata != null) {
                 ObjectNode metadataNode = objectMapper.createObjectNode();
                 for (Map.Entry<String, Object> entry : metadata.entrySet()) {
@@ -2051,7 +2053,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         long batchStart = System.currentTimeMillis();
 
         // Update status - embedding phase
-        int progressPercent = (totalDocs > 0) ? (int) ((documentsProcessed.get() * 100) / totalDocs) : 0;
+        int progressPercent = (totalDocs > 0) ? (int) ((documentsProcessed.get() * 100L) / totalDocs) : 0;
         progressPercent = Math.min(progressPercent, 99);
 
         String etaStr = calculateEta(documentsProcessed.get(), totalDocs, startTime);
@@ -2102,7 +2104,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 if (embeddingMatrix != null && !embeddingMatrix.wasClosed()) {
                     try {
                         embeddingMatrix.close();
-                    } catch (Exception ignored) {
+                    } catch (Exception closeEx) {
+                        logger.warn("Failed to close embedding matrix after batch embedding error: {}", closeEx.getMessage());
                     }
                 }
                 embeddingMatrix = null;
@@ -2145,7 +2148,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         double batchDocsPerSec = batchTime > 0 ? (batchSize * 1000.0 / batchTime) : 0;
 
         // Update status - batch complete
-        int completedPercent = (totalDocs > 0) ? (int) ((documentsProcessed.get() * 100) / totalDocs) : 0;
+        int completedPercent = (totalDocs > 0) ? (int) ((documentsProcessed.get() * 100L) / totalDocs) : 0;
         completedPercent = Math.min(completedPercent, 99);
         currentJobStatus = new JobStatus(JobState.RUNNING,
                 String.format("Batch %d/%d complete: %d/%d docs (%.1f docs/sec)%s",

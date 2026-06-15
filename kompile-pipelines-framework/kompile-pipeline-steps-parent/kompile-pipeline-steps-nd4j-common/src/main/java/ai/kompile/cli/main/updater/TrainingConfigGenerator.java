@@ -23,12 +23,16 @@ import org.nd4j.autodiff.samediff.TrainingConfig;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.learning.config.IUpdater;
 import org.nd4j.linalg.learning.regularization.Regularization;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "generate-training-config",mixinStandardHelpOptions = false,description = "Generates an updater configuration. Used in combination with samediff training to specify an updater to use.")
 public class TrainingConfigGenerator implements Callable<Integer> {
+
+    private static final Logger log = LoggerFactory.getLogger(TrainingConfigGenerator.class);
     @CommandLine.Option(names = {"--l2"},description = "l2 value for regularization",required = false)
     private Double l2;
 
@@ -90,10 +94,10 @@ public class TrainingConfigGenerator implements Callable<Integer> {
         if(applyLearningRateDuringWeightDecay != null && weightDecayCoefficient != null) {
             trainingConfigBuilder.weightDecay(weightDecayCoefficient,applyLearningRateDuringWeightDecay);
         } else if(applyLearningRateDuringWeightDecay != null && weightDecayCoefficient == null) {
-            System.err.println("Specified whether to apply weight decay but no coefficient. Please specify both. Exiting.");
+            log.error("Specified whether to apply weight decay but no coefficient. Please specify both.");
             return 1;
         } else if(weightDecayCoefficient != null && applyLearningRateDuringWeightDecay == null) {
-            System.err.println("Specified weight decay coefficient but not whether to apply weight decay. Please specify both. Exiting.");
+            log.error("Specified weight decay coefficient but not whether to apply weight decay. Please specify both.");
             return 1;
         }
 

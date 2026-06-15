@@ -531,7 +531,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
     }
 
     private String getDocumentId(RetrievedDoc chunk) {
-        if (chunk.getMetadata() != null && chunk.getMetadata().containsKey("documentId")) {
+        if (chunk.getMetadata() != null && chunk.getMetadata().get("documentId") != null) {
             return chunk.getMetadata().get("documentId").toString();
         }
         return chunk.getId();

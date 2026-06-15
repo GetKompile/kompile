@@ -106,16 +106,15 @@ public class SameDiffLLMService {
      * Download a model set using the model manager layer.
      */
     public void downloadModelSet(String setId) {
-        if (downloadingModels.containsKey(setId)) {
+        if (downloadingModels.putIfAbsent(setId, true) != null) {
             throw new IllegalStateException("Model set " + setId + " is already being downloaded");
         }
 
         LlmModelSet modelSet = LlmModelSet.getModelSet(setId);
         if (modelSet == null) {
+            downloadingModels.remove(setId);
             throw new IllegalArgumentException("Unknown model set: " + setId);
         }
-
-        downloadingModels.put(setId, true);
         DownloadProgress progress = new DownloadProgress(setId, modelSet.getComponents().size());
         downloadProgressMap.put(setId, progress);
 

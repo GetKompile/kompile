@@ -125,9 +125,11 @@ public class ToolDefinitionService {
 
     /**
      * Discovers built-in tools and merges them with persisted custom definitions.
+     * Builds the new cache in a local variable first, then swaps it in atomically
+     * to minimise the window during which callers could observe an empty cache.
      */
     public void discoverAndMergeTools() {
-        unifiedToolCache.clear();
+        Map<String, EnhancedToolDefinition> newCache = new ConcurrentHashMap<>();
 
         // 1. Discover built-in tools from @Tool annotations
         Map<String, EnhancedToolDefinition> builtInTools = discoverBuiltInTools();
@@ -143,18 +145,23 @@ public class ToolDefinitionService {
             if (persisted != null) {
                 // Merge persisted metadata into built-in tool
                 EnhancedToolDefinition merged = mergeDefinitions(builtIn, persisted);
-                unifiedToolCache.put(merged.getName(), merged);
+                newCache.put(merged.getName(), merged);
             } else {
-                unifiedToolCache.put(builtIn.getName(), builtIn);
+                newCache.put(builtIn.getName(), builtIn);
             }
         }
 
         // 4. Add custom tools that are not built-in
         for (EnhancedToolDefinition persisted : persistedTools) {
-            if (!unifiedToolCache.containsKey(persisted.getName())) {
-                unifiedToolCache.put(persisted.getName(), persisted);
+            if (!newCache.containsKey(persisted.getName())) {
+                newCache.put(persisted.getName(), persisted);
             }
         }
+
+        // Atomic swap: replace the live cache in a single bulk operation so
+        // concurrent readers never observe an empty cache.
+        unifiedToolCache.clear();
+        unifiedToolCache.putAll(newCache);
 
         logger.info("Unified tool cache contains {} tools", unifiedToolCache.size());
     }
@@ -667,8 +674,18 @@ public class ToolDefinitionService {
             Class<?> paramType = param.getType();
 
             if (paramType.isRecord()) {
-                // Extract from record components
-                for (RecordComponent component : paramType.getRecordComponents()) {
+                // Extract from record components.
+                // Wrap in try/catch(Throwable) because GraalVM native image throws
+                // com.oracle.svm.core.jdk.UnsupportedFeatureError (extends Error, not Exception)
+                // when getRecordComponents() is called without native-image reflection config.
+                RecordComponent[] components;
+                try {
+                    components = paramType.getRecordComponents();
+                } catch (Throwable t) {
+                    logger.warn("getRecordComponents() not available for {} in native image; skipping record fields", paramType.getName());
+                    components = new RecordComponent[0];
+                }
+                for (RecordComponent component : components) {
                     ObjectNode propSchema = createPropertySchema(component.getType());
 
                     ToolParam toolParam = component.getAnnotation(ToolParam.class);
@@ -727,7 +744,17 @@ public class ToolDefinitionService {
             Class<?> paramType = param.getType();
 
             if (paramType.isRecord()) {
-                for (RecordComponent component : paramType.getRecordComponents()) {
+                // Wrap in try/catch(Throwable) because GraalVM native image throws
+                // com.oracle.svm.core.jdk.UnsupportedFeatureError (extends Error, not Exception)
+                // when getRecordComponents() is called without native-image reflection config.
+                RecordComponent[] components;
+                try {
+                    components = paramType.getRecordComponents();
+                } catch (Throwable t) {
+                    logger.warn("getRecordComponents() not available for {} in native image; skipping record fields", paramType.getName());
+                    components = new RecordComponent[0];
+                }
+                for (RecordComponent component : components) {
                     ParameterDefinition.ParameterDefinitionBuilder builder = ParameterDefinition.builder()
                             .name(component.getName())
                             .displayName(formatDisplayName(component.getName()))

@@ -25,6 +25,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -259,4 +260,68 @@ public interface GraphNodeRepository extends JpaRepository<GraphNode, Long> {
      */
     @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId AND n.nodeType = 'ENTITY' AND n.kgEmbedding IS NULL")
     List<GraphNode> findEntitiesWithoutKgEmbedding(@Param("factSheetId") Long factSheetId);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAINTENANCE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Find active (non-stale) entity nodes in a fact sheet
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId AND (n.stale IS NULL OR n.stale = false)")
+    List<GraphNode> findActiveEntities(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Count active (non-stale) nodes in a fact sheet
+     */
+    @Query("SELECT COUNT(n) FROM GraphNode n WHERE n.factSheetId = :factSheetId AND (n.stale IS NULL OR n.stale = false)")
+    long countActiveNodes(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Find orphan entity nodes (no edges connecting them) in a fact sheet
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId " +
+           "AND n.nodeType = 'ENTITY' AND (n.stale IS NULL OR n.stale = false) " +
+           "AND NOT EXISTS (SELECT e FROM GraphEdge e WHERE e.sourceNode = n OR e.targetNode = n)")
+    List<GraphNode> findGraphOrphanEntities(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Find entities with low confidence in a fact sheet
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId " +
+           "AND (n.stale IS NULL OR n.stale = false) " +
+           "AND n.confidence IS NOT NULL AND n.confidence < :minConfidence")
+    List<GraphNode> findLowConfidenceEntities(
+        @Param("factSheetId") Long factSheetId,
+        @Param("minConfidence") double minConfidence
+    );
+
+    /**
+     * Find nodes whose TTL has expired
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId " +
+           "AND (n.stale IS NULL OR n.stale = false) " +
+           "AND n.validUntil IS NOT NULL AND n.validUntil < :now")
+    List<GraphNode> findExpiredNodes(
+        @Param("factSheetId") Long factSheetId,
+        @Param("now") LocalDateTime now
+    );
+
+    /**
+     * Bulk mark nodes as stale by their database IDs
+     */
+    @Modifying
+    @Query("UPDATE GraphNode n SET n.stale = true, n.staleAt = :now WHERE n.id IN :ids")
+    void bulkMarkStale(@Param("ids") List<Long> ids, @Param("now") LocalDateTime now);
+
+    /**
+     * Hard-delete nodes that were marked stale before the grace cutoff
+     */
+    @Modifying
+    @Query("DELETE FROM GraphNode n WHERE n.factSheetId = :factSheetId " +
+           "AND n.stale = true AND n.staleAt IS NOT NULL AND n.staleAt < :graceCutoff")
+    int hardDeleteStaleNodes(
+        @Param("factSheetId") Long factSheetId,
+        @Param("graceCutoff") LocalDateTime graceCutoff
+    );
 }

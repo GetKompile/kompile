@@ -27,7 +27,6 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.EqualsAndHashCode;
-import lombok.Singular;
 import lombok.ToString;
 
 import java.util.*;
@@ -49,21 +48,18 @@ public class LLMStepConfig implements StepConfig {
     private String modelUri;
     private String tokenizerUri;
     private String tokenizerType;
-    @Singular("tokenizerConfigEntry") // Lombok will generate addTokenizerConfigEntry for builder
     private Map<String, String> tokenizerConfig;
 
     private String promptInputName;
     private String responseOutputName;
     private String toolCallRequestOutputName;
     private String toolCallResponseInputName;
-    @Singular("toolDefinition")
     private List<PipelineToolDefinition> toolDefinitions;
 
     private ToolChoiceMode toolChoice;
     private String specificToolNameForCall;
     private ToolCallOutputFormat toolCallOutputFormat;
 
-    @Singular("generationParameterEntry") // Lombok will generate addGenerationParameterEntry for builder
     private Map<String, Object> generationParameters;
     private String conversationContextName;
 

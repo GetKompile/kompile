@@ -914,7 +914,13 @@ public class VectorPopulationSubprocessLauncher {
      */
     private void watchCompletion(VectorPopulationHandle handle) {
         try {
-            int exitCode = handle.getProcess().waitFor();
+            boolean exited = handle.getProcess().waitFor(120, TimeUnit.MINUTES);
+            if (!exited) {
+                logger.error("Vector population subprocess {} timed out after 120 minutes, destroying", handle.getTaskId());
+                handle.getProcess().destroyForcibly();
+                return;
+            }
+            int exitCode = handle.getProcess().exitValue();
             logger.info("Vector population subprocess {} exited with code: {}", handle.getTaskId(), exitCode);
 
             handleCompletion(handle, exitCode);
@@ -936,242 +942,267 @@ public class VectorPopulationSubprocessLauncher {
             logger.debug("Received subprocess message: type={}, taskId={}",
                     message.getClass().getSimpleName(), handle.getTaskId());
 
-            if (message instanceof SubprocessMessage.Progress progress) {
-                handle.updateProgress(progress.phase(), progress.progressPercent(), progress.message());
-                warnedTaskIds.remove(handle.getTaskId());
+            // onFailed needs an early-return path; use a flag rather than restructuring further
+            final boolean[] earlyReturn = {false};
 
-                // Forward to progress tracker
-                if (progressTracker != null) {
-                    VectorPopulationStats stats = buildStatsFromProgress(progress);
-                    progressTracker.updateProgress(
-                            handle.getTaskId(),
-                            mapPhaseToEnum(progress.phase()),
-                            progress.progressPercent(),
-                            progress.currentStep(),
-                            progress.message(),
-                            stats);
-                }
+            SubprocessMessage.dispatch(message, new SubprocessMessage.Handler() {
+                @Override
+                public void onProgress(SubprocessMessage.Progress progress) {
+                    handle.updateProgress(progress.phase(), progress.progressPercent(), progress.message());
+                    warnedTaskIds.remove(handle.getTaskId());
 
-                if (ingestProgressTracker != null) {
-                    String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-                    IngestStats ingestStats = buildIngestStatsFromProgress(progress, handle.getTaskId());
-                    IngestPhase ingestPhase = mapPhaseToIngestPhase(progress.phase());
-                    ingestProgressTracker.updateProgress(
-                            handle.getTaskId(),
-                            displayName,
-                            ingestPhase,
-                            progress.progressPercent(),
-                            progress.currentStep(),
-                            progress.message(),
-                            ingestStats);
-                }
-
-                forwardProgress(handle, progress);
-            } else if (message instanceof SubprocessMessage.PhaseTransition transition) {
-                handle.setCurrentPhase(transition.toPhase());
-                handle.updateHeartbeat();
-                logger.info("Task {} phase transition: {} -> {}",
-                        handle.getTaskId(), transition.fromPhase(), transition.toPhase());
-
-                // Track model loading timing based on phase transitions
-                if (opTimingService != null) {
-                    String toPhase = transition.toPhase() != null ? transition.toPhase().toUpperCase() : "";
-                    String fromPhase = transition.fromPhase() != null ? transition.fromPhase().toUpperCase() : "";
-
-                    // Record model load start when entering LOADING or MODEL_LOADING phase
-                    if (toPhase.equals("LOADING") || toPhase.equals("MODEL_LOADING") || toPhase.equals("INITIALIZING")) {
-                        opTimingService.recordModelLoadStart(handle.getTaskId(), "embedding-model");
+                    // Forward to progress tracker
+                    if (progressTracker != null) {
+                        VectorPopulationStats stats = buildStatsFromProgress(progress);
+                        progressTracker.updateProgress(
+                                handle.getTaskId(),
+                                mapPhaseToEnum(progress.phase()),
+                                progress.progressPercent(),
+                                progress.currentStep(),
+                                progress.message(),
+                                stats);
                     }
-                    // Record model load complete when leaving LOADING phase (transitioning to EMBEDDING)
-                    else if ((fromPhase.equals("LOADING") || fromPhase.equals("MODEL_LOADING") || fromPhase.equals("INITIALIZING"))
-                            && (toPhase.equals("EMBEDDING") || toPhase.equals("INDEXING") || toPhase.equals("PROCESSING"))) {
-                        opTimingService.recordModelLoadComplete(handle.getTaskId());
+
+                    if (ingestProgressTracker != null) {
+                        String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
+                        IngestStats ingestStats = buildIngestStatsFromProgress(progress, handle.getTaskId());
+                        IngestPhase ingestPhase = mapPhaseToIngestPhase(progress.phase());
+                        ingestProgressTracker.updateProgress(
+                                handle.getTaskId(),
+                                displayName,
+                                ingestPhase,
+                                progress.progressPercent(),
+                                progress.currentStep(),
+                                progress.message(),
+                                ingestStats);
                     }
+
+                    forwardProgress(handle, progress);
                 }
 
-                // Forward phase transition to tracker
-                if (progressTracker != null) {
-                    progressTracker.updateProgress(
-                            handle.getTaskId(),
-                            mapPhaseToEnum(transition.toPhase()),
-                            0,
+                @Override
+                public void onPhaseTransition(SubprocessMessage.PhaseTransition transition) {
+                    handle.setCurrentPhase(transition.toPhase());
+                    handle.updateHeartbeat();
+                    logger.info("Task {} phase transition: {} -> {}",
+                            handle.getTaskId(), transition.fromPhase(), transition.toPhase());
+
+                    // Track model loading timing based on phase transitions
+                    if (opTimingService != null) {
+                        String toPhase = transition.toPhase() != null ? transition.toPhase().toUpperCase() : "";
+                        String fromPhase = transition.fromPhase() != null ? transition.fromPhase().toUpperCase() : "";
+
+                        // Record model load start when entering LOADING or MODEL_LOADING phase
+                        if (toPhase.equals("LOADING") || toPhase.equals("MODEL_LOADING") || toPhase.equals("INITIALIZING")) {
+                            opTimingService.recordModelLoadStart(handle.getTaskId(), "embedding-model");
+                        }
+                        // Record model load complete when leaving LOADING phase (transitioning to EMBEDDING)
+                        else if ((fromPhase.equals("LOADING") || fromPhase.equals("MODEL_LOADING") || fromPhase.equals("INITIALIZING"))
+                                && (toPhase.equals("EMBEDDING") || toPhase.equals("INDEXING") || toPhase.equals("PROCESSING"))) {
+                            opTimingService.recordModelLoadComplete(handle.getTaskId());
+                        }
+                    }
+
+                    // Forward phase transition to tracker
+                    if (progressTracker != null) {
+                        progressTracker.updateProgress(
+                                handle.getTaskId(),
+                                mapPhaseToEnum(transition.toPhase()),
+                                0,
+                                "Starting " + transition.toPhase().toLowerCase(),
+                                "Phase transition: " + transition.fromPhase() + " -> " + transition.toPhase(),
+                                null);
+                    }
+
+                    if (ingestProgressTracker != null) {
+                        String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
+                        IngestPhase ingestPhase = mapPhaseToIngestPhase(transition.toPhase());
+                        IngestStats ingestStats = IngestStats.builder()
+                                .subprocessRuntimeInfo(
+                                        IngestProgressUpdate.SubprocessRuntimeInfo.forProcessMode("SUBPROCESS"))
+                                .build();
+                        ingestProgressTracker.updateProgress(
+                                handle.getTaskId(),
+                                displayName,
+                                ingestPhase,
+                                0,
+                                "Starting " + transition.toPhase().toLowerCase(),
+                                "Phase transition: " + transition.fromPhase() + " -> " + transition.toPhase(),
+                                ingestStats);
+                    }
+
+                    broadcastProgress(handle.getTaskId(), transition.toPhase(), 0,
                             "Starting " + transition.toPhase().toLowerCase(),
                             "Phase transition: " + transition.fromPhase() + " -> " + transition.toPhase(),
                             null);
+                    // Broadcast phase transition with duration to WebSocket
+                    if (heartbeatBroadcaster != null) {
+                        heartbeatBroadcaster.broadcastPhaseTransition(handle.getTaskId(), "vectorPopulation",
+                                transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
+                    }
+                    // Forward phase transition to scheduler for GPU yield/reacquire
+                    if (resourceScheduler != null) {
+                        var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.VECTOR_POPULATION;
+                        boolean requiresGpu = profile.phaseRequiresGpu(transition.toPhase());
+                        long gpuMem = profile.gpuMemoryForPhase(transition.toPhase());
+                        resourceScheduler.reportPhaseTransition(handle.getTaskId(), transition.toPhase(), requiresGpu, gpuMem);
+                    }
                 }
 
-                if (ingestProgressTracker != null) {
-                    String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-                    IngestPhase ingestPhase = mapPhaseToIngestPhase(transition.toPhase());
-                    IngestStats ingestStats = IngestStats.builder()
-                            .subprocessRuntimeInfo(
-                                    IngestProgressUpdate.SubprocessRuntimeInfo.forProcessMode("SUBPROCESS"))
-                            .build();
-                    ingestProgressTracker.updateProgress(
-                            handle.getTaskId(),
-                            displayName,
-                            ingestPhase,
-                            0,
-                            "Starting " + transition.toPhase().toLowerCase(),
-                            "Phase transition: " + transition.fromPhase() + " -> " + transition.toPhase(),
-                            ingestStats);
+                @Override
+                public void onHeartbeat(SubprocessMessage.Heartbeat heartbeat) {
+                    // Record startup complete on first heartbeat (indicates subprocess is up and running)
+                    if (opTimingService != null && !handle.isStartupComplete()) {
+                        opTimingService.recordSubprocessStartupComplete(handle.getTaskId());
+                        handle.setStartupComplete(true);
+                    }
+                    handle.updateHeartbeat(heartbeat);
+                    logger.debug("Task {} heartbeat: uptime={}ms, heap={}%, offHeap={}%, gpu={}%",
+                            handle.getTaskId(), heartbeat.uptimeMs(),
+                            String.format("%.1f", heartbeat.memoryUsagePercent()),
+                            String.format("%.1f", heartbeat.offHeapUsagePercent()),
+                            String.format("%.1f", heartbeat.gpuUsagePercent()));
+                    // Broadcast heartbeat memory data to WebSocket
+                    if (heartbeatBroadcaster != null) {
+                        heartbeatBroadcaster.broadcastHeartbeat(handle.getTaskId(), "vectorPopulation", heartbeat);
+                    }
                 }
 
-                broadcastProgress(handle.getTaskId(), transition.toPhase(), 0,
-                        "Starting " + transition.toPhase().toLowerCase(),
-                        "Phase transition: " + transition.fromPhase() + " -> " + transition.toPhase(),
-                        null);
-                // Broadcast phase transition with duration to WebSocket
-                if (heartbeatBroadcaster != null) {
-                    heartbeatBroadcaster.broadcastPhaseTransition(handle.getTaskId(), "vectorPopulation",
-                            transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
-                }
-                // Forward phase transition to scheduler for GPU yield/reacquire
-                if (resourceScheduler != null) {
-                    var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.VECTOR_POPULATION;
-                    boolean requiresGpu = profile.phaseRequiresGpu(transition.toPhase());
-                    long gpuMem = profile.gpuMemoryForPhase(transition.toPhase());
-                    resourceScheduler.reportPhaseTransition(handle.getTaskId(), transition.toPhase(), requiresGpu, gpuMem);
-                }
-            } else if (message instanceof SubprocessMessage.Heartbeat heartbeat) {
-                // Record startup complete on first heartbeat (indicates subprocess is up and running)
-                if (opTimingService != null && !handle.isStartupComplete()) {
-                    opTimingService.recordSubprocessStartupComplete(handle.getTaskId());
-                    handle.setStartupComplete(true);
-                }
-                handle.updateHeartbeat(heartbeat);
-                logger.debug("Task {} heartbeat: uptime={}ms, heap={}%, offHeap={}%, gpu={}%",
-                        handle.getTaskId(), heartbeat.uptimeMs(),
-                        String.format("%.1f", heartbeat.memoryUsagePercent()),
-                        String.format("%.1f", heartbeat.offHeapUsagePercent()),
-                        String.format("%.1f", heartbeat.gpuUsagePercent()));
-                // Broadcast heartbeat memory data to WebSocket
-                if (heartbeatBroadcaster != null) {
-                    heartbeatBroadcaster.broadcastHeartbeat(handle.getTaskId(), "vectorPopulation", heartbeat);
-                }
-            } else if (message instanceof SubprocessMessage.Log log) {
-                // Forward structured subprocess logs to UI (in addition to raw stderr/stdout
-                // forwarding)
-                if (progressTracker != null) {
-                    progressTracker.sendLog(handle.getTaskId(), log.source(), log.level(), log.message());
-                }
-                if (ingestProgressTracker != null) {
-                    ingestProgressTracker.sendLog(handle.getTaskId(), log.source(), log.level(), log.message());
-                }
-            } else if (message instanceof SubprocessMessage.Completed completed) {
-                logger.info("Task {} completed: {} docs embedded and indexed",
-                        handle.getTaskId(), completed.documentsIndexed());
-
-                // Record subprocess completion for timing
-                if (opTimingService != null) {
-                    opTimingService.recordSubprocessComplete(handle.getTaskId(), true);
-                }
-
-                handle.getResultFuture().complete(VectorPopulationResult.success(
-                        handle.getTaskId(), completed.documentsLoaded(), completed.chunksEmbedded(),
-                        completed.documentsIndexed(), completed.totalDurationMs(), handle.getVectorIndexPath()));
-
-                // Forward completion to tracker
-                if (progressTracker != null) {
-                    VectorPopulationStats finalStats = new VectorPopulationStats(
-                            completed.documentsLoaded(),
-                            completed.chunksCreated(),
-                            completed.chunksEmbedded(),
-                            completed.documentsIndexed(),
-                            completed.documentsLoaded(),
-                            completed.tokensProcessed(),
-                            completed.totalTokensInIndex(),
-                            completed.totalDurationMs(),
-                            completed.documentsIndexed() > 0 && completed.totalDurationMs() > 0
-                                    ? (completed.documentsIndexed() * 1000.0 / completed.totalDurationMs())
-                                    : 0,
-                            0,
-                            null,
-                            null,
-                            null,
-                            null, // batchHistory - not available on completion
-                            IngestProgressUpdate.SubprocessRuntimeInfo.forProcessMode("SUBPROCESS"));
-                    progressTracker.completeTask(handle.getTaskId(), finalStats);
-                }
-
-                if (ingestProgressTracker != null) {
-                    String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-                    IngestStats ingestStats = buildIngestStatsFromCompleted(completed);
-                    ingestProgressTracker.completeTask(handle.getTaskId(), displayName, ingestStats);
-                }
-
-                forwardCompletion(handle, completed);
-                closeSubprocessLog(handle, "COMPLETED", 0, null, false, false);
-            } else if (message instanceof SubprocessMessage.Failed failed) {
-                logger.error("Task {} failed in phase {}: {}",
-                        handle.getTaskId(), failed.phase(), failed.errorMessage());
-
-                // Determine the failure reason to decide if we should restart
-                SubprocessRestartManager.FailureReason failureReason =
-                        determineFailureReason(failed.errorMessage(), failed.errorType());
-
-                // Check if this is a restartable failure (OOM or batch size too large)
-                boolean isRestartableFailure = failureReason == SubprocessRestartManager.FailureReason.OUT_OF_MEMORY ||
-                        failureReason == SubprocessRestartManager.FailureReason.BATCH_SIZE_TOO_LARGE;
-
-                if (isRestartableFailure) {
-                    // Store the failure reason for handleCompletion to use
-                    handle.setOomDetected(true);  // Reuse this flag for any restartable failure
-                    handle.setCurrentPhase(failed.phase());
-                    handle.setFailureReason(failureReason);  // Store the actual reason
-
-                    String recoveryType = failureReason == SubprocessRestartManager.FailureReason.BATCH_SIZE_TOO_LARGE
-                            ? "BATCH SIZE TOO LARGE" : "OOM";
-                    String recoveryAction = failureReason == SubprocessRestartManager.FailureReason.BATCH_SIZE_TOO_LARGE
-                            ? "reducing batch size by 75%" : "adjusting memory settings";
-
-                    logger.warn("{} detected via protocol message for task {} - " +
-                            "NOT marking as failed yet, will attempt restart after process exit ({})",
-                            recoveryType, handle.getTaskId(), recoveryAction);
-
-                    // Send restart notification to UI
+                @Override
+                public void onLog(SubprocessMessage.Log log) {
+                    // Forward structured subprocess logs to UI (in addition to raw stderr/stdout forwarding)
+                    if (progressTracker != null) {
+                        progressTracker.sendLog(handle.getTaskId(), log.source(), log.level(), log.message());
+                    }
                     if (ingestProgressTracker != null) {
-                        String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-                        ingestProgressTracker.sendLog(handle.getTaskId(), "SYSTEM", "WARN",
-                                "[ADAPTIVE RECOVERY] " + recoveryType + " detected during " + failed.phase() +
-                                " - subprocess will restart with " + recoveryAction);
+                        ingestProgressTracker.sendLog(handle.getTaskId(), log.source(), log.level(), log.message());
+                    }
+                }
+
+                @Override
+                public void onCompleted(SubprocessMessage.Completed completed) {
+                    logger.info("Task {} completed: {} docs embedded and indexed",
+                            handle.getTaskId(), completed.documentsIndexed());
+
+                    // Record subprocess completion for timing
+                    if (opTimingService != null) {
+                        opTimingService.recordSubprocessComplete(handle.getTaskId(), true);
                     }
 
-                    // Broadcast warning to WebSocket (but not as failure)
-                    broadcastProgress(handle.getTaskId(), "RECOVERY_SCHEDULED",
-                            handle.getProgressPercent(),
-                            "Adaptive Recovery",
-                            recoveryType + " detected during " + failed.phase() + " - " + recoveryAction,
-                            Map.of("phase", failed.phase(),
-                                   "failureReason", failureReason.name(),
-                                   "isRecovery", true));
+                    handle.getResultFuture().complete(VectorPopulationResult.success(
+                            handle.getTaskId(), completed.documentsLoaded(), completed.chunksEmbedded(),
+                            completed.documentsIndexed(), completed.totalDurationMs(), handle.getVectorIndexPath()));
 
-                    // DON'T complete result future or fail task - let handleCompletion do it
-                    return;
+                    // Forward completion to tracker
+                    if (progressTracker != null) {
+                        VectorPopulationStats finalStats = new VectorPopulationStats(
+                                completed.documentsLoaded(),
+                                completed.chunksCreated(),
+                                completed.chunksEmbedded(),
+                                completed.documentsIndexed(),
+                                completed.documentsLoaded(),
+                                completed.tokensProcessed(),
+                                completed.totalTokensInIndex(),
+                                completed.totalDurationMs(),
+                                completed.documentsIndexed() > 0 && completed.totalDurationMs() > 0
+                                        ? (completed.documentsIndexed() * 1000.0 / completed.totalDurationMs())
+                                        : 0,
+                                0,
+                                null,
+                                null,
+                                null,
+                                null, // batchHistory - not available on completion
+                                IngestProgressUpdate.SubprocessRuntimeInfo.forProcessMode("SUBPROCESS"));
+                        progressTracker.completeTask(handle.getTaskId(), finalStats);
+                    }
+
+                    if (ingestProgressTracker != null) {
+                        String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
+                        IngestStats ingestStats = buildIngestStatsFromCompleted(completed);
+                        ingestProgressTracker.completeTask(handle.getTaskId(), displayName, ingestStats);
+                    }
+
+                    forwardCompletion(handle, completed);
+                    closeSubprocessLog(handle, "COMPLETED", 0, null, false, false);
                 }
 
-                // Non-restartable failure - proceed with normal failure handling
-                // Record subprocess completion (as failure) for timing
-                if (opTimingService != null) {
-                    opTimingService.recordSubprocessComplete(handle.getTaskId(), false);
+                @Override
+                public void onFailed(SubprocessMessage.Failed failed) {
+                    logger.error("Task {} failed in phase {}: {}",
+                            handle.getTaskId(), failed.phase(), failed.errorMessage());
+
+                    // Determine the failure reason to decide if we should restart
+                    SubprocessRestartManager.FailureReason failureReason =
+                            determineFailureReason(failed.errorMessage(), failed.errorType());
+
+                    // Check if this is a restartable failure (OOM or batch size too large)
+                    boolean isRestartableFailure = failureReason == SubprocessRestartManager.FailureReason.OUT_OF_MEMORY ||
+                            failureReason == SubprocessRestartManager.FailureReason.BATCH_SIZE_TOO_LARGE;
+
+                    if (isRestartableFailure) {
+                        // Store the failure reason for handleCompletion to use
+                        handle.setOomDetected(true);  // Reuse this flag for any restartable failure
+                        handle.setCurrentPhase(failed.phase());
+                        handle.setFailureReason(failureReason);  // Store the actual reason
+
+                        String recoveryType = failureReason == SubprocessRestartManager.FailureReason.BATCH_SIZE_TOO_LARGE
+                                ? "BATCH SIZE TOO LARGE" : "OOM";
+                        String recoveryAction = failureReason == SubprocessRestartManager.FailureReason.BATCH_SIZE_TOO_LARGE
+                                ? "reducing batch size by 75%" : "adjusting memory settings";
+
+                        logger.warn("{} detected via protocol message for task {} - " +
+                                "NOT marking as failed yet, will attempt restart after process exit ({})",
+                                recoveryType, handle.getTaskId(), recoveryAction);
+
+                        // Send restart notification to UI
+                        if (ingestProgressTracker != null) {
+                            String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
+                            ingestProgressTracker.sendLog(handle.getTaskId(), "SYSTEM", "WARN",
+                                    "[ADAPTIVE RECOVERY] " + recoveryType + " detected during " + failed.phase() +
+                                    " - subprocess will restart with " + recoveryAction);
+                        }
+
+                        // Broadcast warning to WebSocket (but not as failure)
+                        broadcastProgress(handle.getTaskId(), "RECOVERY_SCHEDULED",
+                                handle.getProgressPercent(),
+                                "Adaptive Recovery",
+                                recoveryType + " detected during " + failed.phase() + " - " + recoveryAction,
+                                Map.of("phase", failed.phase(),
+                                       "failureReason", failureReason.name(),
+                                       "isRecovery", true));
+
+                        // Signal early return - let handleCompletion do the actual completion
+                        earlyReturn[0] = true;
+                        return;
+                    }
+
+                    // Non-restartable failure - proceed with normal failure handling
+                    // Record subprocess completion (as failure) for timing
+                    if (opTimingService != null) {
+                        opTimingService.recordSubprocessComplete(handle.getTaskId(), false);
+                    }
+
+                    handle.getResultFuture().complete(VectorPopulationResult.failure(
+                            handle.getTaskId(), failed.phase(), failed.errorMessage()));
+
+                    // Forward failure to tracker
+                    if (progressTracker != null) {
+                        progressTracker.failTask(handle.getTaskId(), mapPhaseToEnum(failed.phase()), failed.errorMessage());
+                    }
+
+                    if (ingestProgressTracker != null) {
+                        String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
+                        IngestPhase ingestPhase = mapPhaseToIngestPhase(failed.phase());
+                        ingestProgressTracker.failTask(handle.getTaskId(), displayName, ingestPhase, failed.errorMessage());
+                    }
+
+                    forwardFailure(handle, failed);
+                    closeSubprocessLog(handle, "FAILED", null, failed.errorMessage(), false, false);
                 }
+            });
 
-                handle.getResultFuture().complete(VectorPopulationResult.failure(
-                        handle.getTaskId(), failed.phase(), failed.errorMessage()));
-
-                // Forward failure to tracker
-                if (progressTracker != null) {
-                    progressTracker.failTask(handle.getTaskId(), mapPhaseToEnum(failed.phase()), failed.errorMessage());
-                }
-
-                if (ingestProgressTracker != null) {
-                    String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-                    IngestPhase ingestPhase = mapPhaseToIngestPhase(failed.phase());
-                    ingestProgressTracker.failTask(handle.getTaskId(), displayName, ingestPhase, failed.errorMessage());
-                }
-
-                forwardFailure(handle, failed);
-                closeSubprocessLog(handle, "FAILED", null, failed.errorMessage(), false, false);
+            if (earlyReturn[0]) {
+                return;
             }
         } catch (Exception e) {
             logger.warn("Failed to parse subprocess message: {}", json, e);
@@ -2090,7 +2121,9 @@ public class VectorPopulationSubprocessLauncher {
         SubprocessLogWriter lw = handle.logWriter;
         if (lw != null) {
             handle.logWriter = null;
-            try { lw.close(); } catch (Exception ignored) {}
+            try { lw.close(); } catch (Exception e) {
+                logger.warn("Failed to close subprocess log writer: {}", e.getMessage());
+            }
         }
 
         Path argsFile = handle.getArgsFile();
@@ -2475,6 +2508,7 @@ public class VectorPopulationSubprocessLauncher {
 
         activeProcesses.clear();
         warnedTaskIds.clear();
+        restartScheduler.shutdownNow();
         logger.info("All vector population subprocesses terminated");
     }
 

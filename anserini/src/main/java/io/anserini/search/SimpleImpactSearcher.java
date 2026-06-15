@@ -56,7 +56,7 @@ import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.Similarity;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.jetbrains.annotations.Nullable; // Ensure this is imported
 
 import java.io.Closeable;
@@ -148,7 +148,7 @@ public class SimpleImpactSearcher implements Closeable {
       throw new IOException(indexDir + " does not exist or is not a directory.");
     }
 
-    this.reader = DirectoryReader.open(FSDirectory.open(indexPath));
+    this.reader = DirectoryReader.open(new NIOFSDirectory(indexPath));
     this.backwardsCompatibilityLucene8 = !reader.toString().contains("lucene.version=9");
     this.similarity = new ImpactSimilarity(); // Default for impact searchers
     this.analyzer = analyzer;

@@ -120,6 +120,30 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
                 lr, gradNorm, tokensPerSec, samplesPerSec, customMetrics));
     }
 
+    public void reportMetricsWithDsp(long step, int epoch, double trainLoss, double evalLoss,
+                                      double lr, double gradNorm, double tokensPerSec, double samplesPerSec,
+                                      Map<String, Double> customMetrics,
+                                      int dspSegmentsWarmup, int dspSegmentsReplayed,
+                                      int dspSegmentsCaptured, int dspSegmentsSlotBySlot,
+                                      int dspSegmentsFailed,
+                                      long dspBufferPoolBytes, long dspBufferPoolReused,
+                                      long dspColoringSavedBytes,
+                                      long gpuMemUsedBytes, long gpuMemFreeBytes,
+                                      long gpuMemTotalBytes, long gpuPoolUsedBytes,
+                                      long gpuPoolReservedBytes, int numGpuDevices,
+                                      String gpuDeviceNames,
+                                      long heapUsedBytes, long heapMaxBytes,
+                                      double heapUsagePercent) {
+        send(TrainingSubprocessMessage.metricsUpdateWithDsp(taskId, step, epoch, trainLoss, evalLoss,
+                lr, gradNorm, tokensPerSec, samplesPerSec, customMetrics,
+                dspSegmentsWarmup, dspSegmentsReplayed, dspSegmentsCaptured,
+                dspSegmentsSlotBySlot, dspSegmentsFailed,
+                dspBufferPoolBytes, dspBufferPoolReused, dspColoringSavedBytes,
+                gpuMemUsedBytes, gpuMemFreeBytes, gpuMemTotalBytes,
+                gpuPoolUsedBytes, gpuPoolReservedBytes, numGpuDevices, gpuDeviceNames,
+                heapUsedBytes, heapMaxBytes, heapUsagePercent));
+    }
+
     public void reportCompleted(double finalLoss, double finalEvalLoss, long totalSteps,
                                  int totalEpochs, String outputPath, Map<String, Double> finalMetrics) {
         long totalDuration = System.currentTimeMillis() - startTimeMs;
@@ -159,8 +183,7 @@ public class TrainingSubprocessProgressReporter implements AutoCloseable {
             out.println(TrainingSubprocessMessage.MESSAGE_PREFIX + json);
             out.flush();
         } catch (JsonProcessingException e) {
-            System.err.println("Failed to serialize training subprocess message: " + e.getMessage());
-            logger.error("Failed to serialize training subprocess message", e);
+            logger.error("Failed to serialize training subprocess message: {}", e.getMessage(), e);
         }
     }
 

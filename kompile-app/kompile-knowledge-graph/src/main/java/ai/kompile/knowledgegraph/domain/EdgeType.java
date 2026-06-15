@@ -57,5 +57,20 @@ public enum EdgeType {
     /**
      * Containment relationship (e.g., entity contains another entity)
      */
-    CONTAINS
+    CONTAINS,
+
+    /**
+     * Entity was extracted from a document
+     */
+    EXTRACTED_FROM,
+
+    /**
+     * Authorship relationship
+     */
+    AUTHORED_BY,
+
+    /**
+     * Addressee/recipient relationship
+     */
+    ADDRESSED_TO
 }

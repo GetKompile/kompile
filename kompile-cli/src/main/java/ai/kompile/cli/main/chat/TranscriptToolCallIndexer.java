@@ -33,7 +33,31 @@ public class TranscriptToolCallIndexer {
 
     /** Result of an indexing run. */
     public record IndexResult(int sessionsScanned, int toolCallsIndexed, int errors,
-                              Map<String, Integer> bySource) {}
+                              Map<String, Integer> bySource,
+                              int tokenSummariesPersisted, long totalInputTokens,
+                              long totalOutputTokens) {
+        /** Backwards-compatible constructor without token fields. */
+        public IndexResult(int sessionsScanned, int toolCallsIndexed, int errors,
+                           Map<String, Integer> bySource) {
+            this(sessionsScanned, toolCallsIndexed, errors, bySource, 0, 0L, 0L);
+        }
+    }
+
+    /** Progress callback for live updates during indexing. */
+    public interface IndexProgressCallback {
+        void onSessionIndexed(String sourceId, String sessionId, int toolCalls,
+                              int totalSessions, int totalToolCalls, int totalTokenSummaries);
+        void onSourceStarted(String sourceId);
+        void onError(String sourceId, String sessionId, String message);
+    }
+
+    /**
+     * Index with live progress callbacks.
+     */
+    public IndexResult indexAllWithProgress(Set<String> sources, boolean reindex,
+                                            IndexProgressCallback callback) {
+        return indexAll(sources, reindex, callback);
+    }
 
     /**
      * Index tool calls from all discovered provider sessions.
@@ -41,10 +65,16 @@ public class TranscriptToolCallIndexer {
      * @param reindex  if true, re-index even if session was already indexed
      */
     public IndexResult indexAll(Set<String> sources, boolean reindex) {
+        return indexAll(sources, reindex, null);
+    }
+
+    private IndexResult indexAll(Set<String> sources, boolean reindex,
+                                IndexProgressCallback callback) {
         ChatSourceRegistry registry = ChatSourceRegistry.getInstance();
         int totalSessions = 0;
         int totalToolCalls = 0;
         int totalErrors = 0;
+        int totalTokenSummaries = 0;
         Map<String, Integer> bySource = new LinkedHashMap<>();
 
         Set<String> alreadyIndexed = reindex ? Collections.emptySet() : getIndexedSessionIds();
@@ -55,6 +85,8 @@ public class TranscriptToolCallIndexer {
             // Only index providers we have extractors for
             if (!Set.of("claude-code", "codex", "qwen", "opencode", "gemini", "pi",
                     "aider", "cline", "cursor", "continue", "kompile").contains(sourceId)) continue;
+
+            if (callback != null) callback.onSourceStarted(sourceId);
 
             try {
                 List<ChatSessionSummary> sessions = adapter.list();
@@ -68,12 +100,22 @@ public class TranscriptToolCallIndexer {
                             bySource.merge(sourceId, count, Integer::sum);
                         }
                         totalSessions++;
+                        if (callback != null) {
+                            callback.onSessionIndexed(sourceId, session.sessionId(), count,
+                                    totalSessions, totalToolCalls, totalTokenSummaries);
+                        }
                     } catch (Exception e) {
                         totalErrors++;
+                        if (callback != null) {
+                            callback.onError(sourceId, session.sessionId(), e.getMessage());
+                        }
                     }
                 }
             } catch (Exception e) {
                 totalErrors++;
+                if (callback != null) {
+                    callback.onError(sourceId, null, e.getMessage());
+                }
             }
         }
 

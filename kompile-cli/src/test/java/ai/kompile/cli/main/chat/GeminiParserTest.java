@@ -176,4 +176,85 @@ class GeminiParserTest {
         PassthroughEvent event = parser.parseGeminiLine("Attempt 2 failed: connection reset");
         assertNull(event, "Attempt failed noise line should be suppressed");
     }
+
+    // ===================================================================
+    // Non-JSON text (not noise) → TextChunk fallback
+    // ===================================================================
+
+    @Test
+    void nonJsonNonNoise_shouldProduceTextChunk() {
+        PassthroughEvent event = parser.parseGeminiLine("Some legitimate output text");
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasTextContaining("Some legitimate output text");
+    }
+
+    // ===================================================================
+    // Result with no tool_calls → numTurns=0
+    // ===================================================================
+
+    @Test
+    void resultWithNoStats_shouldProduceTurnCompleteWithDefaults() {
+        String line = "{\"type\":\"result\"}";
+        PassthroughEvent event = parser.parseGeminiLine(line);
+
+        TurnComplete tc = AgentOutputAssertions.assertThat(event).firstOfType(TurnComplete.class);
+        assertNotNull(tc);
+        assertEquals(0L, tc.durationMs());
+        assertEquals(0, tc.numTurns());
+    }
+
+    // ===================================================================
+    // Tool use with complex parameters
+    // ===================================================================
+
+    @Test
+    void toolUseWithNestedParams_shouldPreserveJson() {
+        String line = ParserTestFixtures.geminiToolUse("edit_file",
+                "{\"path\":\"/tmp/test.java\",\"changes\":[{\"line\":5,\"text\":\"new content\"}]}");
+        PassthroughEvent event = parser.parseGeminiLine(line);
+
+        ToolUse toolUse = AgentOutputAssertions.assertThat(event).firstOfType(ToolUse.class);
+        assertNotNull(toolUse);
+        assertEquals("edit_file", toolUse.name());
+        assertTrue(toolUse.input().contains("path"));
+        assertTrue(toolUse.input().contains("changes"));
+    }
+
+    // ===================================================================
+    // Message with empty content
+    // ===================================================================
+
+    @Test
+    void messageWithEmptyContent_shouldProduceTextChunk() {
+        String line = "{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"\"}";
+        PassthroughEvent event = parser.parseGeminiLine(line);
+
+        AgentOutputAssertions.assertThat(event)
+                .hasEventCount(1)
+                .hasTextChunk("");
+    }
+
+    // ===================================================================
+    // Noise lines — more patterns
+    // ===================================================================
+
+    @Test
+    void yoloModeVariant_shouldReturnNull() {
+        PassthroughEvent event = parser.parseGeminiLine("YOLO mode is enabled");
+        assertNull(event, "YOLO mode variant should be suppressed");
+    }
+
+    @Test
+    void retryingVariant_shouldReturnNull() {
+        PassthroughEvent event = parser.parseGeminiLine("Retrying after 30 seconds...");
+        assertNull(event, "Retry with different interval should be suppressed");
+    }
+
+    @Test
+    void attemptVariant_shouldReturnNull() {
+        PassthroughEvent event = parser.parseGeminiLine("Attempt 5 failed: rate limited");
+        assertNull(event, "Higher attempt number should still be suppressed");
+    }
 }

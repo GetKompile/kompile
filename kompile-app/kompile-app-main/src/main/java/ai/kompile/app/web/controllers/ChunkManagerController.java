@@ -55,7 +55,7 @@ public class ChunkManagerController {
     private final AnseriniIndexerServiceImpl indexerService;
 
     // Store confirmation tokens with expiry (simple in-memory approach)
-    private final Map<String, Long> confirmationTokens = new HashMap<>();
+    private final Map<String, Long> confirmationTokens = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Autowired
     public ChunkManagerController(
@@ -83,6 +83,9 @@ public class ChunkManagerController {
             @RequestParam(defaultValue = "0") int offset,
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(required = false) String sourceId) {
+
+        offset = Math.max(0, offset);
+        limit = Math.max(1, Math.min(limit, 500));
 
         if (vectorStore == null && indexerService == null) {
             return ResponseEntity.ok(new ChunkListResponse(List.of(), offset, limit, 0, 0,
@@ -127,7 +130,7 @@ public class ChunkManagerController {
                             if (id != null) keywordIds.add(id);
                         }
                     } catch (IOException e) {
-                        log.error("Error listing keyword index documents: {}", e.getMessage());
+                        log.error("Error listing keyword index documents", e);
                         keywordDocs = new ArrayList<>();
                     }
                 }
@@ -427,7 +430,7 @@ public class ChunkManagerController {
                         updateSuccess = false;
                     }
                 } catch (Exception e) {
-                    log.error("Error updating vector store: {}", e.getMessage());
+                    log.error("Error updating vector store", e);
                     updateSuccess = false;
                 }
             }
@@ -446,7 +449,7 @@ public class ChunkManagerController {
                     // Index to keyword index only (don't re-embed for vector store)
                     indexerService.indexToKeywordIndexOnly(List.of(retrievedDoc));
                 } catch (IOException e) {
-                    log.error("Error updating keyword index: {}", e.getMessage());
+                    log.error("Error updating keyword index", e);
                     updateSuccess = false;
                 }
             }

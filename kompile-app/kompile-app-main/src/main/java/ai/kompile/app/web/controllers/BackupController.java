@@ -28,6 +28,13 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -127,8 +134,13 @@ public class BackupController {
                 response.put("errors", result.errors());
             }
 
-            response.put("status", result.success() ? "success" : "partial");
-            return ResponseEntity.ok(response);
+            if (result.success()) {
+                response.put("status", "success");
+                return ResponseEntity.ok(response);
+            } else {
+                response.put("status", "partial");
+                return ResponseEntity.status(207).body(response);
+            }
 
         } catch (Exception e) {
             log.error("Error triggering backup", e);
@@ -223,19 +235,19 @@ public class BackupController {
             }
 
             BackupStatus status = backupService.getStatus();
-            java.nio.file.Path backupPath = java.nio.file.Paths.get(status.backupPath(), name);
+            Path backupPath = Paths.get(status.backupPath(), name);
 
-            if (!java.nio.file.Files.exists(backupPath)) {
+            if (!Files.exists(backupPath)) {
                 response.put("status", "error");
                 response.put("message", "Backup not found: " + name);
                 return ResponseEntity.notFound().build();
             }
 
             // Delete the backup
-            if (java.nio.file.Files.isDirectory(backupPath)) {
+            if (Files.isDirectory(backupPath)) {
                 deleteDirectory(backupPath);
             } else {
-                java.nio.file.Files.deleteIfExists(backupPath);
+                Files.deleteIfExists(backupPath);
             }
 
             log.info("Deleted backup: {}", name);
@@ -306,13 +318,13 @@ public class BackupController {
                 return ResponseEntity.badRequest().build();
             }
 
-            java.nio.file.Path backupFile = backupService.getBackupFile(name);
+            Path backupFile = backupService.getBackupFile(name);
             if (backupFile == null) {
                 return ResponseEntity.notFound().build();
             }
 
             // If it's a directory, we can't download it directly
-            if (java.nio.file.Files.isDirectory(backupFile)) {
+            if (Files.isDirectory(backupFile)) {
                 // For directory backups, we could zip them on the fly
                 // For simplicity, return 400 - client should request compressed backups
                 return ResponseEntity.badRequest().build();
@@ -324,7 +336,7 @@ public class BackupController {
             return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
-                .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(java.nio.file.Files.size(backupFile)))
+                .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(Files.size(backupFile)))
                 .body(resource);
 
         } catch (Exception e) {
@@ -333,20 +345,20 @@ public class BackupController {
         }
     }
 
-    private void deleteDirectory(java.nio.file.Path dir) throws java.io.IOException {
-        java.nio.file.Files.walkFileTree(dir, new java.nio.file.SimpleFileVisitor<>() {
+    private void deleteDirectory(Path dir) throws IOException {
+        Files.walkFileTree(dir, new SimpleFileVisitor<>() {
             @Override
-            public java.nio.file.FileVisitResult visitFile(java.nio.file.Path file,
-                    java.nio.file.attribute.BasicFileAttributes attrs) throws java.io.IOException {
-                java.nio.file.Files.deleteIfExists(file);
-                return java.nio.file.FileVisitResult.CONTINUE;
+            public FileVisitResult visitFile(Path file,
+                    BasicFileAttributes attrs) throws IOException {
+                Files.deleteIfExists(file);
+                return FileVisitResult.CONTINUE;
             }
 
             @Override
-            public java.nio.file.FileVisitResult postVisitDirectory(java.nio.file.Path dir,
-                    java.io.IOException exc) throws java.io.IOException {
-                java.nio.file.Files.deleteIfExists(dir);
-                return java.nio.file.FileVisitResult.CONTINUE;
+            public FileVisitResult postVisitDirectory(Path dir,
+                    IOException exc) throws IOException {
+                Files.deleteIfExists(dir);
+                return FileVisitResult.CONTINUE;
             }
         });
     }

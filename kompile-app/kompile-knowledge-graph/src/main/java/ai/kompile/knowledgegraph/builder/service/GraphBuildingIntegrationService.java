@@ -20,8 +20,11 @@ import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.builder.domain.ExtractionJob;
 import ai.kompile.knowledgegraph.builder.domain.ExtractionJob.JobStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -51,11 +54,16 @@ import java.util.function.Consumer;
  */
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class GraphBuildingIntegrationService {
 
+
+    @Autowired
     private final GraphBuilderRegistry builderRegistry;
+    @Autowired
     private final ExtractionJobService jobService;
+    @Autowired
     private final ObjectMapper objectMapper;
 
     // Track running jobs for cancellation

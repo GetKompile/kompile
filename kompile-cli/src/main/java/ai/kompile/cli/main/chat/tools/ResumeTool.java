@@ -43,9 +43,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.Comparator;
 
 /**
@@ -108,7 +111,7 @@ public class ResumeTool implements CliTool {
     private final String currentWorkingDir = Path.of(System.getProperty("user.dir"))
             .toAbsolutePath().normalize().toString();
 
-    private record LoadedConversation(List<ChatHistory.Turn> turns, String source, Path workingDirectory) {}
+    private record LoadedConversation(String sessionId, List<ChatHistory.Turn> turns, String source, Path workingDirectory) {}
 
     /**
      * Constructor for MCP / non-interactive mode.
@@ -765,9 +768,9 @@ public class ResumeTool implements CliTool {
      */
     private String formatDate(long timestampMs) {
         try {
-            java.time.Instant instant = java.time.Instant.ofEpochMilli(timestampMs);
-            java.time.ZonedDateTime zdt = instant.atZone(java.time.ZoneId.systemDefault());
-            java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter.ofPattern("MMM dd HH:mm");
+            Instant instant = Instant.ofEpochMilli(timestampMs);
+            ZonedDateTime zdt = instant.atZone(ZoneId.systemDefault());
+            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("MMM dd HH:mm");
             return zdt.format(fmt);
         } catch (Exception e) {
             return String.valueOf(timestampMs);
@@ -806,19 +809,19 @@ public class ResumeTool implements CliTool {
                             // Only scan project dirs that match the current working directory
                             projectDirsToScan = findMatchingClaudeProjectDirs(claudeDir, currentWorkingDir);
                         } else {
-                            try (java.util.stream.Stream<Path> dirs = Files.list(claudeDir)) {
+                            try (Stream<Path> dirs = Files.list(claudeDir)) {
                                 projectDirsToScan = dirs.filter(Files::isDirectory).collect(Collectors.toList());
                             }
                         }
                         for (Path projectDir : projectDirsToScan) {
-                            try (java.util.stream.Stream<Path> sessionFiles = Files.list(projectDir)) {
+                            try (Stream<Path> sessionFiles = Files.list(projectDir)) {
                                 sessionFiles.filter(p -> p.toString().endsWith(".jsonl"))
                                     .forEach(p -> {
                                         String id = p.getFileName().toString().replace(".jsonl", "");
                                         // Skip sessions already harvested into a kompile transcript
                                         if (harvestedExternalIds.contains(id)) return;
                                         try {
-                                            long lastMod = java.nio.file.Files.getLastModifiedTime(p).toMillis();
+                                            long lastMod = Files.getLastModifiedTime(p).toMillis();
                                             sessionFilePaths.put(id, p);
                                             allConversations.add(new ConversationSummary(
                                                     id,
@@ -838,7 +841,7 @@ public class ResumeTool implements CliTool {
                 case "codex" -> {
                     Path codexDir = Paths.get(homeDir, ".codex");
                     if (Files.isDirectory(codexDir)) {
-                        try (java.util.stream.Stream<Path> files = Files.walk(codexDir)) {
+                        try (Stream<Path> files = Files.walk(codexDir)) {
                             files.filter(p -> p.getFileName().toString().startsWith("rollout-") &&
                                             p.toString().endsWith(".jsonl"))
                                 .forEach(p -> {
@@ -883,7 +886,7 @@ public class ResumeTool implements CliTool {
                                 }
                             }
                         } else {
-                            try (java.util.stream.Stream<Path> projectDirs = Files.walk(qwenDir, 4)) {
+                            try (Stream<Path> projectDirs = Files.walk(qwenDir, 4)) {
                                 projectDirs.filter(p -> p.toString().endsWith("chats") && Files.isDirectory(p))
                                     .forEach(chatsDir -> loadQwenChatsDir(chatsDir, agentName));
                             } catch (IOException ignored) {}
@@ -893,9 +896,9 @@ public class ResumeTool implements CliTool {
                 case "opencode" -> {
                     Path sessionDir = Paths.get(homeDir, ".local", "share", "opencode", "storage", "session");
                     if (Files.isDirectory(sessionDir)) {
-                        try (java.util.stream.Stream<Path> projectDirs = Files.list(sessionDir)) {
+                        try (Stream<Path> projectDirs = Files.list(sessionDir)) {
                             projectDirs.filter(Files::isDirectory).forEach(projDir -> {
-                                try (java.util.stream.Stream<Path> sessionFiles = Files.list(projDir)) {
+                                try (Stream<Path> sessionFiles = Files.list(projDir)) {
                                     sessionFiles.filter(p -> p.toString().endsWith(".json"))
                                         .forEach(p -> {
                                             // When localOnly, check directory field from JSON
@@ -937,7 +940,7 @@ public class ResumeTool implements CliTool {
                                 projectDirsToScan = Files.isDirectory(matchDir)
                                         ? List.of(matchDir) : List.of();
                             } else {
-                                try (java.util.stream.Stream<Path> dirs = Files.list(tmpDir)) {
+                                try (Stream<Path> dirs = Files.list(tmpDir)) {
                                     projectDirsToScan = dirs.filter(Files::isDirectory)
                                             .filter(pd -> !pd.getFileName().toString().equals("bin"))
                                             .collect(Collectors.toList());
@@ -946,7 +949,7 @@ public class ResumeTool implements CliTool {
                             for (Path projDir : projectDirsToScan) {
                                 Path chatsDir = projDir.resolve("chats");
                                 if (Files.isDirectory(chatsDir)) {
-                                    try (java.util.stream.Stream<Path> sessionFiles = Files.list(chatsDir)) {
+                                    try (Stream<Path> sessionFiles = Files.list(chatsDir)) {
                                         sessionFiles.filter(p -> p.toString().endsWith(".json"))
                                             .forEach(p -> {
                                                 String id = readGeminiSessionId(p);
@@ -1007,10 +1010,10 @@ public class ResumeTool implements CliTool {
         try {
             // Gemini uses a single JSON object, not JSONL — stream-parse to find first user message
             if ("gemini".equals(source)) {
-                com.fasterxml.jackson.databind.JsonNode root = MAPPER.readTree(filePath.toFile());
-                com.fasterxml.jackson.databind.JsonNode messages = root.path("messages");
+                JsonNode root = MAPPER.readTree(filePath.toFile());
+                JsonNode messages = root.path("messages");
                 if (messages.isArray()) {
-                    for (com.fasterxml.jackson.databind.JsonNode msg : messages) {
+                    for (JsonNode msg : messages) {
                         String type = msg.path("type").asText("");
                         if ("user".equals(type)) {
                             String text = msg.path("content").asText("");
@@ -1024,13 +1027,13 @@ public class ResumeTool implements CliTool {
             }
 
             // All other agents use JSONL — stream line-by-line, stop after finding first user message
-            try (java.io.BufferedReader reader = Files.newBufferedReader(filePath, java.nio.charset.StandardCharsets.UTF_8)) {
+            try (BufferedReader reader = Files.newBufferedReader(filePath, StandardCharsets.UTF_8)) {
                 String line;
                 int linesRead = 0;
                 while ((line = reader.readLine()) != null && linesRead++ < MAX_SCAN_LINES) {
                     if (line.isBlank()) continue;
                     try {
-                        com.fasterxml.jackson.databind.JsonNode node = MAPPER.readTree(line);
+                        JsonNode node = MAPPER.readTree(line);
                         String extracted = extractUserText(node, source);
                         if (extracted != null) {
                             return formatTitle(extracted);
@@ -1046,13 +1049,13 @@ public class ResumeTool implements CliTool {
      * Extract user message text from a JSONL node based on the agent source format.
      * Returns the text if this node is a user message, null otherwise.
      */
-    private String extractUserText(com.fasterxml.jackson.databind.JsonNode node, String source) {
+    private String extractUserText(JsonNode node, String source) {
         switch (source) {
             case "claude-code" -> {
                 if ("user".equals(node.path("type").asText(""))) {
-                    com.fasterxml.jackson.databind.JsonNode content = node.path("message").path("content");
+                    JsonNode content = node.path("message").path("content");
                     if (content.isArray()) {
-                        for (com.fasterxml.jackson.databind.JsonNode block : content) {
+                        for (JsonNode block : content) {
                             String text = block.path("text").asText("");
                             // Skip Claude Code internal commands — not real user content
                             if (!text.isEmpty() && !text.startsWith("<local-command-")) return text;
@@ -1066,7 +1069,7 @@ public class ResumeTool implements CliTool {
             case "codex" -> {
                 if ("response_item".equals(node.path("type").asText(""))) {
                     if ("user".equals(node.path("payload").path("role").asText(""))) {
-                        com.fasterxml.jackson.databind.JsonNode arr = node.path("payload").path("content");
+                        JsonNode arr = node.path("payload").path("content");
                         if (arr.isArray() && arr.size() > 0) {
                             String text = arr.get(0).path("text").asText("");
                             if (!text.isEmpty()) return text;
@@ -1076,7 +1079,7 @@ public class ResumeTool implements CliTool {
             }
             case "qwen" -> {
                 if ("user".equals(node.path("type").asText(""))) {
-                    com.fasterxml.jackson.databind.JsonNode parts = node.path("message").path("parts");
+                    JsonNode parts = node.path("message").path("parts");
                     if (parts.isArray() && parts.size() > 0) {
                         String text = parts.get(0).path("text").asText("");
                         if (!text.isEmpty()) return text;
@@ -1085,7 +1088,7 @@ public class ResumeTool implements CliTool {
             }
             case "opencode" -> {
                 if ("user".equals(node.path("role").asText(""))) {
-                    com.fasterxml.jackson.databind.JsonNode arr = node.path("content");
+                    JsonNode arr = node.path("content");
                     if (arr.isArray() && arr.size() > 0) {
                         String text = arr.get(0).path("text").asText("");
                         if (!text.isEmpty()) return text;
@@ -1628,7 +1631,7 @@ public class ResumeTool implements CliTool {
                 // Save migrated transcript
                 Path outputPath = Paths.get(System.getProperty("user.home"), ".kompile", "conversations",
                         sessionId + "-migrated." + format);
-                java.nio.file.Files.writeString(outputPath, migrated);
+                Files.writeString(outputPath, migrated);
 
                 terminal.writer().println(GREEN + "✓ Conversation migrated to " + format + " format" + RESET);
                 terminal.writer().println(DIM + "  Saved to: " + outputPath + RESET);
@@ -1817,7 +1820,7 @@ public class ResumeTool implements CliTool {
      */
     private void launchNativeResume(String agent, String sessionId, Path workingDirectory) {
         boolean terminalClosed = false;
-        java.nio.file.Path injectedSettingsFile = null;
+        Path injectedSettingsFile = null;
         try {
             Path effectiveWorkDir = workingDirectory != null
                     ? workingDirectory
@@ -1856,6 +1859,12 @@ public class ResumeTool implements CliTool {
                     // launchAgentWithSession manages its own terminal lifecycle
                     LoadedConversation conv = loadConversation(sessionId);
                     launchAgentWithSession(conv, agent, null);
+                    return;
+                }
+                case "kompile" -> {
+                    // "kompile" target: launch managed TUI with original source agent
+                    LoadedConversation conv = loadConversation(sessionId);
+                    launchKompileManagedResume(sessionId, conv);
                     return;
                 }
                 default -> {
@@ -1902,10 +1911,10 @@ public class ResumeTool implements CliTool {
                 // Ctrl+C hit the JVM thread — kill the subprocess
                 interrupted = true;
                 process.destroy();
-                try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                try { process.waitFor(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
                 if (process.isAlive()) process.destroyForcibly();
                 exitCode = 130; // conventional SIGINT exit code
-                Thread.interrupted(); // clear interrupt flag
+                Thread.currentThread().interrupt();
             } finally {
                 // Always clean up MCP tools
                 ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
@@ -1957,6 +1966,74 @@ public class ResumeTool implements CliTool {
     }
 
     /**
+     * Launch the kompile managed TUI (EmulatedPassthroughCommand) with the original
+     * source agent from the conversation. This is the "kompile" target: the agent
+     * subprocess is wrapped by kompile's scroll-region UI with tool injection,
+     * slash commands, and session management.
+     */
+    private void launchKompileManagedResume(String sessionId, LoadedConversation conversation) {
+        boolean terminalClosed = false;
+        try {
+            String sourceAgent = determineAgentFromSource(conversation.source());
+            Path effectiveWorkDir = conversation.workingDirectory() != null
+                    ? conversation.workingDirectory()
+                    : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+
+            terminal.writer().println(GREEN + "Launching kompile managed UI with " + sourceAgent + " agent..." + RESET);
+            terminal.writer().flush();
+
+            // Close the resume TUI terminal before launching the managed UI
+            terminal.close();
+            terminalClosed = true;
+
+            // Launch EmulatedPassthroughCommand via picocli CommandLine.
+            // --resume-session passes the native session ID so that:
+            //   1. Prior turns are replayed visually in the scroll region
+            //   2. The child agent process uses continuation flags (--continue,
+            //      --resume, --session) from the very first message
+            java.util.List<String> args = new java.util.ArrayList<>();
+            args.add("--agent");
+            args.add(sourceAgent);
+            args.add("--resume-session");
+            args.add(sessionId);
+            args.add("--working-dir");
+            args.add(effectiveWorkDir.toString());
+
+            int exitCode = new picocli.CommandLine(
+                    new ai.kompile.cli.main.chat.EmulatedPassthroughCommand())
+                    .execute(args.toArray(new String[0]));
+
+            // Re-open terminal after managed UI exits
+            Terminal newTerminal = TerminalBuilder.builder().system(true).build();
+            LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
+            this.terminal = newTerminal;
+            this.lineReader = newLineReader;
+            terminalClosed = false;
+
+            newTerminal.writer().println();
+            newTerminal.writer().println(GREEN + "✓ Kompile managed session completed (exit code: " + exitCode + ")" + RESET);
+            newTerminal.writer().println(DIM + "Press Enter to continue..." + RESET);
+            newTerminal.writer().flush();
+            try { newLineReader.readLine(); } catch (UserInterruptException | EndOfFileException ignored) {}
+        } catch (UserInterruptException e) {
+            if (terminalClosed) {
+                restoreTerminalAfterLaunchFailure();
+            }
+        } catch (Exception e) {
+            String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            boolean restored = !terminalClosed || restoreTerminalAfterLaunchFailure();
+            if (restored) {
+                terminal.writer().println(RED + "Error launching kompile managed UI: " + errorMsg + RESET);
+                terminal.writer().println(DIM + "Press Enter to continue..." + RESET);
+                terminal.writer().flush();
+                try { lineReader.readLine(); } catch (Exception ignored) {}
+            } else {
+                System.err.println("Error launching kompile managed UI: " + errorMsg);
+            }
+        }
+    }
+
+    /**
      * Export conversation and launch agent with native session resume.
      * Used for cross-agent resume (source != target) where format conversion is needed.
      *
@@ -1966,8 +2043,14 @@ public class ResumeTool implements CliTool {
      *                        if null, a new UUID is generated
      */
     private void launchAgentWithSession(LoadedConversation conversation, String agent, String targetSessionId) {
+        // "kompile" target means: launch the kompile managed TUI with the original source agent
+        if ("kompile".equalsIgnoreCase(agent)) {
+            launchKompileManagedResume(conversation.sessionId(), conversation);
+            return;
+        }
+
         boolean terminalClosed = false;
-        java.nio.file.Path injectedSettingsFile = null;
+        Path injectedSettingsFile = null;
         try {
             // Export to agent's native format
             ConversationExporter.ExportResult exportResult;
@@ -1996,9 +2079,9 @@ public class ResumeTool implements CliTool {
 
             // Inject MCP tools before launching — probe for running kompile-app (SSE),
             // fall back to stdio if not found
-            java.nio.file.Path agentWorkingDir = exportResult.getWorkingDirectory() != null
+            Path agentWorkingDir = exportResult.getWorkingDirectory() != null
                     ? exportResult.getWorkingDirectory()
-                    : java.nio.file.Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+                    : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
             String sseUrl = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
             try {
                 injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
@@ -2047,10 +2130,10 @@ public class ResumeTool implements CliTool {
                 // Ctrl+C hit the JVM thread — kill the subprocess
                 interrupted = true;
                 process.destroy();
-                try { process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                try { process.waitFor(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
                 if (process.isAlive()) process.destroyForcibly();
                 exitCode = 130;
-                Thread.interrupted(); // clear interrupt flag
+                Thread.currentThread().interrupt();
             } finally {
                 // Always clean up MCP tools
                 ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
@@ -2136,7 +2219,7 @@ public class ResumeTool implements CliTool {
         try {
             List<ChatHistory.Turn> turns = reader.readKompileSession(sessionId);
             if (turns != null && !turns.isEmpty()) {
-                return new LoadedConversation(turns, "kompile", defaultWorkingDirectory);
+                return new LoadedConversation(sessionId, turns, "kompile", defaultWorkingDirectory);
             }
         } catch (Exception ignored) {
             // Fall through to external sources only if not a known kompile session.
@@ -2160,7 +2243,7 @@ public class ResumeTool implements CliTool {
                 if (workingDirectory == null) {
                     throw new IOException("Could not resolve working directory for " + source + " session: " + sessionId);
                 }
-                return new LoadedConversation(turns, source, workingDirectory);
+                return new LoadedConversation(sessionId, turns, source, workingDirectory);
             } catch (Exception e) {
                 lastError = e instanceof IOException ioException
                         ? ioException
@@ -2233,7 +2316,7 @@ public class ResumeTool implements CliTool {
             return null;
         }
 
-        try (java.util.stream.Stream<Path> projectDirs = Files.list(geminiTmpDir)) {
+        try (Stream<Path> projectDirs = Files.list(geminiTmpDir)) {
             for (Path file : projectDirs
                     .filter(Files::isDirectory)
                     .filter(pd -> !pd.getFileName().toString().equals("bin"))
@@ -2243,10 +2326,10 @@ public class ResumeTool implements CliTool {
                             try {
                                 return Files.list(chatsDir);
                             } catch (IOException e) {
-                                return java.util.stream.Stream.empty();
+                                return Stream.empty();
                             }
                         }
-                        return java.util.stream.Stream.empty();
+                        return Stream.empty();
                     })
                     .filter(p -> p.toString().endsWith(".json"))
                     .toList()) {
@@ -2276,7 +2359,7 @@ public class ResumeTool implements CliTool {
         String encodedCwd = normalized.replace("/", "-");
         List<Path> matches = new ArrayList<>();
 
-        try (java.util.stream.Stream<Path> dirs = Files.list(projectsRoot)) {
+        try (Stream<Path> dirs = Files.list(projectsRoot)) {
             dirs.filter(Files::isDirectory).forEach(dir -> {
                 String name = dir.getFileName().toString();
                 if (!name.startsWith("-")) return;
@@ -2301,7 +2384,7 @@ public class ResumeTool implements CliTool {
      * Reads only the first line (session_meta) for the cwd field.
      */
     private boolean codexSessionMatchesCwd(Path file, String cwd) {
-        try (java.io.BufferedReader br = Files.newBufferedReader(file, java.nio.charset.StandardCharsets.UTF_8)) {
+        try (BufferedReader br = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line = br.readLine();
             if (line != null && !line.isBlank()) {
                 JsonNode node = MAPPER.readTree(line);
@@ -2347,7 +2430,7 @@ public class ResumeTool implements CliTool {
     private String sha256(String input) {
         try {
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] hash = md.digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
             for (byte b : hash) {
                 sb.append(String.format("%02x", b));
@@ -2362,7 +2445,7 @@ public class ResumeTool implements CliTool {
      * Load sessions from a Qwen chats directory.
      */
     private void loadQwenChatsDir(Path chatsDir, String agentName) {
-        try (java.util.stream.Stream<Path> sessionFiles = Files.list(chatsDir)) {
+        try (Stream<Path> sessionFiles = Files.list(chatsDir)) {
             sessionFiles.filter(p -> p.toString().endsWith(".jsonl"))
                 .forEach(p -> {
                     String id = p.getFileName().toString().replace(".jsonl", "");
@@ -2446,7 +2529,7 @@ public class ResumeTool implements CliTool {
             if (migrated != null) {
                 Path outputPath = Paths.get(System.getProperty("user.home"), ".kompile", "conversations",
                         sessionId + "-migrated." + format);
-                java.nio.file.Files.writeString(outputPath, migrated);
+                Files.writeString(outputPath, migrated);
 
                 ObjectMapper om = new ObjectMapper();
                 ObjectNode result = om.createObjectNode();

@@ -303,7 +303,7 @@ public class StagingController {
                                 .header("Content-Type", "application/octet-stream")
                                 .body(resource);
                     } catch (Exception e) {
-                        log.error("Failed to serve model file for {}: {}", modelId, e.getMessage());
+                        log.error("Failed to serve model file for '{}'", modelId, e);
                         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
                     }
                 })
@@ -333,7 +333,7 @@ public class StagingController {
                                 .header("Content-Type", "application/octet-stream")
                                 .body(resource);
                     } catch (Exception e) {
-                        log.error("Failed to serve vocab file for {}: {}", modelId, e.getMessage());
+                        log.error("Failed to serve vocab file for '{}'", modelId, e);
                         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
                     }
                 })
@@ -362,7 +362,9 @@ public class StagingController {
                                     info.put("name", p.getFileName().toString());
                                     info.put("size", Files.size(p));
                                     files.add(info);
-                                } catch (IOException ignored) {}
+                                } catch (IOException e) {
+                                    log.debug("Could not read file size for {}: {}", p, e.getMessage());
+                                }
                             });
                         }
                         Map<String, Object> result = new java.util.LinkedHashMap<>();
@@ -370,7 +372,7 @@ public class StagingController {
                         result.put("files", files);
                         return ResponseEntity.ok((Object) result);
                     } catch (IOException e) {
-                        log.error("Failed to list files for model {}: {}", modelId, e.getMessage());
+                        log.error("Failed to list files for model '{}'", modelId, e);
                         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).<Object>build();
                     }
                 })
@@ -402,7 +404,7 @@ public class StagingController {
                                 .header("Content-Type", "application/octet-stream")
                                 .body(resource);
                     } catch (Exception e) {
-                        log.error("Failed to serve file {} for model {}: {}", fileName, modelId, e.getMessage());
+                        log.error("Failed to serve file '{}' for model '{}'", fileName, modelId, e);
                         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
                     }
                 })

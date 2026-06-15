@@ -41,6 +41,7 @@ import { Subject, takeUntil, debounceTime, filter } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 
 import { GraphService } from '../../services/graph.service';
+import { BayesianService } from '../../services/bayesian.service';
 import {
   GraphNode,
   GraphEdge,
@@ -50,6 +51,15 @@ import {
   NODE_SIZES,
   EDGE_COLORS
 } from '../../models/graph-models';
+
+interface EntityMebnData {
+  posterior: number | null;
+  prior: number | null;
+  mfragName: string | null;
+  nodeRole: string | null;
+  entityType: string | null;
+  entityId: string | null;
+}
 
 interface EntitySearchResult {
   entity: GraphNode;
@@ -140,6 +150,7 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
   entityConnections: GraphEdge[] = [];
   connectedEntities: GraphNode[] = [];
   showEntityDetail = false;
+  entityMebnData: EntityMebnData | null = null;
 
   // Statistics
   statistics: {
@@ -152,12 +163,18 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
   // Node ID to Node map for quick lookups
   private nodeMap = new Map<string, GraphNode>();
 
+  // Bayesian posteriors cache for list/grid indicators
+  entityPosteriors: Record<string, number> = {};
+  entityPriors: Record<string, number> = {};
+  entityMebnMetaMap: Record<string, { mfragName: string; nodeRole: string; entityType?: string }> = {};
+
   // Table columns
-  entityColumns = ['type', 'title', 'description', 'connections', 'actions'];
+  entityColumns = ['type', 'title', 'description', 'bayesian', 'connections', 'actions'];
   connectionColumns = ['type', 'source', 'target', 'weight', 'description', 'actions'];
 
   constructor(
     private graphService: GraphService,
+    private bayesianService: BayesianService,
     private snackBar: MatSnackBar,
     private dialog: MatDialog
   ) {}
@@ -224,6 +241,52 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
     });
   }
 
+  /**
+   * Load Bayesian posteriors/priors for displayed entities to show indicators in list/grid rows.
+   */
+  private loadEntityPosteriors(): void {
+    const nodeIds = this.displayedEntities.map(e => e.nodeId).slice(0, 20);
+    if (nodeIds.length === 0) return;
+
+    // Use type-filtered MEBN query when a single entity type filter is active
+    const inferenceCall = this.entityTypeFilters.length === 1
+      ? this.bayesianService.queryMebnByType({
+          seedNodeIds: nodeIds.slice(0, 5),
+          entityType: this.entityTypeFilters[0],
+          maxDepth: 2,
+          maxNodes: 100
+        })
+      : this.bayesianService.queryMebnFromNode(nodeIds[0], 2, 100);
+
+    inferenceCall
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (result) => {
+          const posteriors: Record<string, number> = {};
+          const priors: Record<string, number> = {};
+          const mebnMap: Record<string, { mfragName: string; nodeRole: string; entityType?: string }> = {};
+          for (const [varName, nodeId] of Object.entries(result.variableToNodeId || {})) {
+            if (result.posteriors?.[varName] != null) {
+              posteriors[nodeId] = result.posteriors[varName];
+            }
+            if (result.priors?.[varName] != null) {
+              priors[nodeId] = result.priors[varName];
+            }
+            const meta = result.variableToMebnMeta?.[varName];
+            if (meta?.mfragName) {
+              mebnMap[nodeId] = { mfragName: meta.mfragName, nodeRole: meta.nodeRole, entityType: meta.entityType ?? undefined };
+            }
+          }
+          this.entityPosteriors = posteriors;
+          this.entityPriors = priors;
+          this.entityMebnMetaMap = mebnMap;
+        },
+        error: () => {
+          // Bayesian data is optional
+        }
+      });
+  }
+
   onEntitySearch(query: string): void {
     this.searchSubject.next(query);
   }
@@ -254,6 +317,9 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
     const start = this.entityPageIndex * this.entityPageSize;
     const end = start + this.entityPageSize;
     this.displayedEntities = filtered.slice(start, end);
+
+    // Load Bayesian posteriors for displayed entities
+    this.loadEntityPosteriors();
   }
 
   onEntityPageChange(event: PageEvent): void {
@@ -281,7 +347,9 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
   selectEntity(entity: GraphNode): void {
     this.selectedEntity = entity;
     this.showEntityDetail = true;
+    this.entityMebnData = null;
     this.loadEntityConnections(entity);
+    this.loadEntityMebnData(entity);
     this.entitySelected.emit(entity);
   }
 
@@ -297,6 +365,7 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
     this.selectedEntity = null;
     this.entityConnections = [];
     this.connectedEntities = [];
+    this.entityMebnData = null;
   }
 
   viewInGraph(entity: GraphNode): void {
@@ -350,6 +419,51 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
           this.entityConnections = [];
         }
       });
+  }
+
+  private loadEntityMebnData(entity: GraphNode): void {
+    this.bayesianService.mebnStructure(entity.nodeId, 2, 50)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (result) => {
+          // Find the variable corresponding to this entity's nodeId
+          let posterior: number | null = null;
+          let prior: number | null = null;
+          let mfragName: string | null = null;
+          let nodeRole: string | null = null;
+          let entityType: string | null = null;
+          let entityId: string | null = null;
+
+          for (const [varName, nodeId] of Object.entries(result.variableToNodeId || {})) {
+            if (nodeId === entity.nodeId) {
+              posterior = result.posteriors?.[varName] ?? null;
+              prior = result.priors?.[varName] ?? null;
+              const meta = result.variableToMebnMeta?.[varName];
+              if (meta) {
+                mfragName = meta.mfragName || null;
+                nodeRole = meta.nodeRole || null;
+                entityType = meta.entityType || null;
+                entityId = meta.entityId || null;
+              }
+              break;
+            }
+          }
+
+          if (posterior != null || mfragName != null) {
+            this.entityMebnData = { posterior, prior, mfragName, nodeRole, entityType, entityId };
+          }
+        },
+        error: () => {
+          // MEBN data is optional — fail silently
+        }
+      });
+  }
+
+  getBayesianColor(value: number): string {
+    if (value < 0.3) return '#3b82f6';
+    if (value < 0.5) return '#f59e0b';
+    if (value < 0.7) return '#f97316';
+    return '#ef4444';
   }
 
   private loadConnectedEntities(edges: GraphEdge[], currentNodeId: string): void {

@@ -16,12 +16,15 @@
 
 package ai.kompile.core.reranking;
 
+import lombok.Getter;
+
 /**
  * Configuration for reranking operations.
  * <p>
  * This class provides sensible defaults for common reranking algorithms
  * while allowing full customization.
  */
+@Getter
 public class RerankerConfig {
 
     // Reranker type
@@ -163,19 +166,11 @@ public class RerankerConfig {
         return config;
     }
 
-    // Getters and setters
-
-    public RerankerType getType() {
-        return type;
-    }
+    // Fluent setters (return this for chaining)
 
     public RerankerConfig setType(RerankerType type) {
         this.type = type;
         return this;
-    }
-
-    public boolean isEnabled() {
-        return enabled;
     }
 
     public RerankerConfig setEnabled(boolean enabled) {
@@ -183,17 +178,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public int getFbDocs() {
-        return fbDocs;
-    }
-
     public RerankerConfig setFbDocs(int fbDocs) {
         this.fbDocs = fbDocs;
         return this;
-    }
-
-    public int getFbTerms() {
-        return fbTerms;
     }
 
     public RerankerConfig setFbTerms(int fbTerms) {
@@ -201,17 +188,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public float getOriginalQueryWeight() {
-        return originalQueryWeight;
-    }
-
     public RerankerConfig setOriginalQueryWeight(float originalQueryWeight) {
         this.originalQueryWeight = originalQueryWeight;
         return this;
-    }
-
-    public boolean isFilterTerms() {
-        return filterTerms;
     }
 
     public RerankerConfig setFilterTerms(boolean filterTerms) {
@@ -219,17 +198,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public boolean isOutputQuery() {
-        return outputQuery;
-    }
-
     public RerankerConfig setOutputQuery(boolean outputQuery) {
         this.outputQuery = outputQuery;
         return this;
-    }
-
-    public float getK1() {
-        return k1;
     }
 
     public RerankerConfig setK1(float k1) {
@@ -237,17 +208,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public float getB() {
-        return b;
-    }
-
     public RerankerConfig setB(float b) {
         this.b = b;
         return this;
-    }
-
-    public float getNewTermWeight() {
-        return newTermWeight;
     }
 
     public RerankerConfig setNewTermWeight(float newTermWeight) {
@@ -255,17 +218,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public float getAlpha() {
-        return alpha;
-    }
-
     public RerankerConfig setAlpha(float alpha) {
         this.alpha = alpha;
         return this;
-    }
-
-    public float getBeta() {
-        return beta;
     }
 
     public RerankerConfig setBeta(float beta) {
@@ -273,17 +228,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public float getGamma() {
-        return gamma;
-    }
-
     public RerankerConfig setGamma(float gamma) {
         this.gamma = gamma;
         return this;
-    }
-
-    public boolean isUseNegative() {
-        return useNegative;
     }
 
     public RerankerConfig setUseNegative(boolean useNegative) {
@@ -291,17 +238,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public int getR() {
-        return r;
-    }
-
     public RerankerConfig setR(int r) {
         this.r = r;
         return this;
-    }
-
-    public int getN() {
-        return n;
     }
 
     public RerankerConfig setN(int n) {
@@ -309,17 +248,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public float getAxiomBeta() {
-        return axiomBeta;
-    }
-
     public RerankerConfig setAxiomBeta(float axiomBeta) {
         this.axiomBeta = axiomBeta;
         return this;
-    }
-
-    public boolean isDeterministic() {
-        return deterministic;
     }
 
     public RerankerConfig setDeterministic(boolean deterministic) {
@@ -327,17 +258,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public long getSeed() {
-        return seed;
-    }
-
     public RerankerConfig setSeed(long seed) {
         this.seed = seed;
         return this;
-    }
-
-    public int getRrfK() {
-        return rrfK;
     }
 
     public RerankerConfig setRrfK(int rrfK) {
@@ -345,17 +268,9 @@ public class RerankerConfig {
         return this;
     }
 
-    public float getLambda() {
-        return lambda;
-    }
-
     public RerankerConfig setLambda(float lambda) {
         this.lambda = lambda;
         return this;
-    }
-
-    public int getTopK() {
-        return topK;
     }
 
     public RerankerConfig setTopK(int topK) {

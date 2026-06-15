@@ -196,7 +196,7 @@ public class ApiAgentConfigController {
         }
 
         if (apiAgentChatExecutor == null) {
-            return ResponseEntity.ok(Map.of("error", "API agent executor not available"));
+            return ResponseEntity.status(503).body(Map.of("error", "API agent executor not available"));
         }
 
         Map<String, Object> result = apiAgentChatExecutor.testEndpoint(
@@ -211,7 +211,7 @@ public class ApiAgentConfigController {
     @PostMapping("/test-endpoint")
     public ResponseEntity<Map<String, Object>> testEndpoint(@RequestBody ApiAgentRequest request) {
         if (apiAgentChatExecutor == null) {
-            return ResponseEntity.ok(Map.of("error", "API agent executor not available"));
+            return ResponseEntity.status(503).body(Map.of("error", "API agent executor not available"));
         }
 
         Map<String, Object> result = apiAgentChatExecutor.testEndpoint(

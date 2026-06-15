@@ -148,7 +148,8 @@ public class EntityCategorizationService {
                             result.put(et.asText(), new String[]{domain, cat.getLabel()});
                         }
                     }
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log.debug("Failed to parse entityTypes from category {} metadata: {}", cat.getCategoryId(), e.getMessage());
                 }
             }
         }

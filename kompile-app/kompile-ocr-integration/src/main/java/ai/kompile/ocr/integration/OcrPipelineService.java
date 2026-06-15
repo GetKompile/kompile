@@ -46,11 +46,15 @@ import java.util.function.Consumer;
 @Service
 public class OcrPipelineService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected OcrPipelineService() {}
+
+
     private static final Logger logger = LoggerFactory.getLogger(OcrPipelineService.class);
 
-    private final OcrPipeline defaultOcrPipeline;
-    private final OcrPipeline vlmPipeline;
-    private final OcrPostProcessor postProcessor;
+    private OcrPipeline defaultOcrPipeline;
+    private OcrPipeline vlmPipeline;
+    private OcrPostProcessor postProcessor;
 
     // Runtime state - model IDs come from the UI/registry, not from defaults
     private boolean ocrEnabled = true;

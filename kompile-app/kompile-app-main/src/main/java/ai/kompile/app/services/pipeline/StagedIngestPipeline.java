@@ -711,6 +711,9 @@ public class StagedIngestPipeline implements AutoCloseable {
             Thread.currentThread().interrupt();
             logger.warn("Graph building interrupted");
         } catch (Exception e) {
+            if (e.getCause() instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             logger.error("Graph building worker error: {}", e.getMessage(), e);
         } finally {
             graphBuildingComplete.set(true);

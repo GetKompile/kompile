@@ -90,7 +90,7 @@ public class RemoteCatalogService {
                     return catalog;
                 }
             } catch (Exception e) {
-                log.warn("Failed to fetch catalog from {}: {}", url, e.getMessage());
+                log.warn("Failed to fetch catalog from {}", url, e);
             }
         }
 

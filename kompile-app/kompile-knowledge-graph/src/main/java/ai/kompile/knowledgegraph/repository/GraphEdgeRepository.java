@@ -316,4 +316,123 @@ public interface GraphEdgeRepository extends JpaRepository<GraphEdge, Long> {
      */
     @Query("SELECT e FROM GraphEdge e WHERE e.sourceNode.id = :nodeId OR e.targetNode.id = :nodeId")
     List<GraphEdge> findBySourceNodeIdOrTargetNodeId(@Param("nodeId") Long nodeId);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TEMPORAL QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Find edges that occurred within a time range
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.occurredAt IS NOT NULL " +
+           "AND e.occurredAt >= :from AND e.occurredAt <= :to " +
+           "ORDER BY e.occurredAt DESC")
+    List<GraphEdge> findByOccurredAtBetween(
+        @Param("from") LocalDateTime from,
+        @Param("to") LocalDateTime to,
+        Pageable pageable
+    );
+
+    /**
+     * Find edges within a fact sheet that occurred in a time range
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.factSheetId = :factSheetId " +
+           "AND e.occurredAt IS NOT NULL " +
+           "AND e.occurredAt >= :from AND e.occurredAt <= :to " +
+           "ORDER BY e.occurredAt DESC")
+    List<GraphEdge> findByFactSheetIdAndOccurredAtBetween(
+        @Param("factSheetId") Long factSheetId,
+        @Param("from") LocalDateTime from,
+        @Param("to") LocalDateTime to,
+        Pageable pageable
+    );
+
+    /**
+     * Find edges for a node that occurred in a time range
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE " +
+           "(e.sourceNode.nodeId = :nodeId OR e.targetNode.nodeId = :nodeId) " +
+           "AND e.occurredAt IS NOT NULL " +
+           "AND e.occurredAt >= :from AND e.occurredAt <= :to " +
+           "ORDER BY e.occurredAt DESC")
+    List<GraphEdge> findEdgesForNodeInTimeRange(
+        @Param("nodeId") String nodeId,
+        @Param("from") LocalDateTime from,
+        @Param("to") LocalDateTime to
+    );
+
+    /**
+     * Find the earliest and latest occurredAt timestamps in the graph
+     */
+    @Query("SELECT MIN(e.occurredAt), MAX(e.occurredAt) FROM GraphEdge e WHERE e.occurredAt IS NOT NULL")
+    List<Object[]> findTemporalBounds();
+
+    /**
+     * Find temporal bounds within a fact sheet
+     */
+    @Query("SELECT MIN(e.occurredAt), MAX(e.occurredAt) FROM GraphEdge e " +
+           "WHERE e.factSheetId = :factSheetId AND e.occurredAt IS NOT NULL")
+    List<Object[]> findTemporalBoundsByFactSheet(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Count edges with occurredAt set (for temporal coverage stats)
+     */
+    @Query("SELECT COUNT(e) FROM GraphEdge e WHERE e.occurredAt IS NOT NULL")
+    long countWithOccurredAt();
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAINTENANCE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Find active (non-stale) edges in a fact sheet
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.factSheetId = :factSheetId AND (e.stale IS NULL OR e.stale = false)")
+    List<GraphEdge> findActiveEdges(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Count active (non-stale) edges in a fact sheet
+     */
+    @Query("SELECT COUNT(e) FROM GraphEdge e WHERE e.factSheetId = :factSheetId AND (e.stale IS NULL OR e.stale = false)")
+    long countActiveEdges(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Find edges with low confidence in a fact sheet
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.factSheetId = :factSheetId " +
+           "AND (e.stale IS NULL OR e.stale = false) " +
+           "AND e.confidence IS NOT NULL AND e.confidence < :minConfidence")
+    List<GraphEdge> findLowConfidenceEdges(
+        @Param("factSheetId") Long factSheetId,
+        @Param("minConfidence") double minConfidence
+    );
+
+    /**
+     * Find edges whose TTL has expired
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.factSheetId = :factSheetId " +
+           "AND (e.stale IS NULL OR e.stale = false) " +
+           "AND e.validUntil IS NOT NULL AND e.validUntil < :now")
+    List<GraphEdge> findExpiredEdges(
+        @Param("factSheetId") Long factSheetId,
+        @Param("now") LocalDateTime now
+    );
+
+    /**
+     * Bulk mark edges as stale by their database IDs
+     */
+    @Modifying
+    @Query("UPDATE GraphEdge e SET e.stale = true, e.staleAt = :now WHERE e.id IN :ids")
+    void bulkMarkStale(@Param("ids") List<Long> ids, @Param("now") LocalDateTime now);
+
+    /**
+     * Hard-delete edges that were marked stale before the grace cutoff
+     */
+    @Modifying
+    @Query("DELETE FROM GraphEdge e WHERE e.factSheetId = :factSheetId " +
+           "AND e.stale = true AND e.staleAt IS NOT NULL AND e.staleAt < :graceCutoff")
+    int hardDeleteStaleEdges(
+        @Param("factSheetId") Long factSheetId,
+        @Param("graceCutoff") LocalDateTime graceCutoff
+    );
 }

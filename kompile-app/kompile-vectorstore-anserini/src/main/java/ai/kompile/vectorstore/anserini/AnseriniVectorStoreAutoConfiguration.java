@@ -32,7 +32,7 @@ import org.springframework.context.annotation.Lazy;
 /**
  * Auto-configuration for Anserini VectorStore.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = "ai.kompile.vectorstore.anserini.AnseriniVectorStoreImpl")
 @ConditionalOnProperty(name = "kompile.vectorstore.anserini.enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AnseriniVectorStoreProperties.class)

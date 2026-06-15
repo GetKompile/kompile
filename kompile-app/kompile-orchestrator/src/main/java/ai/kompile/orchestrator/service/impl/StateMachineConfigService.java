@@ -20,8 +20,11 @@ import ai.kompile.orchestrator.model.state.StateDefinition;
 import ai.kompile.orchestrator.model.state.StateTransition;
 import ai.kompile.orchestrator.repository.StateDefinitionRepository;
 import ai.kompile.orchestrator.repository.StateTransitionRepository;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,9 +37,13 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 public class StateMachineConfigService {
 
+
+    @Autowired
     private final StateDefinitionRepository stateRepository;
+    @Autowired
     private final StateTransitionRepository transitionRepository;
 
     // ==================== State CRUD ====================

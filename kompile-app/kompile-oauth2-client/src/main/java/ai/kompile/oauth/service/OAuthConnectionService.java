@@ -43,10 +43,14 @@ import java.util.stream.Collectors;
 @Service
 public class OAuthConnectionService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected OAuthConnectionService() {}
+
+
     private static final Logger log = LoggerFactory.getLogger(OAuthConnectionService.class);
 
-    private final OAuthConnectionRepository repository;
-    private final TokenEncryptionService encryptionService;
+    private OAuthConnectionRepository repository;
+    private TokenEncryptionService encryptionService;
     private final Map<String, OAuthProviderHandler> handlers = new ConcurrentHashMap<>();
     private final Map<String, String> pendingStates = new ConcurrentHashMap<>();
 

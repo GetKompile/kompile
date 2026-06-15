@@ -45,7 +45,7 @@ import java.util.List;
  *   <li>Registers local filters from Spring context</li>
  * </ul>
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ComponentScan(basePackages = "ai.kompile.filterchain")
 @EnableConfigurationProperties(FilterChainProperties.class)
 @ConditionalOnClass(name = "ai.kompile.filterchain.FilterChainAutoConfiguration")

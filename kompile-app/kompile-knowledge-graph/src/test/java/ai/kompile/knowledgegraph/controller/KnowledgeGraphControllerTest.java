@@ -574,7 +574,7 @@ class KnowledgeGraphControllerTest {
         Map<String, Object> viz = Map.of("nodes", List.of(), "edges", List.of());
         when(graphService.getVisualizationData("root-1", 2, 50)).thenReturn(viz);
 
-        ResponseEntity<Map<String, Object>> resp = controller.getVisualizationData("root-1", 2, 50);
+        ResponseEntity<Map<String, Object>> resp = controller.getVisualizationData("root-1", 2, 50, null, null);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         verify(graphService).getVisualizationData("root-1", 2, 50);

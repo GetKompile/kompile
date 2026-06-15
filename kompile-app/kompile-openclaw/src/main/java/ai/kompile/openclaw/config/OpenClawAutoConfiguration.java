@@ -19,13 +19,14 @@ import ai.kompile.openclaw.agent.OpenClawAgentService;
 import ai.kompile.openclaw.agent.ToolkitRegistry;
 import ai.kompile.openclaw.gateway.OpenClawWebSocketHandler;
 import ai.kompile.openclaw.gateway.channel.*;
-import ai.kompile.openclaw.model.AgentDefinition;
-import ai.kompile.openclaw.service.AgentRegistry;
-import ai.kompile.openclaw.service.HeartbeatScheduler;
-import ai.kompile.openclaw.service.PermissionService;
-import ai.kompile.openclaw.service.SessionService;
-import ai.kompile.openclaw.service.impl.DefaultPermissionService;
-import ai.kompile.openclaw.service.impl.InMemoryAgentRegistry;
+import ai.kompile.gateway.core.gateway.channel.ChannelManager;
+import ai.kompile.gateway.core.model.AgentDefinition;
+import ai.kompile.gateway.core.service.AgentRegistry;
+import ai.kompile.gateway.core.service.HeartbeatScheduler;
+import ai.kompile.gateway.core.service.PermissionService;
+import ai.kompile.gateway.core.service.SessionService;
+import ai.kompile.gateway.core.service.impl.DefaultPermissionService;
+import ai.kompile.gateway.core.service.impl.InMemoryAgentRegistry;
 import ai.kompile.openclaw.service.impl.JsonlSessionService;
 import ai.kompile.openclaw.tool.MemoryTool;
 import ai.kompile.openclaw.tool.ShellExecutionTool;
@@ -44,7 +45,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import java.io.IOException;
 
 @Slf4j
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @EnableWebSocket
 public class OpenClawAutoConfiguration implements WebSocketConfigurer {
 

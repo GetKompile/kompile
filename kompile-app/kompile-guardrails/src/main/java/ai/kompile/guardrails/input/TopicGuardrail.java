@@ -94,7 +94,9 @@ public class TopicGuardrail implements InputGuardrail {
             if (end > start) {
                 return response.substring(start + 1, end);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.debug("Failed to extract reason from topic response: {}", e.getMessage());
+        }
         return "Query is off-topic";
     }
 

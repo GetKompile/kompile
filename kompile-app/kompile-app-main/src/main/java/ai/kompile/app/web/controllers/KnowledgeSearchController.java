@@ -46,7 +46,7 @@ public class KnowledgeSearchController {
     @PostMapping("/search")
     public ResponseEntity<Map<String, Object>> search(@RequestBody Map<String, Object> request) {
         if (unifiedKnowledgeTool == null) {
-            return ResponseEntity.ok(Map.of(
+            return ResponseEntity.status(503).body(Map.of(
                     "error", "Unified knowledge tool not available",
                     "available", false));
         }

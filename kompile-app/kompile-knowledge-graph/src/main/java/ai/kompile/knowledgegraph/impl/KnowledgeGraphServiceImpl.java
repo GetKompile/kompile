@@ -36,18 +36,25 @@ import java.util.stream.Collectors;
 @Slf4j
 public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
-    private final ObjectMapper objectMapper;
+    private GraphNodeRepository nodeRepository;
+    private GraphEdgeRepository edgeRepository;
+    private EntityMentionRepository entityMentionRepository;
+    private ObjectMapper objectMapper;
 
     @Autowired
     public KnowledgeGraphServiceImpl(GraphNodeRepository nodeRepository,
                                       GraphEdgeRepository edgeRepository,
+                                      EntityMentionRepository entityMentionRepository,
                                       ObjectMapper objectMapper) {
         this.nodeRepository = nodeRepository;
         this.edgeRepository = edgeRepository;
+        this.entityMentionRepository = entityMentionRepository;
         this.objectMapper = objectMapper;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected KnowledgeGraphServiceImpl() {}
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // NODE MANAGEMENT
@@ -230,6 +237,61 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         return nodeRepository.searchByTitleOrDescription(query, pageable).getContent();
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphNode> getNodesByType(NodeLevel type, int limit) {
+        return nodeRepository.findByNodeType(type, PageRequest.of(0, limit)).getContent();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphNode> getNodesByType(NodeLevel type) {
+        return nodeRepository.findByNodeType(type);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphNode> getNodesByIds(List<String> nodeIds) {
+        if (nodeIds == null || nodeIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return nodeRepository.findByNodeIdIn(nodeIds);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FACT-SHEET-SCOPED NODE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphNode> getNodesByTypeInFactSheet(Long factSheetId, NodeLevel type) {
+        return nodeRepository.findByFactSheetIdAndNodeType(factSheetId, type);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphNode> getNodesInFactSheet(Long factSheetId) {
+        return nodeRepository.findByFactSheetId(factSheetId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphNode> getSourcesInFactSheet(Long factSheetId) {
+        return nodeRepository.findSourcesByFactSheet(factSheetId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<GraphNode> getNodeByExternalIdInFactSheet(String externalId, NodeLevel type, Long factSheetId) {
+        return nodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(externalId, type, factSheetId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphNode> searchNodesInFactSheet(Long factSheetId, String query, int limit) {
+        return nodeRepository.searchByFactSheetAndQuery(factSheetId, query, PageRequest.of(0, limit)).getContent();
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // EDGE MANAGEMENT
     // ═══════════════════════════════════════════════════════════════════════════
@@ -330,6 +392,40 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
     @Transactional(readOnly = true)
     public boolean edgeExists(String sourceNodeId, String targetNodeId) {
         return edgeRepository.findEdgeBetweenNodesBidirectional(sourceNodeId, targetNodeId).isPresent();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FACT-SHEET-SCOPED EDGE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphEdge> getEdgesForNodeInFactSheet(String nodeId, Long factSheetId) {
+        return edgeRepository.findAllEdgesForNodeIdInFactSheet(nodeId, factSheetId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean edgeExistsInFactSheet(String sourceNodeId, String targetNodeId, Long factSheetId) {
+        return edgeRepository.findEdgeBetweenNodesInFactSheet(sourceNodeId, targetNodeId, factSheetId).isPresent();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphEdge> getEdgesInFactSheet(Long factSheetId) {
+        return edgeRepository.findByFactSheetId(factSheetId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphEdge> getEdgesByTypeInFactSheet(Long factSheetId, EdgeType edgeType) {
+        return edgeRepository.findByFactSheetIdAndEdgeType(factSheetId, edgeType);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public GraphEdge findEdgeBetweenNodes(String sourceNodeId, String targetNodeId) {
+        return edgeRepository.findEdgeBetweenNodes(sourceNodeId, targetNodeId).orElse(null);
     }
 
     @Override
@@ -565,6 +661,7 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
             case ENTITY -> 3;
             case CUSTOM -> 4;
             case SNIPPET -> 5;
+            case ATTACHMENT -> 6;
         };
     }
 
@@ -584,6 +681,9 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         if (node.getSourceNode() != null) {
             map.put("sourceId", node.getSourceNode().getNodeId());
         }
+        if (node.getOccurredAt() != null) {
+            map.put("occurredAt", node.getOccurredAt().toString());
+        }
         return map;
     }
 
@@ -597,7 +697,182 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         map.put("label", edge.getLabel());
         map.put("description", edge.getDescription());
         map.put("bidirectional", edge.getBidirectional());
+        if (edge.getOccurredAt() != null) {
+            map.put("occurredAt", edge.getOccurredAt().toString());
+        }
         return map;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TEMPORAL QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Object> getVisualizationDataInTimeRange(java.time.LocalDateTime from,
+                                                                java.time.LocalDateTime to,
+                                                                int maxNodes) {
+        // Get edges in the time range
+        List<GraphEdge> edges = edgeRepository.findByOccurredAtBetween(from, to,
+                PageRequest.of(0, maxNodes * 3));
+
+        // Collect nodes connected by those edges
+        Set<String> nodeIds = new LinkedHashSet<>();
+        for (GraphEdge e : edges) {
+            nodeIds.add(e.getSourceNode().getNodeId());
+            nodeIds.add(e.getTargetNode().getNodeId());
+        }
+
+        // Load the nodes
+        List<GraphNode> nodes = new ArrayList<>();
+        for (String nodeId : nodeIds) {
+            if (nodes.size() >= maxNodes) break;
+            nodeRepository.findByNodeId(nodeId).ifPresent(nodes::add);
+        }
+
+        // Filter edges to only include those between loaded nodes
+        Set<String> loadedNodeIds = nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
+        edges = edges.stream()
+                .filter(e -> loadedNodeIds.contains(e.getSourceNode().getNodeId()) &&
+                             loadedNodeIds.contains(e.getTargetNode().getNodeId()))
+                .collect(Collectors.toList());
+
+        // Convert to D3-friendly format
+        List<Map<String, Object>> nodeData = nodes.stream()
+                .map(this::nodeToVisualizationMap)
+                .collect(Collectors.toList());
+
+        List<Map<String, Object>> edgeData = edges.stream()
+                .map(this::edgeToVisualizationMap)
+                .collect(Collectors.toList());
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("nodes", nodeData);
+        result.put("edges", edgeData);
+        result.put("metadata", Map.of(
+                "nodeCount", nodes.size(),
+                "edgeCount", edges.size()
+        ));
+        result.put("temporalBounds", getTemporalBounds());
+
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphEdge> searchEdgesByTimeRange(java.time.LocalDateTime from,
+                                                   java.time.LocalDateTime to,
+                                                   int limit) {
+        return edgeRepository.findByOccurredAtBetween(from, to, PageRequest.of(0, limit));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Object> getTemporalBounds() {
+        List<Object[]> bounds = edgeRepository.findTemporalBounds();
+        if (bounds.isEmpty() || bounds.get(0)[0] == null) {
+            return Map.of();
+        }
+        Object[] row = bounds.get(0);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("earliest", row[0].toString());
+        result.put("latest", row[1].toString());
+        result.put("temporalEdgeCount", edgeRepository.countWithOccurredAt());
+        return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ENTITY MENTION OPERATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<EntityMention> getEntityMentionsForNode(GraphNode node) {
+        return entityMentionRepository.findByNode(node);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<EntityMention> getEntityMentionsForNode(String nodeId) {
+        GraphNode node = nodeRepository.findByNodeId(nodeId).orElse(null);
+        if (node == null) {
+            return Collections.emptyList();
+        }
+        return entityMentionRepository.findByNode(node);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<EntityMention> findEntityMention(GraphNode node, String entityName) {
+        return entityMentionRepository.findByNodeAndEntityName(node, entityName);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<EntityMention> findEntityMentionInFactSheet(GraphNode node, String entityName, Long factSheetId) {
+        return entityMentionRepository.findByNodeAndEntityNameAndFactSheet(node, entityName, factSheetId);
+    }
+
+    @Override
+    @Transactional
+    public EntityMention saveEntityMention(EntityMention mention) {
+        return entityMentionRepository.save(mention);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<Object[]> findNodePairsWithSharedEntities(int minShared) {
+        return entityMentionRepository.findNodePairsWithSharedEntities(minShared);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<Object[]> findNodePairsWithSharedEntitiesInFactSheet(Long factSheetId, int minShared) {
+        return entityMentionRepository.findNodePairsWithSharedEntitiesByFactSheet(factSheetId, minShared);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> getEntityNamesForNode(String nodeId) {
+        return entityMentionRepository.findEntitiesByNodeId(nodeId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphNode> getNodesWithEntity(String entityName) {
+        return entityMentionRepository.findNodesWithEntity(entityName);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COUNT / STATISTICS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public long countNodesByType(NodeLevel type) {
+        return nodeRepository.countByNodeType(type);
+    }
+
+    @Override
+    public long countNodesByTypeInFactSheet(Long factSheetId, NodeLevel type) {
+        return nodeRepository.countByFactSheetIdAndNodeType(factSheetId, type);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAINTENANCE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public void flushPendingNodes() {
+        // JPA flushes automatically at transaction boundaries; this is a no-op for the JPA implementation.
+    }
+
+    @Override
+    @Transactional
+    public void deleteByFactSheetId(Long factSheetId) {
+        entityMentionRepository.deleteByFactSheetId(factSheetId);
+        int edgesDeleted = edgeRepository.deleteByFactSheetId(factSheetId);
+        int nodesDeleted = nodeRepository.deleteByFactSheetId(factSheetId);
+        log.info("Deleted {} edges and {} nodes for factSheetId={}", edgesDeleted, nodesDeleted, factSheetId);
     }
 
     // Helper class for BFS traversal

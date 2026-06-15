@@ -36,8 +36,11 @@ import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -53,15 +56,24 @@ import java.util.function.Consumer;
  */
 @Service
 @RequiredArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class ExtractionJobService {
 
+
+    @Autowired
     private final ExtractionJobRepository jobRepository;
+    @Autowired
     private final TripleProposalRepository proposalRepository;
+    @Autowired
     private final ExtractionLogRepository logRepository;
+    @Autowired
     private final GraphNodeRepository nodeRepository;
+    @Autowired
     private final GraphEdgeRepository edgeRepository;
+    @Autowired
     private final GraphStorageRegistry storageRegistry;
+    @Autowired
     private final ObjectMapper objectMapper;
 
     // Track active jobs for progress updates

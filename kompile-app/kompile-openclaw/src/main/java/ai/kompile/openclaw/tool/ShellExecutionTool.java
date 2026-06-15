@@ -15,79 +15,15 @@
  */
 package ai.kompile.openclaw.tool;
 
-import ai.kompile.openclaw.service.PermissionService;
-import ai.kompile.react.model.ToolDefinition;
-import lombok.extern.slf4j.Slf4j;
+import ai.kompile.gateway.core.service.PermissionService;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Map;
-
-@Slf4j
-public class ShellExecutionTool {
-
-    private final PermissionService permissions;
+/**
+ * OpenClaw alias for the shared {@link ai.kompile.gateway.core.tool.ShellExecutionTool}.
+ * Kept for backwards compatibility; all logic lives in the shared module.
+ */
+public class ShellExecutionTool extends ai.kompile.gateway.core.tool.ShellExecutionTool {
 
     public ShellExecutionTool(PermissionService permissions) {
-        this.permissions = permissions;
-    }
-
-    public ToolDefinition getToolDefinition() {
-        return ToolDefinition.builder()
-                .name("run_command")
-                .description("Run a shell command on the host system. Use for file operations, git, and system tasks.")
-                .parameters(Map.of(
-                        "type", "object",
-                        "properties", Map.of(
-                                "command", Map.of(
-                                        "type", "string",
-                                        "description", "The command to execute"
-                                )
-                        ),
-                        "required", java.util.List.of("command")
-                ))
-                .executor(this::execute)
-                .requiresApproval(false)
-                .parallelizable(false)
-                .build();
-    }
-
-    private String execute(Map<String, Object> arguments) {
-        String command = (String) arguments.get("command");
-        if (command == null || command.isBlank()) {
-            return "Error: No command provided";
-        }
-
-        String safety = permissions.checkCommandSafety(command);
-        if ("denied".equals(safety)) {
-            return "Permission denied. This command is blocked.";
-        }
-        if ("needs_approval".equals(safety)) {
-            return "Permission pending. This command requires approval. Ask the user to approve: " + command;
-        }
-
-        try {
-            ProcessBuilder pb = new ProcessBuilder("sh", "-c", command);
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-
-            String output = new String(
-                    process.getInputStream().readAllBytes(),
-                    StandardCharsets.UTF_8
-            );
-
-            int exitCode = process.waitFor();
-            String result = output.isBlank() ? "(no output)" : output.trim();
-            
-            if (exitCode != 0) {
-                result = "Exit code: " + exitCode + "\n" + result;
-            }
-
-            log.info("Executed command: {} -> exit code {}", command, exitCode);
-            return result;
-
-        } catch (Exception e) {
-            log.error("Command execution failed: {}", command, e);
-            return "Error executing command: " + e.getMessage();
-        }
+        super(permissions);
     }
 }

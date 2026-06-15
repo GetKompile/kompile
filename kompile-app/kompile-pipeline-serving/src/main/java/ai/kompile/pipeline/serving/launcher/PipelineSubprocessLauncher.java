@@ -281,7 +281,7 @@ public class PipelineSubprocessLauncher {
                 mode,
                 requestDataJson,
                 port,
-                null, // nd4jConfigJson - TODO: resolve from config service
+                captureNd4jConfigFromSystemProperties(),
                 serving.getMemoryStopPercent(),
                 serving.getMemoryCriticalPercent(),
                 serving.getMemoryKillPercent(),
@@ -455,6 +455,32 @@ public class PipelineSubprocessLauncher {
             return socket.getLocalPort();
         } catch (IOException e) {
             return 9090; // fallback
+        }
+    }
+
+    /**
+     * Capture ND4J-relevant system properties as a JSON string for subprocess forwarding.
+     * Returns null if no relevant properties are set or serialization fails.
+     */
+    private String captureNd4jConfigFromSystemProperties() {
+        try {
+            Map<String, String> nd4jProps = new java.util.LinkedHashMap<>();
+            for (Map.Entry<Object, Object> entry : System.getProperties().entrySet()) {
+                String key = entry.getKey().toString();
+                for (String prefix : FORWARDED_PROPERTY_PREFIXES) {
+                    if (key.startsWith(prefix)) {
+                        nd4jProps.put(key, entry.getValue().toString());
+                        break;
+                    }
+                }
+            }
+            if (nd4jProps.isEmpty()) {
+                return null;
+            }
+            return objectMapper.writeValueAsString(nd4jProps);
+        } catch (Exception e) {
+            logger.warn("Failed to capture ND4J config from system properties: {}", e.getMessage());
+            return null;
         }
     }
 }

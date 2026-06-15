@@ -17,7 +17,7 @@ import org.springframework.context.annotation.Configuration;
  * The KVCacheManager checks properties.isEnabled() internally before performing operations.
  * Config is persisted to ~/.kompile/kvcache/config.json for survival across restarts.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(KVCacheProperties.class)
 public class KVCacheAutoConfiguration {
 

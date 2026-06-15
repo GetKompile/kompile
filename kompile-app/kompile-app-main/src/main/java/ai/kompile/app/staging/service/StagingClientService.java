@@ -178,7 +178,7 @@ public class StagingClientService {
                 return ConnectionTestResult.failure("HTTP " + response.statusCode() + ": " + response.body());
             }
         } catch (Exception e) {
-            log.error("Connection test failed for {}: {}", config.getEndpointUrl(), e.getMessage());
+            log.error("Connection test failed for {}", config.getEndpointUrl(), e);
             return ConnectionTestResult.failure(e.getMessage());
         }
     }
@@ -218,7 +218,7 @@ public class StagingClientService {
                 return Optional.of(objectMapper.readTree(response.body()));
             }
         } catch (Exception e) {
-            log.error("Failed to get registry from {}: {}", config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to get registry from {}", config.getEndpointUrl(), e);
         }
         return Optional.empty();
     }
@@ -249,7 +249,7 @@ public class StagingClientService {
                 return Optional.of(objectMapper.readTree(response.body()));
             }
         } catch (Exception e) {
-            log.error("Failed to get catalog from {}: {}", config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to get catalog from {}", config.getEndpointUrl(), e);
         }
         return Optional.empty();
     }
@@ -280,7 +280,7 @@ public class StagingClientService {
                 return Optional.of(objectMapper.readTree(response.body()));
             }
         } catch (Exception e) {
-            log.error("Failed to get staging status from {}: {}", config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to get staging status from {}", config.getEndpointUrl(), e);
         }
         return Optional.empty();
     }
@@ -313,7 +313,7 @@ public class StagingClientService {
                 log.error("Failed to stage model {}: HTTP {}", modelId, response.statusCode());
             }
         } catch (Exception e) {
-            log.error("Failed to stage model {} on {}: {}", modelId, config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to stage model {} on {}", modelId, config.getEndpointUrl(), e);
         }
         return Optional.empty();
     }
@@ -343,7 +343,7 @@ public class StagingClientService {
 
             return response.statusCode() == 200;
         } catch (Exception e) {
-            log.error("Failed to promote model {} on {}: {}", modelId, config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to promote model {} on {}", modelId, config.getEndpointUrl(), e);
             return false;
         }
     }
@@ -374,7 +374,7 @@ public class StagingClientService {
                 return Optional.of(objectMapper.readTree(response.body()));
             }
         } catch (Exception e) {
-            log.error("Failed to get model {} from {}: {}", modelId, config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to get model {} from {}", modelId, config.getEndpointUrl(), e);
         }
         return Optional.empty();
     }
@@ -405,7 +405,7 @@ public class StagingClientService {
                 return Optional.of(objectMapper.readTree(response.body()));
             }
         } catch (Exception e) {
-            log.error("Failed to check model exists {} from {}: {}", modelId, config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to check model exists {} from {}", modelId, config.getEndpointUrl(), e);
         }
         return Optional.empty();
     }
@@ -443,7 +443,7 @@ public class StagingClientService {
 
             return Optional.of(objectMapper.readTree(response.body()));
         } catch (Exception e) {
-            log.error("Failed to delete model {} from {}: {}", modelId, config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to delete model {} from {}", modelId, config.getEndpointUrl(), e);
         }
         return Optional.empty();
     }
@@ -482,7 +482,7 @@ public class StagingClientService {
 
             return Optional.of(objectMapper.readTree(response.body()));
         } catch (Exception e) {
-            log.error("Failed to replace model {} on {}: {}", modelId, config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to replace model {} on {}", modelId, config.getEndpointUrl(), e);
         }
         return Optional.empty();
     }
@@ -731,7 +731,7 @@ public class StagingClientService {
 
             return response.statusCode() == 200;
         } catch (Exception e) {
-            log.error("Failed to activate model {} on {}: {}", modelId, config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to activate model {} on {}", modelId, config.getEndpointUrl(), e);
             return false;
         }
     }
@@ -770,7 +770,7 @@ public class StagingClientService {
             }
             return Optional.empty();
         } catch (Exception e) {
-            log.error("Failed to normalize registry on {}: {}", config.getEndpointUrl(), e.getMessage());
+            log.error("Failed to normalize registry on {}", config.getEndpointUrl(), e);
             return Optional.empty();
         }
     }
@@ -922,18 +922,18 @@ public class StagingClientService {
 
             HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
 
-            if (response.statusCode() == 200) {
-                try (InputStream is = response.body()) {
-                    Files.copy(is, destPath, StandardCopyOption.REPLACE_EXISTING);
+            try (InputStream bodyStream = response.body()) {
+                if (response.statusCode() == 200) {
+                    Files.copy(bodyStream, destPath, StandardCopyOption.REPLACE_EXISTING);
+                    log.info("Successfully downloaded file to {}", destPath);
+                    return DownloadFileResult.success();
+                } else if (response.statusCode() == 404) {
+                    log.warn("File not found (404) at {}", url);
+                    return DownloadFileResult.notFound(url);
+                } else {
+                    log.error("Failed to download file from {}: HTTP {}", url, response.statusCode());
+                    return DownloadFileResult.httpError(response.statusCode(), url);
                 }
-                log.info("Successfully downloaded file to {}", destPath);
-                return DownloadFileResult.success();
-            } else if (response.statusCode() == 404) {
-                log.warn("File not found (404) at {}", url);
-                return DownloadFileResult.notFound(url);
-            } else {
-                log.error("Failed to download file from {}: HTTP {}", url, response.statusCode());
-                return DownloadFileResult.httpError(response.statusCode(), url);
             }
         } catch (Exception e) {
             log.error("Error downloading file from {}: {}", url, e.getMessage(), e);

@@ -180,8 +180,8 @@ public class EnvironmentConfigController {
 
             // Count files if it's a directory
             if (Files.isDirectory(path)) {
-                try {
-                    long fileCount = Files.list(path).count();
+                try (var dirStream = Files.list(path)) {
+                    long fileCount = dirStream.count();
                     status.put("fileCount", fileCount);
                 } catch (IOException e) {
                     status.put("fileCount", -1);
@@ -340,14 +340,24 @@ public class EnvironmentConfigController {
 
         // If it's just "java", check if it's on PATH
         if (javaPath.equals("java")) {
+            Process process = null;
             try {
                 ProcessBuilder pb = new ProcessBuilder("java", "-version");
                 pb.redirectErrorStream(true);
-                Process process = pb.start();
-                int exitCode = process.waitFor();
-                return exitCode == 0;
+                process = pb.start();
+                if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    return false;
+                }
+                return process.exitValue() == 0;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                if (process != null) process.destroyForcibly();
+                return false;
             } catch (Exception e) {
                 return false;
+            } finally {
+                if (process != null && process.isAlive()) process.destroyForcibly();
             }
         }
 

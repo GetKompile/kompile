@@ -20,6 +20,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { GraphService } from '../../services/graph.service';
 import { GraphNode } from '../../models/graph-models';
 
@@ -27,7 +28,7 @@ import { GraphNode } from '../../models/graph-models';
   standalone: true,
   selector: 'app-graph-node-popover',
   imports: [
-    CommonModule, MatIconModule, MatButtonModule, MatChipsModule, MatProgressSpinnerModule
+    CommonModule, MatIconModule, MatButtonModule, MatChipsModule, MatProgressSpinnerModule, MatTooltipModule
   ],
   template: `
     <div class="popover-card" *ngIf="visible && nodeId">
@@ -82,6 +83,49 @@ import { GraphNode } from '../../models/graph-models';
           <div class="meta-item" *ngIf="node.edgeCount > 0">
             <span class="meta-label">Edges</span>
             <span class="meta-value">{{ node.edgeCount }}</span>
+          </div>
+        </div>
+
+        <!-- MEBN Metadata -->
+        <div class="mebn-meta-section" *ngIf="mebnMfragName">
+          <span class="meta-label">MEBN Structure</span>
+          <div class="mebn-meta-badges">
+            <span class="popover-mebn-badge popover-mfrag-badge" matTooltip="MFrag membership">
+              {{ mebnMfragName }}
+            </span>
+            <span class="popover-mebn-badge popover-role-badge"
+                  [class.popover-role-resident]="mebnNodeRole === 'RESIDENT'"
+                  [class.popover-role-input]="mebnNodeRole === 'INPUT'">
+              {{ mebnNodeRole }}
+            </span>
+            <span *ngIf="mebnEntityType" class="popover-mebn-badge popover-entity-badge"
+                  [matTooltip]="'Entity ID: ' + (mebnEntityId || 'N/A')">
+              {{ mebnEntityType }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Bayesian Inference -->
+        <div class="bayesian-section" *ngIf="posteriorValue != null">
+          <span class="meta-label">Bayesian Inference</span>
+          <div class="bayesian-bar-row">
+            <div class="bayesian-values">
+              <span class="prior-val" *ngIf="priorValue != null"
+                    matTooltip="Prior probability">{{ (priorValue * 100).toFixed(1) }}%</span>
+              <mat-icon class="shift-icon" *ngIf="priorValue != null">arrow_forward</mat-icon>
+              <span class="posterior-val"
+                    [style.color]="getPosteriorColor(posteriorValue)"
+                    matTooltip="Posterior probability">{{ (posteriorValue * 100).toFixed(1) }}%</span>
+            </div>
+            <div class="bayesian-bar">
+              <div class="bayesian-bar-fill"
+                   [style.width.%]="posteriorValue * 100"
+                   [style.background-color]="getPosteriorColor(posteriorValue)"></div>
+              <div *ngIf="priorValue != null"
+                   class="bayesian-prior-marker"
+                   [style.left.%]="priorValue * 100"
+                   matTooltip="Prior: {{ (priorValue * 100).toFixed(1) }}%"></div>
+            </div>
           </div>
         </div>
 
@@ -141,6 +185,47 @@ import { GraphNode } from '../../models/graph-models';
       max-height: 120px; overflow-y: auto;
     }
 
+    .bayesian-section { margin-bottom: 8px; }
+    .bayesian-bar-row { margin-top: 4px; }
+    .bayesian-values { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+    .prior-val { font-size: 11px; color: #888; }
+    .shift-icon { font-size: 12px; width: 12px; height: 12px; color: #666; }
+    .posterior-val { font-size: 13px; font-weight: 600; }
+    .bayesian-bar { position: relative; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: visible; }
+    .bayesian-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+    .bayesian-prior-marker {
+      position: absolute; top: -2px; width: 2px; height: 10px;
+      background: #fff; opacity: 0.6; border-radius: 1px;
+      pointer-events: auto; cursor: default;
+    }
+
+    .mebn-meta-section { margin-bottom: 8px; }
+    .mebn-meta-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .popover-mebn-badge {
+      display: inline-flex; align-items: center; padding: 1px 6px;
+      border-radius: 3px; font-size: 10px; font-weight: 500; letter-spacing: 0.3px;
+    }
+    .popover-mfrag-badge {
+      background: rgba(102, 126, 234, 0.15); color: #90a0ff;
+      border: 1px solid rgba(102, 126, 234, 0.3);
+    }
+    .popover-role-badge {
+      background: rgba(255, 255, 255, 0.08); color: #aaa;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+    .popover-role-badge.popover-role-resident {
+      background: rgba(34, 197, 94, 0.15); color: #66bb6a;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    .popover-role-badge.popover-role-input {
+      background: rgba(139, 92, 246, 0.15); color: #b39ddb;
+      border: 1px solid rgba(139, 92, 246, 0.3);
+    }
+    .popover-entity-badge {
+      background: rgba(245, 158, 11, 0.15); color: #ffb74d;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
     .popover-actions { display: flex; justify-content: flex-end; }
     .popover-actions button { font-size: 12px; }
     .popover-actions mat-icon { font-size: 16px; width: 16px; height: 16px; margin-right: 4px; }
@@ -149,6 +234,12 @@ import { GraphNode } from '../../models/graph-models';
 export class GraphNodePopoverComponent implements OnChanges {
   @Input() nodeId: string | null = null;
   @Input() visible = false;
+  @Input() posteriorValue: number | null = null;
+  @Input() priorValue: number | null = null;
+  @Input() mebnMfragName: string | null = null;
+  @Input() mebnNodeRole: string | null = null;
+  @Input() mebnEntityType: string | null = null;
+  @Input() mebnEntityId: string | null = null;
   @Output() openInGraph = new EventEmitter<string>();
   @Output() closed = new EventEmitter<void>();
 
@@ -192,5 +283,11 @@ export class GraphNodePopoverComponent implements OnChanges {
 
   close(): void {
     this.closed.emit();
+  }
+
+  getPosteriorColor(value: number): string {
+    if (value >= 0.7) return '#ef5350';
+    if (value >= 0.4) return '#ffb74d';
+    return '#66bb6a';
   }
 }

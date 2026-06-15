@@ -36,8 +36,8 @@ import java.util.stream.Collectors;
 @Slf4j
 public class SourceWeightingServiceImpl implements SourceWeightingService {
 
-    private final SourceWeightRepository weightRepository;
-    private final GraphNodeRepository nodeRepository;
+    private SourceWeightRepository weightRepository;
+    private GraphNodeRepository nodeRepository;
 
     @Value("${kompile.source-weighting.default-weight:1.0}")
     private double defaultWeight;
@@ -54,6 +54,10 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
         this.weightRepository = weightRepository;
         this.nodeRepository = nodeRepository;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected SourceWeightingServiceImpl() {}
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // WEIGHT MANAGEMENT

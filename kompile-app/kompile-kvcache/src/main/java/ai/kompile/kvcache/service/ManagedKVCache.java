@@ -42,8 +42,8 @@ public class ManagedKVCache implements AutoCloseable {
     private UnifiedKvCacheManager turboQuantCache;
 
     // Track tokens appended per sequence for prefix indexing
-    private final Map<Integer, java.util.List<int[]>> sequenceTokenHistory = new HashMap<>();
-    private int activeSequenceCount = 0;
+    private final Map<Integer, java.util.List<int[]>> sequenceTokenHistory = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile int activeSequenceCount = 0;
 
     public ManagedKVCache(String name, KVCacheConfig config, KVCacheStatisticsCollector statsCollector) {
         this(name, config, statsCollector, null, null);

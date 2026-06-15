@@ -424,7 +424,8 @@ public final class LLMChatUtils {
                             }
                         }
                     } catch (Exception e) {
-                        // Fall through to return null
+                        org.slf4j.LoggerFactory.getLogger(LLMChatUtils.class)
+                                .warn("Failed to extract source_id from filter expression via reflection: {}", e.getMessage());
                     }
                 }
                 return null;

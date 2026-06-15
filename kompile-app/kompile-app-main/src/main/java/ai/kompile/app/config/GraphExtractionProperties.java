@@ -16,6 +16,8 @@
 
 package ai.kompile.app.config;
 
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
@@ -26,41 +28,21 @@ import java.util.List;
  * These properties control how entities and relationships are extracted during
  * document indexing and stored in the knowledge graph.
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConfigurationProperties(prefix = "kompile.graph")
+@Getter
+@Setter
 public class GraphExtractionProperties {
 
     private Extraction extraction = new Extraction();
     private Deduplication deduplication = new Deduplication();
     private Neo4j neo4j = new Neo4j();
 
-    public Extraction getExtraction() {
-        return extraction;
-    }
-
-    public void setExtraction(Extraction extraction) {
-        this.extraction = extraction;
-    }
-
-    public Deduplication getDeduplication() {
-        return deduplication;
-    }
-
-    public void setDeduplication(Deduplication deduplication) {
-        this.deduplication = deduplication;
-    }
-
-    public Neo4j getNeo4j() {
-        return neo4j;
-    }
-
-    public void setNeo4j(Neo4j neo4j) {
-        this.neo4j = neo4j;
-    }
-
     /**
      * Entity/relationship extraction settings.
      */
+    @Getter
+    @Setter
     public static class Extraction {
         /**
          * Enable automatic entity/relationship extraction during indexing.
@@ -97,66 +79,13 @@ public class GraphExtractionProperties {
          */
         private int maxRelationshipsPerChunk = 30;
 
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        public int getBatchSize() {
-            return batchSize;
-        }
-
-        public void setBatchSize(int batchSize) {
-            this.batchSize = batchSize;
-        }
-
-        public String getSchemaEnforcement() {
-            return schemaEnforcement;
-        }
-
-        public void setSchemaEnforcement(String schemaEnforcement) {
-            this.schemaEnforcement = schemaEnforcement;
-        }
-
-        public List<String> getEntityTypes() {
-            return entityTypes;
-        }
-
-        public void setEntityTypes(List<String> entityTypes) {
-            this.entityTypes = entityTypes;
-        }
-
-        public List<String> getRelationshipTypes() {
-            return relationshipTypes;
-        }
-
-        public void setRelationshipTypes(List<String> relationshipTypes) {
-            this.relationshipTypes = relationshipTypes;
-        }
-
-        public int getMaxEntitiesPerChunk() {
-            return maxEntitiesPerChunk;
-        }
-
-        public void setMaxEntitiesPerChunk(int maxEntitiesPerChunk) {
-            this.maxEntitiesPerChunk = maxEntitiesPerChunk;
-        }
-
-        public int getMaxRelationshipsPerChunk() {
-            return maxRelationshipsPerChunk;
-        }
-
-        public void setMaxRelationshipsPerChunk(int maxRelationshipsPerChunk) {
-            this.maxRelationshipsPerChunk = maxRelationshipsPerChunk;
-        }
     }
 
     /**
      * Entity deduplication settings.
      */
+    @Getter
+    @Setter
     public static class Deduplication {
         /**
          * Enable entity deduplication across documents.
@@ -168,26 +97,13 @@ public class GraphExtractionProperties {
          */
         private double similarityThreshold = 0.85;
 
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        public double getSimilarityThreshold() {
-            return similarityThreshold;
-        }
-
-        public void setSimilarityThreshold(double similarityThreshold) {
-            this.similarityThreshold = similarityThreshold;
-        }
     }
 
     /**
      * Neo4j connection settings.
      */
+    @Getter
+    @Setter
     public static class Neo4j {
         /**
          * Enable Neo4j graph store.
@@ -214,44 +130,5 @@ public class GraphExtractionProperties {
          */
         private String database = "neo4j";
 
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        public String getUri() {
-            return uri;
-        }
-
-        public void setUri(String uri) {
-            this.uri = uri;
-        }
-
-        public String getUsername() {
-            return username;
-        }
-
-        public void setUsername(String username) {
-            this.username = username;
-        }
-
-        public String getPassword() {
-            return password;
-        }
-
-        public void setPassword(String password) {
-            this.password = password;
-        }
-
-        public String getDatabase() {
-            return database;
-        }
-
-        public void setDatabase(String database) {
-            this.database = database;
-        }
     }
 }

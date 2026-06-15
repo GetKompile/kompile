@@ -40,6 +40,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * REST controller for cross-index tracking and synchronization.
@@ -292,7 +294,7 @@ public class CrossIndexController {
         } else {
             // Wait for completion
             try {
-                SyncResult result = future.get();
+                SyncResult result = future.get(30, TimeUnit.MINUTES);
                 return ResponseEntity.ok(new SyncJobResponse(
                         result.jobId(), result.status().name(), Instant.now(),
                         String.format("Processed %d documents, %d passages",
@@ -321,7 +323,7 @@ public class CrossIndexController {
                     jobId, "RUNNING", Instant.now(), "Knowledge graph sync started"));
         } else {
             try {
-                SyncResult result = future.get();
+                SyncResult result = future.get(30, TimeUnit.MINUTES);
                 return ResponseEntity.ok(new SyncJobResponse(
                         result.jobId(), result.status().name(), Instant.now(),
                         String.format("Processed %d documents, %d passages",
@@ -350,7 +352,7 @@ public class CrossIndexController {
                     jobId, "RUNNING", Instant.now(), "Full sync started"));
         } else {
             try {
-                SyncResult result = future.get();
+                SyncResult result = future.get(30, TimeUnit.MINUTES);
                 return ResponseEntity.ok(new SyncJobResponse(
                         result.jobId(), result.status().name(), Instant.now(),
                         String.format("Processed %d documents, %d passages",

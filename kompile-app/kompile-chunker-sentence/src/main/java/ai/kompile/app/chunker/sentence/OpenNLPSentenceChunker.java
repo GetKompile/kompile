@@ -55,7 +55,7 @@ public class OpenNLPSentenceChunker implements TextChunker {
     private static final String DEFAULT_LANGUAGE = "en";
 
     private final Map<String, SentenceDetectorME> sentenceDetectors = new ConcurrentHashMap<>();
-    private final List<String> availableLanguages = new ArrayList<>();
+    private final List<String> availableLanguages = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final KompileModelManager modelManager;
 
     public OpenNLPSentenceChunker() {

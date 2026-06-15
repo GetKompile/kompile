@@ -284,8 +284,8 @@ public class DistillationService {
         } catch (Exception e) {
             throw new RuntimeException("Real distillation failed: " + e.getMessage(), e);
         } finally {
-            if (teacher != null) try { teacher.close(); } catch (Exception ignored) {}
-            if (student != null) try { student.close(); } catch (Exception ignored) {}
+            if (teacher != null) try { teacher.close(); } catch (Exception e) { log.warn("Failed to close teacher SameDiff model after distillation", e); }
+            if (student != null) try { student.close(); } catch (Exception e) { log.warn("Failed to close student SameDiff model after distillation", e); }
         }
     }
 
@@ -556,7 +556,8 @@ public class DistillationService {
             for (SseEmitter emitter : emitters) {
                 try {
                     emitter.complete();
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log.warn("Failed to complete SSE emitter for job '{}'", jobId, e);
                 }
             }
             emitters.clear();
@@ -607,5 +608,18 @@ public class DistillationService {
         entry.put("name", name);
         entry.put("description", description);
         return entry;
+    }
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        distillationExecutor.shutdown();
+        try {
+            if (!distillationExecutor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                distillationExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            distillationExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

@@ -182,6 +182,10 @@ public class OfficeGraphExtractor implements DocumentGraphExtractor {
         }
         String modificationDate = str(meta.get(META_MODIFICATION_DATE));
         if (modificationDate == null) modificationDate = str(meta.get(META_LAST_MODIFIED));
+
+        // Compute occurredAt for all relations: prefer modificationDate > creationDate > lastModified
+        String occurredAt = modificationDate != null ? modificationDate : creationDate;
+
         if (modificationDate != null) {
             String modDateId = entityId("date:" + modificationDate);
             if (!entityIndex.containsKey(modDateId)) {
@@ -842,7 +846,9 @@ public class OfficeGraphExtractor implements DocumentGraphExtractor {
                 if (headingText == null || headingText.isBlank()) continue;
 
                 int level = 1;
-                try { level = Integer.parseInt(headingLevel); } catch (NumberFormatException ignored) {}
+                try { level = Integer.parseInt(headingLevel); } catch (NumberFormatException e) {
+                    log.debug("Could not parse Office document heading level '{}' as integer: {}", headingLevel, e.getMessage());
+                }
 
                 String sectionId = entityId("section:" + source + ":" + headingText.toLowerCase());
                 Map<String, String> sectionProps = new LinkedHashMap<>();
@@ -1814,6 +1820,15 @@ public class OfficeGraphExtractor implements DocumentGraphExtractor {
                     }
                 }
             }
+        }
+
+        // Stamp occurredAt on every relation's properties map
+        if (occurredAt != null) {
+            relations.replaceAll(r -> {
+                Map<String, String> props = new LinkedHashMap<>(r.properties() != null ? r.properties() : Map.of());
+                props.putIfAbsent("occurredAt", occurredAt);
+                return new ExtractedRelation(r.source(), r.target(), r.type(), r.description(), r.confidence(), props);
+            });
         }
 
         entities.addAll(entityIndex.values());

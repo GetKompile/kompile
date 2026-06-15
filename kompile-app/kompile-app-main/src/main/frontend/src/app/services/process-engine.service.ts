@@ -230,12 +230,16 @@ export interface ControlAttestation {
   id?: string;
   controlId: string;
   workflowRunId?: string;
+  stepId?: string;
   evaluatedAt?: string;
   passed: boolean;
   expressionEvaluated?: string;
   inputValues?: Record<string, any>;
   inputHash?: string;
+  outputHash?: string;
   evaluatedBy?: string;
+  overrideReason?: string;
+  overrideApprovedBy?: string;
 }
 
 export interface SpelResult {
@@ -488,6 +492,27 @@ export class ProcessEngineService extends BaseService {
 
   analyzeCrossDocumentFlows(graphNodeIds?: string[]): Observable<any> {
     return this.http.post<any>(`${this.backendUrl}/process/discovery/cross-document-flows`, { graphNodeIds });
+  }
+
+  // ── Process Suggestion Store ──────────────────────────────────────────────
+
+  listStoredSuggestions(factSheetId?: number, pendingOnly: boolean = false): Observable<any> {
+    let params: any = {};
+    if (factSheetId != null) params.factSheetId = factSheetId.toString();
+    if (pendingOnly) params.pendingOnly = 'true';
+    return this.http.get<any>(`${this.backendUrl}/process/discovery/suggestions`, { params });
+  }
+
+  getStoredSuggestion(id: string): Observable<any> {
+    return this.http.get<any>(`${this.backendUrl}/process/discovery/suggestions/${id}`);
+  }
+
+  acceptStoredSuggestion(id: string): Observable<any> {
+    return this.http.post<any>(`${this.backendUrl}/process/discovery/suggestions/${id}/accept`, {});
+  }
+
+  deleteStoredSuggestion(id: string): Observable<any> {
+    return this.http.delete<any>(`${this.backendUrl}/process/discovery/suggestions/${id}`);
   }
 
   // ── Integration Discovery ─────────────────────────────────────────────────

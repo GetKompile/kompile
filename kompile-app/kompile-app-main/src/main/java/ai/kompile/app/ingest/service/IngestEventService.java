@@ -17,6 +17,7 @@
 package ai.kompile.app.ingest.service;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.app.config.PrimaryDataSourceConfig;
 import ai.kompile.app.ingest.domain.IngestEvent;
 import ai.kompile.app.ingest.domain.IngestEvent.EventType;
 import ai.kompile.app.ingest.domain.IngestEvent.IngestPhase;
@@ -52,16 +53,28 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class IngestEventService {
 
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected IngestEventService() {
+        this.objectMapper = new ObjectMapper();
+    }
+
+
     private static final Logger logger = LoggerFactory.getLogger(IngestEventService.class);
+
+    // Scheduling intervals
+    private static final long CLEANUP_INTERVAL_MS = 3_600_000L; // 1 hour
 
     // WebSocket topics for event broadcasting
     private static final String EVENTS_TOPIC_ALL = "/topic/ingest/events";
     private static final String EVENTS_TOPIC_TASK = "/topic/ingest/events/";
 
-    private final IngestEventRepository repository;
-    private final SimpMessagingTemplate messagingTemplate;
-    private final Nd4jEnvironmentConfigService nd4jEnvironmentConfigService;
-    private final ObjectMapper objectMapper;
+    @Autowired(required = false)
+    private IngestEventRepository repository;
+    @Autowired(required = false)
+    private SimpMessagingTemplate messagingTemplate;
+    @Autowired(required = false)
+    private Nd4jEnvironmentConfigService nd4jEnvironmentConfigService;
+    private ObjectMapper objectMapper;
 
     // Track phase start times for duration calculation
     private final Map<String, Map<IngestPhase, Instant>> phaseStartTimes = new ConcurrentHashMap<>();
@@ -178,7 +191,7 @@ public class IngestEventService {
      * Log that a task has been queued, capturing the ND4J environment configuration
      * at job start time to allow reproduction of environment-specific issues.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logQueued(String taskId, String fileName) {
         if (!isEnabled()) {
             logger.warn("[{}] logQueued skipped - IngestEventService is disabled", taskId);
@@ -211,7 +224,7 @@ public class IngestEventService {
      * that was
      * passed to the subprocess at invocation time.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logQueuedWithEnvironmentSnapshot(String taskId, String fileName, String nd4jEnvironmentJson) {
         if (!isEnabled()) {
             logger.warn("[{}] logQueuedWithEnvironmentSnapshot skipped - IngestEventService is disabled", taskId);
@@ -267,7 +280,7 @@ public class IngestEventService {
     /**
      * Log the start of a processing phase.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logPhaseStarted(String taskId, String fileName, IngestPhase phase, IngestPhase previousPhase) {
         if (!isEnabled())
             return;
@@ -286,7 +299,7 @@ public class IngestEventService {
     /**
      * Log progress within a phase.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logProgress(String taskId, String fileName, IngestPhase phase,
             int itemsProcessed, int totalItems, String message) {
         if (!isEnabled())
@@ -301,7 +314,7 @@ public class IngestEventService {
     /**
      * Log that a phase has completed.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logPhaseCompleted(String taskId, String fileName, IngestPhase phase,
             int itemsProcessed, String message) {
         if (!isEnabled())
@@ -319,7 +332,7 @@ public class IngestEventService {
     /**
      * Log a state transition between phases.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logStateTransition(String taskId, String fileName, IngestPhase fromPhase, IngestPhase toPhase) {
         if (!isEnabled())
             return;
@@ -335,7 +348,7 @@ public class IngestEventService {
     /**
      * Log an error during processing.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logError(String taskId, String fileName, IngestPhase phase,
             String errorMessage, Throwable exception) {
         if (!isEnabled())
@@ -350,7 +363,7 @@ public class IngestEventService {
     /**
      * Log successful task completion.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logCompleted(String taskId, String fileName, int totalItemsProcessed, String summary) {
         if (!isEnabled())
             return;
@@ -368,7 +381,7 @@ public class IngestEventService {
     /**
      * Log task failure.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logFailed(String taskId, String fileName, IngestPhase failedPhase,
             String errorMessage, Throwable exception) {
         if (!isEnabled())
@@ -387,7 +400,7 @@ public class IngestEventService {
     /**
      * Log task cancellation.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logCancelled(String taskId, String fileName, IngestPhase currentPhase, String reason) {
         if (!isEnabled())
             return;
@@ -416,7 +429,7 @@ public class IngestEventService {
      * @param itemsProcessed Number of items processed before kill
      * @param details        Additional details about the job state at kill time
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logMemoryKilled(String taskId, String fileName, IngestPhase killedPhase,
             double memoryPercent, int killThreshold, int itemsProcessed, String details) {
         if (!isEnabled())
@@ -450,7 +463,7 @@ public class IngestEventService {
      * @param backoffMs     Time until restart in milliseconds
      * @param details       Additional details (JSON with memory analysis)
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logRestartScheduled(String taskId, String fileName, IngestEvent.IngestPhase currentPhase,
                                      int attemptNumber, int maxAttempts, long backoffMs, String details) {
         if (!isEnabled()) return;
@@ -467,7 +480,7 @@ public class IngestEventService {
     /**
      * Log that a restart attempt has started.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logRestartAttempted(String taskId, String fileName,
                                      int attemptNumber, int maxAttempts, String heapSize, String details) {
         if (!isEnabled()) return;
@@ -484,7 +497,7 @@ public class IngestEventService {
     /**
      * Log that a restart attempt succeeded.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logRestartSucceeded(String taskId, String fileName,
                                      int attemptNumber, long recoveryTimeMs) {
         if (!isEnabled()) return;
@@ -500,7 +513,7 @@ public class IngestEventService {
     /**
      * Log that all restart attempts have been exhausted.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logRestartFailed(String taskId, String fileName,
                                   int totalAttempts, long totalTimeMs, String errorMessage) {
         if (!isEnabled()) return;
@@ -519,7 +532,7 @@ public class IngestEventService {
     /**
      * Log a memory analysis result.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logMemoryAnalysis(String taskId, String fileName, IngestEvent.IngestPhase currentPhase,
                                    boolean canIncreaseHeap, String reason, String details) {
         if (!isEnabled()) return;
@@ -538,7 +551,7 @@ public class IngestEventService {
     /**
      * Log a heap adjustment event.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logHeapAdjusted(String taskId, String fileName,
                                  String oldHeapSize, String newHeapSize, boolean increased, String reason) {
         if (!isEnabled()) return;
@@ -554,7 +567,7 @@ public class IngestEventService {
     /**
      * Log a thread reduction event.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logThreadsReduced(String taskId, String fileName,
                                    int oldThreads, int newThreads, String reason, String details) {
         if (!isEnabled()) return;
@@ -569,7 +582,7 @@ public class IngestEventService {
     /**
      * Log a manual restart event.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logManualRestart(String taskId, String fileName, String reason) {
         if (!isEnabled()) return;
 
@@ -591,7 +604,7 @@ public class IngestEventService {
      * @param extractors    List of extractor names being used
      * @param details       Additional details (JSON with extractor configuration)
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logExtractionStarted(String taskId, String fileName,
                                       int documentCount, List<String> extractors, String details) {
         if (!isEnabled()) return;
@@ -621,7 +634,7 @@ public class IngestEventService {
      * @param structuredItems Number of structured items extracted so far
      * @param message         Progress message
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logExtractionProgress(String taskId, String fileName,
                                        String extractorName, int itemsProcessed, int totalItems,
                                        int chunksCreated, int structuredItems, String message) {
@@ -649,7 +662,7 @@ public class IngestEventService {
      * @param extractorsUsed      List of extractors used
      * @param details             Additional details (JSON with full breakdown)
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logExtractionCompleted(String taskId, String fileName,
                                         int documentsProcessed, int chunksCreated,
                                         int entitiesExtracted, int relationshipsExtracted,
@@ -685,7 +698,7 @@ public class IngestEventService {
      * @param itemsProduced Number of items produced
      * @param durationMs    Time taken by the extractor
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logExtractorCompleted(String taskId, String fileName,
                                        String extractorName, String extractorType,
                                        int itemsProduced, long durationMs) {
@@ -709,7 +722,7 @@ public class IngestEventService {
      * @param errorMessage  Error message
      * @param exception     The exception that occurred (may be null)
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void logExtractorError(String taskId, String fileName,
                                    String extractorName, String errorMessage, Throwable exception) {
         if (!isEnabled()) return;
@@ -726,7 +739,7 @@ public class IngestEventService {
     /**
      * Get all events for a task.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IngestEvent> getEventsForTask(String taskId) {
         if (!isEnabled())
             return List.of();
@@ -736,7 +749,7 @@ public class IngestEventService {
     /**
      * Get the latest event for a task.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public IngestEvent getLatestEvent(String taskId) {
         if (!isEnabled())
             return null;
@@ -751,7 +764,7 @@ public class IngestEventService {
      * @return The ND4J environment config JSON, or null if not found or not
      *         captured
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public String getNd4jEnvironmentSnapshot(String taskId) {
         if (!isEnabled())
             return null;
@@ -771,7 +784,7 @@ public class IngestEventService {
      * @param taskId The task identifier
      * @return The ND4J environment config, or null if not found or not captured
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public Nd4jEnvironmentConfig getNd4jEnvironmentConfig(String taskId) {
         String json = getNd4jEnvironmentSnapshot(taskId);
         if (json == null || json.isEmpty()) {
@@ -789,7 +802,7 @@ public class IngestEventService {
     /**
      * Get recent terminal events (completions, failures, cancellations).
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IngestEvent> getRecentTerminalEvents(Duration since) {
         if (!isEnabled())
             return List.of();
@@ -799,7 +812,7 @@ public class IngestEventService {
     /**
      * Get events in a time range.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IngestEvent> getEventsBetween(Instant start, Instant end) {
         if (!isEnabled())
             return List.of();
@@ -809,7 +822,7 @@ public class IngestEventService {
     /**
      * Get error events in a time range.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<IngestEvent> getErrorEvents(Instant start, Instant end) {
         if (!isEnabled())
             return List.of();
@@ -820,7 +833,7 @@ public class IngestEventService {
     /**
      * Get distinct task IDs with events in a time range.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public List<String> getTaskIds(Instant start, Instant end) {
         if (!isEnabled())
             return List.of();
@@ -830,7 +843,7 @@ public class IngestEventService {
     /**
      * Get total event count.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
     public long getTotalEventCount() {
         if (!isEnabled())
             return 0;
@@ -843,8 +856,8 @@ public class IngestEventService {
      * Scheduled cleanup of old events.
      * Runs every hour to prevent database bloat.
      */
-    @Scheduled(fixedRate = 3600000) // Run every hour (3600000 ms)
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Scheduled(fixedRate = CLEANUP_INTERVAL_MS)
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void cleanupOldEvents() {
         if (!isEnabled())
             return;
@@ -871,7 +884,7 @@ public class IngestEventService {
      * @param hoursToKeep Number of hours of logs to retain
      * @return Number of entries deleted
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public int forceCleanup(int hoursToKeep) {
         if (!isEnabled())
             return 0;
@@ -892,7 +905,7 @@ public class IngestEventService {
     /**
      * Delete all events for a specific task.
      */
-    @Transactional(transactionManager = "ingestEventTransactionManager")
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
     public void deleteTaskEvents(String taskId) {
         if (!isEnabled())
             return;

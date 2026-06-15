@@ -42,8 +42,8 @@ public class KGEmbeddingStorageService {
 
     private static final Logger log = LoggerFactory.getLogger(KGEmbeddingStorageService.class);
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
+    private GraphNodeRepository nodeRepository;
+    private GraphEdgeRepository edgeRepository;
 
     @Autowired
     public KGEmbeddingStorageService(
@@ -53,6 +53,10 @@ public class KGEmbeddingStorageService {
         this.nodeRepository = nodeRepository;
         this.edgeRepository = edgeRepository;
     }
+
+    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
+    protected KGEmbeddingStorageService() {}
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // STORING EMBEDDINGS

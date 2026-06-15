@@ -428,58 +428,70 @@ public class ModelInitSubprocessLauncher {
         try {
             ModelInitMessage message = OBJECT_MAPPER.readValue(json, ModelInitMessage.class);
 
-            if (message instanceof ModelInitMessage.Progress progress) {
-                logger.debug("[{}] Progress: {} - {} ({}%)",
-                        modelId, progress.phase(), progress.message(), progress.progressPercent());
-
-                currentStatus = ModelInitStatus.inProgress(taskId, modelId,
-                        progress.phase(), progress.progressPercent(), progress.message());
-
-                if (progressListener != null) {
-                    progressListener.accept(progress);
-                }
-            } else if (message instanceof ModelInitMessage.PhaseTransition transition) {
-                logger.info("[{}] Phase: {} -> {} ({}ms)",
-                        modelId, transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
-
-                currentStatus = ModelInitStatus.inProgress(taskId, modelId,
-                        transition.toPhase(), -1, transition.toPhase().getDescription());
-            } else if (message instanceof ModelInitMessage.Heartbeat heartbeat) {
-                logger.trace("[{}] Heartbeat: uptime={}ms, memory={}%",
-                        modelId, heartbeat.uptimeMs(), String.format("%.1f", heartbeat.memoryUsagePercent()));
-            } else if (message instanceof ModelInitMessage.Completed completed) {
-                logger.info("[{}] COMPLETED: dims={}, type={}, time={}ms",
-                        modelId, completed.embeddingDimensions(),
-                        completed.encoderType(), completed.totalDurationMs());
-
-                currentStatus = ModelInitStatus.completed(taskId, modelId,
-                        completed.embeddingDimensions(), completed.encoderType());
-
-                if (completionListener != null) {
-                    completionListener.accept(completed);
+            ModelInitMessage.dispatch(message, new ModelInitMessage.Handler() {
+                @Override
+                public void onProgress(ModelInitMessage.Progress progress) {
+                    logger.debug("[{}] Progress: {} - {} ({}%)",
+                            modelId, progress.phase(), progress.message(), progress.progressPercent());
+                    currentStatus = ModelInitStatus.inProgress(taskId, modelId,
+                            progress.phase(), progress.progressPercent(), progress.message());
+                    if (progressListener != null) {
+                        progressListener.accept(progress);
+                    }
                 }
 
-                resultFuture.complete(new ModelInitResult(taskId, modelId, true, completed));
-            } else if (message instanceof ModelInitMessage.Failed failed) {
-                logger.error("[{}] FAILED in phase {}: {} (retriable={})",
-                        modelId, failed.phase(), failed.errorMessage(), failed.retriable());
-
-                currentStatus = ModelInitStatus.failed(taskId, modelId,
-                        failed.phase(), failed.errorMessage(), failed.retriable());
-
-                if (failureListener != null) {
-                    failureListener.accept(failed);
+                @Override
+                public void onPhaseTransition(ModelInitMessage.PhaseTransition transition) {
+                    logger.info("[{}] Phase: {} -> {} ({}ms)",
+                            modelId, transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
+                    currentStatus = ModelInitStatus.inProgress(taskId, modelId,
+                            transition.toPhase(), -1, transition.toPhase().getDescription());
                 }
 
-                resultFuture.completeExceptionally(
-                        new RuntimeException("Model init failed: " + failed.errorMessage()));
-            } else if (message instanceof ModelInitMessage.Log logMsg) {
-                // Already logged by subprocess stderr, but could forward to UI
-                logger.trace("[{}] Log: [{}] {}", modelId, logMsg.level(), logMsg.message());
-            } else if (message instanceof ModelInitMessage.ModelInfo info) {
-                logger.info("[{}] Model info: type={}, dims={}, maxSeq={}",
-                        modelId, info.modelType(), info.embeddingDimensions(), info.maxSequenceLength());
-            }
+                @Override
+                public void onHeartbeat(ModelInitMessage.Heartbeat heartbeat) {
+                    logger.trace("[{}] Heartbeat: uptime={}ms, memory={}%",
+                            modelId, heartbeat.uptimeMs(), String.format("%.1f", heartbeat.memoryUsagePercent()));
+                }
+
+                @Override
+                public void onCompleted(ModelInitMessage.Completed completed) {
+                    logger.info("[{}] COMPLETED: dims={}, type={}, time={}ms",
+                            modelId, completed.embeddingDimensions(),
+                            completed.encoderType(), completed.totalDurationMs());
+                    currentStatus = ModelInitStatus.completed(taskId, modelId,
+                            completed.embeddingDimensions(), completed.encoderType());
+                    if (completionListener != null) {
+                        completionListener.accept(completed);
+                    }
+                    resultFuture.complete(new ModelInitResult(taskId, modelId, true, completed));
+                }
+
+                @Override
+                public void onFailed(ModelInitMessage.Failed failed) {
+                    logger.error("[{}] FAILED in phase {}: {} (retriable={})",
+                            modelId, failed.phase(), failed.errorMessage(), failed.retriable());
+                    currentStatus = ModelInitStatus.failed(taskId, modelId,
+                            failed.phase(), failed.errorMessage(), failed.retriable());
+                    if (failureListener != null) {
+                        failureListener.accept(failed);
+                    }
+                    resultFuture.completeExceptionally(
+                            new RuntimeException("Model init failed: " + failed.errorMessage()));
+                }
+
+                @Override
+                public void onLog(ModelInitMessage.Log logMsg) {
+                    // Already logged by subprocess stderr, but could forward to UI
+                    logger.trace("[{}] Log: [{}] {}", modelId, logMsg.level(), logMsg.message());
+                }
+
+                @Override
+                public void onModelInfo(ModelInitMessage.ModelInfo info) {
+                    logger.info("[{}] Model info: type={}, dims={}, maxSeq={}",
+                            modelId, info.modelType(), info.embeddingDimensions(), info.maxSequenceLength());
+                }
+            });
 
         } catch (Exception e) {
             logger.warn("Failed to parse model init message: {}", e.getMessage());
@@ -696,13 +708,17 @@ public class ModelInitSubprocessLauncher {
             }
             try {
                 java.nio.file.Files.deleteIfExists(argsFile);
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                logger.warn("Failed to delete args file {} on cancel: {}", argsFile, e.getMessage());
+            }
             SubprocessLogWriter lw = logWriter;
             if (lw != null) {
                 try {
                     lw.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
                             "CANCELLED", null, "Subprocess cancelled", false, false));
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    logger.warn("Failed to write cancellation end record to subprocess log: {}", e.getMessage());
+                }
                 lw.close();
             }
         }

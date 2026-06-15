@@ -171,6 +171,10 @@ public class GmailCrawler extends AbstractCrawler {
                     Thread.sleep(config.getRequestDelay().toMillis());
                 }
 
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                log.info("Gmail crawl interrupted at message {}", msgId);
+                break;
             } catch (Exception e) {
                 job.recordError("gmail://" + msgId, e);
                 log.warn("Failed to crawl Gmail message {}: {}", msgId, e.getMessage());

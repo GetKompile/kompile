@@ -49,7 +49,7 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
     private final FilesystemToolConfigService configService;
     private final McpOptimizationConfigProvider optimizationProvider;
     private final ResultReferenceCache resultCache;
-    private Map<String, Path> resolvedRoots;
+    private volatile Map<String, Path> resolvedRoots;
 
     // Input DTOs are inner records, which is fine.
     public record ListFilesInput(String rootAlias, String subPath) {}

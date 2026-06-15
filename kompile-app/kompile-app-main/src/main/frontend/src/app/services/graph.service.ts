@@ -36,7 +36,8 @@ import {
   CreateNamedGraphRequest,
   GraphMetadataPatchRequest,
   GraphMetadataPatchResult,
-  MoveGraphResult
+  MoveGraphResult,
+  TemporalBounds
 } from '../models/graph-models';
 
 // ─── Fact-sheet graph operation result types ───────────────────────────────
@@ -260,14 +261,21 @@ export class GraphService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Get D3-formatted visualization data
+   * Get D3-formatted visualization data, optionally filtered by time range
    */
-  getVisualizationData(rootNodeId?: string, depth: number = 2, maxNodes: number = 100): Observable<D3VisualizationData> {
+  getVisualizationData(rootNodeId?: string, depth: number = 2, maxNodes: number = 100,
+                       from?: string, to?: string): Observable<D3VisualizationData> {
     let params = new HttpParams()
       .set('depth', depth.toString())
       .set('maxNodes', maxNodes.toString());
     if (rootNodeId) {
       params = params.set('rootNodeId', rootNodeId);
+    }
+    if (from) {
+      params = params.set('from', from);
+    }
+    if (to) {
+      params = params.set('to', to);
     }
     return this.http.get<RawVisualizationResponse>(`${this.backendUrl}${this.apiPath}/visualization`, { params })
       .pipe(
@@ -281,6 +289,30 @@ export class GraphService extends BaseService {
    */
   getStatistics(): Observable<GraphStatistics> {
     return this.http.get<GraphStatistics>(`${this.backendUrl}${this.apiPath}/statistics`)
+      .pipe(catchError(this.handleError));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TEMPORAL QUERIES
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get the earliest and latest occurredAt timestamps across all edges
+   */
+  getTemporalBounds(): Observable<TemporalBounds> {
+    return this.http.get<TemporalBounds>(`${this.backendUrl}${this.apiPath}/temporal/bounds`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Get edges within a time range
+   */
+  getEdgesInTimeRange(from: string, to: string, limit: number = 100): Observable<GraphEdge[]> {
+    const params = new HttpParams()
+      .set('from', from)
+      .set('to', to)
+      .set('limit', limit.toString());
+    return this.http.get<GraphEdge[]>(`${this.backendUrl}${this.apiPath}/temporal/edges`, { params })
       .pipe(catchError(this.handleError));
   }
 

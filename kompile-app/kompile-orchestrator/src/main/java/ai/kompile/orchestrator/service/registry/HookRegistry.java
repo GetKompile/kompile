@@ -69,7 +69,7 @@ public class HookRegistry {
      * Get all hooks (sorted by priority descending).
      */
     public List<OrchestratorHook> getAll() {
-        return sortedHooks;
+        return Collections.unmodifiableList(sortedHooks);
     }
 
     private void rebuildSortedList() {

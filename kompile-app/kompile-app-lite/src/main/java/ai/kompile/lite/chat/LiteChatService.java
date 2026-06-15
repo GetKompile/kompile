@@ -247,4 +247,17 @@ public class LiteChatService {
 
     public record ChatResponse(String response, int vectorResultCount, int graphResultCount, String sessionId) {}
     public record ChatMessage(String role, String content) {}
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        streamExecutor.shutdown();
+        try {
+            if (!streamExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                streamExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            streamExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 }

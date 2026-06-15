@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.config.IngestConfiguration;
+import ai.kompile.core.util.FieldNames;
 import ai.kompile.app.ingest.service.IngestEventService;
 import ai.kompile.app.services.VectorPopulationProgressTracker;
 import ai.kompile.app.services.VectorPopulationProgressTracker.VectorPopulationUpdate;
@@ -138,7 +139,7 @@ public class VectorPopulationController {
 
         Map<String, Object> response = new HashMap<>();
         boolean subprocessMode = populationService.isSubprocessModeEnabled();
-        response.put("taskId", taskId);
+        response.put(FieldNames.TASK_ID, taskId);
         response.put("status", "started");
         response.put("mode", subprocessMode ? "subprocess" : "in-process");
         response.put("message", subprocessMode
@@ -171,10 +172,10 @@ public class VectorPopulationController {
             PopulationResult result = populationService.populateVectorStore(taskId);
 
             Map<String, Object> response = new HashMap<>();
-            response.put("taskId", taskId);
+            response.put(FieldNames.TASK_ID, taskId);
             response.put("success", result.success());
             response.put("documentsIndexed", result.documentsIndexed());
-            response.put("durationMs", result.durationMs());
+            response.put(FieldNames.DURATION_MS, result.durationMs());
             response.put("mode", "in-process-sync");
 
             if (result.errorMessage() != null) {
@@ -188,7 +189,7 @@ public class VectorPopulationController {
         } catch (Exception e) {
             logger.error("Vector population failed: {}", e.getMessage(), e);
             Map<String, Object> error = new HashMap<>();
-            error.put("taskId", taskId);
+            error.put(FieldNames.TASK_ID, taskId);
             error.put("success", false);
             error.put("error", e.getMessage());
             return ResponseEntity.internalServerError().body(error);
@@ -217,7 +218,7 @@ public class VectorPopulationController {
         }
 
         Map<String, Object> response = new HashMap<>();
-        response.put("taskId", status.getTaskId());
+        response.put(FieldNames.TASK_ID, status.getTaskId());
         response.put("totalDocuments", status.getTotalDocuments());
         response.put("documentsIndexed", status.getDocumentsIndexed());
         response.put("progressPercent", status.getProgressPercent());
@@ -251,7 +252,7 @@ public class VectorPopulationController {
         boolean cancelled = populationService.cancelTask(taskId);
 
         Map<String, Object> response = new HashMap<>();
-        response.put("taskId", taskId);
+        response.put(FieldNames.TASK_ID, taskId);
         response.put("cancelled", cancelled);
 
         if (cancelled) {
@@ -336,7 +337,7 @@ public class VectorPopulationController {
         }
 
         // Generate task ID or use provided one
-        String taskId = (String) request.getOrDefault("taskId",
+        String taskId = (String) request.getOrDefault(FieldNames.TASK_ID,
                 progressTracker != null ? progressTracker.generateTaskId() : UUID.randomUUID().toString());
 
         // Extract options - use IngestConfiguration defaults if not provided in request
@@ -390,7 +391,7 @@ public class VectorPopulationController {
 
             return ResponseEntity.ok(Map.of(
                     "success", true,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "keywordIndexPath", keywordIndexPath,
                     "vectorIndexPath", vectorIndexPath,
                     "mode", "subprocess",
@@ -400,7 +401,7 @@ public class VectorPopulationController {
             logger.error("Failed to launch vector population subprocess: {}", e.getMessage(), e);
             return ResponseEntity.internalServerError().body(Map.of(
                     "success", false,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "message", "Failed to launch: " + e.getMessage()
             ));
         }
@@ -424,13 +425,13 @@ public class VectorPopulationController {
             logger.info("Cancelled vector population subprocess: {}", taskId);
             return ResponseEntity.ok(Map.of(
                     "success", true,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "message", "Subprocess cancelled"
             ));
         } else {
             return ResponseEntity.ok(Map.of(
                     "success", false,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "message", "Subprocess not found or already completed"
             ));
         }
@@ -474,7 +475,7 @@ public class VectorPopulationController {
             return ResponseEntity.ok(Map.of(
                     "available", true,
                     "found", false,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "message", "Subprocess not found or already terminated"
             ));
         }
@@ -548,7 +549,7 @@ public class VectorPopulationController {
             return ResponseEntity.ok(Map.of(
                     "available", true,
                     "found", false,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "message", "Task not found or already cleaned up"
             ));
         }
@@ -576,7 +577,7 @@ public class VectorPopulationController {
         boolean isActive = progressTracker.isTaskActive(taskId);
 
         return ResponseEntity.ok(Map.of(
-                "taskId", taskId,
+                FieldNames.TASK_ID, taskId,
                 "elapsedMs", elapsedMs,
                 "elapsedSeconds", elapsedMs / 1000.0,
                 "elapsedMinutes", elapsedMs / 60000.0,
@@ -602,7 +603,7 @@ public class VectorPopulationController {
             return ResponseEntity.ok(Map.of(
                     "available", true,
                     "found", false,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "message", "Task not found or already cleaned up"
             ));
         }
@@ -613,7 +614,7 @@ public class VectorPopulationController {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("available", true);
         response.put("found", true);
-        response.put("taskId", taskId);
+        response.put(FieldNames.TASK_ID, taskId);
         response.put("task", task.get());
         response.put("elapsedMs", elapsedMs);
         // Logs are no longer stored server-side - use WebSocket for real-time logs
@@ -624,10 +625,10 @@ public class VectorPopulationController {
         if (envOpt.isPresent()) {
             var env = envOpt.get();
             Map<String, Object> envMap = new LinkedHashMap<>();
-            envMap.put("taskId", env.taskId());
+            envMap.put(FieldNames.TASK_ID, env.taskId());
             envMap.put("keywordIndexPath", env.keywordIndexPath());
             envMap.put("vectorIndexPath", env.vectorIndexPath());
-            envMap.put("timestamp", env.timestamp() != null ? env.timestamp().toString() : null);
+            envMap.put(FieldNames.TIMESTAMP, env.timestamp() != null ? env.timestamp().toString() : null);
             envMap.put("environmentCaptured", env.environmentCaptured());
             if (env.nd4jEnvironment() != null) {
                 envMap.put("nd4jEnvironment", env.nd4jEnvironment());
@@ -662,7 +663,7 @@ public class VectorPopulationController {
             long elapsedMs = progressTracker.getElapsedTime(taskId);
 
             Map<String, Object> taskState = new LinkedHashMap<>();
-            taskState.put("taskId", taskId);
+            taskState.put(FieldNames.TASK_ID, taskId);
             taskState.put("task", task);
             taskState.put("elapsedMs", elapsedMs);
             // Logs are no longer stored server-side - use WebSocket for real-time logs
@@ -672,10 +673,10 @@ public class VectorPopulationController {
             if (envOpt.isPresent()) {
                 var env = envOpt.get();
                 Map<String, Object> envMap = new LinkedHashMap<>();
-                envMap.put("taskId", env.taskId());
+                envMap.put(FieldNames.TASK_ID, env.taskId());
                 envMap.put("keywordIndexPath", env.keywordIndexPath());
                 envMap.put("vectorIndexPath", env.vectorIndexPath());
-                envMap.put("timestamp", env.timestamp() != null ? env.timestamp().toString() : null);
+                envMap.put(FieldNames.TIMESTAMP, env.timestamp() != null ? env.timestamp().toString() : null);
                 envMap.put("environmentCaptured", env.environmentCaptured());
                 if (env.nd4jEnvironment() != null) {
                     envMap.put("nd4jEnvironment", env.nd4jEnvironment());
@@ -714,7 +715,7 @@ public class VectorPopulationController {
             return ResponseEntity.ok(Map.of(
                     "available", true,
                     "found", false,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "environmentCaptured", false,
                     "message", "Task environment not found - task may not exist or environment was not captured"
             ));
@@ -724,10 +725,10 @@ public class VectorPopulationController {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("available", true);
         response.put("found", true);
-        response.put("taskId", env.taskId());
+        response.put(FieldNames.TASK_ID, env.taskId());
         response.put("keywordIndexPath", env.keywordIndexPath());
         response.put("vectorIndexPath", env.vectorIndexPath());
-        response.put("timestamp", env.timestamp() != null ? env.timestamp().toString() : null);
+        response.put(FieldNames.TIMESTAMP, env.timestamp() != null ? env.timestamp().toString() : null);
         response.put("environmentCaptured", env.environmentCaptured());
 
         if (env.environmentCaptured() && env.nd4jEnvironment() != null) {
@@ -852,7 +853,7 @@ public class VectorPopulationController {
         if (!restartManager.canManualRestart(taskId)) {
             return ResponseEntity.badRequest().body(Map.of(
                     "success", false,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "message", "Manual restart not allowed - task may be still running"
             ));
         }
@@ -867,7 +868,7 @@ public class VectorPopulationController {
         if (status == null) {
             return ResponseEntity.ok(Map.of(
                     "success", false,
-                    "taskId", taskId,
+                    FieldNames.TASK_ID, taskId,
                     "message", "Task not found - may need to be started fresh via /subprocess/launch"
             ));
         }
@@ -876,7 +877,7 @@ public class VectorPopulationController {
 
         return ResponseEntity.ok(Map.of(
                 "success", true,
-                "taskId", taskId,
+                FieldNames.TASK_ID, taskId,
                 "message", "Manual restart initiated. Subscribe to /topic/vector-population/progress for updates.",
                 "note", "For a full restart, use POST /subprocess/launch with the original parameters"
         ));
@@ -901,7 +902,7 @@ public class VectorPopulationController {
 
         return ResponseEntity.ok(Map.of(
                 "available", true,
-                "taskId", taskId,
+                FieldNames.TASK_ID, taskId,
                 "attemptsMade", status.attemptsMade(),
                 "maxAttempts", status.maxAttempts(),
                 "attemptsRemaining", status.attemptsRemaining(),
@@ -935,7 +936,7 @@ public class VectorPopulationController {
 
         return ResponseEntity.ok(Map.of(
                 "success", true,
-                "taskId", taskId,
+                FieldNames.TASK_ID, taskId,
                 "message", "Automatic restart disabled for this task"
         ));
     }

@@ -16,16 +16,20 @@
 
 package ai.kompile.cli.main.chat.mcp;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Handles injection of kompile MCP tools into spawned agents.
@@ -187,14 +191,14 @@ public class McpToolInjection {
             ObjectNode settings;
             if (Files.exists(settingsFile)) {
                 String existing = Files.readString(settingsFile);
-                com.fasterxml.jackson.databind.JsonNode parsed = OM.readTree(existing);
+                JsonNode parsed = OM.readTree(existing);
                 if (parsed.isObject()) {
                     settings = (ObjectNode) parsed;
                 } else {
                     settings = OM.createObjectNode();
                 }
                 // Remove any existing kompile hooks so we always write the latest version
-                com.fasterxml.jackson.databind.JsonNode hooks = settings.get("hooks");
+                JsonNode hooks = settings.get("hooks");
                 if (hooks != null && hooks.isObject()) {
                     removeKompileMatchersFromArray((ObjectNode) hooks, "PreToolUse");
                     removeKompileMatchersFromArray((ObjectNode) hooks, "PostToolUse");
@@ -231,16 +235,16 @@ public class McpToolInjection {
                     ? (ObjectNode) settings.get("hooks")
                     : settings.putObject("hooks");
 
-            com.fasterxml.jackson.databind.node.ArrayNode preArray = hooks.has("PreToolUse") && hooks.get("PreToolUse").isArray()
-                    ? (com.fasterxml.jackson.databind.node.ArrayNode) hooks.get("PreToolUse")
+            ArrayNode preArray = hooks.has("PreToolUse") && hooks.get("PreToolUse").isArray()
+                    ? (ArrayNode) hooks.get("PreToolUse")
                     : hooks.putArray("PreToolUse");
             ObjectNode preMatcher = OM.createObjectNode();
             preMatcher.put("matcher", ".*");
             preMatcher.putArray("hooks").addObject().put("type", "command").put("command", preCmd);
             preArray.add(preMatcher);
 
-            com.fasterxml.jackson.databind.node.ArrayNode postArray = hooks.has("PostToolUse") && hooks.get("PostToolUse").isArray()
-                    ? (com.fasterxml.jackson.databind.node.ArrayNode) hooks.get("PostToolUse")
+            ArrayNode postArray = hooks.has("PostToolUse") && hooks.get("PostToolUse").isArray()
+                    ? (ArrayNode) hooks.get("PostToolUse")
                     : hooks.putArray("PostToolUse");
             ObjectNode postMatcher = OM.createObjectNode();
             postMatcher.put("matcher", ".*");
@@ -320,11 +324,11 @@ public class McpToolInjection {
 
     /** Remove kompile-managed matcher entries from a hook event array. */
     private static void removeKompileMatchersFromArray(ObjectNode hooks, String event) {
-        com.fasterxml.jackson.databind.JsonNode arr = hooks.get(event);
+        JsonNode arr = hooks.get(event);
         if (arr == null || !arr.isArray()) return;
-        com.fasterxml.jackson.databind.node.ArrayNode array = (com.fasterxml.jackson.databind.node.ArrayNode) arr;
+        ArrayNode array = (ArrayNode) arr;
         for (int i = array.size() - 1; i >= 0; i--) {
-            com.fasterxml.jackson.databind.JsonNode entry = array.get(i);
+            JsonNode entry = array.get(i);
             if (entry.isObject() && entry.has("matcher")) {
                 String matcher = entry.get("matcher").asText("");
                 if (matcher.contains("kompile") || hasKompileHookCommand(entry)) {
@@ -334,12 +338,12 @@ public class McpToolInjection {
         }
     }
 
-    private static boolean hasKompileHookCommand(com.fasterxml.jackson.databind.JsonNode entry) {
-        com.fasterxml.jackson.databind.JsonNode hooks = entry.path("hooks");
+    private static boolean hasKompileHookCommand(JsonNode entry) {
+        JsonNode hooks = entry.path("hooks");
         if (!hooks.isArray()) {
             return false;
         }
-        for (com.fasterxml.jackson.databind.JsonNode hook : hooks) {
+        for (JsonNode hook : hooks) {
             String command = hook.path("command").asText("");
             if (command.contains("[kompile]") || command.contains("Kompile MCP")) {
                 return true;
@@ -462,13 +466,13 @@ public class McpToolInjection {
             pb.redirectErrorStream(true);
             Process p = pb.start();
             String output;
-            try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
+            try (var reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 StringBuilder sb = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) sb.append(line);
                 output = sb.toString().trim();
             }
-            p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
+            p.waitFor(3, TimeUnit.SECONDS);
 
             // Crush reports version as "crush" or any numeric version.
             // The original OpenCode was archived at 0.0.55 and continued as Crush.

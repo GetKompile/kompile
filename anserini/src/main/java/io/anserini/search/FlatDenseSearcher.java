@@ -47,7 +47,8 @@ import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.NIOFSDirectory;
 import org.kohsuke.args4j.Option;
 
 import javax.annotation.Nullable;
@@ -82,7 +83,7 @@ public class FlatDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
   }
 
   private final IndexReader reader;
-  private final FSDirectory directory;  // Store directory reference for proper cleanup
+  private final Directory directory;  // Store directory reference for proper cleanup
   private final VectorQueryGenerator generator;
   private final SameDiffEncoder<float[]> encoder;
   private final int DUMMY_K_FOR_KNN_QUERY = 1000;
@@ -106,7 +107,7 @@ public class FlatDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
     }
 
     try {
-      this.directory = FSDirectory.open(indexPath);
+      this.directory = new NIOFSDirectory(indexPath);
       this.reader = DirectoryReader.open(this.directory);
     } catch (IOException e) {
       throw new IllegalArgumentException(String.format("\"%s\" does not appear to be a valid index.", args.index), e);

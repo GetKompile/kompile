@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.*;
@@ -32,16 +33,23 @@ import java.util.stream.Collectors;
  * Provides CRUD operations, rendering, and template discovery.
  */
 @Service("appPromptTemplateService")
+@Transactional
 public class PromptTemplateService {
 
     private static final Logger logger = LoggerFactory.getLogger(PromptTemplateService.class);
 
-    private final PromptTemplateRepository repository;
-
     @Autowired
+    private PromptTemplateRepository repository;
+
+    /** No-arg for Spring AOT / CGLIB proxy creation. */
+    public PromptTemplateService() {
+    }
+
     public PromptTemplateService(PromptTemplateRepository repository) {
         this.repository = repository;
     }
+
+
 
     /**
      * Gets all templates.

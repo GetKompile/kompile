@@ -65,8 +65,10 @@ public class GraphBuildingStage implements PipelineStage<IndexingStage.IndexingO
     private GraphSchema schema;
     private SchemaEnforcementMode enforcementMode = SchemaEnforcementMode.LENIENT;
 
-    // Chunks to process (set by pipeline before processing)
-    private List<RetrievedDoc> chunksToProcess;
+    // Chunks to process (set by pipeline before processing).
+    // Volatile ensures the reference written by setChunksToProcess() is
+    // immediately visible to the thread that calls process().
+    private volatile List<RetrievedDoc> chunksToProcess;
 
     public GraphBuildingStage(GraphConstructor graphConstructor) {
         this.graphConstructor = graphConstructor;
