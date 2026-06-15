@@ -21,6 +21,7 @@ buildNumber.properties
 # https://github.com/takari/maven-wrapper#usage-without-binary-jar
 .mvn/wrapper/maven-wrapper.jar
 .idea/
+*.iml
 *.json
 
 # Frontend build artifacts
@@ -95,6 +96,7 @@ kompile-app/kompile-model-staging/src/main/resources/staging-static/
 
 # Log files
 *.log
+logfile
 screenlog.*
 
 # Valgrind/debug output
@@ -106,7 +108,9 @@ session-*.md
 demo.txt
 ops.txt
 
-# Temp scripts
+# Ad-hoc/temp scripts
+download-install*
+model-*.sh
 test-file.sh
 run-with-valgrind.sh
 mcp_client.sh
