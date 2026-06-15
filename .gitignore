@@ -89,6 +89,10 @@ kompile-app/kompile-model-staging/src/main/resources/staging-static/
 # Database files
 *.mv.db
 
+# Heap dump / profiling files
+*.heap
+*.hprof
+
 # Log files
 *.log
 screenlog.*
