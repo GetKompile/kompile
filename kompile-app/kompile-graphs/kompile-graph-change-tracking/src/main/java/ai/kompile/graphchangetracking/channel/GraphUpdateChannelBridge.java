@@ -6,7 +6,7 @@ import ai.kompile.graphchangetracking.hook.ChannelGraphUpdateContext;
 import ai.kompile.graphchangetracking.hook.GraphUpdateHookRegistry;
 import ai.kompile.graphchangetracking.service.GraphUpdatePipelineConfigService;
 import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
-import ai.kompile.openclaw.gateway.channel.ChannelMessageReceivedEvent;
+import ai.kompile.gateway.core.gateway.channel.ChannelMessageReceivedEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;

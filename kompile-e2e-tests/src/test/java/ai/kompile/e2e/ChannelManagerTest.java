@@ -1,9 +1,9 @@
 package ai.kompile.e2e;
 
-import ai.kompile.openclaw.gateway.channel.ChannelAdapter;
-import ai.kompile.openclaw.gateway.channel.ChannelAdapter.AdapterConfig;
-import ai.kompile.openclaw.gateway.channel.ChannelManager;
-import ai.kompile.openclaw.gateway.channel.ChannelManager.ChannelStatus;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter.AdapterConfig;
+import ai.kompile.gateway.core.gateway.channel.ChannelManager;
+import ai.kompile.gateway.core.gateway.channel.ChannelManager.ChannelStatus;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;

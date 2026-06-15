@@ -21,7 +21,7 @@ import lombok.Data;
 import java.util.Map;
 
 /**
- * Shared request to interact with an agent gateway (kclaw/openclaw).
+ * Shared request to interact with an agent gateway (kclaw).
  */
 @Data
 @Builder

@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Shared response from an agent gateway interaction (kclaw/openclaw).
+ * Shared response from an agent gateway interaction (kclaw).
  */
 @Data
 @Builder

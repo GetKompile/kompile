@@ -1,11 +1,12 @@
 package ai.kompile.e2e;
 
-import ai.kompile.openclaw.agent.OpenClawAgentService;
-import ai.kompile.openclaw.gateway.channel.*;
-import ai.kompile.openclaw.gateway.channel.ChannelAdapter.AdapterConfig;
-import ai.kompile.openclaw.gateway.channel.ChannelAdapter.IncomingMessage;
-import ai.kompile.openclaw.model.OpenClawRequest;
-import ai.kompile.openclaw.model.OpenClawResponse;
+import ai.kompile.kclaw.agent.KClawAgentService;
+import ai.kompile.kclaw.gateway.channel.*;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter.AdapterConfig;
+import ai.kompile.gateway.core.gateway.channel.ChannelAdapter.IncomingMessage;
+import ai.kompile.gateway.core.model.AgentRequest;
+import ai.kompile.gateway.core.model.AgentResponse;
+import ai.kompile.gateway.core.gateway.channel.SlackApiClient;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
@@ -35,7 +36,7 @@ import static org.mockito.Mockito.*;
 class SlackChannelAdapterTest {
 
     @Mock
-    private OpenClawAgentService agentService;
+    private KClawAgentService agentService;
 
     @Mock
     private SlackApiClient slackApiClient;
@@ -110,11 +111,11 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("I can help with that!")
                 .success(true)
                 .build();
-        when(agentService.execute(any(OpenClawRequest.class))).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -126,7 +127,7 @@ class SlackChannelAdapterTest {
         adapter.onAppMention(message);
 
         verify(slackApiClient).sendTyping("C12345");
-        ArgumentCaptor<OpenClawRequest> reqCaptor = ArgumentCaptor.forClass(OpenClawRequest.class);
+        ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
         verify(agentService).execute(reqCaptor.capture());
         assertEquals("test-agent", reqCaptor.getValue().getAgentId());
         assertEquals("help me with something", reqCaptor.getValue().getMessage());
@@ -155,11 +156,11 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("Reply")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -245,11 +246,11 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -271,11 +272,11 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -298,11 +299,11 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -313,7 +314,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(message);
 
-        ArgumentCaptor<OpenClawRequest> reqCaptor = ArgumentCaptor.forClass(OpenClawRequest.class);
+        ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
         verify(agentService).execute(reqCaptor.capture());
         assertEquals("what is the status?", reqCaptor.getValue().getMessage());
     }
@@ -363,11 +364,11 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        OpenClawResponse errorResponse = OpenClawResponse.builder()
+        AgentResponse errorResponse = AgentResponse.builder()
                 .success(false)
                 .error("Rate limit exceeded")
                 .build();
-        when(agentService.execute(any())).thenReturn(errorResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(errorResponse);
 
         adapter.start();
 
@@ -388,7 +389,7 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        when(agentService.execute(any())).thenThrow(new RuntimeException("Internal failure"));
+        when(agentService.execute(any(AgentRequest.class))).thenThrow(new RuntimeException("Internal failure"));
 
         adapter.start();
 
@@ -411,11 +412,11 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("Thread reply")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -440,11 +441,11 @@ class SlackChannelAdapterTest {
                 "U999", "jdoe", "Jane Doe", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(user));
 
-        OpenClawResponse agentResponse = OpenClawResponse.builder()
+        AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any())).thenReturn(agentResponse);
+        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -455,7 +456,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(message);
 
-        ArgumentCaptor<OpenClawRequest> reqCaptor = ArgumentCaptor.forClass(OpenClawRequest.class);
+        ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
         verify(agentService).execute(reqCaptor.capture());
         assertEquals("Jane Doe", reqCaptor.getValue().getMetadata().get("userName"));
     }

@@ -22,7 +22,7 @@ import picocli.CommandLine;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "channel", description = "Manage OpenClaw channels.")
+@CommandLine.Command(name = "channel", description = "Manage KClaw channels.")
 public class AgentChannelCommand implements Callable<Integer> {
 
     @CommandLine.Parameters(index = "0", description = "Operation: list, add, remove, status")

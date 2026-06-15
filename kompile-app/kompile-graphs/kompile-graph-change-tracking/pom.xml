@@ -41,7 +41,7 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
-            <artifactId>kompile-openclaw</artifactId>
+            <artifactId>kompile-agent-gateway-core</artifactId>
         </dependency>
 
         <dependency>

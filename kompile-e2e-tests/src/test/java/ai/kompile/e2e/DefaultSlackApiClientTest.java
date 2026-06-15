@@ -1,8 +1,8 @@
 package ai.kompile.e2e;
 
-import ai.kompile.openclaw.gateway.channel.DefaultSlackApiClient;
-import ai.kompile.openclaw.gateway.channel.SlackApiClient;
-import ai.kompile.openclaw.gateway.channel.SlackApiClient.SlackMessageHandler;
+import ai.kompile.kclaw.gateway.channel.DefaultSlackApiClient;
+import ai.kompile.gateway.core.gateway.channel.SlackApiClient;
+import ai.kompile.gateway.core.gateway.channel.SlackApiClient.SlackMessageHandler;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
