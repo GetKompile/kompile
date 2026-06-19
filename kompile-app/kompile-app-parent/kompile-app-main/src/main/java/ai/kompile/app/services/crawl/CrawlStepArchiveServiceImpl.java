@@ -65,7 +65,7 @@ public class CrawlStepArchiveServiceImpl implements CrawlStepArchiveService {
     public CrawlStepArchiveServiceImpl(
             ObjectMapper objectMapper,
             @Autowired(required = false) IndexingJobHistoryService jobHistoryService,
-            @Value("${kompile.ingest.state-directory:${user.home}/.kompile/state}") String stateDir) {
+            @Value("${kompile.ingest.state-directory:${kompile.data.dir:${user.home}/.kompile}/state}") String stateDir) {
         this.objectMapper = objectMapper;
         this.archiveStore = new DocumentArchiveStore(objectMapper);
         this.jobHistoryService = jobHistoryService;

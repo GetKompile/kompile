@@ -90,7 +90,7 @@ public class JobLogService {
     @Value("${kompile.ingest.job-log.archive-enabled:true}")
     private boolean archiveEnabled;
 
-    @Value("${kompile.ingest.job-log.archive-path:${user.home}/.kompile/log-archives}")
+    @Value("${kompile.ingest.job-log.archive-path:${kompile.data.dir:${user.home}/.kompile}/log-archives}")
     private String archivePath;
 
     @Value("${kompile.ingest.job-log.archive-on-cleanup:true}")

@@ -71,7 +71,7 @@ public class IndexingJobHistoryService {
     @Value("${kompile.ingest.job-history.max-records:10000}")
     private int maxRecords;
 
-    @Value("${kompile.ingest.state-directory:${user.home}/.kompile/state}")
+    @Value("${kompile.ingest.state-directory:${kompile.data.dir:${user.home}/.kompile}/state}")
     private String stateDirectory;
 
     @Autowired
