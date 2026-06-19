@@ -15,6 +15,7 @@
  */
 package ai.kompile.enrichment.impl.clean;
 
+import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.enrichment.config.EnrichmentConfig;
 import ai.kompile.enrichment.impl.EnrichmentAuditService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -98,11 +99,15 @@ public class EntityNormalizationService {
                         }
                     }
 
-                    // Ensure entity_type is present
+                    // Ensure entity_type is present — prefer the canonical resolved type (e.g. promote a
+                    // known entity_category) and only fall back to keyword inference when nothing is known.
                     if (!meta.has("entity_type") || meta.get("entity_type").asText().isBlank()) {
-                        String inferredType = inferEntityType(entity);
-                        if (inferredType != null) {
-                            meta.put("entity_type", inferredType);
+                        String resolvedType = extractEntityType(entity);
+                        if (resolvedType == null) {
+                            resolvedType = inferEntityType(entity);
+                        }
+                        if (resolvedType != null) {
+                            meta.put("entity_type", resolvedType);
                             metaChanged = true;
                         }
                     }
@@ -144,14 +149,10 @@ public class EntityNormalizationService {
     }
 
     private String extractEntityType(GraphNode node) {
-        if (node.getMetadataJson() == null) return null;
-        try {
-            JsonNode meta = objectMapper.readTree(node.getMetadataJson());
-            JsonNode typeNode = meta.path("entity_type");
-            return typeNode.isMissingNode() ? null : typeNode.asText();
-        } catch (Exception e) {
-            return null;
-        }
+        // Canonical resolution (entity_category -> entity_type -> entity_subtype), shared with the
+        // ontology-conformance and compaction paths so every consumer agrees on a node's semantic type.
+        // Previously this read only entity_type and so missed types stored under entity_category.
+        return GraphNodeTypes.resolveEntityType(node.getMetadata(), null);
     }
 
     private String inferEntityType(GraphNode node) {
