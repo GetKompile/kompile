@@ -56,6 +56,20 @@ public class GraphChangeTrackingController {
         return ResponseEntity.ok(temporalService.diffFactSheet(factSheetId, fromTime, toTime));
     }
 
+    /**
+     * Semantic, entity-level diff between two times: which entities were added / removed / had
+     * attributes changed (vs the count-only {@code /diff}).
+     */
+    @GetMapping("/fact-sheets/{factSheetId}/semantic-diff")
+    public ResponseEntity<TemporalGraphQueryService.EntityDiff> getSemanticDiff(
+            @PathVariable Long factSheetId,
+            @RequestParam String from,
+            @RequestParam String to) {
+        LocalDateTime fromTime = LocalDateTime.parse(from, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        LocalDateTime toTime = LocalDateTime.parse(to, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        return ResponseEntity.ok(temporalService.semanticDiffFactSheet(factSheetId, fromTime, toTime));
+    }
+
     @GetMapping
     public ResponseEntity<Page<GraphMutationRecord>> listChanges(
             @RequestParam(required = false) Long factSheetId,
