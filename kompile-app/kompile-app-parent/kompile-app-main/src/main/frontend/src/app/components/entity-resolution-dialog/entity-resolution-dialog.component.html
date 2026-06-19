@@ -40,6 +40,42 @@
   </div>
 
   <mat-dialog-content>
+    <!-- Barcode identity / recycled-code review queue -->
+    <div class="identity-panel">
+      <div class="identity-header">
+        <mat-icon>qr_code_2</mat-icon>
+        <span class="identity-title">Barcode identities</span>
+        <span class="spacer"></span>
+        <span class="identity-status" *ngIf="lastMaterialize">
+          {{ lastMaterialize.identifierNodes }} code(s) · {{ lastMaterialize.resolveEdges }} link(s)
+        </span>
+        <button mat-stroked-button color="primary" (click)="materializeIdentifiers()" [disabled]="materializing">
+          <mat-icon>sync</mat-icon> {{ materializing ? 'Linking…' : 'Refresh links' }}
+        </button>
+      </div>
+
+      <div class="collisions-loading" *ngIf="collisionsLoading">
+        <mat-spinner diameter="18"></mat-spinner> <span>Checking for recycled codes…</span>
+      </div>
+
+      <div class="collisions-empty" *ngIf="!collisionsLoading && collisions.length === 0">
+        <mat-icon class="ok-icon">verified</mat-icon>
+        <span>No recycled-code collisions</span>
+      </div>
+
+      <div class="collision-list" *ngIf="!collisionsLoading && collisions.length > 0">
+        <div class="collision-warning">
+          <mat-icon>warning</mat-icon>
+          {{ collisions.length }} barcode(s) resolve to multiple products — review needed
+        </div>
+        <div *ngFor="let c of collisions" class="collision-card">
+          <span class="collision-gtin">{{ c.gtin14 }}</span>
+          <mat-icon class="collision-arrow">arrow_forward</mat-icon>
+          <span class="collision-products">{{ c.productTitles.join(' • ') }}</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Loading spinner -->
     <div class="loading-state" *ngIf="loading">
       <mat-spinner diameter="36"></mat-spinner>

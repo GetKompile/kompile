@@ -19,10 +19,10 @@
  */
 
 // Node hierarchy levels
-export type NodeLevel = 'SOURCE' | 'DOCUMENT' | 'SNIPPET' | 'ENTITY' | 'CUSTOM' | 'ATTACHMENT' | 'TABLE';
+export type NodeLevel = 'SOURCE' | 'DOCUMENT' | 'SNIPPET' | 'ENTITY' | 'CUSTOM' | 'ATTACHMENT' | 'TABLE' | 'IDENTIFIER';
 
 // Edge relationship types
-export type EdgeType = 'HIERARCHICAL' | 'EMBEDDING_SIMILARITY' | 'SHARED_ENTITY' | 'USER_DEFINED' | 'CITATION' | 'TEMPORAL' | 'CROSS_SOURCE';
+export type EdgeType = 'HIERARCHICAL' | 'EMBEDDING_SIMILARITY' | 'SHARED_ENTITY' | 'USER_DEFINED' | 'CITATION' | 'TEMPORAL' | 'CROSS_SOURCE' | 'RESOLVES_TO';
 
 /**
  * Graph node representing a source, document, snippet, or entity
@@ -330,7 +330,8 @@ export const NODE_COLORS: Record<NodeLevel, string> = {
   ENTITY: '#9C27B0',      // Purple
   CUSTOM: '#607D8B',      // Grey
   TABLE: '#795548',       // Brown
-  ATTACHMENT: '#FF5722'   // Deep Orange
+  ATTACHMENT: '#FF5722',  // Deep Orange
+  IDENTIFIER: '#3F51B5'   // Indigo
 };
 
 /**
@@ -343,7 +344,8 @@ export const NODE_SIZES: Record<NodeLevel, number> = {
   ENTITY: 12,
   CUSTOM: 12,
   ATTACHMENT: 10,
-  TABLE: 10
+  TABLE: 10,
+  IDENTIFIER: 10
 };
 
 /**
@@ -356,7 +358,8 @@ export const EDGE_COLORS: Record<EdgeType, string> = {
   USER_DEFINED: '#2196F3',         // Blue
   CITATION: '#FF5722',             // Deep Orange
   TEMPORAL: '#795548',             // Brown
-  CROSS_SOURCE: '#00BCD4'          // Cyan
+  CROSS_SOURCE: '#00BCD4',         // Cyan
+  RESOLVES_TO: '#E91E63'           // Pink
 };
 
 /**
@@ -369,7 +372,8 @@ export const EDGE_DASH_PATTERNS: Record<EdgeType, string> = {
   USER_DEFINED: 'none',
   CITATION: '10,5',
   TEMPORAL: '5,2,2,2',
-  CROSS_SOURCE: '8,4'
+  CROSS_SOURCE: '8,4',
+  RESOLVES_TO: '6,3'
 };
 
 export interface ProvenanceCitation {

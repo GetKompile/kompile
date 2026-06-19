@@ -1907,8 +1907,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   maxDepth = 2;
   maxNodes = 100;
   filter: GraphFilter = {
-    nodeTypes: ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT'],
-    edgeTypes: ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE']
+    nodeTypes: ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT', 'IDENTIFIER'],
+    edgeTypes: ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE', 'RESOLVES_TO']
   };
 
   // Temporal filtering
@@ -1940,8 +1940,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   forceConfig: ForceConfig = { ...DEFAULT_FORCE_CONFIG };
 
   // Type lists
-  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT'];
-  allEdgeTypes: EdgeType[] = ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE'];
+  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT', 'IDENTIFIER'];
+  allEdgeTypes: EdgeType[] = ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE', 'RESOLVES_TO'];
 
   // Node colors for display
   private nodeColors: Record<NodeLevel, string> = {
@@ -1951,7 +1951,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     ENTITY: '#a855f7',
     CUSTOM: '#64748b',
     TABLE: '#00bcd4',
-    ATTACHMENT: '#795548'
+    ATTACHMENT: '#795548',
+    IDENTIFIER: '#3F51B5'
   };
 
   constructor(

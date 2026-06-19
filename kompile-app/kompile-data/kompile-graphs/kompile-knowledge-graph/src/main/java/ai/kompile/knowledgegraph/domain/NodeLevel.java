@@ -53,5 +53,14 @@ public enum NodeLevel {
     /**
      * Email attachment node (e.g. a file attached to an email message)
      */
-    ATTACHMENT
+    ATTACHMENT,
+
+    /**
+     * A canonical product identifier (e.g. a GTIN-14 barcode) observed across one
+     * or more entities. Identifier nodes are linked to product entities via
+     * {@link EdgeType#RESOLVES_TO} edges, giving a many-to-many observed-code →
+     * product mapping. An identifier node with edges to more than one product is a
+     * recycled / reassigned code collision.
+     */
+    IDENTIFIER
 }
