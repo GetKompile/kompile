@@ -1,0 +1,88 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="pipelines-panel">
+  <p class="intro">
+    Channel → graph pipelines update the graph from inbound channel messages (slack, email, …)
+    without a full crawl. Each runs its steps on a matching message into the target fact sheet.
+  </p>
+
+  <div class="toolbar">
+    <button mat-stroked-button (click)="refresh()" [disabled]="loading">
+      <mat-icon>refresh</mat-icon> Refresh
+    </button>
+    <button mat-raised-button color="primary" (click)="openCreate()">
+      <mat-icon>add</mat-icon> New pipeline
+    </button>
+    <mat-spinner *ngIf="loading" diameter="22"></mat-spinner>
+  </div>
+
+  <!-- Create form -->
+  <mat-card *ngIf="showCreate" class="create-card">
+    <mat-card-header><mat-card-title>New pipeline</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="form-row">
+        <mat-form-field appearance="outline" class="grow">
+          <mat-label>Name</mat-label>
+          <input matInput [(ngModel)]="draft.pipelineName" placeholder="e.g. Slack support → graph">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Channels (comma-separated)</mat-label>
+          <input matInput [(ngModel)]="draft.triggerChannels" placeholder="slack,email">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Target fact sheet</mat-label>
+          <input matInput type="number" [(ngModel)]="draft.targetFactSheetId"
+                 [placeholder]="factSheetId != null ? ('active: ' + factSheetId) : 'optional'">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="narrow">
+          <mat-label>Priority</mat-label>
+          <input matInput type="number" [(ngModel)]="draft.priority">
+        </mat-form-field>
+      </div>
+
+      <mat-form-field appearance="outline" class="full">
+        <mat-label>Processing steps (JSON)</mat-label>
+        <textarea matInput rows="4" [(ngModel)]="draftSteps"></textarea>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full">
+        <mat-label>Message filter (JSON, optional)</mat-label>
+        <textarea matInput rows="2" [(ngModel)]="draftFilter" placeholder='{ "userName": "alice" }'></textarea>
+      </mat-form-field>
+
+      <div class="form-bottom">
+        <mat-slide-toggle [(ngModel)]="draft.requireApproval">Require approval</mat-slide-toggle>
+        <span class="spacer"></span>
+        <button mat-button (click)="showCreate = false">Cancel</button>
+        <button mat-raised-button color="primary" (click)="create()"
+                [disabled]="saving || !draft.pipelineName?.trim()">Create</button>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Pipelines list -->
+  <div *ngIf="pipelines.length === 0 && !loading" class="empty-state">
+    <mat-icon>account_tree</mat-icon>
+    <p>No channel pipelines yet. Create one to feed graph updates from a channel.</p>
+  </div>
+
+  <table class="pl-table" *ngIf="pipelines.length > 0">
+    <thead>
+      <tr><th>On</th><th>Name</th><th>Channels</th><th>Steps</th><th>Target</th><th>Approval</th><th></th></tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let p of pipelines">
+        <td><mat-slide-toggle [checked]="!!p.enabled" (change)="toggle(p)"></mat-slide-toggle></td>
+        <td>{{ p.pipelineName }}</td>
+        <td>{{ p.triggerChannels || 'any' }}</td>
+        <td class="steps">{{ stepsSummary(p) }}</td>
+        <td>{{ p.targetFactSheetId != null ? ('fs #' + p.targetFactSheetId) : '—' }}</td>
+        <td>{{ p.requireApproval ? 'yes' : 'no' }}</td>
+        <td><button mat-icon-button color="warn" (click)="remove(p)" matTooltip="Delete"><mat-icon>delete</mat-icon></button></td>
+      </tr>
+    </tbody>
+  </table>
+</div>

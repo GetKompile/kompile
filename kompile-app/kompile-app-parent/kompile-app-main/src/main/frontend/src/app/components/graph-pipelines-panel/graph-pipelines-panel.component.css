@@ -1,0 +1,98 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ */
+
+.pipelines-panel {
+  padding: 12px;
+}
+
+.intro {
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.create-card {
+  margin-bottom: 16px;
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.form-row .grow {
+  flex: 1 1 240px;
+}
+
+.form-row .narrow {
+  width: 110px;
+}
+
+.full {
+  width: 100%;
+}
+
+.full textarea {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.form-bottom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-bottom .spacer {
+  flex: 1;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 16px;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.empty-state mat-icon {
+  font-size: 40px;
+  height: 40px;
+  width: 40px;
+}
+
+.pl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pl-table th,
+.pl-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  vertical-align: middle;
+}
+
+.pl-table th {
+  color: rgba(0, 0, 0, 0.6);
+  font-weight: 600;
+}
+
+.pl-table .steps {
+  font-family: monospace;
+  font-size: 12px;
+  color: #3949ab;
+}

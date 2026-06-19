@@ -22,6 +22,10 @@
       <mat-icon class="tab-icon">schema</mat-icon>
       <span class="tab-label">Ontology</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'pipelines'" (click)="selectSubTab('pipelines')">
+      <mat-icon class="tab-icon">cable</mat-icon>
+      <span class="tab-label">Channel Pipelines</span>
+    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'maintenance'" (click)="selectSubTab('maintenance')">
       <mat-icon class="tab-icon">build</mat-icon>
       <span class="tab-label">Maintenance</span>
@@ -45,6 +49,9 @@
     </div>
     <div *ngIf="activeSubTab === 'ontology'">
       <app-graph-ontology-panel [factSheetId]="activeFactSheetId"></app-graph-ontology-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'pipelines'">
+      <app-graph-pipelines-panel [factSheetId]="activeFactSheetId"></app-graph-pipelines-panel>
     </div>
     <div *ngIf="activeSubTab === 'maintenance'">
       <app-graph-maintenance-hub [factSheetId]="activeFactSheetId"></app-graph-maintenance-hub>
