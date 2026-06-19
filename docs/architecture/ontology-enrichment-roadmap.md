@@ -94,12 +94,14 @@ Split into what ships now (no ontology dependency) and what completes after A.
   new store-agnostic `KnowledgeGraphService.findFactSheetIds()` and maintains each, isolating per-fact-sheet failures.
   Still disabled by default.
 
-### B2 — Ontology conformance  *(depends on A)*
+### B2 — Ontology conformance  *(needs A — A-1/A-2 done)*
 
-- [ ] **`ONTOLOGY_CONFORMANCE` maintenance task** — for each node/edge, resolve its semantic type via the A bridge,
-  validate fields (type/regex/min/max/enum/required), relationship cardinality, FK references, immutability;
-  emit a conformance report. Non-destructive (dry-run) by default; apply-mode flags/quarantines violators
-  (set `stale` or a `conformance` metadata flag).
+- [x] **Conformance reachable from maintenance** ✅ (2026-06-19) — `GraphMaintenanceService.checkOntologyConformance(factSheetId)`
+  delegates to the `GraphConformanceChecker` SPI (optional); the knowledge-graph maintenance layer now runs/reports ontology
+  conformance without seeing `OntologySchema`. (`GraphMaintenanceServiceImplTest` 6/6.)
+- [ ] **`ONTOLOGY_CONFORMANCE` apply-mode** — beyond reporting, flag/quarantine non-conforming nodes (set `stale` or a
+  `conformance` metadata flag); add relationship/cardinality checks once edge semantic types exist (see D). Non-destructive by default.
+- [ ] **Scheduled conformance** — run `checkOntologyConformance` per fact sheet from `MaintenanceScheduler`, recorded in history.
 - [ ] **Drift detection** — compare graph type distribution against the ontology's declared types → "types in graph
   not in ontology" (add candidates) and "ontology types with no instances" (dead types). Feeds ontology evolution.
 - [ ] **`COMMUNITY_REBUILD`** (clustering) — lowest priority, may defer.
