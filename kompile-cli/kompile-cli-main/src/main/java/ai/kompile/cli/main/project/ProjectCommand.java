@@ -207,6 +207,29 @@ public class ProjectCommand implements Callable<Integer> {
         @Option(names = "--no-auto-detect", description = "Suppress automatic detection of documents, models, and code. Use explicit flags only.")
         private boolean noAutoDetect;
 
+        // ---- One-command end-to-end (init -> serve -> crawl -> commit -> push) ----
+
+        @Option(names = "--serve", description = "After scaffolding, start the project's services (staging + app) in the background.")
+        private boolean serve;
+
+        @Option(names = "--crawl", description = "After services are healthy, run the project's crawl profiles and wait for them to finish. Implies --serve.")
+        private boolean crawl;
+
+        @Option(names = "--push", description = "After the crawl completes, commit all project changes and push to the configured git remote. Implies --crawl and --serve.")
+        private boolean push;
+
+        @Option(names = "--keep-running", description = "Leave services running after the end-to-end run completes (default: stop them).")
+        private boolean keepRunning;
+
+        @Option(names = "--serve-port", defaultValue = "8080", description = "App port used by --serve. Default: 8080.")
+        private int servePort;
+
+        @Option(names = "--staging-port", defaultValue = "8090", description = "Staging port used by --serve. Default: 8090.")
+        private int stagingPort;
+
+        @Option(names = "--no-staging", description = "Do not start the model staging server during --serve.")
+        private boolean noStaging;
+
         @Override
         public Integer call() throws IOException {
             KompileProjectStore store = new KompileProjectStore();
@@ -313,6 +336,18 @@ public class ProjectCommand implements Callable<Integer> {
             printManifest(manifest, store.status(rootPath));
             if (vlmOcrPreset != null) {
                 printVlmOcrPresetSummary(vlmOcrPreset);
+            }
+
+            // One-command end-to-end: optionally serve, crawl, and push.
+            // --push implies --crawl implies --serve.
+            ProjectServiceCommand.QuickstartPlan plan =
+                    ProjectServiceCommand.quickstartPlan(serve, crawl, push);
+            if (plan.serve()) {
+                String commitMessage = "Initialize Kompile project"
+                        + (manifest.getName() != null ? ": " + manifest.getName() : "");
+                return ProjectServiceCommand.runQuickstart(
+                        rootPath, servePort, stagingPort, noStaging,
+                        plan.crawl(), plan.push(), keepRunning, commitMessage, null);
             }
 
             // Print next-steps guidance

@@ -1,28 +1,57 @@
 # Installation
 
-## Pre-built binaries (recommended)
+## Install script (recommended)
 
-Download the archive for your platform from [GitHub Releases](https://github.com/GetKompile/kompile/releases):
+```bash
+curl -fsSL https://get.kompile.ai/install.sh | bash
+```
 
-| Platform | Archive |
-|----------|---------|
-| Linux x86\_64 (CUDA) | `kompile-<version>-linux-x86_64-cuda12.9.tar.gz` |
-| Linux x86\_64 (CPU) | `kompile-<version>-linux-x86_64-cpu.tar.gz` |
-| Linux ARM64 | `kompile-<version>-linux-arm64-cpu.tar.gz` |
-| macOS Apple Silicon | `kompile-<version>-macosx-arm64-cpu.tar.gz` |
-| Windows x86\_64 | `kompile-<version>-windows-x86_64-cuda12.9.zip` |
+This detects your OS/arch, downloads the matching archive from
+[GitHub Releases](https://github.com/GetKompile/kompile/releases), verifies its checksum,
+extracts it to `~/.kompile`, and prints how to add `bin/` to your `PATH`. Override defaults with:
+
+```bash
+# specific version / variant / install dir
+curl -fsSL https://get.kompile.ai/install.sh | bash -s -- \
+  --version 0.1.0 --variant cli-only --dir ~/.kompile
+```
+
+**Variants:** `cli-only` (the cross-platform `kompile` CLI — the backend is fetched on demand via
+`kompile install kompile-app`), `hosted` (CLI **plus** the bundled app-main server),
+`cpu-intel`, `cpu-arm`, `cuda`, `amd-zluda`.
+
+## Manual download
+
+Download the archive for your platform from
+[GitHub Releases](https://github.com/GetKompile/kompile/releases). Archives are named:
+
+```
+kompile-dist-<version>-<variant>-<os>-<arch>.<ext>
+```
+
+where `os` ∈ {`linux`, `macosx`, `windows`}, `arch` ∈ {`x86_64`, `arm64`}, and `ext` is
+`tar.gz` (Linux/macOS) or `zip` (Windows). For example:
+
+| Platform | Example archive |
+|----------|-----------------|
+| Linux x86\_64 | `kompile-dist-0.1.0-cli-only-linux-x86_64.tar.gz` |
+| Linux ARM64 | `kompile-dist-0.1.0-cli-only-linux-arm64.tar.gz` |
+| macOS Apple Silicon | `kompile-dist-0.1.0-cli-only-macosx-arm64.tar.gz` |
+| Windows x86\_64 | `kompile-dist-0.1.0-cli-only-windows-x86_64.zip` |
 
 Extract and add `bin/` to your PATH:
 
 ```bash
-tar xzf kompile-*-linux-x86_64-cuda12.9.tar.gz
-export PATH=$PWD/kompile-*/bin:$PATH
+tar xzf kompile-dist-*-linux-x86_64.tar.gz
+export PATH="$PWD/kompile-*/bin:$PATH"
 
 # Verify
 kompile --version
 ```
 
-Native libraries auto-resolve from the adjacent `lib/` directory. No environment variables or setup needed.
+Each archive ships a matching `.sha256`; verify with `sha256sum -c <archive>.sha256`.
+For the `hosted` variant, native libraries auto-resolve from the adjacent `lib/` directory —
+no environment variables or setup needed.
 
 ## Bootstrap (from source checkout)
 

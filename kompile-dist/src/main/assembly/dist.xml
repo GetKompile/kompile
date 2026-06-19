@@ -28,28 +28,28 @@
     <files>
         <!-- ============ CLI native executables (renamed for friendlier UX) ============ -->
         <file>
-            <source>${project.parent.basedir}/kompile-cli/target/kompile-cli</source>
+            <source>${project.parent.basedir}/kompile-cli/kompile-cli-main/target/kompile-cli-main</source>
             <outputDirectory>bin</outputDirectory>
             <destName>kompile</destName>
             <fileMode>0755</fileMode>
         </file>
         <file>
-            <source>${project.parent.basedir}/kompile-agent-cli/target/kompile-agent</source>
+            <source>${project.parent.basedir}/kompile-cli/kompile-agent-cli/target/kompile-agent</source>
             <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
         </file>
         <file>
-            <source>${project.parent.basedir}/kompile-app-cli/target/kompile-app-cli</source>
+            <source>${project.parent.basedir}/kompile-cli/kompile-app-cli/target/kompile-app-cli</source>
             <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
         </file>
         <file>
-            <source>${project.parent.basedir}/kompile-model-cli/target/kompile-model</source>
+            <source>${project.parent.basedir}/kompile-cli/kompile-model-cli/target/kompile-model</source>
             <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
         </file>
         <file>
-            <source>${project.parent.basedir}/kompile-component-cli/target/kompile-component</source>
+            <source>${project.parent.basedir}/kompile-cli/kompile-component-cli/target/kompile-component</source>
             <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
         </file>
@@ -60,7 +60,7 @@
              vlm-test, training) via the subprocess-type flag. See
              MainApplication.main() for the routing logic. -->
         <file>
-            <source>${project.parent.basedir}/kompile-app/kompile-app-main/target/kompile-app</source>
+            <source>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app</source>
             <outputDirectory>bin</outputDirectory>
             <destName>kompile-server</destName>
             <fileMode>0755</fileMode>
@@ -68,7 +68,7 @@
 
         <!-- ============ kompile-app-lite native ============ -->
         <file>
-            <source>${project.parent.basedir}/kompile-app/kompile-app-lite/target/kompile-app-lite-native</source>
+            <source>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-lite/target/kompile-app-lite-native</source>
             <outputDirectory>bin</outputDirectory>
             <destName>kompile-app-lite</destName>
             <fileMode>0755</fileMode>
@@ -76,7 +76,7 @@
 
         <!-- ============ kompile-sdk-serving shaded JAR (Vert.x OpenAI-compatible server) ============ -->
         <file>
-            <source>${project.parent.basedir}/kompile-sdk-serving/target/kompile-sdk-serving-${project.version}-shaded.jar</source>
+            <source>${project.parent.basedir}/kompile-app/kompile-middleware/kompile-sdk-serving/target/kompile-sdk-serving-${project.version}-shaded.jar</source>
             <outputDirectory>lib</outputDirectory>
             <destName>kompile-sdk-serving.jar</destName>
         </file>
@@ -100,7 +100,7 @@
              Native images that use AWT/fonts emit lib*.so files next to the binary;
              these must ship alongside `kompile-server` for runtime loading. -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-app-main/target</directory>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/target</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>lib*.so</include>
@@ -115,7 +115,7 @@
              activated. The fileSet pattern lets them be skipped silently when
              absent, which is what we want for a default dist build. -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-app-main/target</directory>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/target</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-vlm-test</include>
@@ -130,7 +130,7 @@
              launcher script falls back to the Spring Boot exec JAR shipped at
              lib/kompile-model-staging.jar. -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-model-staging/target</directory>
+            <directory>${project.parent.basedir}/kompile-app/kompile-models/kompile-model-staging/target</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-model-staging</include>
@@ -140,7 +140,7 @@
 
         <!-- ============ GraalVM shared library + generated headers ============ -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-pipelines-framework/kompile-pipelines-framework-runtime/target</directory>
+            <directory>${project.parent.basedir}/kompile-app/kompile-data/kompile-pipelines-framework/kompile-pipelines-framework-runtime/target</directory>
             <outputDirectory>lib</outputDirectory>
             <includes>
                 <include>libkompile_pipelines.so</include>
@@ -185,7 +185,7 @@
 
         <!-- ============ Default application configuration ============ -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-app-main/src/main/resources</directory>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/src/main/resources</directory>
             <outputDirectory>conf</outputDirectory>
             <includes>
                 <include>application.properties</include>

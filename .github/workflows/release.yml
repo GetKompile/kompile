@@ -1,0 +1,222 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Kompile release pipeline
+#
+# Builds the cross-platform `kompile` CLI as a GraalVM native image, packages it
+# into the canonical distribution archive, generates a SHA-256 checksum, and
+# publishes a GitHub Release. The published archives are exactly what
+# `install.sh` (curl -fsSL https://get.kompile.ai/install.sh | bash) downloads.
+#
+# Archive naming (must match install.sh + docs/getting-started/installation.md):
+#   kompile-dist-<version>-<variant>-<os>-<arch>.<ext>
+#     os   ∈ { linux, macosx, windows }
+#     arch ∈ { x86_64, arm64 }
+#     ext  =  tar.gz (linux/macOS) | zip (windows)
+#
+# ⚠️  RUNNER SIZING — READ THIS FIRST
+#   The CLI native-image build passes `-J-Xmx18g`
+#   (kompile-cli/kompile-cli-main/pom.xml). It will OOM on standard GitHub-hosted
+#   runners (16 GB). Point the `runner` matrix values at machines with ≥ 32 GB RAM
+#   (GitHub "larger runners" or self-hosted) by setting these repository variables
+#   (Settings -> Secrets and variables -> Actions -> Variables):
+#       KOMPILE_LINUX_X64_RUNNER     (default: ubuntu-latest)
+#       KOMPILE_MACOS_ARM64_RUNNER   (default: macos-14)
+#       KOMPILE_WINDOWS_X64_RUNNER   (default: windows-latest)
+#       KOMPILE_RELEASE_RUNNER       (default: ubuntu-latest; lightweight, no native build)
+#   Until you set them, the defaults run on standard hosted runners and the native
+#   build step is expected to OOM.
+#
+# Variants:
+#   This workflow builds the `cli-only` variant (just the `kompile` binary; the
+#   app-main backend is fetched on demand at runtime via `kompile install
+#   kompile-app`). The heavier `hosted` variant (CLI + the ~1.9 GB app-main
+#   native image, ~22 min) and GPU variants (`cuda`, `amd-zluda`) need a
+#   dedicated/self-hosted runner — see the commented `build-hosted` job at the
+#   bottom for the template.
+# ──────────────────────────────────────────────────────────────────────────────
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (without leading v), e.g. 0.1.0'
+        required: true
+        default: '0.0.0-dev'
+
+permissions:
+  contents: write          # needed to create the GitHub Release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GRAALVM_JAVA_VERSION: '21'
+
+jobs:
+  build:
+    name: build ${{ matrix.variant }} (${{ matrix.os_id }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `runner` resolves from a repo variable, falling back to a hosted runner.
+          # Set the variables (see header) to ≥ 32 GB / self-hosted labels.
+          - runner: ${{ vars.KOMPILE_LINUX_X64_RUNNER || 'ubuntu-latest' }}
+            os_id: linux
+            arch: x86_64
+            variant: cli-only
+            ext: tar.gz
+          - runner: ${{ vars.KOMPILE_MACOS_ARM64_RUNNER || 'macos-14' }}   # Apple Silicon
+            os_id: macosx
+            arch: arm64
+            variant: cli-only
+            ext: tar.gz
+          - runner: ${{ vars.KOMPILE_WINDOWS_X64_RUNNER || 'windows-latest' }}
+            os_id: windows
+            arch: x86_64
+            variant: cli-only
+            ext: zip
+          # Enable once you have arm64 Linux runners:
+          # - runner: ubuntu-24.04-arm
+          #   os_id: linux
+          #   arch: arm64
+          #   variant: cli-only
+          #   ext: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up GraalVM ${{ env.GRAALVM_JAVA_VERSION }}
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: ${{ env.GRAALVM_JAVA_VERSION }}
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: 'maven'
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="${{ github.event.inputs.version }}"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Building version ${V}"
+
+      - name: Build CLI native image
+        shell: bash
+        # -Dkompile.dist=true activates the `native` profile (see cli-main pom).
+        # -am builds the CLI's upstream reactor dependencies from a clean checkout
+        #     (the local "no -am" rule assumes deps are already installed).
+        # -DskipTests skips the slow native test execution.
+        run: |
+          mvn -B -ntp -Dkompile.dist=true -DskipTests \
+            -pl kompile-cli/kompile-cli-main -am \
+            clean package
+
+      - name: Assemble distribution archive
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          VARIANT="${{ matrix.variant }}"
+          OS_ID="${{ matrix.os_id }}"
+          ARCH="${{ matrix.arch }}"
+          EXT="${{ matrix.ext }}"
+          NAME="kompile-dist-${VERSION}-${VARIANT}-${OS_ID}-${ARCH}"
+          TOP="kompile-${VERSION}"
+          STAGE="staging/${TOP}"
+          BIN="kompile-cli/kompile-cli-main/target/kompile-cli-main"
+
+          mkdir -p "${STAGE}/bin"
+          if [ "${OS_ID}" = "windows" ]; then
+            cp "${BIN}.exe" "${STAGE}/bin/kompile.exe"
+          else
+            cp "${BIN}" "${STAGE}/bin/kompile"
+            chmod +x "${STAGE}/bin/kompile"
+          fi
+          # Ship the Unix launcher scripts alongside the binary.
+          cp kompile-dist/src/main/scripts/*.sh "${STAGE}/bin/" 2>/dev/null || true
+
+          # Archive (single top-level dir; install.sh strips it on extract).
+          if [ "${EXT}" = "zip" ]; then
+            ( cd staging && 7z a -tzip "../${NAME}.zip" "${TOP}" >/dev/null )
+          else
+            tar -C staging -czf "${NAME}.tar.gz" "${TOP}"
+          fi
+
+          # SHA-256 checksum (sha256sum on Linux/Git-Bash, shasum on macOS).
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${NAME}.${EXT}" > "${NAME}.${EXT}.sha256"
+          else
+            shasum -a 256 "${NAME}.${EXT}" > "${NAME}.${EXT}.sha256"
+          fi
+
+          echo "archive=${NAME}.${EXT}" >> "$GITHUB_OUTPUT"
+          ls -lh "${NAME}.${EXT}" "${NAME}.${EXT}.sha256"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.archive }}
+          path: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.archive }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ${{ vars.KOMPILE_RELEASE_RUNNER || 'ubuntu-latest' }}
+    if: github.event_name == 'push'        # tags publish; manual dispatch only builds
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Template: hosted / GPU variants (needs a dedicated or self-hosted runner)
+#
+#   build-hosted:
+#     name: build hosted (${{ matrix.os_id }}-${{ matrix.arch }})
+#     runs-on: [self-hosted, linux, x64, gpu]   # your capable runner labels
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         include:
+#           - os_id: linux
+#             arch: x86_64
+#             variant: cuda            # or: hosted | cpu-intel | amd-zluda
+#             ext: tar.gz
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: graalvm/setup-graalvm@v1
+#         with: { java-version: '21', distribution: 'graalvm-community' }
+#       # Build EVERY native image in the reactor, then run the kompile-dist
+#       # assembly. For GPU variants also pass the backend flags, e.g.
+#       #   -Plibnd4j-cuda -Dlibnd4j.chip=cuda -Dlibnd4j.compute=86,89
+#       - run: mvn -B -ntp -Dkompile.dist=true -DskipTests clean package
+#       # The assembly emits kompile-dist/target/kompile-dist-<version>.<ext>;
+#       # rename it to kompile-dist-<version>-<variant>-<os>-<arch>.<ext>,
+#       # checksum, and upload exactly like the `build` job above.
+# ──────────────────────────────────────────────────────────────────────────────
