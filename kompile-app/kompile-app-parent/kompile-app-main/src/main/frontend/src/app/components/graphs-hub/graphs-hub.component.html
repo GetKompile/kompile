@@ -18,6 +18,10 @@
       <mat-icon class="tab-icon">monitor_heart</mat-icon>
       <span class="tab-label">Health</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'ontology'" (click)="selectSubTab('ontology')">
+      <mat-icon class="tab-icon">schema</mat-icon>
+      <span class="tab-label">Ontology</span>
+    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'maintenance'" (click)="selectSubTab('maintenance')">
       <mat-icon class="tab-icon">build</mat-icon>
       <span class="tab-label">Maintenance</span>
@@ -34,6 +38,9 @@
     </div>
     <div *ngIf="activeSubTab === 'health'">
       <app-graph-health-panel [factSheetId]="activeFactSheetId"></app-graph-health-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'ontology'">
+      <app-graph-ontology-panel [factSheetId]="activeFactSheetId"></app-graph-ontology-panel>
     </div>
     <div *ngIf="activeSubTab === 'maintenance'">
       <app-graph-maintenance-hub [factSheetId]="activeFactSheetId"></app-graph-maintenance-hub>

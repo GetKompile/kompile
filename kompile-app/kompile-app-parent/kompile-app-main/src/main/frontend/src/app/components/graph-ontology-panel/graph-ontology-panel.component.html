@@ -1,0 +1,111 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="ontology-panel">
+  <div *ngIf="factSheetId == null" class="empty-state">
+    <mat-icon>schema</mat-icon>
+    <p>Select a fact sheet to bind an ontology and view conformance.</p>
+  </div>
+
+  <ng-container *ngIf="factSheetId != null">
+    <!-- Bind / status -->
+    <mat-card class="bind-card">
+      <mat-card-content>
+        <div class="bind-row">
+          <mat-form-field appearance="outline" class="grow">
+            <mat-label>Ontology</mat-label>
+            <mat-select [(ngModel)]="selectedOntologyId">
+              <mat-option *ngFor="let o of ontologies" [value]="o.id">
+                {{ o.name || o.id }}<span class="muted" *ngIf="o.version"> (v{{ o.version }})</span>
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+          <button mat-raised-button color="primary" (click)="bind()"
+                  [disabled]="binding || !selectedOntologyId">
+            <mat-icon>link</mat-icon> Bind
+          </button>
+          <button mat-stroked-button (click)="unbind()"
+                  [disabled]="binding || !report?.ontologyBound">
+            <mat-icon>link_off</mat-icon> Unbind
+          </button>
+          <button mat-icon-button (click)="loadConformance()" [disabled]="loading" matTooltip="Re-check">
+            <mat-icon>refresh</mat-icon>
+          </button>
+          <mat-spinner *ngIf="loading || binding" diameter="22"></mat-spinner>
+        </div>
+        <p class="muted" *ngIf="ontologies.length === 0">
+          No saved ontologies found — derive or create one under Tools → Business Processes first.
+        </p>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Conformance report -->
+    <mat-card *ngIf="report as r" class="report-card">
+      <mat-card-header>
+        <mat-card-title>
+          <ng-container *ngIf="r.ontologyBound">Conformance — {{ r.ontologyName }} (v{{ r.ontologyVersion }})</ng-container>
+          <ng-container *ngIf="!r.ontologyBound">Not bound</ng-container>
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <p *ngIf="!r.ontologyBound" class="muted">{{ r.message }}</p>
+
+        <div *ngIf="r.ontologyBound">
+          <div class="metric-grid">
+            <div class="metric" [class.good]="(r.conformanceScore || 0) >= 0.9" [class.warn]="(r.conformanceScore || 0) < 0.9">
+              <span class="label">Conformance</span><span class="value">{{ pct(r.conformanceScore) }}</span>
+            </div>
+            <div class="metric"><span class="label">Entities checked</span><span class="value">{{ r.entitiesChecked }}</span></div>
+            <div class="metric" [class.warn]="r.nonConformantCount > 0">
+              <span class="label">Non-conformant</span><span class="value">{{ r.nonConformantCount }}</span>
+            </div>
+            <div class="metric" [class.warn]="r.unknownTypeCount > 0">
+              <span class="label">Unknown type</span><span class="value">{{ r.unknownTypeCount }}</span>
+            </div>
+            <div class="metric"><span class="label">Edges checked</span><span class="value">{{ r.edgesChecked }}</span></div>
+            <div class="metric" [class.warn]="r.nonConformantEdgeCount > 0">
+              <span class="label">Non-conformant edges</span><span class="value">{{ r.nonConformantEdgeCount }}</span>
+            </div>
+          </div>
+
+          <!-- Node violations -->
+          <div *ngIf="r.violations?.length" class="violations">
+            <h4>Node violations ({{ r.violations.length }})</h4>
+            <table class="v-table">
+              <thead><tr><th>Entity</th><th>Type</th><th>Issues</th></tr></thead>
+              <tbody>
+                <tr *ngFor="let v of r.violations">
+                  <td>{{ v.title || v.nodeId }}</td>
+                  <td>{{ v.entityType }}<span class="badge" *ngIf="v.unknownType">unknown</span></td>
+                  <td>{{ v.messages?.join('; ') }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Edge violations -->
+          <div *ngIf="r.edgeViolations?.length" class="violations">
+            <h4>Relationship violations ({{ r.edgeViolations.length }})</h4>
+            <table class="v-table">
+              <thead><tr><th>Relationship</th><th>Source → Target</th><th>Reason</th></tr></thead>
+              <tbody>
+                <tr *ngFor="let v of r.edgeViolations">
+                  <td>{{ v.relationshipType }}</td>
+                  <td>{{ v.sourceType }} → {{ v.targetType }}</td>
+                  <td>{{ v.reason }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p *ngIf="r.nonConformantCount === 0 && r.nonConformantEdgeCount === 0 && r.unknownTypeCount === 0"
+             class="all-good">
+            <mat-icon>check_circle</mat-icon> All checked entities and relationships conform.
+          </p>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </ng-container>
+</div>
