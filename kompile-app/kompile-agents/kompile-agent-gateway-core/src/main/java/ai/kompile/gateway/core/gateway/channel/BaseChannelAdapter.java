@@ -19,6 +19,7 @@ import ai.kompile.gateway.core.model.AgentRequest;
 import ai.kompile.gateway.core.model.AgentResponse;
 import ai.kompile.gateway.core.service.AgentExecutor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,8 +36,19 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
     protected final Map<String, AdapterConfig> channelConfigs = new ConcurrentHashMap<>();
     protected volatile boolean running = false;
 
+    /**
+     * Optional publisher for {@link ChannelMessageReceivedEvent}. Set by the wiring layer
+     * (KClawAutoConfiguration) so inbound messages can drive graph-update pipelines via
+     * GraphUpdateChannelBridge, independently of any agent response. Null in plain/test setups.
+     */
+    protected ApplicationEventPublisher eventPublisher;
+
     protected BaseChannelAdapter(AgentExecutor agentExecutor) {
         this.agentExecutor = agentExecutor;
+    }
+
+    public void setEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -77,6 +89,9 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
 
     protected MessageHandler createAgentHandler() {
         return (message, responder) -> {
+            // Offer every inbound message to graph-update pipelines (no-op unless a pipeline
+            // is configured for this channel) — independent of whether an agent responds.
+            publishReceived(message);
             AdapterConfig config = channelConfigs.get(message.channelId());
             if (config == null || !config.enabled()) {
                 log.warn("No config or disabled for channel: {}", message.channelId());
@@ -113,6 +128,18 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
                 responder.replyError("Internal error processing your request");
             }
         };
+    }
+
+    /** Publish a {@link ChannelMessageReceivedEvent} so graph-update pipelines can react. */
+    private void publishReceived(IncomingMessage message) {
+        if (eventPublisher == null) {
+            return;
+        }
+        try {
+            eventPublisher.publishEvent(new ChannelMessageReceivedEvent(this, message, getChannelName()));
+        } catch (Exception e) {
+            log.warn("Failed to publish channel message event for {}: {}", getChannelName(), e.getMessage());
+        }
     }
 
     protected String buildSessionKey(AdapterConfig config, IncomingMessage message) {

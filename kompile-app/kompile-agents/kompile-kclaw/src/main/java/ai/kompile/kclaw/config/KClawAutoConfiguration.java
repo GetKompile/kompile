@@ -200,15 +200,23 @@ public class KClawAutoConfiguration implements WebSocketConfigurer {
 
     @Bean("kclawChannelManager")
     @ConditionalOnBean(KClawAgentService.class)
-    public ChannelManager channelManager(KClawAgentService agentService) {
+    public ChannelManager channelManager(KClawAgentService agentService,
+                                         org.springframework.context.ApplicationEventPublisher eventPublisher) {
         ChannelManager manager = new ChannelManager();
-        
-        manager.registerAdapter(new TelegramChannelAdapter(agentService));
-        manager.registerAdapter(new DiscordChannelAdapter(agentService));
-        manager.registerAdapter(new SlackChannelAdapter(agentService));
-        manager.registerAdapter(new WhatsAppChannelAdapter(agentService));
-        manager.registerAdapter(new EmailChannelAdapter(agentService));
-        
+
+        // Wire each adapter with the event publisher so inbound messages drive graph-update
+        // pipelines (GraphUpdateChannelBridge listens in the same context), then register it.
+        java.util.List<ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter> adapters = java.util.List.of(
+                new TelegramChannelAdapter(agentService),
+                new DiscordChannelAdapter(agentService),
+                new SlackChannelAdapter(agentService),
+                new WhatsAppChannelAdapter(agentService),
+                new EmailChannelAdapter(agentService));
+        adapters.forEach(adapter -> {
+            adapter.setEventPublisher(eventPublisher);
+            manager.registerAdapter(adapter);
+        });
+
         return manager;
     }
 
