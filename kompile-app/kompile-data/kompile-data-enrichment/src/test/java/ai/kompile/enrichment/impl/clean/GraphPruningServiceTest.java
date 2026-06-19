@@ -21,8 +21,6 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,12 +40,6 @@ import static org.mockito.Mockito.*;
 class GraphPruningServiceTest {
 
     @Mock
-    private GraphNodeRepository nodeRepository;
-
-    @Mock
-    private GraphEdgeRepository edgeRepository;
-
-    @Mock
     private KnowledgeGraphService knowledgeGraphService;
 
     @Mock
@@ -60,8 +52,6 @@ class GraphPruningServiceTest {
     @BeforeEach
     void setUp() {
         service = new GraphPruningService(
-                nodeRepository,
-                edgeRepository,
                 knowledgeGraphService,
                 auditService,
                 objectMapper
@@ -80,10 +70,10 @@ class GraphPruningServiceTest {
                 .confidence(0.1).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-1").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
         // No weak edges to prune
-        when(edgeRepository.findByFactSheetIdAndEdgeType(eq(factSheetId), any(EdgeType.class)))
+        when(knowledgeGraphService.getEdgesByTypeInFactSheet(eq(factSheetId), any(EdgeType.class)))
                 .thenReturn(List.of());
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -107,9 +97,9 @@ class GraphPruningServiceTest {
                 .confidence(0.8).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-2").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
-        when(edgeRepository.findByFactSheetIdAndEdgeType(eq(factSheetId), any(EdgeType.class)))
+        when(knowledgeGraphService.getEdgesByTypeInFactSheet(eq(factSheetId), any(EdgeType.class)))
                 .thenReturn(List.of());
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -133,9 +123,9 @@ class GraphPruningServiceTest {
                 .confidence(0.1).edgeCount(3)
                 .factSheetId(factSheetId).externalId("ext-3").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
-        when(edgeRepository.findByFactSheetIdAndEdgeType(eq(factSheetId), any(EdgeType.class)))
+        when(knowledgeGraphService.getEdgesByTypeInFactSheet(eq(factSheetId), any(EdgeType.class)))
                 .thenReturn(List.of());
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -159,9 +149,9 @@ class GraphPruningServiceTest {
                 .confidence(0.9).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-4").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
-        when(edgeRepository.findByFactSheetIdAndEdgeType(eq(factSheetId), any(EdgeType.class)))
+        when(knowledgeGraphService.getEdgesByTypeInFactSheet(eq(factSheetId), any(EdgeType.class)))
                 .thenReturn(List.of());
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -180,9 +170,9 @@ class GraphPruningServiceTest {
     @Test
     void pruneWeakEdgesNoEdges() {
         Long factSheetId = 5L;
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of());
-        when(edgeRepository.findByFactSheetIdAndEdgeType(eq(factSheetId), any(EdgeType.class)))
+        when(knowledgeGraphService.getEdgesByTypeInFactSheet(eq(factSheetId), any(EdgeType.class)))
                 .thenReturn(List.of());
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -218,11 +208,11 @@ class GraphPruningServiceTest {
                 .factSheetId(factSheetId)
                 .build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(nodeA, nodeB));
-        when(edgeRepository.findByFactSheetIdAndEdgeType(factSheetId, EdgeType.EMBEDDING_SIMILARITY))
+        when(knowledgeGraphService.getEdgesByTypeInFactSheet(factSheetId, EdgeType.EMBEDDING_SIMILARITY))
                 .thenReturn(List.of(weakEdge, strongEdge));
-        when(edgeRepository.findByFactSheetIdAndEdgeType(factSheetId, EdgeType.SHARED_ENTITY))
+        when(knowledgeGraphService.getEdgesByTypeInFactSheet(factSheetId, EdgeType.SHARED_ENTITY))
                 .thenReturn(List.of());
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -233,7 +223,7 @@ class GraphPruningServiceTest {
         int pruned = service.pruneGraph(factSheetId, "job-6", config);
 
         assertEquals(1, pruned, "Only the weak edge below threshold should be pruned");
-        verify(edgeRepository).delete(weakEdge);
-        verify(edgeRepository, never()).delete(strongEdge);
+        verify(knowledgeGraphService).deleteEdge(weakEdge.getEdgeId());
+        verify(knowledgeGraphService, never()).deleteEdge(strongEdge.getEdgeId());
     }
 }

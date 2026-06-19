@@ -21,7 +21,7 @@ import ai.kompile.enrichment.domain.TaxonomyNode;
 import ai.kompile.enrichment.repository.EntityCategoryRepository;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +32,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -46,7 +47,7 @@ class EntityCategoryServiceImplTest {
     private EntityCategoryRepository categoryRepository;
 
     @Mock
-    private GraphNodeRepository nodeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     private EntityCategoryServiceImpl service;
 
@@ -54,7 +55,7 @@ class EntityCategoryServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new EntityCategoryServiceImpl(categoryRepository, nodeRepository, objectMapper);
+        service = new EntityCategoryServiceImpl(categoryRepository, knowledgeGraphService, objectMapper);
     }
 
     // ─── toSlug ───────────────────────────────────────────────────────────────
@@ -148,27 +149,27 @@ class EntityCategoryServiceImplTest {
                 .id(1L).categoryId(catId).label(catLabel).factSheetId(factSheetId).source("USER_DEFINED").build();
 
         // Entity whose metadataJson has taxonomyCategory=Finance
+        String nodeId = UUID.randomUUID().toString();
         GraphNode entity = GraphNode.builder()
-                .id(1L).nodeId(UUID.randomUUID().toString())
+                .id(1L).nodeId(nodeId)
                 .nodeType(NodeLevel.ENTITY).title("Bond").externalId("ext-1")
                 .metadataJson("{\"taxonomyCategory\":\"Finance\",\"taxonomyDomain\":\"Finance\"}")
                 .factSheetId(factSheetId).edgeCount(0).build();
 
         when(categoryRepository.findByCategoryId(catId)).thenReturn(Optional.of(cat));
-        // getEntitiesInCategory calls findByFactSheetIdAndNodeType internally
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        // getEntitiesInCategory calls knowledgeGraphService.getNodesByTypeInFactSheet internally
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
-        when(nodeRepository.save(any(GraphNode.class))).thenAnswer(inv -> inv.getArgument(0));
 
         service.delete(catId);
 
-        ArgumentCaptor<GraphNode> savedCaptor = ArgumentCaptor.forClass(GraphNode.class);
-        verify(nodeRepository).save(savedCaptor.capture());
-        GraphNode saved = savedCaptor.getValue();
-
-        JsonNode meta = objectMapper.readTree(saved.getMetadataJson());
-        assertFalse(meta.has("taxonomyCategory"), "taxonomyCategory should be removed after delete");
-        assertFalse(meta.has("taxonomyDomain"), "taxonomyDomain should be removed after delete");
+        // Verify updateNode was called to strip taxonomyCategory / taxonomyDomain
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metaCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(knowledgeGraphService).updateNode(eq(nodeId), eq("Bond"), isNull(), metaCaptor.capture());
+        Map<String, Object> savedMeta = metaCaptor.getValue();
+        assertFalse(savedMeta.containsKey("taxonomyCategory"), "taxonomyCategory should be removed after delete");
+        assertFalse(savedMeta.containsKey("taxonomyDomain"), "taxonomyDomain should be removed after delete");
         verify(categoryRepository).deleteByCategoryId(catId);
     }
 
@@ -192,18 +193,16 @@ class EntityCategoryServiceImplTest {
                 .factSheetId(factSheetId).edgeCount(0).build();
 
         when(categoryRepository.findByCategoryId(catId)).thenReturn(Optional.of(cat));
-        when(nodeRepository.findByNodeId(nodeId)).thenReturn(Optional.of(entity));
-        when(nodeRepository.save(any(GraphNode.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(knowledgeGraphService.getNode(nodeId)).thenReturn(Optional.of(entity));
 
         service.assignEntitiesToCategory(catId, List.of(nodeId));
 
-        ArgumentCaptor<GraphNode> savedCaptor = ArgumentCaptor.forClass(GraphNode.class);
-        verify(nodeRepository).save(savedCaptor.capture());
-        GraphNode saved = savedCaptor.getValue();
-
-        JsonNode meta = objectMapper.readTree(saved.getMetadataJson());
-        assertEquals("Finance", meta.path("taxonomyCategory").asText());
-        assertEquals("Finance", meta.path("taxonomyDomain").asText());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metaCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(knowledgeGraphService).updateNode(eq(nodeId), eq("Bond"), isNull(), metaCaptor.capture());
+        Map<String, Object> savedMeta = metaCaptor.getValue();
+        assertEquals("Finance", savedMeta.get("taxonomyCategory"));
+        assertEquals("Finance", savedMeta.get("taxonomyDomain"));
     }
 
     // ─── removeEntitiesFromCategory ───────────────────────────────────────────
@@ -218,20 +217,18 @@ class EntityCategoryServiceImplTest {
                 .metadataJson("{\"taxonomyCategory\":\"Finance\",\"taxonomyDomain\":\"Finance\",\"entity_type\":\"BOND\"}")
                 .factSheetId(1L).edgeCount(0).build();
 
-        when(nodeRepository.findByNodeId(nodeId)).thenReturn(Optional.of(entity));
-        when(nodeRepository.save(any(GraphNode.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(knowledgeGraphService.getNode(nodeId)).thenReturn(Optional.of(entity));
 
         service.removeEntitiesFromCategory("any-cat", List.of(nodeId));
 
-        ArgumentCaptor<GraphNode> savedCaptor = ArgumentCaptor.forClass(GraphNode.class);
-        verify(nodeRepository).save(savedCaptor.capture());
-        GraphNode saved = savedCaptor.getValue();
-
-        JsonNode meta = objectMapper.readTree(saved.getMetadataJson());
-        assertFalse(meta.has("taxonomyCategory"), "taxonomyCategory should be removed");
-        assertFalse(meta.has("taxonomyDomain"), "taxonomyDomain should be removed");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metaCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(knowledgeGraphService).updateNode(eq(nodeId), eq("Bond"), isNull(), metaCaptor.capture());
+        Map<String, Object> savedMeta = metaCaptor.getValue();
+        assertFalse(savedMeta.containsKey("taxonomyCategory"), "taxonomyCategory should be removed");
+        assertFalse(savedMeta.containsKey("taxonomyDomain"), "taxonomyDomain should be removed");
         // Other fields should be untouched
-        assertEquals("BOND", meta.path("entity_type").asText(),
+        assertEquals("BOND", savedMeta.get("entity_type"),
                 "entity_type should remain after removing category");
     }
 

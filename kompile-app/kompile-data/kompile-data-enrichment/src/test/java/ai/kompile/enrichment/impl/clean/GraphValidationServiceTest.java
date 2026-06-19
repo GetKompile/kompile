@@ -21,8 +21,6 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +31,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -41,12 +40,6 @@ import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class GraphValidationServiceTest {
-
-    @Mock
-    private GraphNodeRepository nodeRepository;
-
-    @Mock
-    private GraphEdgeRepository edgeRepository;
 
     @Mock
     private KnowledgeGraphService knowledgeGraphService;
@@ -61,8 +54,6 @@ class GraphValidationServiceTest {
     @BeforeEach
     void setUp() {
         service = new GraphValidationService(
-                nodeRepository,
-                edgeRepository,
                 knowledgeGraphService,
                 auditService,
                 objectMapper
@@ -101,13 +92,14 @@ class GraphValidationServiceTest {
     }
 
     private void stubGraph(Long factSheetId, List<GraphNode> nodes, List<GraphEdge> edges) {
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
-                .thenReturn(nodes);
-        when(nodeRepository.findByFactSheetId(factSheetId)).thenReturn(nodes);
-        for (GraphNode node : nodes) {
-            when(edgeRepository.findBySourceNodeIdOrTargetNodeId(node.getId())).thenReturn(edges);
-        }
-        when(edgeRepository.findByFactSheetId(factSheetId)).thenReturn(edges);
+        // Filter ENTITY nodes for getNodesByTypeInFactSheet
+        List<GraphNode> entityNodes = nodes.stream()
+                .filter(n -> NodeLevel.ENTITY.equals(n.getNodeType()))
+                .toList();
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
+                .thenReturn(entityNodes);
+        when(knowledgeGraphService.getNodesInFactSheet(factSheetId)).thenReturn(nodes);
+        when(knowledgeGraphService.getEdgesInFactSheet(factSheetId)).thenReturn(edges);
     }
 
     // ─── fixBlankTitles ────────────────────────────────────────────────────────
@@ -124,19 +116,22 @@ class GraphValidationServiceTest {
                 .confidence(0.7).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-1").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
-        when(nodeRepository.findByFactSheetId(factSheetId)).thenReturn(List.of(entity));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(entity.getId())).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesInFactSheet(factSheetId)).thenReturn(List.of(entity));
+        when(knowledgeGraphService.getEdgesInFactSheet(factSheetId)).thenReturn(List.of());
 
         int fixed = service.validate(factSheetId, "job-1", DEFAULT_CONFIG);
 
         assertTrue(fixed >= 1, "Entity with null title and a description should be fixed");
-        // The saved entity should have a non-null title derived from description
-        ArgumentCaptor<GraphNode> savedCaptor = ArgumentCaptor.forClass(GraphNode.class);
-        verify(nodeRepository).save(savedCaptor.capture());
-        assertNotNull(savedCaptor.getValue().getTitle());
-        assertTrue(savedCaptor.getValue().getTitle().startsWith(description.substring(0, 10)),
+        // Verify updateNode was called with a non-null title derived from description
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metaCaptor = ArgumentCaptor.forClass(Map.class);
+        ArgumentCaptor<String> titleCaptor = ArgumentCaptor.forClass(String.class);
+        verify(knowledgeGraphService).updateNode(eq(entity.getNodeId()), titleCaptor.capture(),
+                eq(description), metaCaptor.capture());
+        assertNotNull(titleCaptor.getValue());
+        assertTrue(titleCaptor.getValue().startsWith(description.substring(0, 10)),
                 "Title should start with description content");
     }
 
@@ -155,17 +150,20 @@ class GraphValidationServiceTest {
                 .confidence(0.7).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-2").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
-        when(nodeRepository.findByFactSheetId(factSheetId)).thenReturn(List.of(entity));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(entity.getId())).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesInFactSheet(factSheetId)).thenReturn(List.of(entity));
+        when(knowledgeGraphService.getEdgesInFactSheet(factSheetId)).thenReturn(List.of());
 
         int fixed = service.validate(factSheetId, "job-2", DEFAULT_CONFIG);
 
         assertTrue(fixed >= 1, "Entity with null title and metadataJson aliases should be fixed");
-        ArgumentCaptor<GraphNode> savedCaptor = ArgumentCaptor.forClass(GraphNode.class);
-        verify(nodeRepository).save(savedCaptor.capture());
-        assertEquals("MyAlias", savedCaptor.getValue().getTitle(),
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metaCaptor = ArgumentCaptor.forClass(Map.class);
+        ArgumentCaptor<String> titleCaptor = ArgumentCaptor.forClass(String.class);
+        verify(knowledgeGraphService).updateNode(eq(entity.getNodeId()), titleCaptor.capture(),
+                isNull(), metaCaptor.capture());
+        assertEquals("MyAlias", titleCaptor.getValue(),
                 "Title should be set to the first alias");
     }
 
@@ -180,15 +178,15 @@ class GraphValidationServiceTest {
                 .confidence(0.7).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-3").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
-        when(nodeRepository.findByFactSheetId(factSheetId)).thenReturn(List.of(entity));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(entity.getId())).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesInFactSheet(factSheetId)).thenReturn(List.of(entity));
+        when(knowledgeGraphService.getEdgesInFactSheet(factSheetId)).thenReturn(List.of());
 
         int fixed = service.validate(factSheetId, "job-3", DEFAULT_CONFIG);
 
         assertEquals(0, fixed, "Entity with an existing title should not be modified");
-        verify(nodeRepository, never()).save(any());
+        verify(knowledgeGraphService, never()).updateNode(any(), any(), any(), any());
     }
 
     // ─── removeDanglingEdges ───────────────────────────────────────────────────
@@ -217,11 +215,11 @@ class GraphValidationServiceTest {
                 .edgeType(EdgeType.CONTAINS).weight(0.9)
                 .factSheetId(factSheetId).build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(validNode));
-        when(nodeRepository.findByFactSheetId(factSheetId)).thenReturn(List.of(validNode));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(validNode.getId()))
-                .thenReturn(List.of(danglingEdge));
+        // getNodesInFactSheet returns only the valid node (outsideNode is in a different factSheet)
+        when(knowledgeGraphService.getNodesInFactSheet(factSheetId)).thenReturn(List.of(validNode));
+        when(knowledgeGraphService.getEdgesInFactSheet(factSheetId)).thenReturn(List.of(danglingEdge));
 
         int fixed = service.validate(factSheetId, "job-4", DEFAULT_CONFIG);
 
@@ -254,13 +252,10 @@ class GraphValidationServiceTest {
                 .edgeType(EdgeType.SHARED_ENTITY).weight(0.8)
                 .factSheetId(factSheetId).build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(nodeA, nodeB));
-        when(nodeRepository.findByFactSheetId(factSheetId)).thenReturn(List.of(nodeA, nodeB));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(nodeA.getId()))
-                .thenReturn(List.of(validEdge));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(nodeB.getId()))
-                .thenReturn(List.of(validEdge));
+        when(knowledgeGraphService.getNodesInFactSheet(factSheetId)).thenReturn(List.of(nodeA, nodeB));
+        when(knowledgeGraphService.getEdgesInFactSheet(factSheetId)).thenReturn(List.of(validEdge));
 
         int fixed = service.validate(factSheetId, "job-5", DEFAULT_CONFIG);
 
@@ -298,6 +293,8 @@ class GraphValidationServiceTest {
 
     @Test
     void recalculatesEdgeCountsAfterDuplicateRelationRemoval() {
+        // recalculateEdgeCounts is a no-op in the vector-store regime; verify the
+        // duplicate is still deleted (the observable side-effect that matters).
         Long factSheetId = 9L;
         GraphNode nodeA = node(1L, "node-a", factSheetId);
         nodeA.setEdgeCount(2);
@@ -311,24 +308,15 @@ class GraphValidationServiceTest {
                 EdgeType.USER_DEFINED, "VERSION_OF", "Keeper",
                 0.9, true, factSheetId);
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
-                .thenReturn(List.of(nodeA, nodeB));
-        when(nodeRepository.findByFactSheetId(factSheetId)).thenReturn(List.of(nodeA, nodeB));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(anyLong()))
-                .thenReturn(List.of(duplicate, keeper));
-        when(edgeRepository.findByFactSheetId(factSheetId))
-                .thenReturn(List.of(duplicate, keeper))
-                .thenReturn(List.of(keeper));
+        stubGraph(factSheetId, List.of(nodeA, nodeB), List.of(duplicate, keeper));
 
         int fixed = service.validate(factSheetId, "job-9", DEFAULT_CONFIG);
 
         assertEquals(1, fixed);
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<GraphNode>> nodesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(nodeRepository).saveAll(nodesCaptor.capture());
-        assertEquals(1, nodeA.getEdgeCount());
-        assertEquals(1, nodeB.getEdgeCount());
-        assertTrue(nodesCaptor.getValue().containsAll(List.of(nodeA, nodeB)));
+        ArgumentCaptor<List<String>> edgeIdsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(knowledgeGraphService).deleteEdgesBulk(edgeIdsCaptor.capture());
+        assertTrue(edgeIdsCaptor.getValue().contains("edge-duplicate"),
+                "The weaker duplicate edge should be passed to deleteEdgesBulk");
     }
 
     @Test

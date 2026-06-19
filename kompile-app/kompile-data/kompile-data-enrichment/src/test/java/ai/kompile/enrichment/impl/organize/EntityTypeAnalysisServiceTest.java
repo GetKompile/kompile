@@ -19,8 +19,7 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,10 +39,7 @@ import static org.mockito.Mockito.*;
 class EntityTypeAnalysisServiceTest {
 
     @Mock
-    private GraphNodeRepository nodeRepository;
-
-    @Mock
-    private GraphEdgeRepository edgeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     private EntityTypeAnalysisService service;
 
@@ -51,7 +47,7 @@ class EntityTypeAnalysisServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new EntityTypeAnalysisService(nodeRepository, edgeRepository, objectMapper);
+        service = new EntityTypeAnalysisService(knowledgeGraphService, objectMapper);
     }
 
     // ─── getEntityTypeCounts ───────────────────────────────────────────────────
@@ -64,7 +60,7 @@ class EntityTypeAnalysisServiceTest {
         GraphNode person2 = entityNode(2L, "{\"entity_type\":\"PERSON\"}");
         GraphNode org    = entityNode(3L, "{\"entity_type\":\"ORGANIZATION\"}");
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(person1, person2, org));
 
         Map<String, Long> counts = service.getEntityTypeCounts(factSheetId);
@@ -83,7 +79,7 @@ class EntityTypeAnalysisServiceTest {
         // Entity with blank entity_type → also UNKNOWN
         GraphNode blankType = entityNode(2L, "{\"entity_type\":\"\"}");
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(nullMeta, blankType));
 
         Map<String, Long> counts = service.getEntityTypeCounts(factSheetId);
@@ -106,7 +102,7 @@ class EntityTypeAnalysisServiceTest {
         GraphNode org = entityNode(20L, "{\"entity_type\":\"ORGANIZATION\"}");
         org.setNodeId("node-org");
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(person, org));
 
         // Edge connecting person → org
@@ -120,10 +116,10 @@ class EntityTypeAnalysisServiceTest {
                 .factSheetId(factSheetId)
                 .build();
 
-        // When we look up edges for person (id=10), return the edge
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(10L)).thenReturn(List.of(edge));
-        // When we look up edges for org (id=20), return the same edge (bidirectional lookup)
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(20L)).thenReturn(List.of(edge));
+        // When we look up edges for person (nodeId="node-person"), return the edge
+        when(knowledgeGraphService.getEdgesForNode("node-person")).thenReturn(List.of(edge));
+        // When we look up edges for org (nodeId="node-org"), return the same edge (bidirectional lookup)
+        when(knowledgeGraphService.getEdgesForNode("node-org")).thenReturn(List.of(edge));
 
         Map<String, Set<String>> coOccurrence = service.getTypeCoOccurrence(factSheetId);
 

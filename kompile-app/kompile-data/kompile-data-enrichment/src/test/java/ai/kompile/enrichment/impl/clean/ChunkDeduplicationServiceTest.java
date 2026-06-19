@@ -25,8 +25,6 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,12 +43,6 @@ import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class ChunkDeduplicationServiceTest {
-
-    @Mock
-    private GraphNodeRepository nodeRepository;
-
-    @Mock
-    private GraphEdgeRepository edgeRepository;
 
     @Mock
     private KnowledgeGraphService knowledgeGraphService;
@@ -74,8 +66,6 @@ class ChunkDeduplicationServiceTest {
     @BeforeEach
     void setUp() {
         service = new ChunkDeduplicationService(
-                nodeRepository,
-                edgeRepository,
                 knowledgeGraphService,
                 auditService,
                 objectMapper,
@@ -159,7 +149,7 @@ class ChunkDeduplicationServiceTest {
                 .title("chunk-2").confidence(0.5).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-2").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET))
                 .thenReturn(List.of(n1, n2));
 
         // Stub edges so mergeChunks doesn't NPE
@@ -170,7 +160,7 @@ class ChunkDeduplicationServiceTest {
                 .sourceNode(src).targetNode(n2)
                 .edgeType(EdgeType.CONTAINS).weight(1.0)
                 .description("contains").factSheetId(factSheetId).build();
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(n2.getId()))
+        when(knowledgeGraphService.getEdgesForNode(n2.getNodeId()))
                 .thenReturn(List.of(edge));
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -192,14 +182,15 @@ class ChunkDeduplicationServiceTest {
                 .nodeType(NodeLevel.SNIPPET).contentPreview("only one chunk")
                 .title("chunk-1").externalId("e1").factSheetId(factSheetId).build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET))
                 .thenReturn(List.of(n1));
 
         EnrichmentConfig config = EnrichmentConfig.builder().build();
         int deduped = service.deduplicateChunks(factSheetId, "job-2", config);
 
         assertEquals(0, deduped, "Single snippet — no deduplication should occur");
-        verifyNoInteractions(knowledgeGraphService);
+        // Reads snippets to compare, but must perform no dedup mutation (no loser deletion).
+        verify(knowledgeGraphService, never()).deleteNode(any());
     }
 
     @Test
@@ -217,7 +208,7 @@ class ChunkDeduplicationServiceTest {
                 .contentPreview("completely different text about quantum mechanics and wave functions")
                 .title("chunk-2").externalId("e2").factSheetId(factSheetId).build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET))
                 .thenReturn(List.of(n1, n2));
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -228,7 +219,8 @@ class ChunkDeduplicationServiceTest {
         int deduped = service.deduplicateChunks(factSheetId, "job-3", config);
 
         assertEquals(0, deduped, "Completely different chunks should not be deduplicated");
-        verifyNoInteractions(knowledgeGraphService);
+        // Reads snippets to compare, but must perform no dedup mutation (no loser deletion).
+        verify(knowledgeGraphService, never()).deleteNode(any());
     }
 
     // ─── index cleanup on dedup ───────────────────────────────────────────────
@@ -253,9 +245,9 @@ class ChunkDeduplicationServiceTest {
                 .title("chunk-2").confidence(0.5).edgeCount(0)
                 .factSheetId(factSheetId).externalId("chunk:job1:doc.pdf:1").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET))
                 .thenReturn(List.of(n1, n2));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(anyLong()))
+        when(knowledgeGraphService.getEdgesForNode(n2.getNodeId()))
                 .thenReturn(List.of());
         // Resolver maps the loser's externalId to the index document ID
         when(crossIndexIdResolver.resolveIndexDocumentIds("chunk:job1:doc.pdf:1"))
@@ -308,9 +300,9 @@ class ChunkDeduplicationServiceTest {
                 .weight(0.75)
                 .build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET))
                 .thenReturn(List.of(winner, loser));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(loser.getId()))
+        when(knowledgeGraphService.getEdgesForNode(loser.getNodeId()))
                 .thenReturn(List.of(semanticEdge));
         when(knowledgeGraphService.edgeExists("winner-node", "related-node",
                 EdgeType.USER_DEFINED, "REFERENCES", factSheetId)).thenReturn(false);
@@ -359,9 +351,9 @@ class ChunkDeduplicationServiceTest {
                 .weight(0.75)
                 .build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET))
                 .thenReturn(List.of(winner, loser));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(loser.getId()))
+        when(knowledgeGraphService.getEdgesForNode(loser.getNodeId()))
                 .thenReturn(List.of(semanticEdge));
         when(knowledgeGraphService.edgeExists("winner-node", "related-node",
                 EdgeType.USER_DEFINED, "MENTIONS", factSheetId)).thenReturn(true);
@@ -383,7 +375,7 @@ class ChunkDeduplicationServiceTest {
     void deduplicateChunksSkipsIndexCleanupWhenResolverUnavailable() {
         // Create service without resolver
         ChunkDeduplicationService serviceNoResolver = new ChunkDeduplicationService(
-                nodeRepository, edgeRepository, knowledgeGraphService, auditService,
+                knowledgeGraphService, auditService,
                 objectMapper, vectorStore, indexerService, null);
 
         Long factSheetId = 11L;
@@ -401,9 +393,9 @@ class ChunkDeduplicationServiceTest {
                 .title("chunk-2").confidence(0.5).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-2").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET))
                 .thenReturn(List.of(n1, n2));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(anyLong()))
+        when(knowledgeGraphService.getEdgesForNode(n2.getNodeId()))
                 .thenReturn(List.of());
 
         EnrichmentConfig config = EnrichmentConfig.builder()
@@ -442,9 +434,9 @@ class ChunkDeduplicationServiceTest {
                 .title("chunk-high-conf").confidence(0.9).edgeCount(0)
                 .factSheetId(factSheetId).externalId("ext-high").build();
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET))
                 .thenReturn(List.of(n1, n2));
-        when(edgeRepository.findBySourceNodeIdOrTargetNodeId(anyLong()))
+        when(knowledgeGraphService.getEdgesForNode(n1.getNodeId()))
                 .thenReturn(List.of());
 
         EnrichmentConfig config = EnrichmentConfig.builder()

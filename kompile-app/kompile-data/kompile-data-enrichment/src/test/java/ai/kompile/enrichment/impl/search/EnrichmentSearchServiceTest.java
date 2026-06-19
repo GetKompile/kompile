@@ -20,7 +20,7 @@ import ai.kompile.enrichment.domain.TaxonomyNode;
 import ai.kompile.enrichment.repository.DomainTaxonomyRepository;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,7 +43,7 @@ class EnrichmentSearchServiceTest {
     private DomainTaxonomyRepository taxonomyRepository;
 
     @Mock
-    private GraphNodeRepository nodeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     private EnrichmentSearchService service;
 
@@ -51,7 +51,7 @@ class EnrichmentSearchServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new EnrichmentSearchService(taxonomyRepository, nodeRepository, objectMapper);
+        service = new EnrichmentSearchService(taxonomyRepository, knowledgeGraphService, objectMapper);
     }
 
     // ─── browseTaxonomy ────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ class EnrichmentSearchServiceTest {
         GraphNode finance2 = entityNode(2L, "Finance Stock Report", "{\"taxonomyCategory\":\"Finance\"}");
         GraphNode hr = entityNode(3L, "HR People Report", "{\"taxonomyCategory\":\"HR\"}");
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(finance1, finance2, hr));
 
         List<GraphNode> result = service.searchByCategory(factSheetId, "Finance", null, 100);
@@ -155,7 +155,7 @@ class EnrichmentSearchServiceTest {
         GraphNode stock = entityNode(2L, "Stock Market Analysis", "{\"taxonomyCategory\":\"Finance\"}");
         GraphNode hrNode = entityNode(3L, "People Management", "{\"taxonomyCategory\":\"HR\"}");
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(bond, stock, hrNode));
 
         // Filter by category=Finance AND text containing "bond"
@@ -176,7 +176,7 @@ class EnrichmentSearchServiceTest {
         // No taxonomyCategory → Uncategorized
         GraphNode nocat = entityNode(3L, "Uncategorized Entity", null);
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(f1, f2, nocat));
 
         Map<String, Long> facets = service.getCategoryFacets(factSheetId);

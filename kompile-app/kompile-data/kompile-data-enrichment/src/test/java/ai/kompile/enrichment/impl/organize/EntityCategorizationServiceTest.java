@@ -20,8 +20,7 @@ import ai.kompile.enrichment.domain.TaxonomyNode;
 import ai.kompile.enrichment.repository.EntityCategoryRepository;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
-import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +30,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -41,7 +41,7 @@ import static org.mockito.Mockito.*;
 class EntityCategorizationServiceTest {
 
     @Mock
-    private GraphNodeRepository nodeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     @Mock
     private EntityCategoryRepository categoryRepository;
@@ -52,7 +52,7 @@ class EntityCategorizationServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new EntityCategorizationService(nodeRepository, categoryRepository, objectMapper);
+        service = new EntityCategorizationService(knowledgeGraphService, categoryRepository, objectMapper);
     }
 
     // ─── categorizeEntities ────────────────────────────────────────────────────
@@ -85,24 +85,23 @@ class EntityCategorizationServiceTest {
 
         GraphNode entity = entityNode(1L, "{\"entity_type\":\"PERSON\"}");
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
         when(categoryRepository.findByFactSheetIdOrderBySortOrder(factSheetId))
                 .thenReturn(List.of());
-        when(nodeRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
 
         int count = service.categorizeEntities(factSheetId, taxonomy);
 
         assertEquals(1, count, "One entity should have been categorized");
 
-        ArgumentCaptor<List<GraphNode>> savedCaptor = ArgumentCaptor.forClass(List.class);
-        verify(nodeRepository).saveAll(savedCaptor.capture());
-        GraphNode saved = savedCaptor.getValue().get(0);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metaCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(knowledgeGraphService).updateNode(eq(entity.getNodeId()), anyString(), any(), metaCaptor.capture());
 
-        JsonNode meta = objectMapper.readTree(saved.getMetadataJson());
-        assertEquals("People", meta.path("taxonomyCategory").asText(),
+        Map<String, Object> savedMeta = metaCaptor.getValue();
+        assertEquals("People", savedMeta.get("taxonomyCategory"),
                 "taxonomyCategory should be set to the category label 'People'");
-        assertEquals("HR", meta.path("taxonomyDomain").asText(),
+        assertEquals("HR", savedMeta.get("taxonomyDomain"),
                 "taxonomyDomain should be set to the domain label 'HR'");
     }
 
@@ -135,22 +134,21 @@ class EntityCategorizationServiceTest {
         // Entity with unknown type ROBOT — not in taxonomy
         GraphNode entity = entityNode(1L, "{\"entity_type\":\"ROBOT\"}");
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entity));
         when(categoryRepository.findByFactSheetIdOrderBySortOrder(factSheetId))
                 .thenReturn(List.of());
-        when(nodeRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
 
         int count = service.categorizeEntities(factSheetId, taxonomy);
 
         assertEquals(1, count, "Unknown-type entity should still be categorized as Uncategorized");
 
-        ArgumentCaptor<List<GraphNode>> savedCaptor = ArgumentCaptor.forClass(List.class);
-        verify(nodeRepository).saveAll(savedCaptor.capture());
-        GraphNode saved = savedCaptor.getValue().get(0);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> metaCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(knowledgeGraphService).updateNode(eq(entity.getNodeId()), anyString(), any(), metaCaptor.capture());
 
-        JsonNode meta = objectMapper.readTree(saved.getMetadataJson());
-        assertEquals("Uncategorized", meta.path("taxonomyCategory").asText(),
+        Map<String, Object> savedMeta = metaCaptor.getValue();
+        assertEquals("Uncategorized", savedMeta.get("taxonomyCategory"),
                 "Unknown entity type should fall back to taxonomyCategory=Uncategorized");
     }
 
@@ -158,11 +156,10 @@ class EntityCategorizationServiceTest {
     void categorizeEntitiesNullTaxonomy() {
         Long factSheetId = 3L;
 
-        when(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY))
                 .thenReturn(List.of(entityNode(1L, "{\"entity_type\":\"PERSON\"}")));
         when(categoryRepository.findByFactSheetIdOrderBySortOrder(factSheetId))
                 .thenReturn(List.of());
-        when(nodeRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
 
         // null taxonomy → all entities fall to Uncategorized, still categorized
         int count = service.categorizeEntities(factSheetId, null);
