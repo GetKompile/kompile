@@ -21,13 +21,20 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ThreadPoolExecutor;
 
 /**
@@ -48,6 +55,10 @@ class CrawlRuntimeConfigManager {
     private static final long CONFIG_REFRESH_INTERVAL_NANOS = 5_000_000_000L; // 5 seconds
     private static final int DEFAULT_GRAPH_EXTRACTION_BATCH_SIZE = 10;
 
+    /** The crawl* keys an operator may read/update via REST; everything else in the shared file is left untouched. */
+    private static final Set<String> CRAWL_CONFIG_KEYS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(CrawlRuntimeConfig.defaults().toMap().keySet()));
+
     private final Path graphExtractionConfigPath;
     private final ObjectMapper configObjectMapper = JsonUtils.standardMapper();
 
@@ -62,6 +73,11 @@ class CrawlRuntimeConfigManager {
     CrawlRuntimeConfigManager() {
         this.graphExtractionConfigPath =
                 KompileHome.configDirectory().toPath().resolve(GRAPH_EXTRACTION_CONFIG_FILENAME);
+    }
+
+    /** Test seam: point the manager at a specific config file instead of the real ~/.kompile path. */
+    CrawlRuntimeConfigManager(Path configPath) {
+        this.graphExtractionConfigPath = configPath;
     }
 
     // ── Public API ──────────────────────────────────────────────────────────
@@ -96,6 +112,40 @@ class CrawlRuntimeConfigManager {
                     graphExtractionConfigPath, e.getMessage());
             return crawlRuntimeConfig;
         }
+    }
+
+    /** Snapshot the effective crawl runtime knobs (the crawl* keys) for the REST runtime-config endpoint. */
+    synchronized Map<String, Object> currentCrawlRuntimeConfig() {
+        return refreshRuntimeConfig().toMap();
+    }
+
+    /**
+     * Merge crawl* runtime-config overrides into the shared config file — preserving every other key
+     * (e.g. the graph-extraction schema) — then force an immediate re-read. Unknown / non-crawl keys are
+     * ignored so a config push can never clobber the rest of the shared file. Returns the new effective
+     * config; a running crawl picks the change up at its next phase boundary.
+     */
+    synchronized Map<String, Object> updateCrawlRuntimeConfig(Map<String, Object> updates) throws IOException {
+        JsonNode existing = Files.exists(graphExtractionConfigPath)
+                ? configObjectMapper.readTree(graphExtractionConfigPath.toFile())
+                : null;
+        ObjectNode root = (existing instanceof ObjectNode on) ? on : configObjectMapper.createObjectNode();
+        if (updates != null) {
+            for (Map.Entry<String, Object> entry : updates.entrySet()) {
+                if (CRAWL_CONFIG_KEYS.contains(entry.getKey())) {
+                    root.set(entry.getKey(), configObjectMapper.valueToTree(entry.getValue()));
+                }
+            }
+        }
+        Path parent = graphExtractionConfigPath.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        configObjectMapper.writerWithDefaultPrettyPrinter().writeValue(graphExtractionConfigPath.toFile(), root);
+        // Force this and the next refresh to re-read the file so the change applies immediately.
+        graphExtractionConfigLastModified = Long.MIN_VALUE;
+        lastConfigRefreshNanos = 0L;
+        return refreshRuntimeConfig().toMap();
     }
 
     /**
@@ -301,6 +351,45 @@ class CrawlRuntimeConfigManager {
         long cliQuotaMinHealthyMs = 60_000L;   // hysteresis gap before backoff resets
         long cliMaxRequestsPerWindow = 0;      // 0 = no global request cap
         long cliMaxTokensPerWindow = 0;        // 0 = no global token cap
+
+        /** Serialize the effective values keyed by the same crawl* names {@link #from} reads. */
+        Map<String, Object> toMap() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("crawlMaxConcurrentJobs", maxConcurrentJobs);
+            m.put("crawlQueueCapacity", queueCapacity);
+            m.put("crawlMemoryWaitThresholdPercent", memoryWaitThresholdPercent);
+            m.put("crawlMemoryCriticalThresholdPercent", memoryCriticalThresholdPercent);
+            m.put("crawlMemoryWaitTimeoutSeconds", memoryWaitTimeoutSeconds);
+            m.put("crawlNativeMemoryCleanupEnabled", nativeMemoryCleanupEnabled);
+            m.put("crawlNativeMemoryCleanupPasses", nativeMemoryCleanupPasses);
+            m.put("crawlNativeMemoryWaitThresholdPercent", nativeMemoryWaitThresholdPercent);
+            m.put("crawlNativeMemoryCriticalThresholdPercent", nativeMemoryCriticalThresholdPercent);
+            m.put("crawlGraphExtractionBatchSize", graphExtractionBatchSize);
+            m.put("crawlBackgroundGraphThreads", backgroundGraphThreads);
+            m.put("crawlSourceLoadParallelism", sourceLoadParallelism);
+            m.put("crawlChunkingParallelism", chunkingParallelism);
+            m.put("crawlGraphExtractionParallelism", graphExtractionParallelism);
+            m.put("crawlGraphExtractionTargetCharsPerBatch", graphExtractionTargetCharsPerBatch);
+            m.put("crawlChunkingTargetCharsPerTask", chunkingTargetCharsPerTask);
+            m.put("crawlVectorBatchSize", vectorBatchSize);
+            m.put("crawlPostProcessParallel", postProcessParallel);
+            m.put("crawlGraphConstructorSkipEmbedding", graphConstructorSkipEmbedding);
+            m.put("crawlGraphConstructorPersistMatrixGraph", graphConstructorPersistMatrixGraph);
+            m.put("crawlRetainResultGraph", retainResultGraph);
+            m.put("crawlCostSortChunks", costSortChunks);
+            m.put("crawlLlmCallTimeoutSeconds", llmCallTimeoutSeconds);
+            m.put("crawlGraphExtractionBatchTimeoutSeconds", graphExtractionBatchTimeoutSeconds);
+            m.put("crawlGraphExtractionMaxCharsPerChunk", crawlGraphExtractionMaxCharsPerChunk);
+            m.put("crawlGraphExtractionMaxCharsPerChunkVlm", crawlGraphExtractionMaxCharsPerChunkVlm);
+            m.put("crawlGraphExtractionChunksPerPrompt", graphExtractionChunksPerPrompt);
+            m.put("crawlCircuitBreakerFailureThreshold", circuitBreakerFailureThreshold);
+            m.put("crawlCircuitBreakerCooldownSeconds", circuitBreakerCooldownSeconds);
+            m.put("crawlCliQuotaWindowMs", cliQuotaWindowMs);
+            m.put("crawlCliQuotaMinHealthyMs", cliQuotaMinHealthyMs);
+            m.put("crawlCliMaxRequestsPerWindow", cliMaxRequestsPerWindow);
+            m.put("crawlCliMaxTokensPerWindow", cliMaxTokensPerWindow);
+            return m;
+        }
 
         static CrawlRuntimeConfig defaults() {
             return new CrawlRuntimeConfig();

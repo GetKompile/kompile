@@ -686,6 +686,20 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         return crawlStepArchiveService != null ? crawlStepArchiveService.listResumableCrawlJobs() : List.of();
     }
 
+    @Override
+    public Map<String, Object> getCrawlRuntimeConfig() {
+        return runtimeConfigManager.currentCrawlRuntimeConfig();
+    }
+
+    @Override
+    public Map<String, Object> updateCrawlRuntimeConfig(Map<String, Object> updates) {
+        try {
+            return runtimeConfigManager.updateCrawlRuntimeConfig(updates);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Failed to persist crawl runtime config: " + e.getMessage(), e);
+        }
+    }
+
     /**
      * Archive a pipeline step's inputs to disk and mark it ARCHIVED. Falls back to SKIP (so the job
      * still completes) when no archive service is wired or the write fails.

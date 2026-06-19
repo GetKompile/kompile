@@ -2174,6 +2174,25 @@ public class UnifiedCrawlController {
     }
 
     /**
+     * Read the effective crawl runtime configuration (parallelism / batch sizes / timeouts / memory /
+     * circuit-breaker / CLI-quota knobs) as a flat map of crawl* keys.
+     */
+    @GetMapping("/runtime-config")
+    public ResponseEntity<Map<String, Object>> getRuntimeConfig() {
+        return ResponseEntity.ok(unifiedCrawlService.getCrawlRuntimeConfig());
+    }
+
+    /**
+     * Update crawl runtime config (crawl* keys only; other config such as the graph-extraction schema is
+     * left untouched). Lets an operator throttle a resource-constrained or quota-limited crawl over REST;
+     * a running crawl applies the change at its next phase boundary. Returns the new effective config.
+     */
+    @PutMapping("/runtime-config")
+    public ResponseEntity<Map<String, Object>> updateRuntimeConfig(@RequestBody Map<String, Object> updates) {
+        return ResponseEntity.ok(unifiedCrawlService.updateCrawlRuntimeConfig(updates));
+    }
+
+    /**
      * List available PDF routing modes.
      */
     @GetMapping("/pdf-routing-modes")

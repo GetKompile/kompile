@@ -19,6 +19,7 @@ package ai.kompile.core.crawl.graph;
 import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -123,6 +124,20 @@ public interface UnifiedCrawlService {
 
     /** List crawl jobs that have archived steps on disk and can be resumed (incl. after a restart). */
     List<CrawlStepArchiveService.ResumableCrawlJob> listResumableCrawlJobs();
+
+    /**
+     * Read the effective crawl runtime configuration (parallelism, batch sizes, timeouts, memory
+     * thresholds, circuit-breaker, and CLI-quota knobs) as a flat map of {@code crawl*} keys.
+     */
+    Map<String, Object> getCrawlRuntimeConfig();
+
+    /**
+     * Merge crawl runtime-config overrides ({@code crawl*} keys) into the shared config, leaving all
+     * other config (e.g. the graph-extraction schema) untouched. A running crawl applies the change at
+     * its next phase boundary, so this is the lever for throttling resource-constrained or quota-limited
+     * crawls over REST. Returns the new effective configuration.
+     */
+    Map<String, Object> updateCrawlRuntimeConfig(Map<String, Object> updates);
 
     /**
      * Retry failed documents from a previous job.
