@@ -167,6 +167,9 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     private GraphCompactionService graphCompactionService;
 
     @Autowired(required = false)
+    private ai.kompile.knowledgegraph.resolution.BarcodeIdentityGraphService barcodeIdentityGraphService;
+
+    @Autowired(required = false)
     private CrawlIndexTrackingCallback crawlIndexTrackingCallback;
 
     @Autowired(required = false)
@@ -1478,6 +1481,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     log.info("[Job {}] Graph compaction: {} entities merged into {} ({}ms)",
                             job.getJobId(), compactionResult.entitiesMerged(),
                             compactionResult.finalEntityCount(), compactionResult.elapsedMs());
+                    // Promote barcode/GTIN signals (resolved during compaction) into first-class
+                    // IDENTIFIER nodes + RESOLVES_TO edges, mirroring the HTTP compact/advanced path —
+                    // automated crawls otherwise never materialize them.
+                    materializeBarcodeIdentifiers(job, factSheetId);
                     completePipelineStep(job, "ENTITY_RESOLUTION", 1,
                             compactionResult.entitiesMerged() + " merge(s), "
                                     + compactionResult.finalEntityCount() + " final entities");
@@ -1899,6 +1906,32 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     this, job.getJobId(), job.toProgressSnapshot(), eventType, message));
         } catch (Exception e) {
             log.debug("[Job {}] Failed to publish crawl progress event: {}", job.getJobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Promote barcode/GTIN signals (resolved during compaction) into first-class {@code IDENTIFIER}
+     * nodes + {@code RESOLVES_TO} edges via BarcodeIdentityGraphService, so automated crawls
+     * materialize them — previously only the HTTP compact/advanced path did. Best-effort and
+     * non-fatal: a failure here never fails the crawl.
+     */
+    private void materializeBarcodeIdentifiers(UnifiedCrawlJob job, Long factSheetId) {
+        if (barcodeIdentityGraphService == null || factSheetId == null) {
+            return;
+        }
+        try {
+            var result = barcodeIdentityGraphService.materialize(factSheetId);
+            if (result.identifierNodes() > 0 || result.resolveEdges() > 0 || !result.collisions().isEmpty()) {
+                log.info("[Job {}] Barcode identity materialized: {} IDENTIFIER node(s), {} RESOLVES_TO edge(s), {} collision(s)",
+                        job.getJobId(), result.identifierNodes(), result.resolveEdges(), result.collisions().size());
+                recordEvent(job, "ENTITY_RESOLUTION", "INFO", "Barcode identifiers materialized",
+                        result.identifierNodes() + " identifier node(s), " + result.resolveEdges()
+                                + " resolves-to edge(s), " + result.collisions().size() + " collision(s)");
+            }
+        } catch (Exception e) {
+            log.warn("[Job {}] Barcode identity materialization failed (non-fatal): {}",
+                    job.getJobId(), e.getMessage());
+            recordEvent(job, "ENTITY_RESOLUTION", "WARN", "Barcode identity materialization failed", e.getMessage());
         }
     }
 
