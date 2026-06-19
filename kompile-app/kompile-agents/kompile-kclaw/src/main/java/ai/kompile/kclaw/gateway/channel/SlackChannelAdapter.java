@@ -82,6 +82,15 @@ public class SlackChannelAdapter extends BaseChannelAdapter implements SlackApiC
     }
 
     @Override
+    public void send(String target, String content) {
+        if (apiClient == null || !isRunning()) {
+            log.warn("Slack adapter not ready; cannot deliver to {}", target);
+            return;
+        }
+        apiClient.sendMessage(target, content, null);
+    }
+
+    @Override
     public void onMessage(SlackApiClient.SlackMessage message) {
         if (!respondToAllMessages) {
             return;

@@ -98,9 +98,11 @@ public final class ModuleSelection {
 
     public static final class Builder {
         private final Set<String> moduleIds;
+        private final Set<String> explicitlyExcluded;
 
         private Builder(Set<String> initial) {
             this.moduleIds = new LinkedHashSet<>(initial);
+            this.explicitlyExcluded = new LinkedHashSet<>();
         }
 
         /**
@@ -143,6 +145,7 @@ public final class ModuleSelection {
          */
         public Builder exclude(Collection<String> ids) {
             if (ids == null) return this;
+            explicitlyExcluded.addAll(ids);
             moduleIds.removeAll(ids);
             return this;
         }
@@ -162,11 +165,20 @@ public final class ModuleSelection {
          * Exclude a single module.
          */
         public Builder exclude(String id) {
+            explicitlyExcluded.add(id);
             moduleIds.remove(id);
             return this;
         }
 
         public ModuleSelection build() {
+            // Infer process-discovery when process-engine + knowledge-graph + crawl-graph are all present
+            // and process-discovery has not been explicitly excluded by the caller
+            if (moduleIds.contains("process-engine")
+                    && moduleIds.contains("knowledge-graph")
+                    && moduleIds.contains("crawl-graph")
+                    && !explicitlyExcluded.contains("process-discovery")) {
+                moduleIds.add("process-discovery");
+            }
             return new ModuleSelection(moduleIds);
         }
     }

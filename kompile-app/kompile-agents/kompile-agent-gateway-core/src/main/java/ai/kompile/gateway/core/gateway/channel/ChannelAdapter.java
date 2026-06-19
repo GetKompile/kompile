@@ -29,6 +29,15 @@ public interface ChannelAdapter {
 
     void updateConfig(AdapterConfig config);
 
+    /**
+     * Proactively send a message to a target on this channel (e.g. a Discord/Slack channel id).
+     * Default: unsupported (logged no-op). Adapters that can push outbound messages override this.
+     */
+    default void send(String target, String content) {
+        org.slf4j.LoggerFactory.getLogger(getClass())
+                .warn("Outbound send not supported for channel '{}'", getChannelName());
+    }
+
     record AdapterConfig(
             String channelId,
             String agentId,

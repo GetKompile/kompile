@@ -249,7 +249,20 @@ public class GraphCompactionService {
             Map.entry("region", new AttributeBehavior(0.35, "FREQUENT")),
             Map.entry("channel", new AttributeBehavior(0.40, "FREQUENT")),
             Map.entry("period", new AttributeBehavior(0.55, "STABLE")),
-            Map.entry("forecast_period", new AttributeBehavior(0.55, "STABLE"))
+            Map.entry("forecast_period", new AttributeBehavior(0.55, "STABLE")),
+            // Retail product barcodes. Registered EXCLUSIVE so a product carrying one
+            // is treated as strongly identifiable (blocking priority, not skipped as
+            // generic). Their VALUE comparison is GTIN-aware and corroborated, handled
+            // by barcodeSignal() rather than the exact-equality attribute path.
+            Map.entry("upc", new AttributeBehavior(0.95, "EXCLUSIVE")),
+            Map.entry("upc_a", new AttributeBehavior(0.95, "EXCLUSIVE")),
+            Map.entry("upc_e", new AttributeBehavior(0.95, "EXCLUSIVE")),
+            Map.entry("ean", new AttributeBehavior(0.95, "EXCLUSIVE")),
+            Map.entry("ean13", new AttributeBehavior(0.95, "EXCLUSIVE")),
+            Map.entry("gtin", new AttributeBehavior(0.95, "EXCLUSIVE")),
+            Map.entry("gtin14", new AttributeBehavior(0.95, "EXCLUSIVE")),
+            Map.entry("barcode", new AttributeBehavior(0.95, "EXCLUSIVE")),
+            Map.entry("product_barcode", new AttributeBehavior(0.95, "EXCLUSIVE"))
     );
 
     private final KnowledgeGraphService knowledgeGraphService;
@@ -780,8 +793,12 @@ public class GraphCompactionService {
                 reasons.add(String.format("Levenshtein similarity: %.3f (threshold: %.2f) " +
                         "— \"%s\" vs \"%s\"", sim, DEFAULT_SIMILARITY_THRESHOLD, normA, normB));
             } else {
-                blockers.add(String.format("Levenshtein similarity too low: %.3f < %.2f " +
-                        "— \"%s\" vs \"%s\"", sim, DEFAULT_SIMILARITY_THRESHOLD, normA, normB));
+                // Informational, NOT a hard blocker: a strong identifier or exclusive
+                // attribute match can still legitimately merge dissimilar names. (This
+                // is what scorePair() does — keep explain() consistent with it.)
+                reasons.add(String.format("Name similarity low: %.3f < %.2f — \"%s\" vs \"%s\" " +
+                        "(a strong identifier/attribute match can still merge)",
+                        sim, DEFAULT_SIMILARITY_THRESHOLD, normA, normB));
             }
         }
 
@@ -822,6 +839,18 @@ public class GraphCompactionService {
         Map<String, String> propsA = extractProperties(a);
         Map<String, String> propsB = extractProperties(b);
         if (!propsA.isEmpty() && !propsB.isEmpty()) {
+            // Barcode identity: a shared usable GTIN-14 is a strong match, but a
+            // shared code with strongly-conflicting names is a recycled-code
+            // collision and a hard blocker (route to review, do not merge).
+            switch (barcodeSignal(propsA, propsB, normA, aliasesA, normB, aliasesB)) {
+                case MATCH -> {
+                    score = Math.max(score, BARCODE_IDENTITY_WEIGHT);
+                    reasons.add("Shared global barcode (GTIN-14) — strong identity match");
+                }
+                case COLLISION -> blockers.add("Identifier collision: shared barcode but the names " +
+                        "strongly disagree — likely a recycled/reassigned code (needs review)");
+                case NONE -> { }
+            }
             List<String> attrReasons = scoreAttributes(propsA, propsB);
             if (!attrReasons.isEmpty()) {
                 reasons.addAll(attrReasons);
@@ -958,6 +987,15 @@ public class GraphCompactionService {
         LinkedHashSet<String> signatures = new LinkedHashSet<>();
         Map<String, String> props = extractProperties(node);
         for (Map.Entry<String, String> prop : props.entrySet()) {
+            if (BarcodeNormalizer.isBarcodeAttributeKey(prop.getKey())) {
+                // Block by canonical GTIN-14 so the same product groups across
+                // symbologies / leading-zero noise regardless of which key carried it.
+                BarcodeNormalizer.BarcodeId id = BarcodeNormalizer.parse(prop.getValue());
+                if (id.usableAsGlobalIdentity()) {
+                    signatures.add("attr:gtin:" + id.gtin14());
+                }
+                continue;
+            }
             AttributeBehavior behavior = ATTRIBUTE_BEHAVIORS.get(prop.getKey());
             String normalizedValue = normalizeAttributeValue(prop.getValue());
             if (behavior != null && behavior.exclusivity().contains("EXCLUSIVE")
@@ -1485,6 +1523,21 @@ public class GraphCompactionService {
             Map<String, String> propsA = extractProperties(a);
             Map<String, String> propsB = extractProperties(b);
             if (!propsA.isEmpty() && !propsB.isEmpty()) {
+                // Signal 5a: shared global barcode (GTIN-14) — a strong identity,
+                // corroborated against the names to guard against recycled codes.
+                switch (barcodeSignal(propsA, propsB, normA, aliasesA, normB, extractAliases(b))) {
+                    case MATCH -> {
+                        score = Math.max(score, BARCODE_IDENTITY_WEIGHT);
+                        reasons.add("BARCODE_MATCH");
+                    }
+                    case COLLISION -> {
+                        reasons.add("IDENTIFIER_COLLISION");
+                        log.warn("Identifier collision (compaction): shared barcode but conflicting " +
+                                "names \"{}\" / \"{}\" — withholding barcode-driven merge",
+                                a.getTitle(), b.getTitle());
+                    }
+                    case NONE -> { }
+                }
                 double attrScore = computeAttributeScore(propsA, propsB);
                 if (attrScore > 0) {
                     score = Math.max(score, attrScore);
@@ -2100,6 +2153,11 @@ public class GraphCompactionService {
         double maxScore = 0.0;
         for (Map.Entry<String, String> entryA : propsA.entrySet()) {
             String key = entryA.getKey();
+            // Barcodes are handled by barcodeSignal() (GTIN-aware + corroborated),
+            // not by exact-value equality here.
+            if (BarcodeNormalizer.isBarcodeAttributeKey(key)) {
+                continue;
+            }
             String valB = propsB.get(key);
             if (valB != null && valB.equalsIgnoreCase(entryA.getValue())) {
                 AttributeBehavior behavior = ATTRIBUTE_BEHAVIORS.get(key);
@@ -2117,6 +2175,9 @@ public class GraphCompactionService {
         List<String> reasons = new ArrayList<>();
         for (Map.Entry<String, String> entryA : propsA.entrySet()) {
             String key = entryA.getKey();
+            if (BarcodeNormalizer.isBarcodeAttributeKey(key)) {
+                continue;
+            }
             String valB = propsB.get(key);
             if (valB == null) continue;
 
@@ -2129,6 +2190,79 @@ public class GraphCompactionService {
             }
         }
         return reasons;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BARCODE / GTIN IDENTITY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** Strength of a valid, non-restricted shared barcode as an identity signal. */
+    private static final double BARCODE_IDENTITY_WEIGHT = 0.97;
+
+    enum BarcodeSignal {NONE, MATCH, COLLISION}
+
+    /**
+     * Classify the barcode relationship between two entities' properties. A shared
+     * usable GTIN-14 is a MATCH unless the names strongly disagree, in which case
+     * it is a COLLISION — a likely recycled / reassigned code that must not drive
+     * an automatic merge.
+     */
+    static BarcodeSignal barcodeSignal(Map<String, String> propsA, Map<String, String> propsB,
+                                       String normA, Set<String> aliasesA,
+                                       String normB, Set<String> aliasesB) {
+        Set<String> gtinsA = usableGtins(propsA);
+        Set<String> gtinsB = usableGtins(propsB);
+        if (gtinsA.isEmpty() || gtinsB.isEmpty() || Collections.disjoint(gtinsA, gtinsB)) {
+            return BarcodeSignal.NONE;
+        }
+        return namesStronglyConflict(normA, aliasesA, normB, aliasesB)
+                ? BarcodeSignal.COLLISION : BarcodeSignal.MATCH;
+    }
+
+    /**
+     * Canonical GTIN-14s on an entity usable as a global identity (valid check
+     * digit, non-restricted prefix). Restricted / store-local / invalid codes are
+     * excluded so they never drive a merge.
+     */
+    private static Set<String> usableGtins(Map<String, String> props) {
+        Set<String> gtins = new HashSet<>();
+        for (Map.Entry<String, String> p : props.entrySet()) {
+            if (BarcodeNormalizer.isBarcodeAttributeKey(p.getKey())) {
+                BarcodeNormalizer.BarcodeId id = BarcodeNormalizer.parse(p.getValue());
+                if (id.usableAsGlobalIdentity()) {
+                    gtins.add(id.gtin14());
+                }
+            }
+        }
+        return gtins;
+    }
+
+    /**
+     * Whether two names disagree strongly enough that a shared barcode is more
+     * likely recycled than the same product. Conservative: any shared alias,
+     * shared significant token, or modest fuzzy similarity counts as agreement,
+     * so genuine vendor naming differences still merge.
+     */
+    static boolean namesStronglyConflict(String normA, Set<String> aliasesA,
+                                         String normB, Set<String> aliasesB) {
+        if (normA.equals(normB)) return false;
+        if (aliasesA.contains(normB) || aliasesB.contains(normA)) return false;
+        Set<String> overlap = new HashSet<>(aliasesA);
+        overlap.retainAll(aliasesB);
+        if (!overlap.isEmpty()) return false;
+        if (levenshteinSimilarity(normA, normB) >= 0.34) return false;
+        return !sharesSignificantToken(normA, normB);
+    }
+
+    private static boolean sharesSignificantToken(String a, String b) {
+        Set<String> tokens = new HashSet<>();
+        for (String t : a.split("\\s+")) {
+            if (t.length() >= 3) tokens.add(t);
+        }
+        for (String t : b.split("\\s+")) {
+            if (t.length() >= 3 && tokens.contains(t)) return true;
+        }
+        return false;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

@@ -18,6 +18,8 @@ package ai.kompile.crawler.sql;
 
 import ai.kompile.core.crawler.*;
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.table.TableCellGraphBuilder;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
 import ai.kompile.crawler.AbstractCrawlJob;
@@ -249,6 +251,10 @@ public class SqlCrawler extends AbstractCrawler {
 
                 long rowIndex = 0;
                 int processed = 0;
+                // Buffer a bounded number of rows so the table can also be emitted as a single
+                // content_type=table document (→ one TABLE graph node), alongside per-row docs.
+                List<List<String>> tableRowsBuffer = new ArrayList<>();
+                final int maxTableGraphRows = 1000;
 
                 while (rs.next()) {
                     if (job.shouldStop()) break;
@@ -259,6 +265,16 @@ public class SqlCrawler extends AbstractCrawler {
                     for (int i = 0; i < columnCount; i++) {
                         Object value = rs.getObject(i + 1);
                         columns.put(columnNames[i], value != null ? value : null);
+                    }
+
+                    // Capture row values (bounded) for the aggregated table document.
+                    if (tableRowsBuffer.size() < maxTableGraphRows) {
+                        List<String> rowVals = new ArrayList<>(columnCount);
+                        for (String cn : columnNames) {
+                            Object v = columns.get(cn);
+                            rowVals.add(v != null ? String.valueOf(v) : "");
+                        }
+                        tableRowsBuffer.add(rowVals);
                     }
 
                     // Build row ID from primary key or row index
@@ -337,9 +353,92 @@ public class SqlCrawler extends AbstractCrawler {
                     }
                 }
 
+                // Emit the table as a single content_type=table document so it surfaces as one TABLE
+                // graph node (and renders) in the index browser, alongside the per-row documents.
+                if (!tableRowsBuffer.isEmpty() && !job.shouldStop()) {
+                    emitSqlTableSummary(job, tableName, columnNames, tableRowsBuffer, rowIndex,
+                            rowIndex > tableRowsBuffer.size(), outputDir, jdbcUrl, databaseProduct);
+                }
+
                 log.info("[{}] Table '{}': processed {} rows", job.getJobId(), tableName, processed);
             }
         }
+    }
+
+    /**
+     * Emits one aggregated {@code content_type=table} document per SQL table so the table appears as a
+     * single TABLE graph node in the index browser (the per-row documents are still emitted for search).
+     * For large tables only the first {@code maxTableGraphRows} rows are rendered; {@code table_truncated}
+     * records that the markdown is a sample of {@code table_total_rows}.
+     */
+    private void emitSqlTableSummary(SqlCrawlJob job, String tableName, String[] columnNames,
+                                     List<List<String>> rows, long totalRows, boolean truncated,
+                                     Path outputDir, String jdbcUrl, String databaseProduct) throws IOException {
+        CrawlConfig config = job.getConfig();
+
+        List<List<String>> withHeader = new ArrayList<>();
+        withHeader.add(new ArrayList<>(java.util.Arrays.asList(columnNames)));
+        withHeader.addAll(rows);
+        String markdown = TableCellGraphBuilder.toMarkdown(withHeader, true);
+
+        Graph graph = new TableCellGraphBuilder()
+                .namespace("sql:" + redactJdbcUrl(jdbcUrl) + "/table:" + tableName)
+                .tableName(tableName)
+                .rows(withHeader)
+                .firstRowIsHeader(true)
+                .build();
+
+        String safeFileName = tableName.replaceAll("[^a-zA-Z0-9._-]", "_") + "_table.md";
+        Path tableFile = outputDir.resolve(safeFileName);
+        Files.writeString(tableFile, markdown, StandardCharsets.UTF_8);
+        String localPath = tableFile.toAbsolutePath().toString();
+        String sourceKey = "table:" + tableName;
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put(GraphConstants.META_SQL_TABLE_NAME, tableName);
+        metadata.put(GraphConstants.META_SQL_COLUMN_NAMES, String.join(",", columnNames));
+        metadata.put(GraphConstants.META_SQL_JDBC_URL, redactJdbcUrl(jdbcUrl));
+        metadata.put(GraphConstants.META_SQL_DATABASE_PRODUCT, databaseProduct);
+        metadata.put(GraphConstants.META_LOADER, "SQL Database Crawler");
+        metadata.put(GraphConstants.META_DOCUMENT_TYPE, "database-table");
+        metadata.put(GraphConstants.META_CONTENT_TYPE, "table");
+        metadata.put(GraphConstants.META_SOURCE_TYPE, SourceType.SQL.name());
+        metadata.put(GraphConstants.META_SOURCE_PATH, sourceKey);
+        metadata.put(GraphConstants.META_TABLE_ROW_COUNT, rows.size());
+        metadata.put(GraphConstants.META_TABLE_COLUMN_COUNT, columnNames.length);
+        metadata.put(GraphConstants.META_TABLE_HEADERS, String.join(",", columnNames));
+        metadata.put("full_table_content", markdown);
+        metadata.put("table_extraction_method", "sql");
+        if (truncated) {
+            metadata.put("table_truncated", true);
+            metadata.put("table_total_rows", totalRows);
+        }
+        if (!graph.getEntities().isEmpty()) {
+            metadata.put(GraphConstants.META_TABLE_GRAPH, TableCellGraphBuilder.toJson(graph));
+        }
+        metadata.put("crawlJobId", job.getJobId());
+
+        CrawlItem item = CrawlItem.builder()
+                .url(localPath)
+                .parentUrl(tableName)
+                .depth(0)
+                .contentType("text/markdown")
+                .contentLength((long) markdown.length())
+                .discoveredAt(Instant.now())
+                .sourceDescriptor(DocumentSourceDescriptor.builder()
+                        .type(SourceType.FILE)
+                        .pathOrUrl(localPath)
+                        .sourceId(sourceKey)
+                        .originalFileName(safeFileName)
+                        .collectionName(config.getCollectionName())
+                        .build())
+                .metadata(metadata)
+                .build();
+
+        job.incrementDiscovered();
+        job.getListener().onDocumentDiscovered(item);
+        job.incrementProcessed();
+        job.getListener().onDocumentProcessed(item);
     }
 
     /**

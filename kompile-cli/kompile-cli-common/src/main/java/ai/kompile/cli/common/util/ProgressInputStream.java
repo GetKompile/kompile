@@ -37,7 +37,7 @@ public class ProgressInputStream extends CountingInputStream {
     }
 
     @Override
-    protected synchronized void afterRead(int n) {
+    protected synchronized void afterRead(int n) throws IOException {
         super.afterRead(n);
         double progress = (getByteCount() / (double) max) * 100.0;
         pb.stepTo((long) progress);

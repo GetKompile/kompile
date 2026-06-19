@@ -28,7 +28,7 @@ public enum BuildPreset {
      */
     CLI_AGENT_RAG("CLI Agent RAG application (local, no API keys)",
             "app-main", "app-core", "loaders-orchestrator", "app-anserini", "chat-history", "pipelines-llm",
-            "llm-cli-agent",
+            "cli-llm",
             "embedding-anserini", "embedding-sentence-transformer",
             "vectorstore-anserini",
             "loader-pdf-extended", "loader-tika", "loader-microsoft", "loader-mail",
@@ -86,15 +86,20 @@ public enum BuildPreset {
     FULL("All modules enabled",
             "app-main", "app-core", "loaders-orchestrator", "app-anserini", "chat-history", "pipelines-llm",
             "llm-openai", "llm-anthropic", "llm-gemini", "cli-llm",
-            "embedding-openai", "embedding-anserini", "embedding-sentence-transformer",
+            "embedding-openai", "embedding-anserini", "embedding-sentence-transformer", "embedding-postgresml",
             "vectorstore-anserini", "vectorstore-chroma", "vectorstore-pgvector",
-            "loader-pdf-extended", "loader-pdf-tables", "loader-microsoft", "loader-mail", "loader-excel", "loader-tika",
+            "loader-pdf-extended", "loader-pdf-tables", "loader-microsoft", "loader-mail", "loader-excel",
+            "loader-email-inbox", "loader-discord", "loader-google-workspace", "loader-gmail", "loader-gdocs",
+            "loader-tika",
             "chunker-sentence", "chunker-recursive-character", "chunker-markdown", "chunker-token",
-            "tool-filesystem", "tool-rag", "tool-crawler",
+            "tool-filesystem", "tool-rag", "tool-workflow", "tool-table-search", "tool-gateway", "tool-crawler",
             "ocr-core", "ocr-models", "ocr-postprocess", "ocr-integration", "ocr-datapipeline",
-            "crawler-core", "crawl-graph", "process-discovery", "code-indexer",
-            "kvcache", "model-staging", "model-manager", "pipeline-management",
-            "graph-neo4j", "knowledge-graph", "graph-algorithms"
+            "crawler-core", "crawl-graph", "process-discovery", "process-engine", "event-attribution", "code-indexer",
+            "compute-graph", "compute-graph-scripting", "compute-graph-drools", "compute-graph-xircuits",
+            "compute-graph-n8n",
+            "kvcache", "model-staging", "model-manager", "pipeline-management", "test-milestone",
+            "graph-neo4j", "knowledge-graph", "graph-algorithms",
+            "rag-pipeline", "data-enrichment"
     ),
 
     /**

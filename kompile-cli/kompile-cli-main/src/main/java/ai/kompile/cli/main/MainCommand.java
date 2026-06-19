@@ -40,6 +40,7 @@ import ai.kompile.cli.main.config.ConfigMain;
 import ai.kompile.cli.main.configure.ConfigureCommand;
 import ai.kompile.cli.main.graph.GraphCommand;
 import ai.kompile.cli.main.install.InstallMain;
+import ai.kompile.cli.main.kclaw.KclawCommand;
 import ai.kompile.cli.main.knowledge.KnowledgeCommand;
 import ai.kompile.cli.main.manage.ManageComponents;
 import ai.kompile.cli.main.pipeline.PipelineMain;
@@ -95,6 +96,7 @@ import java.util.concurrent.Callable;
                 A2ACommand.class,
                 GraphCommand.class,
                 KnowledgeCommand.class,
+                KclawCommand.class,
                 // Infrastructure commands
                 McpStdioCommand.class,
                 ServeCommand.class,

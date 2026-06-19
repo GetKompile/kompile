@@ -17,6 +17,9 @@ package ai.kompile.kclaw.config;
 
 import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.kclaw.agent.ToolkitRegistry;
+import ai.kompile.kclaw.task.AgentTaskService;
+import ai.kompile.kclaw.task.AgentTaskStore;
+import ai.kompile.kclaw.task.KompileCliRunner;
 import ai.kompile.kclaw.gateway.KClawWebSocketHandler;
 import ai.kompile.kclaw.gateway.channel.*;
 import ai.kompile.gateway.core.gateway.channel.ChannelManager;
@@ -152,6 +155,47 @@ public class KClawAutoConfiguration implements WebSocketConfigurer {
             ToolkitRegistry toolkitRegistry,
             ai.kompile.react.service.ReActAgentService reActAgentService) {
         return new KClawAgentService(reActAgentService, agentRegistry, sessionService, toolkitRegistry);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AgentTaskStore agentTaskStore(KClawConfig kClawConfig, ObjectMapper objectMapper) {
+        try {
+            return new AgentTaskStore(kClawConfig.getWorkspace(), objectMapper);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to initialize agent task store", e);
+        }
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public KompileCliRunner kompileCliRunner(ObjectMapper objectMapper,
+                                             org.springframework.core.env.Environment env) {
+        String binary = env.getProperty("kompile.cli.binary-path");
+        long timeoutMs = env.getProperty("kompile.cli.task-timeout-ms", Long.class, 600_000L);
+        return new KompileCliRunner(objectMapper, binary, timeoutMs);
+    }
+
+    /**
+     * Task runner — always available (the ReAct engine is optional and degrades gracefully when
+     * no LLM is configured; the kompile-cli engine runs independently).
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AgentTaskService agentTaskService(
+            KompileCliRunner kompileCliRunner,
+            AgentTaskStore agentTaskStore,
+            KClawConfig kClawConfig,
+            org.springframework.beans.factory.ObjectProvider<KClawAgentService> agentServiceProvider,
+            org.springframework.beans.factory.ObjectProvider<ai.kompile.chat.history.service.ChatHistoryService> chatHistoryProvider,
+            org.springframework.beans.factory.ObjectProvider<ChannelManager> channelManagerProvider) {
+        return new AgentTaskService(
+                agentServiceProvider.getIfAvailable(),
+                kompileCliRunner,
+                agentTaskStore,
+                kClawConfig.getDefaultAgentId(),
+                chatHistoryProvider.getIfAvailable(),
+                channelManagerProvider.getIfAvailable());
     }
 
     @Bean("kclawChannelManager")

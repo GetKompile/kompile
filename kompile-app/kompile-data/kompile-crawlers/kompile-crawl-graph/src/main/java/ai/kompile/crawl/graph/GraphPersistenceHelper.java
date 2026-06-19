@@ -158,7 +158,7 @@ class GraphPersistenceHelper {
                     }
 
                     GraphNode node = knowledgeGraphService.createNode(
-                            NodeLevel.ENTITY,
+                            nodeLevelForEntityType(entityType),
                             externalId,
                             entityTitle,
                             entity.getDescription(),
@@ -585,6 +585,28 @@ class GraphPersistenceHelper {
 
     String safeEntityType(String type) {
         return type != null && !type.isBlank() ? type : "entity";
+    }
+
+    /**
+     * Maps an extractor entity-type string to the graph NodeLevel. Top-level table entity types
+     * persist as {@link NodeLevel#TABLE} so they surface in the index-browser Tables tab and the
+     * TABLE node-type filter; cells, columns and everything else stay at {@link NodeLevel#ENTITY}.
+     * Kept consistent with {@code ContentTypeRouter.persistGraphJson} so both persistence paths
+     * type table nodes identically regardless of which store backs the graph.
+     */
+    static NodeLevel nodeLevelForEntityType(String entityType) {
+        if (entityType == null) {
+            return NodeLevel.ENTITY;
+        }
+        switch (entityType) {
+            case GraphConstants.ENTITY_TABLE:
+            case GraphConstants.ENTITY_SHEET:
+            case GraphConstants.ENTITY_DATABASE_TABLE:
+            case GraphConstants.ENTITY_PDF_TABLE:
+                return NodeLevel.TABLE;
+            default:
+                return NodeLevel.ENTITY;
+        }
     }
 
     // -------------------------------------------------------------------------

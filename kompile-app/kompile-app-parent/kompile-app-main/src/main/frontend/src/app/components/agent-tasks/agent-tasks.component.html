@@ -1,0 +1,87 @@
+<div class="agent-tasks">
+  <div class="left">
+    <div class="submit-form">
+      <h3>Run an agent task</h3>
+      <mat-form-field appearance="outline" class="full">
+        <mat-label>Task</mat-label>
+        <textarea matInput [(ngModel)]="task" rows="3"
+                  placeholder="What should the agent do? (it runs in the background and the output is saved)"></textarea>
+      </mat-form-field>
+
+      <div class="row">
+        <mat-form-field appearance="outline">
+          <mat-label>Engine</mat-label>
+          <mat-select [(ngModel)]="engine">
+            <mat-option value="react">kclaw ReAct</mat-option>
+            <mat-option value="kompile-cli">kompile CLI</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" *ngIf="engine === 'react'">
+          <mat-label>Agent id</mat-label>
+          <input matInput [(ngModel)]="agentId" placeholder="(default)">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" *ngIf="engine === 'kompile-cli'">
+          <mat-label>Model</mat-label>
+          <input matInput [(ngModel)]="model" placeholder="(default)">
+        </mat-form-field>
+      </div>
+
+      <div class="row">
+        <mat-form-field appearance="outline">
+          <mat-label>Deliver to channel (optional)</mat-label>
+          <input matInput [(ngModel)]="channel" placeholder="discord / slack">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" *ngIf="channel">
+          <mat-label>Channel target</mat-label>
+          <input matInput [(ngModel)]="channelTarget" placeholder="channel id">
+        </mat-form-field>
+      </div>
+
+      <button mat-raised-button color="primary" (click)="submit()" [disabled]="submitting || !task.trim()">
+        <mat-icon>play_arrow</mat-icon> Run task
+      </button>
+      <span class="error" *ngIf="error">{{ error }}</span>
+    </div>
+
+    <div class="task-list">
+      <div class="list-header">
+        <h3>Tasks</h3>
+        <button mat-icon-button (click)="refresh()" matTooltip="Refresh">
+          <mat-icon>refresh</mat-icon>
+        </button>
+      </div>
+      <div class="task-row" *ngFor="let t of tasks"
+           [class.selected]="selected?.id === t.id" (click)="select(t)">
+        <span class="status" [ngClass]="statusClass(t.status)">{{ t.status }}</span>
+        <span class="engine">{{ t.engine }}</span>
+        <span class="task-text">{{ t.task }}</span>
+        <button mat-icon-button class="del" (click)="remove(t, $event)" matTooltip="Delete">
+          <mat-icon>delete</mat-icon>
+        </button>
+      </div>
+      <div class="empty" *ngIf="tasks.length === 0">No tasks yet.</div>
+    </div>
+  </div>
+
+  <div class="right" *ngIf="selected as s; else placeholder">
+    <div class="output-header">
+      <span class="status" [ngClass]="statusClass(s.status)">{{ s.status }}</span>
+      <span class="muted">{{ s.engine }}{{ s.agentId ? ' · ' + s.agentId : '' }}</span>
+    </div>
+    <div class="task-prompt">{{ s.task }}</div>
+    <div class="running" *ngIf="isRunning(s.status)">
+      <mat-progress-spinner diameter="22" mode="indeterminate"></mat-progress-spinner>
+      <span class="muted">working…</span>
+    </div>
+    <pre class="output" *ngIf="s.output">{{ s.output }}</pre>
+    <div class="error" *ngIf="s.error">{{ s.error }}</div>
+    <div class="muted file" *ngIf="s.outputFile">Saved to: {{ s.outputFile }}</div>
+    <div class="muted file" *ngIf="s.dbSessionId">DB session: {{ s.dbSessionId }}</div>
+  </div>
+  <ng-template #placeholder>
+    <div class="right placeholder">Select a task to view its output.</div>
+  </ng-template>
+</div>

@@ -28,7 +28,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests for {@link SetupCommand} and its subcommands.
- * Verifies command registration, option parsing, and help text generation.
+ * SetupCommand is registered under AppCommand (kompile app setup ...),
+ * not directly on MainCommand. Verifies command registration, option
+ * parsing, and help text generation.
  */
 class SetupCommandTest {
 
@@ -45,20 +47,29 @@ class SetupCommandTest {
         cmd.setErr(new PrintWriter(errWriter));
     }
 
+    /** Resolve setup from its actual location: kompile app setup */
+    private CommandLine setupCmd() {
+        CommandLine appCmd = cmd.getSubcommands().get("app");
+        assertNotNull(appCmd, "app subcommand should be registered on MainCommand");
+        return appCmd.getSubcommands().get("setup");
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // COMMAND REGISTRATION
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Test
     void testSetupCommandRegistered() {
-        // Verify that setup is a recognized subcommand of MainCommand
-        CommandLine setupCmd = cmd.getSubcommands().get("setup");
-        assertNotNull(setupCmd, "setup subcommand should be registered");
+        // SetupCommand was migrated from top-level to 'app setup'
+        CommandLine appCmd = cmd.getSubcommands().get("app");
+        assertNotNull(appCmd, "app subcommand should be registered");
+        assertNotNull(appCmd.getSubcommands().get("setup"),
+                "setup subcommand should be registered under app");
     }
 
     @Test
     void testSetupSubcommands() {
-        CommandLine setupCmd = cmd.getSubcommands().get("setup");
+        CommandLine setupCmd = setupCmd();
         assertNotNull(setupCmd);
 
         var subcommands = setupCmd.getSubcommands();
@@ -72,7 +83,8 @@ class SetupCommandTest {
 
     @Test
     void testStagingServerSubcommands() {
-        CommandLine setupCmd = cmd.getSubcommands().get("setup");
+        CommandLine setupCmd = setupCmd();
+        assertNotNull(setupCmd);
         CommandLine stagingServerCmd = setupCmd.getSubcommands().get("staging-server");
         assertNotNull(stagingServerCmd);
 
@@ -88,7 +100,7 @@ class SetupCommandTest {
 
     @Test
     void testSetupHelp() {
-        int exitCode = cmd.execute("setup", "--help");
+        int exitCode = cmd.execute("app", "setup", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("setup"));
@@ -98,7 +110,7 @@ class SetupCommandTest {
 
     @Test
     void testStagingServerHelp() {
-        int exitCode = cmd.execute("setup", "staging-server", "--help");
+        int exitCode = cmd.execute("app", "setup", "staging-server", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("staging-server"));
@@ -109,7 +121,7 @@ class SetupCommandTest {
 
     @Test
     void testStagingServerStartHelp() {
-        int exitCode = cmd.execute("setup", "staging-server", "start", "--help");
+        int exitCode = cmd.execute("app", "setup", "staging-server", "start", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("--port"));
@@ -118,7 +130,7 @@ class SetupCommandTest {
 
     @Test
     void testRunHelp() {
-        int exitCode = cmd.execute("setup", "run", "--help");
+        int exitCode = cmd.execute("app", "setup", "run", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("--staging-url"), "should show --staging-url option");
@@ -131,7 +143,7 @@ class SetupCommandTest {
 
     @Test
     void testWatchHelp() {
-        int exitCode = cmd.execute("setup", "watch", "--help");
+        int exitCode = cmd.execute("app", "setup", "watch", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("--timeout"), "should show --timeout option");
@@ -145,7 +157,7 @@ class SetupCommandTest {
     @Test
     void testRunCommandOptions_allPresent() {
         // Verify all options show in help text (proves annotations are valid)
-        int exitCode = cmd.execute("setup", "run", "--help");
+        int exitCode = cmd.execute("app", "setup", "run", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("--staging-url"), "missing --staging-url");
@@ -158,7 +170,7 @@ class SetupCommandTest {
 
     @Test
     void testStagingServerStartOptions_allPresent() {
-        int exitCode = cmd.execute("setup", "staging-server", "start", "--help");
+        int exitCode = cmd.execute("app", "setup", "staging-server", "start", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("--port"), "missing --port");
@@ -167,7 +179,7 @@ class SetupCommandTest {
 
     @Test
     void testWatchOptions_allPresent() {
-        int exitCode = cmd.execute("setup", "watch", "--help");
+        int exitCode = cmd.execute("app", "setup", "watch", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("--timeout"), "missing --timeout");
@@ -176,7 +188,7 @@ class SetupCommandTest {
 
     @Test
     void testStagingOptions_allPresent() {
-        int exitCode = cmd.execute("setup", "staging", "--help");
+        int exitCode = cmd.execute("app", "setup", "staging", "--help");
         assertEquals(0, exitCode);
         String output = outWriter.toString();
         assertTrue(output.contains("--name"), "missing --name");

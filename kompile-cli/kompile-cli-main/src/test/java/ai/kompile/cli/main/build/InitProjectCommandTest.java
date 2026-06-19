@@ -598,7 +598,7 @@ class InitProjectCommandTest {
     @Test
     void testGetByCategoryEmbedding() {
         List<ModuleCatalog.ModuleEntry> embModules = ModuleCatalog.getByCategory(ModuleCatalog.Category.EMBEDDING);
-        assertEquals(3, embModules.size(), "Should have 3 embedding providers");
+        assertEquals(4, embModules.size(), "Should have 4 embedding providers");
     }
 
     @Test

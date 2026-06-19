@@ -171,20 +171,22 @@ public record PslRule(double weight, boolean hard, boolean squared,
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
-        if (hard) {
-            sb.append(renderSide(body, " & "));
-            if (!body.isEmpty() && !head.isEmpty()) sb.append(" -> ");
-            else if (!head.isEmpty()) sb.append("-> ");
-            sb.append(renderSide(head, " | ")).append(" .");
-            return sb.toString();
-        }
-        sb.append(trimWeight(weight)).append(": ");
-        if (!body.isEmpty()) {
-            sb.append(renderSide(body, " & "));
-            sb.append(" -> ");
-        }
+        if (!hard) sb.append(trimWeight(weight)).append(": ");
+        String bodyStr = renderBody();
+        sb.append(bodyStr);
+        if (!bodyStr.isEmpty()) sb.append(" -> ");
         sb.append(renderSide(head, " | "));
-        sb.append(squared ? " ^2" : " ^1");
+        sb.append(hard ? " ." : (squared ? " ^2" : " ^1"));
+        return sb.toString();
+    }
+
+    /** Render the body conjunction followed by any {@code A != B} guards. */
+    private String renderBody() {
+        StringBuilder sb = new StringBuilder(renderSide(body, " & "));
+        for (String[] d : distinct) {
+            if (sb.length() > 0) sb.append(" & ");
+            sb.append('(').append(d[0]).append(" != ").append(d[1]).append(')');
+        }
         return sb.toString();
     }
 
@@ -193,10 +195,6 @@ public record PslRule(double weight, boolean hard, boolean squared,
         for (int i = 0; i < atoms.size(); i++) {
             if (i > 0) sb.append(sep);
             sb.append(atoms.get(i));
-        }
-        for (String[] d : distinct) {
-            if (sb.length() > 0) sb.append(sep);
-            sb.append('(').append(d[0]).append(" != ").append(d[1]).append(')');
         }
         return sb.toString();
     }

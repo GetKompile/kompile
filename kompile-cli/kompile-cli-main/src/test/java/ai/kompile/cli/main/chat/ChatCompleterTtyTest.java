@@ -63,10 +63,14 @@ class ChatCompleterTtyTest {
                 new McpSseClient.ToolInfo("bash", "Run shell cmd", null)
         );
         Set<String> skills = new LinkedHashSet<>(List.of("commit", "review", "fix"));
+        Set<String> agents = new LinkedHashSet<>(List.of("coder", "planner"));
+        Set<String> roles = new LinkedHashSet<>(List.of("senior-dev", "architect"));
 
         ChatCompleter completer = new ChatCompleter(
                 () -> tools,
-                () -> skills
+                () -> skills,
+                () -> agents,
+                () -> roles
         );
 
         reader = LineReaderBuilder.builder()

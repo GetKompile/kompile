@@ -33,6 +33,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Tests for {@link CrawlCommand}: command registration, subcommand structure,
  * help text, source type detection, and pipeline configuration.
+ * CrawlCommand is registered under AppCommand (kompile app crawl ...),
+ * not directly on MainCommand.
  * Also tests the data-source integration in init-project.
  */
 class CrawlCommandTest {
@@ -53,19 +55,29 @@ class CrawlCommandTest {
         cmd.setErr(new PrintWriter(errWriter));
     }
 
+    /** Resolve crawl from its actual location: kompile app crawl */
+    private CommandLine crawlCmd() {
+        CommandLine appCmd = cmd.getSubcommands().get("app");
+        assertNotNull(appCmd, "app subcommand should be registered on MainCommand");
+        return appCmd.getSubcommands().get("crawl");
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // COMMAND REGISTRATION
     // ═══════════════════════════════════════════════════════════════════════
 
     @Test
     void testCrawlCommandRegistered() {
-        CommandLine crawlCmd = cmd.getSubcommands().get("crawl");
-        assertNotNull(crawlCmd, "crawl subcommand should be registered");
+        // CrawlCommand was migrated from top-level to 'app crawl'
+        CommandLine appCmd = cmd.getSubcommands().get("app");
+        assertNotNull(appCmd, "app subcommand should be registered");
+        assertNotNull(appCmd.getSubcommands().get("crawl"),
+                "crawl subcommand should be registered under app");
     }
 
     @Test
     void testCrawlSubcommandsRegistered() {
-        CommandLine crawlCmd = cmd.getSubcommands().get("crawl");
+        CommandLine crawlCmd = crawlCmd();
         assertNotNull(crawlCmd);
 
         Map<String, CommandLine> subs = crawlCmd.getSubcommands();
@@ -84,7 +96,7 @@ class CrawlCommandTest {
 
     @Test
     void testCrawlStartHelp() {
-        int exitCode = cmd.execute("crawl", "start", "--help");
+        int exitCode = cmd.execute("app", "crawl", "start", "--help");
         String output = outWriter.toString() + errWriter.toString();
 
         // Crawl behavior
@@ -129,7 +141,7 @@ class CrawlCommandTest {
 
     @Test
     void testCrawlStatusHelp() {
-        int exitCode = cmd.execute("crawl", "status", "--help");
+        int exitCode = cmd.execute("app", "crawl", "status", "--help");
         String output = outWriter.toString() + errWriter.toString();
 
         assertTrue(output.contains("--unified") || output.contains("-u"), "missing --unified");
@@ -138,7 +150,7 @@ class CrawlCommandTest {
 
     @Test
     void testCrawlCancelHelp() {
-        int exitCode = cmd.execute("crawl", "cancel", "--help");
+        int exitCode = cmd.execute("app", "crawl", "cancel", "--help");
         String output = outWriter.toString() + errWriter.toString();
 
         assertTrue(output.contains("--unified") || output.contains("-u"), "missing --unified");
@@ -152,7 +164,7 @@ class CrawlCommandTest {
     void testCrawlWithNoSubcommandReturnsZero() {
         // CrawlCommand.call() prints usage to System.out (not picocli writer)
         // and returns 0. Verify exit code instead of captured output.
-        int exitCode = cmd.execute("crawl");
+        int exitCode = cmd.execute("app", "crawl");
         assertEquals(0, exitCode, "Base crawl command should return 0");
     }
 
@@ -168,11 +180,11 @@ class CrawlCommandTest {
     @Test
     void testTypeOptionAcceptsExcel() {
         // The --type option should exist on crawl start
-        CommandLine startCmd = cmd.getSubcommands().get("crawl").getSubcommands().get("start");
+        CommandLine startCmd = crawlCmd().getSubcommands().get("start");
         assertNotNull(startCmd, "start subcommand should exist");
 
         // Verify help mentions excel as a valid type
-        int exitCode = cmd.execute("crawl", "start", "--help");
+        int exitCode = cmd.execute("app", "crawl", "start", "--help");
         String output = outWriter.toString() + errWriter.toString();
         assertTrue(output.contains("--type"), "Should have --type option");
     }
@@ -200,7 +212,7 @@ class CrawlCommandTest {
     @Test
     void testStartCmdMultimodalAndVlmAreAliases() {
         // Both --multimodal and --vlm should be accepted on crawl start
-        int exitCode = cmd.execute("crawl", "start", "--help");
+        int exitCode = cmd.execute("app", "crawl", "start", "--help");
         String output = outWriter.toString() + errWriter.toString();
 
         assertTrue(output.contains("--multimodal") || output.contains("--vlm"),
@@ -210,7 +222,7 @@ class CrawlCommandTest {
     @Test
     void testStartCmdVlmModelImpliesMultimodal() {
         // The help text should show --vlm-model as a separate option
-        int exitCode = cmd.execute("crawl", "start", "--help");
+        int exitCode = cmd.execute("app", "crawl", "start", "--help");
         String output = outWriter.toString() + errWriter.toString();
 
         assertTrue(output.contains("--vlm-model"), "Should have --vlm-model option");
@@ -228,7 +240,7 @@ class CrawlCommandTest {
 
         // The command should parse the file path as a source without error
         // (it will fail to connect but that validates CLI parsing works)
-        CommandLine startCmd = cmd.getSubcommands().get("crawl").getSubcommands().get("start");
+        CommandLine startCmd = crawlCmd().getSubcommands().get("start");
         assertNotNull(startCmd, "start command should exist");
     }
 
@@ -238,7 +250,7 @@ class CrawlCommandTest {
 
     @Test
     void testGraphExtractionOptions() {
-        int exitCode = cmd.execute("crawl", "start", "--help");
+        int exitCode = cmd.execute("app", "crawl", "start", "--help");
         String output = outWriter.toString() + errWriter.toString();
 
         assertTrue(output.contains("--graph"), "Should have --graph option");
@@ -252,7 +264,7 @@ class CrawlCommandTest {
 
     @Test
     void testDirectoryCrawlOptions() {
-        int exitCode = cmd.execute("crawl", "start", "--help");
+        int exitCode = cmd.execute("app", "crawl", "start", "--help");
         String output = outWriter.toString() + errWriter.toString();
 
         assertTrue(output.contains("--follow-links"), "Should have --follow-links option");
