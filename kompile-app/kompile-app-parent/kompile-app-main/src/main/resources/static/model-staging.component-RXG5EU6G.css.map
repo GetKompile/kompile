@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/components/developer-hub/model-staging/model-staging.component.css"],
-  "sourcesContent": [":host {\n  display: block;\n}\n"],
-  "mappings": ";AAAA;AACE,WAAS;AACX;",
-  "names": []
-}

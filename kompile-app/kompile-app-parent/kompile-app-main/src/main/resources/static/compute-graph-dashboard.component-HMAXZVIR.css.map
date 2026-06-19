@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["angular:styles/component:css;2243a415f2d9da9cb7b031e8ab54226ab990d73e7e86d56426b77e4007eeacd1;/home/agibsonccc/Documents/GitHub/kompile/kompile-app/kompile-app-parent/kompile-app-main/src/main/frontend/src/app/components/compute-graph/compute-graph-dashboard.component.ts"],
-  "sourcesContent": ["\n    .dashboard-container { height: 100%; }\n    .dashboard-header {\n      display: flex; justify-content: space-between; align-items: center;\n      padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.12);\n    }\n    .header-left { display: flex; align-items: center; gap: 12px; }\n    .header-icon { font-size: 32px; width: 32px; height: 32px; color: #90caf9; }\n    .header-left h3 { margin: 0; font-size: 18px; }\n    .header-sub { margin: 2px 0 0; font-size: 12px; color: #999; }\n    .header-right { display: flex; align-items: center; gap: 8px; }\n    .tab-body { padding: 0; }\n    .graph-tabs { height: calc(100% - 80px); }\n  "],
-  "mappings": ";AACI,CAAC;AAAsB,UAAQ;AAAM;AACrC,CAAC;AACC,WAAS;AAAM,mBAAiB;AAAe,eAAa;AAC5D,WAAS,KAAK;AAAM,iBAAe,IAAI,MAAM,KAAK,GAAG,EAAC,GAAG,EAAC,GAAG,EAAC;AAChE;AACA,CAAC;AAAc,WAAS;AAAM,eAAa;AAAQ,OAAK;AAAM;AAC9D,CAAC;AAAc,aAAW;AAAM,SAAO;AAAM,UAAQ;AAAM,SAAO;AAAS;AAC3E,CAFC,YAEY;AAAK,UAAQ;AAAG,aAAW;AAAM;AAC9C,CAAC;AAAa,UAAQ,IAAI,EAAE;AAAG,aAAW;AAAM,SAAO;AAAM;AAC7D,CAAC;AAAe,WAAS;AAAM,eAAa;AAAQ,OAAK;AAAK;AAC9D,CAAC;AAAW,WAAS;AAAG;AACxB,CAAC;AAAa,UAAQ,KAAK,KAAK,EAAE;AAAO;",
-  "names": []
-}
