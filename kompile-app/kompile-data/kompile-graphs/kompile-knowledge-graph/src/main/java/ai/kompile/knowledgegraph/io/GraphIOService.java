@@ -22,7 +22,9 @@ import ai.kompile.knowledgegraph.io.format.JsonGraphExporter;
 import ai.kompile.knowledgegraph.io.format.JsonGraphImporter;
 import ai.kompile.knowledgegraph.io.format.JsonLdGraphExporter;
 import ai.kompile.knowledgegraph.io.format.JsonLdGraphImporter;
+import ai.kompile.knowledgegraph.io.format.NTriplesGraphExporter;
 import ai.kompile.knowledgegraph.io.format.PortableGraph;
+import ai.kompile.knowledgegraph.io.format.TurtleGraphExporter;
 import ai.kompile.knowledgegraph.io.model.ExportResult;
 import ai.kompile.knowledgegraph.io.model.ImportResult;
 import ai.kompile.knowledgegraph.io.model.PortableEdge;
@@ -111,6 +113,18 @@ public class GraphIOService {
                     new CypherDumpExporter().toBytes(graph),
                     "text/plain",
                     "graph.cypher");
+            case "ntriples", "nt" -> new ExportResult("ntriples",
+                    graph.nodes().size(),
+                    graph.edges().size(),
+                    new NTriplesGraphExporter().toBytes(graph),
+                    "application/n-triples",
+                    "graph.nt");
+            case "turtle", "ttl" -> new ExportResult("turtle",
+                    graph.nodes().size(),
+                    graph.edges().size(),
+                    new TurtleGraphExporter().toBytes(graph),
+                    "text/turtle",
+                    "graph.ttl");
             default -> throw new IllegalArgumentException("Unknown export format: " + format);
         };
     }
