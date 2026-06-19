@@ -15,6 +15,8 @@
  */
 package ai.kompile.knowledgegraph.maintenance;
 
+import ai.kompile.core.graphrag.conformance.GraphConformanceChecker;
+import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.core.graphrag.maintenance.GraphMaintenanceService;
 import ai.kompile.core.graphrag.maintenance.model.ConfidencePrunePolicy;
 import ai.kompile.core.graphrag.maintenance.model.ComponentPrunePolicy;
@@ -33,6 +35,7 @@ import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -73,6 +76,8 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
     private final SnapshotManager snapshotManager;
     private final KnowledgeGraphService knowledgeGraphService;
     private final GraphCompactionService graphCompactionService;
+    /** Optional ontology conformance SPI — present only when app-main (the implementor) is on the classpath. */
+    private final ObjectProvider<GraphConformanceChecker> conformanceCheckerProvider;
 
     /** Bounded list of recent reports, newest first. */
     private final List<MaintenanceReport> history = new CopyOnWriteArrayList<>();
@@ -85,7 +90,8 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
                                        ProvenanceValidator provenanceValidator,
                                        SnapshotManager snapshotManager,
                                        KnowledgeGraphService knowledgeGraphService,
-                                       GraphCompactionService graphCompactionService) {
+                                       GraphCompactionService graphCompactionService,
+                                       ObjectProvider<GraphConformanceChecker> conformanceCheckerProvider) {
         this.ttlSweepExecutor = ttlSweepExecutor;
         this.orphanPruner = orphanPruner;
         this.confidencePruner = confidencePruner;
@@ -95,6 +101,7 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
         this.snapshotManager = snapshotManager;
         this.knowledgeGraphService = knowledgeGraphService;
         this.graphCompactionService = graphCompactionService;
+        this.conformanceCheckerProvider = conformanceCheckerProvider;
     }
 
     // ── Pruning ──────────────────────────────────────────────────────────────
@@ -180,6 +187,16 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
     @Override
     public List<ProvenanceCheck> validateProvenance(Long factSheetId) {
         return provenanceValidator.validate(factSheetId);
+    }
+
+    @Override
+    public GraphConformanceSummary checkOntologyConformance(Long factSheetId) {
+        GraphConformanceChecker checker = conformanceCheckerProvider.getIfAvailable();
+        if (checker == null) {
+            log.debug("No GraphConformanceChecker wired; skipping ontology conformance for factSheet={}", factSheetId);
+            return GraphConformanceSummary.notBound(factSheetId);
+        }
+        return checker.checkFactSheet(factSheetId);
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────

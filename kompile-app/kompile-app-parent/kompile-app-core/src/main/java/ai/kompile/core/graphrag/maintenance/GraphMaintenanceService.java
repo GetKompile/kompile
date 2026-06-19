@@ -16,6 +16,7 @@
 
 package ai.kompile.core.graphrag.maintenance;
 
+import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.core.graphrag.maintenance.model.*;
 import java.time.Duration;
 import java.util.List;
@@ -34,6 +35,17 @@ public interface GraphMaintenanceService {
     MaintenanceReport resolveContradictions(Long factSheetId, ContradictionResolutionStrategy strategy, boolean dryRun);
     MaintenanceReport reResolveEntities(Long factSheetId, ReResolutionConfig config, boolean dryRun);
     List<ProvenanceCheck> validateProvenance(Long factSheetId);
+
+    /**
+     * Validate a fact sheet's knowledge graph against its bound ontology via the
+     * {@link ai.kompile.core.graphrag.conformance.GraphConformanceChecker} SPI, when one is wired.
+     * The default returns {@link GraphConformanceSummary#notBound} so implementations and runtime
+     * contexts without a conformance checker (e.g. the graph layer running without app-main) are
+     * unaffected.
+     */
+    default GraphConformanceSummary checkOntologyConformance(Long factSheetId) {
+        return GraphConformanceSummary.notBound(factSheetId);
+    }
 
     // ── Lifecycle ──
     GraphSnapshot createSnapshot(Long factSheetId, String reason);

@@ -15,6 +15,8 @@
  */
 package ai.kompile.knowledgegraph.maintenance;
 
+import ai.kompile.core.graphrag.conformance.GraphConformanceChecker;
+import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceSchedule;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceTask;
 import ai.kompile.core.graphrag.maintenance.model.ReResolutionConfig;
@@ -28,6 +30,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.Duration;
 import java.util.List;
@@ -55,6 +58,7 @@ class GraphMaintenanceServiceImplTest {
     @Mock private SnapshotManager snapshotManager;
     @Mock private KnowledgeGraphService knowledgeGraphService;
     @Mock private GraphCompactionService graphCompactionService;
+    @Mock private ObjectProvider<GraphConformanceChecker> conformanceCheckerProvider;
 
     private GraphMaintenanceServiceImpl service;
 
@@ -64,7 +68,7 @@ class GraphMaintenanceServiceImplTest {
     void setUp() {
         service = new GraphMaintenanceServiceImpl(ttlSweepExecutor, orphanPruner, confidencePruner,
                 componentPruner, contradictionDetector, provenanceValidator, snapshotManager,
-                knowledgeGraphService, graphCompactionService);
+                knowledgeGraphService, graphCompactionService, conformanceCheckerProvider);
     }
 
     @Test
@@ -128,5 +132,22 @@ class GraphMaintenanceServiceImplTest {
 
         verify(graphCompactionService, never()).compact(anyLong(), any());
         verify(graphCompactionService).previewCandidates(eq(FS), any());
+    }
+
+    @Test
+    void ontologyConformanceDelegatesToCheckerWhenWired() {
+        GraphConformanceChecker checker = mock(GraphConformanceChecker.class);
+        GraphConformanceSummary summary = new GraphConformanceSummary(FS, true, "FPnA", 10, 1, 2, "ok");
+        when(conformanceCheckerProvider.getIfAvailable()).thenReturn(checker);
+        when(checker.checkFactSheet(FS)).thenReturn(summary);
+
+        assertSame(summary, service.checkOntologyConformance(FS));
+        verify(checker).checkFactSheet(FS);
+    }
+
+    @Test
+    void ontologyConformanceReturnsNotBoundWhenNoCheckerWired() {
+        when(conformanceCheckerProvider.getIfAvailable()).thenReturn(null);
+        assertFalse(service.checkOntologyConformance(FS).ontologyBound());
     }
 }
