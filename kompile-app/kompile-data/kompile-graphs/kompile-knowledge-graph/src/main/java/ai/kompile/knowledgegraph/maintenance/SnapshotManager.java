@@ -16,6 +16,9 @@
 package ai.kompile.knowledgegraph.maintenance;
 
 import ai.kompile.core.graphrag.maintenance.model.GraphSnapshot;
+import ai.kompile.knowledgegraph.io.GraphIOService;
+import ai.kompile.knowledgegraph.io.model.ImportResult;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,13 +57,19 @@ public class SnapshotManager {
     private final GraphNodeRepository nodeRepository;
     private final GraphEdgeRepository edgeRepository;
     private final ObjectMapper objectMapper;
+    private final GraphIOService graphIOService;
+    private final KnowledgeGraphService knowledgeGraphService;
 
     public SnapshotManager(GraphNodeRepository nodeRepository,
                            GraphEdgeRepository edgeRepository,
-                           ObjectMapper objectMapper) {
+                           ObjectMapper objectMapper,
+                           GraphIOService graphIOService,
+                           KnowledgeGraphService knowledgeGraphService) {
         this.nodeRepository = nodeRepository;
         this.edgeRepository = edgeRepository;
         this.objectMapper = objectMapper;
+        this.graphIOService = graphIOService;
+        this.knowledgeGraphService = knowledgeGraphService;
     }
 
     private Path snapshotBaseDir() {
@@ -99,7 +108,7 @@ public class SnapshotManager {
         manifest.put("entityCount", (int) activeNodeCount);
         manifest.put("relationshipCount", (int) activeEdgeCount);
         manifest.put("communityCount", 0);
-        manifest.put("exportFormat", "json-manifest");
+        manifest.put("exportFormat", "json-full");
         manifest.put("nodeIds", nodeIds);
 
         // Ensure directory exists
@@ -120,6 +129,16 @@ public class SnapshotManager {
             throw new RuntimeException("Cannot write snapshot: " + snapshotFile, e);
         }
 
+        // Full, restorable graph dump alongside the manifest (reuses the portability exporter, so
+        // restore is a lossless re-import). Kept in a separate file so listing stays lightweight.
+        Path graphFile = dir.resolve(snapshotId + ".graph.json");
+        try {
+            Files.write(graphFile, graphIOService.exportGraph("json", factSheetId).data());
+        } catch (Exception e) {
+            log.error("Failed to write snapshot graph dump {}: {}", graphFile, e.getMessage(), e);
+            throw new RuntimeException("Cannot write snapshot graph dump: " + graphFile, e);
+        }
+
         log.info("Created snapshot {} for factSheet={}, nodes={}, edges={}, reason='{}'",
                 snapshotId, factSheetId, activeNodeCount, activeEdgeCount, reason);
 
@@ -131,7 +150,7 @@ public class SnapshotManager {
                 (int) activeNodeCount,
                 (int) activeEdgeCount,
                 0,
-                "json-manifest",
+                "json-full",
                 snapshotFile.toString()
         );
     }
@@ -149,7 +168,8 @@ public class SnapshotManager {
             return List.of();
         }
 
-        File[] files = dir.toFile().listFiles(f -> f.getName().endsWith(".json"));
+        File[] files = dir.toFile().listFiles(
+                f -> f.getName().endsWith(".json") && !f.getName().endsWith(".graph.json"));
         if (files == null || files.length == 0) {
             return List.of();
         }
@@ -165,7 +185,7 @@ public class SnapshotManager {
                 int entityCount = ((Number) manifest.getOrDefault("entityCount", 0)).intValue();
                 int relCount = ((Number) manifest.getOrDefault("relationshipCount", 0)).intValue();
                 int communityCount = ((Number) manifest.getOrDefault("communityCount", 0)).intValue();
-                String format = (String) manifest.getOrDefault("exportFormat", "json-manifest");
+                String format = (String) manifest.getOrDefault("exportFormat", "json-full");
 
                 snapshots.add(new GraphSnapshot(
                         snapshotId,
@@ -187,5 +207,65 @@ public class SnapshotManager {
         snapshots.sort((a, b) -> b.createdAt().compareTo(a.createdAt()));
         log.debug("Listed {} snapshots for factSheet={}", snapshots.size(), factSheetId);
         return snapshots;
+    }
+
+    /**
+     * Restore a fact sheet's graph to a prior snapshot: clear the current fact-sheet graph and
+     * re-import the snapshot's full dump (the Phase-1 portability importer). Structure + metadata
+     * + provenance are restored; KG embeddings (the binary sidecar) are not, and would be
+     * recomputed. Anything created after the snapshot is discarded — that's the rollback.
+     *
+     * @return the restored snapshot's metadata, or {@code null} if it couldn't be resolved
+     */
+    public GraphSnapshot restoreSnapshot(String snapshotId) {
+        Path base = snapshotBaseDir();
+        Path graphFile = null;
+        Long factSheetId = null;
+        if (Files.isDirectory(base)) {
+            try (var subdirs = Files.list(base)) {
+                for (Path sub : subdirs.filter(Files::isDirectory).toList()) {
+                    Path candidate = sub.resolve(snapshotId + ".graph.json");
+                    if (Files.isRegularFile(candidate)) {
+                        graphFile = candidate;
+                        try {
+                            factSheetId = Long.valueOf(sub.getFileName().toString());
+                        } catch (NumberFormatException ignored) {
+                            // Non-numeric snapshot subdirectory; leave factSheetId null.
+                        }
+                        break;
+                    }
+                }
+            } catch (IOException e) {
+                throw new RuntimeException("Cannot scan snapshot directory: " + base, e);
+            }
+        }
+        if (graphFile == null) {
+            throw new IllegalArgumentException("No restorable snapshot dump for id=" + snapshotId);
+        }
+
+        byte[] dump;
+        try {
+            dump = Files.readAllBytes(graphFile);
+        } catch (IOException e) {
+            throw new RuntimeException("Cannot read snapshot dump: " + graphFile, e);
+        }
+
+        // Revert: drop the current graph for this fact sheet, then re-import the snapshot dump.
+        if (factSheetId != null) {
+            knowledgeGraphService.deleteByFactSheetId(factSheetId);
+        }
+        try {
+            ImportResult result = graphIOService.importGraph("json", dump, null);
+            log.info("Restored snapshot {} (factSheet={}): {} nodes, {} edges restored",
+                    snapshotId, factSheetId, result.nodesCreated(), result.edgesCreated());
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to restore snapshot " + snapshotId, e);
+        }
+
+        final String wantedId = snapshotId;
+        return factSheetId == null ? null : listSnapshots(factSheetId).stream()
+                .filter(s -> wantedId.equals(s.snapshotId()))
+                .findFirst()
+                .orElse(null);
     }
 }

@@ -225,6 +225,17 @@ public class GraphMaintenanceRestController {
         return ResponseEntity.ok(maintenanceService.listSnapshots(factSheetId));
     }
 
+    /**
+     * Restore (roll back) the graph to a prior snapshot — clears the current fact-sheet graph and
+     * re-imports the snapshot's full dump. The fact sheet is resolved from the snapshot itself.
+     */
+    @PostMapping("/{factSheetId}/snapshots/{snapshotId}/restore")
+    public ResponseEntity<MaintenanceReport> restoreSnapshot(
+            @PathVariable Long factSheetId,
+            @PathVariable String snapshotId) {
+        return ResponseEntity.ok(maintenanceService.restoreSnapshot(snapshotId));
+    }
+
     // ── History ───────────────────────────────────────────────────────────────
 
     /**

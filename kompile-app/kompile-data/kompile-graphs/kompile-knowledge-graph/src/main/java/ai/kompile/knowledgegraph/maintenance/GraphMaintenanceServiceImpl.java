@@ -208,17 +208,33 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
 
     @Override
     public MaintenanceReport restoreSnapshot(String snapshotId) {
-        log.warn("Snapshot restore not yet implemented for snapshotId={}", snapshotId);
-        Instant now = Instant.now();
-        TaskReport placeholder = new TaskReport(
-                MaintenanceTask.STATS_REFRESH, 0, 0, 0,
-                List.of("Snapshot restore not yet implemented for snapshotId=" + snapshotId),
-                Duration.ZERO);
-        MaintenanceReport report = new MaintenanceReport(
-                UUID.randomUUID().toString(), null, now, now, false,
-                Map.of(MaintenanceTask.STATS_REFRESH, placeholder), null, null);
-        addToHistory(report);
-        return report;
+        Instant start = Instant.now();
+        try {
+            GraphSnapshot restored = snapshotManager.restoreSnapshot(snapshotId);
+            Instant end = Instant.now();
+            int entities = restored != null ? restored.entityCount() : 0;
+            int relationships = restored != null ? restored.relationshipCount() : 0;
+            Long factSheetId = restored != null ? restored.factSheetId() : null;
+            TaskReport task = new TaskReport(
+                    MaintenanceTask.STATS_REFRESH, entities + relationships, entities + relationships, 0,
+                    List.of(), Duration.between(start, end));
+            MaintenanceReport report = new MaintenanceReport(
+                    UUID.randomUUID().toString(), factSheetId, start, end, false,
+                    Map.of(MaintenanceTask.STATS_REFRESH, task), null, restored);
+            addToHistory(report);
+            return report;
+        } catch (Exception e) {
+            Instant end = Instant.now();
+            log.warn("Snapshot restore failed for snapshotId={}: {}", snapshotId, e.getMessage());
+            TaskReport task = new TaskReport(
+                    MaintenanceTask.STATS_REFRESH, 0, 0, 0,
+                    List.of("Snapshot restore failed: " + e.getMessage()), Duration.between(start, end));
+            MaintenanceReport report = new MaintenanceReport(
+                    UUID.randomUUID().toString(), null, start, end, false,
+                    Map.of(MaintenanceTask.STATS_REFRESH, task), null, null);
+            addToHistory(report);
+            return report;
+        }
     }
 
     @Override
