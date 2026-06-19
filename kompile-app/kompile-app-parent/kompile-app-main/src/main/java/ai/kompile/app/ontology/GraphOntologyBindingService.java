@@ -16,6 +16,8 @@
 package ai.kompile.app.ontology;
 
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
+import ai.kompile.core.graphrag.conformance.GraphConformanceChecker;
+import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -54,7 +56,7 @@ import java.util.Optional;
  */
 @Slf4j
 @Service
-public class GraphOntologyBindingService {
+public class GraphOntologyBindingService implements GraphConformanceChecker {
 
     /** Cap on per-report violation detail so the response stays bounded on large graphs. */
     private static final int MAX_VIOLATIONS = 200;
@@ -128,6 +130,19 @@ public class GraphOntologyBindingService {
         log.info("Graph conformance factSheet={}: {}", factSheetId, message);
         return new GraphConformanceReport(factSheetId, true, schema.getId(), schema.getVersion(),
                 schema.getName(), entities.size(), unknown, nonConformant, violations, message);
+    }
+
+    /**
+     * {@link GraphConformanceChecker} SPI: exposes {@link #checkConformance} as an ontology-model-free
+     * {@link GraphConformanceSummary} so the knowledge-graph layer (maintenance / write hooks) can
+     * trigger conformance without depending on the OntologySchema model.
+     */
+    @Override
+    public GraphConformanceSummary checkFactSheet(Long factSheetId) {
+        GraphConformanceReport report = checkConformance(factSheetId);
+        return new GraphConformanceSummary(report.factSheetId(), report.ontologyBound(),
+                report.ontologyName(), report.entitiesChecked(), report.unknownTypeCount(),
+                report.nonConformantCount(), report.message());
     }
 
     // ── binding resolution ─────────────────────────────────────────────────────

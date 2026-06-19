@@ -16,6 +16,7 @@
 package ai.kompile.app.ontology;
 
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
+import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -143,5 +144,22 @@ class GraphOntologyBindingServiceTest {
         assertFalse(report.ontologyBound());
         assertEquals(0, report.entitiesChecked());
         verify(knowledgeGraphService, never()).getNodesByTypeInFactSheet(anyLong(), any());
+    }
+
+    @Test
+    void checkFactSheetExposesSummaryViaSpi() {
+        when(processEngineService.listProcessDefinitions())
+                .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
+        when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(FS, NodeLevel.ENTITY))
+                .thenReturn(List.of(entity("n2", "{\"entity_type\":\"Vendor\"}")));
+
+        GraphConformanceSummary summary = service.checkFactSheet(FS);
+
+        assertTrue(summary.ontologyBound());
+        assertEquals("FPnA", summary.ontologyName());
+        assertEquals(1, summary.entitiesChecked());
+        assertEquals(1, summary.unknownTypeCount());
+        assertEquals(1, summary.nonConformantCount());
     }
 }
