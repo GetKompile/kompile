@@ -29,6 +29,9 @@ import ai.kompile.core.graphrag.maintenance.model.ProvenanceCheck;
 import ai.kompile.core.graphrag.maintenance.model.ReResolutionConfig;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
 import ai.kompile.core.graphrag.maintenance.model.TtlPolicy;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.resolution.GraphCompactionService;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -37,6 +40,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -52,6 +56,14 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
 
     private static final int MAX_HISTORY = 50;
 
+    /** Node levels scanned for orphan health — everything structural except SOURCE roots and freeform CUSTOM. */
+    private static final Set<NodeLevel> HEALTH_ORPHAN_LEVELS = Set.of(
+            NodeLevel.ENTITY, NodeLevel.DOCUMENT, NodeLevel.SNIPPET,
+            NodeLevel.TABLE, NodeLevel.ATTACHMENT, NodeLevel.IDENTIFIER);
+
+    /** Confidence below which a node/edge is reported (not pruned) as low-confidence by STATS_REFRESH. */
+    private static final double LOW_CONFIDENCE_REPORT_THRESHOLD = 0.5;
+
     private final TtlSweepExecutor ttlSweepExecutor;
     private final OrphanPruner orphanPruner;
     private final ConfidencePruner confidencePruner;
@@ -59,6 +71,8 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
     private final ContradictionDetector contradictionDetector;
     private final ProvenanceValidator provenanceValidator;
     private final SnapshotManager snapshotManager;
+    private final KnowledgeGraphService knowledgeGraphService;
+    private final GraphCompactionService graphCompactionService;
 
     /** Bounded list of recent reports, newest first. */
     private final List<MaintenanceReport> history = new CopyOnWriteArrayList<>();
@@ -69,7 +83,9 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
                                        ComponentPruner componentPruner,
                                        ContradictionDetector contradictionDetector,
                                        ProvenanceValidator provenanceValidator,
-                                       SnapshotManager snapshotManager) {
+                                       SnapshotManager snapshotManager,
+                                       KnowledgeGraphService knowledgeGraphService,
+                                       GraphCompactionService graphCompactionService) {
         this.ttlSweepExecutor = ttlSweepExecutor;
         this.orphanPruner = orphanPruner;
         this.confidencePruner = confidencePruner;
@@ -77,6 +93,8 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
         this.contradictionDetector = contradictionDetector;
         this.provenanceValidator = provenanceValidator;
         this.snapshotManager = snapshotManager;
+        this.knowledgeGraphService = knowledgeGraphService;
+        this.graphCompactionService = graphCompactionService;
     }
 
     // ── Pruning ──────────────────────────────────────────────────────────────
@@ -147,12 +165,14 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
 
     @Override
     public MaintenanceReport reResolveEntities(Long factSheetId, ReResolutionConfig config, boolean dryRun) {
-        log.warn("reResolveEntities not yet implemented for factSheet={}", factSheetId);
-        Instant now = Instant.now();
-        TaskReport placeholder = new TaskReport(
-                MaintenanceTask.ENTITY_RE_RESOLUTION, 0, 0, 0,
-                List.of("Entity re-resolution not yet implemented"), Duration.ZERO);
-        MaintenanceReport report = singleTaskReport(factSheetId, now, dryRun, placeholder);
+        ReResolutionConfig cfg = config != null ? config : ReResolutionConfig.defaults();
+        // Only mutate when the caller asked to merge AND this is not a dry run.
+        boolean merge = cfg.mergeOnMatch() && !dryRun;
+        log.info("reResolveEntities factSheet={}, threshold={}, merge={} (dryRun={})",
+                factSheetId, cfg.similarityThreshold(), merge, dryRun);
+        Instant start = Instant.now();
+        TaskReport taskReport = reResolve(factSheetId, cfg.similarityThreshold(), merge);
+        MaintenanceReport report = singleTaskReport(factSheetId, start, dryRun, taskReport);
         addToHistory(report);
         return report;
     }
@@ -273,9 +293,64 @@ public class GraphMaintenanceServiceImpl implements GraphMaintenanceService {
                 yield new TaskReport(task, checks.size(), invalid, checks.size() - invalid,
                         List.of(), Duration.ZERO);
             }
-            case ENTITY_RE_RESOLUTION, STATS_REFRESH, COMMUNITY_REBUILD ->
-                new TaskReport(task, 0, 0, 0, List.of("Not yet implemented"), Duration.ZERO);
+            case ENTITY_RE_RESOLUTION ->
+                reResolve(factSheetId, ReResolutionConfig.defaults().similarityThreshold(), !dryRun);
+            case STATS_REFRESH ->
+                computeStatsRefresh(factSheetId);
+            case COMMUNITY_REBUILD ->
+                new TaskReport(task, 0, 0, 0, List.of("COMMUNITY_REBUILD not yet implemented"), Duration.ZERO);
         };
+    }
+
+    /**
+     * Recomputes a graph-health snapshot for the fact sheet (active node count, orphan nodes,
+     * low-confidence nodes/edges) through the store-agnostic {@link KnowledgeGraphService}, so it
+     * reflects whichever backend is active (the matrix/vector store in production). Read-only:
+     * {@code itemsAffected} reports the number of quality issues found, never a mutation count.
+     */
+    private TaskReport computeStatsRefresh(Long factSheetId) {
+        Instant start = Instant.now();
+        long activeNodes = knowledgeGraphService.countActiveNodes(factSheetId);
+        int orphans = knowledgeGraphService.findOrphanNodeIds(factSheetId, HEALTH_ORPHAN_LEVELS).size();
+        int lowConfNodes = knowledgeGraphService
+                .findLowConfidenceNodeIds(factSheetId, LOW_CONFIDENCE_REPORT_THRESHOLD).size();
+        int lowConfEdges = knowledgeGraphService
+                .findLowConfidenceEdgeIds(factSheetId, LOW_CONFIDENCE_REPORT_THRESHOLD).size();
+        int issues = orphans + lowConfNodes + lowConfEdges;
+        List<String> summary = List.of(
+                "activeNodes=" + activeNodes,
+                "orphanNodes=" + orphans,
+                "lowConfidenceNodes(<" + LOW_CONFIDENCE_REPORT_THRESHOLD + ")=" + lowConfNodes,
+                "lowConfidenceEdges(<" + LOW_CONFIDENCE_REPORT_THRESHOLD + ")=" + lowConfEdges);
+        log.info("STATS_REFRESH factSheet={}: {}", factSheetId, summary);
+        return new TaskReport(MaintenanceTask.STATS_REFRESH,
+                (int) Math.min(activeNodes, Integer.MAX_VALUE), issues, 0,
+                summary, Duration.between(start, Instant.now()));
+    }
+
+    /**
+     * Re-runs entity resolution (graph compaction) for the fact sheet via {@link GraphCompactionService},
+     * which operates on the active backend. When {@code merge} is false it previews candidate pairs without
+     * mutating; otherwise it compacts and reports merge deltas.
+     */
+    private TaskReport reResolve(Long factSheetId, double similarityThreshold, boolean merge) {
+        Instant start = Instant.now();
+        if (!merge) {
+            int candidates = graphCompactionService.previewCandidates(
+                    factSheetId, GraphCompactionService.CompactionConfig.previewOnly(similarityThreshold)).size();
+            return new TaskReport(MaintenanceTask.ENTITY_RE_RESOLUTION, candidates, 0, candidates,
+                    List.of("preview: " + candidates + " merge candidate(s) at threshold " + similarityThreshold),
+                    Duration.between(start, Instant.now()));
+        }
+        GraphCompactionService.CompactionResult result = graphCompactionService.compact(
+                factSheetId, GraphCompactionService.CompactionConfig.withThreshold(similarityThreshold));
+        return new TaskReport(MaintenanceTask.ENTITY_RE_RESOLUTION,
+                result.originalEntityCount(), result.entitiesMerged(),
+                Math.max(0, result.originalEntityCount() - result.entitiesMerged()),
+                List.of("entitiesMerged=" + result.entitiesMerged(),
+                        "edgesRedirected=" + result.edgesRedirected(),
+                        "finalEntityCount=" + result.finalEntityCount()),
+                Duration.between(start, Instant.now()));
     }
 
     /**

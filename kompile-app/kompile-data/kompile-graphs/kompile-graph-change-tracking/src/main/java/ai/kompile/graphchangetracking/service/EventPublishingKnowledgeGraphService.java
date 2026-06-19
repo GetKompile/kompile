@@ -454,6 +454,11 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     }
 
     @Override
+    public List<String> findOrphanNodeIds(Long factSheetId, java.util.Set<NodeLevel> levels) {
+        return delegate.findOrphanNodeIds(factSheetId, levels);
+    }
+
+    @Override
     public List<String> findLowConfidenceNodeIds(Long factSheetId, double minConfidence) {
         return delegate.findLowConfidenceNodeIds(factSheetId, minConfidence);
     }

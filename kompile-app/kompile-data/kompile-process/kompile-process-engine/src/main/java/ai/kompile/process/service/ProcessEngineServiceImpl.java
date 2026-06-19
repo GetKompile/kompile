@@ -31,6 +31,7 @@ import ai.kompile.process.ingest.SubmissionManifest;
 import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.FieldDefinition;
 import ai.kompile.process.ontology.FieldType;
+import ai.kompile.process.ontology.OntologyConformanceValidator;
 import ai.kompile.process.ontology.OntologySchema;
 import ai.kompile.process.ontology.ValidationRule;
 import ai.kompile.process.workflow.ProcessDefinition;
@@ -2346,72 +2347,12 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     /**
      * Validates a single field constraint from the ontology against runData.
      * Checks: required, min, max, regex, enum values.
+     *
+     * <p>Delegates to {@link OntologyConformanceValidator#validateField} — the shared engine — so a
+     * workflow run-data map and a knowledge-graph node are judged by identical field rules.
      */
     private List<String> validateFieldConstraint(FieldDefinition field, Map<String, Object> runData) {
-        List<String> violations = new ArrayList<>();
-        String fieldName = field.getName();
-        Object value = runData.get(fieldName);
-
-        // Required check
-        if (field.isRequired() && value == null) {
-            violations.add(String.format("Required field '%s' is missing", fieldName));
-            return violations; // no point checking further
-        }
-
-        if (value == null) return violations;
-
-        // Min/max for numeric fields
-        if (field.getMin() != null || field.getMax() != null) {
-            double numVal;
-            try {
-                numVal = ((Number) value).doubleValue();
-                if (field.getMin() != null && numVal < field.getMin()) {
-                    violations.add(String.format("Field '%s' value %.2f is below minimum %.2f",
-                            fieldName, numVal, field.getMin()));
-                }
-                if (field.getMax() != null && numVal > field.getMax()) {
-                    violations.add(String.format("Field '%s' value %.2f exceeds maximum %.2f",
-                            fieldName, numVal, field.getMax()));
-                }
-            } catch (ClassCastException e) {
-                // Not a number — skip numeric checks
-            }
-        }
-
-        // Regex for string fields
-        if (field.getRegex() != null && value instanceof String) {
-            if (!((String) value).matches(field.getRegex())) {
-                violations.add(String.format("Field '%s' value '%s' does not match pattern '%s'",
-                        fieldName, value, field.getRegex()));
-            }
-        }
-
-        // Enum validation
-        if (field.getEnumValues() != null && !field.getEnumValues().isEmpty()) {
-            if (value instanceof String) {
-                if (!field.getEnumValues().contains(value)) {
-                    violations.add(String.format("Field '%s' value '%s' not in allowed values: %s",
-                            fieldName, value, field.getEnumValues()));
-                }
-            } else if (value instanceof List) {
-                for (Object item : (List<?>) value) {
-                    if (!field.getEnumValues().contains(String.valueOf(item))) {
-                        violations.add(String.format("Field '%s' array item '%s' not in allowed values: %s",
-                                fieldName, item, field.getEnumValues()));
-                    }
-                }
-            }
-        }
-
-        // MaxLength for string fields
-        if (field.getMaxLength() != null && value instanceof String) {
-            if (((String) value).length() > field.getMaxLength()) {
-                violations.add(String.format("Field '%s' length %d exceeds maximum %d",
-                        fieldName, ((String) value).length(), field.getMaxLength()));
-            }
-        }
-
-        return violations;
+        return OntologyConformanceValidator.validateField(field, runData.get(field.getName()));
     }
 
     /**

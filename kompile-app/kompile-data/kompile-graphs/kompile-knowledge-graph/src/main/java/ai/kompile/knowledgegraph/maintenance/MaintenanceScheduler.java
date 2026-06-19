@@ -19,11 +19,13 @@ import ai.kompile.core.graphrag.maintenance.GraphMaintenanceService;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceReport;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceSchedule;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceTask;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -42,12 +44,16 @@ import java.util.List;
 public class MaintenanceScheduler {
 
     private final GraphMaintenanceService maintenanceService;
+    private final KnowledgeGraphService knowledgeGraphService;
 
     private volatile boolean enabled = false;
+    private volatile boolean allFactSheets = false;
     private volatile Long targetFactSheetId = null;
 
-    public MaintenanceScheduler(GraphMaintenanceService maintenanceService) {
+    public MaintenanceScheduler(GraphMaintenanceService maintenanceService,
+                                KnowledgeGraphService knowledgeGraphService) {
         this.maintenanceService = maintenanceService;
+        this.knowledgeGraphService = knowledgeGraphService;
     }
 
     // ── Configuration ─────────────────────────────────────────────────────────
@@ -60,8 +66,21 @@ public class MaintenanceScheduler {
      */
     public void enable(Long factSheetId) {
         this.targetFactSheetId = factSheetId;
+        this.allFactSheets = false;
         this.enabled = true;
         log.info("Scheduled maintenance enabled for factSheetId={}", factSheetId);
+    }
+
+    /**
+     * Enable scheduled maintenance for ALL fact sheets that have graph data. Each cron trigger
+     * re-enumerates fact sheets via {@link KnowledgeGraphService#findFactSheetIds()} and runs the
+     * standard task set for each, isolating per-fact-sheet failures.
+     */
+    public void enableAll() {
+        this.targetFactSheetId = null;
+        this.allFactSheets = true;
+        this.enabled = true;
+        log.info("Scheduled maintenance enabled for ALL fact sheets");
     }
 
     /**
@@ -70,6 +89,7 @@ public class MaintenanceScheduler {
      */
     public void disable() {
         this.enabled = false;
+        this.allFactSheets = false;
         log.info("Scheduled maintenance disabled");
     }
 
@@ -81,6 +101,11 @@ public class MaintenanceScheduler {
     /** Returns the fact sheet targeted by the scheduler, or {@code null} if none is set. */
     public Long getTargetFactSheetId() {
         return targetFactSheetId;
+    }
+
+    /** Returns {@code true} if the scheduler runs across all fact sheets rather than a single one. */
+    public boolean isAllFactSheets() {
+        return allFactSheets;
     }
 
     // ── Cron trigger ──────────────────────────────────────────────────────────
@@ -95,14 +120,31 @@ public class MaintenanceScheduler {
      */
     @Scheduled(cron = "0 0 3 * * *")
     public void runScheduledMaintenance() {
-        if (!enabled || targetFactSheetId == null) {
+        if (!enabled) {
             return;
         }
 
-        log.info("Starting scheduled maintenance for factSheetId={}", targetFactSheetId);
+        Collection<Long> targets;
+        if (allFactSheets) {
+            targets = knowledgeGraphService.findFactSheetIds();
+            log.info("Starting scheduled maintenance for ALL fact sheets ({} found)", targets.size());
+        } else if (targetFactSheetId != null) {
+            targets = List.of(targetFactSheetId);
+        } else {
+            return;
+        }
+
+        // Run each fact sheet independently so one failure does not abort the rest.
+        for (Long factSheetId : targets) {
+            runMaintenanceFor(factSheetId);
+        }
+    }
+
+    private void runMaintenanceFor(Long factSheetId) {
+        log.info("Starting scheduled maintenance for factSheetId={}", factSheetId);
         try {
             MaintenanceSchedule schedule = new MaintenanceSchedule(
-                    targetFactSheetId,
+                    factSheetId,
                     Duration.ofDays(1),
                     List.of(
                             MaintenanceTask.TTL_SWEEP,
@@ -114,12 +156,12 @@ public class MaintenanceScheduler {
                     false   // dryRun
             );
 
-            MaintenanceReport report = maintenanceService.runFullMaintenance(targetFactSheetId, schedule);
+            MaintenanceReport report = maintenanceService.runFullMaintenance(factSheetId, schedule);
             log.info("Scheduled maintenance completed for factSheetId={}: {} tasks, dryRun={}",
-                    targetFactSheetId, report.taskReports().size(), report.dryRun());
+                    factSheetId, report.taskReports().size(), report.dryRun());
         } catch (Exception e) {
             log.error("Scheduled maintenance failed for factSheetId={}: {}",
-                    targetFactSheetId, e.getMessage(), e);
+                    factSheetId, e.getMessage(), e);
         }
     }
 }

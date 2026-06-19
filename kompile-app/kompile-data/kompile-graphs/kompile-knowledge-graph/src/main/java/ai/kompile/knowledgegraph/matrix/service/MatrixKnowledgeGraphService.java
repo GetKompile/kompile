@@ -1142,14 +1142,18 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Returns nodeIds of ENTITY nodes in the fact sheet with degree 0
-     * (no edges to or from them) that are not already soft-deleted.
+     * Returns nodeIds of nodes in the fact sheet with degree 0 (no edges to or from them)
+     * whose {@link NodeLevel} is in {@code levels} and that are not already soft-deleted.
+     * MatrixGraphNode stores its level as a String, so the requested levels are matched by name.
      */
     @Override
-    public List<String> findOrphanNodeIds(Long factSheetId) {
+    public List<String> findOrphanNodeIds(Long factSheetId, java.util.Set<NodeLevel> levels) {
+        java.util.Set<String> wanted =
+                ((levels == null || levels.isEmpty()) ? DEFAULT_ORPHAN_LEVELS : levels)
+                        .stream().map(Enum::name).collect(Collectors.toSet());
         return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
                 .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
-                .filter(n -> "ENTITY".equals(n.getNodeType()))
+                .filter(n -> n.getNodeType() != null && wanted.contains(n.getNodeType()))
                 .filter(n -> !isMatrixNodeStale(n))
                 .filter(n -> {
                     List<Map.Entry<String, Double>> edges =

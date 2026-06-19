@@ -286,6 +286,17 @@ public interface GraphNodeRepository extends JpaRepository<GraphNode, Long> {
     List<GraphNode> findGraphOrphanEntities(@Param("factSheetId") Long factSheetId);
 
     /**
+     * Find orphan nodes (no edges connecting them) of the given node levels in a fact sheet.
+     * Generalises {@link #findGraphOrphanEntities} beyond ENTITY so maintenance/health scans
+     * can also surface orphaned DOCUMENT / SNIPPET / TABLE / ATTACHMENT / IDENTIFIER nodes.
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId " +
+           "AND n.nodeType IN :types AND (n.stale IS NULL OR n.stale = false) " +
+           "AND NOT EXISTS (SELECT e FROM GraphEdge e WHERE e.sourceNode = n OR e.targetNode = n)")
+    List<GraphNode> findGraphOrphanNodes(@Param("factSheetId") Long factSheetId,
+                                         @Param("types") java.util.Collection<NodeLevel> types);
+
+    /**
      * Find entities with low confidence in a fact sheet
      */
     @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId " +

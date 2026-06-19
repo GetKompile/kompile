@@ -198,6 +198,20 @@ public interface KnowledgeGraphService {
     List<GraphNode> getAllSources();
 
     /**
+     * Enumerate the distinct fact-sheet IDs that have graph data, derived from the
+     * {@linkplain #getAllSources() source roots}. Store-agnostic: works on whichever backend is
+     * active (JPA, matrix/vector, or the change-tracking decorator) because it goes through
+     * {@code getAllSources()}. Fact sheets with no SOURCE node (e.g. only manually-added entities)
+     * are not enumerated — acceptable for scheduled maintenance, which acts on crawled structure.
+     */
+    default java.util.Set<Long> findFactSheetIds() {
+        return getAllSources().stream()
+                .map(GraphNode::getFactSheetId)
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /**
      * Get all nodes across all types, up to the given limit.
      * Default implementation combines results from every NodeLevel.
      */
@@ -563,21 +577,41 @@ public interface KnowledgeGraphService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Return the node UUIDs (nodeId strings) of ENTITY nodes within the given fact
-     * sheet that have degree 0 — i.e. no edges connect them to any other node —
-     * and have not already been marked stale.
-     *
-     * <p>The default implementation iterates all nodes in the fact sheet and
-     * checks {@link #getEdgesForNode}; stores that maintain edge indices may
-     * override this for efficiency.</p>
+     * Node levels treated as orphan-eligible when {@link #findOrphanNodeIds(Long)} is called
+     * without an explicit set. Kept to the ENTITY layer so the existing auto-prune policy
+     * (OrphanPruner) is unchanged; broader maintenance/health scans pass an explicit level set.
+     */
+    java.util.Set<NodeLevel> DEFAULT_ORPHAN_LEVELS = java.util.Set.of(NodeLevel.ENTITY);
+
+    /**
+     * Return the nodeId strings of degree-0 ENTITY nodes (no edges connect them) within the
+     * given fact sheet that are not already stale. Delegates to
+     * {@link #findOrphanNodeIds(Long, java.util.Set)} with {@link #DEFAULT_ORPHAN_LEVELS}.
      *
      * @param factSheetId the fact sheet to scan
      * @return list of orphan node UUIDs (never {@code null})
      */
     default List<String> findOrphanNodeIds(Long factSheetId) {
+        return findOrphanNodeIds(factSheetId, DEFAULT_ORPHAN_LEVELS);
+    }
+
+    /**
+     * Return the nodeId strings of degree-0 nodes (no edges connect them) within the given
+     * fact sheet whose {@link NodeLevel} is in {@code levels} and that are not already stale.
+     *
+     * <p>The default implementation iterates all nodes in the fact sheet and checks
+     * {@link #getEdgesForNode}; stores that maintain edge indices override this for efficiency.
+     * Every backend (JPA <em>and</em> the matrix/vector store) MUST honor the level set.</p>
+     *
+     * @param factSheetId the fact sheet to scan
+     * @param levels      node levels to consider; {@code null}/empty falls back to {@link #DEFAULT_ORPHAN_LEVELS}
+     * @return list of orphan node UUIDs (never {@code null})
+     */
+    default List<String> findOrphanNodeIds(Long factSheetId, java.util.Set<NodeLevel> levels) {
+        java.util.Set<NodeLevel> wanted =
+                (levels == null || levels.isEmpty()) ? DEFAULT_ORPHAN_LEVELS : levels;
         return getNodesInFactSheet(factSheetId).stream()
-                .filter(n -> n.getNodeType() != null
-                        && "ENTITY".equals(n.getNodeType().name()))
+                .filter(n -> n.getNodeType() != null && wanted.contains(n.getNodeType()))
                 .filter(n -> !Boolean.TRUE.equals(n.getStale()))
                 .filter(n -> getEdgesForNode(n.getNodeId()).isEmpty())
                 .map(ai.kompile.knowledgegraph.domain.GraphNode::getNodeId)

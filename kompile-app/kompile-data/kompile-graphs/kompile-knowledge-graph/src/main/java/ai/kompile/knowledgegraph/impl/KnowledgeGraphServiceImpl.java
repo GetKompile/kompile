@@ -904,8 +904,10 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<String> findOrphanNodeIds(Long factSheetId) {
-        return nodeRepository.findGraphOrphanEntities(factSheetId).stream()
+    public List<String> findOrphanNodeIds(Long factSheetId, java.util.Set<NodeLevel> levels) {
+        java.util.Set<NodeLevel> wanted =
+                (levels == null || levels.isEmpty()) ? DEFAULT_ORPHAN_LEVELS : levels;
+        return nodeRepository.findGraphOrphanNodes(factSheetId, wanted).stream()
                 .map(GraphNode::getNodeId)
                 .collect(Collectors.toList());
     }

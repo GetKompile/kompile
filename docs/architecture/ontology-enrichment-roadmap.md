@@ -66,30 +66,33 @@ Suggested order: **B0 → B1 → A → B2 → C → D** (C orchestration can int
 
 Split into what ships now (no ontology dependency) and what completes after A.
 
-### B0 — Standalone correctness fixes (do first)
+### B0 — Standalone correctness fixes ✅ DONE (2026-06-19)
 
-- [ ] **Fix `EDGE_TYPE_MAP` data loss.** Cover all 12 `EdgeType` values in
+- [x] **Fix `EDGE_TYPE_MAP` data loss.** Cover all 12 `EdgeType` values in
   `MatrixKnowledgeGraphService` (line 71); remove the silent `"RELATED_TO"` fallback (line 462) — unmapped
   types become a logged error, not a silent alias. Protects the `RESOLVES_TO` barcode work on the @Primary store.
   *Verify:* unit test enumerating `EdgeType.values()` → distinct canonical strings; write→read round-trip for `RESOLVES_TO`.
-- [ ] **Fix `ContradictionDetector` backend.** Route through `KnowledgeGraphService` (store-agnostic seam) instead
+- [x] **Fix `ContradictionDetector` backend.** Route through `KnowledgeGraphService` (store-agnostic seam) instead
   of `GraphEdgeRepository` so it works on the matrix backend.
   *Verify:* unit test — contradictory edges via `KnowledgeGraphService` on the matrix backend → detected.
-- [ ] **Broaden orphan detection** beyond `ENTITY` (`findOrphanNodeIds`) to SNIPPET/DOCUMENT/TABLE/ATTACHMENT/IDENTIFIER
+- [x] **Broaden orphan detection** beyond `ENTITY` (`findOrphanNodeIds`) to SNIPPET/DOCUMENT/TABLE/ATTACHMENT/IDENTIFIER
   via a level-set parameter. *Verify:* unit test with one orphan per level.
 
-### B1 — Maintenance infrastructure (no ontology dependency)
+### B1 — Maintenance infrastructure ✅ mostly DONE (2026-06-19)
 
-- [ ] **Implement `STATS_REFRESH`** (currently a "Not yet implemented" stub *and* in the default scheduled list).
-  Compute + cache real graph stats.
-- [ ] **Implement `ENTITY_RE_RESOLUTION`** — re-run `GraphCompactionService` for a fact sheet, report deltas
-  (wires existing resolution; no new logic).
-- [ ] **Data-quality stats** in `getGraphStatistics`: stale count, orphan count (all levels), low-confidence
-  node/edge counts, null-confidence edges, missing-provenance counts. Foundation for the drift report.
-- [ ] **Cross-store consistency check** — detect JPA vs vector/matrix divergence (counts + sampled node presence)
-  as a maintenance task + a stat.
-- [ ] **All-fact-sheet maintenance** — let the scheduler target all fact sheets (currently single
-  `targetFactSheetId`); keep default disabled.
+- [x] **Implement `STATS_REFRESH`** — now a per-fact-sheet graph-health snapshot (active nodes, orphans,
+  low-confidence nodes/edges) computed via the store-agnostic `KnowledgeGraphService`; read-only, returns the
+  breakdown in the `TaskReport`.
+- [x] **Implement `ENTITY_RE_RESOLUTION`** — re-runs `GraphCompactionService` for a fact sheet and reports deltas
+  (entitiesMerged / edgesRedirected); honors `ReResolutionConfig` (threshold + mergeOnMatch) and never mutates on a dry run.
+- [~] **Data-quality stats** — delivered *per fact sheet* via STATS_REFRESH (above). Adding the same counts to the
+  *global* `getGraphStatistics` map is folded into **B2's drift report**, where it gains ontology/conformance context.
+- [x] ~~**Cross-store consistency check**~~ **DEFERRED — won't build.** Investigation confirmed the matrix/vector
+  store is the single source of truth ("no JPA write-through"); the JPA `GraphNode`/`GraphEdge` tables are
+  intentionally empty in the live path, so a JPA-vs-vector check would compare against an empty store.
+- [x] **All-fact-sheet maintenance** — `MaintenanceScheduler.enableAll()` enumerates fact sheets each run via the
+  new store-agnostic `KnowledgeGraphService.findFactSheetIds()` and maintains each, isolating per-fact-sheet failures.
+  Still disabled by default.
 
 ### B2 — Ontology conformance  *(depends on A)*
 
@@ -106,16 +109,41 @@ Split into what ships now (no ontology dependency) and what completes after A.
 ## Workstream A — Ontology governs the graph  *(KEYSTONE)*
 
 Where "automatic schema validation" actually lands. Types remain strings governed by JSON — no new enums.
+Split into the reusable engine (A-1, `process-engine`) and the app-main bridge that wires it to live graph data (A-2).
 
-- [ ] **Type-registry bridge** — `GraphOntologyBindingService`: given a graph/fact sheet, resolve the active
-  `OntologySchema` and expose `isKnownEntityType(name)`, `fieldSpec(type, field)`,
-  `allowedRelationship(srcType, edgeLabel, tgtType)`, `cardinality(...)`.
-- [ ] **Activate `NamedGraph.schemaJson`** — populate from the bound ontology (or reference id/version); have
-  `NamedGraphService` + write paths consult it.
-- [ ] **Ontology-driven `SchemaEnforcementMode`** — STRICT/LENIENT pull allowed node/edge/entity types from the
-  bound ontology (today `GraphSchema` is separate). LENIENT tags violations; STRICT drops/coerces. Default LENIENT.
-- [ ] **Write-time validation hook** at the `KnowledgeGraphService` seam (`createNode`/`createEdge`/`updateNode`) —
-  config-gated, default observe-only (tag, don't block) to protect ingest.
+> **Architectural facts (from investigation):** `kompile-process-engine` (OntologySchema) and `kompile-knowledge-graph`
+> (graph + write paths) are *siblings* — neither depends on the other; only `kompile-app-main` sees both. `GraphSchema`
+> (app-core) is label-names only (no field constraints). There is **no graph-level ontology binding** today — the only
+> link is `ProcessDefinition.factSheetId → ontologySchemaId`. These shape A-2 (the write-time hook needs an SPI; a real
+> graph→ontology binding field is the clean fix).
+
+### A-1 — Conformance engine ✅ DONE (2026-06-19)
+
+- [x] **`OntologyConformanceValidator`** (`kompile-process-engine`, `ai.kompile.process.ontology`) — pure/stateless:
+  `validateEntity(schema, type, props)` (unknown-type + field constraints over a graph-node-shaped property map),
+  `validateRelationship(schema, src, type, tgt)` (allowed? + cardinality), `withinSourceCardinality(...)`. The
+  field-constraint logic is now the single source of truth — `ProcessEngineServiceImpl.validateFieldConstraint`
+  delegates to it (`ProcessEngineServiceImplTest` 70/70 still green → behavior preserved). 9 unit tests.
+
+### A-2 — App-main bridge (wires the engine to the graph) — IN PROGRESS
+
+- [x] **Type-registry bridge + conformance check** ✅ (2026-06-19) — `GraphOntologyBindingService` (`kompile-app-main`)
+  resolves the active ontology for a fact sheet (priority-1 explicit-binding hook → falls through to the
+  `ProcessDefinition.factSheetId → ontologySchemaId` link, APPROVED/LIVE preferred), adapts each
+  `GraphNode.getMetadata()` → property map, and runs `OntologyConformanceValidator` over the ENTITY nodes. Surfaced at
+  `GET /api/process/ontology/conformance?factSheetId=` → `GraphConformanceReport`. 5 unit tests; app-main builds with UI.
+  Scope = entity conformance; relationship/cardinality conformance deferred (graph edges carry structural `EdgeType`s,
+  not the ontology's semantic relationship names — that mapping belongs with the typing work in D).
+- [ ] **Graph-level ontology binding field** — add `NamedGraph.ontologySchemaId`/`ontologyVersion` (+ a way to set it)
+  so a fact sheet's graph can be bound explicitly; `GraphOntologyBindingService.resolveExplicitGraphBinding` already has
+  the priority-1 hook waiting for it (currently returns empty → falls through to the process link).
+- [ ] **Activate `NamedGraph.schemaJson`** — populate from the bound ontology; have `NamedGraphService` + write paths
+  consult it. (NamedGraph has no `ontologySchemaId` today — adding a real graph-level binding field is the clean fix.)
+- [ ] **Ontology-driven `SchemaEnforcementMode`** — STRICT/LENIENT pull allowed node/edge/entity types from the bound
+  ontology (today `GraphSchema` is label-names only). LENIENT tags violations; STRICT drops/coerces. Default LENIENT.
+- [ ] **Write-time validation hook** at the `KnowledgeGraphService` seam — needs dependency inversion (an SPI in
+  knowledge-graph that app-main implements, since knowledge-graph cannot see `OntologySchema`); config-gated,
+  default observe-only (tag, don't block) to protect ingest.
 - [ ] **Persist + bind properly** — optional auto-persist of derived ontology as a draft version; FK existence check
   when binding `ProcessDefinition`/`NamedGraph`; fix unbounded in-memory derivation job map (eviction).
 

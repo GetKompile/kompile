@@ -484,4 +484,36 @@ class MatrixKnowledgeGraphServiceTest {
                 "unknown stored type must degrade to USER_DEFINED, not throw");
     }
 
+    // ─── orphan detection across node levels (matrix backend) ─────────────────
+
+    @Test
+    void findOrphanNodeIdsHonorsRequestedLevelsOnTheMatrixBackend() {
+        MatrixGraphNode entityOrphan = matrixNode("entity_orphan", "ENTITY", 1L);
+        MatrixGraphNode entityLinked = matrixNode("entity_linked", "ENTITY", 1L);
+        MatrixGraphNode docOrphan = matrixNode("doc_orphan", "DOCUMENT", 1L);
+        MatrixGraphNode tableOrphan = matrixNode("table_orphan", "TABLE", 1L);
+        MatrixGraphNode otherFactSheet = matrixNode("entity_other", "ENTITY", 2L);
+        when(graphStore.getAllNodes(DEFAULT_GRAPH_ID)).thenReturn(List.of(
+                entityOrphan, entityLinked, docOrphan, tableOrphan, otherFactSheet));
+        // Only entity_linked has edges; every other node in fact sheet 1 is degree 0.
+        when(graphStore.getEdges(DEFAULT_GRAPH_ID, "entity_linked", null))
+                .thenReturn(List.of(Map.entry("some_target", 1.0)));
+
+        // Default (single-arg) stays ENTITY-only so the OrphanPruner auto-prune policy is unchanged.
+        assertEquals(List.of("entity_orphan"), service.findOrphanNodeIds(1L));
+
+        // An explicit level set surfaces orphaned DOCUMENT/TABLE nodes too — never crossing fact sheets.
+        List<String> broad = service.findOrphanNodeIds(1L,
+                Set.of(NodeLevel.ENTITY, NodeLevel.DOCUMENT, NodeLevel.TABLE));
+        assertEquals(Set.of("entity_orphan", "doc_orphan", "table_orphan"), Set.copyOf(broad));
+        assertFalse(broad.contains("entity_other"), "must not return nodes from another fact sheet");
+        assertFalse(broad.contains("entity_linked"), "must not return nodes that have edges");
+    }
+
+    private static MatrixGraphNode matrixNode(String nodeId, String nodeType, Long factSheetId) {
+        return MatrixGraphNode.builder()
+                .nodeId(nodeId).nodeType(nodeType).factSheetId(factSheetId)
+                .metadata(new HashMap<>()).build();
+    }
+
 }
