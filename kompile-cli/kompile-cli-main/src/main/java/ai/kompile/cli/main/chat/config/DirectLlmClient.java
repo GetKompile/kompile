@@ -245,6 +245,7 @@ public class DirectLlmClient {
             if (response.statusCode() != 200) {
                 String body = new String(response.body().readAllBytes());
                 result.text = "[LLM API error " + response.statusCode() + ": " + extractErrorMessage(body) + "]";
+                printStreamingChunk(result.text);
                 return result;
             }
 
@@ -710,6 +711,79 @@ public class DirectLlmClient {
     // ========================================================================
     // Helpers
     // ========================================================================
+
+    /**
+     * Build an OpenAI-compatible content array for a message with optional attachments.
+     * Images become image_url blocks; text files become text blocks with embedded content.
+     * The user message text is appended as the final text block.
+     */
+    private ArrayNode buildOpenAiContentArray(String text, List<AttachmentInput> attachments) {
+        ArrayNode content = objectMapper.createArrayNode();
+        if (attachments != null) {
+            for (AttachmentInput att : attachments) {
+                if (att.isImage()) {
+                    ObjectNode imageBlock = objectMapper.createObjectNode();
+                    imageBlock.put("type", "image_url");
+                    ObjectNode imageUrl = objectMapper.createObjectNode();
+                    imageUrl.put("url", "data:" + att.mimeType() + ";base64," + att.base64Data());
+                    imageBlock.set("image_url", imageUrl);
+                    content.add(imageBlock);
+                } else {
+                    ObjectNode textBlock = objectMapper.createObjectNode();
+                    textBlock.put("type", "text");
+                    textBlock.put("text", "[File: " + att.path() + "]\n" + att.textContent());
+                    content.add(textBlock);
+                }
+            }
+        }
+        ObjectNode textBlock = objectMapper.createObjectNode();
+        textBlock.put("type", "text");
+        textBlock.put("text", text);
+        content.add(textBlock);
+        return content;
+    }
+
+    /**
+     * Build an Anthropic-compatible content array for a message with optional attachments.
+     * Images become base64 image source blocks; text files become text blocks with embedded content.
+     * The user message text is appended as the final text block.
+     */
+    private ArrayNode buildAnthropicContentArray(String text, List<AttachmentInput> attachments) {
+        ArrayNode content = objectMapper.createArrayNode();
+        if (attachments != null) {
+            for (AttachmentInput att : attachments) {
+                if (att.isImage()) {
+                    ObjectNode imageBlock = objectMapper.createObjectNode();
+                    imageBlock.put("type", "image");
+                    ObjectNode source = objectMapper.createObjectNode();
+                    source.put("type", "base64");
+                    source.put("media_type", att.mimeType());
+                    source.put("data", att.base64Data());
+                    imageBlock.set("source", source);
+                    content.add(imageBlock);
+                } else {
+                    ObjectNode textBlock = objectMapper.createObjectNode();
+                    textBlock.put("type", "text");
+                    textBlock.put("text", "[File: " + att.path() + "]\n" + att.textContent());
+                    content.add(textBlock);
+                }
+            }
+        }
+        ObjectNode textBlock = objectMapper.createObjectNode();
+        textBlock.put("type", "text");
+        textBlock.put("text", text);
+        content.add(textBlock);
+        return content;
+    }
+
+    /**
+     * Format an exception message for display. If the exception has no message,
+     * returns the simple class name of the exception type.
+     */
+    private String formatExceptionMessage(Exception e) {
+        String msg = e.getMessage();
+        return (msg != null) ? msg : e.getClass().getSimpleName();
+    }
 
     private String extractErrorMessage(String body) {
         try {

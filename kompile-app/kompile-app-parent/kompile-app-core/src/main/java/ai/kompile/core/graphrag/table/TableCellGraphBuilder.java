@@ -180,6 +180,13 @@ public class TableCellGraphBuilder {
         if (!effectiveHeaders.isEmpty()) {
             tableMeta.put(PROP_HEADERS, String.join(", ", effectiveHeaders));
         }
+        // Reconstruct GFM markdown so consumers that only have the cell graph (index-browser
+        // Tables tab + table-renderer, for HTML/gdocs/email/extractor tables that reach the graph
+        // via the cell-graph path rather than content_type=table promotion) can render the full grid.
+        String fullMarkdown = reconstructMarkdown(rows, effectiveHeaders, dataStartRow, maxCols);
+        if (!fullMarkdown.isEmpty()) {
+            tableMeta.put("fullTableContent", fullMarkdown);
+        }
         tableMeta.put(PROP_ENTITY_SOURCE, SOURCE_TABLE_CELL_GRAPH_BUILDER);
         tableEntity.setMetadata(tableMeta);
         graph.getEntities().add(tableEntity);
@@ -286,6 +293,59 @@ public class TableCellGraphBuilder {
         rel.setConfidence(1.0);
         rel.setMetadata(Collections.singletonMap("provenance", (Object) PROVENANCE_EXTRACTED));
         return rel;
+    }
+
+    /**
+     * Render rows as a GitHub-flavored markdown table. Shared by loaders/crawlers (HTML, SQL, …) so
+     * every producer emits {@code full_table_content} the same way. When {@code firstRowIsHeader} is
+     * true the first row becomes the header; otherwise generic column names are used.
+     */
+    public static String toMarkdown(List<List<String>> rows, boolean firstRowIsHeader) {
+        if (rows == null || rows.isEmpty()) {
+            return "";
+        }
+        int maxCols = rows.stream().mapToInt(List::size).max().orElse(0);
+        List<String> headers = firstRowIsHeader ? rows.get(0) : List.of();
+        int dataStartRow = firstRowIsHeader ? 1 : 0;
+        return reconstructMarkdown(rows, headers, dataStartRow, maxCols);
+    }
+
+    /**
+     * Reconstruct a GitHub-flavored markdown table from the raw rows so consumers that only have
+     * the cell graph (index-browser Tables tab, table-renderer) can render the full grid. Cells
+     * with embedded pipes/newlines are sanitized so the simple markdown parser stays column-aligned.
+     */
+    private static String reconstructMarkdown(List<List<String>> rows, List<String> headers,
+                                              int dataStartRow, int maxCols) {
+        if (maxCols <= 0 || rows.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        // Header row — fall back to generic column names when the table has no header row.
+        sb.append('|');
+        for (int c = 0; c < maxCols; c++) {
+            String h = (headers != null && c < headers.size()) ? headers.get(c) : ("Column " + (c + 1));
+            sb.append(' ').append(sanitizeCell(h)).append(" |");
+        }
+        sb.append('\n').append('|');
+        for (int c = 0; c < maxCols; c++) {
+            sb.append(" --- |");
+        }
+        sb.append('\n');
+        // Data rows
+        for (int r = dataStartRow; r < rows.size(); r++) {
+            List<String> row = rows.get(r);
+            sb.append('|');
+            for (int c = 0; c < maxCols; c++) {
+                String v = c < row.size() ? row.get(c) : "";
+                sb.append(' ').append(sanitizeCell(v)).append(" |");
+            }
+            sb.append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String sanitizeCell(String s) {
+        if (s == null || s.isEmpty()) return "";
+        return s.replace("\r", " ").replace("\n", " ").replace("|", "\\|").trim();
     }
 
     /**

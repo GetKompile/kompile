@@ -141,11 +141,15 @@ class ContentTypeRouter {
                 } else {
                     result.add(doc);
                 }
-                deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
+                // Exactly ONE TABLE node per table: when a cell graph exists, persistGraphJson owns it
+                // (it carries rowCount/columnCount/headers/fullTableContent + the cell graph). Only fall
+                // back to promote when there is no cell graph, so the two paths never both emit a node.
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
                     deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                } else {
+                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
                     deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
@@ -154,13 +158,13 @@ class ContentTypeRouter {
                 // VLM docs with tables — promote tables, pass through for text pipeline
                 Integer tableCount = meta.get(GraphConstants.META_TABLE_COUNT) instanceof Integer
                         ? (Integer) meta.get(GraphConstants.META_TABLE_COUNT) : 0;
-                if (tableCount > 0 || hasTableGraphJson) {
-                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
-                }
+                // Cell graph present → persistGraphJson owns the single TABLE node; otherwise promote.
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
                     deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                } else if (tableCount > 0) {
+                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
                     deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
@@ -171,22 +175,24 @@ class ContentTypeRouter {
                 deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
                 result.add(doc);
             } else if ("slide".equals(contentType) || "presentation".equals(contentType)) {
-                deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
                     deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                } else {
+                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
                     deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
                 }
                 result.add(doc);
             } else if ("spreadsheet".equals(contentType)) {
-                deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
                     deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                } else {
+                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
                     deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
@@ -213,12 +219,13 @@ class ContentTypeRouter {
                     deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
                 }
             } else if ("chart".equals(contentType)) {
-                deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 log.debug("[Job {}] Routing chart document to graph-only extraction with TABLE promotion", jobId);
                 if (hasTableGraphJson) {
                     final String tgj = tableGraphJson;
                     final String sp = sourcePath;
                     deferredDbWrites.add(() -> persistGraphJson(job, tgj, sp, GraphConstants.META_TABLE_GRAPH));
+                } else {
+                    deferredDbWrites.add(() -> promoteTableToGraphNode(doc, job, factSheetId, crawlSource));
                 }
                 if (hasFormulaGraphJson) {
                     deferredDbWrites.add(() -> persistFormulaGraph(job, doc));
@@ -783,10 +790,19 @@ class ContentTypeRouter {
                     String title = (String) entity.get("title");
                     String type = (String) entity.getOrDefault("type", "CELL");
                     String description = (String) entity.get("description");
-                    NodeLevel nodeLevel = ("SHEET".equals(type) || "TABLE".equals(type))
-                            ? NodeLevel.TABLE : NodeLevel.ENTITY;
+                    NodeLevel nodeLevel = GraphPersistenceHelper.nodeLevelForEntityType(type);
 
                     Map<String, Object> entityMeta = new HashMap<>();
+                    // Carry the entity's own metadata onto the node FIRST so TABLE nodes keep their
+                    // rowCount/columnCount/headers/fullTableContent (set by TableCellGraphBuilder) and
+                    // actually render in the Tables tab; the keys below augment it.
+                    if (entity.get("metadata") instanceof Map<?, ?> graphEntityMeta) {
+                        for (Map.Entry<?, ?> e : graphEntityMeta.entrySet()) {
+                            if (e.getKey() != null) {
+                                entityMeta.put(String.valueOf(e.getKey()), e.getValue());
+                            }
+                        }
+                    }
                     entityMeta.put(GraphConstants.META_SOURCE, jobId);
                     entityMeta.put("entity_subtype", type.toLowerCase());
                     if (sourcePath != null) entityMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);

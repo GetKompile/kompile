@@ -18,6 +18,7 @@ package ai.kompile.loader.tika;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.table.TableCellGraphBuilder;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
@@ -563,6 +564,8 @@ public class TikaLoaderImpl implements DocumentLoader {
 
     private String buildPipeTableGraph(String markdown, String fileName) {
         String[] lines = markdown.split("\n");
+        Graph merged = null;
+        int tableIndex = 0;
         for (int i = 1; i < lines.length; i++) {
             if (!PIPE_TABLE_SEPARATOR.matcher(lines[i].trim()).matches()) {
                 continue;
@@ -571,22 +574,39 @@ public class TikaLoaderImpl implements DocumentLoader {
             if (headers.isEmpty()) {
                 continue;
             }
+            String tableName = stripExtension(fileName) + (tableIndex > 0 ? " (table " + (tableIndex + 1) + ")" : "");
             TableCellGraphBuilder builder = new TableCellGraphBuilder()
-                    .namespace("markdown:" + fileName)
-                    .tableName(stripExtension(fileName))
+                    .namespace("markdown:" + fileName + "#" + tableIndex)
+                    .tableName(tableName)
                     .headers(headers)
                     .firstRowIsHeader(false);
-            for (int j = i + 1; j < lines.length; j++) {
+            int j = i + 1;
+            for (; j < lines.length; j++) {
                 String row = lines[j].trim();
                 if (row.isEmpty() || !row.contains("|")) {
                     break;
                 }
                 builder.addRow(splitPipeRow(lines[j]));
             }
-            var graph = builder.build();
-            return graph.getEntities().isEmpty() ? null : TableCellGraphBuilder.toJson(graph);
+            Graph graph = builder.build();
+            if (!graph.getEntities().isEmpty()) {
+                if (merged == null) {
+                    merged = graph;
+                } else {
+                    merged.getEntities().addAll(graph.getEntities());
+                    if (graph.getRelationships() != null) {
+                        if (merged.getRelationships() == null) {
+                            merged.setRelationships(new ArrayList<>());
+                        }
+                        merged.getRelationships().addAll(graph.getRelationships());
+                    }
+                }
+                tableIndex++;
+            }
+            // Skip past the rows we just consumed so the next separator starts a fresh table.
+            i = j;
         }
-        return null;
+        return merged == null ? null : TableCellGraphBuilder.toJson(merged);
     }
 
     private static List<String> splitPipeRow(String line) {

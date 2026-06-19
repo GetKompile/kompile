@@ -243,6 +243,8 @@ public class ResumeTool implements CliTool {
                     return runResume(params);
                 case "view":
                     return runView(params);
+                case "resolve":
+                    return runResolve(params);
                 default:
                     return ToolResult.error("Unknown action: " + action);
             }
@@ -254,7 +256,8 @@ public class ResumeTool implements CliTool {
     /**
      * Resolve a user input string to a session ID.
      * If the input is a number, treat it as a display number from the current page.
-     * Otherwise, treat it as a raw session ID.
+     * Otherwise, treat it as a raw session ID — but also try alias resolution
+     * (slug/customTitle) against Claude Code projects as a fallback.
      */
     private String resolveSessionId(String input) {
         try {
@@ -267,8 +270,17 @@ public class ResumeTool implements CliTool {
             // Index out of range — return null to signal invalid selection
             return null;
         } catch (NumberFormatException e) {
-            // Not a number, treat as raw session ID
+            // Not a number, try alias resolution then fall back to raw input
         }
+
+        // Try to resolve as a Claude Code alias (slug / customTitle) before returning raw
+        try {
+            String[] resolved = resolveClaudeCodeAlias(input, "claude-code");
+            if (resolved != null) {
+                return resolved[0];
+            }
+        } catch (Exception ignored) {}
+
         return input;
     }
 
@@ -2557,6 +2569,9 @@ public class ResumeTool implements CliTool {
         String sessionIdInput = params.has("session_id") ? params.get("session_id").asText() : "";
         String agent = params.has("target_agent") ? params.get("target_agent").asText() : "claude";
         String targetSessionId = params.has("target_session_id") ? params.get("target_session_id").asText() : null;
+        boolean compact = params.has("compact") && params.get("compact").asBoolean(false);
+        int compactRecentTurns = params.has("compact_recent_turns") ? params.get("compact_recent_turns").asInt(2) : 2;
+        int compactMaxChars = params.has("compact_max_chars") ? params.get("compact_max_chars").asInt(10000) : 10000;
 
         if (sessionIdInput.isEmpty()) {
             return ToolResult.error("session_id is required for resume action");
@@ -2575,7 +2590,7 @@ public class ResumeTool implements CliTool {
 
             // Export conversation turns as structured JSON
             List<ChatHistory.Turn> turns = conversation.turns();
-            String conversationJson = ConversationFormatter.format(turns, "openai");
+            int originalCount = turns.size();
 
             ObjectMapper om = JsonUtils.standardMapper();
             ObjectNode result = om.createObjectNode();
@@ -2585,15 +2600,60 @@ public class ResumeTool implements CliTool {
                 result.put("target_session_id", targetSessionId);
             }
             result.put("source", conversation.source());
-            result.put("message_count", turns.size());
-            result.put("conversation_history", conversationJson);
+            result.put("original_message_count", originalCount);
+            result.put("compact", compact);
 
-            // Include per-turn metadata for richer context injection
-            var turnsArray = result.putArray("turns");
-            for (ChatHistory.Turn turn : turns) {
-                ObjectNode turnNode = turnsArray.addObject();
-                turnNode.put("role", turn.role());
-                turnNode.put("content", turn.content());
+            if (compact && originalCount > compactRecentTurns) {
+                // Compact: summarize older turns into a single context block, keep recent turns verbatim
+                List<ChatHistory.Turn> olderTurns = turns.subList(0, originalCount - compactRecentTurns);
+                List<ChatHistory.Turn> recentTurns = turns.subList(originalCount - compactRecentTurns, originalCount);
+
+                // Build compact summary from older turns
+                StringBuilder summaryBuilder = new StringBuilder();
+                summaryBuilder.append("=== compacted cross-agent resume context ===\n");
+                int charCount = 0;
+                for (ChatHistory.Turn t : olderTurns) {
+                    String entry = t.role().toUpperCase() + ": " + t.content() + "\n";
+                    if (charCount + entry.length() > compactMaxChars) break;
+                    summaryBuilder.append(entry);
+                    charCount += entry.length();
+                }
+
+                String summary = summaryBuilder.toString();
+                int charsBefore = turns.stream().mapToInt(t -> t.content().length()).sum();
+
+                // Build output turns: one summary turn + recent turns
+                List<ChatHistory.Turn> compactedTurns = new ArrayList<>();
+                compactedTurns.add(new ChatHistory.Turn("user", summary, null));
+                compactedTurns.addAll(recentTurns);
+
+                String conversationJson = ConversationFormatter.format(compactedTurns, "openai");
+                int charsAfter = compactedTurns.stream().mapToInt(t -> t.content().length()).sum();
+
+                result.put("compacted", true);
+                result.put("message_count", compactedTurns.size());
+                result.put("conversation_history", conversationJson);
+                result.put("compact_chars_before", charsBefore);
+                result.put("compact_chars_after", charsAfter);
+
+                var turnsArray = result.putArray("turns");
+                for (ChatHistory.Turn turn : compactedTurns) {
+                    ObjectNode turnNode = turnsArray.addObject();
+                    turnNode.put("role", turn.role());
+                    turnNode.put("content", turn.content());
+                }
+            } else {
+                String conversationJson = ConversationFormatter.format(turns, "openai");
+                result.put("compacted", false);
+                result.put("message_count", turns.size());
+                result.put("conversation_history", conversationJson);
+
+                var turnsArray = result.putArray("turns");
+                for (ChatHistory.Turn turn : turns) {
+                    ObjectNode turnNode = turnsArray.addObject();
+                    turnNode.put("role", turn.role());
+                    turnNode.put("content", turn.content());
+                }
             }
 
             return ToolResult.success("Conversation exported for resume", result.toString());
@@ -2604,28 +2664,56 @@ public class ResumeTool implements CliTool {
 
     /**
      * Run view with parameters.
+     * Accepts a slug/customTitle alias in addition to a canonical UUID.
      */
     private ToolResult runView(JsonNode params) {
         String sessionIdInput = params.has("session_id") ? params.get("session_id").asText() : "";
+        String source = params.has("source") ? params.get("source").asText() : "";
 
         if (sessionIdInput.isEmpty()) {
             return ToolResult.error("session_id is required for view action");
         }
 
+        // Resolve alias (slug / customTitle) to canonical UUID when a source is given
+        String sessionId = sessionIdInput;
+        if (!source.isEmpty()) {
+            try {
+                String[] resolved = resolveClaudeCodeAlias(sessionIdInput, source);
+                if (resolved != null) {
+                    sessionId = resolved[0];
+                }
+            } catch (Exception ignored) {}
+        }
+
         // Resolve numeric index to actual session ID from previous search results
-        String sessionId = resolveSessionIdFromSearchResults(sessionIdInput);
+        sessionId = resolveSessionIdFromSearchResults(sessionId);
         if (sessionId == null) {
             return ToolResult.error("Invalid session reference '" + sessionIdInput +
                     "'. If using a numeric index, run a search first to populate results. " +
                     "Otherwise, provide the full session UUID.");
         }
 
+        // The canonical UUID to report in the result (may differ from the file lookup key)
+        final String canonicalSessionId = sessionId;
+
         try {
-            LoadedConversation conversation = loadConversation(sessionId);
+            LoadedConversation conversation;
+            try {
+                conversation = loadConversation(sessionId);
+            } catch (Exception primary) {
+                // If loading by canonical UUID failed but we resolved from an alias,
+                // the file may be stored under the original alias name (slug/customTitle).
+                // Try loading by the original input (the slug filename) and report the UUID.
+                if (!sessionIdInput.equals(sessionId)) {
+                    conversation = loadConversation(sessionIdInput);
+                } else {
+                    throw primary;
+                }
+            }
             String transcript = ConversationFormatter.format(conversation.turns(), "kompile");
             ObjectMapper om = JsonUtils.standardMapper();
             ObjectNode result = om.createObjectNode();
-            result.put("session_id", sessionId);
+            result.put("session_id", canonicalSessionId); // always report the canonical UUID
             result.put("source", conversation.source());
             result.put("transcript", transcript);
             result.put("message_count", conversation.turns().size());
@@ -2633,6 +2721,175 @@ public class ResumeTool implements CliTool {
         } catch (Exception e) {
             return ToolResult.error("View error: " + e.getMessage());
         }
+    }
+
+    /**
+     * Run resolve action: resolve a slug, custom title, or partial session ID to the canonical UUID.
+     * Scans the Claude Code JSONL files for sessionId, slug, and customTitle fields.
+     * Returns JSON with resolved_session_id, matched_field, and matched_value.
+     */
+    private ToolResult runResolve(JsonNode params) {
+        String sessionIdInput = params.has("session_id") ? params.get("session_id").asText() : "";
+        String source = params.has("source") ? params.get("source").asText() : "claude-code";
+
+        if (sessionIdInput.isEmpty()) {
+            return ToolResult.error("session_id is required for resolve action");
+        }
+
+        try {
+            String[] resolved = resolveClaudeCodeAlias(sessionIdInput, source);
+            if (resolved != null) {
+                ObjectMapper om = new ObjectMapper();
+                ObjectNode result = om.createObjectNode();
+                result.put("resolved_session_id", resolved[0]);
+                result.put("matched_field", resolved[1]);
+                result.put("matched_value", resolved[2]);
+                return ToolResult.success("Alias resolved", result.toString());
+            }
+            return ToolResult.error("Could not resolve alias '" + sessionIdInput + "' to a canonical session ID");
+        } catch (Exception e) {
+            return ToolResult.error("Resolve error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Attempt to resolve a slug, customTitle, or agentName alias to its canonical session UUID
+     * by scanning the JSONL files in the Claude Code projects directory.
+     * Returns a 3-element array [canonicalUUID, matchedField, matchedValue], or null if not found.
+     */
+    private String[] resolveClaudeCodeAlias(String alias, String source) throws IOException {
+        String homeDir = System.getProperty("user.home");
+        Path projectsRoot;
+        if ("claude-code".equals(source) || "claude".equals(source)) {
+            projectsRoot = Paths.get(homeDir, ".claude", "projects");
+        } else {
+            return null;
+        }
+        if (!Files.isDirectory(projectsRoot)) return null;
+
+        try (Stream<Path> projectDirs = Files.list(projectsRoot)) {
+            for (Path projectDir : projectDirs.filter(Files::isDirectory).toList()) {
+                try (Stream<Path> jsonlFiles = Files.list(projectDir)) {
+                    for (Path jsonlFile : jsonlFiles.filter(p -> p.toString().endsWith(".jsonl")).toList()) {
+                        // Check if the file name (without extension) matches the alias
+                        String fileName = jsonlFile.getFileName().toString().replace(".jsonl", "");
+
+                        // Scan lines for canonical sessionId, slug, and customTitle
+                        String[] result = scanJsonlForAlias(jsonlFile, alias, fileName);
+                        if (result != null) return result;
+                    }
+                } catch (IOException ignored) {}
+            }
+        } catch (IOException ignored) {}
+        return null;
+    }
+
+    /**
+     * Scan a JSONL file to find if the alias matches a slug, customTitle, agentName, or file name
+     * that is distinct from the canonical sessionId stored inside the file.
+     * Returns [canonicalSessionId, matchedField, matchedValue] or null.
+     */
+    private String[] scanJsonlForAlias(Path jsonlFile, String alias, String fileName) {
+        String canonicalSessionId = null;
+        String matchedField = null;
+        String matchedValue = null;
+
+        try (BufferedReader br = Files.newBufferedReader(jsonlFile, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                if (line.isBlank()) continue;
+                try {
+                    JsonNode node = MAPPER.readTree(line);
+
+                    // Track canonical sessionId (present on most entries)
+                    String lineSessionId = node.path("sessionId").asText("");
+                    if (!lineSessionId.isBlank() && canonicalSessionId == null) {
+                        canonicalSessionId = lineSessionId;
+                    }
+
+                    // Check slug field
+                    String slug = node.path("slug").asText("");
+                    if (!slug.isBlank() && slug.equals(alias)) {
+                        matchedField = "alias";
+                        matchedValue = slug;
+                    }
+
+                    // Check customTitle field
+                    String customTitle = node.path("customTitle").asText("");
+                    if (!customTitle.isBlank() && customTitle.equals(alias)) {
+                        matchedField = "alias";
+                        matchedValue = customTitle;
+                    }
+
+                    // Check agentName field (Claude Code uses this for friendly names)
+                    String agentName = node.path("agentName").asText("");
+                    if (!agentName.isBlank() && agentName.equals(alias)) {
+                        matchedField = "alias";
+                        matchedValue = agentName;
+                    }
+                } catch (Exception ignored) {}
+            }
+        } catch (IOException ignored) {}
+
+        // Also check: file name equals alias but sessionId inside differs
+        if (matchedField == null && fileName.equals(alias) && canonicalSessionId != null
+                && !canonicalSessionId.equals(alias)) {
+            matchedField = "alias";
+            matchedValue = fileName;
+        }
+
+        if (matchedField != null && canonicalSessionId != null && !canonicalSessionId.equals(alias)) {
+            return new String[]{canonicalSessionId, matchedField, matchedValue};
+        }
+        return null;
+    }
+
+    /**
+     * Build the agent resume command list from an export result.
+     * For agents that use subcommands (like codex), permission bypass flags are
+     * inserted BEFORE the subcommand so they are correctly positioned.
+     * Returns the full command as a list suitable for ProcessBuilder.
+     */
+    private List<String> buildAgentResumeCommand(String agent, ConversationExporter.ExportResult exportResult) {
+        List<String> agentCommand = new ArrayList<>();
+        String[] resumeParts = exportResult.getResumeCommand().split("\\s+");
+        if (resumeParts.length == 0 || resumeParts[0].isEmpty()) {
+            return agentCommand;
+        }
+
+        // Add executable
+        agentCommand.add(resumeParts[0]);
+
+        // For agents where bypass flags must come before the subcommand,
+        // insert them here (after executable, before remaining parts)
+        String agentKey = agent.toLowerCase();
+        if (agentKey.contains("codex")) {
+            // codex flags go between executable and subcommand
+            List<String> bypassFlags = ai.kompile.cli.main.chat.agent.AgentFlagOverrides.permissionBypassFlags(agent);
+            agentCommand.addAll(bypassFlags);
+        }
+
+        // Working directory flag for codex
+        if (agentKey.contains("codex") && exportResult.getWorkingDirectory() != null) {
+            agentCommand.add("-C");
+            agentCommand.add(exportResult.getWorkingDirectory().toString());
+        }
+
+        // Remaining parts from the resume command
+        for (int i = 1; i < resumeParts.length; i++) {
+            String part = resumeParts[i];
+            if (!part.isEmpty()) {
+                agentCommand.add(part);
+            }
+        }
+
+        // For non-codex agents, append bypass flags at the end
+        if (!agentKey.contains("codex")) {
+            ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
+                    agentCommand, agent, true, exportResult.getWorkingDirectory());
+        }
+
+        return agentCommand;
     }
 
     /**

@@ -48,6 +48,12 @@
 
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-chat-history</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-react-agent</artifactId>
             <version>${project.version}</version>
         </dependency>

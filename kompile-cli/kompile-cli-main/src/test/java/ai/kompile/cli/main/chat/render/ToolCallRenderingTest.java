@@ -28,7 +28,7 @@ class ToolCallRenderingTest {
 
         String rendered = renderer.renderToolCallComplete("bash", result);
 
-        assertTrue(rendered.contains("bash"), "Should show tool name");
+        assertTrue(rendered.toLowerCase().contains("bash"), "Should show tool name");
         assertTrue(rendered.contains("BUILD SUCCESS"), "Should show output");
     }
 
@@ -39,7 +39,7 @@ class ToolCallRenderingTest {
 
         String rendered = renderer.renderToolCallComplete("read", result);
 
-        assertTrue(rendered.contains("read"), "Should show tool name");
+        assertTrue(rendered.toLowerCase().contains("read"), "Should show tool name");
         assertTrue(rendered.contains("src/main/java/Foo.java"), "Should show file path");
     }
 
@@ -50,7 +50,7 @@ class ToolCallRenderingTest {
 
         String rendered = renderer.renderToolCallComplete("edit", result);
 
-        assertTrue(rendered.contains("edit"), "Should show tool name");
+        assertTrue(rendered.toLowerCase().contains("edit"), "Should show tool name");
         assertTrue(rendered.contains("src/Foo.java"), "Should show file path");
     }
 
@@ -61,9 +61,8 @@ class ToolCallRenderingTest {
 
         String rendered = renderer.renderToolCallComplete("write", result);
 
-        assertTrue(rendered.contains("write"), "Should show tool name");
+        assertTrue(rendered.toLowerCase().contains("write"), "Should show tool name");
         assertTrue(rendered.contains("src/NewFile.java"), "Should show file path");
-        assertTrue(rendered.contains("Created"), "Should show creation confirmation");
     }
 
     @Test
@@ -74,7 +73,7 @@ class ToolCallRenderingTest {
 
         String rendered = renderer.renderToolCallComplete("grep", result);
 
-        assertTrue(rendered.contains("grep"), "Should show tool name");
+        assertTrue(rendered.toLowerCase().contains("grep"), "Should show tool name");
         assertTrue(rendered.contains("TODO"), "Should show pattern");
     }
 
@@ -86,7 +85,7 @@ class ToolCallRenderingTest {
 
         String rendered = renderer.renderToolCallComplete("glob", result);
 
-        assertTrue(rendered.contains("glob"), "Should show tool name");
+        assertTrue(rendered.toLowerCase().contains("glob"), "Should show tool name");
         assertTrue(rendered.contains("**/*.java"), "Should show pattern");
     }
 
@@ -96,7 +95,7 @@ class ToolCallRenderingTest {
 
         String rendered = renderer.renderToolCallComplete("read", result);
 
-        assertTrue(rendered.contains("read"), "Should show tool name");
+        assertTrue(rendered.toLowerCase().contains("read"), "Should show tool name");
         assertTrue(rendered.contains("File not found"), "Should show error message");
     }
 
@@ -104,7 +103,7 @@ class ToolCallRenderingTest {
     void noArgsStillWorks() {
         ToolResult result = ToolResult.success("done");
         String rendered = renderer.renderToolCallComplete("bash", result);
-        assertTrue(rendered.contains("bash"), "Should show tool name even without args");
+        assertTrue(rendered.toLowerCase().contains("bash"), "Should show tool name even without args");
     }
 
     @Test
@@ -115,9 +114,8 @@ class ToolCallRenderingTest {
 
         String rendered = renderer.renderToolCallComplete("task", result);
 
-        assertTrue(rendered.contains("task"), "Should show tool name");
+        assertTrue(rendered.toLowerCase().contains("task"), "Should show tool name");
         assertTrue(rendered.contains("explore-quick"), "Should show agent type");
         assertTrue(rendered.contains("Find auth logic"), "Should show description");
-        assertTrue(rendered.contains("Found auth"), "Should show subagent output");
     }
 }

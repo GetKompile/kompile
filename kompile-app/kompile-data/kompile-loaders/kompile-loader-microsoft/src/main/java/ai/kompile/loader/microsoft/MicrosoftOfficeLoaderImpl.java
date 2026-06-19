@@ -348,6 +348,30 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
         doc.getMetadata().put("table_headers", String.join(",", headers));
         doc.getMetadata().put("storage_type", "search");
 
+        // Cell-level graph so Word tables get the same structured TABLE/CELL nodes as CSV/Excel.
+        // With single-owner dedup in ContentTypeRouter, persistGraphJson owns the TABLE node when
+        // this graph is present (no duplicate alongside the promote path).
+        List<List<String>> tableRows = new ArrayList<>();
+        for (org.apache.poi.xwpf.usermodel.XWPFTableRow r : rows) {
+            List<String> cells = new ArrayList<>();
+            for (org.apache.poi.xwpf.usermodel.XWPFTableCell c : r.getTableCells()) {
+                String t = c.getText();
+                cells.add(t != null ? t.trim().replace("\n", " ").replace("\r", "") : "");
+            }
+            tableRows.add(cells);
+        }
+        ai.kompile.core.graphrag.model.Graph tableGraph =
+                new ai.kompile.core.graphrag.table.TableCellGraphBuilder()
+                        .namespace("docx:" + file.getName() + "#" + tableIndex)
+                        .tableName("Table " + (tableIndex + 1))
+                        .rows(tableRows)
+                        .firstRowIsHeader(true)
+                        .build();
+        if (!tableGraph.getEntities().isEmpty()) {
+            doc.getMetadata().put(ai.kompile.core.graphrag.GraphConstants.META_TABLE_GRAPH,
+                    ai.kompile.core.graphrag.table.TableCellGraphBuilder.toJson(tableGraph));
+        }
+
         return doc;
     }
 

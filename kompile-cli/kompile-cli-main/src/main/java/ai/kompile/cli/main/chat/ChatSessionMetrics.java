@@ -271,9 +271,8 @@ public class ChatSessionMetrics {
      */
     public void recordEscape(String type) {
         escapeCount.incrementAndGet();
-        if (type != null && !type.isBlank()) {
-            escapesByType.computeIfAbsent(type, k -> new AtomicInteger(0)).incrementAndGet();
-        }
+        String key = (type != null && !type.isBlank()) ? type : "unknown";
+        escapesByType.computeIfAbsent(key, k -> new AtomicInteger(0)).incrementAndGet();
     }
 
     /** Increment the judge-call counter. */

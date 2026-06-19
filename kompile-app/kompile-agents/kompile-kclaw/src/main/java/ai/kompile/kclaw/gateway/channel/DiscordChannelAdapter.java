@@ -77,6 +77,15 @@ public class DiscordChannelAdapter extends BaseChannelAdapter implements Discord
     }
 
     @Override
+    public void send(String target, String content) {
+        if (apiClient == null || !isRunning()) {
+            log.warn("Discord adapter not ready; cannot deliver to {}", target);
+            return;
+        }
+        apiClient.sendMessage(target, content);
+    }
+
+    @Override
     public void onMessage(DiscordApiClient.DiscordMessage message) {
         if (!isAllowed(message)) {
             return;

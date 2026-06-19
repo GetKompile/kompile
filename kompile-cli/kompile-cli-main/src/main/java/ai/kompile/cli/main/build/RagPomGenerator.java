@@ -164,6 +164,10 @@ public class RagPomGenerator implements Callable<Void> {
     private boolean includeGraphAlgorithms;
 
     @CommandLine.Option(names = {
+            "--includeKnowledgeGraph" }, description = "Include kompile-knowledge-graph module for knowledge graph integration", defaultValue = "true", negatable = true)
+    private boolean includeKnowledgeGraph;
+
+    @CommandLine.Option(names = {
             "--includeOcr" }, description = "Include OCR/VLM modules (ocr-core, ocr-models, ocr-postprocess, ocr-integration, ocr-datapipeline)", defaultValue = "true", negatable = true)
     private boolean includeOcr;
 
@@ -178,6 +182,10 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {
             "--includeEventAttribution" }, description = "Include kompile-event-attribution for Bayesian/MEBN probabilistic inference", defaultValue = "true", negatable = true)
     private boolean includeEventAttribution;
+
+    @CommandLine.Option(names = {
+            "--includeProcessEngine" }, description = "Include kompile-process-engine for business process execution", defaultValue = "false", negatable = true)
+    private boolean includeProcessEngine;
 
     @CommandLine.Option(names = {
             "--includeProcessDiscovery" }, description = "Include kompile-process-discovery for LLM-based process discovery", defaultValue = "true", negatable = true)
@@ -398,10 +406,12 @@ public class RagPomGenerator implements Callable<Void> {
         this.includeKvCache = ids.contains("kvcache");
         this.includeRagPipeline = ids.contains("rag-pipeline") || ids.contains("pipeline-management");
         this.includeGraphAlgorithms = ids.contains("graph-algorithms");
+        this.includeKnowledgeGraph = ids.contains("knowledge-graph");
         this.includeOcr = ids.contains("ocr-core");
         this.includeCrawlGraph = ids.contains("crawl-graph");
         this.includeCrawlerCore = ids.contains("crawler-core");
         this.includeEventAttribution = ids.contains("event-attribution");
+        this.includeProcessEngine = ids.contains("process-engine");
         this.includeProcessDiscovery = ids.contains("process-discovery");
         this.includeCodeIndexer = ids.contains("code-indexer");
         this.includeDataEnrichment = ids.contains("data-enrichment");
@@ -866,6 +876,8 @@ public class RagPomGenerator implements Callable<Void> {
             addDependency(defaultDependencies, "ai.kompile", "kompile-rag-pipeline", "${kompile.project.version}");
         if (includeGraphAlgorithms)
             addDependency(defaultDependencies, "ai.kompile", "kompile-graph-algorithms", "${kompile.project.version}");
+        if (includeKnowledgeGraph)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-knowledge-graph", "${kompile.project.version}");
         if (includeOcr) {
             addDependency(defaultDependencies, "ai.kompile", "kompile-ocr-core", "${kompile.project.version}");
             addDependency(defaultDependencies, "ai.kompile", "kompile-ocr-models", "${kompile.project.version}");
@@ -879,6 +891,8 @@ public class RagPomGenerator implements Callable<Void> {
             addDependency(defaultDependencies, "ai.kompile", "kompile-crawler-core", "${kompile.project.version}");
         if (includeEventAttribution)
             addDependency(defaultDependencies, "ai.kompile", "kompile-event-attribution", "${kompile.project.version}");
+        if (includeProcessEngine)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-process-engine", "${kompile.project.version}");
         if (includeProcessDiscovery)
             addDependency(defaultDependencies, "ai.kompile", "kompile-process-discovery", "${kompile.project.version}");
         if (includeCodeIndexer)

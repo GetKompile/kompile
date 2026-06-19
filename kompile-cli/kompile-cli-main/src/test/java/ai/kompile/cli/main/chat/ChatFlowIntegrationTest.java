@@ -16,6 +16,8 @@ import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -768,10 +770,25 @@ class ChatFlowIntegrationTest {
     class StreamingRenderingIntegration {
 
         private PassthroughStreamParser parser;
+        private PrintStream originalOut;
+        private ByteArrayOutputStream capturedOut;
 
         @BeforeEach
         void setUp() {
             parser = new PassthroughStreamParser();
+            originalOut = System.out;
+            capturedOut = new ByteArrayOutputStream();
+            System.setOut(new PrintStream(capturedOut));
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void tearDown() {
+            System.setOut(originalOut);
+        }
+
+        private String captured() {
+            System.out.flush();
+            return capturedOut.toString();
         }
 
         /**
@@ -780,7 +797,6 @@ class ChatFlowIntegrationTest {
          */
         @Test
         void parsedTextChunksFeedIntoMarkdownRenderer() {
-            List<String> outputLines = new ArrayList<>();
             TerminalRenderer term = new TerminalRenderer(false); // plain mode
             AsciiRenderer ascii = new AsciiRenderer(term, 80);
             StreamingMarkdownRenderer renderer = new StreamingMarkdownRenderer(ascii);
@@ -795,7 +811,7 @@ class ChatFlowIntegrationTest {
             }
             renderer.flush();
 
-            String combined = String.join("\n", outputLines);
+            String combined = captured();
             assertTrue(combined.contains("Hello World"),
                     "Rendered output should contain heading text, got: " + combined);
         }
@@ -805,7 +821,6 @@ class ChatFlowIntegrationTest {
          */
         @Test
         void parsedCodeBlockRendersFormatted() {
-            List<String> outputLines = new ArrayList<>();
             TerminalRenderer term = new TerminalRenderer(false);
             AsciiRenderer ascii = new AsciiRenderer(term, 80);
             StreamingMarkdownRenderer renderer = new StreamingMarkdownRenderer(ascii);
@@ -815,7 +830,7 @@ class ChatFlowIntegrationTest {
             renderer.accept("int x = 42;\n");
             renderer.accept("```\n");
 
-            String combined = String.join("\n", outputLines);
+            String combined = captured();
             assertTrue(combined.contains("int x = 42"),
                     "Code block should contain code, got: " + combined);
         }
@@ -825,18 +840,17 @@ class ChatFlowIntegrationTest {
          */
         @Test
         void markdownFormattingPreservedThroughPipeline() {
-            List<String> outputLines = new ArrayList<>();
             TerminalRenderer term = new TerminalRenderer(false);
             AsciiRenderer ascii = new AsciiRenderer(term, 80);
             StreamingMarkdownRenderer renderer = new StreamingMarkdownRenderer(ascii);
 
             renderer.accept("This is **bold** and *italic* text\n");
 
-            assertEquals(1, outputLines.size());
             // In plain mode, bold markers are stripped but text is preserved
-            assertTrue(outputLines.get(0).contains("bold"),
+            String out = captured();
+            assertTrue(out.contains("bold"),
                     "Should contain bold text");
-            assertTrue(outputLines.get(0).contains("italic"),
+            assertTrue(out.contains("italic"),
                     "Should contain italic text");
         }
 
@@ -845,7 +859,6 @@ class ChatFlowIntegrationTest {
          */
         @Test
         void listItemsStreamCorrectly() {
-            List<String> outputLines = new ArrayList<>();
             TerminalRenderer term = new TerminalRenderer(false);
             AsciiRenderer ascii = new AsciiRenderer(term, 80);
             StreamingMarkdownRenderer renderer = new StreamingMarkdownRenderer(ascii);
@@ -854,8 +867,7 @@ class ChatFlowIntegrationTest {
             renderer.accept("- Second item\n");
             renderer.accept("- Third item\n");
 
-            assertEquals(3, outputLines.size());
-            String combined = String.join(" ", outputLines);
+            String combined = captured();
             assertTrue(combined.contains("First item"));
             assertTrue(combined.contains("Second item"));
             assertTrue(combined.contains("Third item"));
@@ -867,7 +879,6 @@ class ChatFlowIntegrationTest {
          */
         @Test
         void fullPipelineParseToRender() {
-            List<String> outputLines = new ArrayList<>();
             TerminalRenderer term = new TerminalRenderer(true); // ANSI enabled
             AsciiRenderer ascii = new AsciiRenderer(term, 80);
             StreamingMarkdownRenderer renderer = new StreamingMarkdownRenderer(ascii);
@@ -890,8 +901,7 @@ class ChatFlowIntegrationTest {
             }
             renderer.flush();
 
-            String combined = String.join("\n", outputLines);
-            String stripped = AsciiRenderer.stripAnsi(combined);
+            String stripped = AsciiRenderer.stripAnsi(captured());
 
             assertTrue(stripped.contains("Summary"), "Should contain heading");
             assertTrue(stripped.contains("succeeded"), "Should contain bold text");
@@ -905,7 +915,6 @@ class ChatFlowIntegrationTest {
          */
         @Test
         void characterByCharacterStreaming() {
-            List<String> outputLines = new ArrayList<>();
             TerminalRenderer term = new TerminalRenderer(false);
             AsciiRenderer ascii = new AsciiRenderer(term, 80);
             StreamingMarkdownRenderer renderer = new StreamingMarkdownRenderer(ascii);
@@ -915,8 +924,8 @@ class ChatFlowIntegrationTest {
                 renderer.accept(String.valueOf(c));
             }
 
-            assertEquals(1, outputLines.size());
-            assertTrue(outputLines.get(0).contains("Hello world"));
+            String out = captured();
+            assertTrue(out.contains("Hello world"));
         }
     }
 

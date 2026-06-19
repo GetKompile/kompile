@@ -16,10 +16,14 @@
 
 package ai.kompile.loader.web;
 
+import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.table.TableCellGraphBuilder;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 import org.jsoup.safety.Safelist;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,7 +36,9 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -173,19 +179,134 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
             baseUri = file.toURI().toString();
         }
 
-        // Extract text content
+        // Structural mode: emit each <table> as its own table Document (plus a prose Document) so
+        // HTML tables become first-class TABLE graph nodes that render in the index browser. Enabled
+        // explicitly via the "structuralMode" descriptor flag, or auto-detected when tables exist.
+        if (resolveStructuralMode(sourceDescriptor, jsoupDoc)) {
+            List<Document> structural = extractStructural(jsoupDoc, sourceDescriptor, baseUri);
+            if (!structural.isEmpty()) {
+                logger.info("Loaded HTML in structural mode: {} document(s) from {}", structural.size(), pathOrUrl);
+                return structural;
+            }
+        }
+
+        // Flat mode: single document with the whole page text.
         String textContent = extractTextContent(jsoupDoc);
-
-        // Extract metadata
         Map<String, Object> metadata = extractMetadata(jsoupDoc, sourceDescriptor, baseUri);
-
-        // Create Spring AI Document
         Document springDoc = new Document(textContent, metadata);
 
         logger.info("Loaded HTML document: {} characters, title: '{}'",
             textContent.length(), metadata.get("title"));
 
         return List.of(springDoc);
+    }
+
+    /**
+     * Decide whether to use structural (table-aware) extraction. Honors an explicit
+     * {@code structuralMode} descriptor flag (Boolean or String); otherwise auto-detects by the
+     * presence of at least one &lt;table&gt; element.
+     */
+    private boolean resolveStructuralMode(DocumentSourceDescriptor desc, org.jsoup.nodes.Document jsoupDoc) {
+        Object flag = desc.getMetadata() != null ? desc.getMetadata().get("structuralMode") : null;
+        if (flag instanceof Boolean b) {
+            return b;
+        }
+        if (flag instanceof String s) {
+            return Boolean.parseBoolean(s);
+        }
+        return !jsoupDoc.select("table").isEmpty();
+    }
+
+    /**
+     * Extract each top-level &lt;table&gt; as a content_type=table Document (with a TableCellGraphBuilder
+     * cell graph + markdown), plus one prose Document for the remaining text. Returns an empty list when
+     * no tables are found so the caller can fall back to flat extraction.
+     */
+    private List<Document> extractStructural(org.jsoup.nodes.Document jsoupDoc,
+                                             DocumentSourceDescriptor desc, String baseUri) {
+        org.jsoup.nodes.Document working = jsoupDoc.clone();
+        working.select("script, style, noscript, iframe, svg, canvas").remove();
+        Map<String, Object> baseMeta = extractMetadata(working, desc, baseUri);
+
+        List<Document> docs = new ArrayList<>();
+        int tableIndex = 0;
+        for (Element table : working.select("table")) {
+            // Skip nested tables — they are handled via the outer table's direct rows.
+            if (table.parents().stream().anyMatch(p -> "table".equals(p.tagName()))) {
+                continue;
+            }
+            Document tableDoc = buildHtmlTableDocument(table, baseMeta, tableIndex, baseUri);
+            if (tableDoc != null) {
+                docs.add(tableDoc);
+                tableIndex++;
+            }
+        }
+        if (docs.isEmpty()) {
+            return List.of(); // no tables actually extracted → let caller use flat mode
+        }
+
+        // Prose Document from everything that is not a table.
+        working.select("table").remove();
+        String prose = extractTextContent(working);
+        if (prose != null && !prose.isBlank()) {
+            Map<String, Object> proseMeta = new LinkedHashMap<>(baseMeta);
+            proseMeta.put("content_type", "text");
+            docs.add(new Document(prose, proseMeta));
+        }
+        return docs;
+    }
+
+    /** Build a content_type=table Document from a single HTML table element. */
+    private Document buildHtmlTableDocument(Element table, Map<String, Object> baseMeta,
+                                            int tableIndex, String baseUri) {
+        // Direct rows only: a <tr> whose nearest table ancestor is THIS table (no nested-table bleed).
+        List<List<String>> cellRows = new ArrayList<>();
+        for (Element tr : table.select("tr")) {
+            Element ancestorTable = tr.parents().stream()
+                    .filter(p -> "table".equals(p.tagName())).findFirst().orElse(null);
+            if (ancestorTable != table) {
+                continue;
+            }
+            List<String> cells = new ArrayList<>();
+            for (Element cell : tr.children()) {
+                if ("td".equals(cell.tagName()) || "th".equals(cell.tagName())) {
+                    cells.add(cell.text().trim());
+                }
+            }
+            if (!cells.isEmpty()) {
+                cellRows.add(cells);
+            }
+        }
+        if (cellRows.isEmpty()) {
+            return null;
+        }
+
+        List<String> headers = cellRows.get(0);
+        int rowCount = cellRows.size() - 1; // exclude header row
+        int colCount = cellRows.stream().mapToInt(List::size).max().orElse(headers.size());
+
+        Map<String, Object> meta = new LinkedHashMap<>(baseMeta);
+        meta.put("content_type", "table");
+        meta.put("table_extraction_method", "html-jsoup");
+        meta.put("table_index", tableIndex);
+        meta.put("table_row_count", rowCount);
+        meta.put("table_column_count", colCount);
+        meta.put("table_headers", String.join(",", headers));
+        meta.put("full_table_content", TableCellGraphBuilder.toMarkdown(cellRows, true));
+
+        Graph graph = new TableCellGraphBuilder()
+                .namespace("html:" + baseUri + "#" + tableIndex)
+                .tableName("Table " + (tableIndex + 1))
+                .rows(cellRows)
+                .firstRowIsHeader(true)
+                .build();
+        if (!graph.getEntities().isEmpty()) {
+            meta.put(GraphConstants.META_TABLE_GRAPH, TableCellGraphBuilder.toJson(graph));
+        }
+
+        String summary = "Table " + (tableIndex + 1) + " with " + rowCount + " rows and "
+                + colCount + " columns. Columns: " + String.join(", ", headers);
+        return new Document(summary, meta);
     }
 
     /**
