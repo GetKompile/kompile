@@ -5,11 +5,16 @@ import ai.kompile.graphchangetracking.service.MutationContextHolder;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.agent.MultiAgentExtractionService;
+import ai.kompile.core.graphrag.agent.MultiAgentGraphBuilder.MergedGraphResult;
+import ai.kompile.core.graphrag.agent.RelationExtractionAgent;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -21,13 +26,16 @@ public class ConfigDrivenGraphUpdateHook implements GraphUpdateHook {
     private final KnowledgeGraphService graphService;
     private final MutationContextHolder contextHolder;
     private final ObjectMapper objectMapper;
+    private final MultiAgentExtractionService extractionService;
 
     public ConfigDrivenGraphUpdateHook(KnowledgeGraphService graphService,
                                         MutationContextHolder contextHolder,
-                                        ObjectMapper objectMapper) {
+                                        ObjectMapper objectMapper,
+                                        MultiAgentExtractionService extractionService) {
         this.graphService = graphService;
         this.contextHolder = contextHolder;
         this.objectMapper = objectMapper;
+        this.extractionService = extractionService;
     }
 
     @Override
@@ -95,6 +103,7 @@ public class ConfigDrivenGraphUpdateHook implements GraphUpdateHook {
         switch (stepType) {
             case "UPSERT_NODES" -> executeUpsertNodes(params, context);
             case "CREATE_EDGES" -> executeCreateEdges(params, context);
+            case "EXTRACT_GRAPH" -> executeExtractGraph(params, context);
             default -> log.debug("Unhandled step type: {}", stepType);
         }
     }
@@ -134,5 +143,45 @@ public class ConfigDrivenGraphUpdateHook implements GraphUpdateHook {
 
         Double minWeight = params.containsKey("minWeight") ? ((Number) params.get("minWeight")).doubleValue() : 0.5;
         log.debug("CREATE_EDGES step: edgeType={}, minWeight={} (edges created by extraction steps)", edgeType, minWeight);
+    }
+
+    /**
+     * Run LLM entity/relation extraction on the inbound message and persist the result —
+     * the same multi-agent extraction available to the rest of the system, scoped to the
+     * pipeline's target fact sheet. This is what turns a channel message into a real graph
+     * update (entities + relationships) rather than a single opaque message node.
+     */
+    private void executeExtractGraph(Map<String, Object> params, ChannelGraphUpdateContext context) {
+        if (extractionService == null) {
+            log.debug("EXTRACT_GRAPH: extraction service unavailable; skipping");
+            return;
+        }
+        String content = context.getMessage().content();
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        Long factSheetId = context.getPipelineConfig().getTargetFactSheetId();
+        String docId = "channel:" + context.getChannelName() + ":" + context.getMessage().messageId();
+
+        Map<String, Object> docMeta = new HashMap<>();
+        docMeta.put("source", "channel:" + context.getChannelName());
+        docMeta.put("messageId", context.getMessage().messageId());
+        docMeta.put("userId", context.getMessage().userId());
+        RetrievedDoc doc = new RetrievedDoc(docId, content, docMeta);
+
+        List<String> agentIds = (params.get("agentIds") instanceof List<?> l)
+                ? l.stream().map(String::valueOf).toList()
+                : null;
+        String mergeStrategy = (String) params.getOrDefault("mergeStrategy", "UNION");
+
+        MergedGraphResult result = extractionService.runExtraction(
+                List.of(doc), agentIds, mergeStrategy, RelationExtractionAgent.ExtractionConfig.defaults());
+        MultiAgentExtractionService.PersistenceSummary summary =
+                extractionService.persistToGraph(result, graphService, factSheetId);
+
+        log.info("EXTRACT_GRAPH: pipeline {} extracted {} entities + {} edges from {} message {}",
+                context.getPipelineConfig().getPipelineId(),
+                summary.entitiesCreated(), summary.edgesCreated(),
+                context.getChannelName(), context.getMessage().messageId());
     }
 }

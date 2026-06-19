@@ -179,12 +179,16 @@ public class MultiAgentExtractionService {
                     }
 
                     String externalId = "entity:" + entity.getId();
+                    // Scope the node to the fact sheet on the JPA entity (not only in metadata) so it
+                    // appears in per-fact-sheet queries and travels via per-fact-sheet portability export.
+                    // The 6-arg overload no-ops to the 5-arg form when factSheetId is null.
                     GraphNode node = graphService.createNode(
                             NodeLevel.ENTITY,
                             externalId,
                             entity.getTitle() != null ? entity.getTitle() : entity.getId(),
                             entity.getDescription(),
-                            metadata
+                            metadata,
+                            factSheetId
                     );
 
                     entityIdToNodeId.put(entity.getId(), node.getNodeId());

@@ -214,14 +214,14 @@ class MultiAgentExtractionServiceTest {
                 .nodeId("entity_e1")
                 .build();
         when(graphService.createNode(any(NodeLevel.class), anyString(), anyString(),
-                any(), any())).thenReturn(mockNode);
+                any(), any(), any())).thenReturn(mockNode);
 
         MultiAgentExtractionService.PersistenceSummary summary =
                 service.persistToGraph(result, graphService, null);
 
         assertEquals(1, summary.entitiesCreated());
         assertEquals(0, summary.edgesCreated());
-        verify(graphService).createNode(eq(NodeLevel.ENTITY), anyString(), anyString(), any(), any());
+        verify(graphService).createNode(eq(NodeLevel.ENTITY), anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -239,10 +239,10 @@ class MultiAgentExtractionServiceTest {
 
         // Nodes must be returned from createNode so their IDs can be used for edges
         when(graphService.createNode(any(NodeLevel.class), eq("entity:e1"), anyString(),
-                any(), any()))
+                any(), any(), any()))
                 .thenReturn(GraphNode.builder().nodeId("node-alice").build());
         when(graphService.createNode(any(NodeLevel.class), eq("entity:e2"), anyString(),
-                any(), any()))
+                any(), any(), any()))
                 .thenReturn(GraphNode.builder().nodeId("node-acme").build());
         when(graphService.createEdge(eq("node-alice"), eq("node-acme"), any(), any(), any()))
                 .thenReturn(mock(ai.kompile.knowledgegraph.domain.GraphEdge.class));
@@ -267,9 +267,9 @@ class MultiAgentExtractionServiceTest {
         MergedGraphResult result = buildMergedResult(graph, "UNION");
 
         // Alice creation fails
-        when(graphService.createNode(any(), eq("entity:e1"), anyString(), any(), any()))
+        when(graphService.createNode(any(), eq("entity:e1"), anyString(), any(), any(), any()))
                 .thenThrow(new RuntimeException("DB error"));
-        when(graphService.createNode(any(), eq("entity:e2"), anyString(), any(), any()))
+        when(graphService.createNode(any(), eq("entity:e2"), anyString(), any(), any(), any()))
                 .thenReturn(GraphNode.builder().nodeId("node-acme").build());
 
         MultiAgentExtractionService.PersistenceSummary summary =
@@ -290,14 +290,14 @@ class MultiAgentExtractionServiceTest {
         graph.setRelationships(List.of());
 
         MergedGraphResult result = buildMergedResult(graph, "UNION");
-        when(graphService.createNode(any(), anyString(), anyString(), any(), any()))
+        when(graphService.createNode(any(), anyString(), anyString(), any(), any(), any()))
                 .thenReturn(GraphNode.builder().nodeId("n1").build());
 
         service.persistToGraph(result, graphService, 42L);
 
-        // Verify the metadata map passed to createNode contains factSheetId
+        // Node is scoped to the fact sheet (6-arg overload) and retains factSheetId in metadata.
         verify(graphService).createNode(any(), anyString(), anyString(), any(),
-                argThat(meta -> meta != null && "42".equals(meta.get("factSheetId"))));
+                argThat(meta -> meta != null && "42".equals(meta.get("factSheetId"))), eq(42L));
     }
 
     @Test
