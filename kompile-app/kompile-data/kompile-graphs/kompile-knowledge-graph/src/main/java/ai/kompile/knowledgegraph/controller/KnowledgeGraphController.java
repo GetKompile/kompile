@@ -109,6 +109,64 @@ public class KnowledgeGraphController {
             .orElse(ResponseEntity.notFound().build());
     }
 
+    /**
+     * Delete all nodes whose provenance matches a crawl run or source document — for purging the
+     * facts a bad crawl produced, or a superseded source. Scope with {@code factSheetId};
+     * {@code dryRun=true} previews the match count without deleting. (Re-extraction = delete here,
+     * then re-ingest via the normal crawl/upload path.)
+     */
+    @DeleteMapping("/provenance")
+    public ResponseEntity<Map<String, Object>> deleteByProvenance(
+            @RequestParam(name = "crawlRunId", required = false) String crawlRunId,
+            @RequestParam(name = "sourceDocumentId", required = false) String sourceDocumentId,
+            @RequestParam(name = "factSheetId", required = false) Long factSheetId,
+            @RequestParam(name = "dryRun", defaultValue = "false") boolean dryRun) {
+
+        String key;
+        String value;
+        if (crawlRunId != null && !crawlRunId.isBlank()) {
+            key = GraphProvenanceKeys.CRAWL_RUN_ID;
+            value = crawlRunId;
+        } else if (sourceDocumentId != null && !sourceDocumentId.isBlank()) {
+            key = GraphProvenanceKeys.SOURCE_DOCUMENT_ID;
+            value = sourceDocumentId;
+        } else {
+            return ResponseEntity.badRequest().body(
+                    Map.<String, Object>of("error", "crawlRunId or sourceDocumentId is required"));
+        }
+
+        List<String> matches = findNodeIdsByProvenance(key, value, factSheetId);
+        if (!dryRun) {
+            matches.forEach(graphService::deleteNode);
+        }
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("key", key);
+        body.put("value", value);
+        body.put("matched", matches.size());
+        body.put("deleted", dryRun ? 0 : matches.size());
+        body.put("dryRun", dryRun);
+        return ResponseEntity.ok(body);
+    }
+
+    private List<String> findNodeIdsByProvenance(String key, String value, Long factSheetId) {
+        List<GraphNode> candidates = new java.util.ArrayList<>();
+        if (factSheetId != null) {
+            candidates.addAll(graphService.getNodesInFactSheet(factSheetId));
+        } else {
+            for (NodeLevel level : NodeLevel.values()) {
+                candidates.addAll(graphService.getNodesByType(level));
+            }
+        }
+        List<String> ids = new java.util.ArrayList<>();
+        for (GraphNode n : candidates) {
+            Map<String, Object> meta = n.getMetadata();
+            if (meta != null && value.equals(meta.get(key))) {
+                ids.add(n.getNodeId());
+            }
+        }
+        return ids;
+    }
+
     @GetMapping("/nodes/{nodeId}/children")
     public ResponseEntity<List<GraphNode>> getNodeChildren(@PathVariable("nodeId") String nodeId) {
         return ResponseEntity.ok(graphService.getChildren(nodeId));
