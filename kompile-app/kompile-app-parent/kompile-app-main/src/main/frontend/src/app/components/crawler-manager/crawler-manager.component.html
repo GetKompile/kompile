@@ -160,6 +160,10 @@
                   (click)="toggleLogs(job.jobId)" matTooltip="Crawler job logs">
             <mat-icon>terminal</mat-icon> Job Logs
           </button>
+          <button mat-button
+                  (click)="toggleTranscripts(job.jobId)" matTooltip="LLM prompts/responses for this crawl">
+            <mat-icon>forum</mat-icon> Transcripts
+          </button>
           <button mat-button *ngIf="hasSteps(job)"
                   (click)="toggleSteps(job.jobId)" matTooltip="Pipeline step breakdown (what ran / skipped / archived)">
             <mat-icon>checklist</mat-icon> Steps
@@ -182,6 +186,20 @@
             logSource="ingest"
             [maxTailLogs]="80">
           </app-job-log-viewer>
+        </div>
+
+        <div class="pipeline-log-panel"
+             *ngIf="expandedTranscriptsJobId === job.jobId">
+          <app-job-log-viewer
+            *ngIf="getLatestPipelineTaskId(job)"
+            [taskId]="getLatestPipelineTaskId(job)!"
+            [isJobRunning]="isJobActive(job.status)"
+            [source]="'LLM_TRANSCRIPT'"
+            logSource="ingest">
+          </app-job-log-viewer>
+          <div *ngIf="!getLatestPipelineTaskId(job)" class="cm-empty-note">
+            No LLM transcripts yet — this crawl has no graph-extraction pipeline task.
+          </div>
         </div>
 
         <div class="crawl-steps-panel" *ngIf="expandedStepsJobId === job.jobId">

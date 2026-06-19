@@ -35,13 +35,20 @@ public class JobLogLlmTranscriptLogger implements LlmTranscriptLogger {
 
     private static final Logger log = LoggerFactory.getLogger(JobLogLlmTranscriptLogger.class);
 
-    /** Maximum prompt/response text to persist per entry (chars). */
-    private static final int MAX_TRANSCRIPT_CHARS = 8000;
+    /**
+     * Maximum prompt/response text to persist per entry (chars). Raised from the original 8000 so dense
+     * extraction prompts/responses are captured in full; configurable to bound the log store under heavy
+     * crawls via {@code kompile.ingest.transcript.max-chars}.
+     */
+    private final int maxTranscriptChars;
 
     private final JobLogService jobLogService;
 
-    public JobLogLlmTranscriptLogger(JobLogService jobLogService) {
+    public JobLogLlmTranscriptLogger(
+            JobLogService jobLogService,
+            @org.springframework.beans.factory.annotation.Value("${kompile.ingest.transcript.max-chars:65536}") int maxTranscriptChars) {
         this.jobLogService = jobLogService;
+        this.maxTranscriptChars = maxTranscriptChars;
     }
 
     @Override
@@ -92,8 +99,8 @@ public class JobLogLlmTranscriptLogger implements LlmTranscriptLogger {
         // Prompt section
         sb.append("--- PROMPT ---\n");
         if (prompt != null) {
-            if (prompt.length() > MAX_TRANSCRIPT_CHARS) {
-                sb.append(prompt, 0, MAX_TRANSCRIPT_CHARS);
+            if (prompt.length() > maxTranscriptChars) {
+                sb.append(prompt, 0, maxTranscriptChars);
                 sb.append("\n... [truncated, ").append(prompt.length()).append(" chars total]");
             } else {
                 sb.append(prompt);
@@ -106,8 +113,8 @@ public class JobLogLlmTranscriptLogger implements LlmTranscriptLogger {
         // Response section
         sb.append("--- RESPONSE ---\n");
         if (response != null) {
-            if (response.length() > MAX_TRANSCRIPT_CHARS) {
-                sb.append(response, 0, MAX_TRANSCRIPT_CHARS);
+            if (response.length() > maxTranscriptChars) {
+                sb.append(response, 0, maxTranscriptChars);
                 sb.append("\n... [truncated, ").append(response.length()).append(" chars total]");
             } else {
                 sb.append(response);

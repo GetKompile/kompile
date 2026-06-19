@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -80,7 +80,10 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
   sameDomainOnly = true;
 
   private refreshInterval: any;
+  private globalEventSource: EventSource | null = null;
+  private lastSseListRefreshMs = 0;
   expandedLogsJobId: string | null = null;
+  expandedTranscriptsJobId: string | null = null;
   expandedStepsJobId: string | null = null;
 
   /** Per-step accordion state: key is `${jobId}::${stepId}` */
@@ -102,7 +105,8 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     private unifiedCrawlService: UnifiedCrawlService,
     private cdr: ChangeDetectorRef,
     private wsService: WebSocketService,
-    private jobLogService: JobLogService
+    private jobLogService: JobLogService,
+    private zone: NgZone
   ) {}
 
   ngOnInit(): void {
@@ -123,6 +127,7 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
         }
       })
     );
+    this.connectGlobalStream();
   }
 
   ngOnDestroy(): void {
@@ -131,6 +136,48 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     }
     this.wsSubs.forEach(s => s.unsubscribe());
     this.wsService.unsubscribeFromCrawlProgress();
+    this.disconnectGlobalStream();
+  }
+
+  /**
+   * Subscribe to the global crawl SSE stream so the merged job list reflects unified-crawl progress in
+   * near-real time (the STOMP feed only covers legacy crawler jobs). Progress events are coalesced to a
+   * list refresh at most once per second; terminal events refresh immediately. The 5s poll is the fallback.
+   */
+  private connectGlobalStream(): void {
+    this.disconnectGlobalStream();
+    if (typeof EventSource === 'undefined') return;
+    let es: EventSource;
+    try {
+      es = new EventSource(this.unifiedCrawlService.crawlEventsStreamUrl());
+    } catch {
+      return; // SSE unavailable — the 5s poll still drives updates
+    }
+    this.globalEventSource = es;
+
+    const liveRefresh = () => this.zone.run(() => {
+      const now = Date.now();
+      if (now - this.lastSseListRefreshMs < 1000) return;
+      this.lastSseListRefreshMs = now;
+      this.loadJobs();
+    });
+    const terminalRefresh = () => this.zone.run(() => this.loadJobs());
+
+    es.addEventListener('started', liveRefresh);
+    es.addEventListener('progress', liveRefresh);
+    es.addEventListener('completed', terminalRefresh);
+    es.addEventListener('error', (e: any) => {
+      // Browser transport hiccups fire 'error' with no data (auto-reconnect); our server ERROR event
+      // carries data — only refresh on the latter.
+      if (e && e.data) terminalRefresh();
+    });
+  }
+
+  private disconnectGlobalStream(): void {
+    if (this.globalEventSource) {
+      this.globalEventSource.close();
+      this.globalEventSource = null;
+    }
   }
 
   loadCrawlers(): void {
@@ -321,6 +368,10 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
 
   toggleLogs(jobId: string): void {
     this.expandedLogsJobId = this.expandedLogsJobId === jobId ? null : jobId;
+  }
+
+  toggleTranscripts(jobId: string): void {
+    this.expandedTranscriptsJobId = this.expandedTranscriptsJobId === jobId ? null : jobId;
   }
 
   // --- Modular pipeline-step breakdown (unified crawl jobs) ---

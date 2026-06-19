@@ -15,7 +15,7 @@
  */
 
 import {
-  Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef
+  Component, OnInit, OnDestroy, ChangeDetectionStrategy, ChangeDetectorRef, NgZone
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -88,6 +88,8 @@ type EditableUnifiedCrawlSource = UnifiedCrawlSource & { propertiesJson?: string
 export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   private subscriptions = new Subscription();
   private pollInterval: any;
+  private jobEventSource: EventSource | null = null;
+  private lastSseRefreshMs = 0;
 
   activeTab = 0;
 
@@ -184,7 +186,8 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     private wsService: WebSocketService,
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef,
-    private router: Router
+    private router: Router,
+    private zone: NgZone
   ) {}
 
   ngOnInit() {
@@ -223,6 +226,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.wsService.unsubscribeFromSchedulerEvents();
     this.subscriptions.unsubscribe();
     if (this.pollInterval) clearInterval(this.pollInterval);
+    this.disconnectJobStream();
   }
 
   loadGraphModelProviders() {
@@ -531,6 +535,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     // Clear live transcript feed and step expansion state when switching jobs
     this.liveTranscripts = [];
     this.expandedSteps.clear();
+    this.disconnectJobStream();
     this.subscriptions.add(
       this.crawlService.getJob(jobId).subscribe({
         next: (detail) => {
@@ -538,6 +543,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
           this.activeTab = 2; // Switch to detail tab
           this.refreshSubprocessEvents();
           this.refreshLiveTranscripts();
+          this.connectJobStream(jobId);
           this.cdr.markForCheck();
         },
         error: () => {
@@ -567,6 +573,59 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
         error: (err) => { console.error('Failed to load selected job:', err.message); }
       })
     );
+  }
+
+  /**
+   * Subscribe to the live SSE progress stream for a job so per-step state and the rolling LLM
+   * transcript update in real time instead of waiting for the 5s poll (which remains a fallback).
+   * Progress bursts are coalesced to ~one detail refresh per 800ms; terminal events refresh at once.
+   */
+  private connectJobStream(jobId: string) {
+    this.disconnectJobStream();
+    if (typeof EventSource === 'undefined') return;
+    let es: EventSource;
+    try {
+      es = new EventSource(this.crawlService.jobEventStreamUrl(jobId));
+    } catch {
+      return; // SSE unavailable — the 5s poll still drives updates
+    }
+    this.jobEventSource = es;
+    this.lastSseRefreshMs = 0;
+
+    const liveRefresh = () => this.zone.run(() => {
+      if (!this.selectedJob || this.selectedJob.jobId !== jobId || this.selectedJob.fromHistory) return;
+      const now = Date.now();
+      if (now - this.lastSseRefreshMs < 800) return;
+      this.lastSseRefreshMs = now;
+      this.refreshSelectedJob();
+      this.refreshLiveTranscripts();
+    });
+
+    const terminalRefresh = () => this.zone.run(() => {
+      if (this.selectedJob?.jobId === jobId) {
+        this.refreshSelectedJob();
+        this.refreshLiveTranscripts();
+        this.refreshLiveGraphStats();
+      }
+      this.refreshJobs();
+      this.cdr.markForCheck();
+    });
+
+    es.addEventListener('started', liveRefresh);
+    es.addEventListener('progress', liveRefresh);
+    es.addEventListener('completed', terminalRefresh);
+    es.addEventListener('error', (e: any) => {
+      // The browser fires 'error' for transport hiccups (no data; EventSource auto-reconnects); our
+      // server-sent ERROR event also lands here but carries data — only act on the latter.
+      if (e && e.data) terminalRefresh();
+    });
+  }
+
+  private disconnectJobStream() {
+    if (this.jobEventSource) {
+      this.jobEventSource.close();
+      this.jobEventSource = null;
+    }
   }
 
   refreshLiveGraphStats() {

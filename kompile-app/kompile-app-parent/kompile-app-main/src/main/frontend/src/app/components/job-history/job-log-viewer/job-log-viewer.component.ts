@@ -28,7 +28,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatBadgeModule } from '@angular/material/badge';
 import { Subject, Subscription, timer, takeUntil, debounceTime, distinctUntilChanged, buffer, switchMap, of, catchError, tap } from 'rxjs';
 
-import { JobLogService, JobLogEntry, LogLevel, JobLogsResponse, ArchivedLogEntry } from '../../../services/job-log.service';
+import { JobLogService, JobLogEntry, LogLevel, LogSource, JobLogsResponse, ArchivedLogEntry } from '../../../services/job-log.service';
 import { WebSocketService } from '../../../services/websocket.service';
 import { IngestLogEntry } from '../../../models/api-models';
 
@@ -55,7 +55,8 @@ import { IngestLogEntry } from '../../../models/api-models';
 export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, AfterViewInit {
   @Input() taskId: string = '';
   @Input() isJobRunning: boolean = false;  // Whether to use real-time streaming
-  @Input() logSource: 'ingest' | 'vector-population' = 'ingest';  // Type of log source
+  @Input() logSource: 'ingest' | 'vector-population' = 'ingest';  // Type of log source (which WS topic to tail)
+  @Input() source?: LogSource;  // Optional server-side source filter, e.g. 'LLM_TRANSCRIPT' for transcripts only
   @Input() maxTailLogs: number = 200;  // Max logs to keep in tail mode (circular buffer)
   @Input() maxArchiveLogs: number = 5000;  // Max logs to load from archive (prevent memory issues)
   @ViewChild('logContainer') logContainer!: ElementRef;
@@ -141,10 +142,11 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
     // Initial load if taskId is provided
     if (this.taskId) {
       // If job is running, start in tail mode with WebSocket streaming
-      if (this.isJobRunning) {
+      if (this.isJobRunning && !this.source) {
         this.enableTailMode();
       } else {
-        // Start from last page for completed jobs
+        // Source-filtered views (e.g. transcripts) load from history — the WS tail topic carries mixed
+        // ingest events, not source-filtered entries. Completed jobs also load from the last page.
         this.loadLogs(true);
       }
     }
@@ -172,7 +174,7 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
       this.initialLoadComplete = false;
       this.stopStreaming();
 
-      if (this.isJobRunning) {
+      if (this.isJobRunning && !this.source) {
         this.enableTailMode();
       } else {
         this.tailMode = false;
@@ -183,7 +185,7 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
 
     // Handle isJobRunning changes
     if (changes['isJobRunning'] && !changes['isJobRunning'].firstChange) {
-      if (this.isJobRunning && !this.streamingActive) {
+      if (this.isJobRunning && !this.source && !this.streamingActive) {
         this.enableTailMode();
       } else if (!this.isJobRunning && this.streamingActive) {
         this.stopStreaming();
@@ -473,6 +475,7 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
         ? selectedLevelsArray
         : undefined,
       search: this.searchText || undefined,
+      source: this.source,
       page: this.currentPage,
       size: this.pageSize
     }).pipe(takeUntil(this.destroy$)).subscribe({

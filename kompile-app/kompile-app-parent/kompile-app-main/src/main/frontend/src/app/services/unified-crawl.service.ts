@@ -746,6 +746,16 @@ export class UnifiedCrawlService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
+  /** SSE endpoint for live progress of a single crawl job (per-step state + rolling LLM transcript). */
+  jobEventStreamUrl(jobId: string): string {
+    return `${this.backendUrl}/crawl-events/stream/${jobId}`;
+  }
+
+  /** SSE endpoint for live progress of ALL crawl jobs (used by the Tools-side list monitor). */
+  crawlEventsStreamUrl(): string {
+    return `${this.backendUrl}/crawl-events/stream`;
+  }
+
   cancelJob(jobId: string): Observable<any> {
     return this.http.post(`${this.backendUrl}/unified-crawl/jobs/${jobId}/cancel`, {})
       .pipe(catchError(this.handleError));

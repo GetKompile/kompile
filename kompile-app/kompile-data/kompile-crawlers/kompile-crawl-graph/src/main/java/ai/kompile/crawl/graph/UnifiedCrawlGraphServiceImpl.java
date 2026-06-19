@@ -1003,6 +1003,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             job.getStatus().set(UnifiedCrawlJob.Status.RUNNING);
             job.setStartedAt(Instant.now());
             initializePipelineSteps(job);
+            publishProgressEvent(job, CrawlProgressEvent.EventType.STARTED, "Crawl started");
             CrawlStepPlan stepPlan = CrawlStepPlan.from(job.getRequest());
             try {
                 stepPlan.validate();
@@ -1623,6 +1624,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 recordEvent(job, "FAILED", "ERROR", "Pipeline step failure",
                         errorMsg + ". " + job.getDocumentsLoaded().get() + " docs, " + finalChunkCount + " chunks");
                 checkpointFailedJobForResume(job);
+                publishProgressEvent(job, CrawlProgressEvent.EventType.ERROR, errorMsg);
             } else if (hasDeferredEmbedding) {
                 String message = "Crawl graph completed; "
                         + job.getDeferredEmbeddingChunks().size() + " chunk(s) pending bge-m3/vector embedding";
@@ -1634,6 +1636,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 recordEvent(job, "PENDING_EMBEDDING", "WARN", "Unified crawl completed pending embedding",
                         message + ". " + job.getDocumentsLoaded().get() + " docs, " + finalChunkCount + " chunks");
                 publishGraphBuildCompletedEvent(job);
+                publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, message);
             } else {
                 job.getStatus().set(UnifiedCrawlJob.Status.COMPLETED);
                 job.getCurrentPhase().set("COMPLETED");
@@ -1642,6 +1645,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 recordEvent(job, "COMPLETED", "INFO", "Unified crawl completed",
                         job.getDocumentsLoaded().get() + " docs, " + finalChunkCount + " chunks");
                 publishGraphBuildCompletedEvent(job);
+                publishProgressEvent(job, CrawlProgressEvent.EventType.COMPLETED, "Unified crawl completed");
             }
             log.info("Unified crawl job {} completed: {} docs, {} chunks, {} entities, {} relationships",
                     job.getJobId(), job.getDocumentsLoaded().get(), finalChunkCount,
@@ -1657,6 +1661,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             recordEvent(job, "FAILED", "ERROR", "Unified crawl failed",
                     e.getClass().getSimpleName() + ": " + e.getMessage());
             checkpointFailedJobForResume(job);
+            publishProgressEvent(job, CrawlProgressEvent.EventType.ERROR,
+                    e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
 
@@ -1858,6 +1864,26 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 recordEvent(job, phase, "INFO", message, details);
             }
             updatePipelineStepFromCounters(job, phase, message, details);
+            publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, message);
+        }
+    }
+
+    /**
+     * Publish a {@link CrawlProgressEvent} so {@code CrawlProgressSseController} can stream live per-step
+     * progress — and the rolling LLM transcript carried in the snapshot — to connected SSE clients. The
+     * 250ms throttle on the progress tick keeps the cadence sane; terminal callers fire once. Cheap when
+     * nobody is subscribed (the SSE controller short-circuits on empty emitter lists) and never lets a
+     * publish/serialization hiccup break the crawl.
+     */
+    private void publishProgressEvent(UnifiedCrawlJob job, CrawlProgressEvent.EventType eventType, String message) {
+        if (eventPublisher == null || job == null) {
+            return;
+        }
+        try {
+            eventPublisher.publishEvent(new CrawlProgressEvent(
+                    this, job.getJobId(), job.toProgressSnapshot(), eventType, message));
+        } catch (Exception e) {
+            log.debug("[Job {}] Failed to publish crawl progress event: {}", job.getJobId(), e.getMessage());
         }
     }
 

@@ -88,6 +88,14 @@ class UnifiedCrawlGraphServiceImplTest {
         @Bean DocumentLoader emailLoader() { return org.mockito.Mockito.mock(DocumentLoader.class); }
         @Bean TextChunker tableAwareChunker() { return org.mockito.Mockito.mock(TextChunker.class); }
         @Bean TextChunker htmlChunker() { return org.mockito.Mockito.mock(TextChunker.class); }
+        @Bean CrawlProgressEventCollector crawlProgressEventCollector() { return new CrawlProgressEventCollector(); }
+    }
+
+    /** Captures published {@link CrawlProgressEvent}s so tests can assert the SSE pipeline is actually fed. */
+    static class CrawlProgressEventCollector {
+        final List<CrawlProgressEvent> events = new java.util.concurrent.CopyOnWriteArrayList<>();
+        @org.springframework.context.event.EventListener
+        void onCrawlProgressEvent(CrawlProgressEvent event) { events.add(event); }
     }
 
     @Autowired private UnifiedCrawlGraphServiceImpl service;
@@ -101,6 +109,7 @@ class UnifiedCrawlGraphServiceImplTest {
     @MockBean private EntityMentionRepository entityMentionRepository;
     @MockBean private CrossDocumentRelationCallback crossDocumentRelationCallback;
     @MockBean private CrawlStepArchiveService crawlStepArchiveService;
+    @Autowired private CrawlProgressEventCollector crawlProgressEventCollector;
     @Autowired private DocumentLoader fileLoader;
     @Autowired private DocumentLoader emailLoader;
     @Autowired private TextChunker tableAwareChunker;
@@ -116,6 +125,7 @@ class UnifiedCrawlGraphServiceImplTest {
     void setUp() throws Exception {
         // Remove terminal jobs from prior tests so tests that count getAllJobs() get a clean slate
         if (service != null) service.cleanupJobs();
+        if (crawlProgressEventCollector != null) crawlProgressEventCollector.events.clear();
 
         // Reset graphConstructor from any prior test
         if (orchestrator != null) orchestrator.graphConstructor = null;
@@ -825,6 +835,44 @@ class UnifiedCrawlGraphServiceImplTest {
         verify(crawlStepArchiveService, never()).archive(any(), eq("VECTOR_INDEXING"), anyList(), any());
         verify(crawlStepArchiveService, never()).archive(any(), eq("ENTITY_RESOLUTION"), anyList(), any());
         verify(crawlStepArchiveService, never()).archive(any(), eq("EDGE_COMPUTATION"), anyList(), any());
+
+        // The failed crawl also feeds the SSE pipeline with a terminal ERROR event.
+        assertTrue(crawlProgressEventCollector.events.stream()
+                        .anyMatch(e -> job.getJobId().equals(e.getJobId())
+                                && e.getEventType() == CrawlProgressEvent.EventType.ERROR),
+                "A failed crawl must publish a terminal ERROR CrawlProgressEvent");
+    }
+
+    @Test
+    @DisplayName("Crawl publishes live CrawlProgressEvents (revives the SSE pipeline)")
+    void crawl_publishesProgressEventsForSse() throws Exception {
+        when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
+                new Document("Alice works at Acme.", Map.of())
+        ));
+        when(callResponseSpec.content()).thenReturn(buildExtractionJson(
+                List.of(entity("e1", "Alice", "PERSON", "Person", 0.9)), List.of()));
+
+        UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
+                .name("sse events test")
+                .sources(List.of(fileSource("docs", "/data/docs")))
+                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build());
+
+        awaitCompletion(job);
+
+        assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
+
+        // The previously-dead SSE pipeline is now fed: live progress + a terminal COMPLETED event,
+        // each carrying a ProgressSnapshot (per-step state + rolling LLM transcript) for streaming.
+        List<CrawlProgressEvent> mine = crawlProgressEventCollector.events.stream()
+                .filter(e -> job.getJobId().equals(e.getJobId()))
+                .toList();
+        assertFalse(mine.isEmpty(), "Crawl must publish CrawlProgressEvents for the SSE stream");
+        assertTrue(mine.stream().anyMatch(e -> e.getEventType() == CrawlProgressEvent.EventType.COMPLETED),
+                "A terminal COMPLETED event must be published");
+        assertTrue(mine.stream().anyMatch(e -> e.getProgressSnapshot() instanceof UnifiedCrawlJob.ProgressSnapshot),
+                "Events must carry a ProgressSnapshot for per-step + transcript streaming");
     }
 
     // ──────────────────────────────────────────────────────────────────
