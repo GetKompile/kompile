@@ -134,6 +134,9 @@ Split into the reusable engine (A-1, `process-engine`) and the app-main bridge t
   `GET /api/process/ontology/conformance?factSheetId=` → `GraphConformanceReport`. 5 unit tests; app-main builds with UI.
   Scope = entity conformance; relationship/cardinality conformance deferred (graph edges carry structural `EdgeType`s,
   not the ontology's semantic relationship names — that mapping belongs with the typing work in D).
+- [x] **Conformance SPI** ✅ (2026-06-19) — `GraphConformanceChecker` + `GraphConformanceSummary` (`kompile-app-core`);
+  `GraphOntologyBindingService` implements it. The dependency-inversion seam so the knowledge-graph layer can trigger
+  conformance without seeing `OntologySchema` — the foundation the write-hook and B2's maintenance task both build on.
 - [ ] **Graph-level ontology binding field** — add `NamedGraph.ontologySchemaId`/`ontologyVersion` (+ a way to set it)
   so a fact sheet's graph can be bound explicitly; `GraphOntologyBindingService.resolveExplicitGraphBinding` already has
   the priority-1 hook waiting for it (currently returns empty → falls through to the process link).
@@ -141,9 +144,9 @@ Split into the reusable engine (A-1, `process-engine`) and the app-main bridge t
   consult it. (NamedGraph has no `ontologySchemaId` today — adding a real graph-level binding field is the clean fix.)
 - [ ] **Ontology-driven `SchemaEnforcementMode`** — STRICT/LENIENT pull allowed node/edge/entity types from the bound
   ontology (today `GraphSchema` is label-names only). LENIENT tags violations; STRICT drops/coerces. Default LENIENT.
-- [ ] **Write-time validation hook** at the `KnowledgeGraphService` seam — needs dependency inversion (an SPI in
-  knowledge-graph that app-main implements, since knowledge-graph cannot see `OntologySchema`); config-gated,
-  default observe-only (tag, don't block) to protect ingest.
+- [ ] **Write-time validation hook** at the `KnowledgeGraphService` seam — call the now-existing
+  `GraphConformanceChecker` SPI (optional bean) from `createNode`/`createEdge`; config-gated, default observe-only
+  (tag, don't block) to protect ingest. (Deferred — overlaps active concurrent graph-write work.)
 - [ ] **Persist + bind properly** — optional auto-persist of derived ontology as a draft version; FK existence check
   when binding `ProcessDefinition`/`NamedGraph`; fix unbounded in-memory derivation job map (eviction).
 
