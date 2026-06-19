@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["angular:styles/component:css;581e029d31f0e6d674b3b67d2c07a11865406cd1c445e5e3907445dc18e9da0a;/home/agibsonccc/Documents/GitHub/kompile/kompile-app/kompile-app-parent/kompile-app-main/src/main/frontend/src/app/components/kvcache/cache-browser.component.ts"],
-  "sourcesContent": ["\n    .cache-browser { width: 100%; }\n    .toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }\n    .empty-state {\n      text-align: center; padding: 40px; color: #888;\n      display: flex; flex-direction: column; align-items: center; gap: 8px;\n    }\n    .empty-state mat-icon { font-size: 48px; width: 48px; height: 48px; }\n    .cache-table { width: 100%; }\n    .type-badge {\n      padding: 2px 8px; border-radius: 4px; font-size: 12px;\n      background: #e3f2fd; color: #1565c0;\n    }\n    .memory-cell { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }\n    .memory-cell span { font-size: 12px; }\n    .memory-cell mat-progress-bar { height: 6px; }\n  "],
-  "mappings": ";AACI,CAAC;AAAgB,SAAO;AAAM;AAC9B,CAAC;AAAU,WAAS;AAAM,eAAa;AAAQ,OAAK;AAAM,iBAAe;AAAM;AAC/E,CAAC;AACC,cAAY;AAAQ,WAAS;AAAM,SAAO;AAC1C,WAAS;AAAM,kBAAgB;AAAQ,eAAa;AAAQ,OAAK;AACnE;AACA,CAJC,YAIY;AAAW,aAAW;AAAM,SAAO;AAAM,UAAQ;AAAM;AACpE,CAAC;AAAc,SAAO;AAAM;AAC5B,CAAC;AACC,WAAS,IAAI;AAAK,iBAAe;AAAK,aAAW;AACjD,cAAY;AAAS,SAAO;AAC9B;AACA,CAAC;AAAc,WAAS;AAAM,kBAAgB;AAAQ,OAAK;AAAK,aAAW;AAAO;AAClF,CADC,YACY;AAAO,aAAW;AAAM;AACrC,CAFC,YAEY;AAAmB,UAAQ;AAAK;",
-  "names": []
-}

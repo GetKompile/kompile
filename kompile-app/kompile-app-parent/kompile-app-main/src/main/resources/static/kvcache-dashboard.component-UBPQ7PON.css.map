@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["angular:styles/component:css;b83ed50f06c1304a5c209cd616c27eb90cad23c87c9a5ab1c2735186fb2f5ca0;/home/agibsonccc/Documents/GitHub/kompile/kompile-app/kompile-app-parent/kompile-app-main/src/main/frontend/src/app/components/kvcache/kvcache-dashboard.component.ts"],
-  "sourcesContent": ["\n    .kvcache-dashboard { padding: 8px 0; }\n    .dashboard-header { display: flex; align-items: center; margin-bottom: 16px; }\n    .header-info { display: flex; align-items: center; gap: 12px; }\n    .header-info h3 { margin: 0; }\n    .cache-count { font-size: 13px; color: #666; }\n    .tab-body { padding: 16px 0; }\n    .cache-tabs { margin-top: 8px; }\n  "],
-  "mappings": ";AACI,CAAC;AAAoB,WAAS,IAAI;AAAG;AACrC,CAAC;AAAmB,WAAS;AAAM,eAAa;AAAQ,iBAAe;AAAM;AAC7E,CAAC;AAAc,WAAS;AAAM,eAAa;AAAQ,OAAK;AAAM;AAC9D,CADC,YACY;AAAK,UAAQ;AAAG;AAC7B,CAAC;AAAc,aAAW;AAAM,SAAO;AAAM;AAC7C,CAAC;AAAW,WAAS,KAAK;AAAG;AAC7B,CAAC;AAAa,cAAY;AAAK;",
-  "names": []
-}
