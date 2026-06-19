@@ -88,6 +88,9 @@
         {{ activeJobsCount }}
       </span>
     </a>
+    <a mat-tab-link (click)="activeTab = 'graphs'" [active]="activeTab === 'graphs'">
+      Graphs
+    </a>
     <a mat-tab-link (click)="activeTab = 'tools'" [active]="activeTab === 'tools'">
       Tools
     </a>
@@ -113,6 +116,9 @@
       </div>
       <div *ngIf="activeTab === 'sources'">
         <app-fact-sheet-manager (openModelStaging)="openModelStaging()"></app-fact-sheet-manager>
+      </div>
+      <div *ngIf="activeTab === 'graphs'">
+        <app-graphs-hub></app-graphs-hub>
       </div>
       <div *ngIf="activeTab === 'tools'">
         <app-tools-hub></app-tools-hub>

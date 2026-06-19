@@ -148,6 +148,7 @@ import { ProjectExplorerComponent } from './components/project-explorer/project-
 import { TrainingDashboardComponent } from './components/developer-hub/training-dashboard/training-dashboard.component';
 import { TrainingLaunchComponent } from './components/developer-hub/training-launch/training-launch.component';
 import { AgentModelConfigComponent } from './components/agent-model-config/agent-model-config.component';
+import { GraphsHubComponent } from './components/graphs-hub/graphs-hub.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -357,7 +358,8 @@ import { MatNativeDateModule } from '@angular/material/core';
     TrainingDashboardComponent,
     TrainingLaunchComponent,
     ToolCallCatalogComponent,
-    AgentModelConfigComponent
+    AgentModelConfigComponent,
+    GraphsHubComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

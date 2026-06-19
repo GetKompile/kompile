@@ -1,0 +1,114 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="health-panel">
+  <!-- No fact sheet selected -->
+  <div *ngIf="factSheetId == null" class="empty-state">
+    <mat-icon>monitor_heart</mat-icon>
+    <p>Select a fact sheet to view its knowledge-graph health.</p>
+  </div>
+
+  <ng-container *ngIf="factSheetId != null">
+    <div class="toolbar">
+      <button mat-stroked-button (click)="refresh()" [disabled]="loading">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+      <button mat-raised-button color="primary" (click)="takeSnapshot()" [disabled]="snapshotting"
+              matTooltip="Compute and append a snapshot to the persisted time series">
+        <mat-icon>add_chart</mat-icon> Take snapshot
+      </button>
+      <mat-spinner *ngIf="loading || snapshotting" diameter="22"></mat-spinner>
+    </div>
+
+    <!-- Current metrics -->
+    <mat-card *ngIf="current as s" class="metrics-card">
+      <mat-card-header>
+        <mat-card-title>Current health</mat-card-title>
+        <mat-card-subtitle>computed {{ s.computedAt }}</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="metric-grid">
+          <div class="metric"><span class="label">Nodes</span><span class="value">{{ s.nodeCount }}</span></div>
+          <div class="metric"><span class="label">Edges</span><span class="value">{{ s.edgeCount }}</span></div>
+          <div class="metric"><span class="label">Density</span><span class="value">{{ pct(s.density) }}</span></div>
+          <div class="metric"><span class="label">Avg degree</span><span class="value">{{ s.averageDegree | number:'1.0-2' }}</span></div>
+          <div class="metric"><span class="label">Max degree</span><span class="value">{{ s.maxDegree }}</span></div>
+          <div class="metric" [class.warn]="s.orphanRate > 0.2">
+            <span class="label">Orphans</span><span class="value">{{ s.orphanCount }} ({{ pct(s.orphanRate) }})</span>
+          </div>
+          <div class="metric"><span class="label">Components</span><span class="value">{{ s.connectedComponentCount }}</span></div>
+          <div class="metric"><span class="label">Largest component</span><span class="value">{{ pct(s.largestComponentFraction) }}</span></div>
+          <div class="metric" [class.warn]="s.lowConfidenceNodeCount > 0">
+            <span class="label">Low-confidence nodes</span><span class="value">{{ s.lowConfidenceNodeCount }}</span>
+          </div>
+          <div class="metric" [class.warn]="s.lowConfidenceEdgeCount > 0">
+            <span class="label">Low-confidence edges</span><span class="value">{{ s.lowConfidenceEdgeCount }}</span>
+          </div>
+          <div class="metric">
+            <span class="label">Ontology conformance</span>
+            <span class="value">{{ s.ontologyBound ? pct(s.conformanceScore) : 'not bound' }}</span>
+          </div>
+        </div>
+
+        <div class="by-type">
+          <span class="by-type-title">By type:</span>
+          <span class="chip" *ngFor="let e of nodeTypeEntries(s)">{{ e.type }}: {{ e.count }}</span>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- History -->
+    <mat-card *ngIf="history.length > 0" class="history-card">
+      <mat-card-header><mat-card-title>History ({{ history.length }})</mat-card-title></mat-card-header>
+      <mat-card-content>
+        <table class="history-table">
+          <thead>
+            <tr><th>Computed</th><th>Nodes</th><th>Edges</th><th>Density</th><th>Orphans</th><th>Conformance</th></tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let h of history">
+              <td>{{ h.computedAt }}</td>
+              <td>{{ h.nodeCount }}</td>
+              <td>{{ h.edgeCount }}</td>
+              <td>{{ pct(h.density) }}</td>
+              <td>{{ pct(h.orphanRate) }}</td>
+              <td>{{ h.ontologyBound ? pct(h.conformanceScore) : '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Compare -->
+    <mat-card class="compare-card">
+      <mat-card-header><mat-card-title>Compare with another fact sheet</mat-card-title></mat-card-header>
+      <mat-card-content>
+        <div class="compare-controls">
+          <mat-form-field appearance="outline">
+            <mat-label>Other fact sheet ID</mat-label>
+            <input matInput type="number" [(ngModel)]="compareToId" placeholder="e.g. 2">
+          </mat-form-field>
+          <button mat-raised-button color="primary" (click)="runCompare()"
+                  [disabled]="comparing || compareToId == null">
+            <mat-icon>compare_arrows</mat-icon> Compare
+          </button>
+          <mat-spinner *ngIf="comparing" diameter="22"></mat-spinner>
+        </div>
+
+        <div *ngIf="comparison as c" class="compare-result">
+          <div class="metric-grid">
+            <div class="metric"><span class="label">Shared entities</span><span class="value">{{ c.sharedEntityCount }}</span></div>
+            <div class="metric"><span class="label">Only in #{{ c.factSheetIdA }}</span><span class="value">{{ c.onlyInACount }}</span></div>
+            <div class="metric"><span class="label">Only in #{{ c.factSheetIdB }}</span><span class="value">{{ c.onlyInBCount }}</span></div>
+          </div>
+          <div class="sample-lists">
+            <div><strong>Only in #{{ c.factSheetIdA }}:</strong> {{ c.sampleOnlyInA.join(', ') || '—' }}</div>
+            <div><strong>Only in #{{ c.factSheetIdB }}:</strong> {{ c.sampleOnlyInB.join(', ') || '—' }}</div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </ng-container>
+</div>

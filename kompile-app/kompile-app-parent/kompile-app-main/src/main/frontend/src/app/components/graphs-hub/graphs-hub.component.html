@@ -1,0 +1,38 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="graphs-hub">
+  <div class="hub-header">
+    <h2>Graphs</h2>
+    <p class="subtitle">Manage knowledge graphs as assets — the named-graph registry, health metrics over time, and maintenance.</p>
+  </div>
+
+  <div class="sub-tabs">
+    <button class="sub-tab" [class.active]="activeSubTab === 'overview'" (click)="selectSubTab('overview')">
+      <mat-icon class="tab-icon">account_tree</mat-icon>
+      <span class="tab-label">Overview</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'health'" (click)="selectSubTab('health')">
+      <mat-icon class="tab-icon">monitor_heart</mat-icon>
+      <span class="tab-label">Health</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'maintenance'" (click)="selectSubTab('maintenance')">
+      <mat-icon class="tab-icon">build</mat-icon>
+      <span class="tab-label">Maintenance</span>
+    </button>
+  </div>
+
+  <div class="sub-tab-content">
+    <div *ngIf="activeSubTab === 'overview'">
+      <app-graph-overview></app-graph-overview>
+    </div>
+    <div *ngIf="activeSubTab === 'health'">
+      <app-graph-health-panel [factSheetId]="activeFactSheetId"></app-graph-health-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'maintenance'">
+      <app-graph-maintenance-hub [factSheetId]="activeFactSheetId"></app-graph-maintenance-hub>
+    </div>
+  </div>
+</div>

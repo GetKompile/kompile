@@ -1,0 +1,62 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ */
+
+.graphs-hub {
+  padding: 16px;
+}
+
+.hub-header h2 {
+  margin: 0;
+}
+
+.hub-header .subtitle {
+  margin: 4px 0 16px;
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 13px;
+}
+
+.sub-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+}
+
+.sub-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  color: rgba(0, 0, 0, 0.75);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.sub-tab:hover {
+  background: #f5f5f5;
+}
+
+.sub-tab.active {
+  background: #e8eaf6;
+  border-color: #3f51b5;
+  color: #303f9f;
+  font-weight: 600;
+}
+
+.sub-tab .tab-icon {
+  font-size: 18px;
+  height: 18px;
+  width: 18px;
+}
+
+.sub-tab-content {
+  min-height: 200px;
+}
