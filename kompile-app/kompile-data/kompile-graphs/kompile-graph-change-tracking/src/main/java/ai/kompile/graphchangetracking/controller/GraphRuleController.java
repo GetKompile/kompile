@@ -59,6 +59,10 @@ public class GraphRuleController {
             existing.setFactSheetId(update.getFactSheetId());
             existing.setMinNodesCreated(update.getMinNodesCreated());
             existing.setMinEdgesCreated(update.getMinEdgesCreated());
+            if (update.getTriggerType() != null) existing.setTriggerType(update.getTriggerType());
+            existing.setOnMutationType(update.getOnMutationType());
+            existing.setOnEntityKind(update.getOnEntityKind());
+            existing.setOnEntityType(update.getOnEntityType());
             return ResponseEntity.ok(repository.save(existing));
         }).orElse(ResponseEntity.notFound().build());
     }

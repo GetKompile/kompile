@@ -11,6 +11,7 @@ package ai.kompile.graphchangetracking.service;
 
 import ai.kompile.graphchangetracking.domain.GraphRuleConfig;
 import ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent;
+import ai.kompile.graphchangetracking.event.GraphMutationEvent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -55,6 +56,27 @@ public class GraphActionService {
             case "WEBHOOK" -> fireWebhook(rule, payload);
             case "LOG" -> log.info("Graph rule '{}' matched changeset {}: {}",
                     rule.getName(), event.getChangesetId(), payload);
+            default -> log.warn("Graph rule '{}' has unknown actionType '{}'; ignoring",
+                    rule.getName(), actionType);
+        }
+    }
+
+    /** Fire a rule's action for an individual graph mutation (the per-mutation rule path). */
+    public void fire(GraphRuleConfig rule, GraphMutationEvent event) {
+        String actionType = rule.getActionType() != null ? rule.getActionType().toUpperCase() : "LOG";
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("ruleId", rule.getRuleId());
+        payload.put("ruleName", rule.getName());
+        payload.put("mutationType", event.getMutationType());
+        payload.put("entityKind", event.getEntityKind());
+        payload.put("entityId", event.getEntityId());
+        payload.put("factSheetId", event.getFactSheetId());
+        payload.put("changesetId", event.getChangesetId());
+
+        switch (actionType) {
+            case "WEBHOOK" -> fireWebhook(rule, payload);
+            case "LOG" -> log.info("Graph rule '{}' matched mutation {} on {} {}: {}",
+                    rule.getName(), event.getMutationType(), event.getEntityKind(), event.getEntityId(), payload);
             default -> log.warn("Graph rule '{}' has unknown actionType '{}'; ignoring",
                     rule.getName(), actionType);
         }

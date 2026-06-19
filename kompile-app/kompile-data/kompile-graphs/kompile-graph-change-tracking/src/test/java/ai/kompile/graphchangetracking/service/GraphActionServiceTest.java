@@ -11,6 +11,7 @@ package ai.kompile.graphchangetracking.service;
 
 import ai.kompile.graphchangetracking.domain.GraphRuleConfig;
 import ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent;
+import ai.kompile.graphchangetracking.event.GraphMutationEvent;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.ResponseEntity;
@@ -54,5 +55,21 @@ class GraphActionServiceTest {
         GraphRuleConfig rule = GraphRuleConfig.builder().ruleId("r1").name("x").actionType("WEBHOOK").build();
         service.fire(rule, event());
         verifyNoInteractions(restTemplate);
+    }
+
+    @Test
+    void mutationWebhookAction_postsPayloadToTarget() {
+        GraphRuleConfig rule = GraphRuleConfig.builder()
+                .ruleId("m1").name("node-hook").actionType("WEBHOOK")
+                .actionTarget("http://example.test/hook").build();
+        GraphMutationEvent mutation = new GraphMutationEvent(
+                this, "NODE_CREATED", "NODE", "n1", 42L, "cs1", "API", null, null,
+                "{\"nodeType\":\"PERSON\"}") {};
+        when(restTemplate.postForEntity(eq("http://example.test/hook"), any(), eq(String.class)))
+                .thenReturn(ResponseEntity.ok("ok"));
+
+        service.fire(rule, mutation);
+
+        verify(restTemplate).postForEntity(eq("http://example.test/hook"), any(HttpEntity.class), eq(String.class));
     }
 }

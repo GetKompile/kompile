@@ -59,6 +59,27 @@ public class GraphRuleConfig {
     @Column
     private Integer minEdgesCreated;
 
+    /**
+     * When this rule is evaluated: {@code CHANGESET} (default — on changeset-complete, using the
+     * min*Created thresholds) or {@code MUTATION} (per individual node/edge mutation, using the
+     * on* match fields below).
+     */
+    @Column(length = 16, nullable = false)
+    @Builder.Default
+    private String triggerType = "CHANGESET";
+
+    /** MUTATION rules only: match this mutation type ({@code NODE_CREATED}, {@code EDGE_DELETED}, …); null = any. */
+    @Column(length = 32)
+    private String onMutationType;
+
+    /** MUTATION rules only: match this entity kind ({@code NODE}/{@code EDGE}); null = any. */
+    @Column(length = 8)
+    private String onEntityKind;
+
+    /** MUTATION rules only: match this semantic entity type (nodeType / edgeType from the snapshot); null = any. */
+    @Column(length = 64)
+    private String onEntityType;
+
     /** Action to fire on match: {@code LOG} or {@code WEBHOOK}. */
     @Column(length = 20, nullable = false)
     @Builder.Default
@@ -84,6 +105,7 @@ public class GraphRuleConfig {
         if (updatedAt == null) updatedAt = now;
         if (enabled == null) enabled = true;
         if (actionType == null) actionType = "LOG";
+        if (triggerType == null) triggerType = "CHANGESET";
     }
 
     @PreUpdate
