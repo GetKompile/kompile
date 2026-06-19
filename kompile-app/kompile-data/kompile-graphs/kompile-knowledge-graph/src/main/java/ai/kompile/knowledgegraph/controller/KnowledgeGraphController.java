@@ -97,6 +97,18 @@ public class KnowledgeGraphController {
             .orElse(ResponseEntity.notFound().build());
     }
 
+    /**
+     * Provenance view of a node: structural lineage (the source it traces to, timestamps) plus
+     * the reserved provenance metadata keys (source document/chunk, crawl run, extraction model).
+     * Store-agnostic — reads {@code getMetadata()}, so it works for both the JPA and matrix stores.
+     */
+    @GetMapping("/nodes/{nodeId}/provenance")
+    public ResponseEntity<Map<String, Object>> getNodeProvenance(@PathVariable("nodeId") String nodeId) {
+        return graphService.getNode(nodeId)
+            .map(node -> ResponseEntity.ok(GraphProvenanceKeys.describe(node)))
+            .orElse(ResponseEntity.notFound().build());
+    }
+
     @GetMapping("/nodes/{nodeId}/children")
     public ResponseEntity<List<GraphNode>> getNodeChildren(@PathVariable("nodeId") String nodeId) {
         return ResponseEntity.ok(graphService.getChildren(nodeId));

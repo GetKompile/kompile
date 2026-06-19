@@ -162,6 +162,22 @@ public class MultiAgentExtractionService {
             KnowledgeGraphService graphService,
             Long factSheetId,
             boolean dedupByName) {
+        return persistToGraph(result, graphService, factSheetId, dedupByName, null);
+    }
+
+    /**
+     * As above, additionally merging the given {@code provenance} metadata (e.g. source
+     * document/channel, extraction model/time — see
+     * {@link ai.kompile.knowledgegraph.domain.GraphProvenanceKeys}) into every persisted
+     * entity's metadata, so each extracted fact records where it came from. Provenance rides
+     * in metadata (the store-agnostic seam) and therefore also travels via portability export.
+     */
+    public PersistenceSummary persistToGraph(
+            MergedGraphResult result,
+            KnowledgeGraphService graphService,
+            Long factSheetId,
+            boolean dedupByName,
+            Map<String, Object> provenance) {
 
         if (result == null || result.mergedGraph() == null) {
             return new PersistenceSummary(0, 0, 0, 0, List.of());
@@ -192,6 +208,9 @@ public class MultiAgentExtractionService {
                     }
                     if (factSheetId != null) {
                         metadata.put("factSheetId", factSheetId.toString());
+                    }
+                    if (provenance != null && !provenance.isEmpty()) {
+                        metadata.putAll(provenance);
                     }
 
                     String title = entity.getTitle() != null ? entity.getTitle() : entity.getId();

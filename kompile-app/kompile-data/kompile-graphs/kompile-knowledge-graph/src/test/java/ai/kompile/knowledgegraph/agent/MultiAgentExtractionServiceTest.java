@@ -341,6 +341,28 @@ class MultiAgentExtractionServiceTest {
     }
 
     @Test
+    void persistWithProvenance_mergesProvenanceIntoEntityMetadata() {
+        Entity acme = entity("x1", "Acme Corp", "ORGANIZATION");
+        Graph graph = new Graph();
+        graph.setEntities(List.of(acme));
+        graph.setRelationships(List.of());
+        MergedGraphResult result = buildMergedResult(graph, "UNION");
+
+        when(graphService.getNodeByExternalIdInFactSheet(anyString(), any(), eq(42L)))
+                .thenReturn(java.util.Optional.empty());
+        when(graphService.createNode(any(), anyString(), anyString(), any(), any(), eq(42L)))
+                .thenReturn(GraphNode.builder().nodeId("n1").build());
+
+        java.util.Map<String, Object> provenance =
+                java.util.Map.of("_source", "channel:slack", "_sourceDocumentId", "channel:slack:m1");
+        service.persistToGraph(result, graphService, 42L, true, provenance);
+
+        verify(graphService).createNode(eq(NodeLevel.ENTITY), eq("entity:acme corp"), anyString(), any(),
+                argThat(meta -> "channel:slack".equals(meta.get("_source"))
+                        && "channel:slack:m1".equals(meta.get("_sourceDocumentId"))), eq(42L));
+    }
+
+    @Test
     void agentInfoRecordHasCorrectFields() {
         RelationExtractionAgent a = stubAgent("my-agent", List.of(), List.of());
         service = new MultiAgentExtractionService(List.of(a));

@@ -4,6 +4,7 @@ import ai.kompile.graphchangetracking.domain.GraphUpdatePipelineConfig;
 import ai.kompile.graphchangetracking.service.MutationContextHolder;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.agent.MultiAgentExtractionService;
 import ai.kompile.core.graphrag.agent.MultiAgentGraphBuilder.MergedGraphResult;
@@ -14,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -179,8 +181,14 @@ public class ConfigDrivenGraphUpdateHook implements GraphUpdateHook {
         // Dedup across messages by default so a recurring entity maps to one node (step param
         // "dedup": false disables it).
         boolean dedup = !Boolean.FALSE.equals(params.get("dedup"));
+        // Record where each extracted fact came from. Rides in node metadata (store-agnostic seam)
+        // and therefore also travels via the portability export.
+        Map<String, Object> provenance = new HashMap<>();
+        provenance.put(GraphProvenanceKeys.SOURCE, "channel:" + context.getChannelName());
+        provenance.put(GraphProvenanceKeys.SOURCE_DOCUMENT_ID, docId);
+        provenance.put(GraphProvenanceKeys.EXTRACTED_AT, Instant.now().toString());
         MultiAgentExtractionService.PersistenceSummary summary =
-                extractionService.persistToGraph(result, graphService, factSheetId, dedup);
+                extractionService.persistToGraph(result, graphService, factSheetId, dedup, provenance);
 
         log.info("EXTRACT_GRAPH: pipeline {} extracted {} entities + {} edges from {} message {}",
                 context.getPipelineConfig().getPipelineId(),

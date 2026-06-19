@@ -13,6 +13,7 @@ import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
 import ai.kompile.graphchangetracking.domain.GraphUpdatePipelineConfig;
 import ai.kompile.graphchangetracking.service.MutationContextHolder;
 import ai.kompile.knowledgegraph.agent.MultiAgentExtractionService;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,7 +56,7 @@ class ConfigDrivenGraphUpdateHookTest {
 
     @Test
     void extractGraphStep_runsExtractionOnMessage_persistsToTargetFactSheet() {
-        when(extractionService.persistToGraph(any(), any(), any(), eq(true)))
+        when(extractionService.persistToGraph(any(), any(), any(), eq(true), any()))
                 .thenReturn(new MultiAgentExtractionService.PersistenceSummary(2, 0, 1, 0, List.of()));
 
         GraphUpdatePipelineConfig config = GraphUpdatePipelineConfig.builder()
@@ -70,8 +71,9 @@ class ConfigDrivenGraphUpdateHookTest {
         verify(extractionService).runExtraction(
                 argThat(docs -> docs.size() == 1 && docs.get(0).getText().contains("Acme")),
                 any(), eq("UNION"), any());
-        // Persisted via the shared service, scoped to the pipeline's target fact sheet, dedup on.
-        verify(extractionService).persistToGraph(any(), eq(graphService), eq(42L), eq(true));
+        // Persisted via the shared service, scoped to the fact sheet, dedup on, with channel provenance.
+        verify(extractionService).persistToGraph(any(), eq(graphService), eq(42L), eq(true),
+                argThat(p -> "channel:slack".equals(p.get(GraphProvenanceKeys.SOURCE))));
     }
 
     @Test
