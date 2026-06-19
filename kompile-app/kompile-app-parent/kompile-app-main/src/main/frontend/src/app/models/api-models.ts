@@ -4489,8 +4489,8 @@ export interface IngestLogEntry {
   /** Log level: DEBUG, INFO, WARN, ERROR */
   level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
-  /** Source of the log: STDOUT, STDERR, SYSTEM, EMBEDDING */
-  source: 'STDOUT' | 'STDERR' | 'SYSTEM' | 'EMBEDDING';
+  /** Source of the log: STDOUT, STDERR, SYSTEM, EMBEDDING, LLM_TRANSCRIPT */
+  source: 'STDOUT' | 'STDERR' | 'SYSTEM' | 'EMBEDDING' | 'LLM_TRANSCRIPT';
 
   /** Log message content */
   message: string;

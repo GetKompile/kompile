@@ -99,6 +99,7 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
   private logBuffer$ = new Subject<IngestLogEntry>();
   private batchSubscription: Subscription | null = null;
   private lastSequenceNumber = 0;
+  private transcriptSub: Subscription | null = null;
 
   // Native event listener for search input (bypasses Angular change detection)
   private searchInputListener: ((e: Event) => void) | null = null;
@@ -412,7 +413,54 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
       }
     }
 
+    if (this.transcriptSub) {
+      this.transcriptSub.unsubscribe();
+      this.transcriptSub = null;
+      if (this.taskId) {
+        this.webSocketService.unsubscribeFromTaskTranscripts(this.taskId);
+      }
+    }
+
     this.streamingActive = false;
+  }
+
+  /**
+   * Append live LLM transcript entries (from the dedicated transcript topic) on top of the loaded
+   * history so a source-filtered transcript view tails in real time. Dedups against already-shown
+   * entries by sequence number (the backend streams the persisted entry's own sequence).
+   */
+  private startTranscriptStream(): void {
+    if (this.transcriptSub || !this.taskId) {
+      return;
+    }
+    this.webSocketService.connect();
+    this.streamingActive = true;
+    this.transcriptSub = this.webSocketService.subscribeToTaskTranscripts(this.taskId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (entry) => this.ngZone.run(() => {
+          if (entry.sequenceNumber != null
+              && this.logs.some(l => l.sequenceNumber === entry.sequenceNumber)) {
+            return; // already shown (also present in the loaded history)
+          }
+          const jobLogEntry: JobLogEntry = {
+            id: entry.sequenceNumber,
+            taskId: entry.taskId,
+            timestamp: entry.timestamp,
+            level: entry.level as LogLevel,
+            source: entry.source as any,
+            message: entry.message,
+            sequenceNumber: entry.sequenceNumber
+          };
+          this.logs = [...this.logs, jobLogEntry];
+          this.totalCount = this.logs.length;
+          if (this.autoScroll) {
+            setTimeout(() => this.scrollToBottom(), 50);
+          }
+          this.cdr.markForCheck();
+        }),
+        error: (err) => console.error('Error receiving transcript stream:', err)
+      });
   }
 
   /**
@@ -499,6 +547,16 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
           setTimeout(() => {
             this.scrollToBottom();
           }, 100);
+        }
+
+        // For a source-filtered live view (e.g. transcripts), continue from the loaded history's last
+        // sequence and stream new entries over WebSocket so the panel tails in real time.
+        if (this.source === 'LLM_TRANSCRIPT') {
+          this.lastSequenceNumber = (this.logs || []).reduce(
+            (max, l) => Math.max(max, l.sequenceNumber || 0), this.lastSequenceNumber);
+          if (this.isJobRunning) {
+            this.startTranscriptStream();
+          }
         }
 
         this.cdr.markForCheck();

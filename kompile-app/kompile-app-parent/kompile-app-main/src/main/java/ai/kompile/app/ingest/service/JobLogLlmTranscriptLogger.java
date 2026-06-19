@@ -18,10 +18,15 @@ package ai.kompile.app.ingest.service;
 
 import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.app.ingest.domain.JobLogEntry;
+import ai.kompile.app.web.dto.IngestProgressUpdate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
+
+import java.time.Instant;
 
 /**
  * Persists LLM call transcripts to the job log database via {@link JobLogService}.
@@ -45,10 +50,15 @@ public class JobLogLlmTranscriptLogger implements LlmTranscriptLogger {
 
     private final JobLogService jobLogService;
 
+    /** Optional: when present, transcripts are also streamed to {@code /topic/ingest/{taskId}/transcripts}. */
+    private final SimpMessagingTemplate messagingTemplate;
+
     public JobLogLlmTranscriptLogger(
             JobLogService jobLogService,
+            @Autowired(required = false) SimpMessagingTemplate messagingTemplate,
             @Value("${kompile.ingest.transcript.max-chars:65536}") int maxTranscriptChars) {
         this.jobLogService = jobLogService;
+        this.messagingTemplate = messagingTemplate;
         this.maxTranscriptChars = maxTranscriptChars;
     }
 
@@ -68,15 +78,29 @@ public class JobLogLlmTranscriptLogger implements LlmTranscriptLogger {
                 latencyMs, success, errorMessage, agentSessionId);
 
         try {
-            jobLogService.logEntry(
+            JobLogEntry entry = jobLogService.logEntry(
                     taskId,
                     level,
                     JobLogEntry.LogSource.LLM_TRANSCRIPT,
                     message,
                     backendId,
                     Thread.currentThread().getName());
+            // Stream to a dedicated transcript topic so the log viewer can tail transcripts live. Reuses
+            // the persisted entry's sequence number so WS-streamed transcripts share the HTTP history's
+            // sequence space (the viewer dedups by sequenceNumber).
+            if (entry != null && messagingTemplate != null) {
+                messagingTemplate.convertAndSend("/topic/ingest/" + taskId + "/transcripts",
+                        new IngestProgressUpdate.IngestLogEntry(
+                                taskId,
+                                level.name(),
+                                JobLogEntry.LogSource.LLM_TRANSCRIPT.name(),
+                                message,
+                                backendId,
+                                entry.getTimestamp() != null ? entry.getTimestamp() : Instant.now(),
+                                entry.getSequenceNumber()));
+            }
         } catch (Exception e) {
-            log.debug("Failed to persist LLM transcript for job {}: {}", jobId, e.getMessage());
+            log.debug("Failed to persist/stream LLM transcript for job {}: {}", jobId, e.getMessage());
         }
     }
 

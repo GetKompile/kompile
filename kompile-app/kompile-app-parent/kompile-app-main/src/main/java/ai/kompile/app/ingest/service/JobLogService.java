@@ -246,9 +246,9 @@ public class JobLogService {
      * Generic log entry method.
      */
     @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
-    public void logEntry(String taskId, LogLevel level, LogSource source, String message,
+    public JobLogEntry logEntry(String taskId, LogLevel level, LogSource source, String message,
                          String loggerName, String threadName) {
-        if (!isEnabled()) return;
+        if (!isEnabled()) return null;
 
         long seq = getNextSequence(taskId);
         JobLogEntry entry = JobLogEntry.builder()
@@ -262,6 +262,7 @@ public class JobLogService {
                 .sequenceNumber(seq)
                 .build();
         saveEntry(entry);
+        return entry;
     }
 
     /**

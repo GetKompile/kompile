@@ -175,6 +175,23 @@ export class WebSocketService extends BaseService implements OnDestroy {
   }
 
   /**
+   * Subscribe to live LLM transcript entries for a task (dedicated /transcripts topic). Filtered by
+   * source as well as taskId so it never picks up regular ingest logs sharing the logUpdates$ stream.
+   */
+  subscribeToTaskTranscripts(taskId: string): Observable<IngestLogEntry> {
+    const topic = `/topic/ingest/${taskId}/transcripts`;
+    this.subscribeToLogTopic(topic);
+
+    return this.logUpdates$.pipe(
+      filter(log => log.taskId === taskId && log.source === 'LLM_TRANSCRIPT')
+    );
+  }
+
+  unsubscribeFromTaskTranscripts(taskId: string): void {
+    this.unsubscribeFromTopic(`/topic/ingest/${taskId}/transcripts`);
+  }
+
+  /**
    * Subscribe to all subprocess log updates
    */
   subscribeToAllLogs(): Observable<IngestLogEntry> {
