@@ -1,0 +1,81 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ */
+
+.io-panel {
+  padding: 12px;
+}
+
+.scope-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.scope-note mat-icon {
+  font-size: 18px;
+  height: 18px;
+  width: 18px;
+}
+
+.io-card {
+  margin-bottom: 16px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+
+.import-result {
+  margin-top: 12px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.metric .label {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.metric .value {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.metric.warn {
+  background: #fff3e0;
+  border-color: #ffb74d;
+}
+
+.errors {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: #b71c1c;
+  font-size: 13px;
+}

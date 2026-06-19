@@ -25,8 +25,9 @@ import { GraphMaintenanceHubComponent } from '../graph-maintenance-hub/graph-mai
 import { GraphHealthPanelComponent } from '../graph-health-panel/graph-health-panel.component';
 import { GraphRulesPanelComponent } from '../graph-rules-panel/graph-rules-panel.component';
 import { GraphOntologyPanelComponent } from '../graph-ontology-panel/graph-ontology-panel.component';
+import { GraphIoPanelComponent } from '../graph-io-panel/graph-io-panel.component';
 
-type GraphsTab = 'overview' | 'health' | 'ontology' | 'maintenance' | 'rules';
+type GraphsTab = 'overview' | 'health' | 'ontology' | 'maintenance' | 'rules' | 'io';
 
 /**
  * Top-level "Graphs" workspace — a first-class home for managing knowledge graphs as assets. Wires
@@ -43,7 +44,8 @@ type GraphsTab = 'overview' | 'health' | 'ontology' | 'maintenance' | 'rules';
     GraphMaintenanceHubComponent,
     GraphHealthPanelComponent,
     GraphRulesPanelComponent,
-    GraphOntologyPanelComponent
+    GraphOntologyPanelComponent,
+    GraphIoPanelComponent
   ],
   templateUrl: './graphs-hub.component.html',
   styleUrls: ['./graphs-hub.component.css']

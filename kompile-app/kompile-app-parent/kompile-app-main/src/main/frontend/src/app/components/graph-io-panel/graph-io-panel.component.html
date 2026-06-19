@@ -1,0 +1,78 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="io-panel">
+  <p class="scope-note">
+    <mat-icon>folder</mat-icon>
+    {{ factSheetId != null ? ('Scoped to fact sheet #' + factSheetId) : 'No fact sheet selected — exports the global (unscoped) graph.' }}
+  </p>
+
+  <!-- Export -->
+  <mat-card class="io-card">
+    <mat-card-header><mat-card-title>Export</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="row">
+        <mat-form-field appearance="outline">
+          <mat-label>Format</mat-label>
+          <mat-select [(ngModel)]="exportFormat">
+            <mat-option *ngFor="let f of exportFormats" [value]="f.value">{{ f.label }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <button mat-raised-button color="primary" (click)="doExport()" [disabled]="exporting">
+          <mat-icon>download</mat-icon> Download
+        </button>
+        <mat-spinner *ngIf="exporting" diameter="22"></mat-spinner>
+      </div>
+      <p class="muted">RDF (N-Triples / Turtle) mints real IRIs under https://kompile.ai/kg/.</p>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Import -->
+  <mat-card class="io-card">
+    <mat-card-header><mat-card-title>Import</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="row">
+        <mat-form-field appearance="outline">
+          <mat-label>Format</mat-label>
+          <mat-select [(ngModel)]="importFormat">
+            <mat-option *ngFor="let f of importFormats" [value]="f.value">{{ f.label }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <label class="file-pick">
+          <input type="file" (change)="onFileSelected($event)" hidden #fileInput>
+          <button mat-stroked-button type="button" (click)="fileInput.click()">
+            <mat-icon>attach_file</mat-icon> {{ file ? file.name : 'Choose file' }}
+          </button>
+        </label>
+
+        <label class="file-pick" *ngIf="importFormat === 'csv'">
+          <input type="file" (change)="onEdgesFileSelected($event)" hidden #edgesInput>
+          <button mat-stroked-button type="button" (click)="edgesInput.click()">
+            <mat-icon>attach_file</mat-icon> {{ edgesFile ? edgesFile.name : 'Edges CSV (optional)' }}
+          </button>
+        </label>
+
+        <button mat-raised-button color="primary" (click)="doImport()" [disabled]="importing || !file">
+          <mat-icon>upload</mat-icon> Import
+        </button>
+        <mat-spinner *ngIf="importing" diameter="22"></mat-spinner>
+      </div>
+      <p class="muted">Importable formats round-trip the graph; RDF / GraphML are export-only.</p>
+
+      <div *ngIf="lastImport as r" class="import-result">
+        <div class="metric-grid">
+          <div class="metric"><span class="label">Nodes created</span><span class="value">{{ r.nodesCreated }}</span></div>
+          <div class="metric"><span class="label">Nodes updated</span><span class="value">{{ r.nodesUpdated }}</span></div>
+          <div class="metric"><span class="label">Edges created</span><span class="value">{{ r.edgesCreated }}</span></div>
+          <div class="metric" [class.warn]="r.errors > 0"><span class="label">Errors</span><span class="value">{{ r.errors }}</span></div>
+        </div>
+        <ul class="errors" *ngIf="r.errorMessages?.length">
+          <li *ngFor="let m of r.errorMessages">{{ m }}</li>
+        </ul>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

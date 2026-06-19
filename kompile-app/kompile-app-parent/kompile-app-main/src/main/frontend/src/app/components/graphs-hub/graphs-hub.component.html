@@ -30,6 +30,10 @@
       <mat-icon class="tab-icon">rule</mat-icon>
       <span class="tab-label">Rules</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'io'" (click)="selectSubTab('io')">
+      <mat-icon class="tab-icon">import_export</mat-icon>
+      <span class="tab-label">Import / Export</span>
+    </button>
   </div>
 
   <div class="sub-tab-content">
@@ -47,6 +51,9 @@
     </div>
     <div *ngIf="activeSubTab === 'rules'">
       <app-graph-rules-panel [factSheetId]="activeFactSheetId"></app-graph-rules-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'io'">
+      <app-graph-io-panel [factSheetId]="activeFactSheetId"></app-graph-io-panel>
     </div>
   </div>
 </div>
