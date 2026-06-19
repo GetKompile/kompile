@@ -30,6 +30,7 @@ public enum KompileProjectComponentType {
     CONFIG,
     DATASET,
     ARTIFACT,
+    DISTRIBUTION,
     MODULE,
     OTHER
 }

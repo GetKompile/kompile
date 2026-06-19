@@ -355,7 +355,9 @@ public class SqlCrawler extends AbstractCrawler {
 
                 // Emit the table as a single content_type=table document so it surfaces as one TABLE
                 // graph node (and renders) in the index browser, alongside the per-row documents.
-                if (!tableRowsBuffer.isEmpty() && !job.shouldStop()) {
+                // Gated on processed>0 so a no-op incremental re-crawl (all rows already seen) emits
+                // nothing; the buffer still holds the full table for a first/changed crawl.
+                if (processed > 0 && !tableRowsBuffer.isEmpty() && !job.shouldStop()) {
                     emitSqlTableSummary(job, tableName, columnNames, tableRowsBuffer, rowIndex,
                             rowIndex > tableRowsBuffer.size(), outputDir, jdbcUrl, databaseProduct);
                 }

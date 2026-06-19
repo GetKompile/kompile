@@ -58,6 +58,10 @@ public class KompileProjectStore {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to create project directories under " + normalizedRoot + ": " + e.getMessage(), e);
         }
+        // Write the canonical .gitignore unconditionally so the project has a
+        // consistent ignore policy even before (or without) a git repository.
+        // ensureGitRepository's later call is a no-op once the file exists.
+        writeGitignore(normalizedRoot);
 
         KompileProjectManifest manifest = manifestPath(normalizedRoot).toFile().isFile()
                 ? load(normalizedRoot)
@@ -1103,11 +1107,19 @@ public class KompileProjectStore {
                 # Staging server binaries
                 staging/
 
+                # Per-project config is versioned, EXCEPT files that hold secrets.
+                # Keep API keys / tokens out of git; reference them via env placeholders.
+                config/secrets/
+                config/*.secret.json
+                config/oauth-settings.json
+
                 # Crash dumps
                 hs_err_pid*.log
                 hotspot_pid*.log
                 *.hprof
                 *.heapdump
+                compute_sanitizer_*.log
+                replay_pid*.log
 
                 # Lucene write locks (created at runtime)
                 **/write.lock
@@ -1152,9 +1164,21 @@ public class KompileProjectStore {
             sb.append("*.gguf filter=xet diff=xet merge=xet -text\n");
             sb.append("*.fb filter=xet diff=xet merge=xet -text\n");
             sb.append("*.zip filter=xet diff=xet merge=xet -text\n");
+            sb.append("*.tar.gz filter=xet diff=xet merge=xet -text\n");
+            sb.append("*.tgz filter=xet diff=xet merge=xet -text\n");
             sb.append("\n");
             sb.append("# Index files (tracked via git-xet)\n");
             sb.append("data/indices/** filter=xet diff=xet merge=xet -text\n");
+            sb.append("\n");
+            sb.append("# Knowledge-graph embedding sidecars (binary; tracked via git-xet)\n");
+            sb.append("data/graph/embeddings/** filter=xet diff=xet merge=xet -text\n");
+            sb.append("\n");
+            sb.append("# Model store, built artifacts, and native-image distributions\n");
+            sb.append("# (large binaries — including kompile-app-main native dists bundling\n");
+            sb.append("# vendor backend dependencies — are streamed/deduplicated via git-xet)\n");
+            sb.append("data/models/** filter=xet diff=xet merge=xet -text\n");
+            sb.append("data/artifacts/** filter=xet diff=xet merge=xet -text\n");
+            sb.append("data/distributions/** filter=xet diff=xet merge=xet -text\n");
         } else {
             // Without xet, mark large binary files so git doesn't try to diff them
             sb.append("# Model files (binary, no diff)\n");
@@ -1165,9 +1189,19 @@ public class KompileProjectStore {
             sb.append("*.pth binary\n");
             sb.append("*.gguf binary\n");
             sb.append("*.fb binary\n");
+            sb.append("*.tar.gz binary\n");
+            sb.append("*.tgz binary\n");
             sb.append("\n");
             sb.append("# Index files (binary, no diff)\n");
             sb.append("data/indices/** binary\n");
+            sb.append("\n");
+            sb.append("# Knowledge-graph embedding sidecars (binary, no diff)\n");
+            sb.append("data/graph/embeddings/** binary\n");
+            sb.append("\n");
+            sb.append("# Model store, built artifacts, and native-image distributions\n");
+            sb.append("data/models/** binary\n");
+            sb.append("data/artifacts/** binary\n");
+            sb.append("data/distributions/** binary\n");
         }
         try {
             Files.writeString(gitattributes, sb.toString(), StandardCharsets.UTF_8);
@@ -1176,21 +1210,56 @@ public class KompileProjectStore {
         }
     }
 
+    /**
+     * The complete, authoritative set of project directories. This is the single
+     * source of truth for the project layout: every directory that is registered as
+     * a component in {@link #upsertStandardComponents} or read/written by a catalog
+     * method below must appear here so that a freshly initialized project has a
+     * consistent, complete on-disk structure regardless of which init entry point
+     * created it (CLI {@code project init}, {@code init-project}, clone, or the API).
+     *
+     * <p>Paths are relative to the project root. Durable (versioned) directories and
+     * the app-runtime working directories are both created here; the latter are kept
+     * out of version control by {@link #writeGitignore}.</p>
+     */
+    static final List<String> STANDARD_DIRECTORIES = List.of(
+            // ── Durable, versioned knowledge & metadata ──
+            "data/markdown",
+            "data/models",
+            "data/models/.staging",
+            "data/pipelines",
+            "data/input_documents",
+            "data/input_documents/uploads",
+            "data/sources",
+            "data/chats",
+            "data/code-projects",
+            "data/crawls",
+            "data/workflows",
+            "data/prompt-templates",
+            "data/fact-sheets",
+            "data/note-sync",
+            "data/indexed-documents",
+            "data/graph",
+            "data/graph/embeddings",
+            "data/artifacts",
+            "data/distributions",
+            "data/indices",
+            "data/shared_files",
+            "config",
+            "scripts",
+            // ── App-runtime working directories (gitignored, created for parity) ──
+            "data/tool-definitions",
+            "data/folders",
+            "data/mcp-bridges",
+            "data/mcp-servers",
+            "data/logs",
+            "data/pids"
+    );
+
     private void ensureStandardDirectories(Path root) throws IOException {
-        Files.createDirectories(root.resolve("data/markdown"));
-        Files.createDirectories(root.resolve("data/models"));
-        Files.createDirectories(root.resolve("data/models/.staging"));
-        Files.createDirectories(root.resolve("data/pipelines"));
-        Files.createDirectories(root.resolve("data/input_documents"));
-        Files.createDirectories(root.resolve("data/sources"));
-        Files.createDirectories(root.resolve("data/chats"));
-        Files.createDirectories(root.resolve("data/code-projects"));
-        Files.createDirectories(root.resolve("data/crawls"));
-        Files.createDirectories(root.resolve("data/workflows"));
-        Files.createDirectories(root.resolve("data/artifacts"));
-        Files.createDirectories(root.resolve("data/indices"));
-        Files.createDirectories(root.resolve("data/prompt-templates"));
-        Files.createDirectories(root.resolve("scripts"));
+        for (String dir : STANDARD_DIRECTORIES) {
+            Files.createDirectories(root.resolve(dir));
+        }
         ensureProjectMetadataDirectoryInternal(root);
         writeStandardLifecycleScriptFiles(root);
     }
@@ -1244,6 +1313,24 @@ public class KompileProjectStore {
         upsertComponent(manifest, component("indices", KompileProjectComponentType.CONFIG, "Search indices",
                 "data/indices", "Lucene keyword and vector (HNSW) indices. Tracked via git-xet for large binary storage.",
                 KompileProjectStorageBackend.GIT_XET, List.of("indices", "vector", "search", "lucene")));
+        upsertComponent(manifest, component("indexed-documents", KompileProjectComponentType.DATASET, "Indexed documents",
+                "data/indexed-documents", "Registry of documents that have been parsed, embedded, and indexed.",
+                KompileProjectStorageBackend.GIT, List.of("documents", "indexing", "rag")));
+        upsertComponent(manifest, component("graph", KompileProjectComponentType.DATASET, "Knowledge graphs",
+                "data/graph", "Serialized knowledge graph nodes/edges (portable JSON, one file per fact sheet) plus "
+                        + "embedding sidecars under data/graph/embeddings. Rehydrated into the runtime store on "
+                        + "project open so the graph survives a git clone.",
+                KompileProjectStorageBackend.GIT, List.of("graph", "knowledge-graph", "portability", "versioning")));
+        upsertComponent(manifest, component("config", KompileProjectComponentType.CONFIG, "Project configuration",
+                "config", "Per-project Kompile JSON configuration (index, pipeline, LLM, graph extraction). Secrets are gitignored.",
+                KompileProjectStorageBackend.GIT, List.of("config", "settings", "versioning")));
+        upsertComponent(manifest, component("artifacts", KompileProjectComponentType.ARTIFACT, "Build artifacts",
+                "data/artifacts", "Built JARs and other large build outputs. Tracked via git-xet for large binary storage.",
+                KompileProjectStorageBackend.GIT_XET, List.of("artifacts", "build", "git-xet")));
+        upsertComponent(manifest, component("distributions", KompileProjectComponentType.DISTRIBUTION, "Native distributions",
+                "data/distributions", "Native-image distributions of kompile-app-main (bundling vendor backend dependencies). "
+                        + "Tracked via git-xet so large binaries are versioned without bloating git history.",
+                KompileProjectStorageBackend.GIT_XET, List.of("distributions", "native-image", "release", "git-xet")));
     }
 
     private void ensureProjectMetadataDirectoryInternal(Path root) throws IOException {

@@ -26,6 +26,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -439,6 +440,48 @@ class MatrixKnowledgeGraphServiceTest {
         assertEquals(1L, nodesByType.get("TABLE"));
         assertEquals(1L, nodesByType.get("DOCUMENT"));
         assertEquals(0L, nodesByType.get("ENTITY"));
+    }
+
+    // ─── edge-type round-trip (regression: EDGE_TYPE_MAP data loss) ────────────
+
+    @Test
+    void createEdgeStoresCanonicalEnumNameForEveryEdgeType() {
+        // Every EdgeType must persist under its own distinct string. The old hand-maintained
+        // EDGE_TYPE_MAP covered only 7 of the values and aliased the rest (CONTAINS,
+        // EXTRACTED_FROM, AUTHORED_BY, ADDRESSED_TO, RESOLVES_TO) to "RELATED_TO", collapsing
+        // five distinct types into one indistinguishable bucket on the @Primary backend.
+        for (EdgeType type : EdgeType.values()) {
+            service.createEdge("a", "b", type, 1.0, "desc");
+        }
+
+        ArgumentCaptor<String> typeCaptor = ArgumentCaptor.forClass(String.class);
+        verify(graphStore, times(EdgeType.values().length)).addEdge(
+                eq(DEFAULT_GRAPH_ID), eq("a"), eq("b"), anyDouble(), typeCaptor.capture(), anyBoolean());
+
+        List<String> stored = typeCaptor.getAllValues();
+        List<String> expected = Arrays.stream(EdgeType.values()).map(Enum::name).toList();
+        assertEquals(expected, stored, "each EdgeType must store under its own enum name");
+        assertEquals(EdgeType.values().length, Set.copyOf(stored).size(),
+                "no two EdgeType values may collide onto the same stored string");
+        assertTrue(stored.contains("RESOLVES_TO"), "RESOLVES_TO must survive (was aliased to RELATED_TO)");
+        assertFalse(stored.contains("RELATED_TO"), "no EdgeType should be aliased to the legacy RELATED_TO bucket");
+    }
+
+    @Test
+    void edgeTypeParsesBackFromStorageAndLegacyAliasIsGraceful() {
+        // Reverse direction: a stored string must parse back to the same EdgeType, and the
+        // historical non-enum "RELATED_TO" (or any unknown string) must degrade to USER_DEFINED
+        // instead of throwing IllegalArgumentException (the old EdgeType.valueOf(type) path).
+        assertEquals(EdgeType.RESOLVES_TO,
+                service.updateEdge("a::b::RESOLVES_TO", 1.0, "d").getEdgeType());
+        assertEquals(EdgeType.CONTAINS,
+                service.updateEdge("a::b::CONTAINS", 1.0, "d").getEdgeType());
+        assertEquals(EdgeType.USER_DEFINED,
+                service.updateEdge("a::b::RELATED_TO", 1.0, "d").getEdgeType(),
+                "legacy RELATED_TO alias must degrade to USER_DEFINED, not throw");
+        assertEquals(EdgeType.USER_DEFINED,
+                service.updateEdge("a::b::NOT_A_REAL_TYPE", 1.0, "d").getEdgeType(),
+                "unknown stored type must degrade to USER_DEFINED, not throw");
     }
 
 }

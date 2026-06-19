@@ -20,8 +20,7 @@ import ai.kompile.core.graphrag.maintenance.model.ContradictionResolutionStrateg
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceTask;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +33,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Rule-based contradiction detector for knowledge graph edges.
@@ -53,13 +54,10 @@ import java.util.Map;
 @Component
 public class ContradictionDetector {
 
-    private  GraphNodeRepository nodeRepository;
-    private  GraphEdgeRepository edgeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
-    public ContradictionDetector(GraphNodeRepository nodeRepository,
-                                 GraphEdgeRepository edgeRepository) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+    public ContradictionDetector(KnowledgeGraphService knowledgeGraphService) {
+        this.knowledgeGraphService = knowledgeGraphService;
     }
 
     /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
@@ -73,17 +71,13 @@ public class ContradictionDetector {
      * @return list of detected contradictions (may be empty)
      */
     public List<Contradiction> detect(Long factSheetId) {
-        List<GraphEdge> allEdges = edgeRepository.findActiveEdges(factSheetId);
+        List<GraphEdge> allEdges = activeEdges(factSheetId);
         log.debug("ContradictionDetector: inspecting {} active edges for factSheet={}",
                 allEdges.size(), factSheetId);
 
-        // Group edges by (sourceNode.id, targetNode.id)
-        Map<String, List<GraphEdge>> pairGroups = new HashMap<>();
-        for (GraphEdge edge : allEdges) {
-            if (edge.getSourceNode() == null || edge.getTargetNode() == null) continue;
-            String key = edge.getSourceNode().getId() + ":" + edge.getTargetNode().getId();
-            pairGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(edge);
-        }
+        // Group edges by (sourceNode, targetNode) using string node ids so the grouping works
+        // on every backend (the JPA Long id is null on the @Primary matrix/vector store).
+        Map<String, List<GraphEdge>> pairGroups = groupByPair(allEdges);
 
         List<Contradiction> contradictions = new ArrayList<>();
         for (Map.Entry<String, List<GraphEdge>> entry : pairGroups.entrySet()) {
@@ -148,7 +142,6 @@ public class ContradictionDetector {
     @Transactional
     public TaskReport resolve(Long factSheetId, ContradictionResolutionStrategy strategy, boolean dryRun) {
         Instant start = Instant.now();
-        LocalDateTime now = LocalDateTime.now();
         int scanned = 0;
         int affected = 0;
         int skipped = 0;
@@ -172,15 +165,10 @@ public class ContradictionDetector {
         }
 
         // For NEWER_WINS and HIGHER_CONFIDENCE_WINS we need the actual edge objects
-        List<GraphEdge> allEdges = edgeRepository.findActiveEdges(factSheetId);
-        Map<String, List<GraphEdge>> pairGroups = new HashMap<>();
-        for (GraphEdge edge : allEdges) {
-            if (edge.getSourceNode() == null || edge.getTargetNode() == null) continue;
-            String key = edge.getSourceNode().getId() + ":" + edge.getTargetNode().getId();
-            pairGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(edge);
-        }
+        List<GraphEdge> allEdges = activeEdges(factSheetId);
+        Map<String, List<GraphEdge>> pairGroups = groupByPair(allEdges);
 
-        List<Long> edgeIdsToStale = new ArrayList<>();
+        List<String> edgeIdsToStale = new ArrayList<>();
 
         for (List<GraphEdge> group : pairGroups.values()) {
             if (group.size() <= 1) continue;
@@ -204,14 +192,19 @@ public class ContradictionDetector {
             }
 
             for (GraphEdge edge : group) {
-                if (edge.getId().equals(winner.getId())) continue;
-                edgeIdsToStale.add(edge.getId());
-                affected++;
+                if (Objects.equals(edge.getEdgeId(), winner.getEdgeId())) continue;
+                if (edge.getEdgeId() != null) {
+                    edgeIdsToStale.add(edge.getEdgeId());
+                    affected++;
+                }
             }
         }
 
         if (!dryRun && !edgeIdsToStale.isEmpty()) {
-            edgeRepository.bulkMarkStale(edgeIdsToStale, now);
+            // Soft-delete (stale) the losing edges through the store-agnostic service so this
+            // works on the active @Primary backend, not only the JPA repository. (On the matrix
+            // store, which has no edge stale-flag, this degrades to a best-effort prune.)
+            knowledgeGraphService.pruneEdges(edgeIdsToStale, true, false);
             log.info("ContradictionDetector: staled {} conflicting edges using strategy={} for factSheet={}",
                     edgeIdsToStale.size(), strategy, factSheetId);
         }
@@ -232,6 +225,24 @@ public class ContradictionDetector {
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /** Active (non-stale) edges for a fact sheet, read through the store-agnostic service. */
+    private List<GraphEdge> activeEdges(Long factSheetId) {
+        return knowledgeGraphService.getEdgesInFactSheet(factSheetId).stream()
+                .filter(e -> !Boolean.TRUE.equals(e.getStale()))
+                .collect(Collectors.toList());
+    }
+
+    /** Group edges by their (source, target) node-id pair; string ids work on every backend. */
+    private static Map<String, List<GraphEdge>> groupByPair(List<GraphEdge> edges) {
+        Map<String, List<GraphEdge>> pairGroups = new HashMap<>();
+        for (GraphEdge edge : edges) {
+            if (edge.getSourceNode() == null || edge.getTargetNode() == null) continue;
+            String key = edge.getSourceNode().getNodeId() + ":" + edge.getTargetNode().getNodeId();
+            pairGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(edge);
+        }
+        return pairGroups;
+    }
 
     private static String describeEdge(GraphEdge edge) {
         String type = edge.getEdgeType() != null ? edge.getEdgeType().name() : "UNKNOWN";

@@ -65,8 +65,8 @@ public class ToolGatewayConfigService {
 
         this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
-        this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
-        this.featureFlagsPath = KompileHome.dataDir().toPath().resolve("config").resolve(FEATURE_FLAGS_FILENAME);
+        this.configFilePath = KompileHome.configDirectory().toPath().resolve(CONFIG_FILENAME);
+        this.featureFlagsPath = KompileHome.configDirectory().toPath().resolve(FEATURE_FLAGS_FILENAME);
         this.currentConfig = ToolGatewayConfig.defaults();
 
         log.info("ToolGatewayConfigService initialized, config path: {}", configFilePath);

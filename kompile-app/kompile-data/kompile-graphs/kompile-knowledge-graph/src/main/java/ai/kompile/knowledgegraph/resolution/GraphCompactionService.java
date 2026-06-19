@@ -295,7 +295,7 @@ public class GraphCompactionService {
 
     private final ObjectMapper configObjectMapper = JsonUtils.standardMapper();
     private final Path graphExtractionConfigPath =
-            KompileHome.dataDir().toPath().resolve("config").resolve(GRAPH_EXTRACTION_CONFIG_FILENAME);
+            KompileHome.configDirectory().toPath().resolve(GRAPH_EXTRACTION_CONFIG_FILENAME);
     private volatile long graphExtractionConfigLastModified = Long.MIN_VALUE;
     private volatile CompactionRuntimeConfig compactionRuntimeConfig = CompactionRuntimeConfig.defaults();
 

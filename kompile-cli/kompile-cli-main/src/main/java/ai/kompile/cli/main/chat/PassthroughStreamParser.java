@@ -791,7 +791,7 @@ public class PassthroughStreamParser {
                             }
                         }
                         if (state.has("output")) {
-                            output = state.get("output").asText();
+                            output = extractToolOutputText(state.get("output"));
                         }
                         if (state.has("metadata") && state.get("metadata").has("exit")) {
                             exitCode = state.get("metadata").get("exit").asInt();
@@ -814,6 +814,65 @@ public class PassthroughStreamParser {
             PassthroughEvent event = parseOpenCodeLine(line);
             return event != null ? List.of(event) : List.of();
         }
+    }
+
+    /**
+     * Extract a human-readable text summary from an OpenCode tool output node.
+     * <p>
+     * OpenCode tool outputs vary by tool type:
+     * <ul>
+     *   <li>Plain string: returned as-is (parsed and recursed if it is itself JSON).</li>
+     *   <li>MCP content array: {@code [{"type":"text","text":"..."},...]} — concatenate text blocks.</li>
+     *   <li>OpenAI-style function call: {@code {"function":{"name":"...","arguments":{...}}}} — skipped
+     *       (that is the tool's own call, not its result).</li>
+     *   <li>Other object: a {@code text}/{@code content} field, or compact JSON as a last resort.</li>
+     * </ul>
+     * Callers still truncate before display; this just avoids dumping raw JSON blobs where a
+     * readable summary is available.
+     */
+    private String extractToolOutputText(JsonNode outputNode) {
+        if (outputNode == null || outputNode.isNull()) return "";
+
+        // Plain string — but it may itself be a serialized JSON payload (MCP results are
+        // often JSON-encoded strings), so try to parse it and recurse.
+        if (outputNode.isTextual()) {
+            String text = outputNode.asText();
+            String trimmed = text.stripLeading();
+            if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                try {
+                    String extracted = extractToolOutputText(objectMapper.readTree(trimmed));
+                    return extracted.isEmpty() ? text : extracted;
+                } catch (Exception ignored) {
+                    // Not JSON after all — fall through to the raw string.
+                }
+            }
+            return text;
+        }
+
+        // MCP content array: [{"type":"text","text":"..."}, ...]
+        if (outputNode.isArray()) {
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode item : outputNode) {
+                String type = item.has("type") ? item.get("type").asText() : "";
+                if ("text".equals(type) && item.has("text")) {
+                    if (sb.length() > 0) sb.append(' ');
+                    sb.append(item.get("text").asText());
+                }
+            }
+            if (sb.length() > 0) return sb.toString();
+        }
+
+        if (outputNode.isObject()) {
+            // OpenAI-style function-call wrapper — the tool's own call, not its result.
+            if (outputNode.has("function")) return "";
+            if (outputNode.has("text")) return outputNode.get("text").asText();
+            if (outputNode.has("content") && outputNode.get("content").isTextual()) {
+                return outputNode.get("content").asText();
+            }
+        }
+
+        // Fallback: compact JSON (callers truncate before display).
+        return outputNode.toString();
     }
 
     /** Tracks last Pi tool output per callId for delta computation. */

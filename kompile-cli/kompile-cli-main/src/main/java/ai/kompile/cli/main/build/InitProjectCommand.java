@@ -419,11 +419,11 @@ public class InitProjectCommand implements Callable<Integer> {
         // 6. Scaffold data directories and seed files
         scaffoldDataDirectories(projectDir);
 
-        // 6a. Seed the unified project repository manifest
+        // 6a. Seed the unified project repository manifest. This calls
+        //     KompileProjectStore.init(), which is the single source of truth for the
+        //     project layout: it scaffolds the full data/ tree and writes the canonical
+        //     .gitignore + .gitattributes (git-xet for models/artifacts/distributions).
         seedProjectManifest(projectDir, modules);
-
-        // 6b. Generate .gitignore
-        generateGitignore(projectDir);
 
         // 6c. Install staging server executable into project
         installStagingServer(projectDir);
@@ -616,6 +616,27 @@ public class InitProjectCommand implements Callable<Integer> {
         gwConfig.put("dryRun", false);
         gwConfig.put("judgeScoringEnabled", false);
         saveGlobalAndProject("tool-gateway-config.json", gwConfig, dataDir, projectConfigDir);
+
+        // --- graph-extraction-config.json: LLM graph extraction + entity resolution ---
+        Map<String, Object> graphExtractionConfig = new LinkedHashMap<>();
+        graphExtractionConfig.put("enabled", true);
+        graphExtractionConfig.put("entityTypes", new ArrayList<>());
+        graphExtractionConfig.put("relationshipTypes", new ArrayList<>());
+        graphExtractionConfig.put("llmProvider", "default");
+        graphExtractionConfig.put("temperature", 0.0);
+        graphExtractionConfig.put("maxTokens", 4096);
+        graphExtractionConfig.put("schemaMode", "LENIENT");
+        graphExtractionConfig.put("entityResolution", true);
+        graphExtractionConfig.put("entityResolutionSimilarityThreshold", 0.85);
+        graphExtractionConfig.put("entityResolutionUseEmbeddings", true);
+        graphExtractionConfig.put("entityResolutionEmbeddingThreshold", 0.88);
+        graphExtractionConfig.put("minConfidence", 0.5);
+        saveGlobalAndProject("graph-extraction-config.json", graphExtractionConfig, dataDir, projectConfigDir);
+
+        // --- anserini-config.json: keyword index + corpus staging paths ---
+        Map<String, Object> anseriniConfig = new LinkedHashMap<>();
+        anseriniConfig.put("corpusPath", "./data/anserini_corpus_json_staging");
+        saveGlobalAndProject("anserini-config.json", anseriniConfig, dataDir, projectConfigDir);
     }
 
     /**
@@ -1379,44 +1400,6 @@ public class InitProjectCommand implements Callable<Integer> {
                 .replace("\t", "\\t") + "\"";
     }
 
-    private void generateGitignore(File projectDir) throws IOException {
-        writeFile(new File(projectDir, ".gitignore"),
-                "# Build output\n" +
-                "target/\n" +
-                "*.class\n" +
-                "\n" +
-                "# Runtime data\n" +
-                "data/logs/\n" +
-                "data/pids/\n" +
-                "data/*.db\n" +
-                "data/*.db.trace.db\n" +
-                "data/*.db.mv.db\n" +
-                "\n" +
-                "# Staging server binaries\n" +
-                "staging/\n" +
-                "\n" +
-                "# Crash dumps\n" +
-                "hs_err_pid*.log\n" +
-                "hotspot_pid*.log\n" +
-                "*.hprof\n" +
-                "*.heapdump\n" +
-                "compute_sanitizer_*.log\n" +
-                "replay_pid*.log\n" +
-                "\n" +
-                "# IDE\n" +
-                ".idea/\n" +
-                "*.iml\n" +
-                ".vscode/\n" +
-                ".settings/\n" +
-                ".classpath\n" +
-                ".project\n" +
-                "\n" +
-                "# OS\n" +
-                ".DS_Store\n" +
-                "Thumbs.db\n");
-        System.out.println("  Generated .gitignore");
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // Scripts generation
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1531,7 +1514,12 @@ public class InitProjectCommand implements Callable<Integer> {
         // Launch
         if (isApp) {
             sb.append("echo \"Starting application on port ").append(port).append("...\"\n");
-            sb.append("java -jar \"$JAR\" ").append(args);
+            // Point the app at the project as its data dir so indices, per-project
+            // config, and databases land in the versioned project tree (data/, config/)
+            // rather than the global ~/.kompile home. Passed as a -D system property
+            // (before -jar) so both Spring @Value services AND static KompileHome
+            // callers resolve it.
+            sb.append("java -Dkompile.data.dir=\"$PROJECT_DIR\" -jar \"$JAR\" ").append(args);
             sb.append(" > \"$LOG_DIR/").append(logFile).append("\" 2>&1 &\n");
         } else {
             sb.append("echo \"Starting ").append(type).append(" subprocess on port ").append(port).append("...\"\n");
@@ -1700,7 +1688,12 @@ public class InitProjectCommand implements Callable<Integer> {
         sb.append(")\n\n");
 
         sb.append("echo Starting ").append(type).append(" on port ").append(port).append("...\n");
-        sb.append("start \"kompile-").append(type).append("\" /B java -jar \"%JAR%\" ").append(args);
+        if (isApp) {
+            // Point the app at the project as its data dir (see start-app.sh).
+            sb.append("start \"kompile-").append(type).append("\" /B java -Dkompile.data.dir=\"%PROJECT_DIR%\" -jar \"%JAR%\" ").append(args);
+        } else {
+            sb.append("start \"kompile-").append(type).append("\" /B java -jar \"%JAR%\" ").append(args);
+        }
         sb.append(" > \"%LOG_DIR%\\").append(logFile).append("\" 2>&1\n");
         sb.append("echo Started ").append(type).append(". Logs: %LOG_DIR%\\").append(logFile).append("\n");
 

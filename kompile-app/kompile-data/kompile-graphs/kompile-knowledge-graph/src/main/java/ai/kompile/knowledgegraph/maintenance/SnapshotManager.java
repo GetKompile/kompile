@@ -20,6 +20,7 @@ import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
@@ -41,8 +42,14 @@ import java.util.UUID;
 @Component
 public class SnapshotManager {
 
-    private static final String SNAPSHOT_DIR =
-            System.getProperty("user.home") + "/.kompile/graph-snapshots";
+    /**
+     * Base directory for snapshots. When the app runs inside a project
+     * ({@code kompile.data.dir} set), snapshots live under the versioned project
+     * tree ({@code <dataDir>/data/graph/snapshots}) so they travel with a git
+     * clone; otherwise they fall back to {@code ~/.kompile/graph-snapshots}.
+     */
+    @Value("${kompile.data.dir:}")
+    private String dataDir;
 
     private final GraphNodeRepository nodeRepository;
     private final GraphEdgeRepository edgeRepository;
@@ -54,6 +61,13 @@ public class SnapshotManager {
         this.nodeRepository = nodeRepository;
         this.edgeRepository = edgeRepository;
         this.objectMapper = objectMapper;
+    }
+
+    private Path snapshotBaseDir() {
+        if (dataDir != null && !dataDir.isBlank()) {
+            return Path.of(dataDir, "data", "graph", "snapshots");
+        }
+        return Path.of(System.getProperty("user.home"), ".kompile", "graph-snapshots");
     }
 
     /**
@@ -89,7 +103,7 @@ public class SnapshotManager {
         manifest.put("nodeIds", nodeIds);
 
         // Ensure directory exists
-        Path dir = Path.of(SNAPSHOT_DIR, String.valueOf(factSheetId));
+        Path dir = snapshotBaseDir().resolve(String.valueOf(factSheetId));
         try {
             Files.createDirectories(dir);
         } catch (IOException e) {
@@ -129,7 +143,7 @@ public class SnapshotManager {
      * @return list of {@link GraphSnapshot} records, newest first
      */
     public List<GraphSnapshot> listSnapshots(Long factSheetId) {
-        Path dir = Path.of(SNAPSHOT_DIR, String.valueOf(factSheetId));
+        Path dir = snapshotBaseDir().resolve(String.valueOf(factSheetId));
         if (!Files.exists(dir)) {
             log.debug("No snapshot directory found for factSheet={}", factSheetId);
             return List.of();

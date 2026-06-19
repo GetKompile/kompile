@@ -55,7 +55,7 @@ public class FilesystemToolConfigService {
 
     public FilesystemToolConfigService() {
         this.objectMapper = JsonUtils.standardMapper();
-        this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
+        this.configFilePath = KompileHome.configDirectory().toPath().resolve(CONFIG_FILENAME);
         this.config = FilesystemToolConfig.defaults();
         log.info("FilesystemToolConfigService initialized, config path: {}", configFilePath);
     }

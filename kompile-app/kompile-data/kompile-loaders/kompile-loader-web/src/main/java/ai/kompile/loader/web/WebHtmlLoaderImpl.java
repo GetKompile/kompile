@@ -191,8 +191,12 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
         }
 
         // Flat mode: single document with the whole page text.
-        String textContent = extractTextContent(jsoupDoc);
+        // Extract metadata BEFORE extractTextContent because that method mutates the document
+        // by removing script/style/noscript elements (which would strip JSON-LD, etc.).
         Map<String, Object> metadata = extractMetadata(jsoupDoc, sourceDescriptor, baseUri);
+        // Run email detection in flat mode too (structural mode runs it in extractStructural).
+        new HtmlEmailMetadataExtractor().detectAndExtract(jsoupDoc, metadata);
+        String textContent = extractTextContent(jsoupDoc);
         Document springDoc = new Document(textContent, metadata);
 
         logger.info("Loaded HTML document: {} characters, title: '{}'",
@@ -227,8 +231,25 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
         org.jsoup.nodes.Document working = jsoupDoc.clone();
         working.select("script, style, noscript, iframe, svg, canvas").remove();
         Map<String, Object> baseMeta = extractMetadata(working, desc, baseUri);
+        // Email detection: sets content_type_hint=email + email.* fields when the page is a rendered
+        // email, so every emitted document (tables and prose) inherits the email context.
+        new HtmlEmailMetadataExtractor().detectAndExtract(working, baseMeta);
 
+        // Prose Document comes first (docs[0]) so callers can use docs.get(0) as the main document.
+        // Table sub-documents follow (docs[1..n]).
         List<Document> docs = new ArrayList<>();
+
+        // Build prose doc (remove tables first, then extract text)
+        org.jsoup.nodes.Document proseClone = working.clone();
+        proseClone.select("table").remove();
+        String prose = extractTextContent(proseClone);
+        if (prose != null && !prose.isBlank()) {
+            Map<String, Object> proseMeta = new LinkedHashMap<>(baseMeta);
+            proseMeta.put("content_type", "text");
+            docs.add(new Document(prose, proseMeta));
+        }
+
+        // Table sub-documents
         int tableIndex = 0;
         for (Element table : working.select("table")) {
             // Skip nested tables — they are handled via the outer table's direct rows.
@@ -241,18 +262,7 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
                 tableIndex++;
             }
         }
-        if (docs.isEmpty()) {
-            return List.of(); // no tables actually extracted → let caller use flat mode
-        }
 
-        // Prose Document from everything that is not a table.
-        working.select("table").remove();
-        String prose = extractTextContent(working);
-        if (prose != null && !prose.isBlank()) {
-            Map<String, Object> proseMeta = new LinkedHashMap<>(baseMeta);
-            proseMeta.put("content_type", "text");
-            docs.add(new Document(prose, proseMeta));
-        }
         return docs;
     }
 
@@ -285,6 +295,15 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
         int rowCount = cellRows.size() - 1; // exclude header row
         int colCount = cellRows.stream().mapToInt(List::size).max().orElse(headers.size());
 
+        // Skip trivial tables: must have at least 1 data row and at least 2 columns.
+        // Single-row (header-only) or single-column tables are structural/layout artifacts,
+        // not semantic data tables worth indexing separately.
+        if (rowCount < 1 || colCount < 2) {
+            return null;
+        }
+
+        String markdownContent = TableCellGraphBuilder.toMarkdown(cellRows, true);
+
         Map<String, Object> meta = new LinkedHashMap<>(baseMeta);
         meta.put("content_type", "table");
         meta.put("table_extraction_method", "html-jsoup");
@@ -292,7 +311,7 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
         meta.put("table_row_count", rowCount);
         meta.put("table_column_count", colCount);
         meta.put("table_headers", String.join(",", headers));
-        meta.put("full_table_content", TableCellGraphBuilder.toMarkdown(cellRows, true));
+        meta.put("full_table_content", markdownContent);
 
         Graph graph = new TableCellGraphBuilder()
                 .namespace("html:" + baseUri + "#" + tableIndex)
@@ -304,9 +323,8 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
             meta.put(GraphConstants.META_TABLE_GRAPH, TableCellGraphBuilder.toJson(graph));
         }
 
-        String summary = "Table " + (tableIndex + 1) + " with " + rowCount + " rows and "
-                + colCount + " columns. Columns: " + String.join(", ", headers);
-        return new Document(summary, meta);
+        // Use markdown content as document text so extractors and search can see cell data directly.
+        return new Document(markdownContent, meta);
     }
 
     /**
@@ -389,7 +407,8 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
     }
 
     /**
-     * Extracts metadata from an HTML document.
+     * Extracts metadata from an HTML document, including rich html.* keys consumed by
+     * HtmlWebGraphExtractor (headings, hyperlinks, JSON-LD, forms, embedded media, images).
      */
     private Map<String, Object> extractMetadata(org.jsoup.nodes.Document doc,
                                                  DocumentSourceDescriptor sourceDescriptor,
@@ -411,7 +430,7 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
             metadata.put("title", title);
         }
 
-        // Meta tags
+        // Standard meta tags
         extractMetaTag(doc, "description", metadata, "description");
         extractMetaTag(doc, "author", metadata, "author");
         extractMetaTag(doc, "keywords", metadata, "keywords");
@@ -419,13 +438,27 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
         extractMetaTag(doc, "og:description", metadata, "ogDescription");
         extractMetaTag(doc, "og:site_name", metadata, "siteName");
         extractMetaTag(doc, "og:type", metadata, "pageType");
+        extractMetaTag(doc, "og:url", metadata, "ogUrl");
+        extractMetaTag(doc, "og:image", metadata, "ogImage");
         extractMetaTag(doc, "article:published_time", metadata, "publishedTime");
         extractMetaTag(doc, "article:modified_time", metadata, "modifiedTime");
         extractMetaTag(doc, "article:author", metadata, "articleAuthor");
+        extractMetaTag(doc, "article:section", metadata, "article.section");
+        extractMetaTag(doc, "article:tag", metadata, "article.tag");
 
         // Twitter card metadata
+        extractMetaTag(doc, "twitter:card", metadata, "twitterCard");
         extractMetaTag(doc, "twitter:title", metadata, "twitterTitle");
         extractMetaTag(doc, "twitter:description", metadata, "twitterDescription");
+        extractMetaTag(doc, "twitter:image", metadata, "twitterImage");
+        extractMetaTag(doc, "twitter:site", metadata, "twitterSite");
+
+        // Dublin Core metadata
+        extractMetaTag(doc, "DC.creator", metadata, "dc.creator");
+        extractMetaTag(doc, "DC.publisher", metadata, "dc.publisher");
+        extractMetaTag(doc, "DC.date", metadata, "dc.date");
+        extractMetaTag(doc, "DC.description", metadata, "dc.description");
+        extractMetaTag(doc, "DC.rights", metadata, "dc.rights");
 
         // Canonical URL
         Element canonical = doc.selectFirst("link[rel=canonical]");
@@ -445,6 +478,211 @@ public class WebHtmlLoaderImpl implements DocumentLoader {
         // Base URI
         if (!baseUri.isEmpty()) {
             metadata.put("baseUri", baseUri);
+        }
+
+        // ── html.alternateLinks ─────────────────────────────────────────────
+        Elements alternateLinks = doc.select("link[rel=alternate]");
+        if (!alternateLinks.isEmpty()) {
+            List<Map<String, String>> altList = new ArrayList<>();
+            for (Element link : alternateLinks) {
+                String href = link.attr("href");
+                if (href.isEmpty()) continue;
+                Map<String, String> alt = new LinkedHashMap<>();
+                alt.put("href", href);
+                String hreflang = link.attr("hreflang");
+                if (!hreflang.isEmpty()) alt.put("hreflang", hreflang);
+                String type = link.attr("type");
+                if (!type.isEmpty()) alt.put("type", type);
+                String altTitle = link.attr("title");
+                if (!altTitle.isEmpty()) alt.put("title", altTitle);
+                altList.add(alt);
+            }
+            if (!altList.isEmpty()) {
+                metadata.put("html.alternateLinks", altList);
+            }
+        }
+
+        // ── html.headings ───────────────────────────────────────────────────
+        Elements headingElements = doc.select("h1, h2, h3, h4, h5, h6");
+        if (!headingElements.isEmpty()) {
+            List<Map<String, String>> headings = new ArrayList<>();
+            for (Element heading : headingElements) {
+                String text = heading.text().trim();
+                if (text.isEmpty()) continue;
+                String level = heading.tagName().substring(1); // "1" through "6"
+                Map<String, String> h = new LinkedHashMap<>();
+                h.put("level", level);
+                h.put("text", text);
+                headings.add(h);
+            }
+            if (!headings.isEmpty()) {
+                metadata.put("html.headings", headings);
+            }
+        }
+
+        // ── html.hyperlinks ─────────────────────────────────────────────────
+        Elements anchors = doc.select("a[href]");
+        if (!anchors.isEmpty()) {
+            List<Map<String, String>> hyperlinks = new ArrayList<>();
+            List<Map<String, String>> mailtoEmails = new ArrayList<>();
+            for (Element anchor : anchors) {
+                String href = anchor.attr("href");
+                if (href.isEmpty()) continue;
+                String text = anchor.text().trim();
+                String anchorTitle = anchor.attr("title");
+                String rel = anchor.attr("rel");
+                if (href.startsWith("mailto:")) {
+                    String email = href.substring("mailto:".length()).trim();
+                    if (!email.isEmpty()) {
+                        Map<String, String> mailEntry = new LinkedHashMap<>();
+                        mailEntry.put("email", email);
+                        if (!text.isEmpty()) mailEntry.put("text", text);
+                        mailtoEmails.add(mailEntry);
+                    }
+                } else {
+                    Map<String, String> link = new LinkedHashMap<>();
+                    link.put("url", href);
+                    if (!text.isEmpty()) link.put("text", text);
+                    if (!anchorTitle.isEmpty()) link.put("title", anchorTitle);
+                    if (!rel.isEmpty()) link.put("rel", rel);
+                    hyperlinks.add(link);
+                }
+            }
+            if (!hyperlinks.isEmpty()) {
+                metadata.put("html.hyperlinks", hyperlinks);
+            }
+            if (!mailtoEmails.isEmpty()) {
+                metadata.put("html.mailtoEmails", mailtoEmails);
+            }
+        }
+
+        // ── html.images ─────────────────────────────────────────────────────
+        Elements imgElements = doc.select("img[src]");
+        if (!imgElements.isEmpty()) {
+            List<Map<String, String>> images = new ArrayList<>();
+            for (Element img : imgElements) {
+                String src = img.attr("src");
+                if (src.isEmpty()) continue;
+                Map<String, String> imgMeta = new LinkedHashMap<>();
+                imgMeta.put("src", src);
+                String alt = img.attr("alt");
+                if (!alt.isEmpty()) imgMeta.put("alt", alt);
+                String imgTitle = img.attr("title");
+                if (!imgTitle.isEmpty()) imgMeta.put("title", imgTitle);
+                images.add(imgMeta);
+            }
+            if (!images.isEmpty()) {
+                metadata.put("html.images", images);
+                metadata.put("imageCount", images.size());
+            }
+        }
+
+        // ── html.jsonld ─────────────────────────────────────────────────────
+        Elements jsonLdScripts = doc.select("script[type=application/ld+json]");
+        if (!jsonLdScripts.isEmpty()) {
+            List<String> jsonLdBlocks = new ArrayList<>();
+            for (Element script : jsonLdScripts) {
+                String jsonContent = script.html().trim();
+                if (!jsonContent.isEmpty()) {
+                    jsonLdBlocks.add(jsonContent);
+                }
+            }
+            if (!jsonLdBlocks.isEmpty()) {
+                metadata.put("html.jsonld", jsonLdBlocks);
+            }
+        }
+
+        // ── html.forms ──────────────────────────────────────────────────────
+        Elements formElements = doc.select("form");
+        if (!formElements.isEmpty()) {
+            List<Map<String, Object>> forms = new ArrayList<>();
+            for (Element form : formElements) {
+                Map<String, Object> formMeta = new LinkedHashMap<>();
+                String action = form.attr("action");
+                String method = form.attr("method");
+                String formName = form.attr("name");
+                if (!action.isEmpty()) formMeta.put("action", action);
+                if (!method.isEmpty()) formMeta.put("method", method);
+                if (!formName.isEmpty()) formMeta.put("name", formName);
+
+                // Extract fields (input, select, textarea)
+                Elements fieldElements = form.select("input[name], select[name], textarea[name]");
+                List<Map<String, String>> fields = new ArrayList<>();
+                for (Element field : fieldElements) {
+                    String fieldName = field.attr("name");
+                    if (fieldName.isEmpty()) continue;
+                    Map<String, String> fieldMeta = new LinkedHashMap<>();
+                    fieldMeta.put("name", fieldName);
+                    fieldMeta.put("tag", field.tagName());
+                    String fieldType = field.attr("type");
+                    if (!fieldType.isEmpty()) fieldMeta.put("type", fieldType);
+                    String placeholder = field.attr("placeholder");
+                    if (!placeholder.isEmpty()) fieldMeta.put("placeholder", placeholder);
+                    String required = field.attr("required");
+                    if (!required.isEmpty()) fieldMeta.put("required", "true");
+                    fields.add(fieldMeta);
+                }
+                if (!fields.isEmpty()) {
+                    formMeta.put("fields", fields);
+                    formMeta.put("fieldCount", fields.size());
+                }
+                forms.add(formMeta);
+            }
+            if (!forms.isEmpty()) {
+                metadata.put("html.forms", forms);
+            }
+        }
+
+        // ── html.embeddedMedia ──────────────────────────────────────────────
+        List<Map<String, String>> embeddedMedia = new ArrayList<>();
+
+        // Iframes
+        for (Element iframe : doc.select("iframe[src]")) {
+            String src = iframe.attr("src");
+            if (src.isEmpty()) continue;
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("type", "iframe");
+            m.put("src", src);
+            String iframeTitle = iframe.attr("title");
+            if (!iframeTitle.isEmpty()) m.put("title", iframeTitle);
+            String width = iframe.attr("width");
+            if (!width.isEmpty()) m.put("width", width);
+            String height = iframe.attr("height");
+            if (!height.isEmpty()) m.put("height", height);
+            embeddedMedia.add(m);
+        }
+
+        // Video elements
+        for (Element video : doc.select("video")) {
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("type", "video");
+            String src = video.attr("src");
+            if (src.isEmpty()) {
+                // Check <source> child
+                Element source = video.selectFirst("source[src]");
+                if (source != null) src = source.attr("src");
+            }
+            if (!src.isEmpty()) m.put("src", src);
+            String videoTitle = video.attr("title");
+            if (!videoTitle.isEmpty()) m.put("title", videoTitle);
+            embeddedMedia.add(m);
+        }
+
+        // Audio elements
+        for (Element audio : doc.select("audio")) {
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("type", "audio");
+            String src = audio.attr("src");
+            if (src.isEmpty()) {
+                Element source = audio.selectFirst("source[src]");
+                if (source != null) src = source.attr("src");
+            }
+            if (!src.isEmpty()) m.put("src", src);
+            embeddedMedia.add(m);
+        }
+
+        if (!embeddedMedia.isEmpty()) {
+            metadata.put("html.embeddedMedia", embeddedMedia);
         }
 
         // Add any metadata from the source descriptor

@@ -271,7 +271,7 @@ class GraphIOServiceTest {
 
     @Test
     void exportGraph_unknownFormat_throws() {
-        when(graphService.searchNodes(anyString(), any(), anyInt())).thenReturn(List.of());
+        when(graphService.getNodesByType(any())).thenReturn(List.of());
         assertThrows(IllegalArgumentException.class,
                 () -> service.exportGraph("xml", null));
     }
@@ -280,7 +280,7 @@ class GraphIOServiceTest {
 
     @Test
     void exportGraph_json_emptyGraph() throws Exception {
-        when(graphService.searchNodes(anyString(), any(), anyInt())).thenReturn(List.of());
+        when(graphService.getNodesByType(any())).thenReturn(List.of());
 
         ExportResult result = service.exportGraph("json", null);
 
@@ -308,9 +308,9 @@ class GraphIOServiceTest {
         edge.setEdgeType(EdgeType.SHARED_ENTITY);
         edge.setWeight(0.9);
 
-        when(graphService.searchNodes(eq(""), eq(NodeLevel.ENTITY), anyInt()))
+        when(graphService.getNodesByType(eq(NodeLevel.ENTITY)))
                 .thenReturn(List.of(n1, n2));
-        when(graphService.searchNodes(eq(""), argThat(l -> l != NodeLevel.ENTITY), anyInt()))
+        when(graphService.getNodesByType(argThat(l -> l != NodeLevel.ENTITY)))
                 .thenReturn(List.of());
         when(graphService.getEdgesForNode("n1")).thenReturn(List.of(edge));
         when(graphService.getEdgesForNode("n2")).thenReturn(List.of(edge));
@@ -326,7 +326,7 @@ class GraphIOServiceTest {
 
     @Test
     void exportGraph_csv_returnsZip() throws Exception {
-        when(graphService.searchNodes(anyString(), any(), anyInt())).thenReturn(List.of());
+        when(graphService.getNodesByType(any())).thenReturn(List.of());
 
         ExportResult result = service.exportGraph("csv", null);
 
@@ -339,7 +339,7 @@ class GraphIOServiceTest {
 
     @Test
     void exportGraph_graphml_returnsXml() throws Exception {
-        when(graphService.searchNodes(anyString(), any(), anyInt())).thenReturn(List.of());
+        when(graphService.getNodesByType(any())).thenReturn(List.of());
 
         ExportResult result = service.exportGraph("graphml", null);
 
@@ -352,7 +352,7 @@ class GraphIOServiceTest {
 
     @Test
     void exportGraph_cypher_returnsPlaintext() throws Exception {
-        when(graphService.searchNodes(anyString(), any(), anyInt())).thenReturn(List.of());
+        when(graphService.getNodesByType(any())).thenReturn(List.of());
 
         ExportResult result = service.exportGraph("cypher", null);
 
@@ -371,9 +371,9 @@ class GraphIOServiceTest {
         GraphNode noMatch = graphNode("n2", "google", NodeLevel.ENTITY);
         noMatch.setFactSheetId(99L);
 
-        when(graphService.searchNodes(eq(""), eq(NodeLevel.ENTITY), anyInt()))
+        when(graphService.getNodesByType(eq(NodeLevel.ENTITY)))
                 .thenReturn(List.of(match, noMatch));
-        when(graphService.searchNodes(eq(""), argThat(l -> l != NodeLevel.ENTITY), anyInt()))
+        when(graphService.getNodesByType(argThat(l -> l != NodeLevel.ENTITY)))
                 .thenReturn(List.of());
         when(graphService.getEdgesForNode("n1")).thenReturn(List.of());
 

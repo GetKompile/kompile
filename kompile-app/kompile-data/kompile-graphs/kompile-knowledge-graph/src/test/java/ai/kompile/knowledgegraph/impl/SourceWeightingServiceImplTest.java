@@ -18,7 +18,6 @@ package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.SourceWeight;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.repository.SourceWeightRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,7 +44,6 @@ import static org.mockito.Mockito.*;
 class SourceWeightingServiceImplTest {
 
     @Mock private SourceWeightRepository weightRepository;
-    @Mock private GraphNodeRepository nodeRepository;
     @Mock private KnowledgeGraphService knowledgeGraphService;
 
     private SourceWeightingServiceImpl service;
@@ -78,7 +76,7 @@ class SourceWeightingServiceImplTest {
     @Test
     void setSourceWeight_newWeight_creates() {
         GraphNode node = stubNode("n-1", "Source");
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
         when(weightRepository.findBySourceNodeAndTopicAndUserId(node, null, "user1"))
                 .thenReturn(Optional.empty());
         when(weightRepository.save(any(SourceWeight.class))).thenAnswer(i -> i.getArgument(0));
@@ -95,7 +93,7 @@ class SourceWeightingServiceImplTest {
         GraphNode node = stubNode("n-1", "Source");
         SourceWeight existing = SourceWeight.builder()
                 .sourceNode(node).baseWeight(1.0).enabled(true).build();
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
         when(weightRepository.findBySourceNodeAndTopicAndUserId(node, null, "user1"))
                 .thenReturn(Optional.of(existing));
         when(weightRepository.save(any(SourceWeight.class))).thenAnswer(i -> i.getArgument(0));
@@ -107,7 +105,7 @@ class SourceWeightingServiceImplTest {
 
     @Test
     void setSourceWeight_nodeNotFound_throws() {
-        when(nodeRepository.findByNodeId("missing")).thenReturn(Optional.empty());
+        when(knowledgeGraphService.getNode("missing")).thenReturn(Optional.empty());
 
         assertThrows(IllegalArgumentException.class,
                 () -> service.setSourceWeight("missing", 1.0, null, "user1"));
@@ -152,7 +150,7 @@ class SourceWeightingServiceImplTest {
     void removeWeight_found_deletes() {
         GraphNode node = stubNode("n-1", "Source");
         SourceWeight sw = stubWeight(1.0, 1.0);
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
         when(weightRepository.findBySourceNodeAndTopicAndUserId(node, null, "user1"))
                 .thenReturn(Optional.of(sw));
 
@@ -163,7 +161,7 @@ class SourceWeightingServiceImplTest {
     @Test
     void removeWeight_notFound_noOp() {
         GraphNode node = stubNode("n-1", "Source");
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
         when(weightRepository.findBySourceNodeAndTopicAndUserId(node, null, "user1"))
                 .thenReturn(Optional.empty());
 
@@ -173,7 +171,7 @@ class SourceWeightingServiceImplTest {
 
     @Test
     void removeWeight_nodeNotFound_throws() {
-        when(nodeRepository.findByNodeId("missing")).thenReturn(Optional.empty());
+        when(knowledgeGraphService.getNode("missing")).thenReturn(Optional.empty());
 
         assertThrows(IllegalArgumentException.class,
                 () -> service.removeWeight("missing", null, "user1"));
@@ -186,7 +184,7 @@ class SourceWeightingServiceImplTest {
         GraphNode node = stubNode("n-1", "Source");
         SourceWeight sw = SourceWeight.builder()
                 .sourceNode(node).baseWeight(1.0).enabled(true).build();
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
         when(weightRepository.findBySourceNodeAndTopicAndUserId(node, null, "user1"))
                 .thenReturn(Optional.of(sw));
         when(weightRepository.save(any())).thenAnswer(i -> i.getArgument(0));
@@ -198,7 +196,7 @@ class SourceWeightingServiceImplTest {
     @Test
     void setWeightEnabled_weightNotFound_throws() {
         GraphNode node = stubNode("n-1", "Source");
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
         when(weightRepository.findBySourceNodeAndTopicAndUserId(node, null, "user1"))
                 .thenReturn(Optional.empty());
 
@@ -263,7 +261,7 @@ class SourceWeightingServiceImplTest {
     void computeTopicRelevance_topicInTitle_returnsHigh() {
         GraphNode node = stubNode("n-1", "Machine Learning Guide");
         node.setDescription("A comprehensive guide");
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
 
         Double relevance = service.computeTopicRelevance("n-1", "Machine Learning");
         assertEquals(0.8, relevance);
@@ -273,7 +271,7 @@ class SourceWeightingServiceImplTest {
     void computeTopicRelevance_topicNotInContent_returnsDefault() {
         GraphNode node = stubNode("n-1", "Finance Report");
         node.setDescription("Quarterly earnings");
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
 
         Double relevance = service.computeTopicRelevance("n-1", "Kubernetes");
         assertEquals(0.5, relevance);
@@ -281,7 +279,7 @@ class SourceWeightingServiceImplTest {
 
     @Test
     void computeTopicRelevance_nodeNotFound_returnsDefault() {
-        when(nodeRepository.findByNodeId("missing")).thenReturn(Optional.empty());
+        when(knowledgeGraphService.getNode("missing")).thenReturn(Optional.empty());
 
         Double relevance = service.computeTopicRelevance("missing", "topic");
         assertEquals(0.5, relevance);
@@ -290,7 +288,7 @@ class SourceWeightingServiceImplTest {
     @Test
     void computeTopicRelevance_nullTopic_returnsDefault() {
         GraphNode node = stubNode("n-1", "Title");
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
 
         Double relevance = service.computeTopicRelevance("n-1", null);
         assertEquals(0.5, relevance);
@@ -335,7 +333,7 @@ class SourceWeightingServiceImplTest {
     @Test
     void assignTopic_createsNewWeight() {
         GraphNode node = stubNode("n-1", "Source");
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
         when(weightRepository.findBySourceNodeAndTopicAndUserId(node, "ML", null))
                 .thenReturn(Optional.empty());
 
@@ -346,7 +344,7 @@ class SourceWeightingServiceImplTest {
     @Test
     void assignTopic_existingWeight_noOp() {
         GraphNode node = stubNode("n-1", "Source");
-        when(nodeRepository.findByNodeId("n-1")).thenReturn(Optional.of(node));
+        when(knowledgeGraphService.getNode("n-1")).thenReturn(Optional.of(node));
         when(weightRepository.findBySourceNodeAndTopicAndUserId(node, "ML", null))
                 .thenReturn(Optional.of(stubWeight(1.0, 1.0)));
 

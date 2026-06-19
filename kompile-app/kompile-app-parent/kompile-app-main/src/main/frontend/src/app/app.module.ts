@@ -111,6 +111,7 @@ import { VlmOrchestrationComponent } from './components/vlm-orchestration/vlm-or
 import { TritonCacheComponent } from './components/triton-cache/triton-cache.component';
 import { MonitorsManagerComponent } from './components/monitors-manager/monitors-manager.component';
 import { PassthroughChatComponent } from './components/passthrough-chat/passthrough-chat.component';
+import { AgentTasksComponent } from './components/agent-tasks/agent-tasks.component';
 import { Nd4jFrameworkComponent } from './components/nd4j-framework/nd4j-framework.component';
 import { SameDiffLLMModelsComponent } from './components/samediff-llm-models/samediff-llm-models.component';
 import { VlmManagementComponent } from './components/developer-hub/vlm-management/vlm-management.component';
@@ -339,6 +340,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     TritonCacheComponent,
     MonitorsManagerComponent,
     PassthroughChatComponent,
+    AgentTasksComponent,
     Nd4jFrameworkComponent,
     SameDiffLLMModelsComponent,
     ProcessEngineDashboardComponent,

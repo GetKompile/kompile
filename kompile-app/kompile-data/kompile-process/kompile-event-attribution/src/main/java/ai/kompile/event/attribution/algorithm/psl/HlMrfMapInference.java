@@ -9,27 +9,26 @@
  */
 package ai.kompile.event.attribution.algorithm.psl;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
- * MAP (most-probable-explanation) inference for a Hinge-Loss Markov Random Field, the
+ * Entry point and router for HL-MRF MAP (most-probable-explanation) inference — the
  * hand-rolled analogue of PSL's {@code MPEInference}.
  *
- * <p>It minimizes the total weighted energy
- * {@code E(y) = Σ_r w_r · d_r(y)^{p_r}} over the target atom values {@code y ∈ [0,1]},
- * where {@code d_r} is each ground rule's {@link GroundRule#distanceToSatisfaction distance
- * to satisfaction} and {@code p_r ∈ {1, 2}}. Because every {@code d_r} is convex (a hinge
- * over an affine function) and weights are non-negative, {@code E} is convex, so this
- * <b>projected gradient descent with backtracking line search</b> converges to the global
- * optimum. Hard constraints are enforced as a large squared penalty ({@code hardWeight}).</p>
+ * <p>It minimizes the total weighted energy {@code E(y) = Σ_r w_r · d_r(y)^{p_r}} over the
+ * target atom values {@code y ∈ [0,1]}, where {@code d_r} is each ground rule's
+ * {@link GroundRule#distanceToSatisfaction distance to satisfaction} and {@code p_r ∈ {1,2}}.
+ * The energy is convex (a sum of hinges over affine functions with non-negative weights), so
+ * MAP is solved exactly by projected gradient descent. Atom truth values are continuous
+ * {@code [0,1]} soft-truth — the defining difference from the discrete Bayesian-network path
+ * in the sibling {@code algorithm.bayesian} package.</p>
  *
- * <p>Atom truth values are continuous {@code [0,1]} soft-truth — the defining difference
- * from the discrete Bayesian-network path in the sibling {@code algorithm.bayesian} package.</p>
+ * <p>This class grounds the program once and dispatches to an {@link HlMrfSolver} chosen by
+ * problem size: the plain-Java {@link ScalarHlMrfInference} for the small subgraphs that
+ * dominate in practice, and the ND4J-vectorized {@link TensorHlMrfInference} (GPU-capable)
+ * once the program is large enough for matrix operations to pay off — provided an ND4J
+ * backend is available, otherwise it falls back to the scalar solver.</p>
  */
 public final class HlMrfMapInference {
 
@@ -38,6 +37,21 @@ public final class HlMrfMapInference {
     public static final int DEFAULT_MAX_ITERATIONS = 2000;
     public static final double DEFAULT_TOLERANCE = 1e-6;
     public static final double DEFAULT_HARD_WEIGHT = 1.0e6;
+
+    /**
+     * Route to the ND4J {@link TensorHlMrfInference} backend at or above this many ground
+     * rules (when a backend is available). Below it, the scalar solver is faster because it
+     * avoids per-iteration op-dispatch and host/device transfer overhead. The default KG
+     * subgraphs (maxNodes ≈ 100) sit well under this, so they stay on the scalar path.
+     */
+    public static final int DEFAULT_TENSOR_THRESHOLD = 4000;
+
+    /**
+     * Above this many dense incidence-matrix cells ({@code groundRules × atoms}) the dense
+     * {@link TensorHlMrfInference} would use too much memory, so routing prefers the sparse
+     * {@link SgdHlMrfInference} instead (≈ 50M floats ≈ 200 MB).
+     */
+    public static final long DEFAULT_DENSE_CELL_BUDGET = 50_000_000L;
 
     /**
      * Inference outcome.
@@ -57,100 +71,29 @@ public final class HlMrfMapInference {
 
     public static Result solve(PslProgram program, int maxIterations, double tolerance, double hardWeight) {
         List<GroundRule> ground = program.ground();
-        Map<String, Double> values = program.valueSnapshot();
-        List<String> targets = program.targetKeys();
-
-        // Neutral initialization for the free variables.
-        for (String t : targets) values.put(t, 0.5);
-
-        if (targets.isEmpty() || ground.isEmpty()) {
-            return new Result(values, ground, 0, objective(ground, values, hardWeight), true);
-        }
-
-        Set<String> targetSet = new HashSet<>(targets);
-        double objective = objective(ground, values, hardWeight);
-        double step = 0.1;
-        boolean converged = false;
-        int iter = 0;
-
-        for (; iter < maxIterations; iter++) {
-            Map<String, Double> grad = gradient(ground, values, targetSet, hardWeight);
-            double gradNorm2 = 0.0;
-            for (double g : grad.values()) gradNorm2 += g * g;
-            if (gradNorm2 <= tolerance * tolerance) {
-                converged = true;
-                break;
-            }
-
-            // Backtracking line search: shrink the step until the energy strictly decreases.
-            boolean accepted = false;
-            for (int ls = 0; ls < 50; ls++) {
-                Map<String, Double> candidate = new LinkedHashMap<>(values);
-                double maxChange = 0.0;
-                for (String t : targets) {
-                    double v = clamp01(values.get(t) - step * grad.getOrDefault(t, 0.0));
-                    maxChange = Math.max(maxChange, Math.abs(v - values.get(t)));
-                    candidate.put(t, v);
-                }
-                double candidateObjective = objective(ground, candidate, hardWeight);
-                if (candidateObjective < objective) {
-                    boolean tinyProgress = (objective - candidateObjective) < tolerance && maxChange < tolerance;
-                    values = candidate;
-                    objective = candidateObjective;
-                    accepted = true;
-                    if (tinyProgress) converged = true;
-                    break;
-                }
-                step *= 0.5;
-            }
-            if (!accepted) { // step underflow ⇒ already at the optimum
-                converged = true;
-                break;
-            }
-            if (converged) break;
-            step *= 1.5; // grow the step again for the next iteration
-        }
-
-        return new Result(values, ground, iter, objective, converged);
+        return chooseSolver(ground.size(), program.atomCount())
+                .solve(program, ground, maxIterations, tolerance, hardWeight);
     }
 
     /**
-     * Gradient of the energy w.r.t. each target atom. For a ground rule with positive
-     * distance {@code d}, the body conjunction and head disjunction are both in their
-     * linear (un-clamped) regime, so each literal's contribution is
-     * {@code ±coef}, with {@code coef = w·p·d^{p-1}}.
+     * Pick the inference strategy by problem size:
+     * <ul>
+     *   <li>fewer than {@link #DEFAULT_TENSOR_THRESHOLD} ground rules ⇒ {@link ScalarHlMrfInference}
+     *       (plain Java; lowest overhead for the small subgraphs that dominate in practice);</li>
+     *   <li>otherwise, if the dense incidence matrix fits {@link #DEFAULT_DENSE_CELL_BUDGET} and an
+     *       ND4J backend is available ⇒ {@link TensorHlMrfInference} (GPU-capable matrix ops);</li>
+     *   <li>otherwise ⇒ {@link SgdHlMrfInference} (sparse, mini-batch SGD; handles graph scale and
+     *       needs no ND4J backend).</li>
+     * </ul>
      */
-    private static Map<String, Double> gradient(List<GroundRule> ground, Map<String, Double> values,
-                                                Set<String> targets, double hardWeight) {
-        Map<String, Double> grad = new HashMap<>();
-        for (GroundRule gr : ground) {
-            double d = gr.distanceToSatisfaction(values);
-            if (d <= 0.0) continue;
-            double w = gr.hard() ? hardWeight : gr.weight();
-            double coef = gr.squared() ? 2.0 * w * d : w;
-            for (GroundRule.Lit l : gr.body()) {
-                if (targets.contains(l.atomKey())) {
-                    // ∂d/∂value = +∂bodyTruth/∂value = (negated ? -1 : +1)
-                    grad.merge(l.atomKey(), coef * (l.negated() ? -1.0 : 1.0), Double::sum);
-                }
-            }
-            for (GroundRule.Lit l : gr.head()) {
-                if (targets.contains(l.atomKey())) {
-                    // ∂d/∂value = -∂headTruth/∂value = (negated ? +1 : -1)
-                    grad.merge(l.atomKey(), coef * (l.negated() ? 1.0 : -1.0), Double::sum);
-                }
-            }
+    public static HlMrfSolver chooseSolver(int groundRuleCount, int atomCount) {
+        if (groundRuleCount < DEFAULT_TENSOR_THRESHOLD) {
+            return new ScalarHlMrfInference();
         }
-        return grad;
-    }
-
-    private static double objective(List<GroundRule> ground, Map<String, Double> values, double hardWeight) {
-        double sum = 0.0;
-        for (GroundRule gr : ground) sum += gr.potential(values, hardWeight);
-        return sum;
-    }
-
-    private static double clamp01(double v) {
-        return Math.max(0.0, Math.min(1.0, v));
+        long cells = (long) groundRuleCount * Math.max(1, atomCount);
+        if (cells <= DEFAULT_DENSE_CELL_BUDGET && TensorHlMrfInference.isAvailable()) {
+            return new TensorHlMrfInference();
+        }
+        return new SgdHlMrfInference();
     }
 }

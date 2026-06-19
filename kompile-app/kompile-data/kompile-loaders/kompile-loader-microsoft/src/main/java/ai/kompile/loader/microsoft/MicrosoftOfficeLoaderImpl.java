@@ -31,6 +31,9 @@ import org.apache.poi.hwpf.extractor.WordExtractor;
 import org.apache.poi.sl.extractor.SlideShowExtractor;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xslf.usermodel.XMLSlideShow;
+import org.apache.poi.xslf.usermodel.XSLFSlide;
+import org.apache.poi.xslf.usermodel.XSLFShape;
+import org.apache.poi.xslf.usermodel.XSLFTextShape;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
@@ -152,6 +155,9 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
 
             // Extract tracked changes (revisions)
             extractDocxTrackedChanges(document, textDoc);
+
+            // Extract headings for graph sectioning
+            extractDocxHeadings(document, textDoc);
 
             documents.add(textDoc);
 
@@ -294,6 +300,48 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
     }
 
     /**
+     * Extracts heading paragraphs from a .docx document and stores them as a list
+     * in the "docx.headings" metadata key. Each entry is a Map with keys: text, level,
+     * paragraphIndex.  Style names "Heading1"..."Heading9" and their normalised
+     * equivalents (e.g. "heading 1") are treated as headings.
+     */
+    private void extractDocxHeadings(XWPFDocument document, Document doc) {
+        try {
+            List<Map<String, String>> headings = new ArrayList<>();
+            List<org.apache.poi.xwpf.usermodel.XWPFParagraph> paragraphs = document.getParagraphs();
+            for (int idx = 0; idx < paragraphs.size(); idx++) {
+                org.apache.poi.xwpf.usermodel.XWPFParagraph para = paragraphs.get(idx);
+                String style = para.getStyle();
+                if (style == null) continue;
+                String styleLower = style.toLowerCase().replace(" ", "").replace("_", "");
+                int level = 0;
+                if (styleLower.startsWith("heading")) {
+                    // Extract the numeric suffix, e.g. "heading1" -> 1
+                    String suffix = styleLower.substring("heading".length());
+                    if (!suffix.isEmpty()) {
+                        try { level = Integer.parseInt(suffix); } catch (NumberFormatException ignored) {}
+                    }
+                    if (level == 0) level = 1; // treat bare "heading" as level 1
+                }
+                if (level > 0) {
+                    String text = para.getText();
+                    if (text == null || text.isBlank()) continue;
+                    Map<String, String> entry = new LinkedHashMap<>();
+                    entry.put("text", text.trim());
+                    entry.put("level", String.valueOf(level));
+                    entry.put("paragraphIndex", String.valueOf(idx));
+                    headings.add(entry);
+                }
+            }
+            if (!headings.isEmpty()) {
+                doc.getMetadata().put("docx.headings", headings);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to extract headings from .docx", e);
+        }
+    }
+
+    /**
      * Extracts a Word table as a separate Document with markdown formatting.
      */
     private Document extractWordTableAsDocument(org.apache.poi.xwpf.usermodel.XWPFTable table, File file, int tableIndex) {
@@ -394,19 +442,40 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
     private List<Document> extractExcelContent(Workbook workbook, File file, String docType) {
         List<Document> documents = new ArrayList<>();
 
+        // Extract workbook-level core properties (author, title, keywords) once
+        // so they can be stamped on every sheet document.
+        Map<String, String> workbookProps = extractExcelCoreProperties(workbook);
+
         for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
             Sheet sheet = workbook.getSheetAt(i);
             StringBuilder content = new StringBuilder();
             content.append("Sheet: ").append(sheet.getSheetName()).append("\n\n");
 
+            List<String> headerCells = new ArrayList<>();
+            boolean firstRow = true;
+            int rowCount = 0;
             for (Row row : sheet) {
-                for (Cell cell : row) {
-                    String cellValue = getCellValueAsString(cell);
-                    if (!cellValue.trim().isEmpty()) {
-                        content.append(cellValue).append("\t");
+                if (firstRow) {
+                    // Capture the header row
+                    for (Cell cell : row) {
+                        String cellValue = getCellValueAsString(cell);
+                        headerCells.add(cellValue);
+                        if (!cellValue.trim().isEmpty()) {
+                            content.append(cellValue).append("\t");
+                        }
                     }
+                    content.append("\n");
+                    firstRow = false;
+                } else {
+                    for (Cell cell : row) {
+                        String cellValue = getCellValueAsString(cell);
+                        if (!cellValue.trim().isEmpty()) {
+                            content.append(cellValue).append("\t");
+                        }
+                    }
+                    content.append("\n");
+                    rowCount++;
                 }
-                content.append("\n");
             }
 
             if (content.length() > 0) {
@@ -414,11 +483,63 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
                 addMetadata(springDoc, file, docType);
                 springDoc.getMetadata().put("sheetName", sheet.getSheetName());
                 springDoc.getMetadata().put("sheetIndex", i);
+                if (!headerCells.isEmpty()) {
+                    springDoc.getMetadata().put("table_headers", String.join(",", headerCells));
+                    springDoc.getMetadata().put("table_column_count", headerCells.size());
+                }
+                if (rowCount > 0) {
+                    springDoc.getMetadata().put("table_row_count", rowCount);
+                }
+                // Propagate workbook-level properties to each sheet document
+                workbookProps.forEach((k, v) -> springDoc.getMetadata().put(k, v));
                 documents.add(springDoc);
             }
         }
 
         return documents;
+    }
+
+    /**
+     * Extracts OOXML CoreProperties from an XSSFWorkbook (xlsx/xlsm).
+     * Returns an empty map for legacy HSSFWorkbook (xls) which lacks OOXML properties.
+     */
+    private Map<String, String> extractExcelCoreProperties(Workbook workbook) {
+        Map<String, String> props = new LinkedHashMap<>();
+        if (!(workbook instanceof XSSFWorkbook xssfWorkbook)) return props;
+        try {
+            var ooProps = xssfWorkbook.getProperties();
+            if (ooProps == null) return props;
+            var core = ooProps.getCoreProperties();
+            if (core != null) {
+                if (core.getCreator() != null && !core.getCreator().isBlank())
+                    props.put("author", core.getCreator());
+                if (core.getTitle() != null && !core.getTitle().isBlank())
+                    props.put("title", core.getTitle());
+                if (core.getKeywords() != null && !core.getKeywords().isBlank())
+                    props.put("keywords", core.getKeywords());
+                if (core.getSubject() != null && !core.getSubject().isBlank())
+                    props.put("subject", core.getSubject());
+                if (core.getDescription() != null && !core.getDescription().isBlank())
+                    props.put("description", core.getDescription());
+                if (core.getLastModifiedByUser() != null && !core.getLastModifiedByUser().isBlank())
+                    props.put("lastModifiedBy", core.getLastModifiedByUser());
+                if (core.getCreated() != null)
+                    props.put("creationDate", core.getCreated().toInstant().toString());
+                if (core.getModified() != null)
+                    props.put("modificationDate", core.getModified().toInstant().toString());
+            }
+            var extProps = ooProps.getExtendedProperties();
+            if (extProps != null) {
+                var ext = extProps.getUnderlyingProperties();
+                if (ext.getApplication() != null && !ext.getApplication().isBlank())
+                    props.put("applicationName", ext.getApplication());
+                if (ext.getCompany() != null && !ext.getCompany().isBlank())
+                    props.put("company", ext.getCompany());
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to extract CoreProperties from Excel workbook", e);
+        }
+        return props;
     }
 
     private String getCellValueAsString(Cell cell) {
@@ -453,15 +574,119 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
     }
 
     private List<Document> loadPowerPointPptx(File file) throws IOException {
-        try (FileInputStream fis = new FileInputStream(file);
-             XMLSlideShow slideShow = new XMLSlideShow(fis);
-             SlideShowExtractor extractor = new SlideShowExtractor(slideShow)) {
+        List<Document> documents = new ArrayList<>();
 
-            String content = extractor.getText();
-            Document springDoc = new Document(content);
-            addMetadata(springDoc, file, "Microsoft PowerPoint Presentation (.pptx)");
-            return List.of(springDoc);
+        try (FileInputStream fis = new FileInputStream(file);
+             XMLSlideShow slideShow = new XMLSlideShow(fis)) {
+
+            // --- Extract workbook-level core properties once ---
+            Map<String, String> pptxProps = extractPptxCoreProperties(slideShow);
+
+            // --- Full-text summary document (index 0) ---
+            try (SlideShowExtractor fullTextExtractor = new SlideShowExtractor(slideShow)) {
+                String fullText = fullTextExtractor.getText();
+                Document fullDoc = new Document(fullText != null ? fullText : "");
+                addMetadata(fullDoc, file, "Microsoft PowerPoint Presentation (.pptx)");
+                fullDoc.getMetadata().put("content_type", "text");
+                pptxProps.forEach((k, v) -> fullDoc.getMetadata().put(k, v));
+                documents.add(fullDoc);
+            }
+
+            // --- Per-slide documents ---
+            List<XSLFSlide> slides = slideShow.getSlides();
+            for (int slideIdx = 0; slideIdx < slides.size(); slideIdx++) {
+                XSLFSlide slide = slides.get(slideIdx);
+                int slideNumber = slideIdx + 1;
+
+                // Collect slide text
+                StringBuilder slideText = new StringBuilder();
+                String slideTitle = null;
+                for (XSLFShape shape : slide.getShapes()) {
+                    if (shape instanceof XSLFTextShape textShape) {
+                        String text = textShape.getText();
+                        if (text != null && !text.isBlank()) {
+                            slideText.append(text).append("\n");
+                            // First non-blank text shape is the title candidate
+                            if (slideTitle == null) {
+                                slideTitle = text.trim();
+                            }
+                        }
+                    }
+                }
+
+                Document slideDoc = new Document(slideText.toString().trim());
+                addMetadata(slideDoc, file, "Microsoft PowerPoint Presentation (.pptx)");
+                slideDoc.getMetadata().put("content_type", "slide");
+                slideDoc.getMetadata().put("slideNumber", String.valueOf(slideNumber));
+                if (slideTitle != null) {
+                    slideDoc.getMetadata().put("slideTitle", slideTitle);
+                }
+                // Speaker notes
+                try {
+                    var notes = slideShow.getNotesSlide(slide);
+                    if (notes != null) {
+                        StringBuilder notesText = new StringBuilder();
+                        for (XSLFTextShape ph : notes.getPlaceholders()) {
+                            if (ph.getTextType() == org.apache.poi.sl.usermodel.Placeholder.BODY) {
+                                String t = ph.getText();
+                                if (t != null && !t.isBlank()) notesText.append(t).append("\n");
+                            }
+                        }
+                        String notesStr = notesText.toString().trim();
+                        if (!notesStr.isEmpty()) {
+                            slideDoc.getMetadata().put("speakerNotes", notesStr);
+                        }
+                    }
+                } catch (Exception e) {
+                    logger.debug("Could not extract speaker notes for slide {}: {}", slideNumber, e.getMessage());
+                }
+                pptxProps.forEach((k, v) -> slideDoc.getMetadata().put(k, v));
+                documents.add(slideDoc);
+            }
         }
+
+        return documents;
+    }
+
+    /**
+     * Extracts OOXML CoreProperties from an XMLSlideShow (pptx).
+     */
+    private Map<String, String> extractPptxCoreProperties(XMLSlideShow slideShow) {
+        Map<String, String> props = new LinkedHashMap<>();
+        try {
+            var ooProps = slideShow.getProperties();
+            if (ooProps == null) return props;
+            var core = ooProps.getCoreProperties();
+            if (core != null) {
+                if (core.getCreator() != null && !core.getCreator().isBlank())
+                    props.put("author", core.getCreator());
+                if (core.getTitle() != null && !core.getTitle().isBlank())
+                    props.put("title", core.getTitle());
+                if (core.getKeywords() != null && !core.getKeywords().isBlank())
+                    props.put("keywords", core.getKeywords());
+                if (core.getSubject() != null && !core.getSubject().isBlank())
+                    props.put("subject", core.getSubject());
+                if (core.getDescription() != null && !core.getDescription().isBlank())
+                    props.put("description", core.getDescription());
+                if (core.getLastModifiedByUser() != null && !core.getLastModifiedByUser().isBlank())
+                    props.put("lastModifiedBy", core.getLastModifiedByUser());
+                if (core.getCreated() != null)
+                    props.put("creationDate", core.getCreated().toInstant().toString());
+                if (core.getModified() != null)
+                    props.put("modificationDate", core.getModified().toInstant().toString());
+            }
+            var extProps = ooProps.getExtendedProperties();
+            if (extProps != null) {
+                var ext = extProps.getUnderlyingProperties();
+                if (ext.getApplication() != null && !ext.getApplication().isBlank())
+                    props.put("applicationName", ext.getApplication());
+                if (ext.getCompany() != null && !ext.getCompany().isBlank())
+                    props.put("company", ext.getCompany());
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to extract CoreProperties from pptx", e);
+        }
+        return props;
     }
 
     private List<Document> loadAccessDatabase(File file) throws IOException {
@@ -553,5 +778,6 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
         document.getMetadata().put("lastModified", file.lastModified());
         document.getMetadata().put("documentType", docType);
         document.getMetadata().put("loader", getName());
+        document.getMetadata().put("source_type", "FILE");
     }
 }

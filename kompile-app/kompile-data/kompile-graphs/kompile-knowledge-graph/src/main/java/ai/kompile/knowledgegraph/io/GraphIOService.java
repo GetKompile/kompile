@@ -67,7 +67,19 @@ public class GraphIOService {
     }
 
     public ExportResult exportGraph(String format, Long factSheetId) throws Exception {
-        PortableGraph graph = collect(factSheetId);
+        return serialize(format, collect(factSheetId, false));
+    }
+
+    /**
+     * Export only the nodes/edges not scoped to any fact sheet (factSheetId == null).
+     * Complements the per-fact-sheet exports so a portability dump covers the whole
+     * graph exactly once.
+     */
+    public ExportResult exportGlobalGraph(String format) throws Exception {
+        return serialize(format, collect(null, true));
+    }
+
+    private ExportResult serialize(String format, PortableGraph graph) throws Exception {
         return switch (format.toLowerCase()) {
             case "json" -> new ExportResult("json",
                     graph.nodes().size(),
@@ -115,7 +127,15 @@ public class GraphIOService {
                     graphService.updateNode(existing.get().getNodeId(), n.title(), n.description(), n.metadata());
                     updated++;
                 } else {
-                    graphService.createNode(level, n.externalId(), n.title(), n.description(), n.metadata());
+                    // Restore fact-sheet scope when present so rehydrated graphs land
+                    // in the correct fact sheet (the factSheetId-aware overload is a no-op
+                    // on stores that don't scope, preserving interop-import behavior).
+                    if (n.factSheetId() != null) {
+                        graphService.createNode(level, n.externalId(), n.title(), n.description(),
+                                n.metadata(), n.factSheetId());
+                    } else {
+                        graphService.createNode(level, n.externalId(), n.title(), n.description(), n.metadata());
+                    }
                     created++;
                 }
             } catch (Exception e) {
@@ -172,17 +192,20 @@ public class GraphIOService {
         }
     }
 
-    private PortableGraph collect(Long factSheetId) {
+    private PortableGraph collect(Long factSheetId, boolean globalOnly) {
         List<PortableNode> nodes = new ArrayList<>();
         List<PortableEdge> edges = new ArrayList<>();
         Set<String> emittedEdgeIds = new HashSet<>();
 
         for (NodeLevel level : NodeLevel.values()) {
-            for (GraphNode node : graphService.searchNodes("", level, Integer.MAX_VALUE)) {
-                if (factSheetId != null && !factSheetId.equals(node.getFactSheetId())) continue;
+            // Enumerate every node of this level directly. (searchNodes("") is a query
+            // path — on the vector-store-backed graph an empty query is not guaranteed
+            // to return all nodes, which would silently truncate a portability export.)
+            for (GraphNode node : graphService.getNodesByType(level)) {
+                if (!inScope(node.getFactSheetId(), factSheetId, globalOnly)) continue;
                 nodes.add(toPortable(node));
                 for (GraphEdge edge : graphService.getEdgesForNode(node.getNodeId())) {
-                    if (factSheetId != null && !factSheetId.equals(edge.getFactSheetId())) continue;
+                    if (!inScope(edge.getFactSheetId(), factSheetId, globalOnly)) continue;
                     if (!emittedEdgeIds.add(edge.getEdgeId())) continue;
                     edges.add(toPortable(edge));
                 }
@@ -191,13 +214,34 @@ public class GraphIOService {
         return new PortableGraph(nodes, edges);
     }
 
+    /**
+     * Scope predicate shared by node and edge collection.
+     * <ul>
+     *   <li>{@code globalOnly} → keep only rows with no fact-sheet scope (factSheetId == null);</li>
+     *   <li>{@code factSheetId != null} → keep only rows in that fact sheet;</li>
+     *   <li>otherwise → keep everything (interop export of the whole graph).</li>
+     * </ul>
+     */
+    private static boolean inScope(Long rowFactSheetId, Long factSheetId, boolean globalOnly) {
+        if (globalOnly) return rowFactSheetId == null;
+        if (factSheetId != null) return factSheetId.equals(rowFactSheetId);
+        return true;
+    }
+
     private static PortableNode toPortable(GraphNode node) {
+        // getMetadata() is the store-agnostic view of metadataJson; previously this was
+        // hard-coded to null, silently dropping all structured node metadata on export.
+        java.util.Map<String, Object> meta = node.getMetadata();
         return new PortableNode(
                 node.getExternalId(),
                 node.getTitle(),
                 node.getDescription(),
                 node.getNodeType() == null ? "ENTITY" : node.getNodeType().name(),
-                null);
+                meta == null || meta.isEmpty() ? null : meta,
+                node.getFactSheetId(),
+                node.getNamedGraphId(),
+                node.getConfidence(),
+                node.getOccurredAt() == null ? null : node.getOccurredAt().toString());
     }
 
     private static PortableEdge toPortable(GraphEdge edge) {
@@ -206,6 +250,9 @@ public class GraphIOService {
                 edge.getTargetNode().getExternalId(),
                 edge.getEdgeType() == null ? "USER_DEFINED" : edge.getEdgeType().name(),
                 edge.getWeight(),
-                edge.getDescription());
+                edge.getDescription(),
+                edge.getProvenance(),
+                edge.getConfidence(),
+                edge.getOccurredAt() == null ? null : edge.getOccurredAt().toString());
     }
 }

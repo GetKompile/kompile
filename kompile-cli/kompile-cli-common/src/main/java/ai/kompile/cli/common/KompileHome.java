@@ -37,6 +37,26 @@ public final class KompileHome {
     }
 
     /**
+     * The effective Kompile data-dir root, honoring the {@code kompile.data.dir}
+     * system property when set (e.g. an app launched with
+     * {@code -Dkompile.data.dir=<projectDir>}), and falling back to {@code ~/.kompile}.
+     *
+     * <p>This is what lets static callers (which cannot see Spring's
+     * {@code --kompile.data.dir} command-line argument) resolve per-project
+     * configuration and data, consistent with {@code @Value("${kompile.data.dir}")}
+     * services. Note this is the data-dir ROOT (whose {@code config/} subdir holds
+     * configs), not the {@code ~/.kompile/data} subdirectory returned by
+     * {@link #dataDir()}.</p>
+     */
+    public static File resolvedHomeDirectory() {
+        String dataDir = System.getProperty("kompile.data.dir");
+        if (dataDir != null && !dataDir.isBlank()) {
+            return new File(dataDir);
+        }
+        return homeDirectory();
+    }
+
+    /**
      * Returns the Maven installation directory ({@code ~/.kompile/mvn}).
      */
     public static File mavenDirectory() {
@@ -91,7 +111,7 @@ public final class KompileHome {
      * Returns the configuration directory ({@code ~/.kompile/config}).
      */
     public static File configDirectory() {
-        return new File(homeDirectory(), "config");
+        return new File(resolvedHomeDirectory(), "config");
     }
 
     /**

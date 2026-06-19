@@ -84,6 +84,9 @@ public class ProjectBackendService {
     @Autowired(required = false)
     private IndexedDocumentRepository indexedDocumentRepository;
 
+    @Autowired(required = false)
+    private ProjectGraphPortabilityService graphPortabilityService;
+
     @Value("${kompile.project.root:}")
     private String configuredRoot;
 
@@ -117,6 +120,11 @@ public class ProjectBackendService {
         Path root = requireProjectRoot();
         exportProjectCatalogs(root);
         store.openProject(root);
+        // Rehydrate the knowledge graph baked into the project (no-op unless the
+        // runtime graph is empty, i.e. a fresh clone).
+        if (graphPortabilityService != null) {
+            graphPortabilityService.importAllGraphs(root);
+        }
         return new ProjectResponse(store.load(root), store.status(root));
     }
 
@@ -193,7 +201,12 @@ public class ProjectBackendService {
     }
 
     public KompileProjectGitResult commit(String message) {
-        return store.gitCommitAll(requireProjectRoot(), message);
+        Path root = requireProjectRoot();
+        // Bake the current graph into the versioned tree so the commit captures it.
+        if (graphPortabilityService != null) {
+            graphPortabilityService.exportAllGraphs(root);
+        }
+        return store.gitCommitAll(root, message);
     }
 
     public KompileProjectGitResult pull() {

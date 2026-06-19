@@ -74,6 +74,16 @@
             <artifactId>slf4j-api</artifactId>
         </dependency>
 
+        <!-- ND4J for vectorized, GPU-capable HL-MRF tensor inference (TensorHlMrfInference).
+             nd4j-api is also already on the classpath transitively via kompile-knowledge-graph
+             (INDArray embeddings); declared explicitly here for hygiene. The runtime backend is
+             supplied by the host application (app-main). -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-api</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -83,6 +93,21 @@
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ND4J native CPU backend so TensorHlMrfInferenceTest can execute tensor ops -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-native</artifactId>
+            <version>${nd4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-native</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}</classifier>
             <scope>test</scope>
         </dependency>
     </dependencies>

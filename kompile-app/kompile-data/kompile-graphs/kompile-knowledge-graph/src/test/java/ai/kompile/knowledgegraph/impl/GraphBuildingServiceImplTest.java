@@ -45,8 +45,6 @@ import static org.mockito.Mockito.*;
 @org.mockito.junit.jupiter.MockitoSettings(strictness = org.mockito.quality.Strictness.LENIENT)
 class GraphBuildingServiceImplTest {
 
-    @Mock private GraphNodeRepository nodeRepository;
-    @Mock private GraphEdgeRepository edgeRepository;
     @Mock private EntityMentionRepository entityMentionRepository;
     @Mock private EntityExtractionService entityExtractionService;
     @Mock private KnowledgeGraphService knowledgeGraphService;
@@ -97,7 +95,8 @@ class GraphBuildingServiceImplTest {
     @Test
     void processDocument_extractsEntitiesAndCreatesEdges() {
         GraphNode doc = docNode("n1", "doc1");
-        when(nodeRepository.findByExternalIdAndNodeType("doc1", NodeLevel.DOCUMENT))
+        // impl calls knowledgeGraphService.getNodeByExternalId for document lookup
+        when(knowledgeGraphService.getNodeByExternalId("doc1", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(doc));
 
         ExtractedEntity person = new ExtractedEntity("John Smith", "PERSON", 0, 10, 0.9, Map.of());
@@ -105,8 +104,9 @@ class GraphBuildingServiceImplTest {
                 .thenReturn(List.of(person));
         when(entityExtractionService.normalizeEntityName("John Smith")).thenReturn("john smith");
 
+        // impl calls knowledgeGraphService.getNodeByExternalId for entity lookup (in findOrCreateEntityNode)
         GraphNode entityNode = entityNode("e1", "John Smith");
-        when(nodeRepository.findByExternalIdAndNodeType("john smith", NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodeByExternalId("john smith", NodeLevel.ENTITY))
                 .thenReturn(Optional.of(entityNode));
 
         when(entityMentionRepository.findByNodeAndEntityName(doc, "john smith"))
@@ -117,7 +117,8 @@ class GraphBuildingServiceImplTest {
                 .mentionCount(0).confidence(0.9).build();
         when(entityMentionRepository.save(any())).thenReturn(mention);
 
-        when(edgeRepository.findEdgeBetweenNodes("n1", "e1")).thenReturn(Optional.empty());
+        // impl calls knowledgeGraphService.edgeExists (not edgeRepository.findEdgeBetweenNodes)
+        when(knowledgeGraphService.edgeExists("n1", "e1")).thenReturn(false);
 
         int count = service.processDocument("doc1", "John Smith is here", Map.of(), "src1", syncConfig());
 
@@ -129,7 +130,7 @@ class GraphBuildingServiceImplTest {
     @Test
     void processDocument_filtersLowConfidence() {
         GraphNode doc = docNode("n1", "doc1");
-        when(nodeRepository.findByExternalIdAndNodeType("doc1", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("doc1", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(doc));
 
         // Entity below minEntityConfidence (0.5)
@@ -145,7 +146,8 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void processDocument_createsDocNodeIfMissing() {
-        when(nodeRepository.findByExternalIdAndNodeType("doc1", NodeLevel.DOCUMENT))
+        // impl calls knowledgeGraphService.getNodeByExternalId first
+        when(knowledgeGraphService.getNodeByExternalId("doc1", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.empty());
         GraphNode newDoc = docNode("n1", "doc1");
         when(knowledgeGraphService.createDocumentNode(isNull(), eq("doc1"), eq("doc1"), any()))
@@ -161,7 +163,8 @@ class GraphBuildingServiceImplTest {
     @Test
     void processDocument_skipsExistingEdge() {
         GraphNode doc = docNode("n1", "doc1");
-        when(nodeRepository.findByExternalIdAndNodeType("doc1", NodeLevel.DOCUMENT))
+        // impl calls knowledgeGraphService.getNodeByExternalId for document lookup
+        when(knowledgeGraphService.getNodeByExternalId("doc1", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(doc));
 
         ExtractedEntity person = new ExtractedEntity("John", "PERSON", 0, 4, 0.9, Map.of());
@@ -169,17 +172,17 @@ class GraphBuildingServiceImplTest {
                 .thenReturn(List.of(person));
         when(entityExtractionService.normalizeEntityName("John")).thenReturn("john");
 
+        // impl calls knowledgeGraphService.getNodeByExternalId for entity lookup (findOrCreateEntityNode)
         GraphNode entityNode = entityNode("e1", "John");
-        when(nodeRepository.findByExternalIdAndNodeType("john", NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodeByExternalId("john", NodeLevel.ENTITY))
                 .thenReturn(Optional.of(entityNode));
         when(entityMentionRepository.findByNodeAndEntityName(doc, "john"))
                 .thenReturn(Optional.of(EntityMention.builder()
                         .node(doc).entityName("john").entityType("PERSON")
                         .mentionCount(1).confidence(0.8).build()));
 
-        // Edge already exists
-        when(edgeRepository.findEdgeBetweenNodes("n1", "e1"))
-                .thenReturn(Optional.of(new GraphEdge()));
+        // Edge already exists — impl calls knowledgeGraphService.edgeExists (not edgeRepository)
+        when(knowledgeGraphService.edgeExists("n1", "e1")).thenReturn(true);
 
         service.processDocument("doc1", "John is here", Map.of(), "src1", syncConfig());
 
@@ -190,15 +193,12 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void createSharedEntityEdges_createsEdgesForSharedPairs() {
-        GraphNode n1 = docNode("n1", "doc1");
-        GraphNode n2 = docNode("n2", "doc2");
+        // impl delegates to knowledgeGraphService.findNodePairsWithSharedEntities and expects String node IDs
         List<Object[]> pairs = new ArrayList<>();
-        pairs.add(new Object[]{1L, 2L, 5L});
-        when(entityMentionRepository.findNodePairsWithSharedEntities(2))
-                .thenReturn(pairs);
-        when(nodeRepository.findById(1L)).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(2L)).thenReturn(Optional.of(n2));
-        when(edgeRepository.findEdgeBetweenNodes("n1", "n2")).thenReturn(Optional.empty());
+        pairs.add(new Object[]{"n1", "n2", 5L});
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(2)).thenReturn(pairs);
+        // 5 shared → weight = min(1.0, 5/10.0) = 0.5
+        when(knowledgeGraphService.edgeExists("n1", "n2")).thenReturn(false);
 
         int created = service.createSharedEntityEdges(2);
 
@@ -209,16 +209,12 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void createSharedEntityEdges_skipsExistingEdge() {
-        GraphNode n1 = docNode("n1", "doc1");
-        GraphNode n2 = docNode("n2", "doc2");
+        // impl delegates to knowledgeGraphService.findNodePairsWithSharedEntities and expects String node IDs
         List<Object[]> pairs = new ArrayList<>();
-        pairs.add(new Object[]{1L, 2L, 3L});
-        when(entityMentionRepository.findNodePairsWithSharedEntities(1))
-                .thenReturn(pairs);
-        when(nodeRepository.findById(1L)).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(2L)).thenReturn(Optional.of(n2));
-        when(edgeRepository.findEdgeBetweenNodes("n1", "n2"))
-                .thenReturn(Optional.of(new GraphEdge()));
+        pairs.add(new Object[]{"n1", "n2", 3L});
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(1)).thenReturn(pairs);
+        // Edge already exists — impl checks via knowledgeGraphService.edgeExists
+        when(knowledgeGraphService.edgeExists("n1", "n2")).thenReturn(true);
 
         int created = service.createSharedEntityEdges(1);
 
@@ -227,15 +223,11 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void createSharedEntityEdges_capsWeightAtOne() {
-        GraphNode n1 = docNode("n1", "doc1");
-        GraphNode n2 = docNode("n2", "doc2");
+        // impl delegates to knowledgeGraphService.findNodePairsWithSharedEntities and expects String node IDs
         List<Object[]> pairs = new ArrayList<>();
-        pairs.add(new Object[]{1L, 2L, 20L}); // 20 shared → weight min(1.0, 20/10) = 1.0
-        when(entityMentionRepository.findNodePairsWithSharedEntities(1))
-                .thenReturn(pairs);
-        when(nodeRepository.findById(1L)).thenReturn(Optional.of(n1));
-        when(nodeRepository.findById(2L)).thenReturn(Optional.of(n2));
-        when(edgeRepository.findEdgeBetweenNodes("n1", "n2")).thenReturn(Optional.empty());
+        pairs.add(new Object[]{"n1", "n2", 20L}); // 20 shared → weight min(1.0, 20/10.0) = 1.0
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(1)).thenReturn(pairs);
+        when(knowledgeGraphService.edgeExists("n1", "n2")).thenReturn(false);
 
         service.createSharedEntityEdges(1);
 
@@ -245,12 +237,10 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void createSharedEntityEdges_skipsNullNodes() {
+        // impl skips pairs where either ID is not a String (cannot resolve to a nodeId)
         List<Object[]> pairs = new ArrayList<>();
-        pairs.add(new Object[]{1L, 2L, 3L});
-        when(entityMentionRepository.findNodePairsWithSharedEntities(1))
-                .thenReturn(pairs);
-        when(nodeRepository.findById(1L)).thenReturn(Optional.empty());
-        when(nodeRepository.findById(2L)).thenReturn(Optional.empty());
+        pairs.add(new Object[]{1L, 2L, 3L}); // Long IDs → n1Id/n2Id resolve to null → skipped
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(1)).thenReturn(pairs);
 
         int created = service.createSharedEntityEdges(1);
 
@@ -261,8 +251,9 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void buildGraphFromAllSources_sync_returnsBuildStatus() {
-        when(nodeRepository.findAllSources()).thenReturn(List.of());
-        when(entityMentionRepository.findNodePairsWithSharedEntities(anyInt())).thenReturn(List.of());
+        // impl calls knowledgeGraphService.getAllSources() and knowledgeGraphService.findNodePairsWithSharedEntities()
+        when(knowledgeGraphService.getAllSources()).thenReturn(List.of());
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(anyInt())).thenReturn(List.of());
 
         BuildStatus status = service.buildGraphFromAllSources(syncConfig());
 
@@ -272,8 +263,9 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void buildGraphFromSources_sync_returnsBuildStatus() {
-        when(nodeRepository.findByNodeId("src1")).thenReturn(Optional.empty());
-        when(entityMentionRepository.findNodePairsWithSharedEntities(anyInt())).thenReturn(List.of());
+        // impl calls knowledgeGraphService.getNode() for each sourceId
+        when(knowledgeGraphService.getNode("src1")).thenReturn(Optional.empty());
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(anyInt())).thenReturn(List.of());
 
         BuildStatus status = service.buildGraphFromSources(List.of("src1"), syncConfig());
 
@@ -288,8 +280,8 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void getBuildStatus_returnsStatusAfterBuild() {
-        when(nodeRepository.findAllSources()).thenReturn(List.of());
-        when(entityMentionRepository.findNodePairsWithSharedEntities(anyInt())).thenReturn(List.of());
+        when(knowledgeGraphService.getAllSources()).thenReturn(List.of());
+        when(knowledgeGraphService.findNodePairsWithSharedEntities(anyInt())).thenReturn(List.of());
 
         BuildStatus result = service.buildGraphFromAllSources(syncConfig());
         BuildStatus retrieved = service.getBuildStatus(result.jobId());
@@ -316,22 +308,29 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void clearGraph_deletesAll() {
+        // impl calls entityMentionRepository.deleteAll() then knowledgeGraphService.getGraphStatistics()
+        // Node/edge deletion is delegated to the backing store (no direct repo.deleteAll calls)
+        when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of());
+
         service.clearGraph();
 
         verify(entityMentionRepository).deleteAll();
-        verify(edgeRepository).deleteAll();
-        verify(nodeRepository).deleteAll();
+        verify(knowledgeGraphService).getGraphStatistics();
     }
 
     // ─── Build statistics ──────────────────────────────────────────────
 
     @Test
     void getBuildStatistics_returnsCounts() {
-        when(nodeRepository.count()).thenReturn(10L);
-        when(edgeRepository.count()).thenReturn(5L);
+        // impl delegates to knowledgeGraphService.getGraphStatistics() (putAll into result map)
+        // and entityMentionRepository.count() for totalEntityMentions
+        Map<String, Object> serviceStats = new HashMap<>();
+        serviceStats.put("totalNodes", 10L);
+        serviceStats.put("totalEdges", 5L);
+        when(knowledgeGraphService.getGraphStatistics()).thenReturn(serviceStats);
         when(entityMentionRepository.count()).thenReturn(20L);
-        when(nodeRepository.countByNodeType(any())).thenReturn(0L);
-        when(edgeRepository.countByEdgeType(any())).thenReturn(0L);
+        // countNodesByType called for all NodeLevel values; return 0 so nodesByType stays empty
+        when(knowledgeGraphService.countNodesByType(any(NodeLevel.class))).thenReturn(0L);
 
         Map<String, Object> stats = service.getBuildStatistics();
 
@@ -343,23 +342,20 @@ class GraphBuildingServiceImplTest {
 
     @Test
     void getBuildStatistics_includesNonZeroNodeTypes() {
-        when(nodeRepository.count()).thenReturn(3L);
-        when(edgeRepository.count()).thenReturn(1L);
+        // impl builds nodesByType via knowledgeGraphService.countNodesByType (only non-zero included)
+        // edgesByType is not computed by GraphBuildingServiceImpl — that was a JPA-era artifact
+        when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of());
         when(entityMentionRepository.count()).thenReturn(2L);
-        when(nodeRepository.countByNodeType(NodeLevel.ENTITY)).thenReturn(2L);
-        when(nodeRepository.countByNodeType(argThat(l -> l != NodeLevel.ENTITY))).thenReturn(0L);
-        when(edgeRepository.countByEdgeType(EdgeType.SHARED_ENTITY)).thenReturn(1L);
-        when(edgeRepository.countByEdgeType(argThat(t -> t != EdgeType.SHARED_ENTITY))).thenReturn(0L);
+        when(knowledgeGraphService.countNodesByType(NodeLevel.ENTITY)).thenReturn(2L);
+        when(knowledgeGraphService.countNodesByType(argThat(l -> l != NodeLevel.ENTITY))).thenReturn(0L);
 
         Map<String, Object> stats = service.getBuildStatistics();
 
         @SuppressWarnings("unchecked")
         Map<String, Long> nodesByType = (Map<String, Long>) stats.get("nodesByType");
         assertEquals(2L, nodesByType.get("ENTITY"));
-
-        @SuppressWarnings("unchecked")
-        Map<String, Long> edgesByType = (Map<String, Long>) stats.get("edgesByType");
-        assertEquals(1L, edgesByType.get("SHARED_ENTITY"));
+        // Only ENTITY had non-zero count; all others are absent
+        assertEquals(1, nodesByType.size());
     }
 
     // ─── findOrCreateEntityNode ────────────────────────────────────────
@@ -368,21 +364,25 @@ class GraphBuildingServiceImplTest {
     void findOrCreateEntityNode_findsExisting() {
         when(entityExtractionService.normalizeEntityName("Apple")).thenReturn("apple");
         GraphNode existing = entityNode("e1", "Apple");
-        when(nodeRepository.findByExternalIdAndNodeType("apple", NodeLevel.ENTITY))
+        // impl uses knowledgeGraphService.getNodeByExternalId (not nodeRepository)
+        when(knowledgeGraphService.getNodeByExternalId("apple", NodeLevel.ENTITY))
                 .thenReturn(Optional.of(existing));
 
         GraphNode result = service.findOrCreateEntityNode("Apple", "ORG");
 
         assertSame(existing, result);
-        verify(nodeRepository, never()).save(any());
+        verify(knowledgeGraphService, never()).createNode(any(), any(), any(), any(), any());
     }
 
     @Test
     void findOrCreateEntityNode_createsNew() {
         when(entityExtractionService.normalizeEntityName("NewEntity")).thenReturn("newentity");
-        when(nodeRepository.findByExternalIdAndNodeType("newentity", NodeLevel.ENTITY))
+        // impl uses knowledgeGraphService.getNodeByExternalId then knowledgeGraphService.createNode
+        when(knowledgeGraphService.getNodeByExternalId("newentity", NodeLevel.ENTITY))
                 .thenReturn(Optional.empty());
-        when(nodeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        GraphNode created = entityNode("e-new", "NewEntity");
+        when(knowledgeGraphService.createNode(eq(NodeLevel.ENTITY), eq("newentity"), eq("NewEntity"),
+                anyString(), any())).thenReturn(created);
 
         GraphNode result = service.findOrCreateEntityNode("NewEntity", "CONCEPT");
 
@@ -390,6 +390,7 @@ class GraphBuildingServiceImplTest {
         assertEquals(NodeLevel.ENTITY, result.getNodeType());
         assertEquals("newentity", result.getExternalId());
         assertEquals("NewEntity", result.getTitle());
-        verify(nodeRepository).save(any());
+        verify(knowledgeGraphService).createNode(eq(NodeLevel.ENTITY), eq("newentity"), eq("NewEntity"),
+                anyString(), any());
     }
 }

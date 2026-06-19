@@ -48,7 +48,7 @@ public class NoteSyncConfigService {
     public NoteSyncConfigService() {
         this.objectMapper = JsonUtils.standardMapper();
 
-        this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
+        this.configFilePath = KompileHome.configDirectory().toPath().resolve(CONFIG_FILENAME);
         this.currentConfig = NoteSyncConfig.defaults();
 
         log.info("NoteSyncConfigService initialized, config path: {}", configFilePath);

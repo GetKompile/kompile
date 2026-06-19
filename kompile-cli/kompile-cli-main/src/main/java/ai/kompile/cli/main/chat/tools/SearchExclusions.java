@@ -43,12 +43,28 @@ public final class SearchExclusions {
 
     /**
      * Returns true if a directory with this basename should be skipped while traversing.
-     * Hidden directories (name starting with {@code .}) are always skipped.
+     * Hidden directories (name starting with {@code .}) are skipped by default.
      */
     public static boolean isExcludedDir(String name) {
+        return isExcludedDir(name, false);
+    }
+
+    /**
+     * Returns true if a directory with this basename should be skipped while traversing.
+     *
+     * <p>The explicit {@link #DIRS} names — heavy VCS/build/dependency trees such as
+     * {@code .git} and {@code target} — are <em>always</em> pruned; searching them is never
+     * useful. The {@code includeHidden} flag only governs <em>other</em> dot-prefixed
+     * directories (e.g. {@code .github}, {@code .config}): they are pruned when
+     * {@code includeHidden} is false and traversed when it is true.</p>
+     */
+    public static boolean isExcludedDir(String name, boolean includeHidden) {
         if (name == null || name.isEmpty()) {
             return false;
         }
-        return name.startsWith(".") || DIR_SET.contains(name);
+        if (DIR_SET.contains(name)) {
+            return true;
+        }
+        return !includeHidden && name.startsWith(".");
     }
 }

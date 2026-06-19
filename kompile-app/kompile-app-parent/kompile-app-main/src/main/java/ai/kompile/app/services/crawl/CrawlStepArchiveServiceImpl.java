@@ -101,6 +101,13 @@ public class CrawlStepArchiveServiceImpl implements CrawlStepArchiveService {
 
             if (jobHistoryService != null) {
                 String taskId = historyTaskId(job.getJobId());
+                // Ensure a history row exists before flipping the resumable pointers: recordCheckpointPath
+                // and markJobResumable both no-op when findByTaskId is empty, which is exactly the case for a
+                // crawl that failed before its history record was synced. createJob is an idempotent
+                // find-or-create, so this is harmless when the row already exists.
+                String label = job.getRequest() != null && job.getRequest().getName() != null
+                        ? job.getRequest().getName() : job.getJobId();
+                jobHistoryService.createJob(taskId, label);
                 jobHistoryService.recordCheckpointPath(taskId, archiveRoot.toString(),
                         IngestEvent.IngestPhase.INDEXING);
                 jobHistoryService.markJobResumable(taskId, true);

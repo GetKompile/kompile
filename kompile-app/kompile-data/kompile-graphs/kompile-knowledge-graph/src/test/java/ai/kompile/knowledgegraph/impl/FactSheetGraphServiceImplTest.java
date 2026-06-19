@@ -224,7 +224,10 @@ class FactSheetGraphServiceImplTest {
                 .thenReturn(entityPage);
 
         GraphEdge edge = stubEdge("e1", src, doc, EdgeType.HIERARCHICAL, 1.0);
-        when(edgeRepository.findByFactSheetId(1L)).thenReturn(List.of(edge));
+
+        // Vector store is the source of truth: getVisualizationData now reads via knowledgeGraphService.
+        when(knowledgeGraphService.getNodesInFactSheet(1L)).thenReturn(List.of(src, doc));
+        when(knowledgeGraphService.getEdgesInFactSheet(1L)).thenReturn(List.of(edge));
 
         GraphVisualizationData viz = service.getVisualizationData(1L, 50, 50);
 
@@ -236,8 +239,8 @@ class FactSheetGraphServiceImplTest {
     @Test
     void getVisualizationData_unlimitedNodes_returnsAll() {
         GraphNode n1 = stubNode("n1", "N1", NodeLevel.SOURCE);
-        when(nodeRepository.findByFactSheetId(1L)).thenReturn(List.of(n1));
-        when(edgeRepository.findByFactSheetId(1L)).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesInFactSheet(1L)).thenReturn(List.of(n1));
+        when(knowledgeGraphService.getEdgesInFactSheet(1L)).thenReturn(List.of());
 
         GraphVisualizationData viz = service.getVisualizationData(1L, 0, 0);
 
@@ -294,6 +297,17 @@ class FactSheetGraphServiceImplTest {
                 .thenReturn(topConceptRows);
         when(sourceLinkingService.getConnectivitySummary(1L)).thenReturn(Map.of("totalSources", 3));
 
+        // Vector store is the source of truth: per-type node counts come from knowledgeGraphService,
+        // and edge counts are read from the global graph statistics (edges_<type> keys).
+        when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, NodeLevel.SOURCE)).thenReturn(3L);
+        when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, NodeLevel.DOCUMENT)).thenReturn(10L);
+        for (NodeLevel lvl : NodeLevel.values()) {
+            if (lvl != NodeLevel.SOURCE && lvl != NodeLevel.DOCUMENT) {
+                when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, lvl)).thenReturn(0L);
+            }
+        }
+        when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of("edges_hierarchical", 10L));
+
         Map<String, Object> stats = service.getGraphStatistics(1L);
 
         @SuppressWarnings("unchecked")
@@ -309,16 +323,21 @@ class FactSheetGraphServiceImplTest {
 
     @Test
     void clearGraph_deletesAllComponents() {
+        // Vector store is the source of truth: clearGraph counts nodes via the matrix service,
+        // deletes them via deleteByFactSheetId, and removes the JPA entity mentions.
+        when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, NodeLevel.SOURCE)).thenReturn(20L);
+        for (NodeLevel level : NodeLevel.values()) {
+            if (level != NodeLevel.SOURCE) {
+                when(knowledgeGraphService.countNodesByTypeInFactSheet(1L, level)).thenReturn(0L);
+            }
+        }
         when(entityMentionRepository.deleteByFactSheetId(1L)).thenReturn(5);
-        when(edgeRepository.deleteByFactSheetId(1L)).thenReturn(10);
-        when(nodeRepository.deleteByFactSheetId(1L)).thenReturn(20);
 
         int deleted = service.clearGraph(1L);
 
-        assertEquals(35, deleted);
+        assertEquals(25, deleted); // 20 vector-store nodes + 5 entity mentions
+        verify(knowledgeGraphService).deleteByFactSheetId(1L);
         verify(entityMentionRepository).deleteByFactSheetId(1L);
-        verify(edgeRepository).deleteByFactSheetId(1L);
-        verify(nodeRepository).deleteByFactSheetId(1L);
     }
 
     // ─── getRunningJobs ───────────────────────────────────────────────
@@ -477,8 +496,8 @@ class FactSheetGraphServiceImplTest {
     @Test
     void searchNodes_returnsD3FormatResults() {
         GraphNode n1 = stubNode("n1", "Kubernetes", NodeLevel.ENTITY);
-        Page<GraphNode> page = new PageImpl<>(List.of(n1));
-        when(nodeRepository.searchByFactSheetAndQuery(eq(1L), eq("kube"), any())).thenReturn(page);
+        // Vector store is the source of truth: searchNodes delegates to the matrix service.
+        when(knowledgeGraphService.searchNodesInFactSheet(1L, "kube", 10)).thenReturn(List.of(n1));
 
         List<Map<String, Object>> results = service.searchNodes(1L, "kube", 10);
 
@@ -513,8 +532,9 @@ class FactSheetGraphServiceImplTest {
     void getRelatedDocuments_withSharedConcepts_returnsRelated() {
         GraphNode doc1 = stubNode("d1", "Doc1", NodeLevel.DOCUMENT);
         GraphNode doc2 = stubNode("d2", "Doc2", NodeLevel.DOCUMENT);
-        when(nodeRepository.findByNodeId("d1")).thenReturn(Optional.of(doc1));
-        when(nodeRepository.findByNodeId("d2")).thenReturn(Optional.of(doc2));
+        // Vector store is the source of truth: node lookups go through knowledgeGraphService.
+        when(knowledgeGraphService.getNode("d1")).thenReturn(Optional.of(doc1));
+        when(knowledgeGraphService.getNode("d2")).thenReturn(Optional.of(doc2));
 
         when(entityMentionRepository.findEntitiesByNodeId("d1")).thenReturn(List.of("kubernetes", "docker"));
 

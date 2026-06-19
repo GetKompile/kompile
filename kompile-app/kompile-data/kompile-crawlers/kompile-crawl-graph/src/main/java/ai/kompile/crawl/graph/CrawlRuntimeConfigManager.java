@@ -61,7 +61,7 @@ class CrawlRuntimeConfigManager {
 
     CrawlRuntimeConfigManager() {
         this.graphExtractionConfigPath =
-                KompileHome.dataDir().toPath().resolve("config").resolve(GRAPH_EXTRACTION_CONFIG_FILENAME);
+                KompileHome.configDirectory().toPath().resolve(GRAPH_EXTRACTION_CONFIG_FILENAME);
     }
 
     // ── Public API ──────────────────────────────────────────────────────────

@@ -43,8 +43,7 @@ public class Neo4jEnabledCondition implements Condition {
     @Override
     public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
         try {
-            Path configFilePath = KompileHome.dataDir().toPath()
-                    .resolve("config")
+            Path configFilePath = KompileHome.configDirectory().toPath()
                     .resolve(CONFIG_FILENAME);
 
             if (!Files.exists(configFilePath)) {

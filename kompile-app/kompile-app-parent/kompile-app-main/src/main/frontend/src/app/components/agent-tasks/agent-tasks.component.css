@@ -1,0 +1,166 @@
+.agent-tasks {
+  display: flex;
+  gap: 16px;
+  height: 100%;
+  min-height: 480px;
+}
+
+.left {
+  flex: 0 0 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.right {
+  flex: 1 1 auto;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  padding: 16px;
+  overflow: auto;
+  min-width: 0;
+}
+
+.right.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.submit-form,
+.task-list {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.submit-form h3,
+.task-list h3 {
+  margin: 4px 0 12px;
+}
+
+.full {
+  width: 100%;
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+}
+
+.row mat-form-field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.task-list {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.task-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.task-row.selected {
+  background: rgba(63, 81, 181, 0.10);
+}
+
+.task-row .engine {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.55);
+  flex: 0 0 auto;
+}
+
+.task-row .task-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-row .del {
+  visibility: hidden;
+}
+
+.task-row:hover .del {
+  visibility: visible;
+}
+
+.status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  flex: 0 0 auto;
+}
+
+.status-pending { background: #eee; color: #555; }
+.status-running { background: #e3f2fd; color: #1565c0; }
+.status-succeeded { background: #e8f5e9; color: #2e7d32; }
+.status-failed { background: #ffebee; color: #c62828; }
+
+.output-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.task-prompt {
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.running {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.output {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 4px;
+  padding: 12px;
+  font-size: 13px;
+}
+
+.muted {
+  color: rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+}
+
+.file {
+  margin-top: 8px;
+}
+
+.error {
+  color: #c62828;
+  margin-left: 12px;
+  font-size: 13px;
+}
+
+.empty {
+  color: rgba(0, 0, 0, 0.45);
+  padding: 8px;
+}

@@ -144,25 +144,30 @@ class KnowledgeGraphControllerTest {
     }
 
     @Test
-    void listNodes_withTypeOnly_callsSearchNodesWithEmptyQuery() {
+    void listNodes_withTypeOnly_callsGetNodesByType() {
         GraphNode node = makeNode(NODE_ID, NodeLevel.DOCUMENT);
-        when(graphService.searchNodes(eq(""), eq(NodeLevel.DOCUMENT), anyInt()))
+        when(graphService.getNodesByType(eq(NodeLevel.DOCUMENT), eq(50)))
                 .thenReturn(List.of(node));
 
         ResponseEntity<?> resp = controller.listNodes("document", null, 50);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
-        verify(graphService).searchNodes("", NodeLevel.DOCUMENT, 50);
+        List<?> body = (List<?>) resp.getBody();
+        assertEquals(1, body.size());
+        assertEquals(NODE_ID, ((GraphNode) body.get(0)).getNodeId());
+        verify(graphService).getNodesByType(NodeLevel.DOCUMENT, 50);
     }
 
     @Test
-    void listNodes_noParams_callsGetAllSources() {
-        when(graphService.getAllSources()).thenReturn(List.of(makeNode(NODE_ID, NodeLevel.SOURCE)));
+    void listNodes_noParams_callsGetAllNodes() {
+        when(graphService.getAllNodes(50)).thenReturn(List.of(makeNode(NODE_ID, NodeLevel.SOURCE)));
 
         ResponseEntity<?> resp = controller.listNodes(null, null, 50);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
-        verify(graphService).getAllSources();
+        List<?> body = (List<?>) resp.getBody();
+        assertEquals(1, body.size());
+        verify(graphService).getAllNodes(50);
     }
 
     // --- getNode ---

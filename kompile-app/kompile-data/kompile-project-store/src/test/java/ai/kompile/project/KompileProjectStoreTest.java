@@ -80,6 +80,20 @@ class KompileProjectStoreTest {
         assertTrue(Files.isDirectory(tempDir.resolve("data/crawls")));
         assertTrue(Files.isDirectory(tempDir.resolve("data/workflows")));
         assertTrue(Files.isDirectory(tempDir.resolve("scripts")));
+        // Complete project layout: every registered/used directory is scaffolded.
+        assertTrue(Files.isDirectory(tempDir.resolve("data/fact-sheets")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/note-sync")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/indexed-documents")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/artifacts")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/distributions")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/indices")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/input_documents/uploads")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/shared_files")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/mcp-bridges")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/mcp-servers")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/tool-definitions")));
+        assertTrue(Files.isDirectory(tempDir.resolve("data/folders")));
+        assertTrue(Files.isDirectory(tempDir.resolve("config")));
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-all.sh")));
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-staging.sh")));
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-serving.sh")));
@@ -102,6 +116,18 @@ class KompileProjectStoreTest {
         assertTrue(manifest.getComponents().stream().anyMatch(c -> "crawls".equals(c.getId())));
         assertTrue(manifest.getComponents().stream().anyMatch(c -> "workflows".equals(c.getId())));
         assertTrue(manifest.getComponents().stream().anyMatch(c -> "scripts".equals(c.getId())));
+        assertTrue(manifest.getComponents().stream().anyMatch(c -> "artifacts".equals(c.getId())));
+        assertTrue(manifest.getComponents().stream().anyMatch(c -> "distributions".equals(c.getId())));
+        assertTrue(manifest.getComponents().stream().anyMatch(c -> "indexed-documents".equals(c.getId())));
+        assertTrue(manifest.getComponents().stream().anyMatch(c -> "config".equals(c.getId())));
+        // Large-binary components must use the git-xet backend so native distributions
+        // and build artifacts are versioned without bloating git history.
+        assertEquals(KompileProjectStorageBackend.GIT_XET, manifest.getComponents().stream()
+                .filter(c -> "distributions".equals(c.getId())).findFirst().orElseThrow().getStorageBackend());
+        assertEquals(KompileProjectComponentType.DISTRIBUTION, manifest.getComponents().stream()
+                .filter(c -> "distributions".equals(c.getId())).findFirst().orElseThrow().getType());
+        assertEquals(KompileProjectStorageBackend.GIT_XET, manifest.getComponents().stream()
+                .filter(c -> "artifacts".equals(c.getId())).findFirst().orElseThrow().getStorageBackend());
         assertTrue(manifest.getScripts().stream().anyMatch(script -> "start-all".equals(script.getId())));
         assertEquals(1, manifest.getModels().size());
         assertEquals("VLM", manifest.getModels().get(0).getRole());
@@ -155,6 +181,41 @@ class KompileProjectStoreTest {
         assertTrue(status.isGitXetEnabled());
         assertNull(status.getRemoteUrl());
         assertTrue(Files.isRegularFile(tempDir.resolve("data/models/README.md")));
+    }
+
+    @Test
+    void canonicalGitignoreIsWrittenForLocalProjectWithoutGit() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("local-project");
+        request.setBackend(KompileProjectStorageBackend.LOCAL);
+        request.setInitializeGit(false);
+
+        store.init(tempDir, request);
+
+        Path gitignore = tempDir.resolve(".gitignore");
+        assertTrue(Files.isRegularFile(gitignore), ".gitignore must be written even without a git repo");
+        String body = Files.readString(gitignore);
+        assertTrue(body.contains("data/pids/"));
+        assertTrue(body.contains("config/secrets/"));
+        assertTrue(body.contains("data/orchestrator-db*"));
+    }
+
+    @Test
+    void gitattributesTracksArtifactsAndDistributions() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("xet-attrs");
+        request.setBackend(KompileProjectStorageBackend.GIT_XET);
+
+        store.init(tempDir, request);
+
+        Path attrs = tempDir.resolve(".gitattributes");
+        assertTrue(Files.isRegularFile(attrs));
+        String body = Files.readString(attrs);
+        assertTrue(body.contains("data/artifacts/**"));
+        assertTrue(body.contains("data/distributions/**"));
+        assertTrue(body.contains("data/models/**"));
     }
 
     @Test

@@ -16,6 +16,9 @@
 
 package ai.kompile.loader.pdf.tables;
 
+import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.table.TableCellGraphBuilder;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.PdfProcessingConfig;
@@ -288,6 +291,67 @@ public class PdfTableLoaderImpl implements DocumentLoader {
         if (source.getCollectionName() != null) {
             doc.getMetadata().put("collection_name", source.getCollectionName());
         }
+
+        // Cell-level graph so PDF tables get structured TABLE/CELL nodes like CSV/Excel/HTML.
+        // With single-owner dedup in ContentTypeRouter, persistGraphJson owns the TABLE node when
+        // this graph is present (no duplicate alongside the promote path).
+        attachTableGraph(doc, table);
+    }
+
+    /**
+     * Builds a {@link TableCellGraphBuilder} cell graph from the table's markdown and stores it under
+     * {@code tableGraph} so PDF tables surface as structured TABLE/CELL nodes in the index browser.
+     */
+    private void attachTableGraph(Document doc, TableDocument table) {
+        List<List<String>> rows = parseMarkdownRows(table.getMarkdownContent());
+        if (rows.isEmpty()) {
+            return;
+        }
+        var meta = table.getTableMetadata();
+        Graph graph = new TableCellGraphBuilder()
+                .namespace("pdf:" + table.getId())
+                .tableName("Table p" + meta.pageNumber() + " #" + (meta.tableIndex() + 1))
+                .rows(rows)
+                .firstRowIsHeader(true)
+                .build();
+        if (!graph.getEntities().isEmpty()) {
+            doc.getMetadata().put(GraphConstants.META_TABLE_GRAPH, TableCellGraphBuilder.toJson(graph));
+        }
+    }
+
+    /** Parse a GFM markdown table back into rows (header + data), dropping the separator row. */
+    private static List<List<String>> parseMarkdownRows(String markdown) {
+        List<List<String>> rows = new ArrayList<>();
+        if (markdown == null || markdown.isBlank()) {
+            return rows;
+        }
+        for (String line : markdown.split("\n")) {
+            String t = line.trim();
+            if (t.isEmpty() || !t.contains("|")) {
+                continue;
+            }
+            // Drop separator rows such as |---|:--:|
+            if (t.chars().allMatch(c -> c == '|' || c == '-' || c == ':' || c == ' ')) {
+                continue;
+            }
+            rows.add(splitMarkdownRow(t));
+        }
+        return rows;
+    }
+
+    private static List<String> splitMarkdownRow(String line) {
+        String t = line.trim();
+        if (t.startsWith("|")) {
+            t = t.substring(1);
+        }
+        if (t.endsWith("|")) {
+            t = t.substring(0, t.length() - 1);
+        }
+        List<String> cells = new ArrayList<>();
+        for (String c : t.split("\\|", -1)) {
+            cells.add(c.replace("\\|", "|").trim());
+        }
+        return cells;
     }
 
     private TableStorage parseStorageMode(String config) {

@@ -66,17 +66,34 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     private static final String DEFAULT_GRAPH_ID = "default-knowledge-graph";
 
     /**
-     * Mapping of edge type enums to string types used in matrix graph.
+     * Canonical string form of an edge type for matrix-graph storage.
+     * <p>
+     * The stored string is always the enum constant name, so every {@link EdgeType}
+     * value round-trips losslessly. A hand-maintained map used to live here, but it only
+     * covered 7 of the {@link EdgeType} values and silently aliased the rest (CONTAINS,
+     * EXTRACTED_FROM, AUTHORED_BY, ADDRESSED_TO, RESOLVES_TO) to "RELATED_TO" — collapsing
+     * five distinct types into one indistinguishable bucket and leaving a non-enum string
+     * that {@link #edgeTypeFromString} (formerly {@code EdgeType.valueOf}) would throw on.
      */
-    private static final Map<EdgeType, String> EDGE_TYPE_MAP = Map.of(
-            EdgeType.HIERARCHICAL, "HIERARCHICAL",
-            EdgeType.EMBEDDING_SIMILARITY, "EMBEDDING_SIMILARITY",
-            EdgeType.SHARED_ENTITY, "SHARED_ENTITY",
-            EdgeType.USER_DEFINED, "USER_DEFINED",
-            EdgeType.CITATION, "CITATION",
-            EdgeType.TEMPORAL, "TEMPORAL",
-            EdgeType.CROSS_SOURCE, "CROSS_SOURCE"
-    );
+    private static String edgeTypeToString(EdgeType edgeType) {
+        return (edgeType != null ? edgeType : EdgeType.USER_DEFINED).name();
+    }
+
+    /**
+     * Parse a stored edge-type string back to an {@link EdgeType}. Unknown or legacy
+     * strings (e.g. the historical "RELATED_TO" alias) fall back to {@link EdgeType#USER_DEFINED}
+     * rather than throwing, matching the lenient convention used by graph IO import.
+     */
+    private static EdgeType edgeTypeFromString(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return EdgeType.USER_DEFINED;
+        }
+        try {
+            return EdgeType.valueOf(raw);
+        } catch (IllegalArgumentException ex) {
+            return EdgeType.USER_DEFINED;
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // NODE MANAGEMENT
@@ -445,12 +462,17 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             if (node.getFactSheetId() == null || !node.getFactSheetId().equals(factSheetId)) {
                 continue;
             }
-            List<Map.Entry<String, Double>> neighbors = graph.getNeighbors(node.getNodeId(), null);
-            for (Map.Entry<String, Double> neighbor : neighbors) {
-                String key = node.getNodeId() + "::" + neighbor.getKey();
-                if (seen.add(key)) {
-                    result.add(createEdgeObject(node.getNodeId(), neighbor.getKey(),
-                            EdgeType.USER_DEFINED, neighbor.getValue(), null));
+            // Iterate per stored edge type so the real EdgeType is preserved (not flattened to
+            // USER_DEFINED) and a node pair carrying multiple types yields one edge per type —
+            // both are required for type-based consumers such as the ContradictionDetector.
+            for (String edgeTypeStr : graph.getEdgeTypes()) {
+                EdgeType edgeType = edgeTypeFromString(edgeTypeStr);
+                for (Map.Entry<String, Double> neighbor : graph.getNeighbors(node.getNodeId(), edgeTypeStr)) {
+                    String key = node.getNodeId() + "::" + neighbor.getKey() + "::" + edgeTypeStr;
+                    if (seen.add(key)) {
+                        result.add(createEdgeObject(node.getNodeId(), neighbor.getKey(),
+                                edgeType, neighbor.getValue(), null));
+                    }
                 }
             }
         }
@@ -459,7 +481,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     @Override
     public List<GraphEdge> getEdgesByTypeInFactSheet(Long factSheetId, EdgeType edgeType) {
-        String edgeTypeStr = EDGE_TYPE_MAP.getOrDefault(edgeType, "RELATED_TO");
+        String edgeTypeStr = edgeTypeToString(edgeType);
         Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(DEFAULT_GRAPH_ID);
         if (graphOpt.isEmpty()) {
             return Collections.emptyList();
@@ -553,7 +575,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     @Override
     public GraphEdge createEdge(String sourceNodeId, String targetNodeId, EdgeType edgeType,
                                  Double weight, String description) {
-        String edgeTypeStr = EDGE_TYPE_MAP.getOrDefault(edgeType, "RELATED_TO");
+        String edgeTypeStr = edgeTypeToString(edgeType);
         boolean bidirectional = edgeType != EdgeType.HIERARCHICAL;
 
         graphStore.addEdge(DEFAULT_GRAPH_ID, sourceNodeId, targetNodeId,
@@ -595,7 +617,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     @Override
     public List<GraphEdge> getEdgesByType(String nodeId, EdgeType edgeType) {
-        String edgeTypeStr = EDGE_TYPE_MAP.getOrDefault(edgeType, "RELATED_TO");
+        String edgeTypeStr = edgeTypeToString(edgeType);
         List<Map.Entry<String, Double>> edges = graphStore.getEdges(DEFAULT_GRAPH_ID, nodeId, edgeTypeStr);
 
         return edges.stream()
@@ -617,11 +639,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         graphStore.addEdge(DEFAULT_GRAPH_ID, sourceId, targetId,
                 weight != null ? weight : 1.0, edgeType, false);
 
-        EdgeType type = EDGE_TYPE_MAP.entrySet().stream()
-                .filter(e -> e.getValue().equals(edgeType))
-                .map(Map.Entry::getKey)
-                .findFirst()
-                .orElse(EdgeType.USER_DEFINED);
+        EdgeType type = edgeTypeFromString(edgeType);
 
         return createEdgeObject(sourceId, targetId, type, weight, description);
     }
@@ -651,7 +669,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
         AdjacencyMatrixGraph graph = graphOpt.get();
         List<GraphEdge> results = new ArrayList<>();
-        String edgeTypeStr = edgeType != null ? EDGE_TYPE_MAP.get(edgeType) : null;
+        String edgeTypeStr = edgeType != null ? edgeTypeToString(edgeType) : null;
         String lowerQuery = query != null ? query.toLowerCase() : null;
 
         // Iterate through all nodes and their neighbors
@@ -689,7 +707,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                         .edgeId(nodeId + "_" + targetId + "_" + type)
                         .sourceNode(GraphNode.builder().nodeId(nodeId).build())
                         .targetNode(GraphNode.builder().nodeId(targetId).build())
-                        .edgeType(EdgeType.valueOf(type))
+                        .edgeType(edgeTypeFromString(type))
                         .weight(weight)
                         .build();
                     results.add(edge);

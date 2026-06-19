@@ -18,6 +18,7 @@ package ai.kompile.crawl.graph;
 
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.crawl.graph.*;
+import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.GraphConstructor;
@@ -99,6 +100,7 @@ class UnifiedCrawlGraphServiceImplTest {
     @MockBean private KnowledgeGraphService knowledgeGraphService;
     @MockBean private EntityMentionRepository entityMentionRepository;
     @MockBean private CrossDocumentRelationCallback crossDocumentRelationCallback;
+    @MockBean private CrawlStepArchiveService crawlStepArchiveService;
     @Autowired private DocumentLoader fileLoader;
     @Autowired private DocumentLoader emailLoader;
     @Autowired private TextChunker tableAwareChunker;
@@ -791,6 +793,38 @@ class UnifiedCrawlGraphServiceImplTest {
         // Null/blank LLM response exhausts all retries → GRAPH_EXTRACTION FAILED → job FAILED
         assertEquals(UnifiedCrawlJob.Status.FAILED, job.getStatus().get());
         assertEquals(0, job.getEntitiesExtracted().get());
+    }
+
+    @Test
+    @DisplayName("Failed graph extraction is archived once by the orchestrator, not double-archived by the failure checkpoint")
+    void failedGraphExtraction_archivedOnceForResume() throws Exception {
+        when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
+                new Document("Some text the LLM will fail to extract", Map.of())
+        ));
+        // LLM never returns valid JSON → all in-phase retries exhausted → failed chunks archived, job FAILED.
+        when(callResponseSpec.content()).thenReturn("I cannot extract entities from this text.");
+        when(crawlStepArchiveService.archive(any(), anyString(), anyList(), any()))
+                .thenReturn("/tmp/checkpoints/crawl-x");
+
+        UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
+                .name("failure checkpoint test")
+                .sources(List.of(fileSource("docs", "/data/docs")))
+                .graphExtraction(GraphExtractionConfig.builder().enabled(true).build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build());
+
+        awaitCompletion(job);
+
+        assertEquals(UnifiedCrawlJob.Status.FAILED, job.getStatus().get());
+
+        // The graph-extraction orchestrator archives the precise failed chunks for resume. The failure
+        // checkpoint must defer to it and NOT archive GRAPH_EXTRACTION again (which would duplicate the
+        // write and clobber the failed-subset with the full chunk set).
+        verify(crawlStepArchiveService, times(1)).archive(any(), eq("GRAPH_EXTRACTION"), anyList(), any());
+        // Nothing else is resumable here: no graph was produced (0 entities) and vector indexing was off.
+        verify(crawlStepArchiveService, never()).archive(any(), eq("VECTOR_INDEXING"), anyList(), any());
+        verify(crawlStepArchiveService, never()).archive(any(), eq("ENTITY_RESOLUTION"), anyList(), any());
+        verify(crawlStepArchiveService, never()).archive(any(), eq("EDGE_COMPUTATION"), anyList(), any());
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -2565,10 +2599,11 @@ class UnifiedCrawlGraphServiceImplTest {
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        // Verify TABLE node promoted (createTableNode called for slide table)
-        verify(knowledgeGraphService).createTableNode(anyString(), anyString(), anyString(),
+        // Single-owner dedup: when a tableGraph is present, persistGraphJson owns the TABLE node and
+        // promote (createTableNode) is NOT called — so one table never yields two TABLE nodes.
+        verify(knowledgeGraphService, never()).createTableNode(anyString(), anyString(), anyString(),
                 anyInt(), anyInt(), any(), any(), any());
-        // Verify tableGraph JSON persisted as graph nodes (6-param overload)
+        // TABLE node is created from the tableGraph via persistGraphJson (6-param overload)
         verify(knowledgeGraphService).createNode(eq(NodeLevel.TABLE),
                 eq("tbl:slide/table:SlideTable"), anyString(), anyString(), anyMap(), any());
     }
@@ -2660,10 +2695,11 @@ class UnifiedCrawlGraphServiceImplTest {
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        // Verify TABLE promotion
-        verify(knowledgeGraphService).createTableNode(anyString(), anyString(), anyString(),
+        // Single-owner dedup: tableGraph present → persistGraphJson owns the TABLE node; promote
+        // (createTableNode) is NOT called, so the table is never duplicated.
+        verify(knowledgeGraphService, never()).createTableNode(anyString(), anyString(), anyString(),
                 anyInt(), anyInt(), any(), any(), any());
-        // Verify both tableGraph and formulaGraph entity nodes created
+        // Both tableGraph and formulaGraph entity nodes created:
         // TABLE from tableGraph + SHEET from formulaGraph = at least 2 TABLE-level creates
         verify(knowledgeGraphService, atLeast(2)).createNode(eq(NodeLevel.TABLE), anyString(),
                 anyString(), anyString(), anyMap(), any());

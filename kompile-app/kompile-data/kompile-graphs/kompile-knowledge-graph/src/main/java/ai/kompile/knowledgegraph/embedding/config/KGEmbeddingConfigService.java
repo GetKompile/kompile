@@ -66,7 +66,7 @@ public class KGEmbeddingConfigService {
     );
 
     public KGEmbeddingConfigService() {
-        this(KompileHome.dataDir().toPath());
+        this(KompileHome.resolvedHomeDirectory().toPath());
     }
 
     public KGEmbeddingConfigService(String dataDir) {
@@ -90,7 +90,10 @@ public class KGEmbeddingConfigService {
     @PostConstruct
     public void loadPersistedConfig() {
         if (!Files.exists(configFilePath)) {
-            log.info("No persisted KG embedding config found at {} - using defaults", configFilePath);
+            log.info("No persisted KG embedding config found at {} - seeding defaults", configFilePath);
+            // Seed the default config to disk so it is visible, editable, and
+            // versioned alongside the project rather than living only in memory.
+            persistConfig();
             return;
         }
 

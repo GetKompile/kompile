@@ -58,7 +58,7 @@ public class AnseriniConfigService {
 
     public AnseriniConfigService() {
         this.objectMapper = JsonUtils.standardMapper();
-        this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
+        this.configFilePath = KompileHome.configDirectory().toPath().resolve(CONFIG_FILENAME);
         this.config = AnseriniJsonConfig.defaults();
         log.info("AnseriniConfigService initialized, config path: {}", configFilePath);
     }
@@ -72,7 +72,7 @@ public class AnseriniConfigService {
      */
     public AnseriniConfigService(String indexPath, String corpusPath) {
         this.objectMapper = JsonUtils.standardMapper();
-        this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
+        this.configFilePath = KompileHome.configDirectory().toPath().resolve(CONFIG_FILENAME);
         AnseriniJsonConfig cfg = new AnseriniJsonConfig();
         cfg.setIndexPath(indexPath);
         cfg.setCorpusPath(corpusPath != null ? corpusPath : "./data/anserini_corpus_json_staging");

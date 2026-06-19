@@ -21,6 +21,8 @@ import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.*;
 import ai.kompile.utils.StringUtils;
+import ai.kompile.project.KompileProjectChatSession;
+import ai.kompile.project.KompileProjectStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.SetupWizard;
@@ -49,9 +51,12 @@ import org.jline.reader.impl.LineReaderImpl;
 import java.io.File;
 import java.io.IOError;
 import java.net.http.HttpClient;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
@@ -675,6 +680,11 @@ public class ChatRepl {
             Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
             sessionMetrics.saveToFile(metricsFile, objectMapper);
 
+            // Export the full transcript into the current project's versioned
+            // data/chats/ surface so the conversation is locally versioned, not
+            // left only in the global ~/.kompile/conversations store.
+            exportTranscriptToProject();
+
             // Stop the unified TUI (resets scroll regions, stops refresh threads)
             tui.stop();
 
@@ -693,6 +703,80 @@ public class ChatRepl {
                 // Ignore cleanup errors - terminal may already be in bad state
             }
         }
+    }
+
+    /**
+     * Best-effort export of this session's transcript into the current project's
+     * versioned {@code data/chats/} directory and chat catalog, so the conversation
+     * is captured as locally-versioned project metadata rather than living only in
+     * the global {@code ~/.kompile/conversations} store.
+     *
+     * <p>No-op when the working directory is not inside a kompile project, or when
+     * the transcript was never written (an empty session). Failures are swallowed —
+     * exporting must never break session shutdown.</p>
+     */
+    private void exportTranscriptToProject() {
+        try {
+            Path transcript = chatHistory.getTranscriptFile();
+            if (transcript == null || !Files.exists(transcript)) {
+                return;
+            }
+            KompileProjectStore store = new KompileProjectStore();
+            Optional<Path> projectRoot = store.findProjectRoot(Paths.get("").toAbsolutePath());
+            if (projectRoot.isEmpty()) {
+                return;
+            }
+            Path root = projectRoot.get();
+            Path chatsDir = root.resolve("data/chats");
+            Files.createDirectories(chatsDir);
+
+            // Copy the full transcript content (not just a catalog stub) so the
+            // conversation is fully reproducible from the versioned project.
+            Files.copy(transcript, chatsDir.resolve(sessionId + ".txt"),
+                    StandardCopyOption.REPLACE_EXISTING);
+
+            // Upsert the catalog entry, preserving the original createdAt if present.
+            List<KompileProjectChatSession> sessions = new ArrayList<>(store.listChatSessions(root));
+            String now = Instant.now().toString();
+            String createdAt = sessions.stream()
+                    .filter(s -> sessionId.equals(s.getSessionId()))
+                    .map(KompileProjectChatSession::getCreatedAt)
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(now);
+            sessions.removeIf(s -> sessionId.equals(s.getSessionId()));
+            sessions.add(KompileProjectChatSession.builder()
+                    .sessionId(sessionId)
+                    .title(deriveTranscriptTitle(transcript))
+                    .source("kompile-cli")
+                    .messageCount(sessionMetrics.getTotalTurns())
+                    .createdAt(createdAt)
+                    .updatedAt(now)
+                    .build());
+            store.writeChatCatalog(root, sessions);
+        } catch (Exception e) {
+            // Best-effort — never fail session shutdown on export.
+        }
+    }
+
+    /**
+     * Derives a short, human-readable title from the first user message in the
+     * transcript (lines are prefixed with {@code "> "}). Falls back to the session id.
+     */
+    private String deriveTranscriptTitle(Path transcript) {
+        try {
+            for (String line : Files.readAllLines(transcript)) {
+                if (line.startsWith("> ")) {
+                    String title = line.substring(2).strip();
+                    if (!title.isEmpty()) {
+                        return title.length() > 80 ? title.substring(0, 77) + "..." : title;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // fall through to default
+        }
+        return "Session " + sessionId;
     }
 
     // ── Role assignment at startup (called by ChatCommand) ───────────────────

@@ -90,7 +90,9 @@ class CrawlStepArchiveServiceImplTest {
         assertTrue(Files.exists(root.resolve("manifest.json")), "manifest written");
         assertTrue(Files.exists(root.resolve("VECTOR_INDEXING").resolve("chunks.jsonl")), "chunks written");
 
-        // History pointers were lit up so the job shows resumable.
+        // A history row is ensured (idempotent create) so the resumable pointers below actually persist,
+        // then the pointers are lit up so the job shows resumable.
+        verify(history1).createJob(eq(taskId), anyString());
         verify(history1).recordCheckpointPath(eq(taskId), anyString(), eq(IngestEvent.IngestPhase.INDEXING));
         verify(history1).markJobResumable(eq(taskId), eq(true));
 

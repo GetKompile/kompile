@@ -137,6 +137,83 @@ class GrepToolFifoTest {
         }
     }
 
+    /**
+     * Regression: the grep fallback must skip hidden directories like GlobTool
+     * ({@code SearchExclusions.isExcludedDir}) and ripgrep do. Otherwise grep alone walked
+     * {@code .claude/worktrees} (full repo copies), making ~half of all results duplicate noise
+     * and giving a different count than the rg path for the same query.
+     */
+    @Test
+    void grepSkipsHiddenDirectories() throws Exception {
+        Path tmp = Files.createTempDirectory("grep-hidden-test");
+        try {
+            Files.createDirectories(tmp.resolve(".hidden"));
+            Files.createDirectories(tmp.resolve("visible"));
+            Files.writeString(tmp.resolve(".hidden/h.txt"), "HIDDEN_TOKEN should not be searched\n");
+            Files.writeString(tmp.resolve("visible/v.txt"), "VISIBLE_TOKEN here\n");
+
+            ObjectNode params = om.createObjectNode();
+            params.put("pattern", "_TOKEN");
+            ToolResult result = tool.execute(params, ctxFor(tmp));
+
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("VISIBLE_TOKEN"),
+                    "visible match expected: " + result.getOutput());
+            assertFalse(result.getOutput().contains("HIDDEN_TOKEN"),
+                    "hidden directory must be skipped (matches GlobTool/rg): " + result.getOutput());
+        } finally {
+            deleteRecursively(tmp);
+        }
+    }
+
+    /**
+     * The {@code hidden} opt-in must let grep descend hidden directories again, while the
+     * default ({@link #grepSkipsHiddenDirectories}) keeps skipping them.
+     */
+    @Test
+    void grepHiddenOptInSearchesHiddenDirectories() throws Exception {
+        Path tmp = Files.createTempDirectory("grep-hidden-optin-test");
+        try {
+            Files.createDirectories(tmp.resolve(".hidden"));
+            Files.writeString(tmp.resolve(".hidden/h.txt"), "HIDDEN_TOKEN here\n");
+
+            ObjectNode params = om.createObjectNode();
+            params.put("pattern", "HIDDEN_TOKEN");
+            params.put("hidden", true);
+            ToolResult result = tool.execute(params, ctxFor(tmp));
+
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("HIDDEN_TOKEN"),
+                    "hidden=true must search hidden dirs: " + result.getOutput());
+        } finally {
+            deleteRecursively(tmp);
+        }
+    }
+
+    /** Even with {@code hidden=true}, the always-junk dirs (e.g. {@code .git}) stay pruned. */
+    @Test
+    void grepHiddenOptInStillSkipsGitDir() throws Exception {
+        Path tmp = Files.createTempDirectory("grep-git-skip-test");
+        try {
+            Files.createDirectories(tmp.resolve(".git"));
+            Files.writeString(tmp.resolve(".git/config"), "GIT_INTERNAL_TOKEN here\n");
+
+            ObjectNode params = om.createObjectNode();
+            params.put("pattern", "GIT_INTERNAL_TOKEN");
+            params.put("hidden", true);
+            ToolResult result = tool.execute(params, ctxFor(tmp));
+
+            assertFalse(result.isError(), result.getOutput());
+            // The token lives only in .git, which stays pruned, so the search must report no
+            // matches. Assert on the no-match message rather than token absence — the no-match
+            // message echoes the pattern, which itself contains the token.
+            assertTrue(result.getOutput().toLowerCase().contains("no matches"),
+                    ".git must stay pruned even with hidden=true: " + result.getOutput());
+        } finally {
+            deleteRecursively(tmp);
+        }
+    }
+
     @Test
     void grepNoMatchReturnsCleanly() throws Exception {
         Path tmp = Files.createTempDirectory("grep-nomatch-test");

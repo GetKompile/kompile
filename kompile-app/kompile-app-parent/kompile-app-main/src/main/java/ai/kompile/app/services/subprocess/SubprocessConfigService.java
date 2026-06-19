@@ -221,7 +221,7 @@ public class SubprocessConfigService {
     @Autowired
     public SubprocessConfigService(
             @Autowired(required = false) ServerPortService serverPortService) {
-        this(serverPortService, KompileHome.dataDir().getAbsolutePath());
+        this(serverPortService, KompileHome.resolvedHomeDirectory().getAbsolutePath());
     }
 
     public SubprocessConfigService(

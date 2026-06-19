@@ -142,7 +142,7 @@ class SqlCrawlerTest {
             fail("Crawl failed with errors: " + summary.errors());
         }
         assertEquals(CrawlStatus.COMPLETED, job.getStatus());
-        assertEquals(3, discovered.size());
+        assertEquals(4, discovered.size()); // 3 rows + 1 aggregated table-summary document
 
         // Verify first row
         CrawlItem first = discovered.get(0);
@@ -185,7 +185,7 @@ class SqlCrawlerTest {
 
         job.getCompletionFuture().get();
         assertEquals(CrawlStatus.COMPLETED, job.getStatus());
-        assertEquals(5, discovered.size()); // 3 employees + 2 projects
+        assertEquals(7, discovered.size()); // 3 employees + 2 projects + 2 table-summary docs
     }
 
     @Test
@@ -208,7 +208,7 @@ class SqlCrawlerTest {
 
         job.getCompletionFuture().get();
         assertEquals(CrawlStatus.COMPLETED, job.getStatus());
-        assertEquals(2, discovered.size()); // Alice and Charlie
+        assertEquals(3, discovered.size()); // Alice and Charlie + 1 query table-summary doc
 
         // Verify content of first result
         String content = Files.readString(Path.of(discovered.get(0).getUrl()));
@@ -236,8 +236,8 @@ class SqlCrawlerTest {
 
         job.getCompletionFuture().get();
         assertEquals(CrawlStatus.COMPLETED, job.getStatus());
-        // Should discover both tables: 3 employees + 2 projects
-        assertEquals(5, discovered.size());
+        // Should discover both tables: 3 employees + 2 projects + 2 table-summary docs
+        assertEquals(7, discovered.size());
     }
 
     @Test
@@ -262,7 +262,7 @@ class SqlCrawlerTest {
         });
 
         job.getCompletionFuture().get();
-        assertEquals(3, discovered.size());
+        assertEquals(4, discovered.size()); // 3 rows + 1 table-summary document
 
         CrawlItem first = discovered.get(0);
         assertTrue(first.getUrl().endsWith(".txt"));
@@ -321,7 +321,7 @@ class SqlCrawlerTest {
             }
         });
         job1.getCompletionFuture().get();
-        assertEquals(3, discovered1.size());
+        assertEquals(4, discovered1.size()); // 3 rows + 1 table-summary document
 
         // Second crawl with previous state should skip already-visited rows
         SqlCrawlJob sqlJob1 = (SqlCrawlJob) job1;

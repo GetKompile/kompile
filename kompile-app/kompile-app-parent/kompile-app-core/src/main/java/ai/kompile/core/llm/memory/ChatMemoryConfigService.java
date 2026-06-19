@@ -54,7 +54,7 @@ public class ChatMemoryConfigService {
 
     public ChatMemoryConfigService() {
         this.objectMapper = JsonUtils.standardMapper();
-        this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
+        this.configFilePath = KompileHome.configDirectory().toPath().resolve(CONFIG_FILENAME);
         this.config = ChatMemoryConfig.defaults();
         log.info("ChatMemoryConfigService initialized, config path: {}", configFilePath);
     }

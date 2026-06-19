@@ -46,7 +46,8 @@ public class GlobTool implements CliTool {
     public String description() {
         return "Find files matching a glob pattern. Returns file paths sorted by modification time " +
                 "(most recent first). Supports patterns like '**/*.java', 'src/**/*.ts', '*.xml'. " +
-                "Maximum 100 results returned. Use this to discover files before reading or editing them.";
+                "Hidden files and directories are skipped by default; set 'hidden' to true to include " +
+                "them. Maximum 100 results returned. Use this to discover files before reading or editing them.";
     }
 
     @Override
@@ -64,6 +65,11 @@ public class GlobTool implements CliTool {
         path.put("type", "string");
         path.put("description", "Directory to search in (default: working directory)");
 
+        ObjectNode hidden = props.putObject("hidden");
+        hidden.put("type", "boolean");
+        hidden.put("description", "Include hidden files and directories (dot-prefixed). Default false. "
+                + "Heavy trees like .git/node_modules/target are always skipped regardless.");
+
         schema.putArray("required").add("pattern");
         return schema;
     }
@@ -77,6 +83,7 @@ public class GlobTool implements CliTool {
 
         String pattern = params.path("pattern").asText("");
         String searchPath = params.path("path").asText("");
+        final boolean includeHidden = params.path("hidden").asBoolean(false);
 
         if (pattern.isEmpty()) {
             return ToolResult.error("pattern is required");
@@ -99,6 +106,15 @@ public class GlobTool implements CliTool {
                     if (System.currentTimeMillis() > deadline) {
                         return FileVisitResult.TERMINATE;
                     }
+                    // Skip hidden files (dot-prefixed basename) unless opted in, so file-level
+                    // results stay consistent with the pruned hidden directories below and with
+                    // the grep/ripgrep backends.
+                    if (!includeHidden) {
+                        Path fileName = file.getFileName();
+                        if (fileName != null && fileName.toString().startsWith(".")) {
+                            return FileVisitResult.CONTINUE;
+                        }
+                    }
                     Path relative = dir.relativize(file);
                     if (matcher.matches(relative)) {
                         matches.add(file);
@@ -116,7 +132,7 @@ public class GlobTool implements CliTool {
                     // dir; only prune excluded directories encountered while descending.
                     if (!dirPath.equals(dir)) {
                         String name = dirPath.getFileName() != null ? dirPath.getFileName().toString() : "";
-                        if (SearchExclusions.isExcludedDir(name)) {
+                        if (SearchExclusions.isExcludedDir(name, includeHidden)) {
                             return FileVisitResult.SKIP_SUBTREE;
                         }
                     }

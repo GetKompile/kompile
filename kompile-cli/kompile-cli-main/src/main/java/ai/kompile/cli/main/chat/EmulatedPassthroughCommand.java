@@ -2456,6 +2456,25 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
     }
 
+    /**
+     * Force wheel capture back on while the agent is responding. Unlike
+     * {@link #enableTranscriptMouse()} this re-sends {@code ?1000h} even when
+     * {@code transcriptMouseEnabled} is already set: re-entering JLine's readLine for
+     * the response prompt can silently reset the terminal's mouse mode, leaving our
+     * flag {@code true} while the wheel has fallen back to the host terminal's native
+     * scrollback. Re-asserting keeps wheel scrolling consistent between the idle prompt
+     * and an in-progress response. Idempotent and invisible.
+     */
+    private void forceTranscriptMouseCapture() {
+        if (terminal == null || !decoderOwnsScreen()) return;
+        try {
+            writeRawTerminal("\033[?1000h");
+            transcriptMouseEnabled = true;
+        } catch (IOException | IOError ignored) {
+            // Best-effort; PageUp/PageDown still scroll the transcript.
+        }
+    }
+
     /** Disable Kompile's real-terminal mouse tracking, restoring native selection/scroll. */
     private void disableTranscriptMouse() {
         if (terminal == null || !transcriptMouseEnabled) return;
@@ -3317,6 +3336,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
             boolean decoderOwnedRendering = agentDecoder != null && !agentDecoder.renderRawTui();
             while (tuiProcess.isAlive() && !cancelSignal.get()) {
+                // Keep Kompile's wheel capture asserted for the whole response. Re-entering
+                // readLine for the response prompt (JLine re-inits terminal modes) can reset
+                // the terminal's mouse tracking, which would let the wheel scroll the host
+                // terminal's native scrollback instead of the managed transcript — the cause
+                // of scrolling behaving inconsistently while the agent is responding.
+                forceTranscriptMouseCapture();
                 if (decoderOwnedRendering && virtualTerminal != null && decodedTuiTurnComplete(agentDecoder, messageSentAt)) {
                     break;
                 }
@@ -3753,8 +3778,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
 
         // Route to the correct parser — may return multiple events from one line
-        // (e.g., text + AskUserQuestion in the same assistant message)
-        List<PassthroughStreamParser.PassthroughEvent> events = parseAgentLineMulti(agentLower, line);
+        // (e.g., text + AskUserQuestion in the same assistant message).
+        // Strip ANSI escape sequences first for structured agents: the script(1) PTY
+        // wrapper injects cursor-positioning codes (\033[...H, \033[2K, etc.) into JSON
+        // lines, which would otherwise make objectMapper.readTree() throw and the event
+        // be silently discarded.
+        String parseLine = isStructuredAgent(agentLower) ? stripAnsi(line) : line;
+        List<PassthroughStreamParser.PassthroughEvent> events = parseAgentLineMulti(agentLower, parseLine);
 
         if (events.isEmpty()) {
             // No structured parser matched — fall back to ANSI-stripped markdown-rendered text
@@ -3838,7 +3868,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             String output = toolOutput.output();
             if (output != null && !output.isBlank()) {
                 trackToolActivityLog("", output);
-                safePrintln(renderer.dim("  " + output));
+                // Truncate the on-screen preview so a large JSON tool output can't wrap
+                // past the scroll region into the input box. Full output still goes to the log above.
+                safePrintln(renderer.dim("  " + TerminalRenderer.truncatePreview(output, 200)));
             }
         } else if (event instanceof PassthroughStreamParser.ToolComplete toolComplete) {
             flushPendingText(pendingText, spinner, spinnerStopped);
@@ -3849,7 +3881,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             String output = toolComplete.output();
             if (output != null && !output.isBlank()) {
                 trackToolActivityComplete(toolComplete.name(), output, toolComplete.error());
-                safePrintln(renderer.dim("  " + output));
+                // Truncate the on-screen preview so a large JSON tool output can't wrap
+                // past the scroll region into the input box. Full output still goes to the log above.
+                safePrintln(renderer.dim("  " + TerminalRenderer.truncatePreview(output, 200)));
             }
             String status = toolComplete.exitCode() >= 0
                     ? "exit " + toolComplete.exitCode()
@@ -4824,8 +4858,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             PassthroughStreamParser.PassthroughEvent e = parser.parseCodexLine(line);
             return e != null ? List.of(e) : List.of();
         } else if (agentLower.contains("opencode")) {
-            PassthroughStreamParser.PassthroughEvent e = parser.parseOpenCodeLine(line);
-            return e != null ? List.of(e) : List.of();
+            // Multi-event: a completed tool_use yields both ToolUse and ToolComplete.
+            // The single-event parser drops the ToolComplete, so tool output never renders.
+            return parser.parseOpenCodeLineMulti(line);
         }
         return List.of();
     }

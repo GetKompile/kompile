@@ -87,6 +87,11 @@ public class GrepTool implements CliTool {
         contextLines.put("type", "integer");
         contextLines.put("description", "Number of context lines before and after each match");
 
+        ObjectNode hidden = props.putObject("hidden");
+        hidden.put("type", "boolean");
+        hidden.put("description", "Search hidden files and directories (dot-prefixed). Default false. "
+                + "Heavy trees like .git/node_modules/target are always skipped regardless.");
+
         schema.putArray("required").add("pattern");
         return schema;
     }
@@ -104,6 +109,7 @@ public class GrepTool implements CliTool {
         boolean caseInsensitive = params.path("case_insensitive").asBoolean(false);
         String outputMode = params.path("output_mode").asText("content");
         int contextLines = params.path("context_lines").asInt(0);
+        boolean includeHidden = params.path("hidden").asBoolean(false);
 
         if (pattern.isEmpty()) {
             return ToolResult.error("pattern is required");
@@ -124,6 +130,11 @@ public class GrepTool implements CliTool {
             // including a large auto-generated file. rg's own binary-content detection (-I by
             // default) still skips true binary blobs regardless of this flag.
             cmd.add("--no-ignore");
+            // rg skips hidden files/dirs by default (--no-ignore does not change that). Opt in
+            // with --hidden; the SearchExclusions "!<dir>" globs below still prune .git etc.
+            if (includeHidden) {
+                cmd.add("--hidden");
+            }
             if ("files".equals(outputMode)) {
                 cmd.add("-l");
             } else if ("count".equals(outputMode)) {
@@ -168,10 +179,18 @@ public class GrepTool implements CliTool {
             // FIFO is passed directly as the search 'path'. Cheap belt-and-suspenders, no downside.
             cmd.add("-D");
             cmd.add("skip");
-            // The actual fix for grep "stalls": prune VCS/build/dependency dirs. Without this,
-            // grep -r walks the entire monorepo (.git/, every target/, node_modules/, native build
-            // trees) — measured >30s (timed out) vs ~2s with these excludes — and the blocking
-            // read makes the MCP call appear to return "No matches".
+            // Skip hidden dirs/files by default so the grep fallback matches GlobTool
+            // (SearchExclusions.isExcludedDir) and ripgrep's default. Without this the fallback
+            // was the only backend that walked .claude/worktrees (full repo copies) — ~47% of
+            // results were duplicate noise, and grep vs rg returned different counts. The 'hidden'
+            // param lifts only the generic dot rule; the DIRS excludes below still prune .git etc.
+            if (!includeHidden) {
+                cmd.add("--exclude-dir=.*");
+                cmd.add("--exclude=.*");
+            }
+            // Always prune the heavy build/dependency dirs. Without this, grep -r walks the whole
+            // monorepo (every target/, node_modules/, native build trees) — measured >30s (timed out)
+            // vs ~2s with these excludes — and the blocking read makes the MCP call return "No matches".
             for (String ex : SearchExclusions.DIRS) {
                 cmd.add("--exclude-dir=" + ex);
             }

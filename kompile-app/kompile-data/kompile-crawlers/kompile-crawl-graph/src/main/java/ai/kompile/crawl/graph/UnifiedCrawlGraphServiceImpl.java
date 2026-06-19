@@ -708,6 +708,66 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         skipPipelineStep(job, stepId, message + " (archive unavailable — skipped)");
     }
 
+    /**
+     * Persist a resumable checkpoint for a job that failed mid-pipeline so the user can click "resume"
+     * and re-run only the steps that did not finish. Graph extraction and vector indexing already persist
+     * their own resumable state — the graph-extraction orchestrator archives the precise failed chunks
+     * (see {@link GraphExtractionOrchestrator}), and vector indexing defers its chunks for the embedding
+     * resumer — so re-archiving them here would duplicate the write and clobber those precise sets. This
+     * therefore only covers the graph-state steps that otherwise have no resume path: a failed entity
+     * resolution / edge computation re-runs from the persisted fact-sheet graph (no chunks needed). No-op
+     * when no archive service is wired or there is no graph to operate on. The {@code archive()} call also
+     * flags the owning job resumable in the history store, which is what surfaces it to the resume UI.
+     */
+    void checkpointFailedJobForResume(UnifiedCrawlJob job) {
+        if (crawlStepArchiveService == null || job == null) {
+            return;
+        }
+        // Only checkpoint graph-state steps when a graph actually exists to resolve / compute edges over.
+        boolean haveGraph = job.getEntitiesExtracted().get() > 0 || job.getRelationshipsExtracted().get() > 0;
+        if (!haveGraph) {
+            return;
+        }
+        GraphExtractionConfig graphConfig = job.getRequest() != null ? job.getRequest().getGraphExtraction() : null;
+        List<String> checkpointed = new ArrayList<>();
+        if (isStepCheckpointable(job, "ENTITY_RESOLUTION")) {
+            checkpointResumableStep(job, "ENTITY_RESOLUTION", List.of(), graphConfig, checkpointed);
+        }
+        if (isStepCheckpointable(job, "EDGE_COMPUTATION")) {
+            checkpointResumableStep(job, "EDGE_COMPUTATION", List.of(), null, checkpointed);
+        }
+        if (!checkpointed.isEmpty()) {
+            log.info("[Job {}] Saved failure checkpoint; resumable step(s): {}", job.getJobId(), checkpointed);
+            recordEvent(job, "FAILED", "INFO", "Checkpoint saved — job can be resumed",
+                    "Resumable step(s): " + String.join(", ", checkpointed));
+        }
+    }
+
+    /** True when a step has not reached a terminal/non-resumable state and can be archived for resume. */
+    private boolean isStepCheckpointable(UnifiedCrawlJob job, String stepId) {
+        UnifiedCrawlJob.PipelineStepProgress step = ensurePipelineStep(job, stepId);
+        UnifiedCrawlJob.PipelineStepStatus status = step.getStatus().get();
+        return status != UnifiedCrawlJob.PipelineStepStatus.COMPLETED
+                && status != UnifiedCrawlJob.PipelineStepStatus.SKIPPED
+                && status != UnifiedCrawlJob.PipelineStepStatus.ARCHIVED
+                && status != UnifiedCrawlJob.PipelineStepStatus.CANCELLED;
+    }
+
+    /** Archive one step's inputs for resume and mark it ARCHIVED so the per-step "Run now" action appears. */
+    private void checkpointResumableStep(UnifiedCrawlJob job, String stepId, List<Document> chunks,
+                                         Object config, List<String> checkpointed) {
+        try {
+            String dir = crawlStepArchiveService.archive(job, stepId, chunks, config);
+            if (dir != null) {
+                pipelineStepTracker.archivePipelineStep(job, stepId,
+                        "Checkpointed on failure — resume to re-run this step");
+                checkpointed.add(stepId);
+            }
+        } catch (Exception e) {
+            log.warn("[Job {}] Failed to checkpoint step {} for resume: {}", job.getJobId(), stepId, e.getMessage(), e);
+        }
+    }
+
     /** Re-run a single archived step using its persisted chunks/config and the existing helpers. */
     private int runArchivedStep(UnifiedCrawlJob job, String step, List<Document> chunks, String configJson) {
         switch (step) {
@@ -1562,6 +1622,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 job.getErrors().add(errorMsg);
                 recordEvent(job, "FAILED", "ERROR", "Pipeline step failure",
                         errorMsg + ". " + job.getDocumentsLoaded().get() + " docs, " + finalChunkCount + " chunks");
+                checkpointFailedJobForResume(job);
             } else if (hasDeferredEmbedding) {
                 String message = "Crawl graph completed; "
                         + job.getDeferredEmbeddingChunks().size() + " chunk(s) pending bge-m3/vector embedding";
@@ -1595,6 +1656,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             job.setCompletedAt(Instant.now());
             recordEvent(job, "FAILED", "ERROR", "Unified crawl failed",
                     e.getClass().getSimpleName() + ": " + e.getMessage());
+            checkpointFailedJobForResume(job);
         }
     }
 

@@ -296,11 +296,13 @@ class MatrixGraphConstructorTest {
         }
 
         @Test
-        @DisplayName("returns empty graph when LLM response contains non-JSON surrounding text that confuses the parser")
+        @DisplayName("extracts entity from codex transcript that has non-graph JSON and an echoed result block")
         void extractsGraphJsonFromCodexTranscript() {
-            // The current production parseExtractionResponse uses indexOf('{') to lastIndexOf('}'),
-            // which grabs from the first '{' (in "Non-graph config object: {...}") through the last '}',
-            // producing a mangled string that fails JSON parsing → empty graph returned.
+            // parseExtractionResponse uses indexOf("{\"entities\"") to skip preamble/tool-call lines,
+            // then substring from there to lastIndexOf('}') — which reaches the end of the echoed
+            // second JSON block. Jackson's readValue (FAIL_ON_TRAILING_TOKENS disabled by default)
+            // stops at the end of the first valid JSON object and ignores trailing content,
+            // so the entity is successfully extracted despite the "tokens used" echo suffix.
             String transcript = """
                     Reading additional input from stdin...
                     OpenAI Codex v0.135.0
@@ -323,10 +325,12 @@ class MatrixGraphConstructorTest {
             RetrievedDoc doc = new RetrievedDoc("doc1", "KAA methodology text", Map.of());
             Graph result = constructor.constructGraphFromDocs(List.of(doc), null, null);
 
-            // Production extracts from first '{' to last '}', spanning non-JSON prefix text;
-            // the resulting substring is not valid JSON so parsing fails and an empty graph is returned.
-            assertTrue(result.getEntities().isEmpty(),
-                    "When transcript has a non-JSON prefix, the parser fails and returns empty graph");
+            // The parser locates {"entities"... in the codex response line, takes the substring
+            // to lastIndexOf('}') (which spans the echoed block), then Jackson reads the first
+            // complete JSON object and ignores trailing content → 1 entity extracted.
+            assertEquals(1, result.getEntities().size(),
+                    "Parser should extract the entity from the codex response line");
+            assertEquals("KAA", result.getEntities().get(0).getTitle());
         }
 
         @Test
