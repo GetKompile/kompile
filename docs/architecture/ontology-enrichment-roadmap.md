@@ -156,18 +156,24 @@ Split into the reusable engine (A-1, `process-engine`) and the app-main bridge t
 
 ## Workstream C — Couple the enrichment passes
 
-Orchestration/shared-context/barcode-wiring are independent; the unified normalizer needs A.
+> **Concurrency + module status (2026-06-19):** the crawl-pipeline items below sit in the active "Graph-as-asset" crawl
+> zone — **DEFERRED** until it settles. The `kompile-data-enrichment` items are a cold module and safe to edit — **but
+> that module's TEST suite is currently broken** (8 stale tests still on the old `GraphNodeRepository` API after the
+> vector-store-SSOT migration `2ba20a4ac`); those need migrating before `mvn install` is green there.
 
-- [ ] **`EnrichmentContext`** — per-run object holding the loaded node set + a single parsed-metadata view; passes
-  mutate the shared view, one flush. Replaces ~8 independent scans + multiple `ObjectMapper` parses.
-- [ ] **Fill the real `ENRICHMENT` step** — invoke `DataEnrichmentService` from `UnifiedCrawlGraphServiceImpl` under
-  `stepPlan.isRun("ENRICHMENT")` with proper `hardDependsOn` (ENTITY_RESOLUTION/EDGE_COMPUTATION); keep the event
-  path as an ad-hoc fallback.
-- [ ] **Wire barcode identity + in-flight resolution into the pipeline** — call `BarcodeIdentityGraphService.materialize()`
-  after ENTITY_RESOLUTION in the crawl (not just HTTP); reconcile the Neo4j-only `EntityResolutionService` with the JPA path.
-- [ ] **One ontology-aware normalizer** *(needs A)* — collapse `GraphCompactionService.normalize` +
-  `EntityNormalizationService.toTitleCase`/`inferEntityType` into one normalizer that infers entity types from the
-  A registry, replacing keyword heuristics and hardcoded `COMPATIBLE_TYPE_PAIRS`.
+- [x] **Canonical entity-type resolver** ✅ (2026-06-19) — `GraphNodeTypes.resolveEntityType` (app-core,
+  `ai.kompile.core.graphrag.typing`) unifies the `entity_category → entity_type → entity_subtype` precedence;
+  `EntityNormalizationService` adopted it (was `entity_type`-only, missing `entity_category`). First step of the unified
+  normalizer. Follow-up: migrate `GraphOntologyBindingService` (A-2) + `GraphCompactionService` onto it.
+- [ ] **`EnrichmentContext`** — per-run object holding the loaded node set + a single parsed-metadata view; passes mutate
+  the shared view, one flush. Replaces ~8 independent scans + multiple `ObjectMapper` parses. (Care: mutating passes
+  invalidate a shared snapshot — sequence read-only vs mutating deliberately.)
+- [ ] **Fill the real `ENRICHMENT` step** *(DEFERRED — crawl zone)* — invoke `DataEnrichmentService` from
+  `UnifiedCrawlGraphServiceImpl` under `stepPlan.isRun("ENRICHMENT")`; keep the event path as a fallback.
+- [ ] **Wire barcode identity + in-flight resolution into the pipeline** *(DEFERRED — crawl zone)* — call
+  `BarcodeIdentityGraphService.materialize()` after ENTITY_RESOLUTION in the crawl (not just HTTP).
+- [ ] **One ontology-aware normalizer** *(needs A; resolver done above)* — collapse `GraphCompactionService.normalize` +
+  `EntityNormalizationService` heuristics into one normalizer that infers entity types from the A registry.
 - [ ] **Propagate `ContextualChunkEnricher` output back to `GraphNode`** so graph and vector store stay consistent.
 
 ---
