@@ -30,6 +30,10 @@
       <mat-icon class="tab-icon">history_edu</mat-icon>
       <span class="tab-label">Provenance</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'diff'" (click)="selectSubTab('diff')">
+      <mat-icon class="tab-icon">difference</mat-icon>
+      <span class="tab-label">Diff</span>
+    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'maintenance'" (click)="selectSubTab('maintenance')">
       <mat-icon class="tab-icon">build</mat-icon>
       <span class="tab-label">Maintenance</span>
@@ -37,6 +41,18 @@
     <button class="sub-tab" [class.active]="activeSubTab === 'rules'" (click)="selectSubTab('rules')">
       <mat-icon class="tab-icon">rule</mat-icon>
       <span class="tab-label">Rules</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'extract'" (click)="selectSubTab('extract')">
+      <mat-icon class="tab-icon">auto_awesome</mat-icon>
+      <span class="tab-label">Extraction</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'patch'" (click)="selectSubTab('patch')">
+      <mat-icon class="tab-icon">edit_note</mat-icon>
+      <span class="tab-label">Data Patch</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'eval'" (click)="selectSubTab('eval')">
+      <mat-icon class="tab-icon">bug_report</mat-icon>
+      <span class="tab-label">Eval Debugger</span>
     </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'io'" (click)="selectSubTab('io')">
       <mat-icon class="tab-icon">import_export</mat-icon>
@@ -60,11 +76,23 @@
     <div *ngIf="activeSubTab === 'provenance'">
       <app-graph-provenance-panel [factSheetId]="activeFactSheetId"></app-graph-provenance-panel>
     </div>
+    <div *ngIf="activeSubTab === 'diff'">
+      <app-graph-diff-panel [factSheetId]="activeFactSheetId"></app-graph-diff-panel>
+    </div>
     <div *ngIf="activeSubTab === 'maintenance'">
       <app-graph-maintenance-hub [factSheetId]="activeFactSheetId"></app-graph-maintenance-hub>
     </div>
     <div *ngIf="activeSubTab === 'rules'">
       <app-graph-rules-panel [factSheetId]="activeFactSheetId"></app-graph-rules-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'extract'">
+      <app-multi-agent-graph-extraction></app-multi-agent-graph-extraction>
+    </div>
+    <div *ngIf="activeSubTab === 'patch'">
+      <app-graph-data-patch [factSheetId]="activeFactSheetId"></app-graph-data-patch>
+    </div>
+    <div *ngIf="activeSubTab === 'eval'">
+      <app-graph-eval-debugger></app-graph-eval-debugger>
     </div>
     <div *ngIf="activeSubTab === 'io'">
       <app-graph-io-panel [factSheetId]="activeFactSheetId"></app-graph-io-panel>

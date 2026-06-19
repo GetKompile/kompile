@@ -1,0 +1,119 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ */
+
+.diff-panel {
+  padding: 12px;
+}
+
+.controls-card,
+.result-card {
+  margin-bottom: 16px;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+}
+
+.summary {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.chip {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.chip.added {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.chip.removed {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.chip.changed {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.cols {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.col {
+  flex: 1 1 240px;
+}
+
+.col h4,
+.result-card h4 {
+  margin: 8px 0 4px;
+}
+
+.col ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.changed-entity {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.ce-head {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.ch-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ch-table th,
+.ch-table td {
+  text-align: left;
+  padding: 3px 8px;
+  vertical-align: top;
+}
+
+.ch-table th {
+  width: 160px;
+  font-family: monospace;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.ch-table .before {
+  color: #c62828;
+}
+
+.ch-table .after {
+  color: #2e7d32;
+}
+
+.ch-table .arrow {
+  color: rgba(0, 0, 0, 0.4);
+  width: 20px;
+}

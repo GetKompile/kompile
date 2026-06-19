@@ -28,8 +28,13 @@ import { GraphOntologyPanelComponent } from '../graph-ontology-panel/graph-ontol
 import { GraphIoPanelComponent } from '../graph-io-panel/graph-io-panel.component';
 import { GraphPipelinesPanelComponent } from '../graph-pipelines-panel/graph-pipelines-panel.component';
 import { GraphProvenancePanelComponent } from '../graph-provenance-panel/graph-provenance-panel.component';
+import { GraphDiffPanelComponent } from '../graph-diff-panel/graph-diff-panel.component';
+import { GraphEvalDebuggerComponent } from '../graph-eval-debugger/graph-eval-debugger.component';
+import { GraphDataPatchComponent } from '../graph-data-patch/graph-data-patch.component';
+import { MultiAgentGraphExtractionComponent } from '../multi-agent-graph-extraction/multi-agent-graph-extraction.component';
 
-type GraphsTab = 'overview' | 'health' | 'ontology' | 'pipelines' | 'provenance' | 'maintenance' | 'rules' | 'io';
+type GraphsTab = 'overview' | 'health' | 'ontology' | 'pipelines' | 'provenance' | 'diff'
+  | 'maintenance' | 'rules' | 'extract' | 'patch' | 'eval' | 'io';
 
 /**
  * Top-level "Graphs" workspace — a first-class home for managing knowledge graphs as assets. Wires
@@ -49,7 +54,11 @@ type GraphsTab = 'overview' | 'health' | 'ontology' | 'pipelines' | 'provenance'
     GraphOntologyPanelComponent,
     GraphIoPanelComponent,
     GraphPipelinesPanelComponent,
-    GraphProvenancePanelComponent
+    GraphProvenancePanelComponent,
+    GraphDiffPanelComponent,
+    GraphEvalDebuggerComponent,
+    GraphDataPatchComponent,
+    MultiAgentGraphExtractionComponent
   ],
   templateUrl: './graphs-hub.component.html',
   styleUrls: ['./graphs-hub.component.css']
