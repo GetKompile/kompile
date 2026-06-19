@@ -43,9 +43,7 @@ class GraphLocalizationServiceTest {
     @BeforeEach
     void setUp() {
         service = new GraphLocalizationService(graphService, algorithmService);
-        // Inject optional repo dependencies via reflection (field-injected in production)
-        setField(service, "nodeRepository", nodeRepository);
-        setField(service, "edgeRepository", edgeRepository);
+        // Inject optional repo dependency via reflection (field-injected in production)
         setField(service, "entityMentionRepository", entityMentionRepository);
     }
 
@@ -228,12 +226,12 @@ class GraphLocalizationServiceTest {
     void exploreNeighborhood_factSheetScoped() {
         GraphNode seed = mockNode("seed", "Seed", NodeLevel.DOCUMENT);
         stubNodeLookup(seed);
-        when(edgeRepository.findAllEdgesForNodeIdInFactSheet("seed", 42L))
+        when(graphService.getEdgesForNodeInFactSheet("seed", 42L))
                 .thenReturn(List.of());
 
         service.exploreNeighborhood("seed", 2, 50, null, null, null, 42L);
 
-        verify(edgeRepository).findAllEdgesForNodeIdInFactSheet("seed", 42L);
+        verify(graphService).getEdgesForNodeInFactSheet("seed", 42L);
         verify(graphService, never()).getEdgesForNode("seed");
     }
 

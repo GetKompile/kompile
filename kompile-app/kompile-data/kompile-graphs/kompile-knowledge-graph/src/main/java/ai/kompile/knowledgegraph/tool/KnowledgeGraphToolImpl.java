@@ -19,7 +19,7 @@ import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.*;
+import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +42,6 @@ public class KnowledgeGraphToolImpl {
     private final KnowledgeGraphService graphService;
     private final SourceWeightingService weightingService;
     private final EntityMentionRepository entityMentionRepository;
-    private final GraphNodeRepository nodeRepository;
     private final McpOptimizationConfigProvider optimizationProvider;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -63,12 +62,10 @@ public class KnowledgeGraphToolImpl {
             KnowledgeGraphService graphService,
             SourceWeightingService weightingService,
             EntityMentionRepository entityMentionRepository,
-            GraphNodeRepository nodeRepository,
             @Autowired(required = false) McpOptimizationConfigProvider optimizationProvider) {
         this.graphService = graphService;
         this.weightingService = weightingService;
         this.entityMentionRepository = entityMentionRepository;
-        this.nodeRepository = nodeRepository;
         this.optimizationProvider = optimizationProvider != null
                 ? optimizationProvider
                 : McpOptimizationConfigProvider.ofDefaults();
@@ -342,8 +339,8 @@ public class KnowledgeGraphToolImpl {
         try {
             Optional<GraphNode> nodeOpt = graphService.getNode(input.documentId());
             if (nodeOpt.isEmpty()) {
-                // Try by external ID
-                nodeOpt = nodeRepository.findByExternalIdAndNodeType(input.documentId(), NodeLevel.DOCUMENT);
+                // Try by external ID via the service
+                nodeOpt = graphService.getNodeByExternalId(input.documentId(), NodeLevel.DOCUMENT);
             }
 
             if (nodeOpt.isEmpty()) {

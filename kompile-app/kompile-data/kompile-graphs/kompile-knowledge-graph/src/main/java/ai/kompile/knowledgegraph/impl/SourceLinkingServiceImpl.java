@@ -16,7 +16,7 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.*;
+import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.service.SourceLinkingService;
 import lombok.extern.slf4j.Slf4j;
@@ -34,19 +34,13 @@ import java.util.stream.Collectors;
 @Slf4j
 public class SourceLinkingServiceImpl implements SourceLinkingService {
 
-    private GraphNodeRepository nodeRepository;
-    private GraphEdgeRepository edgeRepository;
     private EntityMentionRepository entityMentionRepository;
     private KnowledgeGraphService knowledgeGraphService;
 
     @Autowired
     public SourceLinkingServiceImpl(
-            GraphNodeRepository nodeRepository,
-            GraphEdgeRepository edgeRepository,
             EntityMentionRepository entityMentionRepository,
             KnowledgeGraphService knowledgeGraphService) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
         this.entityMentionRepository = entityMentionRepository;
         this.knowledgeGraphService = knowledgeGraphService;
     }
@@ -60,7 +54,7 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
     public LinkingResult linkSourcesBySharedConcepts(Long factSheetId, LinkingConfig config) {
         log.info("Linking sources by shared concepts for fact sheet {}", factSheetId);
 
-        List<GraphNode> sources = nodeRepository.findSourcesByFactSheet(factSheetId);
+        List<GraphNode> sources = knowledgeGraphService.getSourcesInFactSheet(factSheetId);
         if (sources.size() < 2) {
             return new LinkingResult(sources.size(), 0, 0, 0, List.of(),
                 Map.of("message", "Need at least 2 sources to create links"));
@@ -99,30 +93,26 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
                 if (sharedConcepts.size() >= config.minSharedConcepts() &&
                     jaccardSimilarity >= config.minConceptOverlap()) {
 
-                    // Check if link already exists
-                    if (edgeRepository.findEdgeBetweenNodesInFactSheet(
-                            source1.getNodeId(), source2.getNodeId(), factSheetId).isEmpty() &&
-                        edgeRepository.findEdgeBetweenNodesInFactSheet(
-                            source2.getNodeId(), source1.getNodeId(), factSheetId).isEmpty()) {
+                    // Check if link already exists via service
+                    if (!knowledgeGraphService.edgeExistsInFactSheet(
+                                source1.getNodeId(), source2.getNodeId(), factSheetId) &&
+                        !knowledgeGraphService.edgeExistsInFactSheet(
+                                source2.getNodeId(), source1.getNodeId(), factSheetId)) {
 
                         // Create the edge
                         double strength = Math.min(1.0, jaccardSimilarity + sharedConcepts.size() * 0.05);
                         String description = String.format("Shares %d concepts (%.0f%% overlap)",
                             sharedConcepts.size(), jaccardSimilarity * 100);
 
-                        GraphEdge edge = knowledgeGraphService.createEdge(
+                        GraphEdge edge = knowledgeGraphService.createEdgeWithMetadata(
                             source1.getNodeId(),
                             source2.getNodeId(),
                             config.createCrossSourceEdges() ? EdgeType.CROSS_SOURCE : EdgeType.SHARED_ENTITY,
                             strength,
-                            description
+                            null, description,
+                            serializeSharedConcepts(sharedConcepts),
+                            null, factSheetId
                         );
-
-                        // Set the fact sheet ID on the edge
-                        edge.setFactSheetId(factSheetId);
-                        edge.setBidirectional(config.createBidirectional());
-                        edge.setSharedEntitiesJson(serializeSharedConcepts(sharedConcepts));
-                        edgeRepository.save(edge);
 
                         links.add(new SourceLink(
                             source1.getNodeId(), source1.getTitle(),
@@ -201,8 +191,7 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
 
     @Override
     public List<SourceLink> getSourceLinks(Long factSheetId) {
-        List<GraphEdge> edges = edgeRepository.findCrossSourceEdgesByFactSheet(factSheetId,
-            org.springframework.data.domain.PageRequest.of(0, 1000));
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesByTypeInFactSheet(factSheetId, EdgeType.CROSS_SOURCE);
 
         return edges.stream()
             .map(this::edgeToSourceLink)
@@ -211,7 +200,7 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
 
     @Override
     public List<SourceLink> getLinksForSource(Long factSheetId, String sourceNodeId) {
-        List<GraphEdge> edges = edgeRepository.findAllEdgesForNodeIdInFactSheet(sourceNodeId, factSheetId);
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesForNodeInFactSheet(sourceNodeId, factSheetId);
 
         return edges.stream()
             .filter(e -> e.getEdgeType() == EdgeType.CROSS_SOURCE ||
@@ -226,26 +215,23 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
     @Transactional
     public SourceLink createManualLink(Long factSheetId, String sourceNodeId1, String sourceNodeId2,
                                        String description, double strength) {
-        GraphNode source1 = nodeRepository.findByNodeId(sourceNodeId1)
+        GraphNode source1 = knowledgeGraphService.getNode(sourceNodeId1)
             .orElseThrow(() -> new IllegalArgumentException("Source node not found: " + sourceNodeId1));
-        GraphNode source2 = nodeRepository.findByNodeId(sourceNodeId2)
+        GraphNode source2 = knowledgeGraphService.getNode(sourceNodeId2)
             .orElseThrow(() -> new IllegalArgumentException("Source node not found: " + sourceNodeId2));
 
         if (source1.getNodeType() != NodeLevel.SOURCE || source2.getNodeType() != NodeLevel.SOURCE) {
             throw new IllegalArgumentException("Both nodes must be SOURCE type");
         }
 
-        // Create the edge
-        GraphEdge edge = knowledgeGraphService.createEdge(
+        // Create the edge via service (factSheetId and bidirectional carried through metadata)
+        GraphEdge edge = knowledgeGraphService.createEdgeWithMetadata(
             sourceNodeId1, sourceNodeId2,
             EdgeType.USER_DEFINED,
             strength,
-            description != null ? description : "Manual link"
+            null, description != null ? description : "Manual link",
+            null, null, factSheetId
         );
-
-        edge.setFactSheetId(factSheetId);
-        edge.setBidirectional(true);
-        edgeRepository.save(edge);
 
         return new SourceLink(
             sourceNodeId1, source1.getTitle(),
@@ -260,17 +246,13 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
     @Override
     @Transactional
     public boolean removeLink(Long factSheetId, String sourceNodeId1, String sourceNodeId2) {
-        Optional<GraphEdge> edge = edgeRepository.findEdgeBetweenNodesInFactSheet(
-            sourceNodeId1, sourceNodeId2, factSheetId);
+        // Check both directions via service
+        GraphEdge fwd = knowledgeGraphService.findEdgeBetweenNodes(sourceNodeId1, sourceNodeId2);
+        GraphEdge rev = knowledgeGraphService.findEdgeBetweenNodes(sourceNodeId2, sourceNodeId1);
+        GraphEdge toDelete = fwd != null ? fwd : rev;
 
-        if (edge.isEmpty()) {
-            // Try the other direction
-            edge = edgeRepository.findEdgeBetweenNodesInFactSheet(
-                sourceNodeId2, sourceNodeId1, factSheetId);
-        }
-
-        if (edge.isPresent()) {
-            edgeRepository.delete(edge.get());
+        if (toDelete != null) {
+            knowledgeGraphService.deleteEdge(toDelete.getEdgeId());
             return true;
         }
 
@@ -279,8 +261,8 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
 
     @Override
     public Map<String, Object> getConnectivitySummary(Long factSheetId) {
-        List<GraphNode> sources = nodeRepository.findSourcesByFactSheet(factSheetId);
-        List<GraphEdge> edges = edgeRepository.findByFactSheetId(factSheetId);
+        List<GraphNode> sources = knowledgeGraphService.getSourcesInFactSheet(factSheetId);
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
 
         // Count edges between sources
         long sourceEdges = edges.stream()
@@ -322,10 +304,10 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
 
     @Override
     public List<String> findIsolatedSources(Long factSheetId) {
-        List<GraphNode> sources = nodeRepository.findSourcesByFactSheet(factSheetId);
+        List<GraphNode> sources = knowledgeGraphService.getSourcesInFactSheet(factSheetId);
         Set<String> connectedSources = new HashSet<>();
 
-        List<GraphEdge> edges = edgeRepository.findByFactSheetId(factSheetId);
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
         for (GraphEdge edge : edges) {
             if (edge.getSourceNode().getNodeType() == NodeLevel.SOURCE) {
                 connectedSources.add(edge.getSourceNode().getNodeId());
@@ -343,7 +325,7 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
 
     @Override
     public List<Map<String, Object>> findMostConnectedSources(Long factSheetId, int limit) {
-        List<GraphNode> sources = nodeRepository.findSourcesByFactSheet(factSheetId);
+        List<GraphNode> sources = knowledgeGraphService.getSourcesInFactSheet(factSheetId);
         Map<String, Integer> connectionCounts = new HashMap<>();
         Map<String, String> sourceTitles = new HashMap<>();
 
@@ -352,7 +334,7 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
             sourceTitles.put(source.getNodeId(), source.getTitle());
         }
 
-        List<GraphEdge> edges = edgeRepository.findByFactSheetId(factSheetId);
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
         for (GraphEdge edge : edges) {
             if (edge.getSourceNode().getNodeType() == NodeLevel.SOURCE) {
                 connectionCounts.merge(edge.getSourceNode().getNodeId(), 1, Integer::sum);
@@ -378,8 +360,10 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private Set<String> getConceptsForSource(GraphNode source, Long factSheetId) {
-        // Get all entity mentions for documents under this source
-        List<GraphNode> documents = nodeRepository.findBySourceIdAndType(source.getNodeId(), NodeLevel.DOCUMENT);
+        // Get children of source (documents) via service
+        List<GraphNode> documents = knowledgeGraphService.getChildren(source.getNodeId()).stream()
+            .filter(n -> n.getNodeType() == NodeLevel.DOCUMENT)
+            .collect(Collectors.toList());
 
         Set<String> concepts = new HashSet<>();
         for (GraphNode doc : documents) {
@@ -489,24 +473,19 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
                 GraphNode node2 = nodesWithTerm.get(j);
 
                 // Check if edge already exists
-                if (edgeRepository.findEdgeBetweenNodesBidirectional(
+                if (knowledgeGraphService.findEdgeBetweenNodesBidirectional(
                         node1.getNodeId(), node2.getNodeId()).isEmpty()) {
 
                     String description = String.format("Linked by term: %s", term);
-                    GraphEdge edge = knowledgeGraphService.createEdge(
+                    knowledgeGraphService.createEdgeWithMetadata(
                         node1.getNodeId(),
                         node2.getNodeId(),
                         linkType,
                         linkWeight,
-                        description
+                        null, description,
+                        "[\"" + normalizedTerm + "\"]",
+                        null, factSheetId
                     );
-
-                    if (factSheetId != null) {
-                        edge.setFactSheetId(factSheetId);
-                    }
-                    edge.setBidirectional(true);
-                    edge.setSharedEntitiesJson("[\"" + normalizedTerm + "\"]");
-                    edgeRepository.save(edge);
 
                     linksCreated++;
                     if (!linkedNodeIds.contains(node1.getNodeId())) {
@@ -541,28 +520,25 @@ public class SourceLinkingServiceImpl implements SourceLinkingService {
     @Transactional
     public SourceLink createTermBasedRelation(String sourceNodeId, String targetNodeId, String relationTerm,
                                                String description, double weight, boolean bidirectional) {
-        GraphNode source = nodeRepository.findByNodeId(sourceNodeId)
+        GraphNode source = knowledgeGraphService.getNode(sourceNodeId)
             .orElseThrow(() -> new IllegalArgumentException("Source node not found: " + sourceNodeId));
-        GraphNode target = nodeRepository.findByNodeId(targetNodeId)
+        GraphNode target = knowledgeGraphService.getNode(targetNodeId)
             .orElseThrow(() -> new IllegalArgumentException("Target node not found: " + targetNodeId));
 
         String normalizedTerm = normalizeTerm(relationTerm);
         String edgeDescription = description != null ? description :
             String.format("Related by: %s", relationTerm);
 
-        // Create the edge
-        GraphEdge edge = knowledgeGraphService.createEdge(
+        // Create the edge via service with full metadata
+        knowledgeGraphService.createEdgeWithMetadata(
             sourceNodeId,
             targetNodeId,
             EdgeType.USER_DEFINED,
             weight,
-            edgeDescription
+            relationTerm, edgeDescription,
+            "[\"" + normalizedTerm + "\"]",
+            null, null
         );
-
-        edge.setBidirectional(bidirectional);
-        edge.setLabel(relationTerm);
-        edge.setSharedEntitiesJson("[\"" + normalizedTerm + "\"]");
-        edgeRepository.save(edge);
 
         // Also create entity mentions if they don't exist
         createEntityMentionIfNotExists(source, normalizedTerm, "USER_DEFINED");

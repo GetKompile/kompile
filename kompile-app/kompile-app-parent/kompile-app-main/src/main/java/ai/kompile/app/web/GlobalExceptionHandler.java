@@ -41,7 +41,9 @@ import java.util.Map;
      */
     @ControllerAdvice(basePackages = {
             "ai.kompile.app.web.controllers",
-            "ai.kompile.event.attribution.controller"
+            "ai.kompile.event.attribution.controller",
+            "ai.kompile.event.observation.controller",
+            "ai.kompile.process.attribution.controller"
     })
 public class GlobalExceptionHandler {
 

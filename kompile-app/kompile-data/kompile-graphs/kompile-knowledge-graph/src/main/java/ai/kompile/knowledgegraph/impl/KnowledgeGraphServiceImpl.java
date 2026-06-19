@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.impl;
 
+import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.repository.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -26,6 +27,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -561,16 +563,33 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
     public Map<String, Object> getGraphStatistics() {
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("totalNodes", nodeRepository.count());
-        stats.put("sourceCount", nodeRepository.countByNodeType(NodeLevel.SOURCE));
-        stats.put("documentCount", nodeRepository.countByNodeType(NodeLevel.DOCUMENT));
-        stats.put("snippetCount", nodeRepository.countByNodeType(NodeLevel.SNIPPET));
-        stats.put("entityCount", nodeRepository.countByNodeType(NodeLevel.ENTITY));
-        stats.put("customCount", nodeRepository.countByNodeType(NodeLevel.CUSTOM));
+
+        // Census EVERY NodeLevel (incl. TABLE, ATTACHMENT) into a single nodesByType map.
+        // The index-browser / entity-browser read statistics.nodesByType[<TYPE>], so this is the
+        // canonical, store-agnostic shape — never a hardcoded subset that silently drops a type.
+        Map<String, Long> nodesByType = new LinkedHashMap<>();
+        for (NodeLevel level : NodeLevel.values()) {
+            nodesByType.put(level.name(), nodeRepository.countByNodeType(level));
+        }
+        stats.put("nodesByType", nodesByType);
+
+        // Flat convenience keys (retained for existing consumers, e.g. unified-crawl graph summary).
+        stats.put("sourceCount", nodesByType.getOrDefault(NodeLevel.SOURCE.name(), 0L));
+        stats.put("documentCount", nodesByType.getOrDefault(NodeLevel.DOCUMENT.name(), 0L));
+        stats.put("snippetCount", nodesByType.getOrDefault(NodeLevel.SNIPPET.name(), 0L));
+        stats.put("entityCount", nodesByType.getOrDefault(NodeLevel.ENTITY.name(), 0L));
+        stats.put("customCount", nodesByType.getOrDefault(NodeLevel.CUSTOM.name(), 0L));
+        stats.put("tableCount", nodesByType.getOrDefault(NodeLevel.TABLE.name(), 0L));
+        stats.put("attachmentCount", nodesByType.getOrDefault(NodeLevel.ATTACHMENT.name(), 0L));
         stats.put("totalEdges", edgeRepository.count());
 
+        Map<String, Long> edgesByType = new LinkedHashMap<>();
         for (EdgeType type : EdgeType.values()) {
-            stats.put("edges_" + type.name().toLowerCase(), edgeRepository.countByEdgeType(type));
+            long count = edgeRepository.countByEdgeType(type);
+            edgesByType.put(type.name(), count);
+            stats.put("edges_" + type.name().toLowerCase(), count);
         }
+        stats.put("edgesByType", edgesByType);
 
         return stats;
     }
@@ -676,6 +695,8 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         map.put("sourceType", node.getSourceType());
         map.put("childCount", node.getChildCount());
         map.put("edgeCount", node.getEdgeCount());
+        // Parsed metadata so the visualizer can render TABLE / structured nodes (not a JSON blob).
+        map.put("metadata", node.getMetadata());
         if (node.getParent() != null) {
             map.put("parentId", node.getParent().getNodeId());
         }
@@ -874,6 +895,152 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         int edgesDeleted = edgeRepository.deleteByFactSheetId(factSheetId);
         int nodesDeleted = nodeRepository.deleteByFactSheetId(factSheetId);
         log.info("Deleted {} edges and {} nodes for factSheetId={}", edgesDeleted, nodesDeleted, factSheetId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRUNING / MAINTENANCE QUERIES — JPA backend (bulk @Modifying ops)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> findOrphanNodeIds(Long factSheetId) {
+        return nodeRepository.findGraphOrphanEntities(factSheetId).stream()
+                .map(GraphNode::getNodeId)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> findLowConfidenceNodeIds(Long factSheetId, double minConfidence) {
+        return nodeRepository.findLowConfidenceEntities(factSheetId, minConfidence).stream()
+                .map(GraphNode::getNodeId)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> findLowConfidenceEdgeIds(Long factSheetId, double minConfidence) {
+        return edgeRepository.findLowConfidenceEdges(factSheetId, minConfidence).stream()
+                .map(GraphEdge::getEdgeId)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long countActiveNodes(Long factSheetId) {
+        return nodeRepository.countActiveNodes(factSheetId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<String> findActiveEdgeIds(Long factSheetId) {
+        return edgeRepository.findActiveEdges(factSheetId).stream()
+                .map(GraphEdge::getEdgeId)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * JPA soft-delete/hard-delete of nodes.
+     *
+     * <p>Uses the repository's {@code @Modifying} {@link ai.kompile.knowledgegraph.repository.GraphNodeRepository#bulkMarkStale}
+     * for soft-delete, or individual {@link #deleteNode} calls for hard-delete.
+     * Nodes are resolved from nodeId strings to database-id longs in one batch.</p>
+     */
+    @Override
+    @Transactional
+    public GraphPruneResult pruneNodes(java.util.Collection<String> nodeIds,
+                                       boolean softDelete,
+                                       Duration grace,
+                                       boolean dryRun) {
+        if (nodeIds == null || nodeIds.isEmpty()) {
+            return GraphPruneResult.empty(dryRun);
+        }
+        List<String> ids = new ArrayList<>(nodeIds);
+        if (dryRun) {
+            return GraphPruneResult.ofSoftDelete(ids, true);
+        }
+        if (softDelete) {
+            // Resolve nodeId (UUID string) → database id (Long) for the bulk op
+            List<Long> dbIds = ids.stream()
+                    .map(nid -> nodeRepository.findByNodeId(nid).map(GraphNode::getId).orElse(null))
+                    .filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toList());
+            if (!dbIds.isEmpty()) {
+                nodeRepository.bulkMarkStale(dbIds, java.time.LocalDateTime.now());
+            }
+            return GraphPruneResult.ofSoftDelete(ids, false);
+        } else {
+            int deleted = 0;
+            for (String nodeId : ids) {
+                try {
+                    deleteNode(nodeId);
+                    deleted++;
+                } catch (Exception e) {
+                    log.warn("pruneNodes: could not delete node {}: {}", nodeId, e.getMessage());
+                }
+            }
+            return new GraphPruneResult(ids, deleted, deleted, false);
+        }
+    }
+
+    /**
+     * JPA soft-delete/hard-delete of edges.
+     *
+     * <p>Uses the repository's {@code @Modifying}
+     * {@link ai.kompile.knowledgegraph.repository.GraphEdgeRepository#bulkMarkStale}
+     * for the soft-delete path.</p>
+     */
+    @Override
+    @Transactional
+    public GraphPruneResult pruneEdges(java.util.Collection<String> edgeIds,
+                                       boolean softDelete,
+                                       boolean dryRun) {
+        if (edgeIds == null || edgeIds.isEmpty()) {
+            return GraphPruneResult.empty(dryRun);
+        }
+        List<String> ids = new ArrayList<>(edgeIds);
+        if (dryRun) {
+            return GraphPruneResult.ofSoftDelete(ids, true);
+        }
+        if (softDelete) {
+            List<Long> dbIds = ids.stream()
+                    .map(eid -> edgeRepository.findByEdgeId(eid).map(GraphEdge::getId).orElse(null))
+                    .filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toList());
+            if (!dbIds.isEmpty()) {
+                edgeRepository.bulkMarkStale(dbIds, java.time.LocalDateTime.now());
+            }
+            return GraphPruneResult.ofSoftDelete(ids, false);
+        } else {
+            int deleted = 0;
+            for (String edgeId : ids) {
+                try {
+                    deleteEdge(edgeId);
+                    deleted++;
+                } catch (Exception e) {
+                    log.warn("pruneEdges: could not delete edge {}: {}", edgeId, e.getMessage());
+                }
+            }
+            return new GraphPruneResult(ids, deleted, deleted, false);
+        }
+    }
+
+    /**
+     * JPA hard-delete of stale nodes past the grace period.
+     *
+     * <p>Delegates directly to
+     * {@link ai.kompile.knowledgegraph.repository.GraphNodeRepository#hardDeleteStaleNodes}.</p>
+     */
+    @Override
+    @Transactional
+    public GraphPruneResult hardDeleteStaleNodes(Long factSheetId, Duration grace) {
+        int graceDays = (int) (grace != null ? grace.toDays() : 7);
+        java.time.LocalDateTime graceCutoff = java.time.LocalDateTime.now().minusDays(graceDays);
+        int hardDeleted = nodeRepository.hardDeleteStaleNodes(factSheetId, graceCutoff);
+        if (hardDeleted > 0) {
+            log.info("hardDeleteStaleNodes: permanently removed {} stale nodes for factSheetId={}", hardDeleted, factSheetId);
+        }
+        return GraphPruneResult.ofHardDelete(hardDeleted, false);
     }
 
     // Helper class for BFS traversal

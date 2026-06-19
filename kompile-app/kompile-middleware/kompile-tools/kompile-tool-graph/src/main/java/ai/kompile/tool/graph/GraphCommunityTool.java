@@ -12,7 +12,7 @@ package ai.kompile.tool.graph;
 import ai.kompile.graph.algorithms.JaccardNodeSimilarity;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.graph.algorithms.community.CommunitySummary;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +36,7 @@ public class GraphCommunityTool {
     private static final Logger log = LoggerFactory.getLogger(GraphCommunityTool.class);
 
     private final GraphAlgorithmService algorithmService;
-    private final GraphNodeRepository nodeRepository;
+    private final KnowledgeGraphService graphService;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -75,9 +75,9 @@ public class GraphCommunityTool {
 
     @Autowired
     public GraphCommunityTool(GraphAlgorithmService algorithmService,
-                              GraphNodeRepository nodeRepository) {
+                              KnowledgeGraphService graphService) {
         this.algorithmService = algorithmService;
-        this.nodeRepository = nodeRepository;
+        this.graphService = graphService;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -162,7 +162,7 @@ public class GraphCommunityTool {
                     .collect(Collectors.toList());
 
             // Resolve node details
-            List<GraphNode> nodes = nodeRepository.findByNodeIdIn(memberNodeIds);
+            List<GraphNode> nodes = graphService.getNodesByIds(memberNodeIds);
             List<Map<String, Object>> members = nodes.stream()
                     .map(n -> {
                         Map<String, Object> m = new LinkedHashMap<>();
@@ -262,7 +262,7 @@ public class GraphCommunityTool {
                     .limit(30)
                     .collect(Collectors.toList());
 
-            List<GraphNode> nodes = nodeRepository.findByNodeIdIn(coMembers);
+            List<GraphNode> nodes = graphService.getNodesByIds(coMembers);
             List<Map<String, Object>> memberList = nodes.stream()
                     .map(n -> {
                         Map<String, Object> m = new LinkedHashMap<>();
@@ -312,7 +312,7 @@ public class GraphCommunityTool {
                 allNodeIds.add(p.nodeA());
                 allNodeIds.add(p.nodeB());
             });
-            Map<String, String> idToTitle = nodeRepository.findByNodeIdIn(new ArrayList<>(allNodeIds))
+            Map<String, String> idToTitle = graphService.getNodesByIds(new ArrayList<>(allNodeIds))
                     .stream()
                     .collect(Collectors.toMap(
                             GraphNode::getNodeId,

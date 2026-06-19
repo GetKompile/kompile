@@ -38,7 +38,7 @@ class GraphSearchToolTest {
 
     @BeforeEach
     void setUp() {
-        tool = new GraphSearchTool(graphService, nodeRepository, edgeRepository);
+        tool = new GraphSearchTool(graphService);
     }
 
     @Test

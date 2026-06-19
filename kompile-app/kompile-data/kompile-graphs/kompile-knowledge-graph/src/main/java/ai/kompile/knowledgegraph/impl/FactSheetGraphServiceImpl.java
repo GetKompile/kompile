@@ -763,6 +763,8 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
         if (node.getSourceType() != null) {
             d3Node.put("sourceType", node.getSourceType());
         }
+        // Parsed metadata so TABLE / structured nodes render in the fact-sheet graph view.
+        d3Node.put("metadata", node.getMetadata());
         return d3Node;
     }
 

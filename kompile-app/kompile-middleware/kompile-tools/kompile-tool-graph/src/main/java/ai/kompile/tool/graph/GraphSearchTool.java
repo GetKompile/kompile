@@ -10,16 +10,12 @@
 package ai.kompile.tool.graph;
 
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -37,8 +33,6 @@ public class GraphSearchTool {
     private static final Logger log = LoggerFactory.getLogger(GraphSearchTool.class);
 
     private final KnowledgeGraphService graphService;
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -78,12 +72,8 @@ public class GraphSearchTool {
     ) {}
 
     @Autowired
-    public GraphSearchTool(KnowledgeGraphService graphService,
-                           GraphNodeRepository nodeRepository,
-                           GraphEdgeRepository edgeRepository) {
+    public GraphSearchTool(KnowledgeGraphService graphService) {
         this.graphService = graphService;
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -107,28 +97,15 @@ public class GraphSearchTool {
         NodeLevel type = parseNodeLevel(input.nodeType());
 
         try {
-            Page<GraphNode> page;
+            List<GraphNode> nodes;
             if (input.factSheetId() != null) {
-                if (type != null) {
-                    page = nodeRepository.searchByFactSheetAndQuery(
-                            input.factSheetId(), input.query(), PageRequest.of(0, limit));
-                    // post-filter by type since the repo query doesn't combine both
-                    List<GraphNode> filtered = page.getContent().stream()
-                            .filter(n -> n.getNodeType() == type)
-                            .collect(Collectors.toList());
-                    return buildNodeResults(input.query(), filtered, type);
-                }
-                page = nodeRepository.searchByFactSheetAndQuery(
-                        input.factSheetId(), input.query(), PageRequest.of(0, limit));
-            } else if (type != null) {
-                page = nodeRepository.searchByTitleOrDescriptionAndType(
-                        input.query(), type, PageRequest.of(0, limit));
+                nodes = graphService.searchNodesInFactSheetByType(
+                        input.factSheetId(), input.query(), type, limit);
             } else {
-                page = nodeRepository.searchByTitleOrDescription(
-                        input.query(), PageRequest.of(0, limit));
+                nodes = graphService.searchNodesGlobal(input.query(), type, limit);
             }
 
-            return buildNodeResults(input.query(), page.getContent(), type);
+            return buildNodeResults(input.query(), nodes, type);
 
         } catch (Exception e) {
             log.error("Graph search failed: {}", e.getMessage(), e);
@@ -153,19 +130,17 @@ public class GraphSearchTool {
             List<GraphEdge> edges;
 
             if (input.factSheetId() != null && type != null && input.minWeight() != null) {
-                edges = edgeRepository.findStrongEdgesByTypeAndFactSheet(
-                        input.factSheetId(), type, input.minWeight(),
-                        PageRequest.of(0, limit));
+                edges = graphService.getStrongEdgesByTypeInFactSheet(
+                        input.factSheetId(), type, input.minWeight(), limit);
             } else if (type != null && input.minWeight() != null) {
-                edges = edgeRepository.findStrongEdgesByType(
-                        type, input.minWeight(), PageRequest.of(0, limit));
+                edges = graphService.getStrongEdgesByType(type, input.minWeight(), limit);
             } else if (input.query() != null && !input.query().isBlank()) {
                 edges = graphService.searchEdges(input.query(), type, limit);
             } else if (input.factSheetId() != null && type != null) {
-                edges = edgeRepository.findByFactSheetIdAndEdgeType(
-                        input.factSheetId(), type, PageRequest.of(0, limit)).getContent();
+                edges = graphService.getEdgesByTypeInFactSheet(input.factSheetId(), type)
+                        .stream().limit(limit).collect(Collectors.toList());
             } else if (type != null) {
-                edges = edgeRepository.findByEdgeType(type, PageRequest.of(0, limit)).getContent();
+                edges = graphService.searchEdges(null, type, limit);
             } else {
                 return Map.of("error", "Provide at least a query, edgeType, or minWeight filter",
                         "results", List.of());
@@ -281,11 +256,11 @@ public class GraphSearchTool {
             Optional<GraphEdge> edge;
 
             if (bidir) {
-                edge = edgeRepository.findEdgeBetweenNodesBidirectional(
+                edge = graphService.findEdgeBetweenNodesBidirectional(
                         input.sourceNodeId(), input.targetNodeId());
             } else {
-                edge = edgeRepository.findEdgeBetweenNodes(
-                        input.sourceNodeId(), input.targetNodeId());
+                edge = Optional.ofNullable(
+                        graphService.findEdgeBetweenNodes(input.sourceNodeId(), input.targetNodeId()));
             }
 
             if (edge.isEmpty()) {
@@ -329,12 +304,11 @@ public class GraphSearchTool {
             NodeLevel type = parseNodeLevel(input.nodeType());
 
             if (input.factSheetId() != null) {
-                candidates = nodeRepository.findByFactSheetId(input.factSheetId());
+                candidates = graphService.getNodesInFactSheet(input.factSheetId());
             } else if (type != null) {
-                candidates = nodeRepository.findByNodeType(type);
+                candidates = graphService.getNodesByType(type, 500);
             } else {
-                candidates = nodeRepository.searchByTitleOrDescription(
-                        "", PageRequest.of(0, 500)).getContent();
+                candidates = graphService.getAllNodes(500);
             }
 
             List<GraphNode> matched = candidates.stream()

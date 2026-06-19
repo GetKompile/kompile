@@ -455,6 +455,11 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-event-observation</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-process-attribution</artifactId>
         <version>${project.version}</version>
       </dependency>

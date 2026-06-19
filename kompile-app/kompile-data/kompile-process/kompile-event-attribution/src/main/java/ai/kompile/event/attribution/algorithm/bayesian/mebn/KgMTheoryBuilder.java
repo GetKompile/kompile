@@ -9,7 +9,9 @@
  */
 package ai.kompile.event.attribution.algorithm.bayesian.mebn;
 
+import ai.kompile.core.events.EmpiricalPriorSource;
 import ai.kompile.event.attribution.algorithm.CausalTraversal;
+import ai.kompile.event.attribution.algorithm.bayesian.EmpiricalPriorBlend;
 import ai.kompile.event.attribution.algorithm.bayesian.mebn.logic.Constraints;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
@@ -60,6 +62,7 @@ public class KgMTheoryBuilder {
     private int maxNodes = 100;
     private double minEdgeWeight = 0.05;
     private boolean includeRiskMFrag = true;
+    private EmpiricalPriorSource empiricalPriors;
 
     public KgMTheoryBuilder(KnowledgeGraphService graphService) {
         this.graphService = graphService;
@@ -82,6 +85,15 @@ public class KgMTheoryBuilder {
 
     public KgMTheoryBuilder includeRiskMFrag(boolean includeRiskMFrag) {
         this.includeRiskMFrag = includeRiskMFrag;
+        return this;
+    }
+
+    /**
+     * Supply observed-event empirical priors. Entity-relevance priors and causal-influence edge
+     * strengths are then blended with their structural estimates. Null/absent ⇒ purely structural.
+     */
+    public KgMTheoryBuilder withEmpiricalPriors(EmpiricalPriorSource empiricalPriors) {
+        this.empiricalPriors = empiricalPriors;
         return this;
     }
 
@@ -282,6 +294,9 @@ public class KgMTheoryBuilder {
                 prior = 0.5;
             }
 
+            // Blend with the empirical observed-occurrence prior (evidence-weighted; structural if none).
+            prior = EmpiricalPriorBlend.forNode(prior, empiricalPriors, entityId);
+
             // Binary CPT: [P(FALSE), P(TRUE)]
             return new double[]{1.0 - prior, prior};
         });
@@ -349,6 +364,9 @@ public class KgMTheoryBuilder {
                 double confidence = edge.confidence != null ? edge.confidence : 0.5;
                 double provenanceMult = getProvenanceMultiplier(edge.provenance);
                 edgeStrength = weight * confidence * provenanceMult;
+                // Blend with the empirical observed-connection prior (gated; structural if none).
+                edgeStrength = EmpiricalPriorBlend.forConnection(
+                        edgeStrength, empiricalPriors, edge.sourceId, edge.edgeType.name(), edge.targetId);
             } else {
                 edgeStrength = 0.1; // Weak default for unknown edges
             }

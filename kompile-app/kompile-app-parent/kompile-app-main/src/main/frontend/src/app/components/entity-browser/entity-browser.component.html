@@ -437,6 +437,14 @@
           <span class="info-value">{{ selectedEntity.createdAt | date:'medium' }}</span>
         </div>
 
+        <!-- Rendered table — shown for any TABLE node regardless of graph backend (JPA or vector) -->
+        <div class="entity-table-view" *ngIf="isTableEntity(selectedEntity)">
+          <app-table-renderer
+            [markdownContent]="getTableMarkdown(selectedEntity)"
+            [showExport]="true">
+          </app-table-renderer>
+        </div>
+
         <!-- Metadata -->
         <mat-expansion-panel *ngIf="selectedEntity.metadata && (selectedEntity.metadata | keyvalue).length > 0">
           <mat-expansion-panel-header>

@@ -19,6 +19,7 @@ import ai.kompile.event.attribution.algorithm.bayesian.mebn.SSBNGenerator;
 import ai.kompile.event.attribution.algorithm.bayesian.mebn.logic.GraphKnowledgeBase;
 import ai.kompile.event.attribution.domain.*;
 import ai.kompile.event.attribution.service.EventAttributionService;
+import ai.kompile.core.events.EmpiricalPriorSource;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.attribution.domain.*;
 import ai.kompile.process.attribution.domain.StepAttributionSummary;
@@ -63,6 +64,7 @@ public class ProcessAttributionService {
     private final EventAttributionService attributionService;
     private final ProcessEngineService processEngineService;
     private final KnowledgeGraphService graphService;
+    private EmpiricalPriorSource empiricalPriors;
 
     @Autowired
     public ProcessAttributionService(EventAttributionService attributionService,
@@ -71,6 +73,15 @@ public class ProcessAttributionService {
         this.attributionService = attributionService;
         this.processEngineService = processEngineService;
         this.graphService = graphService;
+    }
+
+    /**
+     * Optional observed-event empirical priors — injected when the {@code kompile-event-observation}
+     * module is present, so process step posteriors/priors reflect real observed event frequencies.
+     */
+    @Autowired(required = false)
+    public void setEmpiricalPriors(EmpiricalPriorSource empiricalPriors) {
+        this.empiricalPriors = empiricalPriors;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -609,7 +620,8 @@ public class ProcessAttributionService {
         try {
             KgMTheoryBuilder mebnBuilder = new KgMTheoryBuilder(graphService)
                     .maxDepth(2)
-                    .maxNodes(50);
+                    .maxNodes(50)
+                    .withEmpiricalPriors(empiricalPriors);
             MTheory mTheory = mebnBuilder.build(nodeIds);
 
             if (!mTheory.getMFrags().isEmpty()) {
@@ -665,7 +677,8 @@ public class ProcessAttributionService {
         // Flat BN fallback: structure-aware but not entity-type-aware
         BayesianNetworkBuilder bnBuilder = new BayesianNetworkBuilder(graphService)
                 .maxDepth(2)
-                .maxNodes(50);
+                .maxNodes(50)
+                .withEmpiricalPriors(empiricalPriors);
         BayesianNetwork network = bnBuilder.build(nodeIds);
 
         if (network.size() == 0) {

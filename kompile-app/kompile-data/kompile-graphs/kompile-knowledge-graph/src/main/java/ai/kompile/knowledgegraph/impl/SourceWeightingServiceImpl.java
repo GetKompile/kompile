@@ -17,8 +17,8 @@ package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.SourceWeight;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.repository.SourceWeightRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.service.SourceWeightingService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,7 +37,7 @@ import java.util.stream.Collectors;
 public class SourceWeightingServiceImpl implements SourceWeightingService {
 
     private SourceWeightRepository weightRepository;
-    private GraphNodeRepository nodeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     @Value("${kompile.source-weighting.default-weight:1.0}")
     private double defaultWeight;
@@ -50,9 +50,9 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
 
     @Autowired
     public SourceWeightingServiceImpl(SourceWeightRepository weightRepository,
-                                       GraphNodeRepository nodeRepository) {
+                                       KnowledgeGraphService knowledgeGraphService) {
         this.weightRepository = weightRepository;
-        this.nodeRepository = nodeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
     }
 
     /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
@@ -66,7 +66,7 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
     @Override
     @Transactional
     public SourceWeight setSourceWeight(String sourceNodeId, Double baseWeight, String topic, String userId) {
-        GraphNode sourceNode = nodeRepository.findByNodeId(sourceNodeId)
+        GraphNode sourceNode = knowledgeGraphService.getNode(sourceNodeId)
             .orElseThrow(() -> new IllegalArgumentException("Source node not found: " + sourceNodeId));
 
         // Look for existing weight
@@ -118,7 +118,7 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
     @Override
     @Transactional
     public void removeWeight(String sourceNodeId, String topic, String userId) {
-        GraphNode sourceNode = nodeRepository.findByNodeId(sourceNodeId)
+        GraphNode sourceNode = knowledgeGraphService.getNode(sourceNodeId)
             .orElseThrow(() -> new IllegalArgumentException("Source node not found: " + sourceNodeId));
 
         weightRepository.findBySourceNodeAndTopicAndUserId(sourceNode, topic, userId)
@@ -128,7 +128,7 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
     @Override
     @Transactional
     public SourceWeight setWeightEnabled(String sourceNodeId, String topic, String userId, boolean enabled) {
-        GraphNode sourceNode = nodeRepository.findByNodeId(sourceNodeId)
+        GraphNode sourceNode = knowledgeGraphService.getNode(sourceNodeId)
             .orElseThrow(() -> new IllegalArgumentException("Source node not found: " + sourceNodeId));
 
         SourceWeight weight = weightRepository.findBySourceNodeAndTopicAndUserId(sourceNode, topic, userId)
@@ -184,7 +184,7 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
     @Transactional(readOnly = true)
     public Double computeTopicRelevance(String sourceNodeId, String topic) {
         // Get source node
-        GraphNode sourceNode = nodeRepository.findByNodeId(sourceNodeId).orElse(null);
+        GraphNode sourceNode = knowledgeGraphService.getNode(sourceNodeId).orElse(null);
         if (sourceNode == null || topic == null) return 0.5;
 
         // Simple keyword matching for now
@@ -236,7 +236,7 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
     @Transactional
     public void assignTopic(String sourceNodeId, String topic) {
         // Create or update a weight entry with the topic
-        GraphNode sourceNode = nodeRepository.findByNodeId(sourceNodeId)
+        GraphNode sourceNode = knowledgeGraphService.getNode(sourceNodeId)
             .orElseThrow(() -> new IllegalArgumentException("Source node not found: " + sourceNodeId));
 
         Optional<SourceWeight> existing = weightRepository.findBySourceNodeAndTopicAndUserId(
@@ -272,7 +272,7 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
         // This would normally integrate with the vector store
         // For now, return a placeholder showing how weights would be applied
 
-        List<GraphNode> sources = nodeRepository.findAllSources();
+        List<GraphNode> sources = knowledgeGraphService.getAllSources();
         List<String> sourceIds = sources.stream().map(GraphNode::getNodeId).collect(Collectors.toList());
 
         Map<String, Double> weights = computeQueryWeights(query, sourceIds);

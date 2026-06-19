@@ -20,7 +20,6 @@ import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,14 +48,11 @@ class CrossDocumentRelationExtractorTest {
     @Mock
     private KnowledgeGraphService knowledgeGraphService;
 
-    @Mock
-    private GraphNodeRepository graphNodeRepository;
-
     private CrossDocumentRelationExtractor extractor;
 
     @BeforeEach
     void setUp() {
-        extractor = new CrossDocumentRelationExtractor(knowledgeGraphService, graphNodeRepository);
+        extractor = new CrossDocumentRelationExtractor(knowledgeGraphService);
     }
 
     private Document makeDoc(String fileName, Map<String, Object> extraMeta) {
@@ -70,10 +66,9 @@ class CrossDocumentRelationExtractorTest {
     private void stubNodeLookup(String sourcePath, String nodeId) {
         GraphNode node = new GraphNode();
         node.setNodeId(nodeId);
-        when(graphNodeRepository.findByExternalIdAndNodeType(eq(sourcePath), eq(NodeLevel.DOCUMENT)))
+        when(knowledgeGraphService.getNodeByExternalId(eq(sourcePath), eq(NodeLevel.DOCUMENT)))
                 .thenReturn(Optional.of(node));
-        when(graphNodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
-                eq(sourcePath), eq(NodeLevel.DOCUMENT), anyLong()))
+        when(knowledgeGraphService.getNodeByExternalIdInFactSheet(eq(sourcePath), eq(NodeLevel.DOCUMENT), anyLong()))
                 .thenReturn(Optional.of(node));
     }
 

@@ -52,7 +52,7 @@ class SourceLinkingServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new SourceLinkingServiceImpl(nodeRepository, edgeRepository,
+        service = new SourceLinkingServiceImpl(
                 entityMentionRepository, knowledgeGraphService);
     }
 

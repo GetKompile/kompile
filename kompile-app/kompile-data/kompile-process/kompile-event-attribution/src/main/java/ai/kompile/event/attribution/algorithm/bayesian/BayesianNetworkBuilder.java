@@ -9,6 +9,7 @@
  */
 package ai.kompile.event.attribution.algorithm.bayesian;
 
+import ai.kompile.core.events.EmpiricalPriorSource;
 import ai.kompile.event.attribution.algorithm.CausalTraversal;
 import ai.kompile.event.attribution.domain.CausalEdgeType;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
@@ -48,6 +49,7 @@ public class BayesianNetworkBuilder {
     private int maxNodes = 100;
     private double leakProbability = NoisyOrCpt.DEFAULT_LEAK;
     private double minEdgeWeight = 0.05;
+    private EmpiricalPriorSource empiricalPriors;
 
     public BayesianNetworkBuilder(KnowledgeGraphService graphService) {
         this.graphService = graphService;
@@ -70,6 +72,15 @@ public class BayesianNetworkBuilder {
 
     public BayesianNetworkBuilder minEdgeWeight(double minEdgeWeight) {
         this.minEdgeWeight = minEdgeWeight;
+        return this;
+    }
+
+    /**
+     * Supply observed-event empirical priors. Root-node priors are then blended with the structural
+     * estimate (evidence-weighted shrinkage). Null/absent ⇒ purely structural (unchanged behavior).
+     */
+    public BayesianNetworkBuilder withEmpiricalPriors(EmpiricalPriorSource empiricalPriors) {
+        this.empiricalPriors = empiricalPriors;
         return this;
     }
 
@@ -248,7 +259,8 @@ public class BayesianNetworkBuilder {
                 GraphNode gn = graphService.getNode(node.getKgNodeId()).orElse(null);
                 int outDegree = gn != null ? graphService.getEdgesForNode(gn.getNodeId()).size() : 0;
                 Double confidence = gn != null ? gn.getConfidence() : null;
-                double prior = NoisyOrCpt.estimatePrior(confidence, outDegree);
+                double structural = NoisyOrCpt.estimatePrior(confidence, outDegree);
+                double prior = EmpiricalPriorBlend.forNode(structural, empiricalPriors, node.getKgNodeId());
                 node.setCpt(NoisyOrCpt.buildPrior(node.getVariableName(), prior));
             } else {
                 // Non-root: noisy-OR CPT from parent edges

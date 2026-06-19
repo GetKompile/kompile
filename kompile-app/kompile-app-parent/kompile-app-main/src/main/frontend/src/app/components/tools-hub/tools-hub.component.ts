@@ -29,6 +29,8 @@ export type ToolsSubTab =
   | 'prompts'
   | 'pipelines'
   | 'processEngine'
+  | 'eventObservation'
+  | 'causalAttribution'
   | 'workflows'
   | 'computeGraph'
   | 'crawlers'
@@ -36,8 +38,8 @@ export type ToolsSubTab =
 
 const KNOWN_TABS: ToolsSubTab[] = [
   'indexBrowser', 'mcp', 'orchestrator', 'chunkManager', 'knowledgeGraph',
-  'backup', 'prompts', 'pipelines', 'processEngine', 'workflows', 'computeGraph',
-  'crawlers', 'codeProjects'
+  'backup', 'prompts', 'pipelines', 'processEngine', 'eventObservation', 'causalAttribution',
+  'workflows', 'computeGraph', 'crawlers', 'codeProjects'
 ];
 
 @Component({

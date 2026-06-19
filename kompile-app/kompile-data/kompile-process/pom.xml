@@ -17,6 +17,7 @@
         <module>kompile-process-engine</module>
         <module>kompile-process-discovery</module>
         <module>kompile-event-attribution</module>
+        <module>kompile-event-observation</module>
         <module>kompile-process-attribution</module>
     </modules>
 </project>

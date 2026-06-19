@@ -164,6 +164,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private int scrollViewportOffset = 0; // lines above live bottom; 0 means follow output
     private int liveDecoderScrollbackStart = -1;
     private int liveDecoderScrollbackLength = 0;
+    /** Lines scrolled per mouse-wheel notch over the managed transcript. */
+    private static final int WHEEL_SCROLL_LINES = 3;
+    // Real-terminal mouse capture. When enabled, the wheel is delivered to
+    // Kompile and consumed for transcript scrolling instead of scrolling the
+    // host terminal's native scrollback. Only ON while a decoder owns the
+    // screen; reports are NEVER forwarded to the agent (decoder-owned TUIs such
+    // as OpenCode render mouse activity if they receive them).
+    private volatile boolean transcriptMouseEnabled = false;
 
     private final Object activityLock = new Object();
     /** Shared draw lock — same instance as KompileTui.drawLock to prevent interleaved ANSI. */
@@ -383,10 +391,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             tui.setSessionId(sessionId);
             tui.setMode("passthrough");
             tui.setEnforcerActive(enforcerEvaluator != null);
-            // Tell KompileTui to reserve rows for input box area (queue + busy + borders + input)
+            // Tell KompileTui to reserve rows for the input box + status line + activity panel.
             tui.setReservedRowsCalculator((h, w) -> {
                 int ir = h < 12 ? 1 : Math.max(3, Math.min(8, h / 5));
-                return ir + 4;
+                int ar = h < 16 ? 1 : Math.max(2, Math.min(4, h / 8));
+                // queue(1)+busy(1)+topBorder(1)+input(ir)+bottomBorder(1)+status(1)+activity(ar)
+                return ir + ar + 5;
             });
             tui.start(terminal);
             initScrollLayout();
@@ -592,8 +602,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             if (h <= 0) h = 24;
 
             inputRows = h < 12 ? 1 : Math.max(3, Math.min(8, h / 5));
-            // reserved = queue(1) + busy(1) + topBorder(1) + input(inputRows) + bottomBorder(1)
-            int reserved = inputRows + 4;
+            activityRows = h < 16 ? 1 : Math.max(2, Math.min(4, h / 8));
+            // queue(1)+busy(1)+topBorder(1)+input(inputRows)+bottomBorder(1)+status(1)+activity(activityRows)
+            int reserved = inputRows + activityRows + 5;
             tui.setReservedMiddleRows(reserved);
             tui.reestablishScrollRegion();
             scrollBottom = tui.scrollBottom();
@@ -780,6 +791,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 System.out.printf("\033[%d;1H\033[2K", row);
             }
             System.out.printf("\033[%d;1H\033[2K%s", bottomBorderRow(), border);
+            renderStatusLineLocked();
+            renderActivityPanelLocked();
             if (keepCursorInInput) {
                 drawBusyInputRows(inputBuffer, w);
             } else if (preserveCursor) {
@@ -870,19 +883,54 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         return truncatePlain(plain, width);
     }
 
-    /** Update the status — delegates to StatusBar (the sole bottom bar). */
-    synchronized void updateStatusLine(String status) {
+    /** Update the managed status line ("kompile [agent] · status …") below the input box. */
+    void updateStatusLine(String status) {
         currentStatus = status == null || status.isBlank() ? "idle" : status;
-        // StatusBar handles the bottom bar; request a redraw to pick up changes
+        redrawStatusLine();
+        // KompileTui's bottom StatusBar tracks its own consolidated metrics separately.
         if (tui != null) {
             tui.getStatusBar().requestRedraw();
         }
     }
 
-    private synchronized void drawActivityPanel(int terminalWidth) {
-        if (tui != null) {
-            pushActivityMenuToStatusBar();
-            tui.getStatusBar().requestRedraw();
+    private void drawActivityPanel(int terminalWidth) {
+        redrawActivityPanelOnly();
+    }
+
+    /** Repaint just the status line in place, preserving the active prompt cursor. */
+    private void redrawStatusLine() {
+        synchronized (drawLock) {
+            if (terminal == null || scrollBottom <= 0) return;
+            boolean activePrompt = activeLineReader != null && !busyInputActive;
+            if (activePrompt) hideCursor();
+            saveCursor();
+            renderStatusLineLocked();
+            restoreCursor();
+            if (activePrompt) showCursor();
+            System.out.flush();
+        }
+    }
+
+    /** Render the status line at {@link #statusRow()}. Caller owns cursor save/restore. */
+    private void renderStatusLineLocked() {
+        if (scrollBottom <= 0) return;
+        int w = terminal != null && terminal.getWidth() > 0 ? terminal.getWidth() : 120;
+        String status = currentStatus == null || currentStatus.isBlank() ? "idle" : currentStatus;
+        String enforcerTag = enforcerEvaluator != null ? " · enforcer" : "";
+        String text = "  kompile [" + agent + "] · " + status + enforcerTag + " · Esc cancel · /quit exit";
+        System.out.printf("\033[%d;1H\033[2K%s", statusRow(),
+                DIM + truncatePlain(text, Math.max(12, w - 1)) + RESET);
+    }
+
+    /** Render the activity panel rows below the status line. Caller owns cursor save/restore. */
+    private void renderActivityPanelLocked() {
+        if (scrollBottom <= 0) return;
+        int w = terminal != null && terminal.getWidth() > 0 ? terminal.getWidth() : 120;
+        List<String> lines = buildActivityLines(Math.max(12, w - 1));
+        int first = activityFirstRow();
+        for (int i = 0; i < activityRows; i++) {
+            String line = i < lines.size() ? lines.get(i) : "";
+            System.out.printf("\033[%d;1H\033[2K%s", first + i, fitAnsiLine(line, Math.max(1, w - 1)));
         }
     }
 
@@ -1320,10 +1368,20 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         redrawActivityPanelOnly();
     }
 
-    private synchronized void redrawActivityPanelOnly() {
-        // Convert activity items to StatusBar MenuItems and push to the consolidated bar
+    private void redrawActivityPanelOnly() {
+        synchronized (drawLock) {
+            if (terminal != null && scrollBottom > 0) {
+                boolean activePrompt = activeLineReader != null && !busyInputActive;
+                if (activePrompt) hideCursor();
+                saveCursor();
+                renderActivityPanelLocked();
+                restoreCursor();
+                if (activePrompt) showCursor();
+                System.out.flush();
+            }
+        }
+        // Keep KompileTui's bottom StatusBar (consolidated metrics) in sync.
         if (tui != null) {
-            pushActivityMenuToStatusBar();
             tui.getStatusBar().requestRedraw();
         }
     }
@@ -1580,12 +1638,19 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private void trackAssistantLog(String text) {
         String normalizedLog = normalizeActivityLog(text);
         if (normalizedLog.isBlank()) return;
+        boolean updated = false;
         synchronized (activityLock) {
             if (!backgroundActivities.isEmpty()) {
                 backgroundActivities.peekLast().addLog(normalizedLog);
+                updated = true;
             }
         }
-        redrawActivityPanel();
+        // Only repaint when an actual background activity changed. A foreground
+        // turn has no activity row to update, and repainting there would emit
+        // cursor-control bytes into the scroll region mid-stream.
+        if (updated) {
+            redrawActivityPanel();
+        }
     }
 
     private void trackTodoActivity(String toolName, String input) {
@@ -1994,10 +2059,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void redrawActivityPanel() {
-        if (tui != null) {
-            pushActivityMenuToStatusBar();
-            tui.getStatusBar().requestRedraw();
-        }
+        redrawActivityPanelOnly();
     }
 
     /** Position cursor at prompt row for readLine and redraw input box borders. */
@@ -2014,6 +2076,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     private void restoreIdlePromptCursor() {
         resetHostInputModes();
+        reassertTranscriptMouse();
         LineReader reader = activeLineReader;
         synchronized (drawLock) {
             if (tui != null) {
@@ -2089,6 +2152,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private int firstInputRow() { return scrollBottom + 4; }
     private int lastInputRow() { return firstInputRow() + inputRows - 1; }
     private int bottomBorderRow() { return lastInputRow() + 1; }
+    /** Status line ("kompile [agent] · status …") sits just below the input box. */
+    private int statusRow() { return bottomBorderRow() + 1; }
+    /** Activity panel (background work, subagents, todos, slash completions) below the status line. */
+    private int activityFirstRow() { return statusRow() + 1; }
 
     private void saveCursor() { System.out.print("\0337"); }
     private void restoreCursor() { System.out.print("\0338"); }
@@ -2344,6 +2411,59 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         try {
             writeRawTerminal(TerminalQueryStripper.hostInputModeResetSequence());
         } catch (IOException | IOError ignored) {
+        }
+        // The reset sequence also disables mouse tracking (?1000l). Callers that
+        // return to the idle prompt re-assert it via reassertTranscriptMouse();
+        // teardown/startup deliberately leave it off.
+        transcriptMouseEnabled = false;
+    }
+
+    /**
+     * Re-establish Kompile's wheel capture after a {@link #resetHostInputModes()}
+     * that returns control to the idle prompt. Safe to call when no decoder owns
+     * the screen — it simply stays off.
+     */
+    private void reassertTranscriptMouse() {
+        enableTranscriptMouse();
+    }
+
+    /**
+     * True when the active agent's output is rendered by Kompile into the
+     * scroll transcript, rather than the agent painting the real screen itself.
+     * Only then may Kompile own the mouse wheel for transcript scrolling — raw
+     * passthrough agents (renderRawTui) keep their native input handling.
+     */
+    private boolean decoderOwnsScreen() {
+        ai.kompile.cli.main.chat.tui.AgentTuiDecoder d = agentDecoder;
+        return d != null && !d.renderRawTui();
+    }
+
+    /**
+     * Enable X10 mouse tracking on the REAL terminal so wheel events are
+     * delivered to Kompile (and consumed by the scroll widget) instead of
+     * scrolling the host terminal's native scrollback. X10 (?1000h) reports as
+     * {@code ESC[M}-prefixed events, matching JLine's {@code key_mouse} binding;
+     * coordinates are irrelevant for wheel detection. No-op unless a decoder
+     * owns the screen. Idempotent — re-sending the enable sequence is harmless.
+     */
+    private void enableTranscriptMouse() {
+        if (terminal == null || transcriptMouseEnabled || !decoderOwnsScreen()) return;
+        try {
+            writeRawTerminal("\033[?1000h");
+            transcriptMouseEnabled = true;
+        } catch (IOException | IOError ignored) {
+            // Mouse capture is best-effort; PageUp/PageDown still scroll the transcript.
+        }
+    }
+
+    /** Disable Kompile's real-terminal mouse tracking, restoring native selection/scroll. */
+    private void disableTranscriptMouse() {
+        if (terminal == null || !transcriptMouseEnabled) return;
+        try {
+            writeRawTerminal("\033[?1000l");
+        } catch (IOException | IOError ignored) {
+        } finally {
+            transcriptMouseEnabled = false;
         }
     }
 
@@ -3216,6 +3336,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 scrollBottom = tui.scrollBottom();
             }
             resetHostInputModes();
+            reassertTranscriptMouse();
             drawFixedInputBox();
             // Don't null out activeProcess or kill the TUI — it persists
             // Update status bar to idle (subprocess stays registered but shows idle)
@@ -4388,7 +4509,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         body.append("Slash commands (/help, /quit, /agent, /status) remain active.\n");
         body.append("\n");
-        body.append(DIM).append("PageUp/PageDown scroll · Ctrl+Home/End jump · Ctrl+C cancel · /quit exit").append(RESET);
+        body.append(DIM).append("Wheel/PageUp/PageDown scroll · Ctrl+Home/End jump · Ctrl+C cancel · /quit exit").append(RESET);
 
         String title = enforcerEvaluator != null
                 ? "Kompile Enforced Passthrough" : "Kompile Emulated Passthrough";
@@ -4507,16 +4628,19 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         String pageDownName = "scroll-page-down";
         String topName = "scroll-top";
         String bottomName = "scroll-bottom";
+        String mouseName = "scroll-mouse-wheel";
 
         impl.getWidgets().put(pageUpName, this::scrollTranscriptPageUp);
         impl.getWidgets().put(pageDownName, this::scrollTranscriptPageDown);
         impl.getWidgets().put(topName, this::scrollTranscriptToTop);
         impl.getWidgets().put(bottomName, this::scrollTranscriptToBottom);
+        impl.getWidgets().put(mouseName, () -> handleTranscriptMouseEvent(impl));
 
         org.jline.reader.Reference pageUp = new org.jline.reader.Reference(pageUpName);
         org.jline.reader.Reference pageDown = new org.jline.reader.Reference(pageDownName);
         org.jline.reader.Reference top = new org.jline.reader.Reference(topName);
         org.jline.reader.Reference bottom = new org.jline.reader.Reference(bottomName);
+        org.jline.reader.Reference mouse = new org.jline.reader.Reference(mouseName);
 
         List<String> pageUpSequences = keySequences(impl, org.jline.utils.InfoCmp.Capability.key_ppage,
                 "\033[5~", "\033[5;2~");
@@ -4526,13 +4650,38 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 "\033[1;5H", "\033[5H");
         List<String> bottomSequences = keySequences(impl, null,
                 "\033[1;5F", "\033[5F");
+        // X10 mouse reports are ESC[M-prefixed; readMouseEvent() consumes the rest.
+        List<String> mouseSequences = keySequences(impl, org.jline.utils.InfoCmp.Capability.key_mouse,
+                "\033[M");
 
         for (KeyMap<org.jline.reader.Binding> keyMap : impl.getKeyMaps().values()) {
             keyMap.bind(pageUp, pageUpSequences.toArray(String[]::new));
             keyMap.bind(pageDown, pageDownSequences.toArray(String[]::new));
             keyMap.bind(top, topSequences.toArray(String[]::new));
             keyMap.bind(bottom, bottomSequences.toArray(String[]::new));
+            keyMap.bind(mouse, mouseSequences.toArray(String[]::new));
         }
+    }
+
+    /**
+     * Handle a mouse report on the managed transcript. Fires only while Kompile
+     * has wheel capture enabled (decoder-owned screen). Wheel up/down scroll the
+     * transcript; every other mouse event (clicks, motion, release) is consumed
+     * so it never leaks into the readline buffer or to the agent's stdin.
+     */
+    private boolean handleTranscriptMouseEvent(LineReaderImpl impl) {
+        try {
+            org.jline.terminal.MouseEvent event = impl.getTerminal().readMouseEvent();
+            if (event == null || !decoderOwnsScreen()) return true;
+            switch (event.getButton()) {
+                case WheelUp -> scrollTranscriptBy(WHEEL_SCROLL_LINES);
+                case WheelDown -> scrollTranscriptBy(-WHEEL_SCROLL_LINES);
+                default -> { /* consume clicks/motion; do not scroll or forward */ }
+            }
+        } catch (RuntimeException ignored) {
+            // A malformed/partial mouse report must never break the active readLine.
+        }
+        return true;
     }
 
     private void installActivityNavigationWidgets(LineReaderImpl impl) {

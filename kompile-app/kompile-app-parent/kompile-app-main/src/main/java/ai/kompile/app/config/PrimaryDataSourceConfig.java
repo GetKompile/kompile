@@ -63,7 +63,8 @@ import java.util.Properties;
         "ai.kompile.app.sync.repository",
         "ai.kompile.staging.repository",
         "ai.kompile.testmilestone.repository",
-        "ai.kompile.codeindexer.domain"
+        "ai.kompile.codeindexer.domain",
+        "ai.kompile.event.observation.repository"
     },
     entityManagerFactoryRef = "entityManagerFactory",
     transactionManagerRef = "transactionManager"
@@ -86,7 +87,8 @@ import java.util.Properties;
     "ai.kompile.app.sync.domain",
     "ai.kompile.staging.domain",
     "ai.kompile.testmilestone.domain",
-    "ai.kompile.codeindexer.domain"
+    "ai.kompile.codeindexer.domain",
+    "ai.kompile.event.observation.domain"
 })
 public class PrimaryDataSourceConfig {
 
@@ -137,7 +139,8 @@ public class PrimaryDataSourceConfig {
         "ai.kompile.app.sync.domain",
         "ai.kompile.staging.domain",
         "ai.kompile.testmilestone.domain",
-        "ai.kompile.codeindexer.domain"
+        "ai.kompile.codeindexer.domain",
+        "ai.kompile.event.observation.domain"
     };
 
     @Bean

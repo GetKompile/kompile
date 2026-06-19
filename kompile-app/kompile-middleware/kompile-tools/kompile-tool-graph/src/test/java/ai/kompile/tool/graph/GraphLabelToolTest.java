@@ -14,6 +14,7 @@ import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class GraphLabelToolTest {
 
+    @Mock private KnowledgeGraphService graphService;
     @Mock private GraphNodeRepository nodeRepository;
     @Mock private GraphEdgeRepository edgeRepository;
 
@@ -38,7 +40,7 @@ class GraphLabelToolTest {
 
     @BeforeEach
     void setUp() {
-        tool = new GraphLabelTool(nodeRepository, edgeRepository, objectMapper);
+        tool = new GraphLabelTool(graphService, objectMapper);
     }
 
     @Test

@@ -66,6 +66,7 @@ public final class CliAgentRegistry {
                             .isDefault(def.isDefault)
                             .description(def.description)
                             .interactivePromptPattern(def.interactivePromptPattern)
+                            .outputMode(def.outputMode)
                             .modelFlag(def.modelFlag)
                             .modelListCommand(def.modelListCommand);
                     if (def.args != null) {

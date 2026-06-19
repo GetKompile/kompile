@@ -310,4 +310,33 @@ public class GraphNode {
             edgeCount--;
         }
     }
+
+    /** Shared parser for {@link #metadataJson}; ObjectMapper is thread-safe for reads. */
+    private static final com.fasterxml.jackson.databind.ObjectMapper METADATA_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /**
+     * Parsed view of {@link #metadataJson}, exposed to API clients as {@code metadata}.
+     *
+     * <p>This is computed (not persisted) and lives on the shared domain object so that
+     * <em>every</em> knowledge-graph store — JPA, the vector/matrix store, or any future
+     * backend — surfaces node metadata to the UI identically, with no per-store mapping
+     * code. The index-browser/graph-visualizer rely on this to render TABLE nodes (and
+     * other structured entities) instead of a raw JSON blob.
+     */
+    @jakarta.persistence.Transient
+    @com.fasterxml.jackson.annotation.JsonProperty(value = "metadata",
+            access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    public java.util.Map<String, Object> getMetadata() {
+        if (metadataJson == null || metadataJson.isBlank()) {
+            return java.util.Collections.emptyMap();
+        }
+        try {
+            return METADATA_MAPPER.readValue(metadataJson,
+                    METADATA_MAPPER.getTypeFactory().constructMapType(
+                            java.util.LinkedHashMap.class, String.class, Object.class));
+        } catch (Exception e) {
+            return java.util.Collections.emptyMap();
+        }
+    }
 }

@@ -15,6 +15,7 @@
  */
 
 import { Injectable } from '@angular/core';
+import { SafeHtml } from '@angular/platform-browser';
 import { marked, Renderer, Tokens } from 'marked';
 import hljs from 'highlight.js';
 
@@ -31,6 +32,12 @@ export interface MessageSegment {
   toolName?: string;
   toolInput?: string;
   toolResult?: string;
+  /**
+   * Pre-rendered, sanitized HTML for text/thinking segments. Populated once by
+   * the chat component so the expensive marked + highlight.js render does not
+   * run on every Angular change-detection pass.
+   */
+  renderedContent?: SafeHtml;
 }
 
 /**
@@ -41,6 +48,19 @@ export interface MessageSegment {
 export class MarkdownRendererService {
 
   private markedInstance: typeof marked;
+
+  /**
+   * Languages considered during auto-detection for fenced code blocks that omit
+   * a language hint. highlightAuto() with no subset scans every registered
+   * grammar (~190), which dominates render time for transcripts full of
+   * unlabeled code blocks; restricting it to the languages that actually appear
+   * in chat keeps detection fast while preserving useful highlighting.
+   */
+  private static readonly AUTO_DETECT_LANGUAGES = [
+    'typescript', 'javascript', 'python', 'java', 'json', 'bash', 'shell',
+    'xml', 'html', 'yaml', 'sql', 'css', 'markdown', 'c', 'cpp', 'csharp',
+    'go', 'rust', 'kotlin', 'dockerfile', 'ini', 'diff', 'plaintext'
+  ];
 
   constructor() {
     this.markedInstance = marked;
@@ -64,7 +84,7 @@ export class MarkdownRendererService {
         }
       } else {
         try {
-          highlighted = hljs.highlightAuto(text).value;
+          highlighted = hljs.highlightAuto(text, MarkdownRendererService.AUTO_DETECT_LANGUAGES).value;
         } catch {
           highlighted = this.escapeHtml(text);
         }

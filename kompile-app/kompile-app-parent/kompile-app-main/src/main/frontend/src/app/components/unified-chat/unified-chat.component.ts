@@ -2430,13 +2430,19 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     if (!message.content) return [];
 
     if (message.isStreaming) {
-      return this.markdownRenderer.parseMessageSegments(message.content, true);
+      // Streaming content changes every chunk, so it can't be cached — but we
+      // still pre-render each segment here so the template binds to a value
+      // instead of invoking the renderer on every change-detection pass.
+      const live = this.markdownRenderer.parseMessageSegments(message.content, true);
+      this.renderSegments(live);
+      return live;
     }
 
     const cacheKey = message.id + ':' + message.content.length;
     let cached = this.segmentCache.get(cacheKey);
     if (!cached) {
       cached = this.markdownRenderer.parseMessageSegments(message.content, false);
+      this.renderSegments(cached);
       this.segmentCache.set(cacheKey, cached);
       if (this.segmentCache.size > 500) {
         const firstKey = this.segmentCache.keys().next().value;
@@ -2448,10 +2454,30 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     return cached;
   }
 
-  renderSegmentMarkdown(content: string): SafeHtml {
-    return this.sanitizer.bypassSecurityTrustHtml(
-      this.markdownRenderer.renderMarkdown(content)
-    );
+  /**
+   * Pre-render text/thinking segments to sanitized HTML once and store the
+   * result on the segment. The chat re-renders frequently (a 2s sync poll plus
+   * streaming updates); running marked + highlight.js for every segment on
+   * every change-detection pass was the main cause of multi-second chat loads.
+   */
+  private renderSegments(segments: MessageSegment[]): void {
+    for (const segment of segments) {
+      if (segment.renderedContent === undefined &&
+          (segment.type === 'text' || segment.type === 'thinking')) {
+        segment.renderedContent = this.sanitizer.bypassSecurityTrustHtml(
+          this.markdownRenderer.renderMarkdown(segment.content)
+        );
+      }
+    }
+  }
+
+  /**
+   * trackBy for the message list. Without a stable identity Angular tears down
+   * and rebuilds every message row (and its rendered markdown) whenever the
+   * `messages` array is reassigned, e.g. on session load.
+   */
+  trackByMessageId(_index: number, message: UnifiedMessage): string {
+    return message.id;
   }
 
   handleKeydown(event: KeyboardEvent): void {

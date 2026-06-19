@@ -15,9 +15,12 @@
  */
 package ai.kompile.knowledgegraph.service;
 
+import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.knowledgegraph.domain.*;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -556,6 +559,209 @@ public interface KnowledgeGraphService {
     void deleteByFactSheetId(Long factSheetId);
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // PRUNING / MAINTENANCE QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Return the node UUIDs (nodeId strings) of ENTITY nodes within the given fact
+     * sheet that have degree 0 — i.e. no edges connect them to any other node —
+     * and have not already been marked stale.
+     *
+     * <p>The default implementation iterates all nodes in the fact sheet and
+     * checks {@link #getEdgesForNode}; stores that maintain edge indices may
+     * override this for efficiency.</p>
+     *
+     * @param factSheetId the fact sheet to scan
+     * @return list of orphan node UUIDs (never {@code null})
+     */
+    default List<String> findOrphanNodeIds(Long factSheetId) {
+        return getNodesInFactSheet(factSheetId).stream()
+                .filter(n -> n.getNodeType() != null
+                        && "ENTITY".equals(n.getNodeType().name()))
+                .filter(n -> !Boolean.TRUE.equals(n.getStale()))
+                .filter(n -> getEdgesForNode(n.getNodeId()).isEmpty())
+                .map(ai.kompile.knowledgegraph.domain.GraphNode::getNodeId)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Return the node UUIDs of non-stale nodes in the fact sheet whose
+     * {@code confidence} field is non-null and strictly less than
+     * {@code minConfidence}.
+     *
+     * @param factSheetId   the fact sheet to scan
+     * @param minConfidence exclusive lower-bound; nodes below this are returned
+     * @return list of matching node UUIDs (never {@code null})
+     */
+    default List<String> findLowConfidenceNodeIds(Long factSheetId, double minConfidence) {
+        return getNodesInFactSheet(factSheetId).stream()
+                .filter(n -> !Boolean.TRUE.equals(n.getStale()))
+                .filter(n -> n.getConfidence() != null && n.getConfidence() < minConfidence)
+                .map(ai.kompile.knowledgegraph.domain.GraphNode::getNodeId)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Return the edge UUIDs of non-stale edges in the fact sheet whose
+     * {@code confidence} field is non-null and strictly less than
+     * {@code minConfidence}.
+     *
+     * @param factSheetId   the fact sheet to scan
+     * @param minConfidence exclusive lower-bound
+     * @return list of matching edge UUIDs (never {@code null})
+     */
+    default List<String> findLowConfidenceEdgeIds(Long factSheetId, double minConfidence) {
+        return getEdgesInFactSheet(factSheetId).stream()
+                .filter(e -> !Boolean.TRUE.equals(e.getStale()))
+                .filter(e -> e.getConfidence() != null && e.getConfidence() < minConfidence)
+                .map(ai.kompile.knowledgegraph.domain.GraphEdge::getEdgeId)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Count non-stale nodes within a fact sheet (across all node types).
+     *
+     * @param factSheetId the fact sheet to count
+     * @return count of active (non-stale) nodes
+     */
+    default long countActiveNodes(Long factSheetId) {
+        return getNodesInFactSheet(factSheetId).stream()
+                .filter(n -> !Boolean.TRUE.equals(n.getStale()))
+                .count();
+    }
+
+    /**
+     * Return the edge UUIDs of active edges in a fact sheet.
+     *
+     * @param factSheetId the fact sheet to scan
+     * @return list of active edge UUIDs (never {@code null})
+     */
+    default List<String> findActiveEdgeIds(Long factSheetId) {
+        return getEdgesInFactSheet(factSheetId).stream()
+                .filter(e -> !Boolean.TRUE.equals(e.getStale()))
+                .map(ai.kompile.knowledgegraph.domain.GraphEdge::getEdgeId)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Soft-delete (mark stale) or immediately remove a set of nodes identified
+     * by their nodeId strings.
+     *
+     * <p>When {@code softDelete} is {@code true} nodes are marked stale with a
+     * stale-at timestamp so a subsequent grace-period sweep can hard-delete them.
+     * When {@code softDelete} is {@code false} the nodes are permanently removed
+     * immediately (hard-delete, grace period is ignored).  When {@code dryRun}
+     * is {@code true} no mutations are performed and the result carries the IDs
+     * that <em>would</em> have been acted on.</p>
+     *
+     * <p>The default implementation calls {@link #deleteNode} for each nodeId
+     * (hard-delete path) or {@link #updateNode} with a stale marker via
+     * metadata (soft-delete path).  Stores that support bulk operations should
+     * override this method.</p>
+     *
+     * @param nodeIds    UUIDs of nodes to prune
+     * @param softDelete {@code true} to mark stale; {@code false} to hard-delete
+     * @param grace      grace period used only when {@code softDelete} is
+     *                   {@code true} and a store persists it; may be {@code null}
+     * @param dryRun     {@code true} to simulate without mutating
+     * @return a {@link GraphPruneResult} describing what was (or would be) done
+     */
+    default GraphPruneResult pruneNodes(Collection<String> nodeIds,
+                                        boolean softDelete,
+                                        Duration grace,
+                                        boolean dryRun) {
+        if (nodeIds == null || nodeIds.isEmpty()) {
+            return GraphPruneResult.empty(dryRun);
+        }
+        List<String> ids = new java.util.ArrayList<>(nodeIds);
+        if (dryRun) {
+            return GraphPruneResult.ofSoftDelete(ids, true);
+        }
+        if (softDelete) {
+            // Mark stale via metadata — stores with a dedicated stale column should override
+            for (String nodeId : ids) {
+                try {
+                    updateNode(nodeId, null, null,
+                            java.util.Map.of("_stale", true,
+                                    "_staleAt", java.time.LocalDateTime.now().toString()));
+                } catch (Exception ignored) { /* best-effort */ }
+            }
+            return GraphPruneResult.ofSoftDelete(ids, false);
+        } else {
+            int deleted = 0;
+            for (String nodeId : ids) {
+                try {
+                    deleteNode(nodeId);
+                    deleted++;
+                } catch (Exception ignored) { /* best-effort */ }
+            }
+            return new GraphPruneResult(ids, deleted, deleted, false);
+        }
+    }
+
+    /**
+     * Soft-delete (mark stale) or immediately remove a set of edges identified
+     * by their edgeId strings.
+     *
+     * <p>Semantics mirror {@link #pruneNodes}.  The default implementation
+     * calls {@link #deleteEdge} per edge for hard-delete, and
+     * {@link #updateEdge} with a stale weight sentinel for soft-delete.
+     * Stores with bulk operations should override.</p>
+     *
+     * @param edgeIds    UUIDs of edges to prune
+     * @param softDelete {@code true} to mark stale; {@code false} to hard-delete
+     * @param dryRun     {@code true} to simulate without mutating
+     * @return a {@link GraphPruneResult} describing what was (or would be) done
+     */
+    default GraphPruneResult pruneEdges(Collection<String> edgeIds,
+                                        boolean softDelete,
+                                        boolean dryRun) {
+        if (edgeIds == null || edgeIds.isEmpty()) {
+            return GraphPruneResult.empty(dryRun);
+        }
+        List<String> ids = new java.util.ArrayList<>(edgeIds);
+        if (dryRun) {
+            return GraphPruneResult.ofSoftDelete(ids, true);
+        }
+        if (softDelete) {
+            for (String edgeId : ids) {
+                try {
+                    // Sentinel: set weight to -1.0 to signal staleness for non-JPA stores
+                    updateEdge(edgeId, -1.0, "_stale");
+                } catch (Exception ignored) { /* best-effort */ }
+            }
+            return GraphPruneResult.ofSoftDelete(ids, false);
+        } else {
+            int deleted = 0;
+            for (String edgeId : ids) {
+                try {
+                    deleteEdge(edgeId);
+                    deleted++;
+                } catch (Exception ignored) { /* best-effort */ }
+            }
+            return new GraphPruneResult(ids, deleted, deleted, false);
+        }
+    }
+
+    /**
+     * Hard-delete nodes that were previously soft-deleted (marked stale) more
+     * than {@code grace} ago.
+     *
+     * <p>The default implementation is a no-op returning zero, because the
+     * base interface has no way to query stale-at timestamps generically.
+     * The JPA backend overrides this to delegate to
+     * {@code nodeRepository.hardDeleteStaleNodes}.  The matrix backend
+     * purges any node whose metadata contains {@code _stale=true}.</p>
+     *
+     * @param factSheetId the fact sheet scope
+     * @param grace       how long nodes must have been stale before deletion
+     * @return a {@link GraphPruneResult} with the count of records permanently removed
+     */
+    default GraphPruneResult hardDeleteStaleNodes(Long factSheetId, Duration grace) {
+        return GraphPruneResult.empty(false);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // STATISTICS & VISUALIZATION
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -573,6 +779,100 @@ public interface KnowledgeGraphService {
      * @return Map with "nodes" and "edges" lists
      */
     Map<String, Object> getVisualizationData(String rootNodeId, int depth, int maxNodes);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ADDITIONAL WRITE / LOOKUP HELPERS (default; delegating to existing primitives)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Persist metadata changes to an already-loaded node object.
+     * The default implementation delegates to {@link #updateNode} using the
+     * values already present on the supplied node.
+     */
+    default GraphNode saveNode(GraphNode node) {
+        return updateNode(node.getNodeId(), node.getTitle(),
+                node.getDescription(),
+                node.getMetadataJson() != null
+                        ? java.util.Map.of("_raw", node.getMetadataJson())
+                        : java.util.Map.of());
+    }
+
+    /**
+     * Persist metadata/weight changes to an already-loaded edge object.
+     * The default implementation delegates to {@link #updateEdge}.
+     */
+    default GraphEdge saveEdge(GraphEdge edge) {
+        return updateEdge(edge.getEdgeId(), edge.getWeight(), edge.getDescription());
+    }
+
+    /**
+     * Find an edge between two nodes searching both directions.
+     * Default: checks source→target, then target→source via {@link #findEdgeBetweenNodes}.
+     */
+    default Optional<GraphEdge> findEdgeBetweenNodesBidirectional(String nodeId1, String nodeId2) {
+        GraphEdge fwd = findEdgeBetweenNodes(nodeId1, nodeId2);
+        if (fwd != null) return Optional.of(fwd);
+        GraphEdge rev = findEdgeBetweenNodes(nodeId2, nodeId1);
+        return Optional.ofNullable(rev);
+    }
+
+    /**
+     * Search nodes scoped to a fact sheet, optionally filtered by type, up to {@code limit} results.
+     * Default: delegates to {@link #searchNodesInFactSheet} (ignoring type post-filter is caller's responsibility).
+     */
+    default List<GraphNode> searchNodesInFactSheetByType(Long factSheetId, String query,
+                                                          NodeLevel type, int limit) {
+        List<GraphNode> raw = searchNodesInFactSheet(factSheetId, query, limit);
+        if (type == null) return raw;
+        return raw.stream()
+                .filter(n -> n.getNodeType() == type)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Search nodes globally (no fact-sheet scope), optionally filtered by type.
+     * Default: delegates to {@link #searchNodes}.
+     */
+    default List<GraphNode> searchNodesGlobal(String query, NodeLevel type, int limit) {
+        return searchNodes(query, type, limit);
+    }
+
+    /**
+     * Get edges of a specific type within a fact sheet, optionally filtered by minimum weight,
+     * up to {@code limit} results.
+     * Default: delegates to {@link #getEdgesByTypeInFactSheet} then filters by weight.
+     */
+    default List<GraphEdge> getStrongEdgesByTypeInFactSheet(Long factSheetId, EdgeType edgeType,
+                                                             Double minWeight, int limit) {
+        List<GraphEdge> all = getEdgesByTypeInFactSheet(factSheetId, edgeType);
+        java.util.stream.Stream<GraphEdge> stream = all.stream();
+        if (minWeight != null) {
+            stream = stream.filter(e -> e.getWeight() != null && e.getWeight() >= minWeight);
+        }
+        return stream.limit(limit).collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Get edges of a specific type globally, optionally filtered by minimum weight,
+     * up to {@code limit} results.
+     * Default: delegates to {@link #getEdgesByType} using edges for all nodes.
+     */
+    default List<GraphEdge> getStrongEdgesByType(EdgeType edgeType, Double minWeight, int limit) {
+        List<GraphEdge> all = searchEdges(null, edgeType, limit * 2);
+        java.util.stream.Stream<GraphEdge> stream = all.stream();
+        if (minWeight != null) {
+            stream = stream.filter(e -> e.getWeight() != null && e.getWeight() >= minWeight);
+        }
+        return stream.limit(limit).collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Get a node by its nodeId (UUID string).
+     * Alias for {@link #getNode} — satisfies callers that use {@code findByNodeId} naming.
+     */
+    default Optional<GraphNode> findNodeById(String nodeId) {
+        return getNode(nodeId);
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TEMPORAL QUERIES

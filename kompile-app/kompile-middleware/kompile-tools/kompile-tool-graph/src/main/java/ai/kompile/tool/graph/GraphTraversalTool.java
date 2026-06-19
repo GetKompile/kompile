@@ -18,7 +18,6 @@ import ai.kompile.core.graphrag.query.SearchType;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +41,6 @@ public class GraphTraversalTool {
 
     private final KnowledgeGraphService graphService;
     private final GraphAlgorithmService algorithmService;
-    private final GraphNodeRepository nodeRepository;
     private final GraphRagService graphRagService;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -101,11 +99,9 @@ public class GraphTraversalTool {
     @Autowired
     public GraphTraversalTool(KnowledgeGraphService graphService,
                               @Autowired(required = false) GraphAlgorithmService algorithmService,
-                              GraphNodeRepository nodeRepository,
                               @Autowired(required = false) GraphRagService graphRagService) {
         this.graphService = graphService;
         this.algorithmService = algorithmService;
-        this.nodeRepository = nodeRepository;
         this.graphRagService = graphRagService;
     }
 
@@ -137,7 +133,7 @@ public class GraphTraversalTool {
             // Resolve all node titles
             Set<String> allNodeIds = new HashSet<>();
             levels.values().forEach(allNodeIds::addAll);
-            Map<String, GraphNode> nodeMap = nodeRepository.findByNodeIdIn(new ArrayList<>(allNodeIds))
+            Map<String, GraphNode> nodeMap = graphService.getNodesByIds(new ArrayList<>(allNodeIds))
                     .stream()
                     .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
 

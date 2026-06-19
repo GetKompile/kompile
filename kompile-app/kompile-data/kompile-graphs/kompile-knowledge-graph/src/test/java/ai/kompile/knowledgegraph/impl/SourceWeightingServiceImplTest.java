@@ -20,6 +20,7 @@ import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.SourceWeight;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.repository.SourceWeightRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,12 +46,13 @@ class SourceWeightingServiceImplTest {
 
     @Mock private SourceWeightRepository weightRepository;
     @Mock private GraphNodeRepository nodeRepository;
+    @Mock private KnowledgeGraphService knowledgeGraphService;
 
     private SourceWeightingServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new SourceWeightingServiceImpl(weightRepository, nodeRepository);
+        service = new SourceWeightingServiceImpl(weightRepository, knowledgeGraphService);
         ReflectionTestUtils.setField(service, "defaultWeight", 1.0);
         ReflectionTestUtils.setField(service, "maxWeight", 3.0);
         ReflectionTestUtils.setField(service, "topicRelevanceFactor", 0.3);

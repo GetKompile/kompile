@@ -16,6 +16,7 @@ import ai.kompile.event.attribution.domain.BayesianInferenceResult;
 import ai.kompile.event.attribution.domain.InferenceStep;
 import ai.kompile.event.attribution.domain.MpeResult;
 import ai.kompile.event.attribution.domain.SensitivityResult;
+import ai.kompile.core.events.EmpiricalPriorSource;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,10 +50,20 @@ public class BayesianNetworkService {
     private static final Logger log = LoggerFactory.getLogger(BayesianNetworkService.class);
 
     private final KnowledgeGraphService graphService;
+    private EmpiricalPriorSource empiricalPriors;
 
     @Autowired
     public BayesianNetworkService(KnowledgeGraphService graphService) {
         this.graphService = graphService;
+    }
+
+    /**
+     * Optional observed-event empirical priors — injected by Spring only when the
+     * {@code kompile-event-observation} module is on the classpath; null otherwise (structural priors).
+     */
+    @Autowired(required = false)
+    public void setEmpiricalPriors(EmpiricalPriorSource empiricalPriors) {
+        this.empiricalPriors = empiricalPriors;
     }
 
     /**
@@ -67,6 +78,7 @@ public class BayesianNetworkService {
         return new BayesianNetworkBuilder(graphService)
                 .maxDepth(maxDepth)
                 .maxNodes(maxNodes)
+                .withEmpiricalPriors(empiricalPriors)
                 .build(seedNodeIds);
     }
 
@@ -77,6 +89,7 @@ public class BayesianNetworkService {
         return new BayesianNetworkBuilder(graphService)
                 .maxDepth(maxDepth)
                 .maxNodes(maxNodes)
+                .withEmpiricalPriors(empiricalPriors)
                 .buildFromTarget(targetNodeId);
     }
 
@@ -347,7 +360,8 @@ public class BayesianNetworkService {
 
         KgMTheoryBuilder builder = new KgMTheoryBuilder(graphService)
                 .maxDepth(maxDepth)
-                .maxNodes(maxNodes);
+                .maxNodes(maxNodes)
+                .withEmpiricalPriors(empiricalPriors);
         MTheory mTheory = builder.build(seedNodeIds);
 
         if (mTheory.getMFrags().isEmpty()) {
@@ -367,7 +381,8 @@ public class BayesianNetworkService {
                                                     int maxDepth, int maxNodes) {
         KgMTheoryBuilder builder = new KgMTheoryBuilder(graphService)
                 .maxDepth(maxDepth)
-                .maxNodes(maxNodes);
+                .maxNodes(maxNodes)
+                .withEmpiricalPriors(empiricalPriors);
         MTheory mTheory = builder.build(seedNodeIds);
         return mTheory.getStatistics();
     }
