@@ -1,0 +1,88 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="prov-panel">
+  <!-- Node lookup -->
+  <mat-card class="lookup-card">
+    <mat-card-header><mat-card-title>Node provenance</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="search-row">
+        <mat-form-field appearance="outline" class="grow">
+          <mat-label>Search nodes</mat-label>
+          <input matInput [(ngModel)]="query" (keyup.enter)="search()" placeholder="entity name or title">
+        </mat-form-field>
+        <button mat-raised-button color="primary" (click)="search()" [disabled]="searching || !query.trim()">
+          <mat-icon>search</mat-icon> Search
+        </button>
+        <mat-spinner *ngIf="searching" diameter="22"></mat-spinner>
+      </div>
+
+      <div class="results" *ngIf="results.length > 0">
+        <button class="result" *ngFor="let n of results" (click)="select(n)">
+          <mat-icon>{{ n.nodeType === 'SOURCE' ? 'description' : 'circle' }}</mat-icon>
+          <span class="r-title">{{ n.title || n.nodeId }}</span>
+          <span class="r-type">{{ n.nodeType }}</span>
+        </button>
+      </div>
+
+      <mat-spinner *ngIf="loadingProv" diameter="24"></mat-spinner>
+
+      <!-- Provenance view -->
+      <div *ngIf="selected as p" class="prov-view">
+        <h4>{{ p.nodeId }} <span class="muted">({{ p.nodeType }})</span></h4>
+
+        <div class="lineage" *ngIf="p.sourceTitle || p.sourceNodeId">
+          <strong>Source node:</strong> {{ p.sourceTitle || p.sourceExternalId || p.sourceNodeId }}
+          <span class="muted" *ngIf="p.sourceType">— {{ p.sourceType }}</span>
+        </div>
+        <div class="lineage muted" *ngIf="p.occurredAt"><strong>Occurred:</strong> {{ p.occurredAt }}</div>
+        <div class="lineage muted" *ngIf="p.createdAt"><strong>Created:</strong> {{ p.createdAt }}</div>
+
+        <table class="prov-table" *ngIf="provEntries(p).length > 0">
+          <tbody>
+            <tr *ngFor="let e of provEntries(p)"><th>{{ e.key }}</th><td>{{ e.value }}</td></tr>
+          </tbody>
+        </table>
+        <p class="muted" *ngIf="provEntries(p).length === 0">
+          No extraction provenance recorded for this node (no crawl/channel source metadata).
+        </p>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Purge by source -->
+  <mat-card class="purge-card">
+    <mat-card-header><mat-card-title>Purge by source</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <p class="muted">Remove all facts that came from a specific crawl run or source document. Always preview with a dry run first.</p>
+      <div class="purge-row">
+        <mat-form-field appearance="outline">
+          <mat-label>Match</mat-label>
+          <mat-select [(ngModel)]="purgeBy">
+            <mat-option value="crawlRunId">Crawl run ID</mat-option>
+            <mat-option value="sourceDocumentId">Source document ID</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="grow">
+          <mat-label>Value</mat-label>
+          <input matInput [(ngModel)]="purgeValue">
+        </mat-form-field>
+        <button mat-stroked-button (click)="runPurge(true)" [disabled]="purging || !purgeValue.trim()">
+          <mat-icon>preview</mat-icon> Dry run
+        </button>
+        <button mat-raised-button color="warn" (click)="runPurge(false)" [disabled]="purging || !purgeValue.trim()">
+          <mat-icon>delete_sweep</mat-icon> Purge
+        </button>
+        <mat-spinner *ngIf="purging" diameter="22"></mat-spinner>
+      </div>
+
+      <table class="prov-table" *ngIf="purgeResult">
+        <tbody>
+          <tr *ngFor="let e of purgeResultEntries()"><th>{{ e.key }}</th><td>{{ e.value }}</td></tr>
+        </tbody>
+      </table>
+    </mat-card-content>
+  </mat-card>
+</div>

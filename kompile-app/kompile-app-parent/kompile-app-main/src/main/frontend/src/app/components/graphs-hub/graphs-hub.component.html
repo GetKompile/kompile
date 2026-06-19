@@ -26,6 +26,10 @@
       <mat-icon class="tab-icon">cable</mat-icon>
       <span class="tab-label">Channel Pipelines</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'provenance'" (click)="selectSubTab('provenance')">
+      <mat-icon class="tab-icon">history_edu</mat-icon>
+      <span class="tab-label">Provenance</span>
+    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'maintenance'" (click)="selectSubTab('maintenance')">
       <mat-icon class="tab-icon">build</mat-icon>
       <span class="tab-label">Maintenance</span>
@@ -52,6 +56,9 @@
     </div>
     <div *ngIf="activeSubTab === 'pipelines'">
       <app-graph-pipelines-panel [factSheetId]="activeFactSheetId"></app-graph-pipelines-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'provenance'">
+      <app-graph-provenance-panel [factSheetId]="activeFactSheetId"></app-graph-provenance-panel>
     </div>
     <div *ngIf="activeSubTab === 'maintenance'">
       <app-graph-maintenance-hub [factSheetId]="activeFactSheetId"></app-graph-maintenance-hub>
