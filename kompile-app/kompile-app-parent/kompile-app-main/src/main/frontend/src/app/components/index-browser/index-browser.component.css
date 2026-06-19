@@ -2278,3 +2278,387 @@
     width: 100%;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* TABLES TAB STYLES                                                         */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.tables-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 0 8px 0;
+}
+
+.tables-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-weight: 500;
+  color: #333;
+}
+
+/* Table card grid */
+.tables-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.table-card {
+  border-radius: 8px;
+  padding: 16px;
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.15s;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+}
+
+.table-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  transform: translateY(-1px);
+}
+
+.table-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.table-card-header mat-icon {
+  color: #795548;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.table-card-source {
+  flex: 1;
+  font-weight: 500;
+  font-size: 14px;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table-card-dims {
+  font-size: 12px;
+  color: #666;
+  background: #f0f0f0;
+  padding: 2px 8px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.table-card-headers {
+  margin-bottom: 8px;
+}
+
+.header-chip {
+  font-size: 11px !important;
+}
+
+.header-chip-more {
+  font-size: 11px !important;
+  opacity: 0.7;
+}
+
+.table-card-preview {
+  font-size: 12px;
+  color: #666;
+  line-height: 1.4;
+  max-height: 42px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 8px;
+}
+
+.table-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.table-page-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #999;
+}
+
+.table-page-info mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+/* Table detail view */
+.table-detail-view {
+  padding: 16px 0;
+}
+
+.table-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.table-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.table-detail-title mat-icon {
+  color: #795548;
+  font-size: 28px;
+  width: 28px;
+  height: 28px;
+}
+
+.table-detail-title h3 {
+  margin: 0;
+  font-weight: 500;
+}
+
+.table-detail-badges {
+  display: flex;
+  gap: 8px;
+}
+
+.table-dim-badge {
+  font-size: 12px;
+  color: #fff;
+  background: #795548;
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+
+.table-page-badge {
+  font-size: 12px;
+  color: #fff;
+  background: #607d8b;
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+
+.table-detail-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.table-render-section {
+  margin-bottom: 20px;
+}
+
+/* Column analysis styles */
+.table-analysis-section {
+  margin: 16px 0;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border-left: 4px solid #795548;
+}
+
+.analysis-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.analysis-header mat-icon {
+  color: #795548;
+}
+
+.analysis-header h4 {
+  margin: 0;
+  font-weight: 500;
+}
+
+.column-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.column-stat-card {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.column-stat-card:hover {
+  border-color: #795548;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.column-stat-card.selected {
+  border-color: #795548;
+  border-width: 2px;
+  box-shadow: 0 2px 8px rgba(121, 85, 72, 0.2);
+}
+
+.stat-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.stat-col-name {
+  font-weight: 500;
+  font-size: 13px;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat-type-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.stat-type-badge.numeric {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.stat-type-badge.text {
+  background: #f3e5f5;
+  color: #7b1fa2;
+}
+
+.stat-card-body .stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #666;
+  padding: 2px 0;
+}
+
+.stat-card-body .stat-row span:last-child {
+  font-weight: 500;
+  color: #333;
+}
+
+/* Column detail panel */
+.column-detail-panel {
+  margin-top: 16px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+}
+
+.column-detail-panel h5 {
+  margin: 0 0 12px 0;
+  font-weight: 500;
+  color: #795548;
+}
+
+.detail-stats .detail-row {
+  padding: 4px 0;
+  font-size: 13px;
+  color: #555;
+}
+
+.detail-stats .detail-row strong {
+  color: #333;
+  min-width: 120px;
+  display: inline-block;
+}
+
+.most-frequent {
+  margin-top: 8px;
+}
+
+.most-frequent strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: #333;
+}
+
+.freq-item {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.freq-value {
+  color: #333;
+  font-weight: 500;
+}
+
+.freq-count {
+  color: #999;
+}
+
+/* Table operations: filter & sort */
+.table-operations-section {
+  margin-top: 16px;
+  padding: 16px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.operation-row {
+  margin-bottom: 12px;
+}
+
+.operation-row:last-child {
+  margin-bottom: 0;
+}
+
+.filter-controls,
+.sort-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-controls h4,
+.sort-controls h4 {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #555;
+  min-width: 80px;
+}
+
+.op-field {
+  max-width: 180px;
+}
+
+.op-field-sm {
+  max-width: 140px;
+}
+
+/* Graph Tab */
+.graph-tab-container {
+  height: calc(100vh - 280px);
+  min-height: 500px;
+  overflow: hidden;
+}

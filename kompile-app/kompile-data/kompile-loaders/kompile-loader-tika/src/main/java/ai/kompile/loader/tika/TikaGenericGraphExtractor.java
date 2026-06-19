@@ -24,6 +24,7 @@ import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.table.TableCellGraphBuilder;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,7 +80,7 @@ public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
     private static final Pattern WIKI_LINK_PATTERN = Pattern.compile(
             "\\[\\[([^\\]|]+)(?:\\|([^\\]]+))?\\]\\]");
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     /** Matches Markdown task list items: - [ ] or - [x] */
     private static final Pattern TASK_ITEM_PATTERN = Pattern.compile(
@@ -198,7 +199,7 @@ public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
             }
         }
 
-        // Accept documents with content_type indicating text, audio, or video
+        // Accept documents with content_type indicating text, audio, video, or table
         String contentType = str(meta.get(META_CONTENT_TYPE));
         if (contentType != null) {
             String lower = contentType.toLowerCase();
@@ -206,8 +207,10 @@ public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
                     || "application/xml".equals(lower) || "application/csv".equals(lower)
                     || lower.startsWith("audio/") || lower.startsWith("video/")
                     || lower.startsWith("image/")
-                    // Also match bare content types set by TikaLoaderImpl ("audio", "video", "image")
-                    || "audio".equals(lower) || "video".equals(lower) || "image".equals(lower)) {
+                    // Also match bare content types set by TikaLoaderImpl
+                    || "audio".equals(lower) || "video".equals(lower) || "image".equals(lower)
+                    // Accept table/spreadsheet content set by TikaLoaderImpl enrichDelimited()
+                    || "table".equals(lower) || "spreadsheet".equals(lower)) {
                 return true;
             }
         }

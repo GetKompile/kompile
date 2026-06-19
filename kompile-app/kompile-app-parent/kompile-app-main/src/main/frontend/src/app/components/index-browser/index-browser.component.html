@@ -486,6 +486,12 @@
                       matTooltip="View Original Source File">
                 <mat-icon>source</mat-icon>
               </button>
+              <button mat-icon-button
+                      (click)="navigateToGraphTab(doc.id)"
+                      matTooltip="View in Graph"
+                      style="color: #667eea;">
+                <mat-icon>hub</mat-icon>
+              </button>
             </td>
           </ng-container>
 
@@ -737,6 +743,12 @@
                       matTooltip="View Original Source File">
                 <mat-icon>source</mat-icon>
               </button>
+              <button mat-icon-button
+                      (click)="navigateToGraphTab(doc.id)"
+                      matTooltip="View in Graph"
+                      style="color: #667eea;">
+                <mat-icon>hub</mat-icon>
+              </button>
             </td>
           </ng-container>
 
@@ -961,7 +973,286 @@
     </mat-tab>
 
     <!-- ═══════════════════════════════════════════════════════════════════════════ -->
-    <!-- TAB 4: CROSS-INDEX STATUS -->
+    <!-- TAB 4: ENTITIES (Knowledge Graph Browser)                                 -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">category</mat-icon>
+        Entities
+      </ng-template>
+
+      <app-entity-browser
+        [factSheetId]="activeFactSheet?.id || null"
+        (entitySelected)="onEntitySelectedFromBrowser($event)"
+        (navigateToGraph)="onNavigateToGraphFromBrowser($event)">
+      </app-entity-browser>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 5: TABLES (Table Browser with Analysis)                               -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">table_chart</mat-icon>
+        Tables
+        <span class="tab-badge" *ngIf="totalTablesCount > 0">
+          ({{ totalTablesCount }})
+        </span>
+      </ng-template>
+
+      <!-- Table Detail View -->
+      <div *ngIf="selectedTable" class="table-detail-view">
+        <div class="table-detail-header">
+          <div class="table-detail-title">
+            <mat-icon>table_chart</mat-icon>
+            <h3>Table: {{ selectedTable.sourceFile || selectedTable.id }}</h3>
+            <div class="table-detail-badges">
+              <span class="table-dim-badge">{{ selectedTable.rowCount }} rows x {{ selectedTable.columnCount }} cols</span>
+              <span class="table-page-badge" *ngIf="selectedTable.pageNumber">Page {{ selectedTable.pageNumber }}</span>
+            </div>
+          </div>
+          <div class="table-detail-actions">
+            <button mat-icon-button matTooltip="View in Graph" (click)="navigateToGraphTab(selectedTable.id)"
+                    style="color: #667eea;">
+              <mat-icon>hub</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Export as CSV" (click)="exportTable('csv')">
+              <mat-icon>download</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Export as JSON" (click)="exportTable('json')">
+              <mat-icon>data_object</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Copy as Markdown" (click)="exportTable('markdown')">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+            <button mat-icon-button (click)="closeTableDetail()" matTooltip="Close">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- Table Renderer -->
+        <div class="table-render-section">
+          <app-table-renderer
+            [markdownContent]="filteredTableContent || sortedTableContent || selectedTable.fullContent"
+            [showMetadata]="true"
+            [showExport]="false">
+          </app-table-renderer>
+        </div>
+
+        <!-- Column Analysis Section -->
+        <div class="table-analysis-section" *ngIf="tableAnalysis || isAnalyzingTable">
+          <div class="analysis-header">
+            <mat-icon>analytics</mat-icon>
+            <h4>Column Analysis</h4>
+            <mat-spinner *ngIf="isAnalyzingTable" diameter="20" style="margin-left: 8px;"></mat-spinner>
+          </div>
+
+          <div class="column-stats-grid" *ngIf="tableAnalysis">
+            <div class="column-stat-card" *ngFor="let col of getColumnStatsKeys(tableAnalysis)"
+                 (click)="analyzeColumn(selectedTable.id, col)"
+                 [class.selected]="selectedColumnAnalysis?.column === col">
+              <div class="stat-card-header">
+                <span class="stat-col-name">{{ col }}</span>
+                <span class="stat-type-badge"
+                      [class.numeric]="getColumnStat(tableAnalysis, col)?.type === 'numeric'"
+                      [class.text]="getColumnStat(tableAnalysis, col)?.type === 'text'">
+                  {{ getColumnStat(tableAnalysis, col)?.type }}
+                </span>
+              </div>
+              <div class="stat-card-body">
+                <!-- Numeric stats -->
+                <ng-container *ngIf="getColumnStat(tableAnalysis, col)?.type === 'numeric'">
+                  <div class="stat-row"><span>Min:</span><span>{{ getColumnStat(tableAnalysis, col)?.min }}</span></div>
+                  <div class="stat-row"><span>Max:</span><span>{{ getColumnStat(tableAnalysis, col)?.max }}</span></div>
+                  <div class="stat-row"><span>Mean:</span><span>{{ getColumnStat(tableAnalysis, col)?.mean | number:'1.1-2' }}</span></div>
+                  <div class="stat-row"><span>Sum:</span><span>{{ getColumnStat(tableAnalysis, col)?.sum }}</span></div>
+                </ng-container>
+                <!-- Text stats -->
+                <ng-container *ngIf="getColumnStat(tableAnalysis, col)?.type === 'text'">
+                  <div class="stat-row"><span>Unique:</span><span>{{ getColumnStat(tableAnalysis, col)?.uniqueValues }}</span></div>
+                  <div class="stat-row"><span>Non-empty:</span><span>{{ getColumnStat(tableAnalysis, col)?.nonEmpty }}</span></div>
+                </ng-container>
+              </div>
+            </div>
+          </div>
+
+          <!-- Detailed single column analysis -->
+          <div class="column-detail-panel" *ngIf="selectedColumnAnalysis">
+            <h5>{{ selectedColumnAnalysis.column }} — Detailed Analysis</h5>
+            <div class="detail-stats">
+              <ng-container *ngIf="selectedColumnAnalysis.columnStats.type === 'numeric'">
+                <div class="detail-row"><strong>Type:</strong> Numeric</div>
+                <div class="detail-row"><strong>Min:</strong> {{ selectedColumnAnalysis.columnStats.min }}</div>
+                <div class="detail-row"><strong>Max:</strong> {{ selectedColumnAnalysis.columnStats.max }}</div>
+                <div class="detail-row"><strong>Sum:</strong> {{ selectedColumnAnalysis.columnStats.sum }}</div>
+                <div class="detail-row"><strong>Mean:</strong> {{ selectedColumnAnalysis.columnStats.mean | number:'1.2-4' }}</div>
+                <div class="detail-row"><strong>Numeric count:</strong> {{ selectedColumnAnalysis.columnStats.numericCount }}</div>
+                <div class="detail-row"><strong>Non-empty:</strong> {{ selectedColumnAnalysis.columnStats.nonEmpty }} / {{ selectedColumnAnalysis.columnStats.totalValues }}</div>
+              </ng-container>
+              <ng-container *ngIf="selectedColumnAnalysis.columnStats.type === 'text'">
+                <div class="detail-row"><strong>Type:</strong> Text</div>
+                <div class="detail-row"><strong>Unique values:</strong> {{ selectedColumnAnalysis.columnStats.uniqueValues }}</div>
+                <div class="detail-row"><strong>Non-empty:</strong> {{ selectedColumnAnalysis.columnStats.nonEmpty }} / {{ selectedColumnAnalysis.columnStats.totalValues }}</div>
+                <div class="most-frequent" *ngIf="selectedColumnAnalysis.columnStats.mostFrequent?.length">
+                  <strong>Most frequent:</strong>
+                  <div class="freq-item" *ngFor="let item of selectedColumnAnalysis.columnStats.mostFrequent">
+                    <span class="freq-value">{{ item.value }}</span>
+                    <span class="freq-count">({{ item.count }})</span>
+                  </div>
+                </div>
+              </ng-container>
+            </div>
+          </div>
+        </div>
+
+        <!-- Filter & Sort Controls -->
+        <div class="table-operations-section">
+          <div class="operation-row">
+            <div class="filter-controls">
+              <h4><mat-icon>filter_alt</mat-icon> Filter</h4>
+              <mat-form-field appearance="outline" class="op-field">
+                <mat-label>Column</mat-label>
+                <mat-select [(ngModel)]="tableFilterColumn" [ngModelOptions]="{standalone: true}">
+                  <mat-option *ngFor="let h of selectedTable.headers" [value]="h">{{ h }}</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="op-field op-field-sm">
+                <mat-label>Operator</mat-label>
+                <mat-select [(ngModel)]="tableFilterOperator" [ngModelOptions]="{standalone: true}">
+                  <mat-option value="eq">Equals</mat-option>
+                  <mat-option value="neq">Not Equals</mat-option>
+                  <mat-option value="contains">Contains</mat-option>
+                  <mat-option value="gt">Greater Than</mat-option>
+                  <mat-option value="lt">Less Than</mat-option>
+                  <mat-option value="gte">Greater or Equal</mat-option>
+                  <mat-option value="lte">Less or Equal</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="op-field">
+                <mat-label>Value</mat-label>
+                <input matInput [(ngModel)]="tableFilterValue" [ngModelOptions]="{standalone: true}" placeholder="Filter value">
+              </mat-form-field>
+              <button mat-stroked-button color="primary" (click)="filterTableRows()"
+                      [disabled]="!tableFilterColumn || !tableFilterValue">
+                <mat-icon>filter_alt</mat-icon> Apply
+              </button>
+              <button mat-button *ngIf="filteredTableContent" (click)="clearTableFilter()">
+                <mat-icon>clear</mat-icon> Clear
+              </button>
+            </div>
+          </div>
+
+          <div class="operation-row">
+            <div class="sort-controls">
+              <h4><mat-icon>sort</mat-icon> Sort</h4>
+              <mat-form-field appearance="outline" class="op-field">
+                <mat-label>Column</mat-label>
+                <mat-select [(ngModel)]="tableSortColumn" [ngModelOptions]="{standalone: true}">
+                  <mat-option *ngFor="let h of selectedTable.headers" [value]="h">{{ h }}</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <mat-button-toggle-group [(ngModel)]="tableSortDescending" [ngModelOptions]="{standalone: true}">
+                <mat-button-toggle [value]="false"><mat-icon>arrow_upward</mat-icon> Asc</mat-button-toggle>
+                <mat-button-toggle [value]="true"><mat-icon>arrow_downward</mat-icon> Desc</mat-button-toggle>
+              </mat-button-toggle-group>
+              <button mat-stroked-button color="primary" (click)="sortTableRows()"
+                      [disabled]="!tableSortColumn">
+                <mat-icon>sort</mat-icon> Apply
+              </button>
+              <button mat-button *ngIf="sortedTableContent" (click)="clearTableSort()">
+                <mat-icon>clear</mat-icon> Clear
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Table List View (when no table is selected) -->
+      <div *ngIf="!selectedTable">
+        <div class="tables-header">
+          <h3><mat-icon>table_chart</mat-icon> Indexed Tables</h3>
+          <button mat-icon-button color="primary" (click)="loadTables()" matTooltip="Refresh tables" [disabled]="isLoadingTables">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+
+        <p class="component-description">
+          <small>
+            Browse tables extracted from your documents. Tables are automatically extracted from PDFs, Excel files, HTML pages, and VLM/OCR results.
+            Click a table to view its full content and column analysis.
+          </small>
+        </p>
+
+        <mat-progress-bar mode="indeterminate" *ngIf="isLoadingTables" class="page-progress-bar"></mat-progress-bar>
+
+        <!-- Empty state -->
+        <div *ngIf="!isLoadingTables && tables.length === 0" class="empty-state-message">
+          <mat-icon>table_chart</mat-icon>
+          <span>No tables found. Tables are extracted from documents during crawling with table-aware chunking.</span>
+        </div>
+
+        <!-- Table cards -->
+        <div *ngIf="tables.length > 0" class="tables-card-grid">
+          <div class="table-card mat-elevation-z2" *ngFor="let t of tables" (click)="viewTableDetail(t)">
+            <div class="table-card-header">
+              <mat-icon>grid_on</mat-icon>
+              <span class="table-card-source">{{ t.sourceFile || 'Unknown source' }}</span>
+              <span class="table-card-dims">{{ t.rowCount }}R x {{ t.columnCount }}C</span>
+            </div>
+            <div class="table-card-headers">
+              <mat-chip-listbox>
+                <mat-chip *ngFor="let h of t.headers?.slice(0, 6)" class="header-chip">{{ h }}</mat-chip>
+                <mat-chip *ngIf="(t.headers?.length || 0) > 6" class="header-chip-more">+{{ (t.headers?.length || 0) - 6 }}</mat-chip>
+              </mat-chip-listbox>
+            </div>
+            <div class="table-card-preview">
+              {{ t.preview }}
+            </div>
+            <div class="table-card-footer">
+              <span *ngIf="t.pageNumber" class="table-page-info">
+                <mat-icon>description</mat-icon> Page {{ t.pageNumber }}
+              </span>
+              <button mat-icon-button matTooltip="View in Graph" (click)="navigateToGraphTab(t.id); $event.stopPropagation()"
+                      style="color: #667eea;">
+                <mat-icon>hub</mat-icon>
+              </button>
+              <button mat-icon-button color="primary" matTooltip="View & Analyze" (click)="viewTableDetail(t); $event.stopPropagation()">
+                <mat-icon>analytics</mat-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pagination -->
+        <mat-paginator *ngIf="totalTablesCount > 0"
+          [pageSizeOptions]="[10, 20, 50]"
+          [pageSize]="tablesPageSize"
+          [length]="totalTablesCount"
+          showFirstLastButtons
+          (page)="onTablesPageChange($event)">
+        </mat-paginator>
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 6: KNOWLEDGE GRAPH -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">hub</mat-icon>
+        Graph
+      </ng-template>
+
+      <div class="graph-tab-container">
+        <app-knowledge-graph-hub
+          [focusNodeId]="graphFocusNodeId">
+        </app-knowledge-graph-hub>
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 7: CROSS-INDEX STATUS -->
     <!-- ═══════════════════════════════════════════════════════════════════════════ -->
     <mat-tab>
       <ng-template mat-tab-label>

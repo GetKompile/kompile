@@ -41,6 +41,7 @@ import { JobHistoryComponent } from './components/job-history/job-history.compon
 import { BatchSizeConfigComponent } from './components/batch-size-config/batch-size-config.component';
 import { SubprocessConfigComponent } from './components/subprocess-config/subprocess-config.component';
 import { DeviceRoutingComponent } from './components/device-routing/device-routing.component';
+import { EmbeddingRestartComponent } from './components/embedding-restart/embedding-restart.component';
 import { OrchestratorHubComponent } from './components/orchestrator-hub/orchestrator-hub.component';
 import { FolderSidebarComponent } from './components/folder-sidebar/folder-sidebar.component';
 import { FolderFilesDialogComponent } from './components/folder-files-dialog/folder-files-dialog.component';
@@ -53,6 +54,7 @@ import { ProcessingSettingsComponent } from './components/processing-settings/pr
 import { GraphVisualizerComponent } from './components/graph-visualizer/graph-visualizer.component';
 import { EntityBrowserComponent } from './components/entity-browser/entity-browser.component';
 import { KnowledgeGraphHubComponent } from './components/knowledge-graph-hub/knowledge-graph-hub.component';
+import { GraphHierarchyComponent } from './components/graph-hierarchy/graph-hierarchy.component';
 import { ConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { ConnectionsManagerComponent } from './components/connections-manager/connections-manager.component';
 import { FactSheetManagerComponent } from './components/fact-sheet-manager/fact-sheet-manager.component';
@@ -118,6 +120,7 @@ import { SkillsManagerComponent } from './components/skills-manager/skills-manag
 import { JobResumeComponent } from './components/job-resume/job-resume.component';
 import { McpToolUseLogComponent } from './components/mcp-tool-use-log/mcp-tool-use-log.component';
 import { McpCliInjectionComponent } from './components/mcp-cli-injection/mcp-cli-injection.component';
+import { ToolCallCatalogComponent } from './components/tool-call-catalog/tool-call-catalog.component';
 import { ModelAdmissionComponent } from './components/developer-hub/model-admission/model-admission.component';
 import { PipelineSchedulesComponent } from './components/developer-hub/pipeline-schedules/pipeline-schedules.component';
 import { ModelSchedulerPanelComponent } from './components/developer-hub/model-scheduler-panel/model-scheduler-panel.component';
@@ -141,6 +144,7 @@ import { MarkdownRendererComponent } from './components/markdown-renderer/markdo
 import { ProjectExplorerComponent } from './components/project-explorer/project-explorer.component';
 import { TrainingDashboardComponent } from './components/developer-hub/training-dashboard/training-dashboard.component';
 import { TrainingLaunchComponent } from './components/developer-hub/training-launch/training-launch.component';
+import { AgentModelConfigComponent } from './components/agent-model-config/agent-model-config.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -290,11 +294,13 @@ import { MatNativeDateModule } from '@angular/material/core';
     BatchSizeConfigComponent,
     SubprocessConfigComponent,
     DeviceRoutingComponent,
+    EmbeddingRestartComponent,
     SubprocessLogsComponent,
     PipelineSettingsPanelComponent,
     GraphVisualizerComponent,
     EntityBrowserComponent,
     KnowledgeGraphHubComponent,
+    GraphHierarchyComponent,
     ConfirmDialogComponent,
     ConnectionsManagerComponent,
     FactSheetManagerComponent,
@@ -342,7 +348,9 @@ import { MatNativeDateModule } from '@angular/material/core';
     MarkdownRendererComponent,
     ProjectExplorerComponent,
     TrainingDashboardComponent,
-    TrainingLaunchComponent
+    TrainingLaunchComponent,
+    ToolCallCatalogComponent,
+    AgentModelConfigComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

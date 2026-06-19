@@ -24,8 +24,6 @@ import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -44,8 +42,6 @@ import java.util.*;
 public class ChunkDeduplicationService {
     private static final Logger log = LoggerFactory.getLogger(ChunkDeduplicationService.class);
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
     private final KnowledgeGraphService knowledgeGraphService;
     private final EnrichmentAuditService auditService;
     private final ObjectMapper objectMapper;
@@ -53,16 +49,12 @@ public class ChunkDeduplicationService {
     private final IndexerService indexerService;
     private final CrossIndexIdResolver crossIndexIdResolver;
 
-    public ChunkDeduplicationService(GraphNodeRepository nodeRepository,
-                                     GraphEdgeRepository edgeRepository,
-                                     KnowledgeGraphService knowledgeGraphService,
+    public ChunkDeduplicationService(KnowledgeGraphService knowledgeGraphService,
                                      EnrichmentAuditService auditService,
                                      ObjectMapper objectMapper,
                                      @Autowired(required = false) VectorStore vectorStore,
                                      @Autowired(required = false) IndexerService indexerService,
                                      @Autowired(required = false) CrossIndexIdResolver crossIndexIdResolver) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
         this.knowledgeGraphService = knowledgeGraphService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
@@ -72,7 +64,7 @@ public class ChunkDeduplicationService {
     }
 
     public int deduplicateChunks(Long factSheetId, String jobId, EnrichmentConfig config) {
-        List<GraphNode> snippets = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SNIPPET);
+        List<GraphNode> snippets = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.SNIPPET);
         if (snippets.size() < 2) {
             log.info("Fewer than 2 SNIPPET nodes for factSheet {}, skipping dedup", factSheetId);
             return 0;
@@ -141,7 +133,8 @@ public class ChunkDeduplicationService {
             ));
 
             // Redirect edges from loser to winner, preserving semantic edge data.
-            List<GraphEdge> loserEdges = edgeRepository.findBySourceNodeIdOrTargetNodeId(loser.getId());
+            // Use vector store (SSOT) to enumerate edges for the loser node
+            List<GraphEdge> loserEdges = knowledgeGraphService.getEdgesForNode(loser.getNodeId());
             List<String> edgeIdsToDelete = new ArrayList<>();
             for (GraphEdge edge : loserEdges) {
                 String srcId = edge.getSourceNode().getNodeId();

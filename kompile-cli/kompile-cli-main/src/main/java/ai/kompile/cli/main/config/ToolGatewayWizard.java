@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -42,7 +43,7 @@ public class ToolGatewayWizard {
     private static final String YELLOW = "\033[33m";
     private static final String RED = "\033[31m";
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     /**
      * Run the interactive setup wizard.

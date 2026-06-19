@@ -15,6 +15,8 @@
  */
 package ai.kompile.knowledgegraph.matrix.service;
 
+import ai.kompile.core.crawl.graph.AgentCallContext;
+import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.graphrag.GraphConstructor;
 import ai.kompile.core.graphrag.model.Entity;
@@ -30,10 +32,10 @@ import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.builder.dto.ExtractedGraphDTO;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.ndarray.INDArray;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -47,20 +49,42 @@ import java.util.stream.Collectors;
  * stores the results in a matrix-based graph backed by a vector store.
  * </p>
  * <p>
- * This is the default graph constructor that works without external dependencies.
- * It is automatically enabled when MatrixGraphStore, LLMChat, and EmbeddingModel beans are all available.
+ * This is the default graph constructor. LLMChat and EmbeddingModel are optional;
+ * if not available, graph construction from raw text is not supported but
+ * programmatic graph building still works.
  * </p>
  */
 @Service
-@ConditionalOnBean({MatrixGraphStore.class, LLMChat.class, EmbeddingModel.class})
-@RequiredArgsConstructor
+@Primary
 @Slf4j
 public class MatrixGraphConstructor implements GraphConstructor {
 
-    private final MatrixGraphStore graphStore;
-    private final LLMChat llmChat;
-    private final EmbeddingModel embeddingModel;
-    private final ObjectMapper objectMapper;
+    @Autowired
+    private MatrixGraphStore graphStore;
+    @Autowired(required = false)
+    private LLMChat llmChat;
+    @Autowired(required = false)
+    private EmbeddingModel embeddingModel;
+    @Autowired
+    private ObjectMapper objectMapper;
+    /**
+     * Optional transcript logger — wired by kompile-app-main where JobLogService is available.
+     * When absent (e.g. test slices, subprocess contexts) transcript recording is silently skipped.
+     */
+    @Autowired(required = false)
+    private LlmTranscriptLogger transcriptLogger;
+
+    /** No-arg constructor for Spring. */
+    public MatrixGraphConstructor() {}
+
+    /** Constructor for tests. */
+    public MatrixGraphConstructor(MatrixGraphStore graphStore, LLMChat llmChat,
+                                   EmbeddingModel embeddingModel, ObjectMapper objectMapper) {
+        this.graphStore = graphStore;
+        this.llmChat = llmChat;
+        this.embeddingModel = embeddingModel;
+        this.objectMapper = objectMapper;
+    }
 
     /**
      * Default edge type for entity relationships.
@@ -255,18 +279,74 @@ public class MatrixGraphConstructor implements GraphConstructor {
         log.info("Batched {} documents into {} LLM call(s) (max {}k chars/call)",
                 docs.size(), batches.size(), BATCH_PROMPT_MAX_CHARS / 1000);
 
+        // Capture jobId and sessionId HERE, before any LLM call can clear them.
+        // CliAgentLLMChat.executeAgent() calls AgentCallContext.clear() at the start of every
+        // invocation (to reset pooled-thread state), which wipes the jobId that
+        // GraphExtractionOrchestrator published on this worker thread via setJobId().
+        // Reading them once before the batch loop guarantees the transcript guard sees the
+        // correct values even after the first LLM call clears the ThreadLocal.
+        final String capturedJobId = AgentCallContext.getJobId();
+        final String capturedSessionId = AgentCallContext.getSessionId();
+
         int docIndex = 0;
         for (List<RetrievedDoc> batch : batches) {
             long batchStart = System.currentTimeMillis();
+            String prompt = null;
+            String jsonResponse = null;
+            String llmErrorMsg = null;
+            boolean llmSuccess = false;
             try {
-                String prompt;
                 if (batch.size() == 1) {
                     prompt = createExtractionPrompt(batch.get(0).getText(), schema);
                 } else {
                     prompt = createBatchExtractionPrompt(batch, schema);
                 }
 
-                String jsonResponse = llmChat.prompt().user(prompt).call().content();
+                // Restore jobId/sessionId on this thread immediately before the LLM call so
+                // that any downstream code (including the LLM adapter itself) can read it.
+                // The finally block below uses the captured values directly, which is safe even
+                // if the LLM adapter clears the ThreadLocal during the call.
+                if (capturedJobId != null) AgentCallContext.setJobId(capturedJobId);
+                if (capturedSessionId != null) AgentCallContext.setSessionId(capturedSessionId);
+
+                long llmCallStart = System.currentTimeMillis();
+                try {
+                    jsonResponse = llmChat.prompt().user(prompt).call().content();
+                    llmSuccess = jsonResponse != null && !jsonResponse.isBlank();
+                } catch (Exception llmEx) {
+                    llmErrorMsg = llmEx.getMessage() != null ? llmEx.getMessage() : llmEx.getClass().getSimpleName();
+                    throw llmEx;
+                } finally {
+                    // Persist one transcript entry per LLM call so every GraphConstructor
+                    // extraction appears in the unified-crawl transcript viewer.
+                    // Uses capturedJobId (snapshotted before the loop) because
+                    // CliAgentLLMChat.executeAgent() calls AgentCallContext.clear() which
+                    // would otherwise make getJobId() return null here.
+                    if (transcriptLogger != null && capturedJobId != null) {
+                        log.debug("Recording GraphConstructor LLM transcript for job {} (session {})",
+                                capturedJobId, capturedSessionId);
+                        long llmLatencyMs = System.currentTimeMillis() - llmCallStart;
+                        String backendId = "graph-constructor";
+                        try {
+                            transcriptLogger.logTranscript(
+                                    capturedJobId,
+                                    backendId,
+                                    "llm",
+                                    prompt,
+                                    jsonResponse,
+                                    llmLatencyMs,
+                                    llmSuccess,
+                                    llmErrorMsg,
+                                    capturedSessionId);
+                        } catch (Exception transcriptEx) {
+                            log.debug("Failed to persist GraphConstructor LLM transcript for job {}: {}",
+                                    capturedJobId, transcriptEx.getMessage());
+                        }
+                    }
+                    // Clear ThreadLocal to avoid leaking into the next task that reuses this thread.
+                    AgentCallContext.clear();
+                }
+
                 ExtractedGraphDTO.ExtractedGraph extracted = parseExtractionResponse(jsonResponse);
 
                 if (extracted != null) {
@@ -412,7 +492,8 @@ public class MatrixGraphConstructor implements GraphConstructor {
                Documents:
                %s
 
-               Respond with a SINGLE JSON object containing "entities" (list) and "relationships" (list) covering ALL documents.
+               IMPORTANT: Your entire response MUST be a single raw JSON object — no preamble, no explanation, no markdown fences, no tool calls before or after. Start your response with { and end with }.
+               The JSON must have exactly two keys: "entities" (array) and "relationships" (array).
                For entity IDs, use unique identifiers (e.g. "entity_1", "entity_2").
                Example: {"entities": [{"id": "e1", "title": "John", "label": "PERSON", "description": "A person"}],
                          "relationships": [{"source": "e1", "target": "e2", "type": "WORKS_AT", "description": "John works at Acme"}]}
@@ -499,21 +580,81 @@ public class MatrixGraphConstructor implements GraphConstructor {
                %s
                \"""
 
-               Respond with a JSON object containing "entities" (list) and "relationships" (list).
+               IMPORTANT: Your entire response MUST be a single raw JSON object — no preamble, no explanation, no markdown fences, no tool calls before or after. Start your response with { and end with }.
+               The JSON must have exactly two keys: "entities" (array) and "relationships" (array).
                Example: {"entities": [{"id": "e1", "title": "John", "label": "PERSON", "description": "A person"}],
                          "relationships": [{"source": "e1", "target": "e2", "type": "WORKS_AT", "description": "John works at Acme"}]}
                """.formatted(schemaDescription, text);
     }
 
     private ExtractedGraphDTO.ExtractedGraph parseExtractionResponse(String jsonResponse) {
+        if (jsonResponse == null || jsonResponse.isBlank()) {
+            return null;
+        }
         try {
-            // Try to extract JSON from the response
-            String json = jsonResponse;
-            int jsonStart = jsonResponse.indexOf('{');
-            int jsonEnd = jsonResponse.lastIndexOf('}');
-            if (jsonStart >= 0 && jsonEnd > jsonStart) {
-                json = jsonResponse.substring(jsonStart, jsonEnd + 1);
+            // 1. Strip markdown code fences: ```json ... ``` or ``` ... ```
+            String stripped = jsonResponse;
+            int fenceStart = jsonResponse.indexOf("```json");
+            if (fenceStart >= 0) {
+                int contentStart = jsonResponse.indexOf('\n', fenceStart) + 1;
+                int fenceEnd = jsonResponse.indexOf("```", contentStart);
+                if (fenceEnd > contentStart) {
+                    stripped = jsonResponse.substring(contentStart, fenceEnd).trim();
+                }
+            } else {
+                int fence2 = jsonResponse.indexOf("```");
+                if (fence2 >= 0) {
+                    int contentStart = jsonResponse.indexOf('\n', fence2) + 1;
+                    int fenceEnd = jsonResponse.indexOf("```", contentStart);
+                    if (fenceEnd > contentStart) {
+                        String candidate = jsonResponse.substring(contentStart, fenceEnd).trim();
+                        if (candidate.startsWith("{")) {
+                            stripped = candidate;
+                        }
+                    }
+                }
             }
+
+            // 2. Find the first occurrence of {"entities" or {"relationships" to skip tool-call
+            //    log prefixes emitted by CLI agents (e.g. "[kompile] read | {"filePath":...}").
+            //    We search for the extraction result root object specifically.
+            String json = stripped;
+            int entitiesStart = stripped.indexOf("{\"entities\"");
+            if (entitiesStart < 0) {
+                // Also handle single-quoted or spaced variants, and fall back to first '{'
+                // that is not a tool-call line (lines starting with "[kompile]" or "[llm]").
+                // Walk through the string line by line to find the first '{' on a non-tool line.
+                int candidateStart = -1;
+                int pos = 0;
+                while (pos < stripped.length()) {
+                    int lineEnd = stripped.indexOf('\n', pos);
+                    if (lineEnd < 0) lineEnd = stripped.length();
+                    String line = stripped.substring(pos, lineEnd).trim();
+                    if (!line.startsWith("[kompile]") && !line.startsWith("[llm]")
+                            && !line.startsWith("[INFO]") && !line.startsWith("[DEBUG]")
+                            && !line.startsWith("[WARN]") && !line.startsWith("[ERROR]")
+                            && line.contains("{")) {
+                        int bracePos = stripped.indexOf('{', pos);
+                        if (bracePos >= 0 && bracePos < lineEnd) {
+                            candidateStart = bracePos;
+                            break;
+                        }
+                    }
+                    pos = lineEnd + 1;
+                }
+                if (candidateStart >= 0) {
+                    int jsonEnd = stripped.lastIndexOf('}');
+                    if (jsonEnd > candidateStart) {
+                        json = stripped.substring(candidateStart, jsonEnd + 1);
+                    }
+                }
+            } else {
+                int jsonEnd = stripped.lastIndexOf('}');
+                if (jsonEnd > entitiesStart) {
+                    json = stripped.substring(entitiesStart, jsonEnd + 1);
+                }
+            }
+
             return objectMapper.readValue(json, ExtractedGraphDTO.ExtractedGraph.class);
         } catch (Exception e) {
             log.error("Failed to parse LLM extraction response: {}", e.getMessage());

@@ -26,6 +26,7 @@ import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.Closeable;
@@ -57,7 +58,7 @@ public class SharedResourcePool implements Closeable {
 
     public SharedResourcePool(Path defaultWorkDir) {
         this.defaultWorkDir = defaultWorkDir;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         // Agent registry — load built-in + custom agents
         this.agentRegistry = new AgentRegistry();

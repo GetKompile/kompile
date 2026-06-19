@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.common.chat.sources;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -27,7 +28,7 @@ import java.util.Optional;
 
 public final class ChatAdapterSupport {
 
-    public static final ObjectMapper MAPPER = new ObjectMapper();
+    public static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private ChatAdapterSupport() {}
 

@@ -1,0 +1,1955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beyond RAG Part 2: Dissecting Documents &mdash; Email to Knowledge Graph</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+<style>
+  :root {
+    --r-background-color: #0d1117;
+    --r-main-color: #c9d1d9;
+    --r-heading-color: #58a6ff;
+    --r-link-color: #58a6ff;
+    --r-selection-background-color: #388bfd33;
+  }
+  .reveal { font-size: 32px; }
+  .reveal h1 { font-size: 2.0em; color: #58a6ff; text-shadow: none; }
+  .reveal h2 { font-size: 1.5em; color: #58a6ff; text-shadow: none; }
+  .reveal h3 { font-size: 1.2em; color: #79c0ff; }
+  .reveal pre { font-size: 0.48em; width: 95%; box-shadow: none; }
+  .reveal pre code { max-height: 520px; padding: 16px; border-radius: 8px; }
+  .reveal code { color: #ff7b72; }
+  .reveal .accent { color: #f0883e; font-weight: bold; }
+  .reveal .green { color: #3fb950; }
+  .reveal .red { color: #f85149; }
+  .reveal .blue { color: #58a6ff; }
+  .reveal .purple { color: #bc8cff; }
+  .reveal .yellow { color: #d29922; }
+  .reveal .dim { color: #8b949e; }
+  .reveal .pill {
+    display: inline-block; padding: 2px 12px; border-radius: 16px;
+    font-size: 0.7em; margin: 2px 4px; font-weight: 600;
+  }
+  .reveal .pill-green { background: #23853220; border: 1px solid #238532; color: #3fb950; }
+  .reveal .pill-red { background: #f8514920; border: 1px solid #f85149; color: #f85149; }
+  .reveal .pill-blue { background: #58a6ff20; border: 1px solid #58a6ff; color: #58a6ff; }
+  .reveal .pill-purple { background: #bc8cff20; border: 1px solid #bc8cff; color: #bc8cff; }
+  .reveal .pill-yellow { background: #d2992220; border: 1px solid #d29922; color: #d29922; }
+  .reveal .pill-orange { background: #f0883e20; border: 1px solid #f0883e; color: #f0883e; }
+  .reveal .pill-cyan { background: #39d35320; border: 1px solid #39d353; color: #39d353; }
+  .reveal table { font-size: 0.65em; margin: 0 auto; border-collapse: collapse; }
+  .reveal table th { background: #161b22; color: #58a6ff; padding: 8px 14px; border-bottom: 2px solid #30363d; }
+  .reveal table td { padding: 6px 14px; border-bottom: 1px solid #21262d; }
+  .reveal table tr:nth-child(even) { background: #161b2280; }
+  .reveal .fragment.highlight-current-blue.current-fragment { color: #58a6ff; }
+  .reveal blockquote { background: #161b22; border-left: 4px solid #f0883e; padding: 12px 20px; font-style: italic; font-size: 0.9em; }
+  .reveal .slide-number { font-size: 14px; color: #8b949e; }
+  .reveal ul { list-style: none; }
+  .reveal ul li::before { content: "->"; color: #58a6ff; font-weight: bold; margin-right: 8px; font-family: monospace; }
+  .reveal ul ul li::before { content: "-"; color: #8b949e; }
+  .reveal .two-col { display: flex; gap: 30px; align-items: flex-start; }
+  .reveal .two-col > div { flex: 1; }
+  .reveal .ascii-box {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px 16px; font-family: monospace; font-size: 0.55em;
+    line-height: 1.3; white-space: pre; text-align: left; color: #c9d1d9;
+  }
+  .reveal .stat-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 16px; text-align: center; margin: 8px;
+  }
+  .reveal .stat-card .number { font-size: 2.2em; font-weight: bold; color: #f0883e; }
+  .reveal .stat-card .label { font-size: 0.7em; color: #8b949e; margin-top: 4px; }
+  .reveal .flow-arrow { color: #f0883e; font-size: 1.4em; margin: 0 8px; }
+  .title-subtitle { color: #8b949e !important; font-size: 0.7em !important; margin-top: 10px !important; }
+  .section-divider { background: linear-gradient(135deg, #0d1117 0%, #161b22 100%) !important; }
+  .reveal .graph-node {
+    display: inline-block; border-radius: 50%; width: 20px; height: 20px;
+    margin: 0 4px; vertical-align: middle;
+  }
+  .reveal .node-person { background: #bc8cff; }
+  .reveal .node-message { background: #58a6ff; }
+  .reveal .node-attachment { background: #f85149; }
+  .reveal .node-list { background: #d29922; }
+  .reveal .algo-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 10px 14px; margin: 4px; text-align: left;
+  }
+  .reveal .algo-card .algo-name { color: #ff7b72; font-family: monospace; font-weight: 600; font-size: 0.85em; }
+  .reveal .algo-card .algo-desc { color: #8b949e; font-size: 0.7em; margin-top: 2px; }
+  .reveal .algo-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    font-size: 0.9em;
+  }
+  .reveal .export-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    font-size: 0.75em;
+  }
+  .reveal .export-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 10px; text-align: center;
+  }
+  .reveal .export-card .format { color: #ff7b72; font-family: monospace; font-weight: 600; font-size: 1.1em; }
+  .reveal .export-card .desc { color: #8b949e; font-size: 0.85em; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- ============================================================ -->
+<!-- TITLE -->
+<!-- ============================================================ -->
+<section>
+  <h1>Beyond RAG</h1>
+  <h3>Part 2: Dissecting Documents</h3>
+  <p class="title-subtitle">From Raw Email to Knowledge Graph</p>
+  <br>
+  <p style="font-size: 0.6em;">
+    <span class="dim">Adam Gibson &bull; Kompile &bull; 2026</span>
+  </p>
+  <aside class="notes">Part 2 picks up where Part 1 left off. In Part 1, we used Elthoria to show that structured data beats RAG for game state -- bonus stacking, grid positions, NPC stats. Now the question is: does that same insight scale beyond games? Can we extract structure from messy, real-world documents? We'll answer that by dissecting something everyone has: email.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- TRANSITION FROM PART 1 -->
+<!-- ============================================================ -->
+<section>
+  <h2>From Elthoria to the Enterprise</h2>
+  <div class="two-col">
+    <div>
+      <h3 style="font-size: 0.9em;">Part 1: Game State</h3>
+      <p class="dim" style="font-size: 0.75em;">
+        Elthoria proved that structured data<br>
+        outperforms RAG for <strong class="green">deterministic queries</strong>.
+      </p>
+      <p style="font-size: 0.7em;">
+        <span class="pill pill-green">196 MCP Tools</span>
+        <span class="pill pill-blue">4 Grounding Layers</span>
+        <span class="pill pill-purple">ANTLR Grid DSL</span>
+      </p>
+      <p class="dim" style="font-size: 0.65em; margin-top: 8px;">
+        "What's Kael's AC?" &rarr; <strong>query the database</strong>, not a vector index
+      </p>
+    </div>
+    <div>
+      <h3 style="font-size: 0.9em;">Part 2: Real-World Documents</h3>
+      <p class="dim" style="font-size: 0.75em;">
+        But real data isn't pre-structured.<br>
+        Can we <strong class="green">extract</strong> that structure?
+      </p>
+      <p style="font-size: 0.7em;">
+        <span class="pill pill-orange">Email Extraction</span>
+        <span class="pill pill-purple">Knowledge Graphs</span>
+        <span class="pill pill-cyan">12 Graph Algorithms</span>
+      </p>
+      <p class="dim" style="font-size: 0.65em; margin-top: 8px;">
+        "Who emailed whom about Project X?" &rarr; <strong>traverse the graph</strong>
+      </p>
+    </div>
+  </div>
+  <aside class="notes">This is the bridge slide. Part 1 showed Elthoria where the game database already has structured data -- NPC stats, bonus types, grid positions. The AI queries it through MCP tools. But most enterprise data isn't pre-structured. Emails, PDFs, Slack threads -- they arrive as unstructured text. Part 2 shows how Kompile extracts structure from these documents and builds queryable knowledge graphs. Same principle: give the AI structured data to work with instead of making it search through text blobs.</aside>
+</section>
+
+<section>
+  <h2>The Elthoria Lesson, Generalized</h2>
+  <div class="ascii-box" style="font-size: 0.5em;">
+<span class="dim">Elthoria:</span>
+  <span class="yellow">Structured DB</span> ──── <span class="green">MCP Tools</span> ──── <span class="blue">AI queries game state</span>
+  <span class="dim">(pre-built)</span>         <span class="dim">(typed access)</span>     <span class="dim">(deterministic answers)</span>
+
+<span class="dim">Enterprise:</span>
+  <span class="red">Raw Documents</span> ──── <span class="yellow">???</span> ──── <span class="green">MCP Tools</span> ──── <span class="blue">AI queries knowledge</span>
+  <span class="dim">(unstructured)</span>     <span class="dim">(this talk)</span>  <span class="dim">(typed access)</span>     <span class="dim">(deterministic answers)</span></div>
+  <p class="fragment" style="font-size: 0.8em; margin-top: 0.5em;">
+    The <span class="yellow">???</span> is the <strong>extraction pipeline</strong>:<br>
+    <span class="dim">raw documents &rarr; entities + relationships &rarr; knowledge graph</span>
+  </p>
+  <aside class="notes">Elthoria had a pre-built database. Enterprise data doesn't. The missing piece is the extraction pipeline -- turning raw documents into structured entities and relationships that live in a knowledge graph. Once you have that graph, the same pattern applies: the AI queries structured data through typed tool interfaces. The rest of this talk fills in that question mark.</aside>
+</section>
+
+<section>
+  <h2>Kompile: The Extraction Platform</h2>
+  <img src="kompile-project.png" alt="Kompile RAG Console - Project view with components, scripts, workflows, source documents, chat sessions, and fact sheets"
+       style="max-width: 95%; max-height: 520px; border-radius: 8px; border: 1px solid #30363d; box-shadow: 0 4px 24px rgba(0,0,0,0.5);">
+  <p style="font-size: 0.55em; margin-top: 8px;">
+    <span class="dim">16 components</span> <span class="flow-arrow">&bull;</span>
+    <span class="dim">2,310 chat sessions</span> <span class="flow-arrow">&bull;</span>
+    <span class="dim">Fact sheets, crawl profiles, search indices, pipelines, model registry</span>
+  </p>
+  <aside class="notes">This is Kompile's RAG Console running live. The project view for "rpg-sample" shows the full platform: 16 components spanning chats, coding projects, crawl profiles, fact sheets, search indices, markdown notes, model registry, pipelines, prompt templates, lifecycle scripts, sources, and workflows. The left panel shows 5 scripts (Start all services, Start app, Start serving, Start staging, Stop all services), 3 workflows, 2 source documents (a Pathfinder character sheet and Owlcat games PDF), 6 prompt templates, 2,310 chat sessions, 2 managed sources, and 1 fact sheet. This is the platform that fills in the "???" from the previous slide -- it turns raw documents into structured knowledge.</aside>
+</section>
+
+<section>
+  <h2>The Extraction Pipeline &mdash; Live</h2>
+  <img src="kompile-crawl-pipeline.png" alt="Kompile crawl pipeline in progress showing Discovery, Loading, Chunking, Graph Extraction, Embedding, and Indexing stages"
+       style="max-width: 95%; max-height: 520px; border-radius: 8px; border: 1px solid #30363d; box-shadow: 0 4px 24px rgba(0,0,0,0.5);">
+  <p style="font-size: 0.55em; margin-top: 8px;">
+    <span class="green">359 docs loaded</span> <span class="flow-arrow">&rarr;</span>
+    <span class="blue">359 chunks</span> <span class="flow-arrow">&rarr;</span>
+    <span class="red">6,729 entities, 9,943 relationships</span> <span class="flow-arrow">&rarr;</span>
+    <span class="purple">Graph + Vector + LLM</span>
+  </p>
+  <aside class="notes">This is the extraction pipeline running live on RPG source documents. The "RPG Sample Full Crawl" is processing 2 sources through 359 documents. The pipeline stages run concurrently: Source Loading (2/2 sources, 359 docs at 11.3/min), Text Conversion (359/359 normalized), Content Routing (359/359 routed to text pipeline), Rule Graph Prep (5/5 document graph extraction complete), Chunking (359/359 chunked into 359 chunks). Graph Extraction is in progress -- already 6,729 entities and 9,943 relationships extracted from the first batches. The three output paths are visible: Graph, Vector, and LLM. The activity log at the bottom shows deterministic graph extraction completing per-document: "5 entities, 3 relationships", "7 entities, 7 relationships" -- exactly the pattern we'll walk through for emails. This is the pipeline that turns raw documents into the structured knowledge graphs we'll explore in this talk.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- WHAT IS KOMPILE? -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>What is Kompile?</h2>
+  <h3>The Sovereign Modular AI Stack<br><span class="dim">Models &bull; Knowledge &bull; Applications</span></h3>
+</section>
+
+<section>
+  <h2>Three Pillars</h2>
+  <div style="display: flex; gap: 12px; font-size: 0.65em;">
+    <div class="stat-card" style="flex: 1;">
+      <div class="number" style="font-size: 1.2em; color: #3fb950;">Models</div>
+      <div class="label" style="text-align: left; padding: 8px;">
+        Model conversion &amp; serving<br>
+        TensorFlow, ONNX, Keras &rarr; SameDiff<br>
+        Local embeddings (bge-base, arctic)<br>
+        Multi-provider LLM (OpenAI, Anthropic, Gemini)<br>
+        <span class="dim">kompile model convert --inputFile=model.onnx</span>
+      </div>
+    </div>
+    <div class="stat-card" style="flex: 1;">
+      <div class="number" style="font-size: 1.2em; color: #58a6ff;">Knowledge</div>
+      <div class="label" style="text-align: left; padding: 8px;">
+        Crawl &rarr; Extract &rarr; Structure<br>
+        Email, PDF, Office, Slack, Confluence<br>
+        Knowledge graphs + vector indices<br>
+        12 graph algorithms, 9 export formats<br>
+        <span class="dim">kompile crawl --source=inbox --graph=true</span>
+      </div>
+    </div>
+    <div class="stat-card" style="flex: 1;">
+      <div class="number" style="font-size: 1.2em; color: #bc8cff;">Applications</div>
+      <div class="label" style="text-align: left; padding: 8px;">
+        RAG apps, agents, pipelines<br>
+        Spring Boot + Angular platform<br>
+        MCP server &amp; REST API<br>
+        CLI: <code>kompile init &rarr; crawl &rarr; chat</code><br>
+        <span class="dim">GraalVM native image support</span>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">Kompile is three things in one. The Models pillar handles model conversion (TensorFlow, ONNX, Keras to SameDiff), local embedding models (bge-base-en-v1.5, arctic-embed), and multi-provider LLM integration via Spring AI. The Knowledge pillar -- which is the focus of this talk -- crawls data sources (email inboxes, PDFs, Office docs, Slack, Confluence, Jira, Notion, Discord, Reddit, Google Workspace, OneDrive, Gmail), extracts structure, and builds knowledge graphs with vector indices. The Applications pillar puts it all together: Spring Boot RAG applications with Angular frontend, MCP tool servers, REST APIs, CLI tools, and pipeline execution. The workflow is: kompile init to scaffold, kompile crawl to ingest, kompile chat to query.</aside>
+</section>
+
+<section>
+  <h2>The Project Workflow</h2>
+  <p class="dim">Everything is project-oriented &mdash; init assesses your infra, crawl builds your knowledge</p>
+  <div class="ascii-box" style="font-size: 0.44em;">
+<span class="accent">$ kompile init-project</span>                              <span class="dim">← interactive wizard or preset</span>
+
+  <span class="yellow">1. What LLM?</span>        CLI agent (Claude/Codex/Gemini) · OpenAI · Anthropic · local-only · none
+  <span class="yellow">2. What embeddings?</span>  Anserini/SameDiff (local) · OpenAI · Sentence Transformer · PostgresML
+  <span class="yellow">3. What vector store?</span> Anserini (Lucene HNSW, default) · pgvector · Chroma
+  <span class="yellow">4. What compute?</span>     CPU · CUDA · ZLUDA · Hexagon NPU · Google TPU
+  <span class="yellow">5. Hardware check</span>    RAM, CPUs, GPU &rarr; auto-tunes batch sizes, heap, parallelism
+
+  <span class="green">&rarr; Generates pom.xml, application.properties, config/*.json, scripts/, data/</span>
+  <span class="green">&rarr; Builds the app (mvn package) &rarr; ready to run</span>
+
+<span class="accent">$ kompile app crawl start ./docs/ https://wiki.example.com</span>   <span class="dim">← point at your data</span>
+
+  Sources auto-detected: directories, URLs, email, Excel, etc.
+  <span class="blue">Pipeline:</span> Load &rarr; Chunk &rarr; Embed &rarr; Index <span class="green">+</span> Graph Extract &rarr; Knowledge Graph
+  Optional: <span class="purple">--graph --multimodal --vlm --fact-sheet="Q3 Finance"</span>
+
+<span class="accent">$ kompile chat</span>                                       <span class="dim">← query your structured knowledge</span></div>
+  <p class="fragment" style="font-size: 0.7em; margin-top: 0.3em;">
+    <code>init</code> gives you end-to-end infrastructure in one step.<br>
+    <span class="dim">No Dockerfiles, no YAML, no cloud console &mdash; one command, one project, everything configured.</span>
+  </p>
+  <aside class="notes">Kompile is project-oriented. The init-project command is an interactive wizard (or can be driven by presets and flags) that assesses what you need for end-to-end AI infrastructure. It walks through your LLM provider (local CLI agents like Claude Code or Codex need no API key; hosted providers need one), your embedding model (local SameDiff models like bge-base run on-device, OpenAI embeddings call the API), your vector store (Lucene HNSW is the default and needs no external server, pgvector needs PostgreSQL, Chroma needs its server), and your compute backend. HardwareAutoConfigurator.autoConfigure() detects your RAM, CPU count, and GPU availability, then tunes batch sizes, heap allocations, and parallelism settings. The output is a complete, buildable Maven project with pom.xml, application.properties, JSON config files for every subsystem, lifecycle scripts, and a data directory structure. Then you crawl: point at your data sources -- directories, URLs, email inboxes, whatever -- and the unified crawl pipeline loads, chunks, embeds, and indexes into your vector store, optionally extracting a knowledge graph in parallel. Crawl output is scoped to a named fact sheet, so you can have separate indices for different domains within the same project. Then you chat -- the AI queries your structured knowledge through MCP tools and vector search.</aside>
+</section>
+
+<section>
+  <h2>Data Crawlers</h2>
+  <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font-size: 0.6em;">
+    <div class="stat-card">
+      <div class="number" style="font-size: 1.0em; color: #f0883e;">Email</div>
+      <div class="label">IMAP, Gmail API,<br>MBOX, PST, EMLX</div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="font-size: 1.0em; color: #3fb950;">Cloud</div>
+      <div class="label">Confluence, Jira,<br>Notion, Google Drive</div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="font-size: 1.0em; color: #58a6ff;">Chat</div>
+      <div class="label">Slack, Discord,<br>channels &amp; threads</div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="font-size: 1.0em; color: #bc8cff;">Documents</div>
+      <div class="label">PDF, Office, CSV,<br>OneDrive, filesystem</div>
+    </div>
+  </div>
+  <p style="font-size: 0.7em; margin-top: 12px;">
+    Every crawler feeds the same pipeline: <span class="accent">CrawlPipelineRouter</span> &rarr; native loader &rarr; extraction &rarr; graph + vectors
+  </p>
+  <p class="fragment dim" style="font-size: 0.65em;">
+    Each source type has its own specialized loader that preserves format-specific structure<br>
+    (email threading, Slack reactions, Jira issue links, Confluence page hierarchies)
+  </p>
+  <aside class="notes">Kompile ships crawlers for every major data source: email (IMAP, Gmail API, and local formats like MBOX, PST, EMLX), cloud platforms (Confluence spaces and pages, Jira projects with issue links, Notion databases, Google Drive and Workspace), chat platforms (Slack channels and threads with reactions and file attachments, Discord servers), and document stores (PDF, Office via Apache POI, CSV/TSV, OneDrive, local filesystem). Every crawler feeds into the same CrawlPipelineRouter, which dispatches each document to its native loader. The loaders preserve format-specific structure -- email threading headers, Slack message threading and reactions, Jira issue type and priority fields, Confluence page parent-child hierarchies. This is the "???" from the earlier slide: the extraction pipeline that turns raw enterprise data into structured knowledge.</aside>
+</section>
+
+<section>
+  <h2>The Structured Data Thesis</h2>
+  <blockquote style="font-size: 0.85em; border-left-color: #3fb950;">
+    "The point isn't <em>how</em> the AI accesses data.<br>
+    The point is that the data has <strong>structure</strong>."
+  </blockquote>
+  <div class="two-col" style="font-size: 0.65em; margin-top: 20px;">
+    <div>
+      <h3 style="font-size: 0.9em;" class="red">RAG: Flatten Everything</h3>
+      <div class="ascii-box" style="font-size: 0.85em;">
+Email with 3 recipients, thread chain,
+attached spreadsheet with formulas
+            <span class="red">&darr;</span>
+    "one text chunk, one vector"
+            <span class="red">&darr;</span>
+  <span class="red">cosine similarity = hope</span></div>
+    </div>
+    <div>
+      <h3 style="font-size: 0.9em;" class="green">Structured: Preserve Everything</h3>
+      <div class="ascii-box" style="font-size: 0.85em;">
+Email with 3 recipients, thread chain,
+attached spreadsheet with formulas
+            <span class="green">&darr;</span>
+  3 PERSON + 1 EMAIL + 1 ATTACHMENT
+  + 1 SHEET + 1 CELL + 1 FORMULA
+            <span class="green">&darr;</span>
+  <span class="green">graph traversal = certainty</span></div>
+    </div>
+  </div>
+  <aside class="notes">This is the central thesis of both talks. The value isn't in MCP versus REST versus GraphQL versus any other protocol. The value is in having structured data in the first place. RAG takes a richly structured email with typed recipients, thread chains, and attached spreadsheets with cell-level formulas, and crushes it into a single text chunk and a vector. You're left hoping cosine similarity finds the right chunk when someone asks about cell F14. Structured extraction preserves all of that: 3 PERSON entities with typed relationships, an EMAIL_MESSAGE with threading, an ATTACHMENT linked to a SHEET linked to a CELL with the actual FORMULA expression. Once you have that structure, how you access it -- MCP tool, REST endpoint, Cypher query -- is an implementation detail.</aside>
+</section>
+
+<section>
+  <h2>MCP: Power and Cost</h2>
+  <div class="two-col" style="font-size: 0.65em;">
+    <div>
+      <h3 style="font-size: 0.9em;" class="green">What MCP Gives You</h3>
+      <ul>
+        <li>Tool discovery &mdash; the AI finds what it can do</li>
+        <li>Typed parameters &amp; returns</li>
+        <li>Schema-driven: LLM knows how to call each tool</li>
+        <li>Standard protocol across providers</li>
+      </ul>
+      <p style="margin-top: 8px;" class="dim">
+        Elthoria: 196 tools across 19+ categories<br>
+        Kompile: knowledge graph, RAG, crawl, admin tools
+      </p>
+    </div>
+    <div>
+      <h3 style="font-size: 0.9em;" class="red">What MCP Costs You</h3>
+      <ul>
+        <li><strong>~7,000 tokens</strong> just for tool schemas</li>
+        <li>Every request carries the full schema set</li>
+        <li>196 tools &times; 35 tokens/tool avg = massive overhead</li>
+        <li>Eats into context window before the AI even starts</li>
+      </ul>
+      <p style="margin-top: 8px;" class="dim">
+        Token overhead is the #1 real-world pain point<br>
+        <span class="red">Scales linearly with tool count</span>
+      </p>
+    </div>
+  </div>
+  <aside class="notes">MCP is powerful -- it gives the AI typed tool discovery, structured parameters, and a standard protocol. Elthoria uses 196 MCP tools. But there's a real cost: the full tool schema set consumes roughly 7,000 tokens. That's 7,000 tokens sent with every single request, before the AI even processes the user's message. With 196 tools averaging 35 tokens per schema, you're burning a significant chunk of your context window just on tool definitions. This scales linearly -- more tools means more overhead. At GPT-4-class pricing, this is a meaningful cost per request. And it's not just money -- those tokens compete with the actual conversation context for space in the window.</aside>
+</section>
+
+<section>
+  <h2>Kompile's Token Optimization Tools</h2>
+  <p class="dim">Actual MCP tools the AI calls to manage its own token footprint</p>
+  <div style="font-size: 0.58em;">
+    <table>
+      <thead><tr><th>Tool</th><th>What the AI Does</th><th>What Happens</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code class="green">activate_tools</code></td>
+          <td><code>action=list</code> &rarr; see available groups<br>
+              <code>action=describe, group=network</code> &rarr; preview tools<br>
+              <code>action=activate, group=delegation</code> &rarr; unlock tools</td>
+          <td>Only 17 core tools visible by default<br>
+              <span class="dim">33+ tools organized into 8 groups</span><br>
+              <strong class="green">~7000 &rarr; ~2000 tokens (70%)</strong></td>
+        </tr>
+        <tr>
+          <td><code class="green">fetch_result</code></td>
+          <td><code>result_id=abc12345</code><br>
+              <code>offset=0, limit=200</code><br>
+              <span class="dim">Retrieve cached result by handle</span></td>
+          <td>Results &gt;8000 chars auto-cached<br>
+              <span class="dim">UUID handle + preview returned instead</span><br>
+              <strong class="green">86-94% context reduction</strong></td>
+        </tr>
+        <tr>
+          <td><code class="green">search_tools</code></td>
+          <td><code>query="graph algorithm"</code><br>
+              <span class="dim">Server-side: lightweight keyword search</span></td>
+          <td>Returns name + description only<br>
+              <span class="dim">No schemas &mdash; minimal tokens</span></td>
+        </tr>
+        <tr>
+          <td><code class="green">describe_tools</code></td>
+          <td><code>names=["pagerank","louvain"]</code><br>
+              <span class="dim">Batch fetch full schemas on demand</span></td>
+          <td>Full input schema only for requested tools<br>
+              <span class="dim">Never loads schemas the AI won't use</span></td>
+        </tr>
+        <tr>
+          <td><code class="green">execute_tool</code></td>
+          <td><code>name="pagerank", args={...}</code><br>
+              <span class="dim">Invoke any tool by name, even if hidden</span></td>
+          <td>Reflection-based dynamic invocation<br>
+              <span class="dim">Tools don't need to be in visible set</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <aside class="notes">These are actual MCP tools the AI can call -- not configuration knobs. activate_tools is the CLI-side gatekeeper: DynamicToolManager organizes 33+ tools into 8 groups (search, workflow, network, delegation, knowledge, process, advanced, custom) with 17 core tools always visible (read, write, edit, grep, glob, bash, list, fetch_result, activate_tools, patch, explore, memory, transcript_search, conversation_import, code_search, code_graph, local_code_index). The AI calls activate_tools with action=list to see what's available, action=describe to preview a group, and action=activate to unlock it. This alone cuts the default schema from ~7000 tokens to ~2000. fetch_result is the result-caching tool: when any tool output exceeds 8000 characters, ToolResultReferenceCache stores the full content and returns a UUID handle with a 500-character preview. The AI calls fetch_result with that handle to retrieve specific line ranges. The arxiv 2511.22729 paper reports 86-94% context reduction with this pattern. On the server side (kompile-app), DynamicToolsetsMetaTool provides search_tools, describe_tools, and execute_tool -- the DYNAMIC mode equivalent. In DYNAMIC mode, only these three meta-tools are exposed. The AI calls search_tools with a keyword query, gets lightweight results (name + description, no schemas), then calls describe_tools for the full input schema of specific tools, then execute_tool to invoke them. This is the three-step pattern: discover, inspect, execute.</aside>
+</section>
+
+<section>
+  <h2>activate_tools: Group-Based Discovery</h2>
+  <div class="ascii-box" style="font-size: 0.42em;">
+<span class="green">Always visible (17 core tools):</span>
+  read, write, edit, grep, glob, bash, list, fetch_result, activate_tools,
+  patch, explore, memory, transcript_search, conversation_import,
+  code_search, code_graph, local_code_index
+
+<span class="yellow">Unlocked on demand via activate_tools:</span>
+  <span class="blue">search</span>      → code_search, search, tool_call_catalog
+  <span class="blue">workflow</span>    → todowrite, todoread, memory, config_archive, test_milestone
+  <span class="blue">network</span>    → webfetch, websearch
+  <span class="blue">delegation</span> → task, quorum_task, multi_task, role_manager, skill_manager
+  <span class="blue">knowledge</span>  → transcript_search, conversation_import, resume
+  <span class="blue">process</span>    → process, edit_coordinator
+  <span class="blue">advanced</span>   → performance_harness, patch
+  <span class="blue">custom</span>     → user-defined tools from ~/.kompile/tools/</div>
+  <pre style="font-size: 0.44em; margin-top: 8px;"><code class="language-java">// DynamicToolManager.java - per-session group activation
+private static final Set&lt;String&gt; CORE_TOOLS = Set.of(
+    "read", "write", "edit", "grep", "glob", "bash", "list",
+    "fetch_result", "activate_tools", "patch", "explore", "memory",
+    "transcript_search", "conversation_import",
+    "code_search", "code_graph", "local_code_index");
+
+// AI calls: activate_tools(action="activate", group="delegation")
+// → adds task, quorum_task, multi_task, role_manager, skill_manager
+// → "Call tools/list to see the updated list"</code></pre>
+  <aside class="notes">Here's how it actually works. DynamicToolManager maintains a per-session activatedGroups set backed by a ConcurrentHashMap. The 17 core tools are always in the visible tool list regardless of what's activated. The remaining tools are organized into 8 groups. When the AI needs web access, it calls activate_tools with action=activate and group=network -- this adds webfetch and websearch to the active set and tells the AI to re-request tools/list. The custom group is populated dynamically from user-defined tool definitions in ~/.kompile/tools/ and .kompile/tools/. Any tools not assigned to a group are treated as ungrouped and always active. The key insight: the AI only pays the token cost for the tools it actually needs in a given session. A session that only reads and edits code never loads the delegation, network, or advanced tools.</aside>
+</section>
+
+<section>
+  <h2>Behind the Tools: Optimization Infrastructure</h2>
+  <div style="font-size: 0.58em;">
+    <table>
+      <thead><tr><th>Layer</th><th>Class</th><th>What It Does</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="blue">Schema</span></td>
+          <td><code>ToolSchemaOptimizer</code></td>
+          <td>4-level adaptive compression: NONE &rarr; MODERATE (200ch desc) &rarr; AGGRESSIVE (100ch, strip params) &rarr; COMPACT (60ch, collapse objects)<br>
+              <span class="dim">optimizeAdaptive(tools, tokenBudget) tries each level until it fits</span></td>
+        </tr>
+        <tr>
+          <td><span class="green">Results</span></td>
+          <td><code>ToolResultReferenceCache</code></td>
+          <td>Threshold: 8000 chars &rarr; store full content, return UUID handle + 500ch preview<br>
+              <span class="dim">15min TTL, 500 entries max, LRU eviction</span></td>
+        </tr>
+        <tr>
+          <td><span class="yellow">Responses</span></td>
+          <td><code>ToolResponseOptimizer</code></td>
+          <td>6 strategies: plain text, JSON (arrays &rarr; 20 items), code (CodeTokenCompressor), search results (dedup), CLI output (strip progress bars, downloads, spinners)<br>
+              <span class="dim">compressObservation: 60-91% on build/test output (RTK research)</span></td>
+        </tr>
+        <tr>
+          <td><span class="purple">Code</span></td>
+          <td><code>CodeTokenCompressor</code></td>
+          <td>Language-aware: strips license headers, collapses imports to <code>[N imports]</code>, collapses long Javadoc to first sentence, extracts API surface<br>
+              <span class="dim">Detects Java, Python, JS, TS, Go, Rust, C/C++, Ruby, Scala + more</span></td>
+        </tr>
+        <tr>
+          <td><span class="red">Config</span></td>
+          <td><code>McpOptimizationConfig</code></td>
+          <td>Central config: metaToolMode (DIRECT/DYNAMIC/HYBRID), ragMaxDocs=3, ragMaxContentChars=2000, compressionThreshold=4000<br>
+              <span class="dim">REST API at /api/config/mcp-optimization &mdash; live reload via Spring events</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <aside class="notes">Behind the callable tools sits a multi-layer optimization infrastructure. ToolSchemaOptimizer runs before schemas leave the server -- it has four compression levels and an adaptive mode that tries each level until the total token estimate fits within a budget (estimated as chars/4). ToolResultReferenceCache is the engine behind fetch_result -- any tool output over 8000 characters gets stored with a UUID handle, the AI receives a 500-character preview, and fetch_result retrieves specific line ranges on demand. ToolResponseOptimizer handles six different output types with specialized compression: plain text gets head+tail truncation, JSON arrays get capped to 20 items, source code goes through CodeTokenCompressor (which is language-aware for 15+ languages -- strips license headers, collapses import blocks to "[N imports]", collapses Javadoc over 8 lines to the first sentence, and can extract just the API surface in 10-20% of tokens). The compressObservation method specifically targets CLI/build/test output -- stripping progress bars, Maven download lines, npm install noise, and collapsing runs of PASS lines -- achieving 60-91% reduction based on RTK research. McpOptimizationConfig ties it all together, persisted to JSON and editable via REST at /api/config/mcp-optimization with live reload via Spring ApplicationEvents.</aside>
+</section>
+
+<section>
+  <h2>REST: The Zero-Overhead Alternative</h2>
+  <div class="two-col" style="font-size: 0.65em;">
+    <div>
+      <h3 style="font-size: 0.9em;">MCP Tool Call</h3>
+      <pre style="font-size: 0.85em;"><code class="language-json">// Requires tool schema in context
+// ~35 tokens per tool definition
+{
+  "name": "graph_search_by_entity",
+  "arguments": {
+    "entityName": "Alice Chen",
+    "maxResults": 5
+  }
+}</code></pre>
+      <p class="dim" style="margin-top: 8px;">
+        AI must have the schema loaded<br>
+        Schema sent every request<br>
+        SSE transport overhead
+      </p>
+    </div>
+    <div>
+      <h3 style="font-size: 0.9em;">REST API Call</h3>
+      <pre style="font-size: 0.85em;"><code class="language-bash"># Zero schema overhead
+# Same operation, same service layer
+GET /api/graph/search
+  ?entityName=Alice+Chen
+  &maxResults=5
+
+POST /api/graph/algorithms/pagerank
+  { "factSheetId": 42 }</code></pre>
+      <p class="dim" style="margin-top: 8px;">
+        No tool schema in context window<br>
+        Standard HTTP &mdash; any client<br>
+        OpenAPI spec for documentation
+      </p>
+    </div>
+  </div>
+  <p class="fragment" style="font-size: 0.75em; margin-top: 0.3em;">
+    <span class="accent">Same service layer underneath.</span> MCP and REST are two doors to the same room.
+  </p>
+  <aside class="notes">Here's the thing: every operation Kompile exposes as an MCP tool is also available as a REST endpoint. The graph search, the PageRank computation, the crawl management -- all accessible via standard HTTP with zero tool schema overhead. REST doesn't need the AI to carry tool definitions in its context window. An agentic system can call REST endpoints directly, parse the JSON response, and pass it into the LLM's context as needed. The trade-off is that MCP gives the AI self-directed tool discovery, while REST requires the orchestration layer to know which endpoint to call. But in many architectures -- especially those with a fixed set of operations -- REST is simpler, cheaper, and just as effective. The key insight: both MCP and REST hit the same Spring service layer underneath. The business logic is the same.</aside>
+</section>
+
+<section>
+  <h2>The Dual-Access Pattern</h2>
+  <p class="dim">Both Kompile and Elthoria expose everything as both a tool and an endpoint</p>
+  <div class="ascii-box" style="font-size: 0.45em;">
+                      <span class="blue">MCP Client</span>                          <span class="green">REST Client</span>
+                      <span class="dim">(AI agent, Claude, etc.)</span>               <span class="dim">(curl, frontend, scripts)</span>
+                           │                                      │
+                     <span class="blue">MCP Transport (SSE)</span>                    <span class="green">HTTP / JSON</span>
+                           │                                      │
+                    ┌──────┴──────┐                       ┌──────┴──────┐
+                    │ <span class="blue">MCP Tool</span>     │                       │ <span class="green">REST</span>        │
+                    │ <span class="blue">@Tool</span>        │                       │ <span class="green">@RestController</span>│
+                    └──────┬──────┘                       └──────┬──────┘
+                           │                                      │
+                           └──────────────┬───────────────────────┘
+                                          │
+                                 <span class="yellow">┌────────┴────────┐</span>
+                                 <span class="yellow">│  @Service Layer  │</span>
+                                 <span class="yellow">│  (shared logic)  │</span>
+                                 <span class="yellow">└──────────────────┘</span>
+                                          │
+                               ┌──────────┼──────────┐
+                               │          │          │
+                        <span class="purple">Graph Store</span>  <span class="blue">Vector Store</span>  <span class="red">Database</span>
+
+  <span class="accent">RestMcpBridgeManager</span>: auto-converts OpenAPI specs &harr; MCP tool schemas
+  <span class="dim">BuiltInToolDiscoveryService.generateOpenApiSpec()</span> → bridge config → bidirectional access</div>
+  <p class="fragment" style="font-size: 0.7em;">
+    <strong>Write the logic once.</strong> The <span class="yellow">@Service</span> is the source of truth.<br>
+    <span class="dim">MCP and REST are just transport layers &mdash; pick what fits your use case.</span>
+  </p>
+  <aside class="notes">This is the pattern both Kompile and Elthoria use: write the business logic once in a Spring @Service class, then expose it through both an @Tool annotation for MCP and a @RestController for REST. The service layer is the source of truth. The RestMcpBridgeManager takes this further -- it can automatically convert between OpenAPI specs and MCP tool schemas bidirectionally. BuiltInToolDiscoveryService generates an OpenAPI spec from the registered tools, creates a bridge config, and enables the same operation to be called via either protocol. This means you can build your AI agent with MCP for tool discovery during development, then switch critical paths to REST for production where token overhead matters. Or run both simultaneously. The transport is a detail -- the structured data underneath is what matters.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- TRANSITION: FROM PLATFORM TO EXAMPLE -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>From Platform to Practice</h2>
+  <h3>Let's crawl an email inbox<br><span class="dim">and see what structure comes out</span></h3>
+</section>
+
+<section>
+  <h2>Anatomy of an Email</h2>
+  <p class="dim">An email isn't a text blob &mdash; it's a structured object with typed fields and nested documents</p>
+  <div class="ascii-box" style="font-size: 0.40em;">
+<span class="blue">┌─────────────────────────────────────────────────────────────────────────────┐</span>
+<span class="blue">│</span>  <span class="accent">From:</span>    Alice Chen &lt;alice@acme.com&gt;          <span class="dim">← PERSON entity</span>          <span class="blue">│</span>
+<span class="blue">│</span>  <span class="accent">To:</span>      Sarah Park &lt;sarah@acme.com&gt;          <span class="dim">← PERSON entity</span>          <span class="blue">│</span>
+<span class="blue">│</span>  <span class="accent">Cc:</span>      Mike Torres &lt;mike@acme.com&gt;          <span class="dim">← PERSON entity</span>          <span class="blue">│</span>
+<span class="blue">│</span>  <span class="accent">Date:</span>    2026-05-19T14:30:00Z                                           <span class="blue">│</span>
+<span class="blue">│</span>  <span class="accent">Subject:</span> Re: Q3 Revenue Forecast Bug          <span class="dim">← EMAIL_MESSAGE entity</span>   <span class="blue">│</span>
+<span class="blue">│</span>  <span class="accent">In-Reply-To:</span> &lt;msg-2847@acme.com&gt;              <span class="dim">← REPLIED_TO relation</span>    <span class="blue">│</span>
+<span class="blue">│</span>  <span class="accent">References:</span>  &lt;msg-2841@acme.com&gt;              <span class="dim">← thread chain</span>           <span class="blue">│</span>
+<span class="blue">│─────────────────────────────────────────────────────────────────────────────│</span>
+<span class="blue">│</span>                                                                             <span class="blue">│</span>
+<span class="blue">│</span>  Hey Sarah, the Q3 revenue forecast has a bug in the commission calc.      <span class="blue">│</span>
+<span class="blue">│</span>  Cell F14 in the attached spreadsheet uses VLOOKUP on the old rate table.  <span class="blue">│</span>
+<span class="blue">│</span>  It should reference the 2026 rates on Sheet3. - Alice                     <span class="blue">│</span>
+<span class="blue">│</span>                                                                             <span class="blue">│</span>
+<span class="blue">│</span>  <span class="red">📎 Q3-forecast.xlsx (148 KB)</span>                    <span class="dim">← ATTACHMENT entity</span>      <span class="blue">│</span>
+<span class="blue">│</span>     <span class="yellow">├── Sheet1: "Revenue Forecast"</span>              <span class="dim">← SPREADSHEET_SHEET</span>     <span class="blue">│</span>
+<span class="blue">│</span>     <span class="yellow">│   └── F14: =VLOOKUP(B14,Sheet2!A:C,3,FALSE)</span> <span class="dim">← CELL / FORMULA</span>      <span class="blue">│</span>
+<span class="blue">│</span>     <span class="yellow">├── Sheet2: "Old Commission Rates"</span>                                    <span class="blue">│</span>
+<span class="blue">│</span>     <span class="yellow">└── Sheet3: "2026 Commission Rates"</span>         <span class="dim">← the correct table</span>     <span class="blue">│</span>
+<span class="blue">└─────────────────────────────────────────────────────────────────────────────┘</span>
+
+  <span class="green">Every annotation on the right is an entity or relationship Kompile extracts.</span>
+  <span class="green">The headers, the people, the thread, the attachment, the sheets, the cell, the formula.</span></div>
+  <aside class="notes">Before we talk about extraction code, look at this email as a data structure. The headers alone give us three PERSON entities with typed relationships (SENT_BY, SENT_TO, CC_TO), an EMAIL_MESSAGE entity with a subject and timestamp, and thread reconstruction via In-Reply-To and References headers. The body is prose -- that's what RAG would chunk and embed. But the attachment is where the business-critical data lives. Q3-forecast.xlsx isn't just a file name -- Apache POI can open it and extract Sheet1 with its cell grid, including cell F14 which contains an actual VLOOKUP formula referencing Sheet2. The bug is that F14 should reference Sheet3 (the 2026 rates), not Sheet2 (the old rates). Every annotation on the right side of this diagram is a typed entity or relationship that Kompile's extraction pipeline produces. None of this requires an LLM -- it's all deterministic parsing of MIME headers and binary file formats.</aside>
+</section>
+
+<section>
+  <h2>What is a Knowledge Graph?</h2>
+  <p class="dim">Entities connected by typed, directed relationships &mdash; not text, not vectors, but structure</p>
+  <div class="two-col">
+    <div>
+      <div class="ascii-box" style="font-size: 0.48em;">
+<span class="dim">A graph is:</span>
+
+  <span class="purple">Nodes</span> (entities) with <span class="yellow">properties</span>
+    <span class="purple">Alice Chen</span>  type: PERSON
+                  email: alice@acme.com
+
+  <span class="blue">Edges</span> (relationships) with <span class="yellow">types</span>
+    Alice ──<span class="accent">SENT_BY</span>──▶ Email
+    Email ──<span class="accent">HAS_ATTACHMENT</span>──▶ Q3-forecast.xlsx
+
+<span class="dim">A knowledge graph is:</span>
+
+  Entities extracted <em>from documents</em>
+  connected by relationships found
+  <em>in those same documents</em>.
+
+  Not hand-built. <span class="green">Extracted automatically.</span></div>
+    </div>
+    <div>
+      <div class="ascii-box" style="font-size: 0.48em;">
+<span class="dim">Why not just use text search?</span>
+
+  <span class="red">Text:</span> "Alice sent an email about Q3"
+         <span class="dim">→ cosine similarity might find it</span>
+         <span class="dim">→ or might find a different Q3 email</span>
+
+  <span class="green">Graph:</span> Alice ──SENT_BY──▶ Email
+                             │
+                      HAS_ATTACHMENT
+                             │
+                     Q3-forecast.xlsx
+                             │
+                      CONTAINS_SHEET
+                             │
+                        Sheet1!F14
+         <span class="dim">→ deterministic traversal</span>
+         <span class="dim">→ every hop is typed</span>
+         <span class="dim">→ you get the formula, not "a passage"</span></div>
+    </div>
+  </div>
+  <aside class="notes">For anyone unfamiliar: a knowledge graph is a data structure where entities (people, documents, files, cells) are nodes with typed properties, and the connections between them are directed, labeled edges. Alice SENT_BY this email. This email HAS_ATTACHMENT this spreadsheet. This spreadsheet CONTAINS_SHEET this sheet. This sheet CONTAINS_CELL this cell. Each hop is a typed relationship you can traverse programmatically. Compare this to text search or RAG: searching for "Alice Q3 spreadsheet" via cosine similarity might return the right email, or might return a different Q3 email, or might return a document that mentions Q3 but has nothing to do with Alice's spreadsheet. A graph traversal is deterministic -- you follow typed edges from Alice to her email to its attachment to the specific cell with the bug. There's no similarity threshold, no ranking, no "maybe". Kompile builds these graphs automatically from documents -- you don't hand-build them.</aside>
+</section>
+
+<section>
+  <h2>From Email to Cell: The Full Graph</h2>
+  <p class="dim">One email produces a graph that traces from people all the way down to individual cell formulas</p>
+  <div class="ascii-box" style="font-size: 0.40em;">
+  <span class="purple">Alice Chen</span> ─<span class="accent">SENT_BY</span>─┐       <span class="purple">Sarah Park</span> ◀─<span class="accent">SENT_TO</span>─┐      <span class="purple">Mike Torres</span> ◀─<span class="accent">CC_TO</span>─┐
+  <span class="dim">PERSON</span>              │       <span class="dim">PERSON</span>               │      <span class="dim">PERSON</span>              │
+                      ▼                              │                            │
+               <span class="blue">┌─────────────────────────────────────┴────────────────────────────┘</span>
+               <span class="blue">│  Re: Q3 Revenue Forecast Bug                                     </span>
+               <span class="blue">│  EMAIL_MESSAGE  ·  2026-05-19T14:30:00Z                           </span>
+               <span class="blue">└──────┬──────────────────┬────────────────────────────────────────┘</span>
+                      │                      │
+               <span class="yellow">REPLIED_TO</span>            <span class="red">HAS_ATTACHMENT</span>
+                      │                      │
+               <span class="blue">┌──────┴──────┐</span>    <span class="red">┌──────┴──────────────┐</span>
+               <span class="blue">│  msg-2847   │</span>    <span class="red">│ Q3-forecast.xlsx    │</span>
+               <span class="blue">│EMAIL_MESSAGE│</span>    <span class="red">│ ATTACHMENT (148 KB) │</span>
+               <span class="blue">└─────────────┘</span>    <span class="red">└──────┬──────────────┘</span>
+                                          │
+                                   <span class="yellow">CONTAINS_SHEET</span>
+                             ┌────────────┼────────────┐
+                             │            │            │
+                      <span class="yellow">┌──────┴──────┐ ┌──────┴──────┐ ┌──────┴──────────────┐</span>
+                      <span class="yellow">│ Sheet1      │ │ Sheet2      │ │ Sheet3               │</span>
+                      <span class="yellow">│ "Revenue    │ │ "Old Rates" │ │ "2026 Commission     │</span>
+                      <span class="yellow">│  Forecast"  │ │             │ │  Rates"              │</span>
+                      <span class="yellow">└──────┬──────┘ └─────────────┘ └──────────────────────┘</span>
+                             │
+                      <span class="accent">CONTAINS_CELL</span>
+                             │
+                      <span class="red">┌──────┴─────────────────────────────────┐</span>
+                      <span class="red">│ F14: =VLOOKUP(B14, Sheet2!A:C, 3, FALSE) │</span>  <span class="dim">← The bug is HERE</span>
+                      <span class="red">│ FORMULA entity                            │</span>  <span class="dim">   Should reference Sheet3</span>
+                      <span class="red">│ refs: [Sheet2!A:C]                        │</span>  <span class="dim">   not Sheet2</span>
+                      <span class="red">└───────────────────────────────────────────┘</span></div>
+  <p class="fragment" style="font-size: 0.7em; margin-top: 0.3em;">
+    <span class="accent">6 hops</span> from person to formula. Every node is typed. Every edge is labeled.<br>
+    <span class="dim">This is what Kompile's extraction pipeline builds &mdash; automatically, from one email.</span>
+  </p>
+  <aside class="notes">This is the complete graph from a single email. Three PERSON nodes at the top (Alice, Sarah, Mike) with typed relationships to the EMAIL_MESSAGE. The email links to its parent via REPLIED_TO (thread reconstruction from In-Reply-To headers) and to its attachment via HAS_ATTACHMENT. The attachment -- Q3-forecast.xlsx -- gets dispatched to Apache POI, which extracts three sheets as SPREADSHEET_SHEET entities via CONTAINS_SHEET edges. Sheet1 has cells, and cell F14 becomes a FORMULA entity via CONTAINS_CELL, carrying the actual expression =VLOOKUP(B14,Sheet2!A:C,3,FALSE) and its cell references as properties. Six hops from Alice to the buggy formula. Every hop is a typed, directed relationship. You can traverse this graph forward -- "what did Alice send?" -- or backward -- "which email contained this formula?" -- and the answer is always deterministic. Now the question is: how do we build this graph? What does RAG lose, and what does the extraction pipeline preserve? That's the rest of this talk.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 1: WHAT RAG FLATTENS -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part I</h2>
+  <h3>What RAG Flattens<br><span class="dim">The information you lose</span></h3>
+</section>
+
+<section>
+  <h2>RAG Sees Text. Emails Have Structure.</h2>
+  <div class="two-col">
+    <div>
+      <h3 style="font-size: 0.85em;" class="red">What RAG Sees</h3>
+      <div class="ascii-box" style="font-size: 0.45em;">
+"Hey Sarah, the Q3 revenue forecast
+has a bug in the commission calc.
+Cell F14 in the attached spreadsheet
+uses VLOOKUP on the old rate table.
+It should reference the 2026 rates
+on Sheet3. Can you fix it before
+the board deck goes out? - Alice"
+
+<span class="red">&rarr; One text chunk, embedded as a vector
+&rarr; "Which cell?" lost in embedding
+&rarr; "Which spreadsheet?" no attachment link
+&rarr; The formula itself? Never extracted.</span></div>
+    </div>
+    <div>
+      <h3 style="font-size: 0.85em;" class="green">What's Actually There</h3>
+      <div class="ascii-box" style="font-size: 0.45em;">
+<span class="blue">From:</span>    Alice Chen &lt;alice@acme.com&gt;
+<span class="blue">To:</span>      Sarah Park &lt;sarah@acme.com&gt;
+<span class="blue">Cc:</span>      Mike Torres &lt;mike@acme.com&gt;
+<span class="blue">Date:</span>    2026-05-19T14:30:00Z
+<span class="blue">Subject:</span> Re: Q3 Revenue Forecast Bug
+<span class="blue">Attach:</span>  Q3-forecast.xlsx (148 KB)
+           <span class="dim">&rarr; Sheet1!F14: =VLOOKUP(B14,Sheet2!A:C,3,FALSE)</span>
+           <span class="dim">&rarr; Sheet3: "2026 Commission Rates"</span>
+
+<span class="green">&rarr; 3 people, typed relationships
+&rarr; Attachment &rarr; sheets &rarr; cells &rarr; formulas
+&rarr; The bug IS the formula. It's extractable.</span></div>
+    </div>
+  </div>
+  <aside class="notes">This is the core problem. A RAG system takes this email, strips it to text, chunks it, embeds it, and stores the vector. You've lost everything that matters: who sent it, the attachment, the specific cell reference, and the formula itself. The business-critical information isn't the email body -- it's cell F14 in the attached spreadsheet, which uses a VLOOKUP referencing the wrong rate table. Kompile's loaders extract all of this: the MIME headers give us people and threading, the EmailAttachmentExtractor pulls the .xlsx to a temp file, Apache POI parses it into sheets, rows, cells, and formulas, and the CrawlPipelineRouter dispatches each piece to the right extractor. The formula, the cell reference, the sheet name -- all become first-class entities in the knowledge graph.</aside>
+</section>
+
+<section>
+  <h2>Questions RAG Can't Answer</h2>
+  <table class="fragment" style="font-size: 0.6em;">
+    <thead>
+      <tr>
+        <th>Question</th>
+        <th>Requires</th>
+        <th>RAG?</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>"Who are the most connected people in our org?"</td>
+        <td><span class="purple">Graph centrality</span></td>
+        <td class="red">No</td>
+      </tr>
+      <tr>
+        <td>"Show me the email thread about the Jenkins outage"</td>
+        <td><span class="blue">Thread traversal</span> (In-Reply-To chain)</td>
+        <td class="red">No</td>
+      </tr>
+      <tr>
+        <td>"Which cell in which spreadsheet has the forecast bug?"</td>
+        <td><span class="accent">Multi-hop: email &rarr; attachment &rarr; sheet &rarr; cell</span></td>
+        <td class="red">No</td>
+      </tr>
+      <tr>
+        <td>"How does Alice connect to the VP of Engineering?"</td>
+        <td><span class="green">Shortest path</span></td>
+        <td class="red">No</td>
+      </tr>
+      <tr>
+        <td>"Find all formulas referencing the old rate table"</td>
+        <td><span class="yellow">Graph query on FORMULA entities</span></td>
+        <td class="red">No</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="fragment" style="font-size: 0.75em; margin-top: 0.5em;">
+    Every one of these is answerable with a <span class="green">knowledge graph</span>.
+  </p>
+  <aside class="notes">Five questions that are completely natural for a user to ask, and completely impossible for a RAG system to answer. The new third row is the key one: "which cell in which spreadsheet has the forecast bug?" requires traversing from email to attachment to sheet to cell -- a four-hop graph traversal. RAG can't do this because it flattened the spreadsheet into text chunks with no cell-level addressability. The fifth row shows the inverse query: find all formulas that reference a specific table. This is a graph filter on FORMULA entities by their expression content. PageRank, thread traversal, shortest path, and typed queries round out the set.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 2: EMAIL EXTRACTION -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part II</h2>
+  <h3>Dissecting an Email<br><span class="dim">From MIME to metadata</span></h3>
+</section>
+
+<section>
+  <h2>Kompile's Email Loaders</h2>
+  <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; font-size: 0.7em;">
+    <div class="stat-card">
+      <div class="number" style="font-size: 1.6em;">IMAP/POP3</div>
+      <div class="label">Live mail servers<br><span class="dim">Gmail, Outlook, custom IMAP</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="font-size: 1.6em;">Local Inbox</div>
+      <div class="label">MBOX, Maildir, PST, EMLX<br><span class="dim">Thunderbird, Apple Mail, Outlook</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="font-size: 1.6em;">Gmail API</div>
+      <div class="label">REST API with OAuth2<br><span class="dim">Labels, threads, attachments</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="number" style="font-size: 1.6em;">Auto-Discovery</div>
+      <div class="label">MailboxDiscoveryService<br><span class="dim">Scans Thunderbird, Evolution, KMail, Geary</span></div>
+    </div>
+  </div>
+  <aside class="notes">Kompile ships four email loading modules. IMAP/POP3 connects to live servers -- Gmail preset, Microsoft OAuth2, any custom IMAP host. Local Inbox handles every common format: MBOX (Thunderbird), Maildir (dovecot), PST/OST (Outlook), EMLX (Apple Mail). Gmail API uses the REST endpoint for users who want label and thread metadata. And Auto-Discovery scans your machine for installed mail clients and their data files automatically -- profiles.ini for Thunderbird, ~/Library/Mail for Apple Mail, Windows paths for Outlook. You don't need to configure paths -- it finds them.</aside>
+</section>
+
+<section>
+  <h2>What the Parser Extracts</h2>
+  <p class="dim">Every email is parsed by an RFC 2822 / MIME parser &mdash; no LLM, just standards</p>
+  <div class="ascii-box" style="font-size: 0.42em;">
+<span class="accent">Raw email arrives</span> (IMAP fetch, .mbox file, Gmail API, .eml file)
+         │
+         ▼
+<span class="blue">┌─────────────────────────────────────────────────────────────────────────────────┐</span>
+<span class="blue">│  MIME Parser (RFC 2822)                                                         │</span>
+<span class="blue">│                                                                                 │</span>
+<span class="blue">│  <span class="yellow">Headers</span>                              <span class="yellow">Threading</span>                                 │</span>
+<span class="blue">│  ┌──────────────────────────────┐     ┌──────────────────────────────┐           │</span>
+<span class="blue">│  │ Subject  → "Re: Q3 Forecast" │     │ Message-ID  → unique ID      │           │</span>
+<span class="blue">│  │ From     → Alice (name+addr) │     │ In-Reply-To → parent msg ID  │           │</span>
+<span class="blue">│  │ To       → Sarah             │     │ References  → full thread    │           │</span>
+<span class="blue">│  │ Cc       → Mike              │     │ List-Id     → mailing list   │           │</span>
+<span class="blue">│  │ Date     → ISO-8601 instant  │     │ X-Mailer    → client app     │           │</span>
+<span class="blue">│  └──────────────────────────────┘     └──────────────────────────────┘           │</span>
+<span class="blue">│                                                                                 │</span>
+<span class="blue">│  <span class="yellow">Body</span>                                 <span class="yellow">Attachments</span>                               │</span>
+<span class="blue">│  ┌──────────────────────────────┐     ┌──────────────────────────────┐           │</span>
+<span class="blue">│  │ text/plain preferred         │     │ Each extracted to temp file   │           │</span>
+<span class="blue">│  │ text/html as fallback        │     │ Routed to native loader:     │           │</span>
+<span class="blue">│  │ (converted to clean text)    │     │  .pdf  → PDF parser          │           │</span>
+<span class="blue">│  └──────────────────────────────┘     │  .xlsx → Spreadsheet parser  │           │</span>
+<span class="blue">│                                       │  .docx → Document parser     │           │</span>
+<span class="blue">│                                       │  .png  → OCR (if enabled)    │           │</span>
+<span class="blue">│                                       └──────────────────────────────┘           │</span>
+<span class="blue">└─────────────────────────────────────────────────────────────────────────────────┘</span>
+         │
+         ▼
+<span class="green">30+ structured metadata fields + body text + attachment sub-documents</span></div>
+  <aside class="notes">The parser follows the MIME standard -- RFC 2822 for headers, MIME multipart for body structure. It extracts four categories of data. Headers give you identity and routing: who sent it, who received it, when, what subject. Threading gives you conversation reconstruction: Message-ID uniquely identifies every email, In-Reply-To links to the parent, References preserves the full chain. These three fields alone let you rebuild entire conversation threads without any LLM. Body extraction prefers the text/plain part for clean text, falling back to HTML which gets converted to text. Attachments are the key: each one is extracted to a temp file and routed to a format-specific parser -- PDFs go to a PDF parser, spreadsheets to a spreadsheet parser, Word docs to a document parser, images to OCR. Each attachment becomes its own sub-document linked back to the parent email. All of this is deterministic -- just reading standards-defined headers and binary file formats.</aside>
+</section>
+
+<section>
+  <h2>The MIME Tree</h2>
+  <p class="dim">An email is a tree of nested parts &mdash; the parser walks it, extracting each piece</p>
+  <div class="ascii-box" style="font-size: 0.46em;">
+<span class="blue">multipart/mixed</span>                              <span class="dim">← the email envelope</span>
+├── <span class="blue">multipart/alternative</span>                    <span class="dim">← body in multiple formats</span>
+│   ├── <span class="green">text/plain</span>                            <span class="dim">← preferred: clean body text</span>
+│   └── <span class="dim">text/html</span>                             <span class="dim">← fallback: converted to text</span>
+│
+├── <span class="red">application/vnd.openxmlformats (xlsx)</span>    <span class="dim">← attachment: spreadsheet</span>
+│   <span class="dim">filename="Q3-forecast.xlsx"</span>
+│   │
+│   └── <span class="yellow">Spreadsheet parser opens it:</span>
+│       ├── Sheet1: "Revenue Forecast"        <span class="dim">→ rows, cells, formulas</span>
+│       ├── Sheet2: "Old Commission Rates"    <span class="dim">→ reference data</span>
+│       └── Sheet3: "2026 Commission Rates"   <span class="dim">→ reference data</span>
+│
+├── <span class="red">application/pdf</span>                          <span class="dim">← attachment: PDF</span>
+│   <span class="dim">filename="budget.pdf"</span>                    <span class="dim">→ text + tables + annotations</span>
+│
+└── <span class="red">image/png</span>                                <span class="dim">← attachment: image</span>
+    <span class="dim">filename="chart.png"</span>                     <span class="dim">→ OCR text (if enabled)</span></div>
+  <p class="fragment" style="font-size: 0.75em;">
+    Attachments become <strong>first-class documents</strong> &mdash; each parsed by a native, format-aware loader.
+  </p>
+  <aside class="notes">An email isn't a flat file -- it's a MIME tree. The top-level multipart/mixed container holds the body (as multipart/alternative with plain text and HTML versions) plus each attachment as a separate MIME part. The parser walks this tree recursively. Body text comes from the text/plain part when available. Each attachment is extracted with its original content type and filename, then dispatched to a format-specific loader. The spreadsheet parser opens the xlsx and extracts individual sheets, rows, cells, and formulas. The PDF parser extracts text, tables, annotations, and form fields. The image loader can run OCR if configured. Each attachment becomes its own sub-document in the pipeline, with metadata linking it back to the parent email -- so you can always trace an attachment to the email that contained it.</aside>
+</section>
+
+<section>
+  <h2>30+ Metadata Fields per Email</h2>
+  <p class="dim">Everything RAG throws away &mdash; all extracted deterministically from headers</p>
+  <div class="two-col" style="font-size: 0.6em;">
+    <div>
+      <table>
+        <thead><tr><th colspan="2">Identity &amp; Routing</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Subject</strong></td><td>Subject line</td></tr>
+          <tr><td><strong>From</strong></td><td>Sender name + email address</td></tr>
+          <tr><td><strong>To / Cc / Bcc</strong></td><td>All recipients, typed by role</td></tr>
+          <tr><td><strong>Date</strong></td><td>Precise timestamp (ISO-8601)</td></tr>
+          <tr><td><strong>Folder</strong></td><td>IMAP folder, Outlook PST folder</td></tr>
+          <tr><td><strong>Flags</strong></td><td>Read, Replied, Flagged, Draft</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <table>
+        <thead><tr><th colspan="2">Threading &amp; Attachments</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Message-ID</strong></td><td>Globally unique identifier</td></tr>
+          <tr><td><strong>In-Reply-To</strong></td><td>Parent message &rarr; thread link</td></tr>
+          <tr><td><strong>References</strong></td><td>Full conversation chain</td></tr>
+          <tr><td><strong>List-Id</strong></td><td>Mailing list identifier</td></tr>
+          <tr><td><strong>Attachment name</strong></td><td>Original filename</td></tr>
+          <tr><td><strong>Attachment type</strong></td><td>MIME content type</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <p class="fragment" style="font-size: 0.7em; margin-top: 0.4em;">
+    <span class="accent">Three fields reconstruct entire threads:</span>
+    Message-ID + In-Reply-To + References<br>
+    <span class="dim">No LLM, no embeddings, no similarity search &mdash; just reading the standard headers.</span>
+  </p>
+  <aside class="notes">This is what RAG throws away. Every field here is defined by the RFC 2822 email standard and extracted deterministically. The identity fields give you typed sender/recipient relationships -- not "this email mentions Alice" but "Alice sent this email to Sarah with Mike on CC". The threading fields are the key to conversation reconstruction: Message-ID is a globally unique identifier for every email, In-Reply-To points to the parent message, and References preserves the full thread chain going back to the original message. With just those three fields, you can rebuild entire conversation trees without any AI involvement. Format-specific fields are preserved too: Maildir flags (Seen, Replied, Flagged), Outlook PST folder paths, Exchange Thread-Index for conversation grouping. Attachment sub-documents carry the parent email's ID, subject, sender, and date so you can always trace back. All of this is deterministic, fast, and reliable.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 3: DETERMINISTIC GRAPH EXTRACTION -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part III</h2>
+  <h3>From Email to Graph<br><span class="dim">No LLM required</span></h3>
+</section>
+
+<section>
+  <h2>Deterministic Graph Extraction</h2>
+  <p class="dim">Rule-based, no LLM &mdash; every header maps directly to an entity or relationship</p>
+  <div class="ascii-box" style="font-size: 0.42em;">
+<span class="accent">Input:</span> the 30+ metadata fields already extracted by the parser
+
+<span class="yellow">Step 1: Create entities</span>
+
+  From: Alice Chen &lt;alice@acme.com&gt;   →   <span class="purple">PERSON</span> { name: "Alice Chen", email: "alice@acme.com" }
+  To:   Sarah Park &lt;sarah@acme.com&gt;   →   <span class="purple">PERSON</span> { name: "Sarah Park", email: "sarah@acme.com" }
+  Subject + Date + Message-ID          →   <span class="blue">EMAIL_MESSAGE</span> { subject: "Re: Q3...", date: "2026-05-19..." }
+  Attachment filename + type           →   <span class="red">ATTACHMENT</span> { name: "Q3-forecast.xlsx", type: "application/xlsx" }
+
+<span class="yellow">Step 2: Create relationships</span>      <span class="dim">(each maps 1:1 to a header field)</span>
+
+  From           →   Alice  ──<span class="accent">SENT_BY</span>──▶  Email       <span class="dim">confidence: 1.0</span>
+  To             →   Email  ──<span class="accent">SENT_TO</span>──▶  Sarah       <span class="dim">confidence: 1.0</span>
+  Cc             →   Email  ──<span class="accent">CC_TO</span>────▶  Mike        <span class="dim">confidence: 1.0</span>
+  In-Reply-To    →   Email  ──<span class="accent">REPLIED_TO</span>──▶ msg-2847  <span class="dim">confidence: 1.0</span>
+  References     →   Email  ──<span class="accent">REFERENCES</span>──▶ msg-2841  <span class="dim">confidence: 1.0</span>
+  Attachment     →   Email  ──<span class="accent">HAS_ATTACHMENT</span>──▶ Q3-forecast.xlsx  <span class="dim">confidence: 1.0</span>
+
+<span class="yellow">Step 3: Deduplicate</span>
+
+  <span class="green">Same email address → same entity ID, every time, across all emails</span>
+  Alice in 1,000 emails = 1 PERSON node with 1,000 relationships</div>
+  <p class="fragment" style="font-size: 0.75em;">
+    <span class="green">Zero LLM calls. Every relationship has confidence 1.0.</span><br>
+    <span class="dim">The same person in 1,000 emails is always one node &mdash; automatic deduplication by email address.</span>
+  </p>
+  <aside class="notes">This is the key insight: you don't need an LLM to extract structure from emails. The graph extractor reads the metadata fields already parsed from MIME headers and maps them directly to entities and relationships. Each header field becomes exactly one entity or relationship -- From becomes a PERSON entity and a SENT_BY edge, To becomes SENT_TO, In-Reply-To becomes REPLIED_TO, and so on. Every relationship gets confidence 1.0 and provenance "EXTRACTED" because it came from a definitive source, not inference. Deduplication is automatic and deterministic: each email address is hashed to a stable unique ID, so the same person appearing across 1,000 emails always resolves to one PERSON node in the graph. No embedding similarity, no fuzzy matching -- just a consistent hash. This means cross-document entity merging is free. After processing an entire inbox, you have a clean graph where each person is one node connected to every email they sent or received.</aside>
+</section>
+
+<section>
+  <h2>Entity Types &amp; Relationships</h2>
+  <div class="two-col">
+    <div>
+      <h3 style="font-size: 0.85em;">Entities</h3>
+      <table style="font-size: 0.75em;">
+        <tbody>
+          <tr><td><span class="graph-node node-message"></span> <code>EMAIL_MESSAGE</code></td><td>subject, date, messageId</td></tr>
+          <tr><td><span class="graph-node node-person"></span> <code>PERSON</code></td><td>email, name, aliases</td></tr>
+          <tr><td><span class="graph-node node-list"></span> <code>MAILING_LIST</code></td><td>listId</td></tr>
+          <tr><td><span class="graph-node node-attachment"></span> <code>ATTACHMENT</code></td><td>filename, mimeType</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h3 style="font-size: 0.85em;">Relationships</h3>
+      <table style="font-size: 0.75em;">
+        <tbody>
+          <tr><td><code>SENT_BY</code></td><td>message &rarr; person</td></tr>
+          <tr><td><code>SENT_TO</code></td><td>message &rarr; person</td></tr>
+          <tr><td><code>CC_TO</code></td><td>message &rarr; person</td></tr>
+          <tr><td><code>BCC_TO</code></td><td>message &rarr; person <span class="dim">(0.9)</span></td></tr>
+          <tr><td><code>REPLIED_TO</code></td><td>message &rarr; message</td></tr>
+          <tr><td><code>REFERENCES</code></td><td>message &rarr; message</td></tr>
+          <tr><td><code>POSTED_TO</code></td><td>message &rarr; list</td></tr>
+          <tr><td><code>HAS_ATTACHMENT</code></td><td>message &rarr; attachment</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <aside class="notes">Four entity types, eight relationship types. Every relationship maps directly to an RFC 2822 header. BCC gets confidence 0.9 because BCC headers are not always preserved -- some servers strip them. REPLIED_TO comes from In-Reply-To. REFERENCES comes from the References header, which contains the full thread chain. The deterministic UUID generation from email addresses means that when Alice appears in 500 emails as sender, recipient, and CC, she's always one PERSON entity in the graph. Note for Q&amp;A: the GmailGraphExtractor uses a parallel schema with Gmail-specific types -- GMAIL_MESSAGE, GMAIL_THREAD, GMAIL_LABEL -- and adds IN_THREAD and HAS_LABEL relationships. Same pattern, different type vocabulary tailored to the Gmail API's richer metadata.</aside>
+</section>
+
+<section>
+  <h2>Email &rarr; Graph: A Worked Example</h2>
+  <div class="ascii-box" style="font-size: 0.43em;">
+                                     <span class="blue">┌─────────────────────────────────┐</span>
+                                     <span class="blue">│  Re: Q3 Revenue Forecast Bug    │</span>
+                                     <span class="blue">│  EMAIL_MESSAGE                  │</span>
+                                     <span class="blue">│  2026-05-19T14:30:00Z           │</span>
+                                     <span class="blue">└─────┬──────┬──────┬──────┬──────┘</span>
+                                           │      │      │      │
+                              <span class="accent">SENT_BY</span>    │ <span class="green">SENT_TO</span>  │  <span class="green">CC_TO</span>  │  <span class="red">HAS_ATTACHMENT</span>
+                                           │      │      │      │
+                              <span class="purple">┌──────┐</span>    │ <span class="purple">┌──────┐</span>  │ <span class="purple">┌──────┐</span>  │ <span class="red">┌──────────────────┐</span>
+                              <span class="purple">│ Alice│</span>    │ <span class="purple">│ Sarah│</span>  │ <span class="purple">│  Mike│</span>  │ <span class="red">│ Q3-forecast.xlsx │</span>
+                              <span class="purple">│PERSON│</span>    │ <span class="purple">│PERSON│</span>  │ <span class="purple">│PERSON│</span>  │ <span class="red">│ ATTACHMENT        │</span>
+                              <span class="purple">└──────┘</span>    │ <span class="purple">└──────┘</span>  │ <span class="purple">└──────┘</span>  │ <span class="red">└────────┬─────────┘</span>
+                                           │                    │          │
+                                    <span class="yellow">REPLIED_TO</span>            <span class="yellow">REFERENCES</span>  │ <span class="accent">CONTAINS_SHEET</span>
+                                           │                    │          │
+                                     <span class="blue">┌─────┴──────┐</span>   <span class="blue">┌──────┴──────┐</span>  <span class="yellow">┌──┴──────────────┐</span>
+                                     <span class="blue">│ msg-2847   │</span>   <span class="blue">│  msg-2841   │</span>  <span class="yellow">│ Sheet1           │</span>
+                                     <span class="blue">│EMAIL_MESSAGE│</span>  <span class="blue">│EMAIL_MESSAGE│</span>  <span class="yellow">│ SPREADSHEET_SHEET│</span>
+                                     <span class="blue">└────────────┘</span>   <span class="blue">└─────────────┘</span>  <span class="yellow">└──┬──────────────┘</span>
+                                                                              │ <span class="accent">CONTAINS_CELL</span>
+                                                                           <span class="red">┌──┴──────────────────────────────────┐</span>
+                                                                           <span class="red">│ F14                                │</span>
+                                                                           <span class="red">│ CELL {formula: VLOOKUP(B14,...)}   │</span>
+                                                                           <span class="red">└────────────────────────────────────┘</span></div>
+  <p style="font-size: 0.65em; margin-top: 0.3em;">
+    <span class="green">9+ entities, 9+ relationships</span> &mdash; from email headers <strong>and</strong> attachment internals
+  </p>
+  <aside class="notes">One email, but now we follow the attachment deeper. Alice, Sarah, and Mike are PERSON nodes. The email links to Q3-forecast.xlsx via HAS_ATTACHMENT. The REPLIED_TO and REFERENCES edges reconstruct the thread. But here's what's new: the xlsx attachment gets dispatched to Apache POI, which extracts sheets, rows, and cells. Sheet1 becomes a SPREADSHEET_SHEET entity linked via CONTAINS_SHEET. Cell F14 becomes a CELL entity with its formula as a property. The graph now traces from "Alice sent an email" all the way down to "cell F14 uses VLOOKUP(B14,Sheet2!A:C,3,FALSE)" -- a four-hop path that RAG can never reconstruct from flattened text.</aside>
+</section>
+
+<section>
+  <h2>Multi-Hop Traceability: Email to Formula</h2>
+  <p class="dim">Business-critical knowledge lives at the leaf nodes &mdash; you need the full path</p>
+  <div class="ascii-box" style="font-size: 0.44em;">
+<span class="purple">Alice Chen</span> ──<span class="accent">SENT_BY</span>──▶ <span class="blue">Re: Q3 Revenue Forecast Bug</span> ──<span class="red">HAS_ATTACHMENT</span>──▶ <span class="red">Q3-forecast.xlsx</span>
+       <span class="dim">PERSON</span>                     <span class="dim">EMAIL_MESSAGE</span>                            <span class="dim">ATTACHMENT</span>
+                                                                               │
+                                                                    <span class="accent">CONTAINS_SHEET</span>
+                                                                               │
+                                                                       <span class="yellow">┌───────┴──────────┐</span>
+                                                                       <span class="yellow">│ Sheet1            │</span>  <span class="yellow">Sheet3</span>
+                                                                       <span class="yellow">│ "Revenue Forecast"│</span>  <span class="yellow">"2026 Commission</span>
+                                                                       <span class="yellow">└───────┬──────────┘</span>   <span class="yellow"> Rates"</span>
+                                                                    <span class="accent">CONTAINS_CELL</span>
+                                                                               │
+                                                                       <span class="red">┌───────┴──────────────────────────┐</span>
+                                                                       <span class="red">│ F14: =VLOOKUP(B14,Sheet2!A:C,3,  │</span>
+                                                                       <span class="red">│              FALSE)              │</span>  <span class="dim">← The bug is HERE</span>
+                                                                       <span class="red">│ FORMULA entity                   │</span>  <span class="dim">   Should reference Sheet3</span>
+                                                                       <span class="red">│ refs: [Sheet2!A:C]               │</span>  <span class="dim">   not Sheet2</span>
+                                                                       <span class="red">└──────────────────────────────────┘</span>
+<span class="green">
+The query: "Which formulas reference the old rate table?"
+The traversal: FORMULA.refs CONTAINS "Sheet2" → F14 → Sheet1 → Q3-forecast.xlsx → email → Alice</span></div>
+  <p class="fragment" style="font-size: 0.7em;">
+    <span class="accent">4 hops</span>: person &rarr; email &rarr; attachment &rarr; sheet &rarr; cell<br>
+    <span class="dim">Each hop is a typed relationship. Each node is a first-class entity with properties.</span>
+  </p>
+  <aside class="notes">This is the slide that makes the business case. The bug isn't in the email body text -- it's in cell F14 of an attached Excel spreadsheet. RAG would embed the email body and the spreadsheet text separately, losing the connection between them. Kompile's knowledge graph traces the full path: Alice (PERSON) sent an email (EMAIL_MESSAGE) with an attachment (Q3-forecast.xlsx), which contains Sheet1 (SPREADSHEET_SHEET), which contains cell F14 (CELL/FORMULA entity) with the actual VLOOKUP expression. The formula's refs property lists Sheet2!A:C -- but the correct table is on Sheet3. You can query this graph in reverse too: "find all formulas referencing Sheet2" returns F14, then traverse up to find which email, which person, and which thread discussed it. This is granular, traceable knowledge -- not a text blob that mentions a spreadsheet.</aside>
+</section>
+
+<section>
+  <h2>Cross-Document Entity Merging</h2>
+  <pre><code class="language-java">// EmailGraphExtractor.java - deterministic deduplication
+
+private static String entityId(String key) {
+    return UUID.nameUUIDFromBytes(key.getBytes()).toString();
+}
+
+// "alice@acme.com" always → same UUID across all emails
+// addEntity() merges: aliases ∪, longest description, max confidence
+
+public ExtractionResult extractBatch(List&lt;Document&gt; docs) {
+    Map&lt;String, ExtractedEntity&gt; mergedEntities = new LinkedHashMap&lt;&gt;();
+    for (Document doc : docs) {
+        ExtractionResult result = extract(doc);
+        for (ExtractedEntity entity : result.entities()) {
+            addEntity(mergedEntities, entity);  // merge by ID
+        }
+    }
+    // 1000 emails mentioning Alice → 1 PERSON entity
+}</code></pre>
+  <blockquote class="fragment" style="font-size: 0.7em;">
+    "Real names win over email addresses. Aliases accumulate. Confidence only goes up."
+  </blockquote>
+  <aside class="notes">The merge logic is simple but effective. If Alice appears as "alice@acme.com" in one email and "Alice Chen &lt;alice@acme.com&gt;" in another, both produce the same UUID. The addEntity method keeps the real name over the email address, unions all aliases, keeps the longest description, and takes the maximum confidence. After processing a batch, you have one PERSON entity for Alice with all her known aliases. This is deterministic entity resolution -- no LLM, no embeddings, no similarity threshold.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 4: THE PIPELINE FORK -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part IV</h2>
+  <h3>The Pipeline Fork<br><span class="dim">RAG path vs. Extraction path</span></h3>
+</section>
+
+<section>
+  <h2>Two Paths from One Document</h2>
+  <div class="ascii-box" style="font-size: 0.45em;">
+                           <span class="accent">┌───────────────────┐</span>
+                           <span class="accent">│   Raw Document    │</span>
+                           <span class="accent">│ (email, PDF, etc) │</span>
+                           <span class="accent">└────────┬──────────┘</span>
+                                    │
+                           <span class="yellow">ExtractionStage</span>
+                           <span class="dim">(loaders → metadata)</span>
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │                               │
+           <span class="blue">Path A: RAG</span>                    <span class="green">Path B: Graph</span>
+                    │                               │
+          <span class="blue">TokenizationStage</span>            <span class="green">GraphBuildingStage</span>
+                    │                      ┌────────┴────────┐
+           <span class="blue">ChunkingStage</span>            <span class="green">Deterministic</span>     <span class="purple">LLM-Based</span>
+                    │                <span class="green">(header rules)</span>   <span class="purple">(entity extraction)</span>
+          <span class="blue">EmbeddingStage</span>               │                 │
+                    │                <span class="green">EmailGraph</span>      <span class="purple">ExtractionResult</span>
+          <span class="blue">IndexingStage</span>            <span class="green">Extractor</span>       <span class="purple">{entities, relations}</span>
+                    │                      └────────┬────────┘
+           <span class="blue">Vector Store</span>                        │
+         <span class="dim">(similarity search)</span>          <span class="green">Knowledge Graph</span>
+                                       <span class="dim">(traversal, algorithms)</span></div>
+  <aside class="notes">This is the architectural insight. The StagedIngestPipeline processes every document through two parallel paths. Path A is traditional RAG: tokenize, chunk, embed, index into a vector store for similarity search. Path B is graph extraction: either deterministic (like EmailGraphExtractor for emails) or LLM-based (for general documents). Both paths start from the same ExtractionStage output. You don't choose one or the other -- you get both. The vector store handles "find me documents about budgets" while the graph handles "show me Alice's communication network".</aside>
+</section>
+
+<section>
+  <h2>One Crawl, Everything Extracted</h2>
+  <p class="dim">A single crawl produces embeddings, graph entities, formulas, tables &mdash; all in one place</p>
+  <div class="ascii-box" style="font-size: 0.42em;">
+<span class="accent">Source: alice@acme.com inbox</span>   +   <span class="accent">Source: /shared/finance/*.xlsx</span>   +   <span class="accent">Source: /docs/*.pdf</span>
+
+                                    <span class="yellow">CrawlPipelineRouter</span>
+                          <span class="dim">dispatches each document to its native loader</span>
+                                           │
+           ┌───────────────────────────────┼───────────────────────────────┐
+           │                               │                               │
+  <span class="blue">Mime4jMessageParser</span>           <span class="green">Apache POI (Office)</span>              <span class="red">PDFBox / Tika</span>
+  <span class="dim">email headers, threading</span>      <span class="dim">sheets, rows, cells, formulas</span>    <span class="dim">text, tables, annotations</span>
+  <span class="dim">MIME tree, attachments</span>        <span class="dim">named ranges, pivot tables</span>      <span class="dim">form fields, bookmarks</span>
+           │                               │                               │
+           └───────────────────────────────┼───────────────────────────────┘
+                                           │
+                              <span class="yellow">Unified ExtractionResult</span>
+                    <span class="dim">{entities, relations, properties, provenance}</span>
+                                           │
+              ┌────────────────────────────┼────────────────────────────┐
+              │                            │                            │
+     <span class="blue">Vector Embeddings</span>          <span class="green">Knowledge Graph</span>            <span class="purple">Structured Items</span>
+     <span class="dim">chunks → bge-base → HNSW</span>   <span class="dim">PERSON, EMAIL_MESSAGE,</span>     <span class="dim">TABLE, FORMULA, CELL,</span>
+     <span class="dim">"find similar docs"</span>        <span class="dim">ATTACHMENT, SHEET, CELL,</span>   <span class="dim">KEY_VALUE, CODE_BLOCK,</span>
+                                <span class="dim">FORMULA + all relations</span>    <span class="dim">CITATION, FACT, LIST</span></div>
+  <div class="fragment" style="font-size: 0.7em; margin-top: 0.3em;">
+    <p>
+      <span class="green">Business logic</span> (email headers, threading, MIME) <span class="flow-arrow">+</span>
+      <span class="blue">Raw parsing</span> (POI cells, PDFBox tables, Tika OCR) <span class="flow-arrow">+</span>
+      <span class="purple">LLM extraction</span> (entities, concepts, facts)
+    </p>
+    <p class="dim" style="font-size: 0.85em;">All land in one knowledge graph. Queryable. Traversable. Traceable to source.</p>
+  </div>
+  <aside class="notes">This is the key slide for understanding what a crawl actually produces. You point Kompile at multiple sources -- an email inbox, a shared drive of Excel files, a folder of PDFs -- and the CrawlPipelineRouter dispatches each document to its native loader. Emails go to Mime4jMessageParser for MIME parsing and thread reconstruction. Excel files go to Apache POI, which extracts not just text but individual sheets, rows, cells, formulas, named ranges, and pivot tables. PDFs go to PDFBox for text, tables, annotations, form fields, and bookmarks. Each loader produces typed metadata -- not a text blob. The outputs then flow into three parallel destinations: vector embeddings for similarity search, a knowledge graph with typed entities and relations, and structured items (TABLE, FORMULA, CELL, KEY_VALUE, etc.) that preserve the document's internal structure. The mix matters: business logic handles email threading and MIME structures deterministically, raw parsing extracts cells and formulas byte-by-byte from binary formats, and LLM extraction finds higher-level entities and concepts from the text content. All three land in one unified graph, queryable via MCP tools and traversable via graph algorithms.</aside>
+</section>
+
+<section>
+  <h2>Document-Level Granularity</h2>
+  <p class="dim">Not just "a spreadsheet was attached" &mdash; every cell, formula, and table is a node</p>
+  <div class="two-col">
+    <div>
+      <h3 style="font-size: 0.85em;">What Loaders Extract</h3>
+      <table style="font-size: 0.6em;">
+        <thead><tr><th>Format</th><th>Granularity</th></tr></thead>
+        <tbody>
+          <tr><td><code>.xlsx / .xls</code></td><td>Sheets, cells, formulas, named ranges, data types</td></tr>
+          <tr><td><code>.docx</code></td><td>Paragraphs, tables, headers, footnotes, tracked changes</td></tr>
+          <tr><td><code>.pptx</code></td><td>Slides, text frames, speaker notes, embedded charts</td></tr>
+          <tr><td><code>.pdf</code></td><td>Text blocks, tables, annotations, form fields, bookmarks</td></tr>
+          <tr><td><code>.eml / .mbox</code></td><td>Headers, body, thread chain, attachments (recursive)</td></tr>
+          <tr><td><code>.csv / .tsv</code></td><td>Rows, columns, headers, data types</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h3 style="font-size: 0.85em;">Graph Entity Types</h3>
+      <table style="font-size: 0.6em;">
+        <thead><tr><th>Entity</th><th>From</th></tr></thead>
+        <tbody>
+          <tr><td><code>FORMULA</code></td><td>Cell expressions + references</td></tr>
+          <tr><td><code>TABLE</code></td><td>Structured rows/cols from any format</td></tr>
+          <tr><td><code>CELL</code></td><td>Individual cell: value, type, address</td></tr>
+          <tr><td><code>KEY_VALUE</code></td><td>Labeled data pairs (forms, headers)</td></tr>
+          <tr><td><code>FACT</code></td><td>LLM-extracted factual claims</td></tr>
+          <tr><td><code>CONCEPT</code></td><td>Topics, keywords, technical terms</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <p class="fragment" style="font-size: 0.7em; margin-top: 0.3em;">
+    <span class="accent">Every extracted item links back to its source document, page, sheet, and cell.</span><br>
+    <span class="dim">Provenance is never lost. You can always trace a fact to its origin.</span>
+  </p>
+  <aside class="notes">This shows the depth of extraction. For Excel files, Apache POI extracts not just the cell values but the formulas themselves, the cell references within those formulas, the data types, named ranges, and sheet structure. For PDFs, PDFBox extracts tables with row/column structure, form field values, annotations, and bookmarks. Each of these becomes a typed entity in the knowledge graph. A FORMULA entity stores the expression text and a list of cell references it depends on. A TABLE entity preserves row/column structure that would be destroyed by chunking. A KEY_VALUE entity captures labeled data pairs from forms or document headers. Every entity links back to its source via provenance metadata -- you can always trace a formula back to its cell, its sheet, its file, and the email that contained it. This is what makes the knowledge graph actionable: not just "this document mentions revenue" but "cell F14 on Sheet1 of Q3-forecast.xlsx, attached to Alice's email on May 19th, contains a VLOOKUP that references the wrong rate table."</aside>
+</section>
+
+<section>
+  <h2>GraphExtractionSchema: The Contract</h2>
+  <pre><code class="language-java">// GraphExtractionSchema.java - the standard format
+
+public record ExtractedEntity(
+    String id,            // unique within extraction ("e1")
+    String name,          // "Acme Corp"
+    String type,          // PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT
+    List&lt;String&gt; aliases, // ["ACME", "Acme Corporation"]
+    String description,   // short description
+    Double confidence,    // 0.0–1.0 (default 1.0)
+    Map&lt;String, String&gt; properties  // typed key-value pairs
+) {}
+
+public record ExtractedRelation(
+    String source,        // source entity ID
+    String target,        // target entity ID
+    String type,          // WORKS_AT, LOCATED_IN, SENT_BY, ...
+    String description,   // how source and target relate
+    Double confidence,    // 0.0–1.0
+    String provenance,    // EXTRACTED, INFERRED, or AMBIGUOUS
+    Map&lt;String, String&gt; properties
+) {}</code></pre>
+  <p class="fragment dim" style="font-size: 0.7em;">
+    Schema version: <code>kompile-graph-extraction/v1</code> &mdash;
+    used by <strong>all</strong> extractors (deterministic, LLM, and statistical).
+  </p>
+  <aside class="notes">This is the common contract. Whether entities come from email header parsing, LLM extraction, or statistical concept detection, they all produce ExtractedEntity and ExtractedRelation records in this schema. The provenance field is critical: EXTRACTED means it came from a definitive source like a header, INFERRED means it was derived by an LLM, AMBIGUOUS means the extractor wasn't sure. This lets downstream consumers make trust decisions -- you might auto-accept EXTRACTED provenance but require human review for AMBIGUOUS.</aside>
+</section>
+
+<section>
+  <h2>LLM-Based Extraction: When Headers Aren't Enough</h2>
+  <pre><code class="language-json">// The prompt sent to the LLM for entity extraction
+
+"Extract entities and relationships from the following text.
+Return a JSON object matching this exact schema:
+{
+  \"entities\": [{
+    \"id\": \"e1\",
+    \"name\": \"Acme Corp\",
+    \"type\": \"ORGANIZATION\",
+    \"aliases\": [\"ACME\"],
+    \"description\": \"...\",
+    \"confidence\": 0.95,
+    \"properties\": {}
+  }],
+  \"relations\": [{
+    \"source\": \"e1\", \"target\": \"e2\",
+    \"type\": \"EMPLOYS\",
+    \"description\": \"...\",
+    \"confidence\": 0.90,
+    \"properties\": {}
+  }]
+}"</code></pre>
+  <p class="fragment" style="font-size: 0.75em;">
+    <span class="accent">Schema enforcement:</span>
+    <span class="pill pill-green">NONE</span> accept all &nbsp;
+    <span class="pill pill-yellow">LENIENT</span> warn on unknown types &nbsp;
+    <span class="pill pill-red">STRICT</span> reject non-conforming
+  </p>
+  <aside class="notes">For the email body content and general documents, the LLM extraction path kicks in. The prompt forces structured JSON output matching the GraphExtractionSchema. Schema enforcement gives you control: STRICT mode filters out any entity with an unrecognized type and any relation with missing endpoints -- this is essential for production systems where you want a clean graph. LENIENT logs warnings but keeps everything. NONE accepts whatever the LLM returns. Every prompt and response is logged to ExtractionLogRecord for audit.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 5: ENTITY RESOLUTION -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part V</h2>
+  <h3>Entity Resolution<br><span class="dim">Cross-document deduplication</span></h3>
+</section>
+
+<section>
+  <h2>EntityResolutionService: Fuzzy Merge</h2>
+  <pre><code class="language-java">// EntityResolutionService.java - cross-chunk deduplication
+
+// Resolution pipeline:
+// 1. Normalize: lowercase, strip suffixes (Inc, Corp, LLC, Ltd)
+// 2. Match candidates: same type AND one of:
+//    - Exact normalized name match
+//    - Normalized alias match
+//    - Levenshtein similarity >= 0.85
+// 3. Merge: aliases ∪, longest description, max confidence
+
+static String normalize(String name) {
+    String result = name.trim().toLowerCase();
+    result = SUFFIX_PATTERN.matcher(result).replaceAll("").trim();
+    return result.replaceAll("\\s+", " ");
+}
+
+static double levenshteinSimilarity(String a, String b) {
+    int maxLen = Math.max(a.length(), b.length());
+    int distance = levenshteinDistance(a, b);
+    return 1.0 - (double) distance / maxLen;
+}</code></pre>
+  <aside class="notes">After extracting entities from multiple chunks or documents, the EntityResolutionService merges duplicates. Three-step pipeline: first, normalize names by lowercasing and stripping business suffixes like Inc, Corp, LLC. Second, find match candidates that share the same entity type AND have either an exact name match, alias match, or Levenshtein similarity above the threshold (default 0.85). Third, merge matched entities: union all aliases, keep the longest description, keep the highest confidence, merge properties with first-write-wins. After resolution, all relations are remapped to the canonical entity IDs.</aside>
+</section>
+
+<section>
+  <h2>Resolution in Action</h2>
+  <div class="ascii-box" style="font-size: 0.48em;">
+<span class="dim">Before resolution (3 chunks):</span>
+
+  Chunk 1: <span class="purple">PERSON</span> "Alice Chen"           <span class="dim">id: e1-c1, aliases: ["Alice"]</span>
+  Chunk 2: <span class="purple">PERSON</span> "Alice Chen-Park"       <span class="dim">id: e3-c2</span>    <span class="green">← Levenshtein("alice chen", "alice chen-park") = 0.86 ≥ 0.85</span>
+  Chunk 3: <span class="purple">PERSON</span> "Alice"                 <span class="dim">id: e1-c3</span>    <span class="green">← matches alias "Alice" from chunk 1</span>
+
+  Chunk 1: <span class="yellow">ORG</span> "Acme Corp"                <span class="dim">id: e2-c1</span>    <span class="green">← normalize: "acme" (strips "corp")</span>
+  Chunk 2: <span class="yellow">ORG</span> "Acme Corporation"          <span class="dim">id: e2-c2</span>    <span class="green">← normalize: "acme" (strips "corporation")</span>
+  Chunk 3: <span class="yellow">ORG</span> "ACME"                     <span class="dim">id: e4-c3</span>    <span class="green">← normalize: "acme" (exact match)</span>
+
+<span class="green">After resolution:</span>
+
+  <span class="purple">PERSON</span> "Alice Chen"  <span class="dim">aliases: ["Alice", "Alice Chen-Park"]  confidence: 0.95  chunks: 3</span>
+  <span class="yellow">ORG</span>    "Acme Corp"   <span class="dim">aliases: ["Acme Corporation", "ACME"]  confidence: 0.92  chunks: 3</span>
+
+<span class="dim">Relations remapped: e3-c2 → e1-c1, e1-c3 → e1-c1, e2-c2 → e2-c1, e4-c3 → e2-c1</span></div>
+  <aside class="notes">Concrete example showing all three match strategies. "Alice Chen-Park" matches "Alice Chen" via Levenshtein similarity (0.86, above the 0.85 threshold). "Alice" matches because it was listed as an alias on the chunk 1 entity. For organizations, normalize() strips business suffixes -- "Acme Corp" becomes "acme", "Acme Corporation" becomes "acme", "ACME" lowercases to "acme" -- all exact normalized name matches. After merging, all relations pointing to the old IDs get remapped to the canonical entity IDs, and duplicate source-target-type triples are deduplicated.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 6: GRAPH BACKENDS -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part VI</h2>
+  <h3>Graph Backends<br><span class="dim">Three engines, one interface</span></h3>
+</section>
+
+<section>
+  <h2>Three Graph Constructors</h2>
+  <div style="display: flex; gap: 12px; font-size: 0.65em;">
+    <div class="stat-card" style="flex: 1;">
+      <div class="number" style="font-size: 1.2em; color: #3fb950;">Matrix</div>
+      <div class="label" style="text-align: left; padding: 8px;">
+        <strong>Default (in-memory)</strong><br>
+        ND4J adjacency matrices<br>
+        H2 database for persistence<br>
+        Embeddings via EmbeddingModel<br>
+        <span class="dim">No external dependencies</span>
+      </div>
+    </div>
+    <div class="stat-card" style="flex: 1;">
+      <div class="number" style="font-size: 1.2em; color: #58a6ff;">Neo4j</div>
+      <div class="label" style="text-align: left; padding: 8px;">
+        <strong>Production scale</strong><br>
+        MERGE + APOC upserts<br>
+        Cypher query passthrough<br>
+        Dynamic labels per type<br>
+        <span class="dim">Requires Neo4j server</span>
+      </div>
+    </div>
+    <div class="stat-card" style="flex: 1;">
+      <div class="number" style="font-size: 1.2em; color: #bc8cff;">FactSheet</div>
+      <div class="label" style="text-align: left; padding: 8px;">
+        <strong>Per-project scoping</strong><br>
+        Statistical concept extraction<br>
+        Shared-entity edges<br>
+        D3.js visualization data<br>
+        <span class="dim">factSheetId isolation</span>
+      </div>
+    </div>
+  </div>
+  <p class="fragment" style="font-size: 0.75em;">
+    All three implement <code>GraphConstructor</code> &mdash; swap backends without changing extraction logic.
+  </p>
+  <aside class="notes">Three backends, one interface. MatrixGraphConstructor is the default -- zero external dependencies, uses ND4J matrices for algorithms and H2 for persistence. Great for development and small deployments. Neo4jGraphConstructor is for production scale -- uses MERGE with APOC for safe upserts, dynamic labels per entity type, and Cypher passthrough for advanced queries. FactSheetGraphService scopes graphs per project (factSheetId), uses statistical concept extraction instead of LLM, and produces D3.js-ready visualization data. All three accept the same ExtractionResult input. You swap backends by changing a Spring property.</aside>
+</section>
+
+<section>
+  <h2>Neo4j: Cypher Upserts</h2>
+  <pre><code class="language-java">// Neo4jGraphConstructor.java - safe graph writes
+
+// Node upsert with dynamic labels
+private static final String UPSERT_NODE_QUERY = """
+    UNWIND $rows AS row
+    MERGE (n:__Entity__ {id: row.id})
+    SET n.name = row.name,
+        n.description = row.description,
+        n.confidence = row.confidence
+    WITH n, row
+    CALL apoc.create.addLabels(n, [row.type]) YIELD node
+    RETURN node
+    """;
+
+// Relationship upsert
+private static final String UPSERT_RELATIONSHIP_QUERY = """
+    UNWIND $rows AS row
+    MATCH (s:__Entity__ {id: row.source})
+    MATCH (t:__Entity__ {id: row.target})
+    CALL apoc.merge.relationship(s, row.type, {}, {
+        description: row.description,
+        confidence: row.confidence
+    }, t, {}) YIELD rel
+    RETURN rel
+    """;</code></pre>
+  <aside class="notes">The Neo4j backend uses MERGE to safely upsert -- if an entity already exists, it updates; if not, it creates. The __Entity__ base label is on every node, with the specific type (PERSON, ORGANIZATION, etc.) added dynamically via APOC's addLabels. This means you can query all entities with MATCH (n:__Entity__) or filter by type with MATCH (n:PERSON). The relationship upsert uses apoc.merge.relationship for the same idempotent behavior. If APOC isn't available, the code falls back to simple MERGE without dynamic labels.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 7: GRAPH ALGORITHMS -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part VII</h2>
+  <h3>Graph Algorithms<br><span class="dim">Computing knowledge from structure</span></h3>
+</section>
+
+<section>
+  <h2>12 Algorithms, 4 Categories</h2>
+  <div class="algo-grid">
+    <div class="algo-card">
+      <div class="algo-name" style="color: #f0883e;">PageRank</div>
+      <div class="algo-desc">Power iteration (ND4J)<br>Who's most important?</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #f0883e;">Betweenness</div>
+      <div class="algo-desc">Brandes' algorithm<br>Who bridges communities?</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #f0883e;">Degree</div>
+      <div class="algo-desc">In / Out / Total<br>Who has most connections?</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #bc8cff;">Louvain</div>
+      <div class="algo-desc">Modularity optimization<br>Find conversation clusters</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #bc8cff;">WCC</div>
+      <div class="algo-desc">Connected components<br>Find isolated subgraphs</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #bc8cff;">HITS</div>
+      <div class="algo-desc">Hub/authority scores<br>Who sends vs. receives?</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #3fb950;">Dijkstra</div>
+      <div class="algo-desc">Weighted shortest path<br>How do A and B connect?</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #3fb950;">BFS</div>
+      <div class="algo-desc">Breadth-first traversal<br>Explore neighborhoods</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #3fb950;">Random Walk</div>
+      <div class="algo-desc">Weighted random steps<br>Stochastic exploration</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #58a6ff;">Jaccard</div>
+      <div class="algo-desc">Neighbor overlap<br>Who communicates similarly?</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #58a6ff;">Cosine</div>
+      <div class="algo-desc">Embedding similarity<br>Semantic node comparison</div>
+    </div>
+    <div class="algo-card">
+      <div class="algo-name" style="color: #58a6ff;">TransE / RotatE</div>
+      <div class="algo-desc">KG embeddings<br>Link prediction</div>
+    </div>
+  </div>
+  <p style="font-size: 0.55em; margin-top: 0.3em;">
+    <span style="color: #f0883e;">Centrality</span> &bull;
+    <span style="color: #bc8cff;">Community</span> &bull;
+    <span style="color: #3fb950;">Path Finding</span> &bull;
+    <span style="color: #58a6ff;">Similarity</span>
+  </p>
+  <aside class="notes">Four categories, twelve algorithms. Centrality answers "who matters?" -- PageRank via ND4J power iteration, Betweenness via Brandes' exact or sampled algorithm, Degree for raw connection counts. Community answers "who belongs together?" -- Louvain for modularity-maximizing clusters, WCC for connected components, HITS for hub/authority asymmetry. Path finding answers "how are things connected?" -- Dijkstra with inverse weight as cost (high confidence = short path), BFS for level-by-level exploration, Random Walk for stochastic sampling. Similarity answers "who is like whom?" -- Jaccard for neighbor overlap, Cosine for embedding similarity, TransE/RotatE for link prediction in complex space.</aside>
+</section>
+
+<section>
+  <h2>PageRank: Finding Important Nodes</h2>
+  <pre><code class="language-java">// PageRankAlgorithm.java - delegates to ND4J power iteration
+
+public static Map&lt;String, Double&gt; compute(AdjacencyView view,
+                                           double damping,      // 0.85
+                                           int maxIterations,   // 100
+                                           double tolerance) {  // 1e-6
+    // Build column-stochastic transition matrix T
+    // T = (adj / outDegrees).T
+    // Iterate: pr = T·pr·d + (1-d)/n
+    // Until convergence (L1 norm &lt; tolerance)
+    Map&lt;String, Double&gt; raw = MatrixGraphAlgorithms.pageRank(
+            view.toAdjacencyMatrix(), view.nodeIds(),
+            damping, tolerance, maxIterations);
+
+    // Sort descending by score
+    return raw.entrySet().stream()
+            .sorted(comparingByValue().reversed())
+            .collect(toMap(...));
+}</code></pre>
+  <blockquote class="fragment" style="font-size: 0.7em;">
+    "On an email graph, PageRank finds the people everyone communicates with &mdash; the organizational hubs."
+  </blockquote>
+  <aside class="notes">PageRank on an email graph doesn't find the person who sends the most emails -- that's degree centrality. It finds the person who is communicated with by people who themselves are communicated with by many others. It's recursive importance. In an organization, this typically surfaces the executive assistants, project leads, and cross-team connectors who sit at communication hubs. The ND4J implementation uses BLAS matrix operations for efficiency -- the power iteration converges in 10-20 iterations on typical email graphs.</aside>
+</section>
+
+<section>
+  <h2>Louvain: Finding Conversation Clusters</h2>
+  <pre><code class="language-java">// LouvainCommunityDetection.java - modularity-maximizing clustering
+
+public static Map&lt;String, Integer&gt; compute(AdjacencyView view, int maxIter) {
+    // Initialize: each node in its own community
+    // Iterate: move node to community with greatest modularity gain
+    //   gain = kInComm - sigmaTot * ku / (2m)
+    // Stop when no move improves modularity
+
+    for (String u : nodes) {
+        Map&lt;Integer, Double&gt; commWeights = neighborCommunityWeights(u, adj, community);
+        // Remove u, test every neighbor community, pick the best
+        int bestComm = currentComm;
+        double bestGain = 0.0;
+        for (var e : commWeights.entrySet()) {
+            double gain = e.getValue() - sigmaTot * ku / (2.0 * m);
+            if (gain > bestGain) { bestComm = e.getKey(); bestGain = gain; }
+        }
+    }
+    // Renumber to dense [0, k) range
+}</code></pre>
+  <blockquote class="fragment" style="font-size: 0.7em;">
+    "On an email graph, Louvain finds which teams actually talk to each other &mdash; not the org chart, the real communication structure."
+  </blockquote>
+  <aside class="notes">Louvain community detection finds clusters of nodes that are more densely connected internally than externally. On an email graph, this reveals the actual communication structure -- which may differ significantly from the organizational chart. Engineering team A might cluster with Product team B because they work on the same feature, even though they're in different departments. The algorithm iterates until no single node move improves the modularity score. Results include a modularity() function so you can measure how well the clustering fits, and groupByCommunity() for easy visualization.</aside>
+</section>
+
+<section>
+  <h2>Community Summarization</h2>
+  <pre><code class="language-java">// CommunitySummarizer.java - LLM-generated community descriptions
+
+// After Louvain assigns communities, generate natural-language summaries
+// Mirrors Microsoft GraphRAG's community summary pattern
+
+List&lt;CommunitySummary&gt; summaries = summarizer.summarize(
+    communityAssignments, graphService, maxNodesPerPrompt);
+
+// For each community:
+// 1. Collect node titles and descriptions (sample if > 25 nodes)
+// 2. Send to LLM: "Summarize this group of entities..."
+// 3. Return CommunitySummary(communityId, nodeIds, summary, timestamp)</code></pre>
+  <div class="fragment" style="font-size: 0.75em;">
+    <p>Example output:</p>
+    <div class="ascii-box" style="font-size: 0.8em;">
+<span class="purple">Community 0:</span> "Core engineering leadership cluster centered around
+Sarah Park and DevOps. Primarily discusses infrastructure, deployments,
+and Q3 reliability initiatives. Strong ties to Finance via budget threads."</div>
+  </div>
+  <aside class="notes">After Louvain finds communities, the CommunitySummarizer generates human-readable descriptions. This mirrors Microsoft's GraphRAG approach -- use structural algorithms to find clusters, then use an LLM to describe what each cluster is about. The maxNodesPerPrompt parameter (default 25) controls sampling for large communities. The result is a natural-language summary that an LLM can use as context: instead of "Community 0 contains nodes A, B, C", you get "Core engineering leadership cluster..." This is the bridge between graph structure and LLM reasoning.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 8: GRAPH TOOLS & QUERYING -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part VIII</h2>
+  <h3>Graph Tools &amp; Querying<br><span class="dim">The AI explores the graph</span></h3>
+</section>
+
+<section>
+  <h2>KnowledgeGraphToolImpl: 8 MCP Tools</h2>
+  <table style="font-size: 0.55em;">
+    <thead><tr><th>Tool</th><th>Input</th><th>What It Does</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code class="green">graph_search_by_entity</code></td>
+        <td>entityName, maxResults</td>
+        <td>Find documents mentioning an entity</td>
+      </tr>
+      <tr>
+        <td><code class="green">graph_get_related_documents</code></td>
+        <td>documentId, relationshipType</td>
+        <td>Traverse edges to find related docs</td>
+      </tr>
+      <tr>
+        <td><code class="green">graph_get_source_context</code></td>
+        <td>sourceId, includeChildren</td>
+        <td>Source metadata + child documents</td>
+      </tr>
+      <tr>
+        <td><code class="green">graph_find_connected</code></td>
+        <td>nodeId, depth (max 3)</td>
+        <td>BFS expansion from a node</td>
+      </tr>
+      <tr>
+        <td><code class="green">graph_search_nodes</code></td>
+        <td>query, nodeType, maxResults</td>
+        <td>Full-text search filtered by type</td>
+      </tr>
+      <tr>
+        <td><code class="green">graph_get_document_entities</code></td>
+        <td>documentId</td>
+        <td>All entities mentioned in a doc</td>
+      </tr>
+      <tr>
+        <td><code class="green">graph_find_by_topic</code></td>
+        <td>topic, maxResults</td>
+        <td>Sources + docs tagged with a topic</td>
+      </tr>
+      <tr>
+        <td><code class="green">graph_get_overview</code></td>
+        <td><span class="dim">(none)</span></td>
+        <td>Graph stats, sources, topic list</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="fragment" style="font-size: 0.7em;">
+    The AI doesn't query a vector store &mdash; it <strong>traverses a graph</strong>.
+  </p>
+  <aside class="notes">Eight MCP tools exposed to the LLM for graph exploration. graph_search_by_entity finds documents via EntityMention records. graph_find_connected does BFS with a configurable max depth of 3. graph_get_related_documents traverses edges filtered by type: entity, similarity, hierarchical, or any. graph_get_overview gives the AI a summary of the entire graph before it starts exploring. These are the tools that close the loop from Part 1's Elthoria pattern -- instead of NPC tools querying a game database, knowledge graph tools query an extracted graph.</aside>
+</section>
+
+<section>
+  <h2>Graph Algorithm REST API</h2>
+  <pre><code class="language-bash"># PageRank on the email graph
+POST /api/graph/algorithms/pagerank
+{ "factSheetId": 42, "damping": 0.85 }
+
+# Louvain communities
+POST /api/graph/algorithms/communities/louvain
+{ "factSheetId": 42, "maxIterations": 20 }
+
+# LLM-generated community summaries
+POST /api/graph/algorithms/communities/louvain/summarize
+{ "factSheetId": 42, "maxNodesPerPrompt": 25 }
+
+# Shortest path between two entities
+POST /api/graph/algorithms/path/shortest
+{ "factSheetId": 42, "fromNodeId": "alice-uuid", "toNodeId": "vp-uuid",
+  "weighted": true }
+
+# BFS neighborhood exploration
+POST /api/graph/algorithms/traverse/bfs
+{ "factSheetId": 42, "startNodeId": "alice-uuid", "maxDepth": 2 }</code></pre>
+  <aside class="notes">Every algorithm is exposed via REST at /api/graph/algorithms/. All endpoints accept an optional factSheetId to scope the computation to a specific project. The adjacency view is cached per factSheetId and invalidated via a separate endpoint when the graph changes. The Dijkstra endpoint uses inverse edge weight as cost -- high confidence relationships are treated as shorter paths. The BFS endpoint returns nodes grouped by depth level. Community summarization chains Louvain detection with LLM summarization in a single call.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 9: VISUALIZATION & EXPORT -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part IX</h2>
+  <h3>Visualization &amp; Export<br><span class="dim">See the graph, share the graph</span></h3>
+</section>
+
+<section>
+  <h2>D3.js Force-Directed Visualization</h2>
+  <div class="two-col">
+    <div style="font-size: 0.7em;">
+      <p><strong>Angular Component</strong> (live)</p>
+      <ul style="font-size: 0.85em;">
+        <li>D3.js v7 force simulation</li>
+        <li>Color-coded by node type</li>
+        <li>Drag, pin (Shift+drag), zoom</li>
+        <li>Double-click to expand</li>
+        <li>Right-click context menu</li>
+        <li>Link mode (click two nodes)</li>
+        <li>Typed arrow markers per edge type</li>
+      </ul>
+      <p style="margin-top: 8px;"><strong>Side Panel</strong></p>
+      <ul style="font-size: 0.85em;">
+        <li>Details, Relations, Filter tabs</li>
+        <li>Weights &amp; Layout controls</li>
+        <li>Live graph build polling (2s)</li>
+      </ul>
+    </div>
+    <div style="font-size: 0.7em;">
+      <p><strong>Standalone HTML Export</strong></p>
+      <ul style="font-size: 0.85em;">
+        <li>Self-contained, opens in any browser</li>
+        <li>D3.js v7 from CDN</li>
+        <li>Degree-sized nodes (5&ndash;20px)</li>
+        <li>12-color type palette</li>
+        <li>Search/filter by name</li>
+        <li>Toggle legend per type</li>
+        <li>Provenance badges on edges</li>
+      </ul>
+      <p style="margin-top: 8px;"><strong>Static SVG Export</strong></p>
+      <ul style="font-size: 0.85em;">
+        <li>Java-computed force layout</li>
+        <li>300 iterations, no browser needed</li>
+        <li>1600&times;1200px, arrow markers</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">Two visualization paths. The Angular component is the live, interactive experience -- full D3.js v7 with force simulation, drag to move nodes, Shift+drag to pin them, double-click to expand a node's neighborhood. The side panel lets you filter by node type, adjust force parameters (link distance, charge strength, collision radius), and watch graph construction in real time. The standalone HTML export generates a self-contained file you can email to anyone -- they open it in a browser and get an interactive force-directed graph with search, zoom, and type filtering. The SVG export uses a Java-side force layout (300 iterations of Coulomb repulsion + Hooke attraction) for PDF-ready static images.</aside>
+</section>
+
+<section>
+  <h2>Node Types &amp; Visual Encoding</h2>
+  <div style="font-size: 0.7em;">
+    <table>
+      <thead>
+        <tr><th>Node Type</th><th>Color</th><th>In Email Graph</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>SOURCE</code></td><td><span style="color: #22c55e;">&#9679;</span> Green</td><td>Email inbox / mailbox file</td></tr>
+        <tr><td><code>DOCUMENT</code></td><td><span style="color: #3b82f6;">&#9679;</span> Blue</td><td>Individual email message</td></tr>
+        <tr><td><code>ENTITY</code></td><td><span style="color: #a855f7;">&#9679;</span> Purple</td><td>Person, org, mailing list</td></tr>
+        <tr><td><code>ATTACHMENT</code></td><td><span style="color: #ec4899;">&#9679;</span> Pink</td><td>PDF, spreadsheet, image</td></tr>
+        <tr><td><code>SNIPPET</code></td><td><span style="color: #f59e0b;">&#9679;</span> Amber</td><td>Quoted reply text</td></tr>
+        <tr><td><code>TABLE</code></td><td><span style="color: #14b8a6;">&#9679;</span> Teal</td><td>Extracted from attachments</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="font-size: 0.65em; margin-top: 0.5em;">
+    <p>
+      <span class="dim">Edge provenance:</span>
+      <span style="color: #3fb950;">&#9644;&#9644; EXTRACTED</span> (solid green) &nbsp;
+      <span style="color: #f0883e;">- - INFERRED</span> (dashed orange) &nbsp;
+      <span style="color: #f85149;">. . AMBIGUOUS</span> (dotted red)
+    </p>
+  </div>
+  <aside class="notes">Every node type gets a distinct color. In an email graph, SOURCE nodes are the inboxes themselves (green), DOCUMENT nodes are individual emails (blue), ENTITY nodes are people and organizations (purple), ATTACHMENTs are files (pink). Edge styling encodes provenance: solid green for EXTRACTED (came from headers, confidence 1.0), dashed orange for INFERRED (LLM-derived), dotted red for AMBIGUOUS (low confidence). At a glance, you can see which parts of the graph are derived from hard facts versus AI inference.</aside>
+</section>
+
+<section>
+  <h2>9 Export Formats</h2>
+  <div class="export-grid">
+    <div class="export-card">
+      <div class="format">JSON</div>
+      <div class="desc">Portable nodes + edges</div>
+    </div>
+    <div class="export-card">
+      <div class="format">JSON-LD</div>
+      <div class="desc">Semantic web linked data</div>
+    </div>
+    <div class="export-card">
+      <div class="format">CSV</div>
+      <div class="desc">nodes.csv + edges.csv (ZIP)</div>
+    </div>
+    <div class="export-card">
+      <div class="format">GraphML</div>
+      <div class="desc">Gephi, yEd, NetworkX</div>
+    </div>
+    <div class="export-card">
+      <div class="format">Cypher</div>
+      <div class="desc">Neo4j import dump</div>
+    </div>
+    <div class="export-card">
+      <div class="format">HTML</div>
+      <div class="desc">D3.js interactive viz</div>
+    </div>
+    <div class="export-card">
+      <div class="format">SVG</div>
+      <div class="desc">Static force layout</div>
+    </div>
+    <div class="export-card">
+      <div class="format">Obsidian</div>
+      <div class="desc">Markdown vault (ZIP)</div>
+    </div>
+    <div class="export-card">
+      <div class="format">Wiki</div>
+      <div class="desc">Markdown wiki (ZIP)</div>
+    </div>
+  </div>
+  <pre style="margin-top: 0.5em;"><code class="language-bash"># Export your email graph as interactive HTML
+GET /api/graph/io/export?format=html&amp;factSheetId=42
+
+# Export for Gephi analysis
+GET /api/graph/io/export?format=graphml&amp;factSheetId=42
+
+# Import another graph and merge
+POST /api/graph/io/merge  (multipart: multiple JSON files)</code></pre>
+  <aside class="notes">Nine export formats plus a merge endpoint. JSON and JSON-LD for programmatic consumption. CSV for spreadsheet analysis. GraphML for Gephi, yEd, or NetworkX -- this is the bridge to the academic graph analysis ecosystem. Cypher for importing into Neo4j. HTML for shareable interactive visualizations. SVG for static images in documents. Obsidian for building a linked knowledge vault where each entity becomes a markdown note with backlinks. Wiki for markdown-based documentation wikis. The merge endpoint accepts multiple PortableGraph JSON files and deduplicates them into a single graph.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 10: KG EMBEDDINGS -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part X</h2>
+  <h3>KG Embeddings<br><span class="dim">Learning from graph structure</span></h3>
+</section>
+
+<section>
+  <h2>KG Embeddings: TransE &amp; RotatE</h2>
+  <div class="two-col" style="font-size: 0.7em;">
+    <div>
+      <h3 style="font-size: 0.85em;">TransE</h3>
+      <p class="dim">Translation in embedding space</p>
+      <div class="ascii-box" style="font-size: 0.85em;">
+<span class="blue">h</span> + <span class="green">r</span> ≈ <span class="purple">t</span>
+
+Score: ||<span class="blue">h</span> + <span class="green">r</span> - <span class="purple">t</span>||
+Lower = more plausible
+
+<span class="dim">"Alice" + "WORKS_AT" ≈ "Acme Corp"</span></div>
+    </div>
+    <div>
+      <h3 style="font-size: 0.85em;">RotatE</h3>
+      <p class="dim">Rotation in complex space</p>
+      <div class="ascii-box" style="font-size: 0.85em;">
+<span class="blue">h</span> ∘ <span class="green">r</span> ≈ <span class="purple">t</span>
+
+Relations as e<sup>iθ</sup>
+Score: ||<span class="blue">h</span> ∘ <span class="green">r</span> - <span class="purple">t</span>||
+
+<span class="dim">Models: symmetric, inverse,
+composition relations</span></div>
+    </div>
+  </div>
+  <p class="fragment" style="font-size: 0.75em;">
+    <span class="accent">Link prediction:</span> "Who <em>else</em> might Alice work with?"<br>
+    <span class="dim">Train on known triples, predict missing ones.</span>
+  </p>
+  <aside class="notes">Knowledge graph embeddings go beyond structure -- they learn dense vector representations of entities and relations. TransE models relations as translations: head + relation should approximate tail. Simple and effective for 1-to-1 relations. RotatE models relations as rotations in complex space, which can capture symmetric, antisymmetric, inverse, and compositional patterns that TransE can't. Both use negative sampling (corrupt head or tail) for training. The application is link prediction: given the known graph, what edges are likely missing? "Alice WORKS_AT Acme" and "Bob WORKS_AT Acme" are known -- the model might predict "Alice COLLABORATES_WITH Bob" even if that edge doesn't exist yet.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 11: FULL PIPELINE -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part XI</h2>
+  <h3>The Full Pipeline<br><span class="dim">End to end</span></h3>
+</section>
+
+<section>
+  <h2>StagedIngestPipeline</h2>
+  <div class="ascii-box" style="font-size: 0.42em;">
+<span class="accent">EXTRACT</span> (1-2 threads)         Load documents via specialized loaders
+    │                            Email → Mime4jMessageParser, PDF → PDFBox, Office → Apache POI
+    ▼
+<span class="yellow">TOKENIZE</span> (2-4 threads)        Count tokens, prepare for chunking
+    │
+    ▼
+<span class="blue">CHUNK</span> (4-8 threads)            Split into chunks (token, sentence, recursive, table-aware)
+    │
+    ├──────────────────────────────────────────────────┐
+    ▼                                                  ▼
+<span class="blue">EMBED</span> (1-4 threads)            Parallel:    <span class="green">GRAPH BUILD</span> (1 thread)
+    │  Generate vectors via                        │  LLM entity extraction
+    │  EmbeddingModel                              │  OR deterministic (EmailGraphExtractor)
+    ▼                                              │  Entity resolution across chunks
+<span class="blue">INDEX</span> (1 thread)                               │  Batches of 10 → GraphConstructor
+    │  Store in vector index                       ▼
+    │  (Lucene HNSW, pgvector)              <span class="green">Knowledge Graph</span>
+    ▼                                       (Matrix, Neo4j, or FactSheet)
+<span class="blue">Vector Store</span>
+(similarity search)</div>
+  <p class="fragment" style="font-size: 0.7em;">
+    Producer-consumer queues with backpressure between every stage.
+  </p>
+  <aside class="notes">The StagedIngestPipeline runs the full extraction flow. Bounded queues between every stage provide backpressure so fast stages don't overwhelm slow ones. The thread counts are tuned for the workload: extraction is I/O-bound (1-2 threads), chunking is CPU-bound (4-8 threads), embedding is GPU-bound (1-4 threads based on model parallelism). The graph building stage waits for all chunks to accumulate, then processes in batches of 10 via the GraphConstructor. For emails, the deterministic EmailGraphExtractor runs first, then the LLM-based extractor processes the email body content. Both outputs feed into entity resolution before hitting the graph store.</aside>
+</section>
+
+<section>
+  <h2>ContentExtractionStage: Parallel Extractors</h2>
+  <pre><code class="language-java">// ContentExtractionStage.java - concurrent extraction
+
+// Runs 5 extractor types in parallel on the same documents:
+ConcurrentExtractionOrchestrator orchestrator = new ConcurrentExtractionOrchestrator(
+    CHUNKING,   // 4-8 threads → List&lt;RetrievedDoc&gt; for embedding
+    ENTITY,     // 2 threads → PERSON, ORG, LOCATION, DATE, PRODUCT
+    CONCEPT,    // 2 threads → topics, keywords, technical terms
+    FACT,       // 2 threads → structured fact extraction
+    TABLE       // 1 thread  → markdown table preservation
+);
+
+// Output: ContentExtractionOutput
+//   .chunks()      → for RAG embedding path
+//   .itemsByType() → for knowledge graph path
+//     ENTITY, RELATIONSHIP, TABLE, CONCEPT, CODE_BLOCK,
+//     CITATION, FACT, SUMMARY, KEY_VALUE, LIST, FORMULA</code></pre>
+  <blockquote class="fragment" style="font-size: 0.7em;">
+    "One document, five parallel extractors, two output paths &mdash; RAG and Graph from the same pipeline."
+  </blockquote>
+  <aside class="notes">ContentExtractionStage is the enhanced alternative that runs five extractor types concurrently. CHUNKING produces traditional chunks for the RAG path. ENTITY, CONCEPT, FACT, and TABLE produce StructuredItems for the graph path. Each extractor runs in its own thread pool. The output contains both chunks (for embedding) and itemsByType (for the knowledge graph). This means processing a document once produces both a searchable vector index AND a structured knowledge graph. No duplicate processing, no separate pipelines. The StructuredItem type hierarchy covers 12 item types from ENTITY to FORMULA.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- CLOSING -->
+<!-- ============================================================ -->
+<section>
+  <h2>Key Takeaways</h2>
+  <ol style="list-style: none; font-size: 0.8em;">
+    <li class="fragment" style="margin-bottom: 10px;">
+      <span class="pill pill-blue">1</span>
+      <strong>Structured data beats RAG &mdash; the protocol is secondary</strong><br>
+      <span class="dim">MCP, REST, Cypher &mdash; they're transport. The data structure is what matters.</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 10px;">
+      <span class="pill pill-green">2</span>
+      <strong>Emails have structure that RAG destroys</strong><br>
+      <span class="dim">30+ metadata fields, thread chains, typed sender/recipient relationships</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 10px;">
+      <span class="pill pill-yellow">3</span>
+      <strong>Deterministic extraction needs no LLM</strong><br>
+      <span class="dim">EmailGraphExtractor: headers &rarr; entities + relationships in &lt;1ms</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 10px;">
+      <span class="pill pill-purple">4</span>
+      <strong>MCP has real costs &mdash; optimize or use REST</strong><br>
+      <span class="dim">~7,000 tokens overhead per request; DYNAMIC mode cuts 70%; REST has zero overhead</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 10px;">
+      <span class="pill pill-orange">5</span>
+      <strong>Expose everything as both tool and endpoint</strong><br>
+      <span class="dim">Shared service layer, dual access &mdash; pick what fits each use case</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 10px;">
+      <span class="pill pill-cyan">6</span>
+      <strong>Graph algorithms answer questions vectors can't</strong><br>
+      <span class="dim">PageRank, Louvain, Dijkstra &mdash; 12 algorithms on extracted structure</span>
+    </li>
+  </ol>
+  <aside class="notes">Six takeaways. First and most important: structured data is the thesis, not any particular protocol. MCP, REST, and Cypher are all just ways to access data -- the value is in having typed entities, relationships, and properties instead of text blobs. Second: emails are a perfect example -- 30+ metadata fields that RAG throws away. Third: you don't need an LLM to extract that structure -- deterministic parsers do it faster and with certainty. Fourth: MCP is powerful but expensive -- ~7,000 tokens of overhead per request at scale. Kompile's DYNAMIC mode cuts that 70%, and REST endpoints provide the same operations at zero schema cost. Fifth: the dual-access pattern -- expose everything as both an MCP tool and a REST endpoint via a shared service layer -- gives you flexibility to pick the right transport for each use case. Sixth: once you have a graph, algorithms like PageRank, Louvain, and Dijkstra answer questions that no amount of vector similarity search can touch.</aside>
+</section>
+
+<section>
+  <h1>Beyond RAG</h1>
+  <h3>Part 2: Dissecting Documents</h3>
+  <p style="font-size: 1.0em;">
+    <span class="accent">Extract</span> <span class="flow-arrow">&rarr;</span>
+    <span class="green">Structure</span> <span class="flow-arrow">&rarr;</span>
+    <span class="purple">Graph</span> <span class="flow-arrow">&rarr;</span>
+    <span class="blue">Query</span> <span class="flow-arrow">&rarr;</span>
+    <span class="yellow">Visualize</span>
+  </p>
+  <br>
+  <p class="dim">
+    github.com/KonduitAI/kompile<br>
+    Kompile Platform
+  </p>
+  <br>
+  <p style="font-size: 0.7em;">
+    <span class="blue">adam@getkompile.com</span><br>
+    <span class="dim">Questions?</span>
+  </p>
+  <p style="font-size: 0.5em; margin-top: 1.5em; opacity: 0.35;">
+    Elthoria Transition &rarr; What is Kompile? &rarr; Email Anatomy &amp; Graphs &rarr; What RAG Flattens &rarr; Email Extraction &rarr;
+    Deterministic Graphs &rarr; Pipeline Fork &rarr; Entity Resolution &rarr; Graph Backends &rarr;
+    Algorithms &rarr; Tools &amp; Querying &rarr; Visualization &amp; Export
+  </p>
+  <aside class="notes">Thank the audience. Recap: Kompile is the platform that turns raw enterprise data into structured knowledge graphs. The thesis is structured data over RAG -- not any particular protocol. MCP is powerful but has real token costs (~7,000 tokens overhead) that Kompile optimizes with DYNAMIC mode, schema compression, and result caching. REST endpoints provide the same operations at zero schema cost. The dual-access pattern -- shared service layer, both tools and endpoints -- gives you flexibility. Emails are the perfect case study: 30+ metadata fields that RAG destroys, all extractable deterministically. Graph algorithms answer questions vectors can't. Open the floor for questions.</aside>
+</section>
+
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script>
+Reveal.initialize({
+  hash: true,
+  center: true,
+  overview: true,
+  slideNumber: 'c/t',
+  width: 1200,
+  height: 700,
+  margin: 0.05,
+  transition: 'fade',
+  transitionSpeed: 'fast',
+  plugins: [RevealHighlight, RevealNotes],
+  highlight: { highlightOnLoad: true }
+});
+</script>
+</body>
+</html>

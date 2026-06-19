@@ -4,6 +4,7 @@ import ai.kompile.staging.execution.ChatTemplateService;
 import ai.kompile.staging.execution.LlmExecutionService;
 import ai.kompile.staging.web.dto.*;
 import ai.kompile.staging.web.dto.openai.*;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
@@ -30,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class OpenAiCompatController {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiCompatController.class);
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private final LlmExecutionService executionService;
     private final ChatTemplateService chatTemplateService;

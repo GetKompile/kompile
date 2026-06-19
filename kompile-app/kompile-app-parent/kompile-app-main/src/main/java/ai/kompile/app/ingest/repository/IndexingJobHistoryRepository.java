@@ -94,6 +94,24 @@ public interface IndexingJobHistoryRepository extends JpaRepository<IndexingJobH
        Page<IndexingJobHistory> findRecentJobs(@Param("since") Instant since, Pageable pageable);
 
        /**
+        * Find crawl job history entries (taskId starts with "crawl-"), most recent first.
+        */
+       @Query("SELECT j FROM IndexingJobHistory j WHERE j.taskId LIKE 'crawl-%' ORDER BY j.startTime DESC")
+       List<IndexingJobHistory> findCrawlJobs();
+
+       /**
+        * Find crawl job history entries with pagination.
+        */
+       @Query("SELECT j FROM IndexingJobHistory j WHERE j.taskId LIKE 'crawl-%' ORDER BY j.startTime DESC")
+       Page<IndexingJobHistory> findCrawlJobs(Pageable pageable);
+
+       /**
+        * Find crawl jobs that have archived steps on disk and can be resumed.
+        */
+       @Query("SELECT j FROM IndexingJobHistory j WHERE j.taskId LIKE 'crawl-%' AND j.resumable = true ORDER BY j.startTime DESC")
+       List<IndexingJobHistory> findResumableCrawlJobs();
+
+       /**
         * Find failed jobs by failure reason.
         */
        List<IndexingJobHistory> findByFailureReasonOrderByStartTimeDesc(FailureReason failureReason);

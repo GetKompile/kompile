@@ -15,11 +15,13 @@
  */
 package ai.kompile.core.staging;
 
+import lombok.Getter;
 import org.springframework.context.ApplicationEvent;
 
 /**
  * Published when a training job starts. Shared between kompile-app-main and kompile-model-staging.
  */
+@Getter
 public class TrainingJobStartedEvent extends ApplicationEvent {
     private final String jobId;
     private final String modelId;
@@ -31,8 +33,4 @@ public class TrainingJobStartedEvent extends ApplicationEvent {
         this.modelId = modelId;
         this.subprocess = subprocess;
     }
-
-    public String getJobId() { return jobId; }
-    public String getModelId() { return modelId; }
-    public boolean isSubprocess() { return subprocess; }
 }

@@ -17,6 +17,7 @@
 package ai.kompile.loader.slack;
 
 import ai.kompile.core.crawler.*;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
@@ -123,7 +124,7 @@ public class SlackCrawler extends AbstractCrawler {
         String token = str(props.get("slackToken"));
         boolean includeThreads = boolVal(props.get("includeThreads"), true);
         boolean includeFiles = boolVal(props.get("includeFiles"), true);
-        int daysBack = intVal(props.get("daysBack"), 30);
+        int daysBack = MapUtils.toInt(props.get("daysBack"), 30);
         int maxMessages = config.getMaxDocuments();
 
         MethodsClient client = slack.methods(token);
@@ -706,9 +707,4 @@ public class SlackCrawler extends AbstractCrawler {
         return Boolean.parseBoolean(obj.toString());
     }
 
-    private static int intVal(Object obj, int defaultValue) {
-        if (obj == null) return defaultValue;
-        if (obj instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(obj.toString()); } catch (NumberFormatException e) { return defaultValue; }
-    }
 }

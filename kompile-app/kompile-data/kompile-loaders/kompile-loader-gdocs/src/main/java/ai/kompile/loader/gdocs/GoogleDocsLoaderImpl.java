@@ -17,6 +17,7 @@
 package ai.kompile.loader.gdocs;
 
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -78,8 +79,8 @@ public class GoogleDocsLoaderImpl implements DocumentLoader {
                     "Google Docs loader requires 'accessToken' in metadata");
         }
 
-        boolean useDocsApi = getBooleanOr(meta, "useDocsApi", true);
-        int maxDocuments = getIntOr(meta, "maxDocuments", 100);
+        boolean useDocsApi = MapUtils.getBoolean(meta, "useDocsApi", true);
+        int maxDocuments = MapUtils.getInt(meta, "maxDocuments", 100);
 
         GoogleDocsApiClient apiClient = new GoogleDocsApiClient(accessToken);
 
@@ -140,7 +141,7 @@ public class GoogleDocsLoaderImpl implements DocumentLoader {
                 documents.add(doc);
 
                 // Optionally load comments for this document
-                boolean includeComments = getBooleanOr(meta, "includeComments", false);
+                boolean includeComments = MapUtils.getBoolean(meta, "includeComments", false);
                 if (includeComments) {
                     try {
                         List<JsonNode> comments = apiClient.listComments(docId, 100);
@@ -300,7 +301,7 @@ public class GoogleDocsLoaderImpl implements DocumentLoader {
         }
 
         // Folder-based discovery
-        String folderId = getStringOr(meta, "folderId", null);
+        String folderId = MapUtils.getStringNonBlank(meta, "folderId", null);
         if (folderId != null) {
             List<JsonNode> files = apiClient.listFilesInFolder(folderId, maxDocuments);
             List<String> ids = new ArrayList<>();
@@ -313,7 +314,7 @@ public class GoogleDocsLoaderImpl implements DocumentLoader {
         }
 
         // Query-based discovery
-        String driveQuery = getStringOr(meta, "driveQuery", null);
+        String driveQuery = MapUtils.getStringNonBlank(meta, "driveQuery", null);
         List<JsonNode> files = apiClient.listDocFiles(driveQuery, maxDocuments);
         List<String> ids = new ArrayList<>();
         for (JsonNode f : files) {
@@ -322,25 +323,4 @@ public class GoogleDocsLoaderImpl implements DocumentLoader {
         return ids;
     }
 
-    private static String getStringOr(Map<String, Object> meta, String key, String defaultValue) {
-        Object val = meta.get(key);
-        if (val instanceof String s && !s.isBlank()) return s;
-        return defaultValue;
-    }
-
-    private static int getIntOr(Map<String, Object> meta, String key, int defaultValue) {
-        Object val = meta.get(key);
-        if (val instanceof Number n) return n.intValue();
-        if (val instanceof String s) {
-            try { return Integer.parseInt(s); } catch (NumberFormatException e) { /* fall through */ }
-        }
-        return defaultValue;
-    }
-
-    private static boolean getBooleanOr(Map<String, Object> meta, String key, boolean defaultValue) {
-        Object val = meta.get(key);
-        if (val instanceof Boolean b) return b;
-        if (val instanceof String s) return Boolean.parseBoolean(s);
-        return defaultValue;
-    }
 }

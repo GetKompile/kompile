@@ -33,6 +33,7 @@ import ai.kompile.cli.main.chat.enforcer.EnforcerService;
 import ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator;
 import ai.kompile.cli.main.chat.enforcer.KeywordRealtimeMonitor;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -145,7 +146,7 @@ public class EnforcerCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--bootstrap-output"}, description = "Output file for bootstrapped patterns", defaultValue = ".kompile/enforcer-diff-patterns.json")
     String bootstrapOutput;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Override
     public Integer call() {

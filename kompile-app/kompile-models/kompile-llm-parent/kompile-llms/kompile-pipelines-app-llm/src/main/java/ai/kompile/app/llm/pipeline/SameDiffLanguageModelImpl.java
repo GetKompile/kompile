@@ -24,6 +24,7 @@ import ai.kompile.pipelines.framework.api.llm.LLMStepConfig;
 import ai.kompile.pipelines.framework.core.context.DefaultContext;
 import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
 import ai.kompile.pipelines.steps.samediff.llm.SameDiffLanguageModelStepRunner;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -75,7 +76,7 @@ import java.util.concurrent.TimeUnit;
 public class SameDiffLanguageModelImpl implements LanguageModel, ChatModel {
 
     private static final Logger logger = LoggerFactory.getLogger(SameDiffLanguageModelImpl.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private final Object loadLock = new Object();
     private volatile LoadedModel loaded; // null until first successful load

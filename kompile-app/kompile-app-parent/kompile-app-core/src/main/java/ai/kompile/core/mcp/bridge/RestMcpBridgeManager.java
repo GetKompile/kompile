@@ -146,35 +146,4 @@ public interface RestMcpBridgeManager {
      */
     RestMcpBridgeConfig importConfig(String json);
 
-    /**
-     * Result of testing an endpoint mapping
-     */
-    class EndpointTestResult {
-        private boolean success;
-        private int statusCode;
-        private Object response;
-        private String error;
-        private long durationMs;
-
-        public EndpointTestResult() {}
-
-        public EndpointTestResult(boolean success, int statusCode, Object response, String error, long durationMs) {
-            this.success = success;
-            this.statusCode = statusCode;
-            this.response = response;
-            this.error = error;
-            this.durationMs = durationMs;
-        }
-
-        public boolean isSuccess() { return success; }
-        public void setSuccess(boolean success) { this.success = success; }
-        public int getStatusCode() { return statusCode; }
-        public void setStatusCode(int statusCode) { this.statusCode = statusCode; }
-        public Object getResponse() { return response; }
-        public void setResponse(Object response) { this.response = response; }
-        public String getError() { return error; }
-        public void setError(String error) { this.error = error; }
-        public long getDurationMs() { return durationMs; }
-        public void setDurationMs(long durationMs) { this.durationMs = durationMs; }
-    }
 }

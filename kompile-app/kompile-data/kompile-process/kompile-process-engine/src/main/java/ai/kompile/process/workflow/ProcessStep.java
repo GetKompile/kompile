@@ -17,6 +17,7 @@
 package ai.kompile.process.workflow;
 
 import ai.kompile.process.ontology.ProvenanceCitation;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -33,6 +34,7 @@ import java.util.Map;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class ProcessStep {
 
     /** Hierarchical step ID, e.g., "1.1", "2.3". */

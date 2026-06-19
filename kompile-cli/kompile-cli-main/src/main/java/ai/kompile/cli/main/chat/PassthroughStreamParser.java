@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -33,7 +34,7 @@ import java.util.regex.Pattern;
  */
 public class PassthroughStreamParser {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     /** Tracks last aggregated_output per Codex item ID for delta computation. */
     private final Map<String, String> codexAggregatedOutputs = new HashMap<>();
@@ -367,6 +368,13 @@ public class PassthroughStreamParser {
         return line.startsWith("YOLO mode is enabled")
                 || line.startsWith("Attempt ") && line.contains("failed:")
                 || line.startsWith("Retrying after");
+    }
+
+    /**
+     * Alias for {@link #parseGeminiLine(String)} used by the Agy/Qwen adapter.
+     */
+    public PassthroughEvent parseAgyLine(String line) {
+        return parseGeminiLine(line);
     }
 
     /**

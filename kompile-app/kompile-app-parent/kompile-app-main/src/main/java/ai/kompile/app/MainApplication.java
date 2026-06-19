@@ -17,6 +17,7 @@
 package ai.kompile.app;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.common.util.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
@@ -69,7 +70,7 @@ public class MainApplication {
 
     // ND4J environment config constants
     private static final String ND4J_CONFIG_FILENAME = "nd4j-environment-config.json";
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     public static void main(String[] args) throws Exception {
         // Disable Lucene MemorySegment-based MMapDirectory — Arena.ofShared is not supported in GraalVM native image
@@ -970,6 +971,16 @@ public class MainApplication {
             }
 
             log.info("=== Cleanup complete. External process will terminate JVM in 2 seconds. ===");
+
+            // Use Runtime.halt(0) rather than System.exit(0) here.
+            // We are already executing inside a Spring @PreDestroy callback, which itself runs
+            // inside the JVM shutdown-hook sequence.  System.exit() would attempt to re-enter
+            // that sequence and deadlock waiting for the same hooks to complete.  halt() bypasses
+            // all pending shutdown hooks and terminates the process immediately, which is exactly
+            // what we want here: all Spring beans have already been destroyed by the time this
+            // handler fires (it is @Order(LOWEST_PRECEDENCE)), and the only remaining threads are
+            // native OpenBLAS/MKL worker threads that never self-terminate.
+            Runtime.getRuntime().halt(0);
         }
     }
 }

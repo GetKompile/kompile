@@ -268,6 +268,20 @@ import {
                         <mat-spinner diameter="24"></mat-spinner>
                         <span>Analyzing causal chains...</span>
                       </div>
+                      <div *ngIf="attributionError && !attributionLoading" class="attr-error">
+                        <mat-icon class="attr-error-icon">error_outline</mat-icon>
+                        <div class="attr-error-body">
+                          <div class="attr-error-title">Attribution failed</div>
+                          <div class="attr-error-message">{{attributionError}}</div>
+                          <button mat-stroked-button color="primary" class="attr-error-retry"
+                                  (click)="loadAttribution()">
+                            <mat-icon>refresh</mat-icon> Try again
+                          </button>
+                        </div>
+                        <button mat-icon-button (click)="attributionError = null" matTooltip="Dismiss">
+                          <mat-icon>close</mat-icon>
+                        </button>
+                      </div>
                       <div *ngIf="attributionResult" class="attr-results">
                         <div class="attr-stats">
                           <span class="stat">{{attributionResult.chains.length}} chains</span>
@@ -389,6 +403,20 @@ import {
                       <div *ngIf="predictionLoading" class="attr-loading">
                         <mat-spinner diameter="24"></mat-spinner>
                         <span>Predicting outcomes...</span>
+                      </div>
+                      <div *ngIf="predictionError && !predictionLoading" class="attr-error">
+                        <mat-icon class="attr-error-icon">error_outline</mat-icon>
+                        <div class="attr-error-body">
+                          <div class="attr-error-title">Prediction failed</div>
+                          <div class="attr-error-message">{{predictionError}}</div>
+                          <button mat-stroked-button color="primary" class="attr-error-retry"
+                                  (click)="loadPrediction()">
+                            <mat-icon>refresh</mat-icon> Try again
+                          </button>
+                        </div>
+                        <button mat-icon-button (click)="predictionError = null" matTooltip="Dismiss">
+                          <mat-icon>close</mat-icon>
+                        </button>
                       </div>
                       <div *ngIf="predictionResult" class="pred-results">
                         <div class="attr-stats">
@@ -825,6 +853,7 @@ import {
       padding: 12px 20px;
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       border-bottom: 1px solid var(--border-color, #e3e8ee);
+      flex-shrink: 0;
     }
 
     .fact-sheet-info {
@@ -899,6 +928,7 @@ import {
       background: var(--bg-surface, #ffffff);
       border-bottom: 1px solid var(--border-color, #e3e8ee);
       box-shadow: var(--shadow-sm, 0 1px 2px 0 rgba(0, 0, 0, 0.05));
+      flex-shrink: 0;
     }
 
     .toolbar-left, .toolbar-right {
@@ -926,9 +956,7 @@ import {
     .canvas-container {
       flex: 1;
       position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      min-height: 0;
       background: var(--bg-body, #f8f9fa);
     }
 
@@ -1185,6 +1213,7 @@ import {
       padding: 10px 20px;
       background: var(--bg-surface, #ffffff);
       border-top: 1px solid var(--border-color, #e3e8ee);
+      flex-shrink: 0;
     }
 
     .stat {
@@ -1395,6 +1424,45 @@ import {
       padding: 12px 0;
       font-size: 12px;
       color: var(--text-secondary, #697386);
+    }
+
+    .attr-error {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 8px 0;
+      padding: 10px 12px;
+      border: 1px solid var(--warn-border, #f3c2c2);
+      border-left: 3px solid var(--warn, #d32f2f);
+      border-radius: 4px;
+      background: var(--warn-bg, #fdecea);
+      font-size: 12px;
+    }
+
+    .attr-error-icon {
+      color: var(--warn, #d32f2f);
+      flex-shrink: 0;
+    }
+
+    .attr-error-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .attr-error-title {
+      font-weight: 600;
+      color: var(--warn, #d32f2f);
+      margin-bottom: 2px;
+    }
+
+    .attr-error-message {
+      color: var(--text-primary, #1a2027);
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .attr-error-retry {
+      margin-top: 8px;
     }
 
     .attr-stats {
@@ -1795,8 +1863,10 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   // Attribution & prediction state
   attributionResult: AttributionResult | null = null;
   attributionLoading = false;
+  attributionError: string | null = null;
   predictionResult: PredictionResult | null = null;
   predictionLoading = false;
+  predictionError: string | null = null;
 
   // Link mode state
   linkSourceNode: D3Node | null = null;
@@ -1823,8 +1893,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   maxDepth = 2;
   maxNodes = 100;
   filter: GraphFilter = {
-    nodeTypes: ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM'],
-    edgeTypes: ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED']
+    nodeTypes: ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT'],
+    edgeTypes: ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE']
   };
 
   // Temporal filtering
@@ -1856,7 +1926,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   forceConfig: ForceConfig = { ...DEFAULT_FORCE_CONFIG };
 
   // Type lists
-  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM'];
+  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT'];
   allEdgeTypes: EdgeType[] = ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE'];
 
   // Node colors for display
@@ -1904,9 +1974,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     const from = this.temporalFilterActive && this.timeFrom ? this.timeFrom + 'T00:00:00' : undefined;
     const to = this.temporalFilterActive && this.timeTo ? this.timeTo + 'T23:59:59' : undefined;
 
-    const loadObservable = this.factSheetId
-      ? this.graphService.getFactSheetVisualizationData(this.factSheetId, this.maxNodes, this.maxNodes * 2)
-      : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
+    const loadObservable = this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
 
     loadObservable
       .pipe(takeUntil(this.destroy$))
@@ -2146,13 +2214,14 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
           });
         } else {
           // Window: show only events in current step's time window
+          // Keep items without timestamps so they are not silently dropped
           const windowStart = this.getSnapshotWindowStart();
           links = links.filter(l => {
-            if (!l.occurredAt) return false;
+            if (!l.occurredAt) return true;
             return l.occurredAt >= windowStart && l.occurredAt <= cutoff;
           });
           nodes = nodes.filter(n => {
-            if (!n.occurredAt) return false;
+            if (!n.occurredAt) return true;
             return n.occurredAt >= windowStart && n.occurredAt <= cutoff;
           });
         }
@@ -2201,7 +2270,9 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     // Normal selection
     this.selectedNode = node;
     this.attributionResult = null;
+    this.attributionError = null;
     this.predictionResult = null;
+    this.predictionError = null;
 
     // Load relations for the selected node
     if (node) {
@@ -2363,7 +2434,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   resetFilters(): void {
     this.filter = {
       nodeTypes: [...this.allNodeTypes],
-      edgeTypes: [...this.allEdgeTypes.slice(0, 4)]
+      edgeTypes: [...this.allEdgeTypes]
     };
     this.maxDepth = 2;
     this.maxNodes = 100;
@@ -2759,6 +2830,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   loadAttribution(): void {
     if (!this.selectedNode) return;
     this.attributionLoading = true;
+    this.attributionError = null;
 
     this.attributionService.explainQuick(this.selectedNode.id, {
       includeCounterfactuals: true
@@ -2772,11 +2844,33 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
         this.mergeAttributionOverlay(result);
       },
       error: (err) => {
+        const message = this.extractHttpError(err, 'Attribution query failed');
         console.error('Attribution query failed:', err);
-        this.snackBar.open('Attribution query failed', 'Dismiss', { duration: 3000 });
+        this.attributionError = message;
         this.attributionLoading = false;
+        this.snackBar.open(message, 'Dismiss', { duration: 6000 });
       }
     });
+  }
+
+  /**
+   * Extract a human-readable message from an Angular HttpErrorResponse. The backend
+   * returns a structured { error, message, type, ... } body for attribution / Bayesian
+   * failures (err.error) — surface that instead of Angular's opaque
+   * "Http failure response for ...: 500 ..." wrapper string.
+   */
+  private extractHttpError(err: any, fallback: string): string {
+    const body = err?.error;
+    if (body && typeof body === 'object' && body.message) {
+      return body.type ? `${body.message} (${body.type})` : body.message;
+    }
+    if (typeof body === 'string' && body.trim().length > 0) {
+      return body;
+    }
+    if (err?.status === 0) {
+      return 'Could not reach the server (network error, or it is still starting up).';
+    }
+    return err?.message || fallback;
   }
 
   /**
@@ -2824,6 +2918,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   loadPrediction(): void {
     if (!this.selectedNode) return;
     this.predictionLoading = true;
+    this.predictionError = null;
 
     this.attributionService.predictQuick(this.selectedNode.id).pipe(
       takeUntil(this.destroy$)
@@ -2833,9 +2928,11 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
         this.predictionLoading = false;
       },
       error: (err) => {
+        const message = this.extractHttpError(err, 'Prediction query failed');
         console.error('Prediction query failed:', err);
-        this.snackBar.open('Prediction query failed', 'Dismiss', { duration: 3000 });
+        this.predictionError = message;
         this.predictionLoading = false;
+        this.snackBar.open(message, 'Dismiss', { duration: 6000 });
       }
     });
   }

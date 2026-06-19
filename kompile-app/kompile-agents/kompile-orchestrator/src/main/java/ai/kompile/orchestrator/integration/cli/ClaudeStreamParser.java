@@ -15,6 +15,7 @@
  */
 package ai.kompile.orchestrator.integration.cli;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Getter;
@@ -54,7 +55,7 @@ import java.util.regex.Pattern;
 @Slf4j
 public class ClaudeStreamParser {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // Track content blocks being assembled per session
     private final Map<String, List<ContentBlock>> sessionBlocks = new ConcurrentHashMap<>();

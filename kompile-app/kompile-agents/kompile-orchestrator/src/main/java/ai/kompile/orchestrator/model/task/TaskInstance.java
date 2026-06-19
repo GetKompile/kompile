@@ -15,6 +15,7 @@
  */
 package ai.kompile.orchestrator.model.task;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.*;
 import lombok.*;
@@ -35,7 +36,7 @@ import java.util.Map;
 @AllArgsConstructor
 public class TaskInstance {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

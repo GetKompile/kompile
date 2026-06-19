@@ -17,6 +17,7 @@
 package ai.kompile.embedding.anserini;
 
 import ai.kompile.modelmanager.ModelConstants;
+import ai.kompile.utils.MapUtils;
 
 import java.util.Map;
 
@@ -76,9 +77,9 @@ public final class EmbeddingMemoryEstimator {
         Map<String, Object> arch = ModelConstants.getArchitectureMetadata(modelId);
         if (arch.isEmpty()) return -1;
 
-        int numLayers = getInt(arch, "num_layers", 12);
-        int numHeads = getInt(arch, "num_heads", 12);
-        long modelSizeBytes = getLong(arch, "model_size_bytes", 500_000_000L);
+        int numLayers = MapUtils.getInt(arch, "num_layers", 12);
+        int numHeads = MapUtils.getInt(arch, "num_heads", 12);
+        long modelSizeBytes = MapUtils.getLong(arch, "model_size_bytes", 500_000_000L);
 
         return estimatePeakMemoryBytes(numLayers, numHeads, seqLength, batchSize, modelSizeBytes);
     }
@@ -144,19 +145,4 @@ public final class EmbeddingMemoryEstimator {
         return -1;
     }
 
-    private static int getInt(Map<String, Object> map, String key, int defaultValue) {
-        Object val = map.get(key);
-        if (val instanceof Integer) return (Integer) val;
-        if (val instanceof Long) return ((Long) val).intValue();
-        if (val instanceof Number) return ((Number) val).intValue();
-        return defaultValue;
-    }
-
-    private static long getLong(Map<String, Object> map, String key, long defaultValue) {
-        Object val = map.get(key);
-        if (val instanceof Long) return (Long) val;
-        if (val instanceof Integer) return (Integer) val;
-        if (val instanceof Number) return ((Number) val).longValue();
-        return defaultValue;
-    }
 }

@@ -16,6 +16,7 @@
 
 package ai.kompile.process.discovery;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.slf4j.Logger;
@@ -38,9 +39,8 @@ import java.util.stream.Collectors;
 public class ProcessSuggestionStore {
 
     private static final Logger log = LoggerFactory.getLogger(ProcessSuggestionStore.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .enable(SerializationFeature.INDENT_OUTPUT)
-            .findAndRegisterModules();
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
+            .enable(SerializationFeature.INDENT_OUTPUT);
 
     private final Map<String, ProcessSuggestion> suggestions = new ConcurrentHashMap<>();
     private final Path storageDir;

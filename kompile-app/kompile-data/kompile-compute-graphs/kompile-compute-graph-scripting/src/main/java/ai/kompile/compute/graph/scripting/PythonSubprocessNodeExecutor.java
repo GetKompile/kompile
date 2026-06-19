@@ -20,6 +20,7 @@ import ai.kompile.compute.graph.engine.ExecutionContext;
 import ai.kompile.compute.graph.engine.NodeExecutor;
 import ai.kompile.compute.graph.model.*;
 import com.fasterxml.jackson.core.type.TypeReference;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -47,7 +48,7 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class PythonSubprocessNodeExecutor implements NodeExecutor {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final long DEFAULT_TIMEOUT_SECONDS = 30;
 
     private final String pythonExecutable;

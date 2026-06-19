@@ -19,6 +19,8 @@ package ai.kompile.app.subprocess;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -26,14 +28,22 @@ import java.util.Map;
  * Shared utility for propagating ND4J/CUDA/threading environment variables
  * from the parent process to all subprocess types.
  *
- * <p>Every subprocess launcher should call {@link #propagateToEnvironment(Map, String, String)}
- * to ensure consistent environment variable coverage. This prevents the bug where
- * some subprocess types miss critical env vars (e.g., CUDA_VISIBLE_DEVICES, thread
- * counts, Triton cache dirs) that other types propagate correctly.</p>
+ * <p>Every subprocess launcher that runs a JVM with ND4J on the classpath MUST call
+ * {@link #propagateToEnvironment(Map, String, String)} to ensure consistent
+ * environment variable coverage. This prevents the bug where some subprocess types
+ * miss critical env vars (e.g., Triton cache dirs, CUDA config, thread counts)
+ * that other types propagate correctly.</p>
+ *
+ * <p>This is the SINGLE SOURCE OF TRUTH for subprocess environment propagation.
+ * Do not duplicate this logic in individual launchers.</p>
  */
 public final class SubprocessEnvironmentPropagator {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessEnvironmentPropagator.class);
+
+    /** Default Triton kernel cache directory when none is configured. */
+    private static final String DEFAULT_TRITON_CACHE_DIR =
+            System.getProperty("user.home") + "/.kompile/cache/triton/triton_cache";
 
     private SubprocessEnvironmentPropagator() {}
 
@@ -82,8 +92,30 @@ public final class SubprocessEnvironmentPropagator {
     );
 
     /**
+     * Prefixes used to sweep any additional env vars not in the explicit list.
+     */
+    private static final String[] SWEEP_PREFIXES = {
+            "ND4J_", "KOMPILE_", "CUDA_", "SD_"
+    };
+
+    /**
+     * Convenience overload: propagate all env vars with no config-based overrides.
+     * Uses the default Triton cache dir ({@code ~/.kompile/cache/triton/triton_cache})
+     * if no {@code ND4J_TRITON_CACHE_DIR} env var is set.
+     *
+     * @param env the subprocess ProcessBuilder environment map to modify
+     */
+    public static void propagateToEnvironment(Map<String, String> env) {
+        propagateToEnvironment(env, null, null);
+    }
+
+    /**
      * Propagate all known ND4J/CUDA/threading environment variables to a subprocess
-     * environment map. Also sweeps all ND4J_ and KOMPILE_ prefixed vars.
+     * environment map. Also sweeps all ND4J_, KOMPILE_, CUDA_, and SD_ prefixed vars.
+     *
+     * <p>If no Triton cache dir is available from any source (env var, config override,
+     * or system property), the default {@code ~/.kompile/cache/triton/triton_cache} is
+     * used and the directory is created if it does not exist.</p>
      *
      * @param env              the subprocess ProcessBuilder environment map to modify
      * @param tritonCacheDir   optional Triton cache dir override (from config); null to skip
@@ -101,12 +133,17 @@ public final class SubprocessEnvironmentPropagator {
             }
         }
 
-        // Sweep all ND4J_ and KOMPILE_ prefixed vars not already covered
+        // Sweep all prefixed vars not already covered
         for (Map.Entry<String, String> e : System.getenv().entrySet()) {
             String key = e.getKey();
-            if ((key.startsWith("ND4J_") || key.startsWith("KOMPILE_")) && !env.containsKey(key)) {
-                env.put(key, e.getValue());
-                propagated++;
+            if (!env.containsKey(key)) {
+                for (String prefix : SWEEP_PREFIXES) {
+                    if (key.startsWith(prefix)) {
+                        env.put(key, e.getValue());
+                        propagated++;
+                        break;
+                    }
+                }
             }
         }
 
@@ -121,6 +158,20 @@ public final class SubprocessEnvironmentPropagator {
         }
         if (tritonDumpDir != null && !tritonDumpDir.isBlank() && !env.containsKey("ND4J_TRITON_DUMP_DIR")) {
             env.put("ND4J_TRITON_DUMP_DIR", tritonDumpDir);
+        }
+
+        // Fall back: check system property, then use default. The native code reads
+        // ND4J_TRITON_CACHE_DIR directly — without it, kernels recompile every launch.
+        if (!env.containsKey("ND4J_TRITON_CACHE_DIR")) {
+            String fromProp = System.getProperty("nd4j.triton.cacheDir");
+            String effectiveDir = fromProp != null ? fromProp : DEFAULT_TRITON_CACHE_DIR;
+            try {
+                Files.createDirectories(Path.of(effectiveDir));
+            } catch (Exception ex) {
+                logger.warn("Could not create Triton cache directory {}: {}", effectiveDir, ex.getMessage());
+            }
+            env.put("ND4J_TRITON_CACHE_DIR", effectiveDir);
+            logger.info("[ENV PROPAGATION] Set ND4J_TRITON_CACHE_DIR={} (default)", effectiveDir);
         }
 
         logger.info("[ENV PROPAGATION] Propagated {} environment variables to subprocess", propagated);

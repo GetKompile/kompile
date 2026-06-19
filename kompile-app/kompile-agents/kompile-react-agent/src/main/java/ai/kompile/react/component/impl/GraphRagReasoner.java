@@ -25,6 +25,7 @@ import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.TokenUsage;
 import ai.kompile.react.model.ToolCall;
 import ai.kompile.react.model.ToolDefinition;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -92,7 +93,7 @@ public class GraphRagReasoner implements Reasoner {
         this.systemPrompt = systemPrompt != null ? systemPrompt : GRAPH_RAG_SYSTEM_PROMPT;
         this.defaultSearchType = defaultSearchType != null ? defaultSearchType : SearchType.LOCAL;
         this.maxGraphResults = maxGraphResults != null ? maxGraphResults : 10;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     @Override

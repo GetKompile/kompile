@@ -36,6 +36,7 @@ import ai.kompile.pipelines.framework.runtime.pipeline.graph.GraphPipeline;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Getter;
+import lombok.Setter;
 import org.apache.maven.model.*;
 import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
@@ -54,6 +55,7 @@ import java.util.stream.Collectors;
 @CommandLine.Command(name = "pom-generate", mixinStandardHelpOptions = false,
         description = "Generates a pom.xml for building Kompile applications or pipelines.")
 @Getter
+@Setter
 public class PomGenerator implements Callable<Void> {
 
     // --- Configuration Fields (set by KompileApplicationBuilder) ---
@@ -101,11 +103,7 @@ public class PomGenerator implements Callable<Void> {
     private Model model;
     private List<Dependency> resolvedDependencies = new ArrayList<>();
 
-    // --- Setters (ensure all fields used in create() have setters) ---
-    public void setAssembly(boolean assembly) { this.assembly = assembly; }
-    public void setImageName(String imageName) { this.imageName = imageName; }
-    public void setMainClass(String mainClass) { this.mainClass = mainClass; }
-    public void setNativeImageJvmArgs(String[] nativeImageJvmArgs) { this.nativeImageJvmArgs = nativeImageJvmArgs; }
+    // --- Custom mutators ---
     public void addNativeImageJvmArgIfMissing(String arg) {
         if (this.nativeImageJvmArgs == null) this.nativeImageJvmArgs = new String[0];
         List<String> argsList = new ArrayList<>(Arrays.asList(this.nativeImageJvmArgs));
@@ -118,44 +116,9 @@ public class PomGenerator implements Callable<Void> {
         }
         this.nativeImageJvmArgs = argsList.toArray(new String[0]);
     }
-    public void setExtraDependencies(String extraDependencies) { this.extraDependencies = extraDependencies; }
-    public void setIncludeResources(String includeResources) { this.includeResources = includeResources; }
-    public void setNd4jBackend(String nd4jBackend) { this.nd4jBackend = nd4jBackend; }
-    public void setNd4jBackendClassifier(String nd4jBackendClassifier) { this.nd4jBackendClassifier = nd4jBackendClassifier; }
-    public void setNumpySharedLibrary(boolean numpySharedLibrary) { this.numpySharedLibrary = numpySharedLibrary; }
-    public void setOutputFile(File outputFile) { this.outputFile = outputFile; }
-    public void setDebugNative(boolean debugNative) { this.debugNative = debugNative; }
-    public void setDebugNativePort(int debugNativePort) { this.debugNativePort = debugNativePort; }
-    public void setPipelineJsonFilePathForAnalysis(String path) { this.pipelineJsonFilePathForAnalysis = path; }
+    // Alias setters where the setter name differs from the standard Lombok-generated name
     public void setPipelinePath(String resourcePath) { this.pipelineResourcePath = resourcePath; }
-    public void setAppType(String appType) { this.appType = appType; }
-    public void setLlmProvider(String provider) { this.llmProvider = provider; }
-    public void setVectorStoreProvider(String provider) { this.vectorStoreProvider = provider; }
-    public void setEmbeddingProvider(String provider) { this.embeddingProvider = provider; }
-    public void setDocumentLoaderProvider(String provider) { this.documentLoaderProvider = provider; }
-    public void setEnableRagService(boolean enable) { this.enableRagService = enable; }
-    public void setEnableFilesystemTool(boolean enable) { this.enableFilesystemTool = enable; }
-    public void setEnableFrontendBuild(boolean enable) { this.enableFrontendBuild = enable; }
     public void setKompileVersion(String version) { this.kompileParentVersion = version; }
-    public void setRagMcpAssistantParentVersion(String version) { this.ragMcpAssistantParentVersion = version; }
-    public void setKompilePipelinesVersion(String version) { this.kompilePipelinesVersion = version; }
-    public void setKompileAppVersion(String version) { this.kompileAppVersion = version; }
-    public void setSpringBootVersion(String version) { this.springBootVersion = version; }
-    public void setSpringAiVersion(String version) { this.springAiVersion = version; }
-    public void setNativeImagePluginVersion(String version) { this.nativeImagePluginVersion = version; }
-    public void setPython(boolean python) { this.python = python; }
-    public void setOnnx(boolean onnx) { this.onnx = onnx; }
-    public void setTvm(boolean tvm) { this.tvm = tvm; }
-    public void setDoc(boolean doc) { this.doc = doc; }
-    public void setDl4j(boolean dl4j) { this.dl4j = dl4j; }
-    public void setSamediff(boolean samediff) { this.samediff = samediff; }
-    public void setTensorflow(boolean tensorflow) { this.tensorflow = tensorflow; }
-    public void setImage(boolean image) { this.image = image; }
-    public void setServer(boolean server) { this.server = server; }
-    public void setNd4jExtension(String ext) { this.nd4jExtension = ext; }
-    public void setNd4jOperations(String ops) { this.nd4jOperations = ops; }
-    public void setNd4jDataTypes(String types) { this.nd4jDataTypes = types; }
-    public void setNd4jUseLto(boolean useLto) { this.nd4jUseLto = useLto; }
 
     private void addDependency(List<Dependency> addTo, String groupId, String artifactId, String version, String scope, String classifier, boolean optional) {
         Dependency dependency = new Dependency();

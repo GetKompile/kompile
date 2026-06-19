@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import ai.kompile.utils.StringUtils;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -95,7 +96,7 @@ public record RealtimeInterruptEvent(
         return new RealtimeInterruptEvent(
                 newId(), Instant.now(), EventType.SCORE_UPDATE, "info",
                 score, List.of(), "score update", "",
-                Action.CONTINUE, agentName, truncate(triggerText, 200), null, 0);
+                Action.CONTINUE, agentName, StringUtils.truncate(triggerText, 200), null, 0);
     }
 
     public static RealtimeInterruptEvent textViolation(double score, List<String> violations,
@@ -108,7 +109,7 @@ public record RealtimeInterruptEvent(
                 newId(), Instant.now(), EventType.TEXT_VIOLATION, "error",
                 score, violations != null ? violations : List.of(),
                 reason, correctionPrompt != null ? correctionPrompt : "",
-                action, agentName, truncate(triggerText, 200), null, attempt);
+                action, agentName, StringUtils.truncate(triggerText, 200), null, attempt);
     }
 
     public static RealtimeInterruptEvent toolViolation(String toolName, List<String> violations,
@@ -153,8 +154,4 @@ public record RealtimeInterruptEvent(
         return UUID.randomUUID().toString().substring(0, 8);
     }
 
-    private static String truncate(String text, int max) {
-        if (text == null) return null;
-        return text.length() <= max ? text : text.substring(0, max - 3) + "...";
-    }
 }

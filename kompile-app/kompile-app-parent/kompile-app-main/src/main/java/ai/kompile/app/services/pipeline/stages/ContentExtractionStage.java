@@ -20,6 +20,7 @@ import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.app.core.extraction.*;
 import ai.kompile.app.ingest.service.IngestEventService;
 import ai.kompile.app.services.pipeline.PipelineStage;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -76,7 +77,7 @@ public class ContentExtractionStage implements PipelineStage<TokenizationStage.T
     private final ConcurrentExtractionOrchestrator orchestrator;
     private final StageMetrics metrics = new StageMetrics();
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // Audit logging service (optional)
     private IngestEventService eventService;

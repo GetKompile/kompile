@@ -17,6 +17,7 @@
 package ai.kompile.app.services;
 
 import ai.kompile.cli.common.chat.sources.*;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +43,7 @@ import java.util.concurrent.TimeUnit;
 public class TranscriptIndexingService {
 
     private static final Logger logger = LoggerFactory.getLogger(TranscriptIndexingService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     @Autowired
     private ToolCallWriterService toolCallWriter;

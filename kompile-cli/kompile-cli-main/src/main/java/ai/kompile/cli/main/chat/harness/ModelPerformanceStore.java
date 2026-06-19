@@ -16,10 +16,10 @@
 
 package ai.kompile.cli.main.chat.harness;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -55,8 +55,7 @@ public class ModelPerformanceStore {
     private volatile Path deferredLoadPath;
 
     public ModelPerformanceStore(int maxRecordAge, int maxRecords) {
-        this.mapper = new ObjectMapper();
-        this.mapper.registerModule(new JavaTimeModule());
+        this.mapper = JsonUtils.standardMapper();
         this.records = new CopyOnWriteArrayList<>();
         this.maxRecordAge = maxRecordAge;
         this.maxRecords = maxRecords;

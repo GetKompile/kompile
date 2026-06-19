@@ -16,6 +16,7 @@
 
 package ai.kompile.oauth.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -55,6 +56,6 @@ public class OAuth2ClientAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public ObjectMapper oauthObjectMapper() {
-        return new ObjectMapper();
+        return JsonUtils.newStandardMapper();
     }
 }

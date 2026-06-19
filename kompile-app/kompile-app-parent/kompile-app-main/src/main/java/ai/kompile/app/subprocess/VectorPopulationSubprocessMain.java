@@ -17,10 +17,12 @@
 package ai.kompile.app.subprocess;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.app.services.pipeline.IngestPipelineConfig;
 import ai.kompile.app.services.pipeline.ParallelIngestPipeline;
 import ai.kompile.app.services.pipeline.PipelineProgress;
 import ai.kompile.app.services.pipeline.PipelineResult;
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -61,7 +63,7 @@ import java.util.*;
 public class VectorPopulationSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(VectorPopulationSubprocessMain.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     // Redirect System.out to System.err for logging, keep protocol messages on original stdout
     private static PrintStream originalStdout;
@@ -328,7 +330,7 @@ public class VectorPopulationSubprocessMain {
                 // Don't force a high minimum (like 32) that defeats OOM recovery!
                 int minBatchSize = Math.max(AdaptiveRecoverySettings.MIN_BATCH_SIZE,
                         Math.min(subprocessArgs.embeddingBatchSize(), subprocessArgs.embeddingBatchSize() / 2));
-                ParallelIngestPipeline.PipelineConfig pipelineConfig = ParallelIngestPipeline.PipelineConfig.builder()
+                IngestPipelineConfig pipelineConfig = IngestPipelineConfig.builder()
                         .minBatchSize(minBatchSize)
                         .defaultBatchSize(subprocessArgs.embeddingBatchSize())
                         .maxBatchSize(subprocessArgs.maxBatchSize())

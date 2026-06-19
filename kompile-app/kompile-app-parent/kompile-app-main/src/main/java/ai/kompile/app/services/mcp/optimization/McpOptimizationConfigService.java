@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.mcp.optimization;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigChangedEvent;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
@@ -62,7 +63,7 @@ public class McpOptimizationConfigService implements McpOptimizationConfigProvid
     public McpOptimizationConfigService(
             @Value("${kompile.data.dir:#{null}}") String dataDir,
             ApplicationEventPublisher eventPublisher) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.eventPublisher = eventPublisher;
 
         String effectiveDataDir = dataDir;

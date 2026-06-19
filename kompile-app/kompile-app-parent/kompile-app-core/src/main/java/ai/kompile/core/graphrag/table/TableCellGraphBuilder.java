@@ -16,6 +16,7 @@
 
 package ai.kompile.core.graphrag.table;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
@@ -64,7 +65,7 @@ import static ai.kompile.core.graphrag.GraphConstants.*;
 public class TableCellGraphBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(TableCellGraphBuilder.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private String namespace;
     private String tableName;

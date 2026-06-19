@@ -49,8 +49,8 @@ public class SubprocessRegistry {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessRegistry.class);
 
-    private static final int GRACEFUL_SHUTDOWN_SECONDS = 10;
-    private static final int FORCE_KILL_WAIT_SECONDS = 5;
+    private static final int GRACEFUL_SHUTDOWN_SECONDS = 3;
+    private static final int FORCE_KILL_WAIT_SECONDS = 2;
 
     private final ConcurrentHashMap<String, TrackedProcess> processes = new ConcurrentHashMap<>();
     private volatile boolean shutdownHookRegistered = false;

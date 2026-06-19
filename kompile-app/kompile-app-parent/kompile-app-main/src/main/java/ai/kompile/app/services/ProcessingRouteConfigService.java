@@ -17,6 +17,7 @@
 package ai.kompile.app.services;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -55,7 +56,7 @@ public class ProcessingRouteConfigService {
     }
 
     public ProcessingRouteConfigService(Path dataDir) {
-        this.objectMapper = new ObjectMapper()
+        this.objectMapper = JsonUtils.newStandardMapper()
                 .enable(SerializationFeature.INDENT_OUTPUT);
         this.configPath = dataDir.resolve("config").resolve(CONFIG_FILENAME);
     }

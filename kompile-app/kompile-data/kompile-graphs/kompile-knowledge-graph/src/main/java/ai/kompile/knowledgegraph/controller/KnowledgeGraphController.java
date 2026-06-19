@@ -78,11 +78,14 @@ public class KnowledgeGraphController {
             }
         }
         if (query != null && !query.isBlank()) {
+            // Text search: vector-store similarity search filtered by optional type
             nodes = graphService.searchNodes(query, nodeType, limit);
         } else if (nodeType != null) {
-            nodes = graphService.searchNodes("", nodeType, limit);
+            // Type filter only: enumerate directly from in-memory graph (no vector search)
+            nodes = graphService.getNodesByType(nodeType, limit);
         } else {
-            nodes = graphService.getAllSources();
+            // No filter: return all nodes from the vector store (source of truth)
+            nodes = graphService.getAllNodes(limit);
         }
         return ResponseEntity.ok(nodes);
     }

@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.skill;
 
 import ai.kompile.cli.common.KompileHome;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -49,6 +51,8 @@ import java.util.stream.Stream;
  * </pre>
  */
 public class CustomSkillLoader {
+
+    private static final Logger log = LoggerFactory.getLogger(CustomSkillLoader.class);
 
     private final Path workingDirectory;
 
@@ -89,7 +93,7 @@ public class CustomSkillLoader {
                                 skills.put(skill.getName(), skill);
                             }
                         } catch (Exception e) {
-                            System.err.println("Warning: Failed to load skill from " + file + ": " + e.getMessage());
+                            log.warn("Failed to load skill from {}: {}", file, e.getMessage(), e);
                         }
                     });
         } catch (IOException e) {

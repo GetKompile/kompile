@@ -27,8 +27,8 @@ import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -87,8 +87,7 @@ public class EvalRunner {
      * and the OutcomeEvaluator will use those scores for cases with no assertions.
      */
     public void enableJudge() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
+        ObjectMapper mapper = JsonUtils.standardMapper();
         HarnessConfig config = HarnessConfig.load(mapper);
         config.setJudgeEnabled(true);
         this.judge = new JudgeLlmEvaluator(mapper, config);
@@ -342,8 +341,7 @@ public class EvalRunner {
      */
     AgentExecResult executeInternal(String prompt, Path workDir,
                                             long timeoutMs, Map<String, String> env) {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
+        ObjectMapper mapper = JsonUtils.standardMapper();
 
         try {
             ChatConfig chatConfig = ChatConfig.loadOrFromEnv();

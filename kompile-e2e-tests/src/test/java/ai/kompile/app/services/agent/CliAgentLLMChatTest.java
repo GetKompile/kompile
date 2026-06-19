@@ -63,7 +63,11 @@ class CliAgentLLMChatTest {
         when(agentRegistryService.getAvailableAgentCount()).thenReturn(1);
         when(agentRegistryService.getDefaultAgent()).thenReturn(Optional.of(echoAgent));
 
-        llmChat = new CliAgentLLMChat(agentRegistryService);
+        ClaudeStreamParser streamParser = new ClaudeStreamParser();
+        AgentProcessDiagnosticService diagnosticService = new AgentProcessDiagnosticService();
+        AgentSubprocessExecutor subprocessExecutor = new AgentSubprocessExecutor(
+                agentRegistryService, diagnosticService, streamParser);
+        llmChat = new CliAgentLLMChat(agentRegistryService, subprocessExecutor, streamParser);
     }
 
     // ── isAvailable ──────────────────────────────────────────────────────────────
@@ -76,7 +80,10 @@ class CliAgentLLMChatTest {
     @Test
     void isAvailable_whenNoAgents_returnsFalse() {
         when(agentRegistryService.hasAvailableAgents()).thenReturn(false);
-        CliAgentLLMChat noAgentChat = new CliAgentLLMChat(agentRegistryService);
+        ClaudeStreamParser parser = new ClaudeStreamParser();
+        AgentSubprocessExecutor exec = new AgentSubprocessExecutor(
+                agentRegistryService, new AgentProcessDiagnosticService(), parser);
+        CliAgentLLMChat noAgentChat = new CliAgentLLMChat(agentRegistryService, exec, parser);
         assertFalse(noAgentChat.isAvailable());
     }
 
@@ -128,7 +135,10 @@ class CliAgentLLMChatTest {
     void executeAgent_noAgentAvailable_returnsErrorMessage() {
         when(agentRegistryService.getDefaultAgent()).thenReturn(Optional.empty());
         // Reset cached agent
-        CliAgentLLMChat noAgent = new CliAgentLLMChat(agentRegistryService);
+        ClaudeStreamParser parser = new ClaudeStreamParser();
+        AgentSubprocessExecutor exec = new AgentSubprocessExecutor(
+                agentRegistryService, new AgentProcessDiagnosticService(), parser);
+        CliAgentLLMChat noAgent = new CliAgentLLMChat(agentRegistryService, exec, parser);
 
         String result = noAgent.executeAgent("test", null);
         assertNotNull(result);

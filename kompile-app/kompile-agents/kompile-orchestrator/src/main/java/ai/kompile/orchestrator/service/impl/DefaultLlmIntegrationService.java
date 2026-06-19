@@ -28,6 +28,7 @@ import ai.kompile.orchestrator.model.workflow.ActionType;
 import ai.kompile.orchestrator.repository.LlmSessionRepository;
 import ai.kompile.orchestrator.repository.LlmTriggerRepository;
 import ai.kompile.orchestrator.service.registry.LlmProviderRegistry;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,7 +55,7 @@ public class DefaultLlmIntegrationService implements LlmIntegrationService {
     private final ApplicationEventPublisher eventPublisher;
     private final OrchestratorProperties properties;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final Map<String, LlmTrigger> triggerCache = new ConcurrentHashMap<>();
 
     // Pattern for parsing JSON from LLM output

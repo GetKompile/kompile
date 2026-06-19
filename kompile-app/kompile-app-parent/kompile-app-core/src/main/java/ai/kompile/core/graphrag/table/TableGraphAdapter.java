@@ -16,6 +16,7 @@
 
 package ai.kompile.core.graphrag.table;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,7 +41,7 @@ import java.util.*;
 public final class TableGraphAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(TableGraphAdapter.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private TableGraphAdapter() {}
 

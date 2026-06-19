@@ -52,7 +52,12 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public class PersistentAgentProcess implements AutoCloseable {
 
-    private static final int DEFAULT_TURN_TIMEOUT_SECONDS = 120;
+    /**
+     * Default per-turn timeout: 600 s (10 min) to match the outer multi_task
+     * future.get(10, TimeUnit.MINUTES) gate and allow real agentic work to
+     * complete before the timeout fires.
+     */
+    private static final int DEFAULT_TURN_TIMEOUT_SECONDS = 600;
 
     private final String agentBinary;
     private final Path workDir;
@@ -132,12 +137,34 @@ public class PersistentAgentProcess implements AutoCloseable {
     }
 
     /**
+     * Thrown when an agent turn times out but has produced some partial output.
+     * Carries the partial text so callers can surface it as INCOMPLETE rather
+     * than silently treating it as a successful completion.
+     */
+    public static final class TimedOutException extends IOException {
+        private final String partialOutput;
+
+        public TimedOutException(String partialOutput, int timeoutSeconds) {
+            super("Agent turn timed out after " + timeoutSeconds + "s with partial output ("
+                    + partialOutput.length() + " chars)");
+            this.partialOutput = partialOutput;
+        }
+
+        /** The partial text accumulated before the timeout fired. Never null, may be empty. */
+        public String getPartialOutput() {
+            return partialOutput;
+        }
+    }
+
+    /**
      * Send a message and wait for the agent's response.
      *
-     * @param message the user message to send
+     * @param message        the user message to send
      * @param timeoutSeconds max seconds to wait for a complete turn
      * @return the agent's text response
-     * @throws IOException if communication fails
+     * @throws IOException        if communication fails
+     * @throws TimedOutException  if the turn timed out (even with partial output — callers
+     *                            MUST distinguish this from a true completion)
      */
     public String sendMessage(String message, int timeoutSeconds) throws IOException, InterruptedException {
         sendLock.lock();
@@ -155,8 +182,11 @@ public class PersistentAgentProcess implements AutoCloseable {
             boolean completed = turnComplete.await(timeoutSeconds, TimeUnit.SECONDS);
             String result = turnOutput.toString().trim();
 
-            if (!completed && result.isEmpty()) {
-                throw new IOException("Agent turn timed out after " + timeoutSeconds + "s");
+            if (!completed) {
+                // Timeout — throw regardless of whether partial output exists.
+                // Empty buffer → plain IOException; non-empty → TimedOutException with
+                // the partial text so callers can report it distinctly.
+                throw new TimedOutException(result, timeoutSeconds);
             }
             return result;
         } finally {

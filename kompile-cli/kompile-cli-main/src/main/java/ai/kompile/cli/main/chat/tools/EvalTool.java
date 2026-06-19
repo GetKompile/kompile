@@ -16,13 +16,14 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.harness.eval.*;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.File;
 import java.io.IOException;
@@ -50,12 +51,8 @@ import java.util.Map;
  */
 public class EvalTool implements CliTool {
 
-    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
-    static {
-        JSON_MAPPER.registerModule(new JavaTimeModule());
-        JSON_MAPPER.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        JSON_MAPPER.enable(SerializationFeature.INDENT_OUTPUT);
-    }
+    private static final ObjectMapper JSON_MAPPER = JsonUtils.newStandardMapper()
+            .enable(SerializationFeature.INDENT_OUTPUT);
 
     @Override
     public String id() {
@@ -169,8 +166,8 @@ public class EvalTool implements CliTool {
         sb.append("  " + "-".repeat(96) + "\n");
         for (EvalRunResult r : runs) {
             sb.append(String.format("  %-36s %-20s %s  %d/%d (%.0f%%)  %dms  %s\n",
-                    truncate(r.getRunId(), 36),
-                    truncate(r.getSuiteName(), 20),
+                    StringUtils.truncate(r.getRunId(), 36),
+                    StringUtils.truncate(r.getSuiteName(), 20),
                     r.isSuitePassed() ? "PASS" : "FAIL",
                     r.getPassedCases(), r.getTotalCases(),
                     r.getPassRate() * 100,
@@ -228,7 +225,7 @@ public class EvalTool implements CliTool {
         sb.append("  " + "-".repeat(80) + "\n");
         for (EvalCaseResult cr : run.getCaseResults()) {
             sb.append(String.format("  %-30s %-10s %-12s %dms\n",
-                    truncate(cr.getCaseId(), 30),
+                    StringUtils.truncate(cr.getCaseId(), 30),
                     cr.passed() ? "PASS" : "FAIL",
                     cr.getOutcome(),
                     cr.getExecutionTimeMs()));
@@ -488,7 +485,7 @@ public class EvalTool implements CliTool {
         sb.append(String.format("  %-25s %-30s %-30s\n", "", "Run A", "Run B"));
         sb.append("  " + "-".repeat(85) + "\n");
         sb.append(String.format("  %-25s %-30s %-30s\n", "Run ID",
-                truncate(runA.getRunId(), 30), truncate(runB.getRunId(), 30)));
+                StringUtils.truncate(runA.getRunId(), 30), StringUtils.truncate(runB.getRunId(), 30)));
         sb.append(String.format("  %-25s %-30s %-30s\n", "Suite",
                 runA.getSuiteName(), runB.getSuiteName()));
         sb.append(String.format("  %-25s %-30s %-30s\n", "Result",
@@ -534,7 +531,7 @@ public class EvalTool implements CliTool {
                 String delta = statusA.equals(statusB) ? "=" :
                         ("PASS".equals(statusB) ? "IMPROVED" : "REGRESSED");
                 sb.append(String.format("  %-30s %-12s %-12s %s\n",
-                        truncate(caseId, 30), statusA, statusB, delta));
+                        StringUtils.truncate(caseId, 30), statusA, statusB, delta));
             }
         }
 
@@ -598,11 +595,6 @@ public class EvalTool implements CliTool {
             return val.isEmpty() ? null : val;
         }
         return null;
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
     }
 
     private static void addStringProp(ObjectNode props, String name, String desc) {

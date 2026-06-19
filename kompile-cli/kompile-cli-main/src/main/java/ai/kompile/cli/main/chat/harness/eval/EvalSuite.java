@@ -18,6 +18,10 @@ package ai.kompile.cli.main.chat.harness.eval;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -42,6 +46,10 @@ import java.util.List;
  *         value: hello
  * </pre>
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class EvalSuite {
 
@@ -71,17 +79,18 @@ public class EvalSuite {
 
     /** Required fraction of cases that must pass for the suite to pass. Default: 0.8 */
     @JsonProperty
+    @Builder.Default
     private double requiredPassRate = 0.8;
 
     /** The test cases. */
     @JsonProperty
+    @Builder.Default
     private List<EvalCase> cases = new ArrayList<>();
 
     /** Tags for filtering suites. */
     @JsonProperty
+    @Builder.Default
     private List<String> tags = new ArrayList<>();
-
-    public EvalSuite() {}
 
     /** Returns the effective agent for a case (case-level overrides suite-level). */
     public String effectiveAgent(EvalCase evalCase) {
@@ -107,26 +116,4 @@ public class EvalSuite {
     public List<EvalCase> enabledCases() {
         return cases.stream().filter(EvalCase::isEnabled).toList();
     }
-
-    // Getters
-    public String getName() { return name; }
-    public String getDescription() { return description; }
-    public String getAgent() { return agent; }
-    public String getModel() { return model; }
-    public String getProvider() { return provider; }
-    public String getWorkingDirectory() { return workingDirectory; }
-    public double getRequiredPassRate() { return requiredPassRate; }
-    public List<EvalCase> getCases() { return cases; }
-    public List<String> getTags() { return tags; }
-
-    // Setters for Jackson
-    public void setName(String name) { this.name = name; }
-    public void setDescription(String description) { this.description = description; }
-    public void setAgent(String agent) { this.agent = agent; }
-    public void setModel(String model) { this.model = model; }
-    public void setProvider(String provider) { this.provider = provider; }
-    public void setWorkingDirectory(String workingDirectory) { this.workingDirectory = workingDirectory; }
-    public void setRequiredPassRate(double requiredPassRate) { this.requiredPassRate = requiredPassRate; }
-    public void setCases(List<EvalCase> cases) { this.cases = cases; }
-    public void setTags(List<String> tags) { this.tags = tags; }
 }

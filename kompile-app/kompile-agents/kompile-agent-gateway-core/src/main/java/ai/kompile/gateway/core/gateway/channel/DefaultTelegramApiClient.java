@@ -15,6 +15,7 @@
  */
 package ai.kompile.gateway.core.gateway.channel;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -36,7 +37,7 @@ public class DefaultTelegramApiClient implements TelegramApiClient {
     private final ObjectMapper objectMapper;
 
     public DefaultTelegramApiClient(String botToken) {
-        this(botToken, HttpClient.newHttpClient(), new ObjectMapper());
+        this(botToken, HttpClient.newHttpClient(), JsonUtils.standardMapper());
     }
 
     public DefaultTelegramApiClient(String botToken, HttpClient httpClient, ObjectMapper objectMapper) {

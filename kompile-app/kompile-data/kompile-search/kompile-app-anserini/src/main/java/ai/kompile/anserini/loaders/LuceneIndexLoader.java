@@ -22,6 +22,7 @@ import ai.kompile.core.loaders.StreamingDocumentLoader;
 import ai.kompile.core.source.SourceAttributionHelper;
 import ai.kompile.core.source.SourceMetadataConstants;
 import com.fasterxml.jackson.core.type.TypeReference;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexableField;
@@ -57,7 +58,7 @@ public class LuceneIndexLoader implements StreamingDocumentLoader {
     private static final String ANSERINI_CONTENT_FIELD = "contents"; // Default Anserini content field
     private static final String METADATA_FIELD = "metadata"; // JSON metadata field
 
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Override
     public String getName() {

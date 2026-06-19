@@ -16,6 +16,7 @@
 
 package ai.kompile.core.mcp.optimization;
 
+import lombok.Getter;
 import org.springframework.context.ApplicationEvent;
 
 /**
@@ -23,6 +24,7 @@ import org.springframework.context.ApplicationEvent;
  * load, PUT from UI, reset). Listeners in the compression and meta-tool
  * layers consume this to reload caches, recompute tool-exposure filters, etc.
  */
+@Getter
 public class McpOptimizationConfigChangedEvent extends ApplicationEvent {
 
     private final McpOptimizationConfig config;
@@ -30,9 +32,5 @@ public class McpOptimizationConfigChangedEvent extends ApplicationEvent {
     public McpOptimizationConfigChangedEvent(Object source, McpOptimizationConfig config) {
         super(source);
         this.config = config;
-    }
-
-    public McpOptimizationConfig getConfig() {
-        return config;
     }
 }

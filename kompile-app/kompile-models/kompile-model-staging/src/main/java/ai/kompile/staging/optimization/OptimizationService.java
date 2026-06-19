@@ -57,6 +57,7 @@ public class OptimizationService {
 
     /**
      * Available optimization types that can be configured.
+     * Order matches GraphOptimizer.defaultOptimizations() execution order.
      */
     public enum OptimizationType {
         UNUSED_FUNCTION("UnusedFunctionOptimizations",
@@ -69,35 +70,110 @@ public class OptimizationService {
                 "Pre-executes operations on constants and replaces them with the result",
                 "folding"),
 
+        BROADCAST_ELIMINATION("BroadcastEliminationOptimizations",
+                "Broadcast Elimination",
+                "Removes redundant broadcasts, double negation, and canonicalizes commutative ops",
+                "simplification"),
+
+        REORDERING("ReorderingOptimizations",
+                "Expression Reordering",
+                "Reassociates constants and eliminates double transpose",
+                "simplification"),
+
+        ALGEBRAIC("AlgebraicOptimizations",
+                "Algebraic Simplification",
+                "Simplifies algebraic identities: x+0=x, x*1=x, x*0=0, x-x=0",
+                "simplification"),
+
+        PEEPHOLE("PeepholeOptimizations",
+                "Peephole Optimizations",
+                "Removes idempotent ops, inverse pairs, and propagates negation",
+                "simplification"),
+
+        ARITHMETIC_CHAIN("ArithmeticChainOptimizations",
+                "Arithmetic Chain Folding",
+                "Folds arithmetic chains: add(add(x,c1),c2) becomes add(x,c1+c2)",
+                "simplification"),
+
+        STRENGTH_REDUCTION("StrengthReductionOptimizations",
+                "Strength Reduction",
+                "Replaces expensive ops with cheaper equivalents: pow(x,2) becomes square(x), div(x,c) becomes mul(x,1/c)",
+                "simplification"),
+
         IDENTITY_FUNCTION("IdentityFunctionOptimizations",
                 "Remove Identity Operations",
                 "Removes identity operations and no-op permutations",
                 "cleanup"),
+
+        CONCAT_SPLIT("ConcatSplitOptimizations",
+                "Concat/Split Optimization",
+                "Flattens nested concat operations and eliminates concat-split pairs",
+                "simplification"),
+
+        SELECT_WHERE("SelectWhereOptimizations",
+                "Select/Where Simplification",
+                "Simplifies select/where operations with constant conditions",
+                "simplification"),
+
+        REDUNDANCY_ELIMINATION("RedundancyEliminationOptimizations",
+                "Redundancy Elimination",
+                "Removes single-input concat, full-extent slice, and identity gather operations",
+                "simplification"),
 
         SHAPE_FUNCTION("ShapeFunctionOptimizations",
                 "Shape Optimizations",
                 "Fuses chained permutes/concats and removes redundant reshapes",
                 "fusion"),
 
+        COMMON_SUBEXPRESSION_ELIMINATION("CommonSubexpressionElimination",
+                "Common Subexpression Elimination",
+                "Deduplicates identical operations sharing the same inputs and arguments",
+                "simplification"),
+
+        ATTENTION_FUSION("AttentionFusionOptimizations",
+                "Attention Fusion",
+                "Detects and fuses attention patterns into optimized operations (must run before horizontal fusion)",
+                "fusion"),
+
+        HORIZONTAL_FUSION("HorizontalFusionOptimizations",
+                "Horizontal Fusion",
+                "Fuses parallel matmul operations sharing the same input into a single fused matmul plus slice",
+                "fusion"),
+
+        MATMUL_CHAIN("MatMulChainOptimizations",
+                "MatMul Chain Optimization",
+                "Folds constant matmul chains and absorbs transposes into matmul flags",
+                "fusion"),
+
+        ACTIVATION_FUSION("ActivationFusionOptimizations",
+                "Activation Fusion",
+                "Fuses activation patterns: sigmoid(x)*x becomes swish, detects SwiGLU gating",
+                "fusion"),
+
+        NORMALIZATION_FUSION("NormalizationFusionOptimizations",
+                "Normalization Fusion",
+                "Detects and fuses RMSNorm and mean-square normalization sub-graphs",
+                "fusion"),
+
+        REMATERIALIZATION("RematerializationOptimizations",
+                "Rematerialization",
+                "Duplicates cheap operations to shorten variable live ranges and reduce peak memory",
+                "performance"),
+
         LINEAR_FUSION("LinearFusionOptimizations",
                 "Linear Layer Fusion",
                 "Fuses matmul+add into efficient xw_plus_b operations",
                 "fusion"),
 
-        ATTENTION_FUSION("AttentionFusionOptimizations",
-                "Attention Fusion",
-                "Detects and fuses attention patterns into optimized operations",
-                "fusion"),
+        QUANTIZATION("QuantizationOptimizations",
+                "Quantization",
+                "Converts weights to lower precision (INT8, FP16, BF16) for smaller size and faster inference",
+                "quantization"),
 
         CUDNN_FUNCTION("CuDNNFunctionOptimizations",
                 "cuDNN Optimizations",
                 "Converts operations to use optimized cuDNN implementations (CUDA only)",
-                "hardware"),
-
-        QUANTIZATION("QuantizationOptimizations",
-                "Quantization",
-                "Converts weights to lower precision (INT8, FP16, BF16) for smaller size and faster inference",
-                "quantization");
+                "hardware");
 
         private final String className;
         private final String displayName;
@@ -142,89 +218,6 @@ public class OptimizationService {
     }
 
     /**
-     * Configuration for an optimization run.
-     */
-    public static class OptimizationConfig {
-        private Set<OptimizationType> enabledOptimizations;
-        private QuantizationType quantizationType;
-        private boolean quantizePerChannel = false;
-        private boolean createBackup = true;
-
-        public OptimizationConfig() {
-            // Default optimizations (same as GraphOptimizer.defaultOptimizations())
-            this.enabledOptimizations = EnumSet.of(
-                    OptimizationType.UNUSED_FUNCTION,
-                    OptimizationType.CONSTANT_FUNCTION,
-                    OptimizationType.IDENTITY_FUNCTION,
-                    OptimizationType.SHAPE_FUNCTION,
-                    OptimizationType.LINEAR_FUSION,
-                    OptimizationType.ATTENTION_FUSION
-            );
-        }
-
-        public Set<OptimizationType> getEnabledOptimizations() { return enabledOptimizations; }
-        public void setEnabledOptimizations(Set<OptimizationType> types) { this.enabledOptimizations = types; }
-        public QuantizationType getQuantizationType() { return quantizationType; }
-        public void setQuantizationType(QuantizationType type) { this.quantizationType = type; }
-        public boolean isQuantizePerChannel() { return quantizePerChannel; }
-        public void setQuantizePerChannel(boolean perChannel) { this.quantizePerChannel = perChannel; }
-        public boolean isCreateBackup() { return createBackup; }
-        public void setCreateBackup(boolean createBackup) { this.createBackup = createBackup; }
-
-        public void enableOnly(OptimizationType... types) {
-            this.enabledOptimizations = EnumSet.noneOf(OptimizationType.class);
-            this.enabledOptimizations.addAll(Arrays.asList(types));
-        }
-
-        public void enableAll() {
-            this.enabledOptimizations = EnumSet.allOf(OptimizationType.class);
-        }
-
-        public void disableAll() {
-            this.enabledOptimizations = EnumSet.noneOf(OptimizationType.class);
-        }
-    }
-
-    /**
-     * Result of an optimization operation.
-     */
-    public static class OptimizationResult {
-        private boolean success;
-        private String modelId;
-        private String message;
-        private String error;
-        private long optimizationTimeMs;
-        private String backupFile;
-        private List<String> appliedOptimizations;
-        private ModelMetadata.OptimizationStats stats;
-
-        public boolean isSuccess() { return success; }
-        public void setSuccess(boolean success) { this.success = success; }
-        public String getModelId() { return modelId; }
-        public void setModelId(String modelId) { this.modelId = modelId; }
-        public String getMessage() { return message; }
-        public void setMessage(String message) { this.message = message; }
-        public String getError() { return error; }
-        public void setError(String error) { this.error = error; }
-        public long getOptimizationTimeMs() { return optimizationTimeMs; }
-        public void setOptimizationTimeMs(long ms) { this.optimizationTimeMs = ms; }
-        public String getBackupFile() { return backupFile; }
-        public void setBackupFile(String backupFile) { this.backupFile = backupFile; }
-        public List<String> getAppliedOptimizations() { return appliedOptimizations; }
-        public void setAppliedOptimizations(List<String> opts) { this.appliedOptimizations = opts; }
-        public ModelMetadata.OptimizationStats getStats() { return stats; }
-        public void setStats(ModelMetadata.OptimizationStats stats) { this.stats = stats; }
-
-        public static OptimizationResult failure(String modelId, String error) {
-            OptimizationResult r = new OptimizationResult();
-            r.success = false;
-            r.modelId = modelId;
-            r.error = error;
-            return r;
-        }
-    }
-
-    /**
      * Get all available optimization types with their metadata.
      */
     public List<Map<String, Object>> getAvailableOptimizations() {
@@ -260,14 +253,11 @@ public class OptimizationService {
 
     /**
      * Check if an optimization type is in the default set.
+     * Defaults include everything except hardware-specific (cuDNN) and quantization.
      */
     private boolean isDefaultOptimization(OptimizationType type) {
-        return type == OptimizationType.UNUSED_FUNCTION ||
-               type == OptimizationType.CONSTANT_FUNCTION ||
-               type == OptimizationType.IDENTITY_FUNCTION ||
-               type == OptimizationType.SHAPE_FUNCTION ||
-               type == OptimizationType.LINEAR_FUSION ||
-               type == OptimizationType.ATTENTION_FUSION;
+        return type != OptimizationType.CUDNN_FUNCTION &&
+               type != OptimizationType.QUANTIZATION;
     }
 
     /**
@@ -406,15 +396,16 @@ public class OptimizationService {
                     modelId, optimizationTimeMs, appliedOptimizationNames, stats, savedConfig);
 
             // Build result
-            OptimizationResult result = new OptimizationResult();
-            result.setSuccess(true);
-            result.setModelId(modelId);
-            result.setMessage(String.format("Model optimized successfully. Ops: %d -> %d, Vars: %d -> %d",
-                    opsBefore, opsAfter, varsBefore, varsAfter));
-            result.setOptimizationTimeMs(optimizationTimeMs);
-            result.setBackupFile(regResult.getBackupFile());
-            result.setAppliedOptimizations(appliedOptimizationNames);
-            result.setStats(stats);
+            OptimizationResult result = OptimizationResult.builder()
+                    .success(true)
+                    .modelId(modelId)
+                    .message(String.format("Model optimized successfully. Ops: %d -> %d, Vars: %d -> %d",
+                            opsBefore, opsAfter, varsBefore, varsAfter))
+                    .optimizationTimeMs(optimizationTimeMs)
+                    .backupFile(regResult.getBackupFile())
+                    .appliedOptimizations(appliedOptimizationNames)
+                    .stats(stats)
+                    .build();
 
             // Notify kompile-app-main to reload the model if callback URL is configured
             notifyModelReload(modelId);
@@ -439,46 +430,95 @@ public class OptimizationService {
 
     /**
      * Build the list of optimizer sets based on configuration.
+     * Order matches GraphOptimizer.defaultOptimizations() exactly.
      */
     private List<OptimizerSet> buildOptimizerList(OptimizationConfig config) {
         List<OptimizerSet> optimizers = new ArrayList<>();
         Set<OptimizationType> enabled = config.getEnabledOptimizations();
 
-        // Add optimizers in the recommended order
+        // Phase 1: Cleanup and simplification (order matches GraphOptimizer)
         if (enabled.contains(OptimizationType.UNUSED_FUNCTION)) {
             optimizers.add(new UnusedFunctionOptimizations());
         }
         if (enabled.contains(OptimizationType.CONSTANT_FUNCTION)) {
             optimizers.add(new ConstantFunctionOptimizations());
         }
+        if (enabled.contains(OptimizationType.BROADCAST_ELIMINATION)) {
+            optimizers.add(new BroadcastEliminationOptimizations());
+        }
+        if (enabled.contains(OptimizationType.REORDERING)) {
+            optimizers.add(new ReorderingOptimizations());
+        }
+        if (enabled.contains(OptimizationType.ALGEBRAIC)) {
+            optimizers.add(new AlgebraicOptimizations());
+        }
+        if (enabled.contains(OptimizationType.PEEPHOLE)) {
+            optimizers.add(new PeepholeOptimizations());
+        }
+        if (enabled.contains(OptimizationType.ARITHMETIC_CHAIN)) {
+            optimizers.add(new ArithmeticChainOptimizations());
+        }
+        if (enabled.contains(OptimizationType.STRENGTH_REDUCTION)) {
+            optimizers.add(new StrengthReductionOptimizations());
+        }
         if (enabled.contains(OptimizationType.IDENTITY_FUNCTION)) {
             optimizers.add(new IdentityFunctionOptimizations());
+        }
+        if (enabled.contains(OptimizationType.CONCAT_SPLIT)) {
+            optimizers.add(new ConcatSplitOptimizations());
+        }
+        if (enabled.contains(OptimizationType.SELECT_WHERE)) {
+            optimizers.add(new SelectWhereOptimizations());
+        }
+        if (enabled.contains(OptimizationType.REDUNDANCY_ELIMINATION)) {
+            optimizers.add(new RedundancyEliminationOptimizations());
         }
         if (enabled.contains(OptimizationType.SHAPE_FUNCTION)) {
             optimizers.add(new ShapeFunctionOptimizations());
         }
-        if (enabled.contains(OptimizationType.LINEAR_FUSION)) {
-            optimizers.add(new LinearFusionOptimizations());
+        if (enabled.contains(OptimizationType.COMMON_SUBEXPRESSION_ELIMINATION)) {
+            optimizers.add(new CommonSubexpressionElimination());
         }
+
+        // Phase 2: Fusion passes (attention MUST run before horizontal fusion)
         if (enabled.contains(OptimizationType.ATTENTION_FUSION)) {
             optimizers.add(new AttentionFusionOptimizations());
         }
+        if (enabled.contains(OptimizationType.HORIZONTAL_FUSION)) {
+            optimizers.add(new HorizontalFusionOptimizations());
+        }
+        if (enabled.contains(OptimizationType.MATMUL_CHAIN)) {
+            optimizers.add(new MatMulChainOptimizations());
+        }
+        // Activation and normalization fusion MUST run before rematerialization
+        if (enabled.contains(OptimizationType.ACTIVATION_FUSION)) {
+            optimizers.add(new ActivationFusionOptimizations());
+        }
+        if (enabled.contains(OptimizationType.NORMALIZATION_FUSION)) {
+            optimizers.add(new NormalizationFusionOptimizations());
+        }
 
-        // Second pass of unused function removal (after fusions)
+        // Phase 3: Rematerialization (after all fusions to avoid breaking patterns)
+        if (enabled.contains(OptimizationType.REMATERIALIZATION)) {
+            optimizers.add(new RematerializationOptimizations());
+        }
+
+        // Phase 4: Linear fusion and quantization
+        if (enabled.contains(OptimizationType.LINEAR_FUSION)) {
+            optimizers.add(new LinearFusionOptimizations());
+        }
+        if (enabled.contains(OptimizationType.QUANTIZATION) && config.getQuantizationType() != null) {
+            optimizers.add(new QuantizationOptimizations());
+        }
+
+        // Phase 5: Second pass of unused function removal (catch newly dead ops from fusions)
         if (enabled.contains(OptimizationType.UNUSED_FUNCTION)) {
             optimizers.add(new UnusedFunctionOptimizations());
         }
 
+        // Phase 6: Hardware-specific
         if (enabled.contains(OptimizationType.CUDNN_FUNCTION)) {
             optimizers.add(new CuDNNFunctionOptimizations());
-        }
-
-        // Note: Quantization requires special handling - add if enabled
-        // QuantizationOptimizations would need custom configuration
-        if (enabled.contains(OptimizationType.QUANTIZATION) && config.getQuantizationType() != null) {
-            // Quantization is handled separately through the QuantizationOptimizations class
-            // which requires specific configuration
-            optimizers.add(new QuantizationOptimizations());
         }
 
         return optimizers;
@@ -607,46 +647,63 @@ public class OptimizationService {
     public List<Map<String, Object>> getPresets() {
         List<Map<String, Object>> presets = new ArrayList<>();
 
-        // Default preset
+        // Default preset - all non-hardware, non-quantization passes
         Map<String, Object> defaultPreset = new LinkedHashMap<>();
         defaultPreset.put("id", "default");
         defaultPreset.put("name", "Default Optimizations");
-        defaultPreset.put("description", "Standard optimization pipeline for most models");
+        defaultPreset.put("description", "Full optimization pipeline matching GraphOptimizer defaults (excludes cuDNN and quantization)");
         defaultPreset.put("optimizations", Arrays.asList(
-                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "IDENTITY_FUNCTION",
-                "SHAPE_FUNCTION", "LINEAR_FUSION", "ATTENTION_FUSION"
+                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "BROADCAST_ELIMINATION",
+                "REORDERING", "ALGEBRAIC", "PEEPHOLE", "ARITHMETIC_CHAIN",
+                "STRENGTH_REDUCTION", "IDENTITY_FUNCTION", "CONCAT_SPLIT",
+                "SELECT_WHERE", "REDUNDANCY_ELIMINATION", "SHAPE_FUNCTION",
+                "COMMON_SUBEXPRESSION_ELIMINATION", "ATTENTION_FUSION",
+                "HORIZONTAL_FUSION", "MATMUL_CHAIN", "ACTIVATION_FUSION",
+                "NORMALIZATION_FUSION", "REMATERIALIZATION", "LINEAR_FUSION"
         ));
         presets.add(defaultPreset);
 
-        // Transformer preset
+        // Transformer preset - default plus transformer-specific fusions
         Map<String, Object> transformerPreset = new LinkedHashMap<>();
         transformerPreset.put("id", "transformer");
-        transformerPreset.put("name", "Transformer/BERT Models");
-        transformerPreset.put("description", "Optimized for transformer architectures with attention fusion");
+        transformerPreset.put("name", "Transformer/LLM Models");
+        transformerPreset.put("description", "All default optimizations plus attention, activation, and normalization fusion for transformers");
         transformerPreset.put("optimizations", Arrays.asList(
-                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "IDENTITY_FUNCTION",
-                "SHAPE_FUNCTION", "LINEAR_FUSION", "ATTENTION_FUSION"
+                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "BROADCAST_ELIMINATION",
+                "REORDERING", "ALGEBRAIC", "PEEPHOLE", "ARITHMETIC_CHAIN",
+                "STRENGTH_REDUCTION", "IDENTITY_FUNCTION", "CONCAT_SPLIT",
+                "SELECT_WHERE", "REDUNDANCY_ELIMINATION", "SHAPE_FUNCTION",
+                "COMMON_SUBEXPRESSION_ELIMINATION", "ATTENTION_FUSION",
+                "HORIZONTAL_FUSION", "MATMUL_CHAIN", "ACTIVATION_FUSION",
+                "NORMALIZATION_FUSION", "REMATERIALIZATION", "LINEAR_FUSION"
         ));
         presets.add(transformerPreset);
 
-        // Minimal preset
+        // Minimal preset - safe cleanup only
         Map<String, Object> minimalPreset = new LinkedHashMap<>();
         minimalPreset.put("id", "minimal");
         minimalPreset.put("name", "Minimal (Safe)");
-        minimalPreset.put("description", "Conservative optimizations with minimal risk of changing behavior");
+        minimalPreset.put("description", "Conservative cleanup: dead code, identity removal, and algebraic simplification");
         minimalPreset.put("optimizations", Arrays.asList(
-                "UNUSED_FUNCTION", "IDENTITY_FUNCTION"
+                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "IDENTITY_FUNCTION",
+                "ALGEBRAIC", "REDUNDANCY_ELIMINATION"
         ));
         presets.add(minimalPreset);
 
-        // Aggressive preset
+        // Aggressive preset - everything including hardware-specific
         Map<String, Object> aggressivePreset = new LinkedHashMap<>();
         aggressivePreset.put("id", "aggressive");
         aggressivePreset.put("name", "Aggressive");
-        aggressivePreset.put("description", "All optimizations including hardware-specific ones");
+        aggressivePreset.put("description", "All optimizations including hardware-specific cuDNN replacements");
         aggressivePreset.put("optimizations", Arrays.asList(
-                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "IDENTITY_FUNCTION",
-                "SHAPE_FUNCTION", "LINEAR_FUSION", "ATTENTION_FUSION", "CUDNN_FUNCTION"
+                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "BROADCAST_ELIMINATION",
+                "REORDERING", "ALGEBRAIC", "PEEPHOLE", "ARITHMETIC_CHAIN",
+                "STRENGTH_REDUCTION", "IDENTITY_FUNCTION", "CONCAT_SPLIT",
+                "SELECT_WHERE", "REDUNDANCY_ELIMINATION", "SHAPE_FUNCTION",
+                "COMMON_SUBEXPRESSION_ELIMINATION", "ATTENTION_FUSION",
+                "HORIZONTAL_FUSION", "MATMUL_CHAIN", "ACTIVATION_FUSION",
+                "NORMALIZATION_FUSION", "REMATERIALIZATION", "LINEAR_FUSION",
+                "CUDNN_FUNCTION"
         ));
         presets.add(aggressivePreset);
 
@@ -654,9 +711,10 @@ public class OptimizationService {
         Map<String, Object> sizePreset = new LinkedHashMap<>();
         sizePreset.put("id", "size_reduction");
         sizePreset.put("name", "Size Reduction");
-        sizePreset.put("description", "Focus on reducing model size with quantization");
+        sizePreset.put("description", "Cleanup plus quantization for reducing model size");
         sizePreset.put("optimizations", Arrays.asList(
-                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "QUANTIZATION"
+                "UNUSED_FUNCTION", "CONSTANT_FUNCTION", "REDUNDANCY_ELIMINATION",
+                "COMMON_SUBEXPRESSION_ELIMINATION", "QUANTIZATION"
         ));
         sizePreset.put("quantizationType", "FLOAT16");
         presets.add(sizePreset);

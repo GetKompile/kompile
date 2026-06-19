@@ -19,7 +19,7 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
 import ai.kompile.app.services.mcp.ToolPermissionService;
 import ai.kompile.app.services.mcp.ToolPermissionService.PermissionLevel;
-import ai.kompile.app.services.mcp.ToolPermissionService.ToolPermissionConfig;
+import ai.kompile.app.services.mcp.ToolPermissionConfig;
 import ai.kompile.core.mcp.EnhancedToolDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;

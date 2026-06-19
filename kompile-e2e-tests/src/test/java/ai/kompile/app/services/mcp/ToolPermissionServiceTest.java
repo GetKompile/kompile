@@ -17,7 +17,7 @@
 package ai.kompile.app.services.mcp;
 
 import ai.kompile.app.services.mcp.ToolPermissionService.PermissionLevel;
-import ai.kompile.app.services.mcp.ToolPermissionService.ToolPermissionConfig;
+import ai.kompile.app.services.mcp.ToolPermissionConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

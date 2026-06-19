@@ -33,6 +33,7 @@ import ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline;
 // Parameter keys will be string literals matching schema definitions.
 // The Picocli command will need to know these keys.
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Getter;
 import org.apache.commons.io.FileUtils;
@@ -1206,7 +1207,7 @@ public class KompileApplicationBuilder {
                             if (imageDataType != null) specificParams.put("dataType", imageDataType);
                             if (imageNormalizationConfigJson != null && !imageNormalizationConfigJson.isEmpty()) {
                                 try {
-                                    Map<String,Object> normConf = new ObjectMapper().readValue(imageNormalizationConfigJson, Map.class);
+                                    Map<String,Object> normConf = JsonUtils.standardMapper().readValue(imageNormalizationConfigJson, Map.class);
                                     specificParams.put("normalizationConfig", normConf);
                                 } catch (Exception e) {
                                     System.err.println("Warning: Could not parse imageNormalizationConfigJson: " + e.getMessage());

@@ -21,6 +21,7 @@ import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -80,7 +81,7 @@ public class VespaVectorStoreImpl implements VectorStore, AutoCloseable {
     public VespaVectorStoreImpl(VespaVectorStoreProperties properties, EmbeddingModel embeddingModel) {
         this.properties = properties;
         this.embeddingModel = embeddingModel;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         // Build HTTP client for queries
         this.httpClient = HttpClient.newBuilder()

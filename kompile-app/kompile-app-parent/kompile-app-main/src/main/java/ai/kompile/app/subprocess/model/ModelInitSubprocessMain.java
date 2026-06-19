@@ -18,6 +18,7 @@ package ai.kompile.app.subprocess.model;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import ai.kompile.embedding.anserini.RetryableErrorClassifier;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -66,7 +67,7 @@ import java.util.Map;
 public class ModelInitSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(ModelInitSubprocessMain.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     // Redirect System.out to System.err for logging, keep protocol messages on original stdout
     private static PrintStream originalStdout;

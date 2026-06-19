@@ -17,6 +17,7 @@
 package ai.kompile.loader.onedrive;
 
 import ai.kompile.cli.common.util.HttpConstants;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.crawler.CrawlConfig;
 import ai.kompile.core.crawler.CrawlEventListener;
 import ai.kompile.core.crawler.CrawlItem;
@@ -28,6 +29,7 @@ import ai.kompile.crawler.AbstractCrawlJob;
 import ai.kompile.crawler.AbstractCrawler;
 import ai.kompile.oauth.service.OAuthConnectionService;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -113,7 +115,7 @@ public class OneDriveCrawler extends AbstractCrawler {
     // -----------------------------------------------------------------------
 
     private final OAuthConnectionService oauthService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
@@ -200,14 +202,14 @@ public class OneDriveCrawler extends AbstractCrawler {
                             + "connections UI or pass 'accessToken' in CrawlConfig properties.");
         }
 
-        String driveId = prop(props, "driveId", "me");
-        String folderId = prop(props, "folderId", "root");
-        String siteId   = prop(props, "siteId", null);
-        long maxFileSize = propLong(props, "maxFileSize", DEFAULT_MAX_FILE_SIZE);
+        String driveId = MapUtils.getStringNonBlank(props, "driveId", "me");
+        String folderId = MapUtils.getStringNonBlank(props, "folderId", "root");
+        String siteId   = MapUtils.getStringNonBlank(props, "siteId", null);
+        long maxFileSize = MapUtils.getLong(props, "maxFileSize", DEFAULT_MAX_FILE_SIZE);
         long requestDelayMs = config.getRequestDelay() != null
                 ? config.getRequestDelay().toMillis() : 500L;
         if (props.containsKey("requestDelayMs")) {
-            requestDelayMs = propLong(props, "requestDelayMs", requestDelayMs);
+            requestDelayMs = MapUtils.getLong(props, "requestDelayMs", requestDelayMs);
         }
 
         // Compile include/exclude patterns
@@ -678,25 +680,6 @@ public class OneDriveCrawler extends AbstractCrawler {
         }
     }
 
-    /** Reads a string property from the properties map with a default fallback. */
-    private static String prop(Map<String, Object> props, String key, String defaultValue) {
-        Object v = props.get(key);
-        if (v instanceof String s && !s.isBlank()) return s;
-        return defaultValue;
-    }
-
-    /** Reads a long property from the properties map with a default fallback. */
-    private static long propLong(Map<String, Object> props, String key, long defaultValue) {
-        Object v = props.get(key);
-        if (v instanceof Number n) return n.longValue();
-        if (v instanceof String s) {
-            try { return Long.parseLong(s.trim()); } catch (NumberFormatException e) {
-                log.debug("Property '{}' has non-numeric value '{}', using default {}: {}", key, s, defaultValue, e.getMessage());
-            }
-        }
-        return defaultValue;
-    }
-
     /** Infers a MIME type from the file extension. */
     private static String probeContentTypeByExtension(String fileName) {
         if (fileName == null) return null;
@@ -731,7 +714,10 @@ public class OneDriveCrawler extends AbstractCrawler {
         if (lower.endsWith(".pptx") || lower.endsWith(".ppt")) return "presentation";
         if (lower.endsWith(".html") || lower.endsWith(".htm")) return "HTML Document";
         if (lower.endsWith(".eml") || lower.endsWith(".msg") || lower.endsWith(".mbox")) return "email";
-        if (lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".json") || lower.endsWith(".xml")) return "text";
+        if (lower.endsWith(".json")) return "json";
+        if (lower.endsWith(".xml")) return "xml";
+        if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return "yaml";
+        if (lower.endsWith(".txt") || lower.endsWith(".md")) return "text";
         if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif")) return "image";
         return "file";
     }

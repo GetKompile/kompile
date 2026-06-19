@@ -16,6 +16,8 @@
 
 package ai.kompile.app.services.mcp;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.core.mcp.bridge.EndpointTestResult;
 import ai.kompile.core.mcp.bridge.RestMcpBridgeConfig;
 import ai.kompile.core.mcp.bridge.RestMcpBridgeConfig.*;
 import ai.kompile.core.mcp.bridge.RestMcpBridgeManager;
@@ -24,7 +26,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,8 +65,7 @@ public class RestMcpBridgeManagerImpl implements RestMcpBridgeManager {
     private String configDirectory;
 
     public RestMcpBridgeManagerImpl() {
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
+        this.objectMapper = JsonUtils.standardMapper();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();

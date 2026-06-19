@@ -18,7 +18,7 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.cli.common.config.ConfigArchiveManifest;
 import ai.kompile.cli.common.config.ConfigArchiveService;
-import ai.kompile.cli.common.config.ConfigArchiveService.ArchiveInfo;
+import ai.kompile.cli.common.config.ArchiveInfo;
 import ai.kompile.cli.common.config.ConfigArchiveService.ImportResult;
 import ai.kompile.cli.common.config.ImportMode;
 import lombok.extern.slf4j.Slf4j;

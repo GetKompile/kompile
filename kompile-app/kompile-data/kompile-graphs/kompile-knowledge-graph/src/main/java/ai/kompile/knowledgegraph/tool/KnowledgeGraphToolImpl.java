@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.tool;
 
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.repository.*;
@@ -478,12 +479,6 @@ public class KnowledgeGraphToolImpl {
     // HELPER METHODS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private String truncate(String text, int maxLength) {
-        if (text == null) return "";
-        if (text.length() <= maxLength) return text;
-        return text.substring(0, maxLength - 3) + "...";
-    }
-
     /**
      * Truncates node descriptions to the configured MCP optimization length,
      * falling back to the provided default when optimization is disabled.
@@ -496,6 +491,6 @@ public class KnowledgeGraphToolImpl {
         if (max <= 0) {
             return text == null ? "" : text;
         }
-        return truncate(text, max);
+        return StringUtils.truncate(text, max);
     }
 }

@@ -37,6 +37,11 @@
 
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-model-manager</artifactId>
         </dependency>
 

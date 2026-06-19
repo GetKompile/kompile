@@ -24,7 +24,7 @@ import { McpClientService, McpConnection, McpTool, McpResource, McpPrompt } from
   styleUrls: ['./mcp-hub.component.css']
 })
 export class McpHubComponent implements OnInit {
-  activeSubTab: 'tools' | 'serverBuilder' | 'externalServers' | 'restBridge' | 'debugger' | 'toolManager' | 'promptTemplates' | 'clientConnections' = 'tools';
+  activeSubTab: 'tools' | 'toolUseLog' | 'serverBuilder' | 'externalServers' | 'restBridge' | 'cliInjection' | 'debugger' | 'toolManager' | 'promptTemplates' | 'clientConnections' | 'usageCatalog' = 'tools';
 
   // MCP Client state
   connections: McpConnection[] = [];
@@ -45,6 +45,10 @@ export class McpHubComponent implements OnInit {
   constructor(private mcpClient: McpClientService) {}
 
   ngOnInit(): void {}
+
+  switchToToolUseLog(): void {
+    this.activeSubTab = 'toolUseLog';
+  }
 
   loadConnections(): void {
     this.connectionsLoading = true;

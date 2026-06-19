@@ -18,6 +18,7 @@ package ai.kompile.llm.cli;
 
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -48,7 +49,7 @@ public class CliAgentLlmConfigService {
 
     private static final Logger log = LoggerFactory.getLogger(CliAgentLlmConfigService.class);
     private static final String CONFIG_FILE = "cli-llm-config.json";
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     /**
      * Built-in agent definitions — derived from CliAgentRegistry (cli-agents.json).

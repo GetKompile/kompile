@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.transfer;
 
+import ai.kompile.utils.FormatUtils;
 import lombok.Builder;
 import lombok.Data;
 
@@ -96,14 +97,14 @@ public class TransferProgress {
      * Get formatted bytes transferred (e.g., "123.4 MB").
      */
     public String getFormattedBytesTransferred() {
-        return formatBytes(bytesTransferred);
+        return FormatUtils.formatBytes(bytesTransferred);
     }
 
     /**
      * Get formatted total bytes (e.g., "500.2 MB").
      */
     public String getFormattedTotalBytes() {
-        return totalBytes > 0 ? formatBytes(totalBytes) : "unknown";
+        return totalBytes > 0 ? FormatUtils.formatBytes(totalBytes) : "unknown";
     }
 
     /**
@@ -111,7 +112,7 @@ public class TransferProgress {
      */
     public String getFormattedSpeed() {
         if (bytesPerSecond <= 0) return "";
-        return formatBytes(bytesPerSecond) + "/s";
+        return FormatUtils.formatBytes(bytesPerSecond) + "/s";
     }
 
     /**
@@ -134,12 +135,6 @@ public class TransferProgress {
         return (seconds / 3600) + "h " + ((seconds % 3600) / 60) + "m";
     }
 
-    private String formatBytes(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 
     // Factory methods
 
@@ -166,7 +161,7 @@ public class TransferProgress {
                 .bytesTransferred(transferred)
                 .totalBytes(total)
                 .bytesPerSecond(speed)
-                .message("Downloading: " + formatBytesStatic(transferred) + " / " + formatBytesStatic(total))
+                .message("Downloading: " + FormatUtils.formatBytes(transferred) + " / " + FormatUtils.formatBytes(total))
                 .build();
     }
 
@@ -178,7 +173,7 @@ public class TransferProgress {
                 .totalBytes(total)
                 .previouslyTransferred(previousBytes)
                 .resumable(true)
-                .message("Resuming from " + formatBytesStatic(previousBytes))
+                .message("Resuming from " + FormatUtils.formatBytes(previousBytes))
                 .build();
     }
 
@@ -196,7 +191,7 @@ public class TransferProgress {
                 .fileName(fileName)
                 .bytesTransferred(totalBytes)
                 .totalBytes(totalBytes)
-                .message("Download completed: " + formatBytesStatic(totalBytes))
+                .message("Download completed: " + FormatUtils.formatBytes(totalBytes))
                 .build();
     }
 
@@ -217,10 +212,4 @@ public class TransferProgress {
                 .build();
     }
 
-    private static String formatBytesStatic(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 }

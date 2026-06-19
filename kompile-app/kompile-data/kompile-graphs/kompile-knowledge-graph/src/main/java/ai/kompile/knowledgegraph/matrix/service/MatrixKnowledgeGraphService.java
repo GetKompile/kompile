@@ -23,13 +23,11 @@ import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
@@ -43,14 +41,22 @@ import java.util.stream.Collectors;
  * </p>
  */
 @Service
-@ConditionalOnClass(name = "ai.kompile.knowledgegraph.matrix.service.MatrixKnowledgeGraphService")
-@ConditionalOnProperty(name = "kompile.knowledgegraph.type", havingValue = "matrix", matchIfMissing = false)
-@RequiredArgsConstructor
+@Primary
 @Slf4j
 public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
-    private final MatrixGraphStore graphStore;
-    private final ObjectMapper objectMapper;
+    @Autowired
+    private MatrixGraphStore graphStore;
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    public MatrixKnowledgeGraphService() {}
+
+    /** Test constructor. */
+    public MatrixKnowledgeGraphService(MatrixGraphStore graphStore, ObjectMapper objectMapper) {
+        this.graphStore = graphStore;
+        this.objectMapper = objectMapper;
+    }
 
     /**
      * Default graph ID for single-graph mode.
@@ -184,18 +190,77 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     @Override
     public GraphNode createNode(NodeLevel nodeType, String externalId, String title,
                                  String description, Map<String, Object> metadata) {
+        return createNode(nodeType, externalId, title, description, metadata, null);
+    }
+
+    /**
+     * Fact-sheet-scoped createNode override.
+     * <p>
+     * Stores the node in the vector/matrix store with the factSheetId preserved so
+     * in-memory queries (countNodesByTypeInFactSheet, getNodesByTypeInFactSheet)
+     * can find it. The vector store is the SINGLE SOURCE OF TRUTH — no JPA write-through.
+     * </p>
+     */
+    @Override
+    public GraphNode createNode(NodeLevel nodeType, String externalId, String title,
+                                 String description, Map<String, Object> metadata,
+                                 Long factSheetId) {
         String nodeId = nodeType.name().toLowerCase() + "_" + externalId;
 
-        MatrixGraphNode node = MatrixGraphNode.builder()
+        MatrixGraphNode matrixNode = MatrixGraphNode.builder()
                 .nodeId(nodeId)
                 .nodeType(nodeType.name())
                 .title(title)
                 .description(description)
                 .metadata(metadata != null ? metadata : new HashMap<>())
+                .factSheetId(factSheetId)
                 .build();
 
-        graphStore.addNode(DEFAULT_GRAPH_ID, node);
-        return convertToGraphNode(node, externalId);
+        graphStore.addNode(DEFAULT_GRAPH_ID, matrixNode);
+
+        return convertToGraphNode(matrixNode, externalId);
+    }
+
+    /**
+     * Fact-sheet-scoped addDocument override.
+     * <p>
+     * Routes through the 6-arg {@link #createNode} which stores factSheetId on the
+     * vector-store node, so per-fact-sheet queries (countNodesByTypeInFactSheet,
+     * getNodesByTypeInFactSheet) can find DOCUMENT nodes — consistent with ENTITY nodes.
+     * The vector store is the SINGLE SOURCE OF TRUTH — no JPA write-through.
+     * </p>
+     */
+    @Override
+    public GraphNode addDocument(String sourceExternalId, String jobId, String sourceType,
+                                  String sourcePath, String fileName,
+                                  String contentPreview, Map<String, Object> docMeta,
+                                  Long factSheetId) {
+        // Persist the SOURCE node (no factSheetId — SOURCE spans fact sheets)
+        Map<String, Object> sourceMeta = docMeta != null ? new HashMap<>(docMeta) : new HashMap<>();
+        sourceMeta.put("sourceType", sourceType != null ? sourceType : "FILE");
+        sourceMeta.put("pathOrUrl", sourcePath);
+        GraphNode sourceNode = createNode(NodeLevel.SOURCE, sourceExternalId, jobId,
+                null, sourceMeta, null);
+
+        // Persist the DOCUMENT node with factSheetId so it is scoped in the vector store
+        Map<String, Object> documentMeta = docMeta != null ? new HashMap<>(docMeta) : new HashMap<>();
+        if (contentPreview != null) {
+            documentMeta.put("contentPreview", contentPreview);
+        }
+        documentMeta.put("parentNodeId", sourceNode.getNodeId());
+        String docTitle = fileName != null ? fileName : sourcePath;
+        GraphNode docNode = createNode(NodeLevel.DOCUMENT, sourcePath, docTitle,
+                contentPreview, documentMeta, factSheetId);
+
+        // Hierarchical edge from SOURCE → DOCUMENT (matrix store only, best-effort)
+        try {
+            graphStore.addEdge(DEFAULT_GRAPH_ID, sourceNode.getNodeId(), docNode.getNodeId(),
+                    1.0, "HIERARCHICAL", false);
+        } catch (Exception ignored) {
+            // best-effort
+        }
+
+        return docNode;
     }
 
     @Override
@@ -267,6 +332,14 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     public List<GraphNode> getNodesByType(NodeLevel type, int limit) {
         return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
                 .filter(n -> type.name().equals(n.getNodeType()))
+                .limit(limit)
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<GraphNode> getAllNodes(int limit) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
                 .limit(limit)
                 .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
                 .collect(Collectors.toList());
@@ -804,16 +877,25 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                 .map(MatrixGraphNode::getNodeId)
                 .collect(Collectors.toSet());
 
+        Set<String> seenEdges = new HashSet<>();
         for (MatrixGraphNode node : nodes) {
-            List<Map.Entry<String, Double>> nodeEdges = graph.getNeighbors(node.getNodeId(), null);
-            for (Map.Entry<String, Double> edge : nodeEdges) {
-                if (nodeIds.contains(edge.getKey())) {
-                    Map<String, Object> edgeMap = new LinkedHashMap<>();
-                    edgeMap.put("id", node.getNodeId() + "::" + edge.getKey());
-                    edgeMap.put("source", node.getNodeId());
-                    edgeMap.put("target", edge.getKey());
-                    edgeMap.put("weight", edge.getValue());
-                    edges.add(edgeMap);
+            // Iterate over all edge types to capture type information
+            for (String edgeType : graph.getEdgeTypes()) {
+                List<Map.Entry<String, Double>> typeEdges = graph.getNeighbors(node.getNodeId(), edgeType);
+                for (Map.Entry<String, Double> edge : typeEdges) {
+                    if (nodeIds.contains(edge.getKey())) {
+                        String edgeId = node.getNodeId() + "::" + edge.getKey() + "::" + edgeType;
+                        if (seenEdges.add(edgeId)) {
+                            Map<String, Object> edgeMap = new LinkedHashMap<>();
+                            edgeMap.put("id", edgeId);
+                            edgeMap.put("source", node.getNodeId());
+                            edgeMap.put("target", edge.getKey());
+                            edgeMap.put("type", edgeType);
+                            edgeMap.put("weight", edge.getValue());
+                            edgeMap.put("bidirectional", !"HIERARCHICAL".equals(edgeType));
+                            edges.add(edgeMap);
+                        }
+                    }
                 }
             }
         }
@@ -854,8 +936,19 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     private GraphEdge createEdgeObject(String sourceId, String targetId, EdgeType edgeType,
                                         Double weight, String description) {
+        // Populate sourceNode and targetNode so JSON serialization includes
+        // sourceNodeId/targetNodeId and node titles for the entity browser.
+        GraphNode sourceNode = graphStore.getNode(DEFAULT_GRAPH_ID, sourceId)
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .orElseGet(() -> GraphNode.builder().nodeId(sourceId).build());
+        GraphNode targetNode = graphStore.getNode(DEFAULT_GRAPH_ID, targetId)
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
+                .orElseGet(() -> GraphNode.builder().nodeId(targetId).build());
+
         return GraphEdge.builder()
                 .edgeId(sourceId + "::" + targetId + "::" + edgeType.name())
+                .sourceNode(sourceNode)
+                .targetNode(targetNode)
                 .edgeType(edgeType)
                 .weight(weight != null ? weight : 1.0)
                 .description(description)
@@ -904,11 +997,9 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             return 0;
         }
 
-        long count = 0;
-        for (MatrixGraphNode node : graph.getAllNodes()) {
-            count += graph.getNeighbors(node.getNodeId(), edgeType).size();
-        }
-        return count;
+        // With sparse storage, edge counts are maintained as O(1) counters per type.
+        // No INDArray or GPU operation needed.
+        return graph.getEdgeCountByType(edgeType);
     }
 
     private void collectNodesAtDepth(AdjacencyMatrixGraph graph, String nodeId, int depth,
@@ -933,7 +1024,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     private Map<String, Object> nodeToVisualizationMap(MatrixGraphNode node) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("id", node.getNodeId());
-        map.put("type", node.getNodeType() != null ? node.getNodeType().toLowerCase() : "unknown");
+        map.put("type", node.getNodeType() != null ? node.getNodeType() : "UNKNOWN");
         map.put("label", node.getTitle());
         map.put("title", node.getTitle());
         map.put("description", node.getDescription());
@@ -941,6 +1032,21 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         if (node.getMetadata() != null) {
             map.put("sourceType", node.getMetadata().get("sourceType"));
             map.put("parentId", node.getMetadata().get("parentNodeId"));
+        }
+
+        // Include childCount and edgeCount for parity with JPA visualization
+        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(DEFAULT_GRAPH_ID);
+        if (graphOpt.isPresent()) {
+            AdjacencyMatrixGraph graph = graphOpt.get();
+            // Count children (HIERARCHICAL outgoing edges)
+            List<Map.Entry<String, Double>> children = graph.getNeighbors(node.getNodeId(), "HIERARCHICAL");
+            map.put("childCount", children != null ? children.size() : 0);
+            // Count all edges
+            List<Map.Entry<String, Double>> allEdges = graph.getNeighbors(node.getNodeId(), null);
+            map.put("edgeCount", allEdges != null ? allEdges.size() : 0);
+        } else {
+            map.put("childCount", 0);
+            map.put("edgeCount", 0);
         }
 
         return map;

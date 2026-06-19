@@ -18,10 +18,11 @@ package ai.kompile.cli.main.chat.harness.eval;
 
 import ai.kompile.cli.main.chat.harness.TaskOutcome;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -168,7 +169,7 @@ public class EvalCommand implements Callable<Integer> {
                     String outcome = result.getOutcome() != null ? result.getOutcome().name() : "?";
                     System.out.printf("  [%d/%d] %s  %-30s  %s  %s%n",
                             index, total, icon,
-                            truncate(result.getCaseId(), 30),
+                            StringUtils.truncate(result.getCaseId(), 30),
                             term.dim(outcome),
                             term.dim(result.getExecutionTimeMs() + "ms"));
                 });
@@ -193,10 +194,8 @@ public class EvalCommand implements Callable<Integer> {
 
         private void printJsonResult(EvalRunResult result) {
             try {
-                ObjectMapper jsonMapper = new ObjectMapper();
-                jsonMapper.registerModule(new JavaTimeModule());
-                jsonMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-                jsonMapper.enable(SerializationFeature.INDENT_OUTPUT);
+                ObjectMapper jsonMapper = JsonUtils.newStandardMapper()
+                        .enable(SerializationFeature.INDENT_OUTPUT);
                 System.out.println(jsonMapper.writeValueAsString(result));
             } catch (Exception e) {
                 System.err.println("Error serializing result: " + e.getMessage());
@@ -315,10 +314,8 @@ public class EvalCommand implements Callable<Integer> {
 
             if (json) {
                 try {
-                    ObjectMapper jsonMapper = new ObjectMapper();
-                    jsonMapper.registerModule(new JavaTimeModule());
-                    jsonMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-                    jsonMapper.enable(SerializationFeature.INDENT_OUTPUT);
+                    ObjectMapper jsonMapper = JsonUtils.newStandardMapper()
+                            .enable(SerializationFeature.INDENT_OUTPUT);
                     System.out.println(jsonMapper.writeValueAsString(runs));
                 } catch (Exception e) {
                     System.err.println("Error: " + e.getMessage());
@@ -450,10 +447,8 @@ public class EvalCommand implements Callable<Integer> {
 
             if (json) {
                 try {
-                    ObjectMapper jsonMapper = new ObjectMapper();
-                    jsonMapper.registerModule(new JavaTimeModule());
-                    jsonMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-                    jsonMapper.enable(SerializationFeature.INDENT_OUTPUT);
+                    ObjectMapper jsonMapper = JsonUtils.newStandardMapper()
+                            .enable(SerializationFeature.INDENT_OUTPUT);
                     System.out.println(jsonMapper.writeValueAsString(run));
                 } catch (Exception e) {
                     System.err.println("Error: " + e.getMessage());
@@ -489,7 +484,7 @@ public class EvalCommand implements Callable<Integer> {
                 String icon = cr.passed() ? term.green("PASS") : term.red("FAIL");
                 cases.append(String.format("  %s  %-30s  %-10s  %dms%n",
                         icon,
-                        truncate(cr.getCaseId(), 30),
+                        StringUtils.truncate(cr.getCaseId(), 30),
                         cr.getOutcome(),
                         cr.getExecutionTimeMs()));
 
@@ -800,10 +795,8 @@ public class EvalCommand implements Callable<Integer> {
 
             if (json) {
                 try {
-                    ObjectMapper jsonMapper = new ObjectMapper();
-                    jsonMapper.registerModule(new JavaTimeModule());
-                    jsonMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-                    jsonMapper.enable(SerializationFeature.INDENT_OUTPUT);
+                    ObjectMapper jsonMapper = JsonUtils.newStandardMapper()
+                            .enable(SerializationFeature.INDENT_OUTPUT);
                     Map<String, Object> out = new java.util.LinkedHashMap<>();
                     out.put("runA", runA);
                     out.put("runB", runB);
@@ -821,7 +814,7 @@ public class EvalCommand implements Callable<Integer> {
             body.append(String.format("  %-20s %-30s %-30s%n", "", "Run A", "Run B"));
             body.append("  " + "-".repeat(80)).append("\n");
             body.append(String.format("  %-20s %-30s %-30s%n", "Run ID",
-                    truncate(runA.getRunId(), 30), truncate(runB.getRunId(), 30)));
+                    StringUtils.truncate(runA.getRunId(), 30), StringUtils.truncate(runB.getRunId(), 30)));
             body.append(String.format("  %-20s %-30s %-30s%n", "Suite",
                     runA.getSuiteName(), runB.getSuiteName()));
             body.append(String.format("  %-20s %-30s %-30s%n", "Result",
@@ -873,7 +866,7 @@ public class EvalCommand implements Callable<Integer> {
                         regressed++;
                     }
                     diff.append(String.format("  %-30s %-10s %-10s %s%n",
-                            truncate(caseId, 30), statusA, statusB, delta));
+                            StringUtils.truncate(caseId, 30), statusA, statusB, delta));
                 }
 
                 diff.append("\n  ").append(term.green(improved + " improved"))
@@ -902,18 +895,12 @@ public class EvalCommand implements Callable<Integer> {
                 mapper = new ObjectMapper((com.fasterxml.jackson.core.JsonFactory) yamlFactory);
             } catch (Exception e) {
                 System.err.println("Warning: jackson-dataformat-yaml not on classpath, falling back to JSON parser");
-                mapper = new ObjectMapper();
+                mapper = JsonUtils.standardMapper();
             }
         } else {
-            mapper = new ObjectMapper();
+            mapper = JsonUtils.standardMapper();
         }
-        mapper.registerModule(new JavaTimeModule());
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         return mapper;
     }
 
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
-    }
 }

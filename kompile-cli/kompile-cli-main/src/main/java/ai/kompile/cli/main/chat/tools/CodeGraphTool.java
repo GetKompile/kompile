@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.codeindex.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -69,7 +70,7 @@ public class CodeGraphTool implements CliTool {
 
     @Override
     public JsonNode parameterSchema() {
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");

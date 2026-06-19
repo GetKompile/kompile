@@ -17,7 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.diffindex.DiffIndexService;
-import ai.kompile.app.services.diffindex.DiffIndexService.DiffIndexEntry;
+import ai.kompile.app.services.diffindex.DiffIndexEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;

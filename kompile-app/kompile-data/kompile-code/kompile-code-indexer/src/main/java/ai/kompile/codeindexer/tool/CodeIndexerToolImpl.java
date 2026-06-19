@@ -17,6 +17,7 @@
 package ai.kompile.codeindexer.tool;
 
 import ai.kompile.codeindexer.domain.*;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.codeindexer.service.CodeGraphBuilder;
 import ai.kompile.codeindexer.service.CodeSearchService;
 import ai.kompile.codeindexer.service.CodebaseIndexer;
@@ -772,7 +773,7 @@ public class CodeIndexerToolImpl {
         if (e.getEndLine() != null) map.put("endLine", e.getEndLine());
         if (e.getSignature() != null) map.put("signature", e.getSignature());
         if (e.getLanguage() != null) map.put("language", e.getLanguage());
-        if (e.getDocComment() != null) map.put("docComment", truncate(e.getDocComment(), 300));
+        if (e.getDocComment() != null) map.put("docComment", StringUtils.truncate(e.getDocComment(), 300));
         if (e.getVisibility() != null) map.put("visibility", e.getVisibility());
         if (e.getParentFqn() != null) map.put("parentFqn", e.getParentFqn());
         return map;
@@ -789,7 +790,4 @@ public class CodeIndexerToolImpl {
         return map;
     }
 
-    private String truncate(String s, int maxLen) {
-        return s.length() > maxLen ? s.substring(0, maxLen) + "..." : s;
-    }
 }

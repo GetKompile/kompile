@@ -59,7 +59,7 @@ class AgentTaskServiceTest {
 
     @Test
     void create_returnsTaskWithIdAndStatus() {
-        AgentTaskService.AgentTask task = service.create(
+        AgentTask task = service.create(
                 "session-1", "Fix the bug", "Detailed description",
                 "alice", "high", List.of("backend"), null);
 
@@ -78,14 +78,14 @@ class AgentTaskServiceTest {
 
     @Test
     void create_withNullPriority_defaultsMedium() {
-        AgentTaskService.AgentTask task = service.create(
+        AgentTask task = service.create(
                 "sess", "Task", null, null, null, null, null);
         assertEquals("medium", task.getPriority());
     }
 
     @Test
     void create_withNullTags_defaultsEmptyList() {
-        AgentTaskService.AgentTask task = service.create(
+        AgentTask task = service.create(
                 "sess", "Task", null, null, "low", null, null);
         assertNotNull(task.getTags());
         assertTrue(task.getTags().isEmpty());
@@ -93,7 +93,7 @@ class AgentTaskServiceTest {
 
     @Test
     void create_withNullSession_usesGlobalSession() {
-        AgentTaskService.AgentTask task = service.create(
+        AgentTask task = service.create(
                 null, "Global task", null, null, null, null, null);
         // Session should be normalized to "_global"
         assertEquals("_global", task.getSessionId());
@@ -101,24 +101,24 @@ class AgentTaskServiceTest {
 
     @Test
     void create_withBlankSession_usesGlobalSession() {
-        AgentTaskService.AgentTask task = service.create(
+        AgentTask task = service.create(
                 "  ", "Blank session", null, null, null, null, null);
         assertEquals("_global", task.getSessionId());
     }
 
     @Test
     void create_withParentTaskId_preserved() {
-        AgentTaskService.AgentTask parent = service.create("s1", "Parent", null, null, null, null, null);
-        AgentTaskService.AgentTask child = service.create("s1", "Child", null, null, null, null,
+        AgentTask parent = service.create("s1", "Parent", null, null, null, null, null);
+        AgentTask child = service.create("s1", "Child", null, null, null, null,
                 String.valueOf(parent.getId()));
         assertEquals(String.valueOf(parent.getId()), child.getParentTaskId());
     }
 
     @Test
     void create_multipleTasksHaveIncreasingIds() {
-        AgentTaskService.AgentTask t1 = service.create("s", "T1", null, null, null, null, null);
-        AgentTaskService.AgentTask t2 = service.create("s", "T2", null, null, null, null, null);
-        AgentTaskService.AgentTask t3 = service.create("s", "T3", null, null, null, null, null);
+        AgentTask t1 = service.create("s", "T1", null, null, null, null, null);
+        AgentTask t2 = service.create("s", "T2", null, null, null, null, null);
+        AgentTask t3 = service.create("s", "T3", null, null, null, null, null);
         assertTrue(t2.getId() > t1.getId());
         assertTrue(t3.getId() > t2.getId());
     }
@@ -127,8 +127,8 @@ class AgentTaskServiceTest {
 
     @Test
     void get_existingTask_returnsIt() {
-        AgentTaskService.AgentTask created = service.create("s", "Task", null, null, null, null, null);
-        AgentTaskService.AgentTask found = service.get(created.getId());
+        AgentTask created = service.create("s", "Task", null, null, null, null, null);
+        AgentTask found = service.get(created.getId());
         assertNotNull(found);
         assertEquals(created.getId(), found.getId());
     }
@@ -146,14 +146,14 @@ class AgentTaskServiceTest {
         service.create("sess-A", "A2", null, null, null, null, null);
         service.create("sess-B", "B1", null, null, null, null, null);
 
-        List<AgentTaskService.AgentTask> tasks = service.listForSession("sess-A", null, null, null);
+        List<AgentTask> tasks = service.listForSession("sess-A", null, null, null);
         assertEquals(2, tasks.size());
         tasks.forEach(t -> assertEquals("sess-A", t.getSessionId()));
     }
 
     @Test
     void listForSession_unknownSession_returnsEmpty() {
-        List<AgentTaskService.AgentTask> tasks = service.listForSession("no-such-session", null, null, null);
+        List<AgentTask> tasks = service.listForSession("no-such-session", null, null, null);
         assertNotNull(tasks);
         assertTrue(tasks.isEmpty());
     }
@@ -161,11 +161,11 @@ class AgentTaskServiceTest {
     @Test
     void listForSession_withStatusFilter_returnsOnlyMatching() {
         service.create("s", "Pending task", null, null, null, null, null);
-        AgentTaskService.AgentTask t2 = service.create("s", "In progress", null, null, null, null, null);
+        AgentTask t2 = service.create("s", "In progress", null, null, null, null, null);
         service.update(t2.getId(), null, null, "in_progress", null, null, null);
 
-        List<AgentTaskService.AgentTask> pending = service.listForSession("s", "pending", null, null);
-        List<AgentTaskService.AgentTask> inProgress = service.listForSession("s", "in_progress", null, null);
+        List<AgentTask> pending = service.listForSession("s", "pending", null, null);
+        List<AgentTask> inProgress = service.listForSession("s", "in_progress", null, null);
 
         assertEquals(1, pending.size());
         assertEquals(1, inProgress.size());
@@ -178,7 +178,7 @@ class AgentTaskServiceTest {
         service.create("s", "Task2", null, "bob", null, null, null);
         service.create("s", "Task3", null, "alice", null, null, null);
 
-        List<AgentTaskService.AgentTask> aliceTasks = service.listForSession("s", null, "alice", null);
+        List<AgentTask> aliceTasks = service.listForSession("s", null, "alice", null);
         assertEquals(2, aliceTasks.size());
         aliceTasks.forEach(t -> assertEquals("alice", t.getAssignee()));
     }
@@ -189,7 +189,7 @@ class AgentTaskServiceTest {
         service.create("s", "Task2", null, null, null, List.of("frontend"), null);
         service.create("s", "Task3", null, null, null, List.of("backend"), null);
 
-        List<AgentTaskService.AgentTask> backendTasks = service.listForSession("s", null, null, "backend");
+        List<AgentTask> backendTasks = service.listForSession("s", null, null, "backend");
         assertEquals(2, backendTasks.size());
     }
 
@@ -199,7 +199,7 @@ class AgentTaskServiceTest {
         service.create("s", "B", null, null, null, null, null);
         service.create("s", "A", null, null, null, null, null);
 
-        List<AgentTaskService.AgentTask> tasks = service.listForSession("s", null, null, null);
+        List<AgentTask> tasks = service.listForSession("s", null, null, null);
         for (int i = 1; i < tasks.size(); i++) {
             assertTrue(tasks.get(i).getId() > tasks.get(i - 1).getId());
         }
@@ -213,17 +213,17 @@ class AgentTaskServiceTest {
         service.create("sess-Y", "Y1", null, null, null, null, null);
         service.create("sess-Y", "Y2", null, null, null, null, null);
 
-        List<AgentTaskService.AgentTask> all = service.listAll(null, null, null);
+        List<AgentTask> all = service.listAll(null, null, null);
         assertTrue(all.size() >= 3);
     }
 
     @Test
     void listAll_withStatusFilter_crossSession() {
         service.create("sA", "T1", null, null, null, null, null);
-        AgentTaskService.AgentTask t2 = service.create("sB", "T2", null, null, null, null, null);
+        AgentTask t2 = service.create("sB", "T2", null, null, null, null, null);
         service.update(t2.getId(), null, null, "completed", null, null, null);
 
-        List<AgentTaskService.AgentTask> completed = service.listAll("completed", null, null);
+        List<AgentTask> completed = service.listAll("completed", null, null);
         assertTrue(completed.stream().allMatch(t -> "completed".equals(t.getStatus())));
     }
 
@@ -231,9 +231,9 @@ class AgentTaskServiceTest {
 
     @Test
     void update_existingTask_updatesFields() {
-        AgentTaskService.AgentTask task = service.create("s", "Old title", null, null, "low", null, null);
+        AgentTask task = service.create("s", "Old title", null, null, "low", null, null);
 
-        AgentTaskService.AgentTask updated = service.update(
+        AgentTask updated = service.update(
                 task.getId(), "New title", "New desc", "in_progress",
                 "bob", "critical", List.of("tag1"));
 
@@ -248,29 +248,29 @@ class AgentTaskServiceTest {
 
     @Test
     void update_unknownTask_returnsNull() {
-        AgentTaskService.AgentTask result = service.update(
+        AgentTask result = service.update(
                 99999L, "title", null, null, null, null, null);
         assertNull(result);
     }
 
     @Test
     void update_toCompletedStatus_setsCompletedAt() {
-        AgentTaskService.AgentTask task = service.create("s", "Task", null, null, null, null, null);
+        AgentTask task = service.create("s", "Task", null, null, null, null, null);
         assertNull(task.getCompletedAt());
 
-        AgentTaskService.AgentTask updated = service.update(
+        AgentTask updated = service.update(
                 task.getId(), null, null, "completed", null, null, null);
         assertNotNull(updated.getCompletedAt());
     }
 
     @Test
     void update_partialUpdate_onlyChangesSpecifiedFields() {
-        AgentTaskService.AgentTask task = service.create("s", "Title", "Desc", "alice", "high", null, null);
+        AgentTask task = service.create("s", "Title", "Desc", "alice", "high", null, null);
         String originalTitle = task.getTitle();
         String originalDesc = task.getDescription();
 
         // Only update status
-        AgentTaskService.AgentTask updated = service.update(task.getId(), null, null, "in_progress", null, null, null);
+        AgentTask updated = service.update(task.getId(), null, null, "in_progress", null, null, null);
         assertEquals(originalTitle, updated.getTitle());
         assertEquals(originalDesc, updated.getDescription());
         assertEquals("alice", updated.getAssignee());
@@ -281,7 +281,7 @@ class AgentTaskServiceTest {
 
     @Test
     void delete_existingTask_returnsTrue() {
-        AgentTaskService.AgentTask task = service.create("s", "To delete", null, null, null, null, null);
+        AgentTask task = service.create("s", "To delete", null, null, null, null, null);
         boolean deleted = service.delete(task.getId());
         assertTrue(deleted);
         assertNull(service.get(task.getId()));
@@ -294,12 +294,12 @@ class AgentTaskServiceTest {
 
     @Test
     void delete_removesFromList() {
-        AgentTaskService.AgentTask t1 = service.create("s", "T1", null, null, null, null, null);
-        AgentTaskService.AgentTask t2 = service.create("s", "T2", null, null, null, null, null);
+        AgentTask t1 = service.create("s", "T1", null, null, null, null, null);
+        AgentTask t2 = service.create("s", "T2", null, null, null, null, null);
 
         service.delete(t1.getId());
 
-        List<AgentTaskService.AgentTask> remaining = service.listForSession("s", null, null, null);
+        List<AgentTask> remaining = service.listForSession("s", null, null, null);
         assertTrue(remaining.stream().noneMatch(t -> t.getId() == t1.getId()));
         assertTrue(remaining.stream().anyMatch(t -> t.getId() == t2.getId()));
     }
@@ -308,8 +308,8 @@ class AgentTaskServiceTest {
 
     @Test
     void complete_existingTask_setsCompletedStatus() {
-        AgentTaskService.AgentTask task = service.create("s", "Complete me", null, null, null, null, null);
-        AgentTaskService.AgentTask completed = service.complete(task.getId(), "All done!");
+        AgentTask task = service.create("s", "Complete me", null, null, null, null, null);
+        AgentTask completed = service.complete(task.getId(), "All done!");
 
         assertNotNull(completed);
         assertEquals("completed", completed.getStatus());
@@ -319,8 +319,8 @@ class AgentTaskServiceTest {
 
     @Test
     void complete_withNullNote_doesNotSetNote() {
-        AgentTaskService.AgentTask task = service.create("s", "Task", null, null, null, null, null);
-        AgentTaskService.AgentTask completed = service.complete(task.getId(), null);
+        AgentTask task = service.create("s", "Task", null, null, null, null, null);
+        AgentTask completed = service.complete(task.getId(), null);
         assertNotNull(completed);
         assertEquals("completed", completed.getStatus());
         assertNull(completed.getCompletionNote());
@@ -343,7 +343,7 @@ class AgentTaskServiceTest {
     @Test
     void summary_withTasks_countsByStatus() {
         service.create("s", "T1", null, null, null, null, null); // pending
-        AgentTaskService.AgentTask t2 = service.create("s", "T2", null, null, null, null, null);
+        AgentTask t2 = service.create("s", "T2", null, null, null, null, null);
         service.complete(t2.getId(), null); // completed
 
         Map<String, Object> result = service.summary("s");
@@ -412,7 +412,7 @@ class AgentTaskServiceTest {
 
     @Test
     void agentTask_settersAndGetters() {
-        AgentTaskService.AgentTask task = new AgentTaskService.AgentTask();
+        AgentTask task = new AgentTask();
         task.setId(42L);
         task.setSessionId("my-session");
         task.setTitle("Title");
@@ -446,7 +446,7 @@ class AgentTaskServiceTest {
 
     @Test
     void tasks_persistedToDisk_surviveFreshInit() throws Exception {
-        AgentTaskService.AgentTask created = service.create(
+        AgentTask created = service.create(
                 "persist-sess", "Persisted Task", "desc", null, "medium", null, null);
         long taskId = created.getId();
 
@@ -457,7 +457,7 @@ class AgentTaskServiceTest {
         f.set(freshService, tempDir);
         freshService.init();
 
-        AgentTaskService.AgentTask reloaded = freshService.get(taskId);
+        AgentTask reloaded = freshService.get(taskId);
         assertNotNull(reloaded, "Task should be reloaded from disk");
         assertEquals("Persisted Task", reloaded.getTitle());
         assertEquals("persist-sess", reloaded.getSessionId());

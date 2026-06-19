@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.mcp.stdio;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -140,7 +141,7 @@ public class CommandGuardrail {
      * when an AGENTS.md is present.
      */
     public static CommandGuardrail load(Path workDir) {
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
 
         // Try project-level config first
         Path projectConfig = workDir.resolve(".kompile").resolve("config").resolve("command-guardrails.json");

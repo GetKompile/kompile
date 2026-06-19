@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.enforcer.semantic;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -69,7 +70,7 @@ public class EmbeddingMatcher implements SemanticMatcher {
         this.similarityThreshold = similarityThreshold;
         this.windowSize = windowSize;
         this.windowStride = windowStride;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();

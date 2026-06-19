@@ -55,9 +55,13 @@ import {
   DocumentGraphProgress,
   AvailableSourceType,
   SubprocessEvent,
-  SubprocessStatistics
+  SubprocessStatistics,
+  PipelineStepCatalogEntry,
+  ResumableJobEntry,
+  CrawlStageEvent
 } from '../../services/unified-crawl.service';
 import { JobLogViewerComponent } from '../job-history/job-log-viewer/job-log-viewer.component';
+import { JobLogService, JobLogEntry } from '../../services/job-log.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { FactSheet } from '../../models/api-models';
 import { GraphExtractionService, ModelProvider } from '../../services/graph-extraction.service';
@@ -147,10 +151,36 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   docPageSize = 25;
   docStatusFilter = '';
 
+  // LLM transcript audit state
+  transcriptLogs: JobLogEntry[] = [];
+  transcriptsLoading = false;
+  transcriptsExpanded = false;
+  transcriptPage = 0;
+  transcriptTotalCount = 0;
+
+  // Live in-progress transcript feed (shown during RUNNING/PENDING without expanding the full viewer)
+  liveTranscripts: JobLogEntry[] = [];
+  liveTranscriptsLoading = false;
+
+  // Retry state
+  retryInProgress = false;
+
+  // Step catalog + per-step selection for start form ('run' | 'archive' | 'skip')
+  stepCatalog: PipelineStepCatalogEntry[] = [];
+  stepSelections: { [stepId: string]: 'run' | 'archive' | 'skip' } = {};
+
+  // Resumable jobs
+  resumableJobs: ResumableJobEntry[] = [];
+  stepActionInProgress: { [key: string]: boolean } = {};
+
+  // Per-step accordion expansion state (stepId → expanded)
+  expandedSteps: Set<string> = new Set<string>();
+
   constructor(
     private crawlService: UnifiedCrawlService,
     private factSheetService: FactSheetService,
     private graphExtractionService: GraphExtractionService,
+    private jobLogService: JobLogService,
     private wsService: WebSocketService,
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef,
@@ -167,7 +197,9 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.subscriptions.add(this.factSheetService.loadActiveSheet().subscribe({ error: (err) => { console.error('Failed to load active sheet:', err.message); } }));
     this.loadSourceTypes();
     this.loadGraphModelProviders();
+    this.loadStepCatalog();
     this.refreshJobs();
+    this.refreshResumableJobs();
     // Subscribe to scheduler events for real-time notifications
     this.wsService.connect();
     this.subscriptions.add(
@@ -177,10 +209,12 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     );
     this.pollInterval = setInterval(() => {
       this.refreshJobs();
+      this.refreshResumableJobs();
       if (this.selectedJob && (this.selectedJob.status === 'RUNNING' || this.selectedJob.status === 'PENDING')) {
         this.refreshSelectedJob();
         this.refreshLiveGraphStats();
         this.refreshSubprocessEvents();
+        this.refreshLiveTranscripts();
       }
     }, 5000);
   }
@@ -402,10 +436,26 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
       return;
     }
 
+    // Compute enabled/archived step arrays from selections (omit foundational — always run)
+    const enabledSteps: string[] = [];
+    const archivedSteps: string[] = [];
+    for (const step of this.stepCatalog) {
+      if (step.foundational) continue;
+      const sel = this.stepSelections[step.id] || 'run';
+      if (sel === 'run') {
+        enabledSteps.push(step.id);
+      } else if (sel === 'archive') {
+        archivedSteps.push(step.id);
+      }
+      // 'skip' → omitted from both arrays
+    }
+
     const request: UnifiedCrawlRequest = {
       name: this.jobName || 'Unified crawl',
       factSheetId: this.activeFactSheet?.id || null,
       sources: requestSources,
+      enabledSteps: enabledSteps.length > 0 ? enabledSteps : undefined,
+      archivedSteps: archivedSteps.length > 0 ? archivedSteps : undefined,
       graphExtraction: {
         enabled: this.graphEnabled,
         schemaPresetId: this.graphSchemaPresetId || undefined,
@@ -478,21 +528,39 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   }
 
   selectJob(jobId: string) {
+    // Clear live transcript feed and step expansion state when switching jobs
+    this.liveTranscripts = [];
+    this.expandedSteps.clear();
     this.subscriptions.add(
       this.crawlService.getJob(jobId).subscribe({
         next: (detail) => {
           this.selectedJob = detail;
           this.activeTab = 2; // Switch to detail tab
           this.refreshSubprocessEvents();
+          this.refreshLiveTranscripts();
           this.cdr.markForCheck();
         },
-        error: () => this.snackBar.open('Failed to load job details', 'Dismiss', { duration: 3000 })
+        error: () => {
+          // Live job not found — try loading from history
+          this.subscriptions.add(
+            this.crawlService.getJobFromHistory(jobId).subscribe({
+              next: (detail) => {
+                this.selectedJob = detail;
+                this.activeTab = 2;
+                this.cdr.markForCheck();
+              },
+              error: () => this.snackBar.open('Failed to load job details', 'Dismiss', { duration: 3000 })
+            })
+          );
+        }
       })
     );
   }
 
   refreshSelectedJob() {
     if (!this.selectedJob) return;
+    // Don't poll historical jobs — their state is fixed
+    if (this.selectedJob.fromHistory) return;
     this.subscriptions.add(
       this.crawlService.getJob(this.selectedJob.jobId).subscribe({
         next: (detail) => { this.selectedJob = detail; this.cdr.markForCheck(); },
@@ -602,6 +670,35 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
         error: () => this.snackBar.open('Failed to cancel job', 'Dismiss', { duration: 3000 })
       })
     );
+  }
+
+  retryFailedDocuments(jobId: string, retryPhase?: string) {
+    this.retryInProgress = true;
+    this.cdr.markForCheck();
+    this.subscriptions.add(
+      this.crawlService.retryJob(jobId, retryPhase).subscribe({
+        next: (resp: any) => {
+          this.retryInProgress = false;
+          this.snackBar.open(
+            `Retry job started: ${resp.documentsToRetry} documents to re-process`,
+            'View', { duration: 5000 }
+          );
+          this.refreshJobs();
+          this.cdr.markForCheck();
+        },
+        error: (err: any) => {
+          this.retryInProgress = false;
+          const msg = err?.error?.error || 'Failed to start retry job';
+          this.snackBar.open(msg, 'Dismiss', { duration: 4000 });
+          this.cdr.markForCheck();
+        }
+      })
+    );
+  }
+
+  getErrorDocumentsForPhase(documents: DocumentGraphProgress[] | undefined, phase: string): DocumentGraphProgress[] {
+    if (!documents) return [];
+    return documents.filter(d => (d.status === 'FAILED' || d.errorMessage) && d.phase === phase);
   }
 
   cleanupJobs() {
@@ -739,7 +836,13 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   }
 
   getStepStatusClass(status: string | undefined): string {
-    return 'step-' + (status || 'pending').toLowerCase();
+    const s = (status || 'pending').toLowerCase();
+    return 'step-' + s;
+  }
+
+  isStepRunNowEligible(status: string | undefined): boolean {
+    const s = (status || '').toUpperCase();
+    return s === 'ARCHIVED' || s === 'DEFERRED';
   }
 
   getCrawlHistoryTaskId(jobId: string): string {
@@ -748,6 +851,122 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
 
   isCrawlJobRunning(status: string): boolean {
     return status === 'RUNNING' || status === 'PENDING';
+  }
+
+  toggleTranscripts(jobId: string): void {
+    this.transcriptsExpanded = !this.transcriptsExpanded;
+    if (this.transcriptsExpanded && this.transcriptLogs.length === 0) {
+      this.loadTranscripts(jobId);
+    }
+  }
+
+  /** Extract the agent chat session id embedded in a transcript message header, if any. */
+  transcriptSessionId(message: string | undefined): string | null {
+    if (!message) { return null; }
+    const m = message.match(/\bsession=(\S+)/);
+    return m ? m[1] : null;
+  }
+
+  loadTranscripts(jobId: string, page: number = 0): void {
+    this.transcriptsLoading = true;
+    this.transcriptPage = page;
+    this.cdr.markForCheck();
+
+    const taskId = this.getCrawlHistoryTaskId(jobId);
+    // When a parent task id is present (resumed job), fetch both the current job's
+    // transcripts and the parent's, then merge them in chronological order.
+    const parentTaskId = this.selectedJob?.resumedFromTaskId ?? null;
+
+    this.jobLogService.getLogsForJob(taskId, {
+      source: 'LLM_TRANSCRIPT',
+      page: page,
+      size: 50
+    }).subscribe({
+      next: (resp) => {
+        const currentLogs: JobLogEntry[] = resp.logs || [];
+        const totalCount: number = resp.totalCount || 0;
+
+        if (parentTaskId && page === 0) {
+          // Only merge on page 0 — subsequent pages belong to the current job only
+          this.jobLogService.getLogsForJob(parentTaskId, {
+            source: 'LLM_TRANSCRIPT',
+            page: 0,
+            size: 50
+          }).subscribe({
+            next: (parentResp) => {
+              const parentLogs: JobLogEntry[] = parentResp.logs || [];
+              // Merge: sort by timestamp ascending so the combined list is chronological
+              const merged = [...parentLogs, ...currentLogs].sort((a, b) => {
+                const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+                const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+                return ta - tb;
+              });
+              this.transcriptLogs = merged;
+              // Report combined count so the pagination footer is informative
+              this.transcriptTotalCount = (parentResp.totalCount || 0) + totalCount;
+              this.transcriptsLoading = false;
+              this.cdr.markForCheck();
+            },
+            error: () => {
+              // Parent fetch failed — show only the current job's transcripts
+              this.transcriptLogs = currentLogs;
+              this.transcriptTotalCount = totalCount;
+              this.transcriptsLoading = false;
+              this.cdr.markForCheck();
+            }
+          });
+        } else {
+          this.transcriptLogs = currentLogs;
+          this.transcriptTotalCount = totalCount;
+          this.transcriptsLoading = false;
+          this.cdr.markForCheck();
+        }
+      },
+      error: () => {
+        this.transcriptsLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  loadMoreTranscripts(jobId: string): void {
+    this.loadTranscripts(jobId, this.transcriptPage + 1);
+  }
+
+  loadPrevTranscripts(jobId: string): void {
+    if (this.transcriptPage > 0) {
+      this.loadTranscripts(jobId, this.transcriptPage - 1);
+    }
+  }
+
+  /**
+   * Poll the latest LLM_TRANSCRIPT entries for the active running job so the in-progress view
+   * surfaces extraction activity without requiring the user to open the full transcript panel.
+   * Fetches the most-recent page (page=0, size=5) and stops if the job reaches a terminal state.
+   */
+  refreshLiveTranscripts(): void {
+    if (!this.selectedJob) { return; }
+    if (this.selectedJob.status !== 'RUNNING' && this.selectedJob.status !== 'PENDING') {
+      // Clear live feed when job finishes; user uses the collapsible full viewer for post-mortem
+      this.liveTranscripts = [];
+      this.cdr.markForCheck();
+      return;
+    }
+    this.liveTranscriptsLoading = true;
+    const taskId = this.getCrawlHistoryTaskId(this.selectedJob.jobId);
+    this.subscriptions.add(
+      this.jobLogService.getLogsForJob(taskId, { source: 'LLM_TRANSCRIPT', page: 0, size: 5 }).subscribe({
+        next: (resp) => {
+          this.liveTranscripts = resp.logs || [];
+          this.liveTranscriptsLoading = false;
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.liveTranscriptsLoading = false;
+          this.cdr.markForCheck();
+        }
+      })
+    );
   }
 
   formatElapsed(ms: number): string {
@@ -843,8 +1062,175 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     }
   }
 
+  loadStepCatalog() {
+    this.subscriptions.add(
+      this.crawlService.getStepCatalog().subscribe({
+        next: (catalog) => {
+          this.stepCatalog = catalog;
+          // Default every step to 'run'
+          const sel: { [id: string]: 'run' | 'archive' | 'skip' } = {};
+          for (const s of catalog) {
+            sel[s.id] = 'run';
+          }
+          this.stepSelections = sel;
+          this.cdr.markForCheck();
+        },
+        error: (err) => { console.error('Failed to load step catalog:', err.message); }
+      })
+    );
+  }
+
+  refreshResumableJobs() {
+    this.subscriptions.add(
+      this.crawlService.listResumableJobs().subscribe({
+        next: (jobs) => {
+          this.resumableJobs = jobs;
+          this.cdr.markForCheck();
+        },
+        error: (err) => { console.error('Failed to load resumable jobs:', err.message); }
+      })
+    );
+  }
+
+  setStepSelection(stepId: string, value: 'run' | 'archive' | 'skip') {
+    this.stepSelections[stepId] = value;
+    // Dependency cascade: if this step is now skip/archive, force all dependents that list it to skip
+    for (const step of this.stepCatalog) {
+      if (step.dependsOn.includes(stepId) && value !== 'run') {
+        if (this.stepSelections[step.id] === 'run') {
+          this.stepSelections[step.id] = 'skip';
+        }
+      }
+    }
+    this.cdr.markForCheck();
+  }
+
+  isStepDependencyBlocked(step: PipelineStepCatalogEntry): boolean {
+    // A step is blocked (forced-skip) when any of its dependencies is set to skip/archive
+    return step.dependsOn.some(depId => {
+      const sel = this.stepSelections[depId];
+      return sel === 'skip' || sel === 'archive';
+    });
+  }
+
+  runStep(jobId: string, stepId: string) {
+    const key = `${jobId}:${stepId}`;
+    this.stepActionInProgress[key] = true;
+    this.cdr.markForCheck();
+    this.subscriptions.add(
+      this.crawlService.runStep(jobId, stepId).subscribe({
+        next: (resp: any) => {
+          this.stepActionInProgress[key] = false;
+          this.snackBar.open(resp.message || `Step ${stepId} triggered`, 'OK', { duration: 3000 });
+          this.refreshJobs();
+          this.refreshResumableJobs();
+          if (this.selectedJob?.jobId === jobId) {
+            this.refreshSelectedJob();
+          }
+          this.cdr.markForCheck();
+        },
+        error: (err: any) => {
+          this.stepActionInProgress[key] = false;
+          this.snackBar.open(err.error?.error || `Failed to run step ${stepId}`, 'Dismiss', { duration: 4000 });
+          this.cdr.markForCheck();
+        }
+      })
+    );
+  }
+
+  resumeAllArchivedSteps(entry: ResumableJobEntry) {
+    // Run archived steps sequentially by chaining subscriptions
+    const steps = [...entry.archivedSteps];
+    const runNext = (index: number) => {
+      if (index >= steps.length) {
+        this.snackBar.open(`Resumed ${steps.length} step(s) for "${entry.name}"`, 'OK', { duration: 3000 });
+        this.refreshJobs();
+        this.refreshResumableJobs();
+        this.cdr.markForCheck();
+        return;
+      }
+      const key = `${entry.jobId}:${steps[index]}`;
+      this.stepActionInProgress[key] = true;
+      this.cdr.markForCheck();
+      this.subscriptions.add(
+        this.crawlService.runStep(entry.jobId, steps[index]).subscribe({
+          next: () => {
+            this.stepActionInProgress[key] = false;
+            runNext(index + 1);
+          },
+          error: (err: any) => {
+            this.stepActionInProgress[key] = false;
+            this.snackBar.open(err.error?.error || `Failed to run step ${steps[index]}`, 'Dismiss', { duration: 4000 });
+            this.cdr.markForCheck();
+          }
+        })
+      );
+    };
+    runNext(0);
+  }
+
+  isStepActionInProgress(jobId: string, stepId: string): boolean {
+    return !!this.stepActionInProgress[`${jobId}:${stepId}`];
+  }
+
   private parseCommaSeparated(str: string): string[] {
     if (!str || !str.trim()) return [];
     return str.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  }
+
+  // ─── Step accordion ───────────────────────────────────────────────────────
+
+  /** Toggle a single step's expanded state (multiple steps may be open). */
+  toggleStepExpanded(stepId: string): void {
+    if (this.expandedSteps.has(stepId)) {
+      this.expandedSteps.delete(stepId);
+    } else {
+      this.expandedSteps.add(stepId);
+    }
+    this.cdr.markForCheck();
+  }
+
+  isStepExpanded(stepId: string): boolean {
+    return this.expandedSteps.has(stepId);
+  }
+
+  /**
+   * Map a pipeline step's stepId to the set of phase strings that appear in
+   * recentEvents / documentProgress for that step.
+   * Falls back to the stepId itself so novel phases still work.
+   */
+  stepIdToPhases(stepId: string): string[] {
+    const upper = (stepId || '').toUpperCase();
+    const phaseMap: { [key: string]: string[] } = {
+      'SOURCE_LOADING':        ['LOADING'],
+      'SOURCE_DISCOVERY':      ['DISCOVERING'],
+      'TEXT_CONVERSION':       ['CONVERTING'],
+      'DOCUMENT_PREPROCESSING':['OCR_PROCESSING', 'CONVERTING'],
+      'CONTENT_ROUTING':       ['ROUTING'],
+      'RULE_GRAPH_PREP':       ['GRAPH_PREP'],
+      'CHUNKING':              ['CHUNKING'],
+      'GRAPH_EXTRACTION':      ['GRAPH_EXTRACTION'],
+      'CRAWL_SURFACE':         ['CRAWL_SURFACE'],
+      'ENTITY_RESOLUTION':     ['ENTITY_RESOLUTION'],
+      'GRAPH_EDGE_CLEANUP':    ['EDGE_COMPUTATION'],
+      'EMBEDDING':             ['EMBEDDING', 'VECTOR_INDEXING', 'INDEXING'],
+    };
+    return phaseMap[upper] || [upper];
+  }
+
+  /** Activity log entries (recentEvents) filtered to the phases of a step. */
+  getStepEvents(step: PipelineStepProgress): CrawlStageEvent[] {
+    if (!this.selectedJob?.recentEvents) return [];
+    const phases = this.stepIdToPhases(step.stepId);
+    return this.selectedJob.recentEvents.filter(e => phases.includes((e.phase || '').toUpperCase()));
+  }
+
+  /** Document progress entries currently in the given step's phase(s). */
+  getStepDocuments(step: PipelineStepProgress): DocumentGraphProgress[] {
+    if (!this.selectedJob?.documentProgress) return [];
+    const phases = this.stepIdToPhases(step.stepId);
+    return this.selectedJob.documentProgress.filter(d =>
+      phases.includes((d.phase || '').toUpperCase())
+    );
   }
 }

@@ -31,6 +31,8 @@ import org.mockito.quality.Strictness;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
+import ai.kompile.app.web.dto.modelregistry.*;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -79,7 +81,7 @@ class ModelRegistryControllerTest {
 
     @Test
     void getRegistry_withNoStagingService_returnsEmptyRegistry() {
-        ResponseEntity<ModelRegistryController.ModelRegistry> response = controller.getRegistry();
+        ResponseEntity<ModelRegistry> response = controller.getRegistry();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
         assertTrue(response.getBody().models.isEmpty());
@@ -87,7 +89,7 @@ class ModelRegistryControllerTest {
 
     @Test
     void getModelsByType_withNoStagingService_returnsEmptyList() {
-        ResponseEntity<List<ModelRegistryController.ModelEntry>> response =
+        ResponseEntity<List<ModelEntry>> response =
                 controller.getModelsByType("encoder");
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -96,7 +98,7 @@ class ModelRegistryControllerTest {
 
     @Test
     void getModel_withNoStagingService_returnsNotFound() {
-        ResponseEntity<ModelRegistryController.ModelEntry> response =
+        ResponseEntity<ModelEntry> response =
                 controller.getModel("bge-base-en-v1.5");
         assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
     }
@@ -111,7 +113,7 @@ class ModelRegistryControllerTest {
 
     @Test
     void getStagingStatus_withNoStagingServices_returnsNotConnected() {
-        ResponseEntity<ModelRegistryController.StagingStatusResponse> response =
+        ResponseEntity<StagingStatusResponse> response =
                 controller.getStagingStatus();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -120,30 +122,30 @@ class ModelRegistryControllerTest {
 
     @Test
     void getVersionInfo_withNoStagingServices_returnsZeroModels() {
-        ResponseEntity<ModelRegistryController.VersionInfoResponse> response =
+        ResponseEntity<VersionInfoResponse> response =
                 controller.getVersionInfo();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
-        assertEquals(0, response.getBody().totalModels());
+        assertEquals(0, response.getBody().totalModels);
     }
 
     @Test
     void getBuiltInCatalog_returnsAllThreeCategories() {
-        ResponseEntity<ModelRegistryController.BuiltInModelCatalog> response =
+        ResponseEntity<BuiltInModelCatalog> response =
                 controller.getBuiltInCatalog();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
-        assertNotNull(response.getBody().denseEncoders());
-        assertNotNull(response.getBody().sparseEncoders());
-        assertNotNull(response.getBody().crossEncoders());
-        Map<String, Integer> counts = response.getBody().counts();
+        assertNotNull(response.getBody().denseEncoders);
+        assertNotNull(response.getBody().sparseEncoders);
+        assertNotNull(response.getBody().crossEncoders);
+        Map<String, Integer> counts = response.getBody().counts;
         assertNotNull(counts);
         assertTrue(counts.containsKey("total"));
     }
 
     @Test
     void getDenseEncodersEndpoint_returnsNonNullList() {
-        ResponseEntity<List<ModelRegistryController.BuiltInModelInfo>> response =
+        ResponseEntity<List<BuiltInModelInfo>> response =
                 controller.getDenseEncodersEndpoint();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -151,7 +153,7 @@ class ModelRegistryControllerTest {
 
     @Test
     void getSparseEncodersEndpoint_returnsNonNullList() {
-        ResponseEntity<List<ModelRegistryController.BuiltInModelInfo>> response =
+        ResponseEntity<List<BuiltInModelInfo>> response =
                 controller.getSparseEncodersEndpoint();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -159,7 +161,7 @@ class ModelRegistryControllerTest {
 
     @Test
     void getCrossEncodersEndpoint_returnsNonNullList() {
-        ResponseEntity<List<ModelRegistryController.BuiltInModelInfo>> response =
+        ResponseEntity<List<BuiltInModelInfo>> response =
                 controller.getCrossEncodersEndpoint();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -169,7 +171,7 @@ class ModelRegistryControllerTest {
     void getBuiltInModel_withKnownModelId_returnsModel() {
         // Use one of the built-in model IDs from ModelConstants
         // bge-base-en-v1.5 is a well-known built-in model
-        ResponseEntity<ModelRegistryController.BuiltInModelInfo> response =
+        ResponseEntity<BuiltInModelInfo> response =
                 controller.getBuiltInModel("bge-base-en-v1.5");
         // Either 200 (if registered) or 404 (if not)
         assertTrue(response.getStatusCode() == HttpStatus.OK ||
@@ -178,37 +180,37 @@ class ModelRegistryControllerTest {
 
     @Test
     void getBuiltInModel_withUnknownModelId_returnsNotFound() {
-        ResponseEntity<ModelRegistryController.BuiltInModelInfo> response =
+        ResponseEntity<BuiltInModelInfo> response =
                 controller.getBuiltInModel("nonexistent-model-xyz");
         assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
     }
 
     @Test
     void assembleArchive_withNoModels_returnsBadRequest() {
-        ModelRegistryController.AssembleArchiveRequest request =
-                new ModelRegistryController.AssembleArchiveRequest();
+        AssembleArchiveRequest request =
+                new AssembleArchiveRequest();
         request.denseEncoderIds = List.of();
         request.sparseEncoderIds = List.of();
         request.crossEncoderIds = List.of();
 
-        ResponseEntity<ModelRegistryController.AssembleArchiveResponse> response =
+        ResponseEntity<AssembleArchiveResponse> response =
                 controller.assembleArchive(request);
         assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
         assertNotNull(response.getBody());
-        assertFalse(response.getBody().success());
+        assertFalse(response.getBody().success);
     }
 
     @Test
     void importArchive_withNonexistentPath_returnsBadRequest() {
-        ModelRegistryController.ArchiveImportRequest request =
-                new ModelRegistryController.ArchiveImportRequest();
+        ArchiveImportRequest request =
+                new ArchiveImportRequest();
         request.archivePath = "/nonexistent/path/archive.karch";
 
-        ResponseEntity<ModelRegistryController.ArchiveImportResponse> response =
+        ResponseEntity<ArchiveImportResponse> response =
                 controller.importArchive(request);
         assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
         assertNotNull(response.getBody());
-        assertFalse(response.getBody().success());
+        assertFalse(response.getBody().success);
     }
 
     @Test
@@ -275,17 +277,17 @@ class ModelRegistryControllerTest {
 
     @Test
     void getActiveModelContext_withAllNullServices_returnsNullEmbeddingAndReranker() {
-        ResponseEntity<ModelRegistryController.ActiveModelContext> response =
+        ResponseEntity<ActiveModelContext> response =
                 controller.getActiveModelContext();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
-        assertNull(response.getBody().embedding());
-        assertNull(response.getBody().reranker());
+        assertNull(response.getBody().embedding);
+        assertNull(response.getBody().reranker);
     }
 
     @Test
     void getModelsByRole_withNoStagingService_returnsEmptyList() {
-        ResponseEntity<List<ModelRegistryController.ModelEntry>> response =
+        ResponseEntity<List<ModelEntry>> response =
                 controller.getModelsByRole("retrieval");
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertTrue(response.getBody().isEmpty());

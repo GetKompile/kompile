@@ -52,7 +52,6 @@ class Nd4jBuildConfigTest {
         assertFalse(config.isHelperMlir());
         assertFalse(config.isHelperPjrt());
         assertFalse(config.isHelperMiopen());
-        assertFalse(config.isHelperLlamacpp());
         assertFalse(config.isHelperVlm());
         assertTrue(config.isDynamicKernelSelection());
         assertEquals(KernelStrategy.FASTEST, config.getKernelStrategy());
@@ -274,13 +273,12 @@ class Nd4jBuildConfigTest {
                 .helperMlir(true)
                 .helperPjrt(true)
                 .helperMiopen(true)
-                .helperLlamacpp(true)
                 .helperVlm(true)
                 .build();
 
         String helpers = config.getEffectiveHelpersList();
         String[] helperArray = helpers.split(";");
-        assertEquals(10, helperArray.length);
+        assertEquals(9, helperArray.length);
     }
 
     // =============================================
@@ -550,5 +548,76 @@ class Nd4jBuildConfigTest {
         String types = config.getEffectiveDataTypes();
         int typeCount = types.split(";").length;
         assertEquals(6, typeCount);
+    }
+
+    // =============================================
+    // ZLUDA Configuration Tests
+    // =============================================
+
+    @Test
+    @DisplayName("ZLUDA AMD config should store all AMD-specific fields")
+    void testZludaAmdConfiguration() {
+        Nd4jBuildConfig config = Nd4jBuildConfig.builder()
+                .backend(Backend.ZLUDA)
+                .zludaTarget(ZludaTarget.AMD)
+                .rocmVersion("6.1")
+                .hipVersion("6.0")
+                .miopenVersion("3.1")
+                .amdGpuTargets("gfx1030;gfx1100")
+                .zludaPath("/opt/zluda")
+                .helperMiopen(true)
+                .build();
+
+        assertEquals(Backend.ZLUDA, config.getBackend());
+        assertEquals(ZludaTarget.AMD, config.getZludaTarget());
+        assertEquals("6.1", config.getRocmVersion());
+        assertEquals("6.0", config.getHipVersion());
+        assertEquals("3.1", config.getMiopenVersion());
+        assertEquals("gfx1030;gfx1100", config.getAmdGpuTargets());
+        assertEquals("/opt/zluda", config.getZludaPath());
+        assertTrue(config.isHelperMiopen());
+        assertEquals("zluda-amd", config.getEffectiveMavenProfile());
+    }
+
+    @Test
+    @DisplayName("ZLUDA Intel config should store oneAPI version")
+    void testZludaIntelConfiguration() {
+        Nd4jBuildConfig config = Nd4jBuildConfig.builder()
+                .backend(Backend.ZLUDA)
+                .zludaTarget(ZludaTarget.INTEL)
+                .oneApiVersion("2024.1")
+                .build();
+
+        assertEquals(ZludaTarget.INTEL, config.getZludaTarget());
+        assertEquals("2024.1", config.getOneApiVersion());
+        assertEquals("zluda-intel", config.getEffectiveMavenProfile());
+    }
+
+    @Test
+    @DisplayName("zludaAmdTraining preset should have correct configuration")
+    void testZludaAmdTrainingPreset() {
+        Nd4jBuildConfig config = Nd4jBuildConfig.zludaAmdTraining("6.1", "gfx1030;gfx1100");
+
+        assertEquals(Backend.ZLUDA, config.getBackend());
+        assertEquals(ZludaTarget.AMD, config.getZludaTarget());
+        assertEquals(TypeProfile.TRAINING, config.getTypeProfile());
+        assertTrue(config.isHelperMiopen());
+        assertEquals("6.1", config.getRocmVersion());
+        assertEquals("gfx1030;gfx1100", config.getAmdGpuTargets());
+        assertTrue(config.isDynamicKernelSelection());
+        assertTrue(config.isSemanticFiltering());
+    }
+
+    @Test
+    @DisplayName("zludaAmdInference preset should have correct configuration")
+    void testZludaAmdInferencePreset() {
+        Nd4jBuildConfig config = Nd4jBuildConfig.zludaAmdInference("6.1", "gfx1100");
+
+        assertEquals(Backend.ZLUDA, config.getBackend());
+        assertEquals(ZludaTarget.AMD, config.getZludaTarget());
+        assertEquals(TypeProfile.INFERENCE, config.getTypeProfile());
+        assertTrue(config.isHelperMiopen());
+        assertTrue(config.isAggressiveSemanticFiltering());
+        assertTrue(config.isUseLto());
     }
 }

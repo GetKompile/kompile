@@ -16,7 +16,7 @@
 
 package ai.kompile.cli.common.mcp;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -58,8 +58,7 @@ public class McpSseClient implements AutoCloseable {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
-        this.objectMapper = new ObjectMapper()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

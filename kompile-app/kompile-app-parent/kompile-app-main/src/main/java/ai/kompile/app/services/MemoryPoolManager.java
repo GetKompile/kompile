@@ -18,6 +18,7 @@ package ai.kompile.app.services;
 
 import ai.kompile.app.config.GpuDevice;
 import ai.kompile.app.config.MemoryPoolConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -56,7 +57,7 @@ public class MemoryPoolManager {
             GpuResourceManager gpuResourceManager,
             @Value("${kompile.data.dir:#{null}}") String dataDir) {
         this.gpuResourceManager = gpuResourceManager;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         String effectiveDataDir = dataDir;
         if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
             effectiveDataDir = System.getProperty("user.home") + "/.kompile";

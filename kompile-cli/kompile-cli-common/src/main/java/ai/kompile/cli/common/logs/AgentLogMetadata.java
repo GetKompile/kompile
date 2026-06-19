@@ -17,6 +17,9 @@
 package ai.kompile.cli.common.logs;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 import java.util.List;
@@ -27,6 +30,9 @@ import java.util.List;
  *
  * <p>Populated when the run starts and rewritten when the run finishes.
  */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class AgentLogMetadata {
 
@@ -46,135 +52,4 @@ public class AgentLogMetadata {
     private Long pid;
     private Double costUsd;
     private Integer numTurns;
-
-    public AgentLogMetadata() {
-    }
-
-    public String getProcessId() {
-        return processId;
-    }
-
-    public void setProcessId(String processId) {
-        this.processId = processId;
-    }
-
-    public String getAgentName() {
-        return agentName;
-    }
-
-    public void setAgentName(String agentName) {
-        this.agentName = agentName;
-    }
-
-    public String getOrchestratorInstanceId() {
-        return orchestratorInstanceId;
-    }
-
-    public void setOrchestratorInstanceId(String orchestratorInstanceId) {
-        this.orchestratorInstanceId = orchestratorInstanceId;
-    }
-
-    public Long getSessionId() {
-        return sessionId;
-    }
-
-    public void setSessionId(Long sessionId) {
-        this.sessionId = sessionId;
-    }
-
-    public List<String> getCommand() {
-        return command;
-    }
-
-    public void setCommand(List<String> command) {
-        this.command = command;
-    }
-
-    public String getWorkingDirectory() {
-        return workingDirectory;
-    }
-
-    public void setWorkingDirectory(String workingDirectory) {
-        this.workingDirectory = workingDirectory;
-    }
-
-    public Instant getStartedAt() {
-        return startedAt;
-    }
-
-    public void setStartedAt(Instant startedAt) {
-        this.startedAt = startedAt;
-    }
-
-    public Instant getEndedAt() {
-        return endedAt;
-    }
-
-    public void setEndedAt(Instant endedAt) {
-        this.endedAt = endedAt;
-    }
-
-    public Long getDurationMs() {
-        return durationMs;
-    }
-
-    public void setDurationMs(Long durationMs) {
-        this.durationMs = durationMs;
-    }
-
-    public String getState() {
-        return state;
-    }
-
-    public void setState(String state) {
-        this.state = state;
-    }
-
-    public Integer getExitCode() {
-        return exitCode;
-    }
-
-    public void setExitCode(Integer exitCode) {
-        this.exitCode = exitCode;
-    }
-
-    public String getErrorMessage() {
-        return errorMessage;
-    }
-
-    public void setErrorMessage(String errorMessage) {
-        this.errorMessage = errorMessage;
-    }
-
-    public Integer getLinesWritten() {
-        return linesWritten;
-    }
-
-    public void setLinesWritten(Integer linesWritten) {
-        this.linesWritten = linesWritten;
-    }
-
-    public Long getPid() {
-        return pid;
-    }
-
-    public void setPid(Long pid) {
-        this.pid = pid;
-    }
-
-    public Double getCostUsd() {
-        return costUsd;
-    }
-
-    public void setCostUsd(Double costUsd) {
-        this.costUsd = costUsd;
-    }
-
-    public Integer getNumTurns() {
-        return numTurns;
-    }
-
-    public void setNumTurns(Integer numTurns) {
-        this.numTurns = numTurns;
-    }
 }

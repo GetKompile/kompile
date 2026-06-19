@@ -38,10 +38,9 @@ import ai.kompile.process.workflow.ProcessPhase;
 import ai.kompile.process.workflow.ProcessStatus;
 import ai.kompile.process.workflow.ProcessStep;
 import ai.kompile.process.workflow.StepType;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -168,9 +167,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     }
 
     public ProcessEngineServiceImpl() {
-        this.objectMapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+        this.objectMapper = JsonUtils.newStandardMapper()
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     }
 

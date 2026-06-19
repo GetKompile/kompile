@@ -17,6 +17,7 @@
 package ai.kompile.cli.agent;
 
 import ai.kompile.cli.common.http.KompileHttpClient;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 
@@ -339,10 +340,10 @@ public class ProcessCommand implements Callable<Integer> {
 
     private Object readBody() throws Exception {
         if (file != null) {
-            return new ObjectMapper().readValue(Files.readString(file), Object.class);
+            return JsonUtils.standardMapper().readValue(Files.readString(file), Object.class);
         }
         if (json != null && !json.isBlank()) {
-            return new ObjectMapper().readValue(json, Object.class);
+            return JsonUtils.standardMapper().readValue(json, Object.class);
         }
         System.err.println("Request body required: provide --file or --json");
         throw new IllegalArgumentException("No request body provided");
@@ -350,10 +351,10 @@ public class ProcessCommand implements Callable<Integer> {
 
     private Object readBodyOrNull() throws Exception {
         if (file != null) {
-            return new ObjectMapper().readValue(Files.readString(file), Object.class);
+            return JsonUtils.standardMapper().readValue(Files.readString(file), Object.class);
         }
         if (json != null && !json.isBlank()) {
-            return new ObjectMapper().readValue(json, Object.class);
+            return JsonUtils.standardMapper().readValue(json, Object.class);
         }
         return null;
     }

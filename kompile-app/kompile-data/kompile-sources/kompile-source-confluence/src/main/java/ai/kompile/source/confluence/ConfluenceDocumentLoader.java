@@ -19,7 +19,9 @@ package ai.kompile.source.confluence;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.utils.MapUtils;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,7 +68,7 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Override
     public String getName() {
@@ -123,7 +125,7 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
             files.add(path);
         }
 
-        int maxDocuments = getInt(descriptor.getMetadata(), "maxDocuments", DEFAULT_MAX_DOCUMENTS);
+        int maxDocuments = MapUtils.getInt(descriptor.getMetadata(), "maxDocuments", DEFAULT_MAX_DOCUMENTS);
         if (maxDocuments > 0 && files.size() > maxDocuments) {
             files = files.subList(0, maxDocuments);
         }
@@ -160,7 +162,7 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
                 .or(() -> stringValue(metadata, "space"))
                 .orElseThrow(() -> new IllegalArgumentException("Confluence API loading requires metadata.spaceKey."));
         String authHeader = resolveAuthHeader(metadata);
-        int maxDocuments = getInt(metadata, "maxDocuments", DEFAULT_MAX_DOCUMENTS);
+        int maxDocuments = MapUtils.getInt(metadata, "maxDocuments", DEFAULT_MAX_DOCUMENTS);
 
         report(progressCallback, 5, spaceKey, "Discovering Confluence pages");
         List<Document> documents = new ArrayList<>();
@@ -346,21 +348,6 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
         }
         String value = metadata.get(key).toString().trim();
         return value.isEmpty() ? Optional.empty() : Optional.of(value);
-    }
-
-    private int getInt(Map<String, Object> metadata, String key, int defaultValue) {
-        if (metadata == null || metadata.get(key) == null) {
-            return defaultValue;
-        }
-        Object value = metadata.get(key);
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        try {
-            return Integer.parseInt(value.toString());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
     }
 
     private int progress(int current, int total) {

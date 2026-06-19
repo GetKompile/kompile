@@ -19,6 +19,9 @@ package ai.kompile.cli.main.chat.harness.eval;
 import ai.kompile.cli.main.chat.harness.TaskOutcome;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -28,6 +31,9 @@ import java.util.List;
  * Complete result of running one {@link EvalCase} against an agent.
  * Captures the outcome, all assertion results, judge scores, timing, and agent output.
  */
+@Data
+@Builder
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class EvalCaseResult {
 
@@ -40,7 +46,7 @@ public class EvalCaseResult {
     @JsonProperty private String outcomeReason;
 
     // Assertions
-    @JsonProperty private List<AssertionResult> assertionResults = new ArrayList<>();
+    @JsonProperty @Builder.Default private List<AssertionResult> assertionResults = new ArrayList<>();
     @JsonProperty private int assertionsPassed;
     @JsonProperty private int assertionsTotal;
     @JsonProperty private int criticalAssertionsFailed;
@@ -74,71 +80,12 @@ public class EvalCaseResult {
 
     public EvalCaseResult() {
         this.timestamp = Instant.now();
+        this.assertionResults = new ArrayList<>();
     }
 
     public boolean passed() {
         return outcome == TaskOutcome.COMPLETED;
     }
-
-    // Getters
-    public String getCaseId() { return caseId; }
-    public String getCaseName() { return caseName; }
-    public String getPrompt() { return prompt; }
-    public TaskOutcome getOutcome() { return outcome; }
-    public String getOutcomeReason() { return outcomeReason; }
-    public List<AssertionResult> getAssertionResults() { return assertionResults; }
-    public int getAssertionsPassed() { return assertionsPassed; }
-    public int getAssertionsTotal() { return assertionsTotal; }
-    public int getCriticalAssertionsFailed() { return criticalAssertionsFailed; }
-    public String getAgentOutput() { return agentOutput; }
-    public String getAgent() { return agent; }
-    public String getModel() { return model; }
-    public String getProvider() { return provider; }
-    public int getAgenticSteps() { return agenticSteps; }
-    public int getToolCallsTotal() { return toolCallsTotal; }
-    public int getToolCallErrors() { return toolCallErrors; }
-    public boolean isHitMaxSteps() { return hitMaxSteps; }
-    public boolean isHadEscape() { return hadEscape; }
-    public String getEscapeType() { return escapeType; }
-    public float getCompositeScore() { return compositeScore; }
-    public float getJudgeCorrectness() { return judgeCorrectness; }
-    public float getJudgeCompleteness() { return judgeCompleteness; }
-    public String getJudgeReasoning() { return judgeReasoning; }
-    public long getExecutionTimeMs() { return executionTimeMs; }
-    public long getInputTokens() { return inputTokens; }
-    public long getOutputTokens() { return outputTokens; }
-    public Instant getTimestamp() { return timestamp; }
-    public String getError() { return error; }
-
-    // Setters
-    public void setCaseId(String v) { this.caseId = v; }
-    public void setCaseName(String v) { this.caseName = v; }
-    public void setPrompt(String v) { this.prompt = v; }
-    public void setOutcome(TaskOutcome v) { this.outcome = v; }
-    public void setOutcomeReason(String v) { this.outcomeReason = v; }
-    public void setAssertionResults(List<AssertionResult> v) { this.assertionResults = v; }
-    public void setAssertionsPassed(int v) { this.assertionsPassed = v; }
-    public void setAssertionsTotal(int v) { this.assertionsTotal = v; }
-    public void setCriticalAssertionsFailed(int v) { this.criticalAssertionsFailed = v; }
-    public void setAgentOutput(String v) { this.agentOutput = v; }
-    public void setAgent(String v) { this.agent = v; }
-    public void setModel(String v) { this.model = v; }
-    public void setProvider(String v) { this.provider = v; }
-    public void setAgenticSteps(int v) { this.agenticSteps = v; }
-    public void setToolCallsTotal(int v) { this.toolCallsTotal = v; }
-    public void setToolCallErrors(int v) { this.toolCallErrors = v; }
-    public void setHitMaxSteps(boolean v) { this.hitMaxSteps = v; }
-    public void setHadEscape(boolean v) { this.hadEscape = v; }
-    public void setEscapeType(String v) { this.escapeType = v; }
-    public void setCompositeScore(float v) { this.compositeScore = v; }
-    public void setJudgeCorrectness(float v) { this.judgeCorrectness = v; }
-    public void setJudgeCompleteness(float v) { this.judgeCompleteness = v; }
-    public void setJudgeReasoning(String v) { this.judgeReasoning = v; }
-    public void setExecutionTimeMs(long v) { this.executionTimeMs = v; }
-    public void setInputTokens(long v) { this.inputTokens = v; }
-    public void setOutputTokens(long v) { this.outputTokens = v; }
-    public void setTimestamp(Instant v) { this.timestamp = v; }
-    public void setError(String v) { this.error = v; }
 
     /** Create a result for a case that failed with an error before execution. */
     public static EvalCaseResult error(EvalCase evalCase, String errorMsg) {

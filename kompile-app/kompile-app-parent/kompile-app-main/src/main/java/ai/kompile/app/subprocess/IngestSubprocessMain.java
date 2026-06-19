@@ -17,6 +17,7 @@
 package ai.kompile.app.subprocess;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
 import org.nd4j.linalg.factory.Nd4j;
@@ -52,7 +53,7 @@ import java.util.Map;
 public class IngestSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(IngestSubprocessMain.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     // Redirect System.out to System.err for logging, keep protocol messages on
     // original stdout

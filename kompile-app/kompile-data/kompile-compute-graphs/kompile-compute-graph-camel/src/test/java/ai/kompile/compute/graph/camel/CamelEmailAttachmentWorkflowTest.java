@@ -915,8 +915,7 @@ class CamelEmailAttachmentWorkflowTest {
     }
 
     private String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() > max ? s.substring(0, max) + "..." : s;
+        return ai.kompile.utils.StringUtils.truncate(s, max);
     }
 
     /**

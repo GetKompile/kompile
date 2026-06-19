@@ -1,0 +1,3313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Semantic Alignment — Northstar Goods · DRAFT</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f5f5f5;
+    --surface-sunken: #ededed;
+    --text: #1a1a1a;
+    --text-secondary: #5a5a5a;
+    --text-tertiary: #858585;
+    --border: rgba(0,0,0,0.10);
+    --border-strong: rgba(0,0,0,0.20);
+    --accent: #DC143C;
+    --accent-bg: #FCE5EA;
+
+    --gray-50: #F1EFE8; --gray-600: #5F5E5A; --gray-800: #444441;
+    --blue-50: #E6F1FB; --blue-600: #185FA5; --blue-800: #0C447C;
+    --amber-50: #FAEEDA; --amber-600: #854F0B; --amber-800: #633806;
+    --green-50: #EAF3DE; --green-600: #3B6D11; --green-800: #27500A;
+    --purple-50: #EEEDFE; --purple-600: #534AB7; --purple-800: #3C3489;
+    --coral-50: #FAECE7; --coral-600: #993C1D; --coral-800: #712B13;
+    --teal-50: #E1F5EE; --teal-600: #0F6E56; --teal-800: #085041;
+    --pink-50: #FBEAF0; --pink-600: #993556; --pink-800: #72243E;
+    --red-50: #FBE9E7;  --red-600: #B43124;  --red-800: #821E13;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --surface: #1a1a1a;
+      --surface-hover: #262626;
+      --surface-sunken: #0d0d0d;
+      --text: #f5f5f5;
+      --text-secondary: #a8a8a8;
+      --text-tertiary: #707070;
+      --border: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.20);
+      --accent: #F08197;
+      --accent-bg: rgba(220,20,60,0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- Header (brand bar) ---- */
+  body > header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 32px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  .header-inner { max-width: 1500px; margin: 0 auto; }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .logo-slash {
+    font-family: inherit;
+    font-weight: 800;
+    color: var(--accent);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+  .logo-wordmark {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: -4px;
+  }
+  .logo-divider { color: var(--text-tertiary); margin: 0 4px; font-size: 12px; }
+  .logo-context {
+    font-size: 12px; color: var(--text-tertiary);
+    font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .draft-pill {
+    display: inline-block;
+    margin-left: 12px;
+    padding: 2px 10px;
+    border-radius: 12px;
+    background: var(--amber-50);
+    color: var(--amber-800);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  @media (prefers-color-scheme: dark) {
+    .draft-pill { background: rgba(133,79,11,0.20); color: #F0C171; }
+  }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 2px; }
+  .sub { font-size: 13px; color: var(--text-secondary); margin: 0; max-width: 880px; }
+
+  main { max-width: 1500px; margin: 0 auto; padding: 28px 32px 64px; }
+
+  /* ---- Hero / explainer ---- */
+  .hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin-bottom: 22px;
+  }
+  .hero-eyebrow {
+    font-size: 11px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .hero h2 {
+    margin: 0 0 8px;
+    font-size: 19px; font-weight: 500;
+    line-height: 1.35;
+    color: var(--text);
+  }
+  .hero p {
+    margin: 0 0 8px;
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+  .hero p:last-child { margin-bottom: 0; }
+  .hero strong { color: var(--text); font-weight: 600; }
+  .hero em { color: var(--accent); font-style: normal; font-weight: 600; }
+  .hero code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    background: var(--surface-sunken);
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--text);
+  }
+
+  /* ---- Architecture-position diagram (datastore → layer → workflow) ---- */
+  .arch-diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 22px 8px;
+    margin-bottom: 22px;
+  }
+  .arch-diagram-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .arch-diagram h3 { margin: 0; font-size: 14px; font-weight: 500; }
+  .arch-diagram .hint { font-size: 11.5px; color: var(--text-tertiary); }
+  .arch-diagram svg { display: block; width: 100%; height: auto; }
+
+  /* ---- ER thumbnail placeholder ---- */
+  .er-thumb {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 22px;
+    margin-bottom: 22px;
+  }
+  .er-thumb-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .er-thumb h3 { margin: 0; font-size: 14px; font-weight: 500; }
+  .er-thumb .hint { font-size: 11.5px; color: var(--text-tertiary); }
+  .er-thumb-canvas {
+    height: 200px;
+    background: var(--surface-sunken);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    font-style: italic;
+  }
+
+  /* ---- Schema browser shell ---- */
+  .browser {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (max-width: 960px) {
+    .browser { grid-template-columns: 1fr; }
+  }
+  .left-rail {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    position: sticky;
+    top: 130px;
+    max-height: calc(100vh - 160px);
+    overflow-y: auto;
+  }
+  .rail-search {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-sunken);
+  }
+  .rail-search input {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 12.5px;
+    background: var(--surface);
+    color: var(--text);
+  }
+  .rail-search input::placeholder { color: var(--text-tertiary); }
+
+  .rail-empty,
+  .pane-empty {
+    padding: 28px 22px;
+    color: var(--text-tertiary);
+    font-size: 12.5px;
+    font-style: italic;
+    text-align: center;
+    line-height: 1.6;
+  }
+
+  /* ---- Left-rail entity list (Chunk 1B) ---- */
+  .rail-group-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 12px 14px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    border-top: 1px solid var(--border);
+    background: var(--surface-sunken);
+  }
+  .rail-group-head.first { border-top: none; }
+  .rail-group-count {
+    font-weight: 600;
+    color: var(--text-tertiary);
+    background: var(--surface);
+    padding: 1px 7px;
+    border-radius: 9px;
+    font-size: 10px;
+    border: 1px solid var(--border);
+    letter-spacing: 0;
+  }
+  .entity-item {
+    padding: 10px 14px 10px 11px;
+    border-top: 1px solid var(--border);
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.1s, border-left-color 0.1s;
+  }
+  .entity-item:hover { background: var(--surface-hover); }
+  .entity-item.active {
+    background: var(--accent-bg);
+    border-left-color: var(--accent);
+  }
+  .entity-item-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    letter-spacing: -0.01em;
+  }
+  .entity-item.active .entity-item-name { color: var(--accent); }
+  .entity-item-desc {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+    line-height: 1.35;
+  }
+
+  /* ---- Entity detail card (Chunk 1C) ---- */
+  .entity-detail { padding: 22px 26px 26px; }
+  .entity-detail-header {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 18px;
+  }
+  .entity-detail-name {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.01em;
+    margin: 0;
+    margin-right: auto;
+  }
+  .classification-badge {
+    display: inline-flex;
+    padding: 3px 10px;
+    border-radius: 11px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .classification-badge.reference     { background: var(--blue-50);   color: var(--blue-800); }
+  .classification-badge.transactional { background: var(--gray-50);   color: var(--gray-800); }
+  .classification-badge.pattern       { background: var(--purple-50); color: var(--purple-800); }
+  .classification-badge.control       { background: var(--coral-50);  color: var(--coral-800); }
+  .classification-badge.metric        { background: var(--green-50);  color: var(--green-800); }
+  .classification-badge.actor         { background: var(--amber-50);  color: var(--amber-800); }
+  .confidence-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 11px;
+    font-size: 11px; font-weight: 600;
+    background: var(--surface-sunken); color: var(--text-secondary);
+  }
+  .confidence-pill::before {
+    content: ''; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green-600);
+  }
+  .inheritance-line {
+    width: 100%;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 6px;
+  }
+  .inheritance-line code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    background: var(--surface-sunken);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .entity-detail-desc {
+    font-size: 14px;
+    color: var(--text);
+    line-height: 1.55;
+    margin: 0 0 24px;
+  }
+  .entity-section { margin-bottom: 22px; }
+  .entity-section-head {
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    margin: 0 0 10px;
+  }
+
+  /* Fields table */
+  .fields-table {
+    width: 100%; border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .fields-table th {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    background: var(--surface-sunken);
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .fields-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .fields-table tr:last-child td { border-bottom: none; }
+  .fields-table td.fname {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .fields-table td.ftype {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--blue-800);
+  }
+  @media (prefers-color-scheme: dark) {
+    .fields-table td.ftype { color: #BEDDF6; }
+  }
+  .fields-table td.freq {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-style: italic;
+  }
+  .fields-table td.fconstraint {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+  }
+
+  /* Forward curve mini-charts (FXForwardCurve) */
+  .curve-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+  @media (max-width: 980px) {
+    .curve-grid { grid-template-columns: 1fr; }
+  }
+  .curve-card {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 12px 8px;
+  }
+  .curve-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+    gap: 8px;
+  }
+  .curve-pair {
+    font-family: ui-monospace, Menlo, monospace;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .curve-meta {
+    color: var(--text-tertiary);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .curve-svg { width: 100%; height: auto; display: block; }
+  .curve-svg .curve-line { stroke: var(--accent); stroke-width: 1.7; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+  .curve-svg .curve-dot { fill: var(--accent); }
+  .curve-svg .curve-dot-ecb { fill: var(--bg); stroke: var(--accent); stroke-width: 1.4; }
+  .curve-svg .curve-grid-line { stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 2 2; }
+  .curve-svg .curve-axis { stroke: var(--border-strong); stroke-width: 0.6; }
+  .curve-svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; fill: var(--text-tertiary); }
+  .curve-svg .curve-y-label { font-size: 8.5px; fill: var(--text-secondary); }
+  .curve-svg .curve-x-label { font-size: 9px; fill: var(--text-secondary); text-anchor: middle; }
+  .curve-foot {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    letter-spacing: 0.02em;
+  }
+  .curve-foot strong { color: var(--text-secondary); font-weight: 600; }
+  .curve-legend {
+    display: flex;
+    gap: 14px;
+    margin-top: 10px;
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    align-items: center;
+  }
+  .curve-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+  .curve-legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .curve-legend-dot.open { background: var(--bg); border: 1.4px solid var(--accent); box-sizing: border-box; }
+
+  /* Pattern-tag: small inline badge used in Example variances (Pattern entities) */
+  .pattern-tag {
+    display: inline-block;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 1px 7px;
+    background: var(--purple-50);
+    color: var(--purple-800);
+    border-radius: 4px;
+    margin-right: 8px;
+    letter-spacing: 0.01em;
+    vertical-align: 1px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .pattern-tag { background: rgba(83,74,183,0.20); color: #C8C3F2; }
+  }
+
+  /* Trigger-condition variant of allowed-row: right side is a code expression, not chips */
+  .allowed-rule {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    padding: 4px 0;
+    line-height: 1.55;
+  }
+  .allowed-rule code { background: transparent; padding: 0; color: inherit; }
+
+  /* Metric decomposition tree (used in ROICDecomposition) */
+  .metric-tree-svg { width: 100%; height: auto; display: block; }
+  .metric-tree-svg .tree-line { stroke: var(--border-strong); stroke-width: 1; fill: none; }
+  .metric-tree-svg .tree-box  { fill: var(--surface-sunken); stroke: var(--border); stroke-width: 1; }
+  .metric-tree-svg .tree-box-root { fill: var(--accent-bg); stroke: var(--accent); stroke-width: 1.4; }
+  .metric-tree-svg .tree-label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 9.5px; fill: var(--text-tertiary); text-anchor: middle; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700; }
+  .metric-tree-svg .tree-formula { font-family: ui-monospace, Menlo, monospace; font-size: 9px; fill: var(--text-tertiary); text-anchor: middle; }
+  .metric-tree-svg .tree-value { font-family: ui-monospace, Menlo, monospace; font-size: 13.5px; font-weight: 700; fill: var(--text); text-anchor: middle; }
+  .metric-tree-svg .tree-value-root { fill: var(--accent); font-size: 16px; }
+  .metric-tree-svg .tree-op { font-family: ui-monospace, Menlo, monospace; font-size: 16px; font-weight: 600; fill: var(--text-tertiary); text-anchor: middle; }
+
+  /* Trend chart: highlight last data point */
+  .curve-svg .curve-dot-last { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+  .curve-svg .curve-bench-median { stroke: var(--text-tertiary); stroke-width: 0.8; stroke-dasharray: 4 3; fill: none; }
+  .curve-svg .curve-bench-internal { stroke: var(--accent); stroke-width: 0.8; stroke-dasharray: 2 2; fill: none; opacity: 0.7; }
+  .curve-svg .curve-bench-label { font-size: 8.5px; fill: var(--text-tertiary); }
+  .curve-svg .curve-value-label { font-family: ui-monospace, Menlo, monospace; font-size: 10px; font-weight: 700; fill: var(--accent); }
+
+  /* Authority matrix (used in ApprovalRole) */
+  .matrix-scroll { overflow-x: auto; }
+  .authority-matrix {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11.5px;
+    min-width: 660px;
+  }
+  .authority-matrix th {
+    font-size: 9.5px;
+    color: var(--text-tertiary);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: center;
+    padding: 8px 4px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: bottom;
+    background: var(--surface-sunken);
+    white-space: nowrap;
+  }
+  .authority-matrix th.first-col { text-align: left; padding-left: 10px; min-width: 220px; }
+  .authority-matrix td {
+    padding: 6px 4px;
+    border-bottom: 1px solid var(--border);
+    text-align: center;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .authority-matrix td.decision {
+    text-align: left;
+    padding-left: 10px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .authority-matrix tr:last-child td { border-bottom: none; }
+  .auth-A { background: var(--green-50);  color: var(--green-800); }
+  .auth-C { background: var(--amber-50);  color: var(--amber-800); }
+  .auth-R { background: var(--blue-50);   color: var(--blue-800); }
+  .auth-I { background: var(--gray-50);   color: var(--gray-800); }
+  @media (prefers-color-scheme: dark) {
+    .auth-A { background: rgba(59,109,17,0.22);  color: #B8D88E; }
+    .auth-C { background: rgba(133,79,11,0.22);  color: #F0C171; }
+    .auth-R { background: rgba(24,95,165,0.22);  color: #BEDDF6; }
+    .auth-I { background: rgba(95,94,90,0.22);   color: #C8C7C2; }
+  }
+  .auth-legend {
+    display: flex;
+    gap: 16px;
+    margin-top: 10px;
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .auth-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .auth-legend-key {
+    display: inline-block;
+    width: 18px;
+    height: 16px;
+    border-radius: 3px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px;
+    font-weight: 700;
+    text-align: center;
+    line-height: 16px;
+  }
+
+  /* Member list (allowed-row variant for ApprovalRole roles & members) */
+  .member-row { display: grid; grid-template-columns: 200px 1fr; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .member-row:last-child { border-bottom: none; }
+  .member-role { font-family: ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: var(--text); padding-top: 2px; }
+  .member-people { font-size: 12.5px; color: var(--text-secondary); line-height: 1.55; }
+  .member-people strong { color: var(--text); font-weight: 600; }
+  .member-people .member-meta { color: var(--text-tertiary); font-size: 11px; display: block; margin-top: 2px; }
+
+  /* Allowed values */
+  .allowed-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 14px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    align-items: baseline;
+  }
+  .allowed-row:last-child { border-bottom: none; }
+  .allowed-canonical {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .allowed-aliases { font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+  .alias-chip {
+    display: inline-block;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    background: var(--surface-sunken);
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--text);
+    margin: 1px 3px 1px 0;
+    border: 1px solid var(--border);
+  }
+
+  /* Rules */
+  .rules-list {
+    margin: 0; padding-left: 20px;
+    font-size: 12.5px;
+    color: var(--text);
+    line-height: 1.7;
+  }
+  .rules-list li { margin: 5px 0; }
+  .rules-list code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px;
+    background: var(--surface-sunken);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text-secondary);
+  }
+  .rules-list em { color: var(--accent); font-style: normal; font-weight: 600; }
+
+  /* Used-by chips */
+  .rel-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .rel-chip {
+    display: inline-flex; align-items: center;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11.5px;
+    font-family: ui-monospace, Menlo, monospace;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  /* Provenance chips */
+  .prov-chips { display: flex; flex-direction: column; gap: 6px; }
+  .prov-chip {
+    display: grid;
+    grid-template-columns: 24px 1fr;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    background: var(--surface-sunken);
+    border-left: 3px solid var(--text-tertiary);
+    align-items: baseline;
+  }
+  .prov-chip.doc { border-left-color: var(--blue-600); }
+  .prov-chip.xls { border-left-color: var(--green-600); }
+  .prov-chip.rec { border-left-color: var(--coral-600); }
+  .prov-chip.int { border-left-color: var(--purple-600); }
+  .prov-icon { font-size: 14px; line-height: 1; }
+  .prov-text { color: var(--text); line-height: 1.5; }
+  .prov-text strong { font-weight: 600; }
+  .prov-text em { color: var(--text-secondary); font-style: italic; }
+  .prov-text code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    background: var(--surface);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+  }
+
+  /* Change history */
+  .change-list { list-style: none; margin: 0; padding: 0; }
+  .change-row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 14px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+    align-items: baseline;
+  }
+  .change-row:last-child { border-bottom: none; }
+  .change-date {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-weight: 600;
+  }
+  .change-detail { color: var(--text); line-height: 1.5; }
+  .change-detail em { color: var(--text-secondary); font-style: italic; }
+  .change-detail code {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    background: var(--surface-sunken);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text-secondary);
+  }
+
+  .right-pane {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    min-height: 480px;
+    overflow: hidden;
+  }
+  .pane-empty { padding: 80px 24px; }
+
+  /* ---- Footer ---- */
+  footer {
+    max-width: 1500px;
+    margin: 0 auto;
+    padding: 24px 32px 48px;
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="logo-row">
+      <span class="logo-slash">//</span>
+      <span class="logo-wordmark">PROSSIMO</span>
+      <span class="logo-divider">·</span>
+      <span class="logo-context">Semantic Alignment</span>
+      <span class="draft-pill">Stage 2 · Complete · 12 / 12</span>
+    </div>
+    <h1>Northstar Goods — Semantic Alignment</h1>
+    <p class="sub">ProssimoTech's discipline of unifying meaning across silos — and the ontology / semantic layer it produces. Generated from discovery; owned by the customer; refined every cycle.</p>
+  </div>
+</header>
+
+<main>
+
+  <!-- ============ HERO / EXPLAINER ============ -->
+  <div class="hero">
+    <div class="hero-eyebrow">// What you're looking at</div>
+    <h2>Every business has a vocabulary. <em>Semantic alignment</em> is the discipline of making that vocabulary agree across silos — and <strong>the ontology</strong> is the artifact it produces.</h2>
+    <p>At Northstar, three regional sales teams use eleven different spellings of "DTC" — <code>DTC</code>, <code>Direct-to-Consumer</code>, <code>ecom</code>, <code>Direct</code>, <code>EC</code>, <code>Marketplace</code>, plus regional dialects. Three currencies arrive in three different magnitudes (JPY thousands, AUD millions, SGD actuals). One product is <code>RST-001</code> in corporate, <code>NS-UK-RestBath16</code> in EMEA, and <code>JP-RST-001</code> in Japan. None of this is wrong — every region has reasons. But none of it can be summed, compared, or projected without a translation layer.</p>
+    <p><strong>Semantic alignment</strong> is the ongoing discipline that produces and maintains that translation layer. Its output — <strong>the ontology</strong> (or <em>semantic layer</em> in data-architecture parlance) — is a catalog of every concept in the close cycle, with controlled vocabularies, validation rules, relationships, and full provenance back to the manuals, macros, recordings, and interviews where each rule was learned. Agents read from it; humans edit it; the customer keeps it.</p>
+    <p>This view shows Northstar's instance, derived from ProssimoTech's cross-customer FP&amp;A templates. Click any entity in the catalog to see its definition, evidence, and how it's used.</p>
+  </div>
+
+  <!-- ============ ARCHITECTURE-POSITION DIAGRAM ============ -->
+  <div class="arch-diagram">
+    <div class="arch-diagram-head">
+      <h3>Where the semantic layer sits in the stack</h3>
+      <span class="hint">datastore → ontology → workflow</span>
+    </div>
+    <svg viewBox="0 0 1300 220" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr-crimson" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="var(--accent)"/>
+        </marker>
+        <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="var(--text-secondary)"/>
+        </marker>
+      </defs>
+
+      <!-- LEFT: Source systems -->
+      <text x="20" y="44" fill="var(--text-tertiary)" font-size="10" font-weight="700" letter-spacing="0.08em">RAW · SOURCE SYSTEMS</text>
+
+      <g>
+        <rect x="20" y="62" width="110" height="32" rx="4" fill="var(--surface-sunken)" stroke="var(--border-strong)" stroke-width="0.8"/>
+        <text x="75" y="82" text-anchor="middle" fill="var(--text)" font-size="11.5">NetSuite</text>
+      </g>
+      <g>
+        <rect x="138" y="62" width="110" height="32" rx="4" fill="var(--surface-sunken)" stroke="var(--border-strong)" stroke-width="0.8"/>
+        <text x="193" y="82" text-anchor="middle" fill="var(--text)" font-size="11.5">Shopify + Amazon</text>
+      </g>
+      <g>
+        <rect x="256" y="62" width="110" height="32" rx="4" fill="var(--surface-sunken)" stroke="var(--border-strong)" stroke-width="0.8"/>
+        <text x="311" y="82" text-anchor="middle" fill="var(--text)" font-size="11.5">Salesforce</text>
+      </g>
+      <g>
+        <rect x="20" y="102" width="110" height="32" rx="4" fill="var(--surface-sunken)" stroke="var(--border-strong)" stroke-width="0.8"/>
+        <text x="75" y="122" text-anchor="middle" fill="var(--text)" font-size="11.5">Workday</text>
+      </g>
+      <g>
+        <rect x="138" y="102" width="110" height="32" rx="4" fill="var(--surface-sunken)" stroke="var(--border-strong)" stroke-width="0.8"/>
+        <text x="193" y="122" text-anchor="middle" fill="var(--text)" font-size="11.5">Treasury FX feed</text>
+      </g>
+      <g>
+        <rect x="256" y="102" width="110" height="32" rx="4" fill="var(--surface-sunken)" stroke="var(--border-strong)" stroke-width="0.8"/>
+        <text x="311" y="122" text-anchor="middle" fill="var(--text)" font-size="11.5">Regional .xlsx (×3)</text>
+      </g>
+
+      <text x="193" y="160" text-anchor="middle" fill="var(--text-tertiary)" font-size="10" font-style="italic">11 spellings of "DTC" · 3 magnitude conventions · 2 fiscal calendars</text>
+
+      <!-- Arrow LEFT → MIDDLE  (label removed — already in left zone title) -->
+      <line x1="378" y1="96" x2="430" y2="96" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arr-crimson)"/>
+
+      <!-- MIDDLE: Semantic Alignment -->
+      <g>
+        <rect x="445" y="30" width="280" height="135" rx="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="2.5"/>
+        <text x="460" y="55" fill="var(--accent)" font-size="11" font-weight="800" letter-spacing="0.06em">// PROSSIMO</text>
+        <text x="585" y="92" text-anchor="middle" fill="var(--accent)" font-size="22" font-weight="800" letter-spacing="0.04em">SEMANTIC</text>
+        <text x="585" y="118" text-anchor="middle" fill="var(--accent)" font-size="22" font-weight="800" letter-spacing="0.04em">ALIGNMENT</text>
+        <line x1="465" y1="135" x2="705" y2="135" stroke="var(--border)" stroke-width="0.5"/>
+        <text x="585" y="150" text-anchor="middle" fill="var(--text-secondary)" font-size="11" font-style="italic">ontology · semantic layer</text>
+      </g>
+      <text x="585" y="184" text-anchor="middle" fill="var(--text-tertiary)" font-size="10" font-style="italic">12 entities · 60 rules · provenance to source · refined every cycle</text>
+
+      <!-- Arrow MIDDLE → RIGHT  (label removed — already in right zone title) -->
+      <line x1="725" y1="96" x2="777" y2="96" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arr-crimson)"/>
+
+      <!-- RIGHT: Workflow -->
+      <text x="790" y="44" fill="var(--text-tertiary)" font-size="10" font-weight="700" letter-spacing="0.08em">CANONICAL · FP&amp;A WORKFLOW (PARTIALLY AGENTIC)</text>
+
+      <g>
+        <rect x="790" y="72" width="92" height="48" rx="4" fill="var(--green-50)" stroke="var(--green-600)" stroke-width="0.8"/>
+        <text x="836" y="93" text-anchor="middle" fill="var(--green-800)" font-size="11" font-weight="600">Triage</text>
+        <text x="836" y="110" text-anchor="middle" fill="var(--green-600)" font-size="9" letter-spacing="0.06em">AGENT</text>
+      </g>
+      <line x1="884" y1="96" x2="896" y2="96" stroke="var(--text-secondary)" stroke-width="1" marker-end="url(#arr-gray)"/>
+
+      <g>
+        <rect x="900" y="72" width="92" height="48" rx="4" fill="var(--green-50)" stroke="var(--green-600)" stroke-width="0.8"/>
+        <text x="946" y="93" text-anchor="middle" fill="var(--green-800)" font-size="11" font-weight="600">FX</text>
+        <text x="946" y="110" text-anchor="middle" fill="var(--green-600)" font-size="9" letter-spacing="0.06em">AGENT</text>
+      </g>
+      <line x1="994" y1="96" x2="1006" y2="96" stroke="var(--text-secondary)" stroke-width="1" marker-end="url(#arr-gray)"/>
+
+      <g>
+        <rect x="1010" y="72" width="92" height="48" rx="4" fill="var(--green-50)" stroke="var(--green-600)" stroke-width="0.8"/>
+        <text x="1056" y="93" text-anchor="middle" fill="var(--green-800)" font-size="11" font-weight="600">Project</text>
+        <text x="1056" y="110" text-anchor="middle" fill="var(--green-600)" font-size="9" letter-spacing="0.06em">AGENT</text>
+      </g>
+      <line x1="1104" y1="96" x2="1116" y2="96" stroke="var(--text-secondary)" stroke-width="1" marker-end="url(#arr-gray)"/>
+
+      <g>
+        <rect x="1120" y="72" width="92" height="48" rx="4" fill="var(--purple-50)" stroke="var(--purple-600)" stroke-width="0.8"/>
+        <text x="1166" y="93" text-anchor="middle" fill="var(--purple-800)" font-size="11" font-weight="600">CFO</text>
+        <text x="1166" y="110" text-anchor="middle" fill="var(--purple-600)" font-size="9" letter-spacing="0.06em">HUMAN</text>
+      </g>
+      <line x1="1214" y1="96" x2="1226" y2="96" stroke="var(--text-secondary)" stroke-width="1" marker-end="url(#arr-gray)"/>
+
+      <g>
+        <rect x="1230" y="72" width="68" height="48" rx="4" fill="var(--surface-sunken)" stroke="var(--text-secondary)" stroke-width="0.8"/>
+        <text x="1264" y="93" text-anchor="middle" fill="var(--text)" font-size="11" font-weight="600">P&amp;L</text>
+        <text x="1264" y="110" text-anchor="middle" fill="var(--text-tertiary)" font-size="9" letter-spacing="0.06em">OUTPUT</text>
+      </g>
+
+      <text x="1044" y="160" text-anchor="middle" fill="var(--text-tertiary)" font-size="10" font-style="italic">canonical inputs · governed transitions · audit trail</text>
+    </svg>
+  </div>
+
+  <!-- ============ ER THUMBNAIL (placeholder for Chunk 1D) ============ -->
+  <div class="er-thumb">
+    <div class="er-thumb-head">
+      <h3>Entity-relationship overview</h3>
+      <span class="hint">Click any entity to jump to its detail card</span>
+    </div>
+    <div class="er-thumb-canvas">
+      ER diagram — to be populated in Stage 1D
+    </div>
+  </div>
+
+  <!-- ============ SCHEMA BROWSER SHELL ============ -->
+  <div class="browser">
+
+    <!-- Left rail (entity list — populated in Stage 1B) -->
+    <aside class="left-rail">
+      <div class="rail-search">
+        <input type="text" id="entity-search" placeholder="Search entities…">
+      </div>
+
+      <!-- ============ REFERENCE entities ============ -->
+      <div class="rail-group-head first">
+        <span>Reference</span>
+        <span class="rail-group-count">4</span>
+      </div>
+      <div class="entity-item active" data-entity="ChannelTaxonomy">
+        <div class="entity-item-name">ChannelTaxonomy</div>
+        <div class="entity-item-desc">3 channels · 11 accepted aliases</div>
+      </div>
+      <div class="entity-item" data-entity="SKUMaster">
+        <div class="entity-item-name">SKUMaster</div>
+        <div class="entity-item-desc">13 corp SKUs · 26 regional codes</div>
+      </div>
+      <div class="entity-item" data-entity="CurrencyRegistry">
+        <div class="entity-item-name">CurrencyRegistry</div>
+        <div class="entity-item-desc">6 currencies · magnitude conventions</div>
+      </div>
+      <div class="entity-item" data-entity="ChartOfAccounts">
+        <div class="entity-item-name">ChartOfAccounts</div>
+        <div class="entity-item-desc">47 P&amp;L line items · GL mappings</div>
+      </div>
+
+      <!-- ============ TRANSACTIONAL entities ============ -->
+      <div class="rail-group-head">
+        <span>Transactional</span>
+        <span class="rail-group-count">1</span>
+      </div>
+      <div class="entity-item" data-entity="FXForwardCurve">
+        <div class="entity-item-name">FXForwardCurve</div>
+        <div class="entity-item-desc">5 ccys · refreshed each cycle</div>
+      </div>
+
+      <!-- ============ PATTERN entities ============ -->
+      <div class="rail-group-head">
+        <span>Pattern</span>
+        <span class="rail-group-count">1</span>
+      </div>
+      <div class="entity-item" data-entity="VarianceTriagePattern">
+        <div class="entity-item-name">VarianceTriagePattern</div>
+        <div class="entity-item-desc">5 patterns · auto-fix or escalate</div>
+      </div>
+
+      <!-- ============ CONTROL entities ============ -->
+      <div class="rail-group-head">
+        <span>Control</span>
+        <span class="rail-group-count">1</span>
+      </div>
+      <div class="entity-item" data-entity="ControlLibrary">
+        <div class="entity-item-name">ControlLibrary</div>
+        <div class="entity-item-desc">7 controls · C-01..C-07 · C-03 → PipelineCoverageRatio</div>
+      </div>
+
+      <!-- ============ METRIC entities ============ -->
+      <div class="rail-group-head">
+        <span>Metric</span>
+        <span class="rail-group-count">4</span>
+      </div>
+      <div class="entity-item" data-entity="CashConversionCycle">
+        <div class="entity-item-name">CashConversionCycle</div>
+        <div class="entity-item-desc">DSO + DIO − DPO · working capital</div>
+      </div>
+      <div class="entity-item" data-entity="ROICDecomposition">
+        <div class="entity-item-name">ROICDecomposition</div>
+        <div class="entity-item-desc">DuPont · margin × turnover × leverage</div>
+      </div>
+      <div class="entity-item" data-entity="FreeCashFlowMargin">
+        <div class="entity-item-name">FreeCashFlowMargin</div>
+        <div class="entity-item-desc">FCF ÷ revenue · cash productivity</div>
+      </div>
+      <div class="entity-item" data-entity="PipelineCoverageRatio">
+        <div class="entity-item-name">PipelineCoverageRatio</div>
+        <div class="entity-item-desc">pipeline ÷ forecast · band 1.4× – 2.2×</div>
+      </div>
+
+      <!-- ============ ACTOR entities ============ -->
+      <div class="rail-group-head">
+        <span>Actor</span>
+        <span class="rail-group-count">1</span>
+      </div>
+      <div class="entity-item" data-entity="ApprovalRole">
+        <div class="entity-item-name">ApprovalRole</div>
+        <div class="entity-item-desc">4 human roles · 8 named agents</div>
+      </div>
+    </aside>
+
+    <!-- Right pane (entity detail — ChannelTaxonomy populated in Stage 1C) -->
+    <section class="right-pane">
+
+      <!-- ============ CHANNEL TAXONOMY — full detail card ============ -->
+      <article class="entity-detail" id="detail-channel">
+
+        <!-- Header -->
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">ChannelTaxonomy</h2>
+          <span class="classification-badge reference">Reference</span>
+          <span class="confidence-pill">confidence 0.94</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_CPG_Channel</code> template (cross-customer) · last template update Jan 2026 · v3.1
+          </div>
+        </header>
+
+        <!-- Description -->
+        <p class="entity-detail-desc">
+          The canonical 3-channel partition for Northstar's commerce mix. Every revenue line — DTC, Amazon marketplace, or Wholesale — must map to exactly one canonical channel. The taxonomy holds the canonical names, the alias map (eleven regional spellings), the GM band per channel for control C-05, and the auto-fix policy that lets the Triage agent normalize regional submissions in place.
+        </p>
+
+        <!-- Fields -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Fields</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Required</th><th>Constraint</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="fname">canonical_name</td>
+                <td class="ftype">string</td>
+                <td class="freq">required</td>
+                <td class="fconstraint">enum {DTC, Amazon, Wholesale}</td>
+              </tr>
+              <tr>
+                <td class="fname">aliases</td>
+                <td class="ftype">string[]</td>
+                <td class="freq">optional</td>
+                <td class="fconstraint">unique values · case-sensitive</td>
+              </tr>
+              <tr>
+                <td class="fname">gm_band_low</td>
+                <td class="ftype">decimal</td>
+                <td class="freq">required</td>
+                <td class="fconstraint">trailing-6mo GM% − 150 bps</td>
+              </tr>
+              <tr>
+                <td class="fname">gm_band_high</td>
+                <td class="ftype">decimal</td>
+                <td class="freq">required</td>
+                <td class="fconstraint">trailing-6mo GM% + 150 bps</td>
+              </tr>
+              <tr>
+                <td class="fname">mix_share_target</td>
+                <td class="ftype">decimal</td>
+                <td class="freq">optional</td>
+                <td class="fconstraint">0.0 – 1.0 · Σ across channels = 1.0</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Allowed values + aliases -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Allowed values · canonical → accepted aliases (auto-correct on ingest)</h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">DTC</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">Direct-to-Consumer</span>
+              <span class="alias-chip">ecom</span>
+              <span class="alias-chip">EC</span>
+              <span class="alias-chip">Direct</span>
+              <span class="alias-chip">Marketplace (DTC subset)</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">Amazon</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">Amazon FBA</span>
+              <span class="alias-chip">Amazon Vendor</span>
+              <span class="alias-chip">Amazon SP-API</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">Wholesale</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">Wholesale - {customer}</span>
+              <span class="alias-chip">Whlsl</span>
+              <span class="alias-chip">Retail</span>
+              <span class="alias-chip">Distributor</span>
+              <span class="alias-chip">B2B</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Validation rules -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>Channel value must match exactly one of <code>{DTC, Amazon, Wholesale}</code>; case-sensitive.</li>
+            <li>Aliases auto-correct to canonical at ingest <em>except</em> when classified as <code>VarianceTriagePattern.ChannelMismatch</code> — those <em>always escalate</em> to M. Chen per her standing override (interview turn 11).</li>
+            <li>Implied gross margin per channel must fall within trailing-6mo ± 150bps; otherwise commentary required (Control <code>C-05</code>).</li>
+            <li>If <code>mix_share_target</code> values are populated, they must sum to 1.0 ± 0.001 across the three canonical channels.</li>
+            <li>Maximum auto-fix budget per regional workbook: 4 corrections; beyond that, the Triage agent escalates the entire batch.</li>
+          </ul>
+        </div>
+
+        <!-- Used by -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Triage agent</span>
+            <span class="rel-chip">FX agent</span>
+            <span class="rel-chip">Projection agent</span>
+            <span class="rel-chip">Control C-02 (Regional total)</span>
+            <span class="rel-chip">Control C-05 (GM band)</span>
+            <span class="rel-chip">VarianceTriagePattern.ChannelMismatch</span>
+            <span class="rel-chip">Variance commentary template</span>
+          </div>
+        </div>
+
+        <!-- Provenance -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §3.2</strong> — channel taxonomy definition (FP&amp;A_Close_SOP_v3.2.docx, p.14).
+                <em>"Each revenue line must be tagged with one of three corp channels: DTC, Amazon, Wholesale."</em>
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong><code>Run_Consolidate</code> macro</strong> in <code>3MoP&amp;L_Master_2026.xlsm</code> · cell <code>B14</code> — <code>VLOOKUP</code> against canonical channel list. Decoded during ingest.
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Mar26_close_S.Reyes.mp4 · 0:42:13</strong> — analyst spotted a "Direct-to-Consumer" cell in the AMER workbook and silently corrected it to <code>DTC</code> in the Adjustments tab. Recurs in Feb and Apr recordings.
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 11</strong> — channel-mismatch override.
+                <em>"Channel mismatches always escalate to me, even if J. Park could fix them. I want to see the trend."</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 23</strong> — variance triage workflow; confirmed the 4–5 known patterns and the auto-fix-budget rule.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Change history -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-05-07</span>
+              <span class="change-detail">Run #142 telemetry — auto-promoted <code>Direct</code> and <code>ecom</code> as DTC aliases after 8 confirmations across regions. <em>(automatic, ontology custodian notified)</em></span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-04-12</span>
+              <span class="change-detail">Added <code>Marketplace (DTC subset)</code> alias rule — needed to disambiguate from Amazon Marketplace per APAC analyst feedback.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-14</span>
+              <span class="change-detail">Always-escalate rule added to <code>ChannelMismatch</code> pattern from M. Chen interview; pre-existing auto-fix logic preserved for SKU mapping and currency tags.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-01</span>
+              <span class="change-detail">Initial discovery — canonical 3 channels established from SOP §3.2 + Run_Consolidate macro decoding.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_CPG_Channel</code> template v3.1 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ SKU MASTER — full detail card ============ -->
+      <article class="entity-detail" id="detail-sku" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">SKUMaster</h2>
+          <span class="classification-badge reference">Reference</span>
+          <span class="confidence-pill">confidence 0.91</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_CPG_SKU</code> template (cross-customer) · last template update Feb 2026 · v2.4
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          The canonical product master — ~1,240 active SKUs across Northstar's three channels. Holds the SKU identity, life-cycle status, base price (USD-denominated for cross-channel comparability), standard cost, channel eligibility, and the GM target the margin-band controls evaluate against. Every revenue and COGS line that lands in the close must resolve to a valid <code>sku_id</code>; unknown SKUs escalate (no auto-fix).
+        </p>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Fields</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Required</th><th>Constraint</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">sku_id</td><td class="ftype">string</td><td class="freq">required</td><td class="fconstraint">primary key · format <code>NS-XXXX-NN</code></td></tr>
+              <tr><td class="fname">canonical_name</td><td class="ftype">string</td><td class="freq">required</td><td class="fconstraint">≤ 80 chars · no trailing whitespace</td></tr>
+              <tr><td class="fname">channel_eligible</td><td class="ftype">enum[]</td><td class="freq">required</td><td class="fconstraint">subset of <code>{DTC, Amazon, Wholesale}</code></td></tr>
+              <tr><td class="fname">base_price_usd</td><td class="ftype">decimal</td><td class="freq">required</td><td class="fconstraint">USD only · 2 decimals · &gt; 0</td></tr>
+              <tr><td class="fname">std_cost_usd</td><td class="ftype">decimal</td><td class="freq">required</td><td class="fconstraint">USD only · 4 decimals · &gt; 0</td></tr>
+              <tr><td class="fname">gm_target</td><td class="ftype">decimal</td><td class="freq">required</td><td class="fconstraint">0.30 – 0.75 · ± 200 bps band</td></tr>
+              <tr><td class="fname">lifecycle_status</td><td class="ftype">enum</td><td class="freq">required</td><td class="fconstraint">{Active, Phasing-out, Discontinued, NPI}</td></tr>
+              <tr><td class="fname">parent_sku</td><td class="ftype">string</td><td class="freq">optional</td><td class="fconstraint">FK → SKUMaster.sku_id (variants)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Allowed values · <code>lifecycle_status</code></h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">Active</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">Live</span>
+              <span class="alias-chip">In-Market</span>
+              <span class="alias-chip">Selling</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">Phasing-out</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">Sunsetting</span>
+              <span class="alias-chip">EOL planned</span>
+              <span class="alias-chip">Wind-down</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">Discontinued</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">EOL</span>
+              <span class="alias-chip">Dead</span>
+              <span class="alias-chip">Killed</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">NPI</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">New Product Intro</span>
+              <span class="alias-chip">Launch</span>
+              <span class="alias-chip">Pre-launch</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>Every revenue/COGS line must resolve to a valid <code>sku_id</code>; unknown SKUs <em>always escalate</em> — no auto-fix budget applies (Control <code>C-04</code>).</li>
+            <li>Implied GM% per SKU must sit within <code>gm_target</code> ± 200 bps; otherwise commentary is required (Control <code>C-06</code>).</li>
+            <li>Channel value on a transaction must be a member of the SKU's <code>channel_eligible</code> set; mismatches route to <code>VarianceTriagePattern.ChannelMismatch</code>.</li>
+            <li><code>lifecycle_status = "Phasing-out"</code> SKUs flag a soft warning on new orders; <code>Discontinued</code> blocks bookings entirely.</li>
+            <li>Cross-channel price spread &gt; 12% on the same SKU triggers Projection-agent review (price-discipline check).</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Triage agent</span>
+            <span class="rel-chip">FX agent</span>
+            <span class="rel-chip">Projection agent</span>
+            <span class="rel-chip">Control C-04 (SKU mapping)</span>
+            <span class="rel-chip">Control C-06 (margin discipline)</span>
+            <span class="rel-chip">ChannelTaxonomy (GM band calc)</span>
+            <span class="rel-chip">FreeCashFlowMargin metric</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §4.1</strong> — SKU master discipline (FP&amp;A_Close_SOP_v3.2.docx, p.21).
+                <em>"All revenue and cost lines must tie back to an active SKU; substitutions are not permitted at close."</em>
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong>ERP master extract</strong> — <code>SKU_master_2026Q1.xlsx</code> (1,240 rows). Decoded: 1,118 Active · 64 Phasing-out · 41 Discontinued · 17 NPI.
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Apr26_close_S.Reyes.mp4 · 1:08:47</strong> — analyst manually added an NPI SKU to the close pack via Adjustments tab; routine for new launches but undocumented in SOP. Drove the NPI lifecycle state.
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 14</strong> — SKU resolution policy.
+                <em>"Unknown SKU IDs come straight to me. I'd rather see four false positives a week than miss one real new product."</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 8</strong> — confirmed the 200-bp GM band as standard discipline; preferred over channel-level band for SKU-level controls.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-05-09</span>
+              <span class="change-detail">Run #143 — promoted <code>parent_sku</code> from optional flag to formal field after 6 confirmed variant groupings (NPI launches with size variants). <em>(automatic)</em></span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-04-22</span>
+              <span class="change-detail">Added price-discipline cross-channel check (12% spread threshold) per Projection-agent telemetry; previously a soft heuristic.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-08</span>
+              <span class="change-detail">Tightened <code>lifecycle_status</code> from a free-text field to enum after 3 close cycles of inconsistent values ("EOL", "End of life", "Killed").</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-04</span>
+              <span class="change-detail">Initial discovery — 1,217 active SKUs reconciled from ERP extract against 1,240 distinct IDs found in close packs (23 phantom IDs flagged).</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_CPG_SKU</code> template v2.4 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ CURRENCY REGISTRY — full detail card ============ -->
+      <article class="entity-detail" id="detail-currency" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">CurrencyRegistry</h2>
+          <span class="classification-badge reference">Reference</span>
+          <span class="confidence-pill">confidence 0.97</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_Multi-Currency</code> template (cross-customer) · last template update Nov 2025 · v4.0
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          The six currencies in Northstar's reporting perimeter, with USD as the reporting currency. Holds canonical ISO 4217 codes, symbol-to-code aliases (¥ → JPY, € → EUR, etc.), decimal precision per currency, and the FX-source priority list the FX agent walks when revaluing transactional data. Every monetary field in the close must declare a currency from this registry — raw symbols and informal codes auto-correct on ingest.
+        </p>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Fields</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Required</th><th>Constraint</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">iso_code</td><td class="ftype">string(3)</td><td class="freq">required</td><td class="fconstraint">ISO 4217 · primary key</td></tr>
+              <tr><td class="fname">symbol</td><td class="ftype">string</td><td class="freq">required</td><td class="fconstraint">Unicode · used for display only</td></tr>
+              <tr><td class="fname">decimals</td><td class="ftype">int</td><td class="freq">required</td><td class="fconstraint">0, 2, or 3 per ISO 4217</td></tr>
+              <tr><td class="fname">reporting_priority</td><td class="ftype">int</td><td class="freq">required</td><td class="fconstraint">1 = reporting (USD); 2..n = local</td></tr>
+              <tr><td class="fname">fx_source_priority</td><td class="ftype">enum[]</td><td class="freq">required</td><td class="fconstraint">ordered: {Bloomberg, ECB, Treasury_internal}</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Allowed values · canonical → accepted aliases (auto-correct on ingest)</h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">USD</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">$</span>
+              <span class="alias-chip">US$</span>
+              <span class="alias-chip">USDollar</span>
+              <span class="alias-chip">dollars</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">EUR</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">€</span>
+              <span class="alias-chip">euro</span>
+              <span class="alias-chip">EU</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">GBP</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">£</span>
+              <span class="alias-chip">pound</span>
+              <span class="alias-chip">sterling</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">JPY</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">¥</span>
+              <span class="alias-chip">yen</span>
+              <span class="alias-chip">JP¥</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">CAD</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">C$</span>
+              <span class="alias-chip">CDN</span>
+              <span class="alias-chip">CanDollar</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">AUD</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">A$</span>
+              <span class="alias-chip">AUS</span>
+              <span class="alias-chip">AusDollar</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>Currency tag must be an active member of the registry (ISO 4217 code or registered alias); unknown codes escalate.</li>
+            <li>JPY values round to 0 decimals; CAD/USD/EUR/GBP/AUD round to 2; mismatches auto-correct with audit-log entry.</li>
+            <li>FX rates in transactional data must derive from <code>FXForwardCurve</code>; raw inline rates are rejected (Control <code>C-01</code>).</li>
+            <li>Symbol-only entries (e.g. <code>¥</code> in a price field) auto-correct to ISO code at ingest; budget = 6 corrections per workbook.</li>
+            <li>Cross-rate consistency: <code>USD/EUR · EUR/GBP</code> must reconcile to <code>USD/GBP</code> within 0.05%; otherwise FX-source review.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">FX agent</span>
+            <span class="rel-chip">Projection agent</span>
+            <span class="rel-chip">Triage agent (currency normalization)</span>
+            <span class="rel-chip">Control C-01 (FX consistency)</span>
+            <span class="rel-chip">FXForwardCurve</span>
+            <span class="rel-chip">SKUMaster (base_price_usd)</span>
+            <span class="rel-chip">All monetary fields</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §5.1</strong> — multi-currency policy (FP&amp;A_Close_SOP_v3.2.docx, p.27).
+                <em>"All foreign-currency lines must be revalued via Treasury's published forward curve at month-end; no inline rates."</em>
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong><code>FX_workings_2026.xlsx</code></strong> — sheet <em>Rate_table</em>, cells <code>B4:F18</code>. Six currencies · monthly forward rates · explicit ISO codes in headers.
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Mar26_close_S.Reyes.mp4 · 0:18:32</strong> — analyst typed <code>¥</code> directly into a price cell in APAC workbook; macro silently converted to <code>JPY</code> on save. Surfaced the symbol-aliasing pattern.
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 17</strong> — FX-source priority ordering.
+                <em>"Bloomberg first, ECB as backup. We only fall back to internal treasury rates if both upstream feeds fail at month-end — which has happened twice this year."</em>
+              </span>
+            </div>
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>Treasury policy memo</strong> — <code>FX_policy_2025-11.pdf</code>, §3 — established the 0.05% cross-rate tolerance and the no-inline-rate rule.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-30</span>
+              <span class="change-detail">Tightened cross-rate tolerance from 0.10% → 0.05% per treasury memo update; surfaced one previously-tolerated inconsistency in March close (Bloomberg vs ECB EUR/GBP).</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-12</span>
+              <span class="change-detail">Promoted <code>¥</code>, <code>€</code>, <code>£</code> as auto-correct aliases after 14 confirmed instances across regional workbooks. <em>(automatic)</em></span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-18</span>
+              <span class="change-detail">Added <code>fx_source_priority</code> field after FX agent v0.4 needed deterministic fallback ordering; previously hard-coded.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-01</span>
+              <span class="change-detail">Initial discovery — six currencies confirmed from FX_workings sheet + ERP transactional history (last 18 months).</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_Multi-Currency</code> template v4.0 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ CHART OF ACCOUNTS — full detail card ============ -->
+      <article class="entity-detail" id="detail-coa" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">ChartOfAccounts</h2>
+          <span class="classification-badge reference">Reference</span>
+          <span class="confidence-pill">confidence 0.93</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_CPG_COA</code> template (cross-customer) · last template update Dec 2025 · v1.8
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          Northstar's GL account taxonomy as it appears in the monthly close pack and the rolling P&amp;L projection — 314 active accounts across the three financial statements, organized in a four-level hierarchy (statement → category → account → sub-account). Holds canonical account codes, sign conventions, parent-child links, and the regional-code alias map that lets the Triage agent normalize APAC and EMEA workbook codes back to the corporate COA.
+        </p>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Fields</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Required</th><th>Constraint</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">account_code</td><td class="ftype">string(4-6)</td><td class="freq">required</td><td class="fconstraint">primary key · numeric · immutable once posted</td></tr>
+              <tr><td class="fname">account_name</td><td class="ftype">string</td><td class="freq">required</td><td class="fconstraint">≤ 60 chars · canonical English</td></tr>
+              <tr><td class="fname">statement_type</td><td class="ftype">enum</td><td class="freq">required</td><td class="fconstraint">{P&amp;L, BalanceSheet, CashFlow}</td></tr>
+              <tr><td class="fname">category</td><td class="ftype">string</td><td class="freq">required</td><td class="fconstraint">major rollup (e.g. Revenue, COGS, Opex)</td></tr>
+              <tr><td class="fname">parent_account</td><td class="ftype">string</td><td class="freq">optional</td><td class="fconstraint">FK → ChartOfAccounts.account_code</td></tr>
+              <tr><td class="fname">sign_convention</td><td class="ftype">enum</td><td class="freq">required</td><td class="fconstraint">{debit_positive, credit_positive}</td></tr>
+              <tr><td class="fname">is_active</td><td class="ftype">boolean</td><td class="freq">required</td><td class="fconstraint">false → blocks new postings</td></tr>
+              <tr><td class="fname">external_mapping</td><td class="ftype">string</td><td class="freq">optional</td><td class="fconstraint">SEC 10-Q line · audit reconciliation tag</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Allowed values · canonical statement → major categories (auto-rollup target)</h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">P&amp;L</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">Revenue</span>
+              <span class="alias-chip">COGS</span>
+              <span class="alias-chip">Gross Margin</span>
+              <span class="alias-chip">Opex</span>
+              <span class="alias-chip">EBITDA</span>
+              <span class="alias-chip">D&amp;A</span>
+              <span class="alias-chip">Interest</span>
+              <span class="alias-chip">Tax</span>
+              <span class="alias-chip">Net Income</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">BalanceSheet</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">Current Assets</span>
+              <span class="alias-chip">Non-current Assets</span>
+              <span class="alias-chip">Current Liabilities</span>
+              <span class="alias-chip">Non-current Liabilities</span>
+              <span class="alias-chip">Equity</span>
+            </div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">CashFlow</div>
+            <div class="allowed-aliases">
+              <span class="alias-chip">Operating CF</span>
+              <span class="alias-chip">Investing CF</span>
+              <span class="alias-chip">Financing CF</span>
+              <span class="alias-chip">Δ Cash</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>Every transaction line must map to an <code>is_active = true</code> account; postings to inactive accounts <em>always escalate</em> (no auto-fix).</li>
+            <li>Regional code aliases (e.g. <code>JP-4001-DTC</code> → <code>4001</code>) auto-correct to corporate COA at ingest; budget = 8 corrections per regional workbook.</li>
+            <li>Sign convention enforced: revenue accounts must be credit-positive; expense accounts debit-positive — sign mismatches block the regional total (Control <code>C-02</code>).</li>
+            <li><code>account_code</code> is immutable once a transaction has posted to it; renames flow via a new code with a <code>parent_account</code> link to the predecessor.</li>
+            <li>Statement-level totals must reconcile to the sum of all active children; orphan accounts (no parent, no statement_type) escalate immediately.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Triage agent</span>
+            <span class="rel-chip">Projection agent</span>
+            <span class="rel-chip">Control C-02 (Regional total)</span>
+            <span class="rel-chip">Control C-04 (Mapping)</span>
+            <span class="rel-chip">Control C-07 (Statement reconciliation)</span>
+            <span class="rel-chip">ROICDecomposition (input)</span>
+            <span class="rel-chip">FreeCashFlowMargin (input)</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §2.3</strong> — chart of accounts governance (FP&amp;A_Close_SOP_v3.2.docx, p.9).
+                <em>"Regional submissions must use corporate account codes; local extensions are for management reporting only."</em>
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong>ERP COA extract</strong> — <code>COA_master_2026Q1.csv</code> (314 active rows, 47 inactive, 22 archived). Decoded hierarchy from the <code>parent_code</code> column.
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Feb26_close_S.Reyes.mp4 · 0:31:08</strong> — analyst manually mapped <code>JP-4001-DTC</code> to corporate <code>4001</code> via lookup column; same pattern observed in EMEA workbook at 0:54:22. Drove the regional-alias rule.
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 6</strong> — COA discipline.
+                <em>"We never extend the corporate chart for a regional ask. The mapping table absorbs it. That's how we stayed clean through the 2024 ERP migration."</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 19</strong> — confirmed the C-07 statement-reconciliation control as a hard gate, not a warning.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-28</span>
+              <span class="change-detail">Promoted <code>JP-4001-DTC</code> → <code>4001</code> mapping after 6 confirmed instances; added two more APAC alias mappings (<code>JP-4002-AMZ</code>, <code>JP-4003-WHL</code>). <em>(automatic)</em></span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-19</span>
+              <span class="change-detail">Tightened <code>account_code</code> immutability rule; previously codes could be renamed in-place — surfaced one historical reconciliation gap from late 2024.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-22</span>
+              <span class="change-detail">Added <code>external_mapping</code> field to support SEC 10-Q line traceability per audit committee request; backfilled for 89 P&amp;L accounts.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-03</span>
+              <span class="change-detail">Initial discovery — 314 active accounts reconciled from ERP extract against close-pack usage; 12 accounts marked inactive (no postings in trailing 18 months).</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_CPG_COA</code> template v1.8 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ FX FORWARD CURVE — full detail card ============ -->
+      <article class="entity-detail" id="detail-fxcurve" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">FXForwardCurve</h2>
+          <span class="classification-badge transactional">Transactional</span>
+          <span class="confidence-pill">confidence 0.96</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_FX_Curve</code> template (cross-customer) · last template update Sep 2025 · v2.1
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          The time-series of forward FX rates the FX agent uses to revalue every non-USD line in the close and to forward-curve the rolling 3-month projection. Each row is a <code>(as_of_date, currency_pair, tenor)</code> tuple with a mid-rate from a registered source. Refreshed at month-end and on-demand; the agent walks the source-priority list (Bloomberg → ECB → Treasury_internal) per <code>CurrencyRegistry</code>. Stale or off-band rows are quarantined before they reach a control.
+        </p>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Fields</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Required</th><th>Constraint</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">as_of_date</td><td class="ftype">date</td><td class="freq">required</td><td class="fconstraint">composite key · business day or month-end</td></tr>
+              <tr><td class="fname">currency_pair</td><td class="ftype">string(7)</td><td class="freq">required</td><td class="fconstraint">composite key · format <code>USD/JPY</code></td></tr>
+              <tr><td class="fname">tenor</td><td class="ftype">enum</td><td class="freq">required</td><td class="fconstraint">{spot, 1M, 2M, 3M, 6M, 12M}</td></tr>
+              <tr><td class="fname">mid_rate</td><td class="ftype">decimal</td><td class="freq">required</td><td class="fconstraint">6 decimals · &gt; 0</td></tr>
+              <tr><td class="fname">source</td><td class="ftype">enum</td><td class="freq">required</td><td class="fconstraint">{Bloomberg, ECB, Treasury_internal}</td></tr>
+              <tr><td class="fname">ingest_timestamp</td><td class="ftype">datetime</td><td class="freq">required</td><td class="fconstraint">UTC · used for staleness check</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Forward curve · April 2026 month-end snapshot · all six tenors per pair</h3>
+          <div class="curve-grid">
+
+            <!-- USD/JPY -->
+            <div class="curve-card">
+              <div class="curve-card-head">
+                <span class="curve-pair">USD/JPY</span>
+                <span class="curve-meta">Bloomberg</span>
+              </div>
+              <svg viewBox="0 0 280 170" class="curve-svg" preserveAspectRatio="xMidYMid meet">
+                <line class="curve-grid-line" x1="35" y1="60" x2="255" y2="60" />
+                <line class="curve-grid-line" x1="35" y1="100" x2="255" y2="100" />
+                <line class="curve-axis" x1="35" y1="20" x2="35" y2="140" />
+                <line class="curve-axis" x1="35" y1="140" x2="255" y2="140" />
+                <text class="curve-y-label" x="32" y="20" text-anchor="end" dominant-baseline="middle">154.30</text>
+                <text class="curve-y-label" x="32" y="80" text-anchor="end" dominant-baseline="middle">152.75</text>
+                <text class="curve-y-label" x="32" y="140" text-anchor="end" dominant-baseline="middle">151.20</text>
+                <text class="curve-x-label" x="35"  y="153">spot</text>
+                <text class="curve-x-label" x="53"  y="153">1M</text>
+                <text class="curve-x-label" x="72"  y="153">2M</text>
+                <text class="curve-x-label" x="90"  y="153">3M</text>
+                <text class="curve-x-label" x="145" y="153">6M</text>
+                <text class="curve-x-label" x="255" y="153">12M</text>
+                <polyline class="curve-line" points="35,23.2 53,33.0 72,42.4 90,51.5 145,79.3 255,135.7" />
+                <circle class="curve-dot" cx="35"  cy="23.2"  r="2.4"/>
+                <circle class="curve-dot" cx="53"  cy="33.0"  r="2.4"/>
+                <circle class="curve-dot" cx="72"  cy="42.4"  r="2.4"/>
+                <circle class="curve-dot" cx="90"  cy="51.5"  r="2.4"/>
+                <circle class="curve-dot" cx="145" cy="79.3"  r="2.4"/>
+                <circle class="curve-dot" cx="255" cy="135.7" r="2.4"/>
+              </svg>
+              <div class="curve-foot">
+                <span>spot <strong>154.218</strong></span>
+                <span>12M slope <strong>−1.89%</strong></span>
+              </div>
+            </div>
+
+            <!-- USD/EUR -->
+            <div class="curve-card">
+              <div class="curve-card-head">
+                <span class="curve-pair">USD/EUR</span>
+                <span class="curve-meta">Bloomberg / ECB at 3M</span>
+              </div>
+              <svg viewBox="0 0 280 170" class="curve-svg" preserveAspectRatio="xMidYMid meet">
+                <line class="curve-grid-line" x1="35" y1="60" x2="255" y2="60" />
+                <line class="curve-grid-line" x1="35" y1="100" x2="255" y2="100" />
+                <line class="curve-axis" x1="35" y1="20" x2="35" y2="140" />
+                <line class="curve-axis" x1="35" y1="140" x2="255" y2="140" />
+                <text class="curve-y-label" x="32" y="20" text-anchor="end" dominant-baseline="middle">0.919</text>
+                <text class="curve-y-label" x="32" y="80" text-anchor="end" dominant-baseline="middle">0.913</text>
+                <text class="curve-y-label" x="32" y="140" text-anchor="end" dominant-baseline="middle">0.906</text>
+                <text class="curve-x-label" x="35"  y="153">spot</text>
+                <text class="curve-x-label" x="53"  y="153">1M</text>
+                <text class="curve-x-label" x="72"  y="153">2M</text>
+                <text class="curve-x-label" x="90"  y="153">3M</text>
+                <text class="curve-x-label" x="145" y="153">6M</text>
+                <text class="curve-x-label" x="255" y="153">12M</text>
+                <polyline class="curve-line" points="35,25.5 53,31.1 72,38.5 90,45.8 145,70.8 255,130.8" />
+                <circle class="curve-dot"     cx="35"  cy="25.5"  r="2.4"/>
+                <circle class="curve-dot"     cx="53"  cy="31.1"  r="2.4"/>
+                <circle class="curve-dot"     cx="72"  cy="38.5"  r="2.4"/>
+                <circle class="curve-dot-ecb" cx="90"  cy="45.8"  r="2.6"/>
+                <circle class="curve-dot"     cx="145" cy="70.8"  r="2.4"/>
+                <circle class="curve-dot"     cx="255" cy="130.8" r="2.4"/>
+              </svg>
+              <div class="curve-foot">
+                <span>spot <strong>0.9184</strong></span>
+                <span>12M slope <strong>−1.24%</strong></span>
+              </div>
+            </div>
+
+            <!-- USD/GBP -->
+            <div class="curve-card">
+              <div class="curve-card-head">
+                <span class="curve-pair">USD/GBP</span>
+                <span class="curve-meta">Bloomberg</span>
+              </div>
+              <svg viewBox="0 0 280 170" class="curve-svg" preserveAspectRatio="xMidYMid meet">
+                <line class="curve-grid-line" x1="35" y1="60" x2="255" y2="60" />
+                <line class="curve-grid-line" x1="35" y1="100" x2="255" y2="100" />
+                <line class="curve-axis" x1="35" y1="20" x2="35" y2="140" />
+                <line class="curve-axis" x1="35" y1="140" x2="255" y2="140" />
+                <text class="curve-y-label" x="32" y="20" text-anchor="end" dominant-baseline="middle">0.790</text>
+                <text class="curve-y-label" x="32" y="80" text-anchor="end" dominant-baseline="middle">0.784</text>
+                <text class="curve-y-label" x="32" y="140" text-anchor="end" dominant-baseline="middle">0.779</text>
+                <text class="curve-x-label" x="35"  y="153">spot</text>
+                <text class="curve-x-label" x="53"  y="153">1M</text>
+                <text class="curve-x-label" x="72"  y="153">2M</text>
+                <text class="curve-x-label" x="90"  y="153">3M</text>
+                <text class="curve-x-label" x="145" y="153">6M</text>
+                <text class="curve-x-label" x="255" y="153">12M</text>
+                <polyline class="curve-line" points="35,29.8 53,33.1 72,39.6 90,48.4 145,76.7 255,129.1" />
+                <circle class="curve-dot" cx="35"  cy="29.8"  r="2.4"/>
+                <circle class="curve-dot" cx="53"  cy="33.1"  r="2.4"/>
+                <circle class="curve-dot" cx="72"  cy="39.6"  r="2.4"/>
+                <circle class="curve-dot" cx="90"  cy="48.4"  r="2.4"/>
+                <circle class="curve-dot" cx="145" cy="76.7"  r="2.4"/>
+                <circle class="curve-dot" cx="255" cy="129.1" r="2.4"/>
+              </svg>
+              <div class="curve-foot">
+                <span>spot <strong>0.7891</strong></span>
+                <span>12M slope <strong>−1.15%</strong></span>
+              </div>
+            </div>
+
+          </div>
+          <div class="curve-legend">
+            <span class="curve-legend-item"><span class="curve-legend-dot"></span>Bloomberg (primary)</span>
+            <span class="curve-legend-item"><span class="curve-legend-dot open"></span>ECB fallback (used at USD/EUR 3M)</span>
+            <span style="margin-left:auto; color: var(--text-tertiary);">All forwards quote in USD as base · curves trend down → quote currency strengthening forward</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Recent samples · last ingest <code>2026-04-30 17:02 UTC</code> · 30 rows total · showing 6</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>as_of_date</th><th>currency_pair</th><th>tenor</th><th>mid_rate</th><th>source</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">2026-04-30</td><td class="fname">USD/JPY</td><td class="ftype">spot</td><td class="fname">154.218000</td><td class="ftype">Bloomberg</td></tr>
+              <tr><td class="fname">2026-04-30</td><td class="fname">USD/JPY</td><td class="ftype">3M</td><td class="fname">153.487000</td><td class="ftype">Bloomberg</td></tr>
+              <tr><td class="fname">2026-04-30</td><td class="fname">USD/EUR</td><td class="ftype">spot</td><td class="fname">0.918400</td><td class="ftype">Bloomberg</td></tr>
+              <tr><td class="fname">2026-04-30</td><td class="fname">USD/EUR</td><td class="ftype">3M</td><td class="fname">0.916200</td><td class="ftype">ECB</td></tr>
+              <tr><td class="fname">2026-04-30</td><td class="fname">USD/GBP</td><td class="ftype">spot</td><td class="fname">0.789100</td><td class="ftype">Bloomberg</td></tr>
+              <tr><td class="fname">2026-04-30</td><td class="fname">USD/GBP</td><td class="ftype">3M</td><td class="fname">0.787400</td><td class="ftype">Bloomberg</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>Every <code>currency_pair</code> must reference an <code>iso_code</code> registered in <code>CurrencyRegistry</code>; unknown codes quarantine the row pre-ingest.</li>
+            <li>Source must be a member of <code>CurrencyRegistry.fx_source_priority</code>; the FX agent walks the list in order and records the source actually used (Control <code>C-01</code>).</li>
+            <li>Staleness: <code>ingest_timestamp</code> must be ≤ 24h old for projection use; ≤ 72h for retrospective close. Older rows are flagged.</li>
+            <li>Month-on-month rate move per pair must fall within ± 5%; otherwise the FX agent escalates to J. Park for confirmation before posting.</li>
+            <li>Cross-rate consistency across the registered triplet (e.g. <code>USD/EUR · EUR/GBP · USD/GBP</code>) must hold within 0.05% — otherwise source-of-record review.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">FX agent</span>
+            <span class="rel-chip">Projection agent</span>
+            <span class="rel-chip">Control C-01 (FX consistency)</span>
+            <span class="rel-chip">CurrencyRegistry (back-reference)</span>
+            <span class="rel-chip">All non-USD monetary lines</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>Treasury policy memo</strong> — <code>FX_policy_2025-11.pdf</code>, §3 — established the no-inline-rate rule and the source-priority ordering.
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong><code>FX_workings_2026.xlsx</code></strong> — sheet <em>Rate_table</em>, monthly snapshot rows; cross-checked against Bloomberg API export to validate ingest schema and tenors.
+              </span>
+            </div>
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>Bloomberg FX API ref</strong> — endpoint <code>/v3/fx/forward</code>; tenors and mid-rate semantics confirmed against vendor docs (cached extract).
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 17</strong> — fallback discipline.
+                <em>"Bloomberg first, ECB as backup. We only fall back to internal treasury rates if both upstream feeds fail at month-end — which has happened twice this year."</em>
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Apr26_close_S.Reyes.mp4 · 0:22:14</strong> — analyst paused on a stale ECB row (flagged by ingest); manually re-pulled from Bloomberg via Treasury portal. Confirmed 24h staleness threshold is the right gate.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-05-01</span>
+              <span class="change-detail">Promoted <code>2M</code> tenor as a first-class enum value — previously projected by linear interpolation between 1M and 3M; now ingested directly from Bloomberg per Projection-agent feedback.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-04-12</span>
+              <span class="change-detail">Tightened the month-on-month band from ± 7% → ± 5% after April's USD/JPY move triggered three false-positive escalations.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-05</span>
+              <span class="change-detail">Added explicit <code>ingest_timestamp</code> field; previously inferred from filename. Surfaced two stale-row near-misses in Feb close.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-08</span>
+              <span class="change-detail">Initial discovery — schema decoded from <code>FX_workings_2026.xlsx</code> rate table; validated against ERP transactional FX overrides for trailing 12 months.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_FX_Curve</code> template v2.1 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ VARIANCE TRIAGE PATTERN — full detail card ============ -->
+      <article class="entity-detail" id="detail-pattern" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">VarianceTriagePattern</h2>
+          <span class="classification-badge pattern">Pattern</span>
+          <span class="confidence-pill">confidence 0.88</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_VarianceTriage</code> template (cross-customer) · last template update Oct 2025 · v2.7
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          Five named patterns the Triage agent recognizes when analyst behavior or upstream data deviates from the canonical reference entities. Each pattern has a match signature (a boolean expression evaluated at ingest), an auto-fix budget (or "always escalate" override), and a target. The original four were distilled from J. Park's interview <em>("there are 4 or 5 things I see every close")</em>; the fifth (StaleFXRow) was promoted from inline FX-agent logic in March after the pattern recurred across cycles.
+        </p>
+
+        <!-- Match signature (replaces Fields for Pattern classification) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Match signature · 5 named patterns · the boolean expressions the Triage agent walks at ingest</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Pattern</th><th>Match rule</th><th>Budget</th><th>Escalation target</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="fname">ChannelMismatch</td>
+                <td class="fconstraint"><code>channel ∉ ChannelTaxonomy.{canonical, aliases}</code></td>
+                <td class="freq">0 · always escalate</td>
+                <td class="ftype">M. Chen (override turn 11)</td>
+              </tr>
+              <tr>
+                <td class="fname">CurrencySymbolDrift</td>
+                <td class="fconstraint"><code>currency ∈ {¥,€,£,$,C$,A$} ∧ ∉ ISO codes</code></td>
+                <td class="freq">6 per workbook</td>
+                <td class="ftype">auto-correct + audit log</td>
+              </tr>
+              <tr>
+                <td class="fname">SKUTypoVariant</td>
+                <td class="fconstraint"><code>sku_id ∉ SKUMaster ∧ fuzzy_match ≥ 0.85</code></td>
+                <td class="freq">4 per workbook</td>
+                <td class="ftype">auto-correct ≥ 0.85; below → J. Park</td>
+              </tr>
+              <tr>
+                <td class="fname">GMOutOfBand</td>
+                <td class="fconstraint"><code>|implied_GM − target| &gt; 200 bps (SKU) | 150 bps (channel)</code></td>
+                <td class="freq">n/a · commentary required</td>
+                <td class="ftype">analyst → M. Chen review</td>
+              </tr>
+              <tr>
+                <td class="fname">StaleFXRow</td>
+                <td class="fconstraint"><code>now − ingest_timestamp &gt; 24h (proj) | 72h (close)</code></td>
+                <td class="freq">n/a · quarantine</td>
+                <td class="ftype">FX agent re-pull from priority source</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Example variances (replaces Allowed values) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Example variances · actual instances caught in recent runs</h3>
+          <ul class="rules-list">
+            <li><span class="pattern-tag">ChannelMismatch</span> APAC analyst submitted <code>"DTC Japan"</code> in March close — escalated to M. Chen within 4 minutes of ingest per always-escalate override (interview turn 11). M. Chen confirmed the regional naming had been creeping in for two cycles; instructed Triage agent <em>not</em> to auto-fix.</li>
+            <li><span class="pattern-tag">CurrencySymbolDrift</span> APAC workbook (Apr 2026 close) had 47 instances of <code>¥</code> in price columns across 8 sub-tabs — Triage agent auto-corrected to <code>JPY</code> at ingest within budget; all 47 logged to audit trail with original cell coordinates.</li>
+            <li><span class="pattern-tag">SKUTypoVariant</span> <code>NS-1247A</code> appeared in EMEA close pack — fuzzy match to <code>NS-1247-A</code> (canonical) at confidence 0.92 → auto-corrected. Recurred 11× that close; pattern run logged a single resolution with <em>run-of-similar</em> tag.</li>
+            <li><span class="pattern-tag">GMOutOfBand</span> Wholesale channel GM% landed at 38.2% in March close vs trailing-6mo 41.5% (band: 40.0–43.0%). Triage flagged for analyst commentary; commentary not filed by Day 4 → escalated to M. Chen on Day 5 with band-breach delta.</li>
+            <li><span class="pattern-tag">StaleFXRow</span> ECB <code>USD/EUR 3M</code> row was 28 hours stale at projection-agent run time → quarantined; FX agent re-pulled from Bloomberg as primary per <code>fx_source_priority</code>. <em>(See the open dot at 3M on the FXForwardCurve curve chart.)</em></li>
+          </ul>
+        </div>
+
+        <!-- Resolution policy (replaces Validation rules) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Resolution policy</h3>
+          <ul class="rules-list">
+            <li>Per-pattern auto-fix budget tracked per regional workbook per close cycle; budget exhaustion escalates the entire batch (not individual lines).</li>
+            <li>Always-escalate overrides take precedence over budget — <code>ChannelMismatch</code> never auto-corrects regardless of confidence (M. Chen interview turn 11 standing rule).</li>
+            <li>All resolutions log to audit trail with <code>(pattern_id, confidence, original_value, corrected_value, run_id, timestamp)</code> — closure of audit loop is hard-required by Control <code>C-07</code>.</li>
+            <li>Confidence promotion: 8 confirmed match-and-resolution events without analyst override promote the pattern's threshold or extend its alias map automatically.</li>
+            <li>Confidence demotion: any instance of an analyst overriding the agent's resolution demotes pattern confidence by 0.02; three successive overrides triggers a custodian review.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Triage agent</span>
+            <span class="rel-chip">FX agent</span>
+            <span class="rel-chip">Projection agent</span>
+            <span class="rel-chip">Control C-02..C-06 (downstream)</span>
+            <span class="rel-chip">Audit trail</span>
+            <span class="rel-chip">Variance commentary template</span>
+            <span class="rel-chip">Operating model dashboard</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 23</strong> — pattern enumeration.
+                <em>"There are 4 or 5 things I see every close. Channel mismatches, currency symbols, SKU typos, GM bands, and stale FX. If we can teach the agent those, we cover 80% of variance."</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 11</strong> — always-escalate override.
+                <em>"Channel mismatches always escalate to me, even if J. Park could fix them. I want to see the trend."</em>
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Mar26 + Apr26 close recordings</strong> — observed analyst behavior matching all 5 patterns; <code>SKUTypoVariant</code> and <code>CurrencySymbolDrift</code> each appeared in 3+ separate workbook tabs across the two cycles.
+              </span>
+            </div>
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §7</strong> — variance handling (FP&amp;A_Close_SOP_v3.2.docx, p.34) — established the auto-fix budget concept and the audit-log requirement.
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong>Run #138–#143 telemetry</strong> — pattern-match counts, confidence trajectories, and analyst override events; informed the <code>StaleFXRow</code> promotion in March 2026.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-22</span>
+              <span class="change-detail">Tightened <code>SKUTypoVariant</code> fuzzy-match threshold from 0.80 → 0.85 after 3 false positives in March close (legitimate new SKUs being auto-corrected to similar legacy codes).</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-14</span>
+              <span class="change-detail">Always-escalate rule formalized for <code>ChannelMismatch</code> from M. Chen interview turn 11; previously inherited as <em>"soft escalate"</em> from template.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-08</span>
+              <span class="change-detail">Added <code>StaleFXRow</code> as the 5th pattern after FX agent observed 4 stale-row near-misses across Feb–Mar; previously handled inline by FX agent.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-04</span>
+              <span class="change-detail">Initial discovery — 4 named patterns enumerated from J. Park interview turn 23 and recording analysis; budget rule decoded from SOP §7.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_VarianceTriage</code> template v2.7 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ CONTROL LIBRARY — full detail card ============ -->
+      <article class="entity-detail" id="detail-control" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">ControlLibrary</h2>
+          <span class="classification-badge control">Control</span>
+          <span class="confidence-pill">confidence 0.92</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_Controls</code> template (cross-customer) · last template update Dec 2025 · v3.5
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          The seven-control gate every monthly close and rolling P&amp;L projection must pass. Hard controls block close progression; soft controls require analyst commentary but allow forward motion. Each control checks a specific reconciliation, mapping discipline, or band condition against the canonical reference entities. Failure telemetry feeds back into ontology custody — a control that trips on the same entity 3 times in a row triggers a confidence demotion and review.
+        </p>
+
+        <!-- Control list (replaces Fields) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Control list · C-01..C-07 · canonical 7-control framework</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>ID</th><th>Name</th><th>Type</th><th>Severity</th><th>Owner</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">C-01</td><td class="ftype">FX Consistency</td><td class="freq">hard</td><td class="fconstraint">block close</td><td>J. Park</td></tr>
+              <tr><td class="fname">C-02</td><td class="ftype">Regional Total</td><td class="freq">hard</td><td class="fconstraint">block close</td><td>J. Park</td></tr>
+              <tr><td class="fname">C-03</td><td class="ftype">Pipeline Coverage</td><td class="freq">soft</td><td class="fconstraint">commentary required</td><td>M. Chen</td></tr>
+              <tr><td class="fname">C-04</td><td class="ftype">SKU Mapping</td><td class="freq">hard</td><td class="fconstraint">always escalate</td><td>J. Park</td></tr>
+              <tr><td class="fname">C-05</td><td class="ftype">Channel GM Band</td><td class="freq">soft</td><td class="fconstraint">commentary required</td><td>M. Chen</td></tr>
+              <tr><td class="fname">C-06</td><td class="ftype">SKU Margin Discipline</td><td class="freq">soft</td><td class="fconstraint">commentary required</td><td>J. Park</td></tr>
+              <tr><td class="fname">C-07</td><td class="ftype">Statement Reconciliation</td><td class="freq">hard</td><td class="fconstraint">block close</td><td>M. Chen</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Trigger conditions (replaces Allowed values) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Trigger conditions · the rule each control evaluates</h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">C-01</div>
+            <div class="allowed-rule"><code>∀ non-USD line: posted_rate ≈ FXForwardCurve.mid_rate(as_of, pair) ± 0.05% ∧ source ∈ CurrencyRegistry.fx_source_priority</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">C-02</div>
+            <div class="allowed-rule"><code>|Σ regional_total_USD − corporate_total_USD| / corporate_total_USD ≤ 0.001</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">C-03</div>
+            <div class="allowed-rule"><code>PipelineCoverageRatio<sub>90d</sub> ≥ 1.2</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">C-04</div>
+            <div class="allowed-rule"><code>∀ line: line.sku_id ∈ SKUMaster.sku_id ∧ SKUMaster.is_active = true</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">C-05</div>
+            <div class="allowed-rule"><code>∀ channel ∈ ChannelTaxonomy: |GM%<sub>channel</sub> − GM%<sub>trailing-6mo</sub>| ≤ 1.5%</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">C-06</div>
+            <div class="allowed-rule"><code>∀ sku ∈ SKUMaster: |implied_GM%<sub>sku</sub> − sku.gm_target| ≤ 2.0%</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">C-07</div>
+            <div class="allowed-rule"><code>Σ NetIncome<sub>P&amp;L</sub> = ΔEquity<sub>BS</sub> − ΔAPIC<sub>BS</sub> ∧ Σ CFO<sub>CF</sub> = ΔCash<sub>BS</sub> ± 0.01% (consolidated)</code></div>
+          </div>
+        </div>
+
+        <!-- Failure handling (replaces Validation rules) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Failure handling</h3>
+          <ul class="rules-list">
+            <li>Hard controls (<code>C-01</code>, <code>C-02</code>, <code>C-04</code>, <code>C-07</code>) block close progression past Day 5; the close cannot be filed until each hard fail is resolved or the failure is owned with a sign-off entry.</li>
+            <li>Soft controls (<code>C-03</code>, <code>C-05</code>, <code>C-06</code>) allow progression but require analyst commentary in the Variance Tracker tab; missing commentary by Day 4 escalates to control owner on Day 5.</li>
+            <li>Every control failure logs <code>(control_id, run_id, entities_implicated, severity, owner_paged_at)</code> to the audit trail; the trail is read by Control <code>C-07</code> as part of its own check.</li>
+            <li>M. Chen always copy on hard escalations even when not the owner (interview turn 11 standing rule); J. Park copy on soft escalations involving DTC channel.</li>
+            <li>Three consecutive runs with the same control firing on the same entity demotes that entity's confidence by 0.02 and triggers a custodian review at the next ontology refresh cycle.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Triage agent</span>
+            <span class="rel-chip">FX agent</span>
+            <span class="rel-chip">Projection agent</span>
+            <span class="rel-chip">Audit trail</span>
+            <span class="rel-chip">Operating model dashboard</span>
+            <span class="rel-chip">PipelineCoverageRatio (drives C-03)</span>
+            <span class="rel-chip">Variance commentary template</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §6</strong> — control framework (FP&amp;A_Close_SOP_v3.2.docx, p.29).
+                <em>"No close ships without all seven gates passed or owned. Soft fails require analyst commentary; hard fails block."</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 19</strong> — C-07 hard gate.
+                <em>"Statement reconciliation is non-negotiable. Even if it costs us a day, we don't ship a close where the statements don't tie."</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 6</strong> — COA discipline informing <code>C-04</code> and <code>C-07</code>; established that the 7-control framework predates the agentic system and survived the 2024 ERP migration.
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong>Run #142 telemetry</strong> — <code>C-03</code> fired on PipelineCoverageRatio for the first time in March 2026; promoted the metric from informal heuristic to first-class ontology entity.
+              </span>
+            </div>
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>Audit committee memo</strong> — <code>Audit_FY26_controls.pdf</code> §2 — confirmed <code>C-07</code> as a Sarbanes-Oxley-aligned hard gate; instructed quarterly review of control thresholds.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-30</span>
+              <span class="change-detail">Promoted <code>C-03</code> PipelineCoverageRatio from soft commentary to required-on-projection; previously only fired in close cycle. <em>(automatic, run #143)</em></span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-14</span>
+              <span class="change-detail">Tightened <code>C-05</code> channel GM band from ±200 bps → ±150 bps after M. Chen interview turn 8; surfaced two historical near-misses retroactively.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-22</span>
+              <span class="change-detail">Added <code>C-07</code> statement-reconciliation as 7th control after audit committee memo; previously enforced ad-hoc by close lead at Day 6.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-01</span>
+              <span class="change-detail">Initial discovery — 6 controls (<code>C-01..C-06</code>) enumerated from SOP §6 + interview cross-reference; ownership matrix decoded from RACI sheet.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_Controls</code> template v3.5 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ CASH CONVERSION CYCLE — full detail card ============ -->
+      <article class="entity-detail" id="detail-ccc" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">CashConversionCycle</h2>
+          <span class="classification-badge metric">Metric</span>
+          <span class="confidence-pill">confidence 0.89</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_Metric_CCC</code> template (cross-customer) · last template update Sep 2025 · v1.6
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          Days from cash spent on inventory until cash collected from customers, net of supplier credit. Computed monthly from BS positions and trailing-365-day P&amp;L flows; tracked as a 12-month rolling series. CCC compression is a leading indicator of operating efficiency — Northstar has compressed from 78 days (May 2025) to 64 days (April 2026), driven by inventory-turn improvements and a modest DPO extension. Used by the Projection agent as one of three working-capital drivers and by the Operating Model dashboard as the headline efficiency metric.
+        </p>
+
+        <!-- Inputs (replaces Fields for Metric classification) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Inputs · 5 source values from the close pack</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Input</th><th>Source</th><th>COA reference</th><th>Statement</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">Inventory</td><td class="ftype">period-end balance</td><td class="fconstraint"><code>1300 (Asset.Current.Inventory)</code></td><td class="freq">Balance Sheet</td></tr>
+              <tr><td class="fname">AccountsReceivable</td><td class="ftype">period-end balance</td><td class="fconstraint"><code>1200 (Asset.Current.AR)</code></td><td class="freq">Balance Sheet</td></tr>
+              <tr><td class="fname">AccountsPayable</td><td class="ftype">period-end balance</td><td class="fconstraint"><code>2100 (Liability.Current.AP)</code></td><td class="freq">Balance Sheet</td></tr>
+              <tr><td class="fname">COGS</td><td class="ftype">trailing 365d</td><td class="fconstraint"><code>5000 (P&amp;L.COGS)</code></td><td class="freq">P&amp;L</td></tr>
+              <tr><td class="fname">Revenue</td><td class="ftype">trailing 365d</td><td class="fconstraint"><code>4000 (P&amp;L.Revenue)</code></td><td class="freq">P&amp;L</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Formula & benchmark (replaces Allowed values) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Formula &amp; benchmark</h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">CCC</div>
+            <div class="allowed-rule"><code>DIO + DSO − DPO  =  (Inventory/COGS)·365  +  (AR/Revenue)·365  −  (AP/COGS)·365</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">Apr 2026</div>
+            <div class="allowed-rule"><code>52d (DIO) + 38d (DSO) − 26d (DPO) = <strong style="color: var(--accent);">64 days</strong></code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">benchmark</div>
+            <div class="allowed-rule"><code>CPG industry median (S&amp;P CapIQ 2024) 70d  ·  Northstar trailing-6mo 68d  ·  best-in-class quartile 55d</code></div>
+          </div>
+        </div>
+
+        <!-- Trend visualization -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Trend · 12-month rolling · May 2025 → April 2026</h3>
+          <div class="curve-card" style="padding: 14px 16px 10px;">
+            <div class="curve-card-head">
+              <span class="curve-pair">CCC (days) · improving = down</span>
+              <span class="curve-meta">monthly close · trailing 365d denominator</span>
+            </div>
+            <svg viewBox="0 0 600 180" class="curve-svg" preserveAspectRatio="xMidYMid meet">
+              <!-- Gridlines + benchmarks -->
+              <line class="curve-grid-line" x1="50" y1="40.9" x2="580" y2="40.9" />
+              <line class="curve-bench-median" x1="50" y1="95.45" x2="580" y2="95.45" />
+              <line class="curve-bench-internal" x1="50" y1="106.36" x2="580" y2="106.36" />
+              <text class="curve-bench-label" x="585" y="95.45" dominant-baseline="middle">CPG median 70d</text>
+              <text class="curve-bench-label" x="585" y="106.36" dominant-baseline="middle" fill="var(--accent)" opacity="0.85">NS trailing 68d</text>
+              <!-- Axes -->
+              <line class="curve-axis" x1="50" y1="30" x2="50" y2="150" />
+              <line class="curve-axis" x1="50" y1="150" x2="580" y2="150" />
+              <!-- Y labels -->
+              <text class="curve-y-label" x="46" y="40.9"  text-anchor="end" dominant-baseline="middle">80</text>
+              <text class="curve-y-label" x="46" y="95.45" text-anchor="end" dominant-baseline="middle">70</text>
+              <text class="curve-y-label" x="46" y="150"   text-anchor="end" dominant-baseline="middle">60</text>
+              <!-- X labels -->
+              <text class="curve-x-label" x="50"    y="163">May 25</text>
+              <text class="curve-x-label" x="194.5" y="163">Aug 25</text>
+              <text class="curve-x-label" x="339.1" y="163">Nov 25</text>
+              <text class="curve-x-label" x="483.6" y="163">Feb 26</text>
+              <text class="curve-x-label" x="580"   y="163">Apr 26</text>
+              <!-- Trend line + dots -->
+              <polyline class="curve-line" points="50,51.8 98.2,40.9 146.4,62.7 194.5,68.2 242.7,84.5 290.9,79.1 339.1,90.0 387.3,73.6 435.5,95.4 483.6,106.4 531.8,122.7 580,128.2" />
+              <circle class="curve-dot" cx="50"    cy="51.8"  r="2.4"/>
+              <circle class="curve-dot" cx="98.2"  cy="40.9"  r="2.4"/>
+              <circle class="curve-dot" cx="146.4" cy="62.7"  r="2.4"/>
+              <circle class="curve-dot" cx="194.5" cy="68.2"  r="2.4"/>
+              <circle class="curve-dot" cx="242.7" cy="84.5"  r="2.4"/>
+              <circle class="curve-dot" cx="290.9" cy="79.1"  r="2.4"/>
+              <circle class="curve-dot" cx="339.1" cy="90.0"  r="2.4"/>
+              <circle class="curve-dot" cx="387.3" cy="73.6"  r="2.4"/>
+              <circle class="curve-dot" cx="435.5" cy="95.4"  r="2.4"/>
+              <circle class="curve-dot" cx="483.6" cy="106.4" r="2.4"/>
+              <circle class="curve-dot" cx="531.8" cy="122.7" r="2.4"/>
+              <circle class="curve-dot-last" cx="580" cy="128.2" r="3.8"/>
+              <!-- Last value label -->
+              <text class="curve-value-label" x="572" y="124" text-anchor="end">64d</text>
+            </svg>
+            <div class="curve-foot">
+              <span>peak <strong>80d (Jun 2025)</strong></span>
+              <span>12-month compression <strong>−14d (−18%)</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Validation rules -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>All BS inputs must reference active accounts in <code>ChartOfAccounts</code> at <code>is_active = true</code>; postings to inactive accounts block the metric run (Control <code>C-04</code>).</li>
+            <li>Month-on-month CCC change &gt; ± 8 days triggers analyst commentary in the Operating Model dashboard; sustained &gt; ± 12 days escalates to M. Chen.</li>
+            <li>If any input is null or stale (BS not yet closed for the period), the metric returns <code>n/a</code> rather than a partial value.</li>
+            <li>FX: all inputs revalued to USD via <code>FXForwardCurve</code> at period-end before calculation; consistency enforced by Control <code>C-01</code>.</li>
+            <li>Channel-mix shifts &gt; 5 pp may distort CCC interpretation — the Projection agent flags channel-mix change &gt; 5 pp alongside any CCC anomaly.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Projection agent (working-capital driver)</span>
+            <span class="rel-chip">Operating Model dashboard</span>
+            <span class="rel-chip">FreeCashFlowMargin (cross-reference)</span>
+            <span class="rel-chip">Variance commentary template</span>
+            <span class="rel-chip">Board-pack monthly P&amp;L review</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §8.2</strong> — working-capital metrics (FP&amp;A_Close_SOP_v3.2.docx, p.41).
+                <em>"CCC is reported as a single number monthly, with DIO/DSO/DPO components in the appendix; commentary required for moves &gt; 8 days."</em>
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong><code>WC_workings_2026.xlsx</code></strong> — sheet <em>CCC_calc</em>, cells <code>C12:C24</code>. Decoded the trailing-365 denominator convention (vs. annualized-month).
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 16</strong> — CCC framing.
+                <em>"I want CCC every month with a 12-month tail. Anything over a one-week move month-on-month, I want to know why."</em>
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Mar26_close_S.Reyes.mp4 · 1:42:08</strong> — analyst manually computed DIO with COGS-trailing-3mo as denominator (vs. SOP-mandated 365); flagged as inconsistency. Drove the trailing-365 lock-in rule.
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 9</strong> — channel-mix caveat; established that DTC vs Wholesale shift can mechanically move CCC by 4–6 days, requiring qualitative read alongside the number.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-30</span>
+              <span class="change-detail">Added channel-mix-shift co-flag rule per J. Park interview turn 9; previously CCC anomalies escalated without mix context. <em>(automatic)</em></span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-15</span>
+              <span class="change-detail">Locked trailing-365 denominator after analyst inconsistency caught in March recording; previously some sheets used trailing-90 annualized.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-10</span>
+              <span class="change-detail">Tightened month-on-month commentary threshold from 10d → 8d per M. Chen interview turn 16.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-01</span>
+              <span class="change-detail">Initial discovery — formula and inputs decoded from <code>WC_workings_2026.xlsx</code> + SOP §8.2 cross-reference.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_Metric_CCC</code> template v1.6 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ ROIC DECOMPOSITION — full detail card ============ -->
+      <article class="entity-detail" id="detail-roic" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">ROICDecomposition</h2>
+          <span class="classification-badge metric">Metric</span>
+          <span class="confidence-pill">confidence 0.85</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_Metric_ROIC</code> template (cross-customer) · last template update Aug 2025 · v2.3
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          Return on Invested Capital decomposed DuPont-style into Operating Margin × Capital Turnover. The metric is computed quarterly (not monthly — rolling-12-month NOPAT requires four full close cycles for stability) and reported alongside its decomposition so the board pack can read whether ROIC moves are driven by margin or by capital efficiency. Northstar's Q1 2026 ROIC of 20.9% sits in the top quartile of CPG peers; the WACC spread of 12.7 pp is the headline value-creation number M. Chen reports to the audit committee.
+        </p>
+
+        <!-- Inputs (replaces Fields for Metric classification) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Inputs · 5 source values from the quarterly close</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Input</th><th>Source</th><th>COA reference</th><th>Statement</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">EBIT</td><td class="ftype">trailing 12mo</td><td class="fconstraint"><code>4000–6900 net (P&amp;L pre-tax pre-interest)</code></td><td class="freq">P&amp;L</td></tr>
+              <tr><td class="fname">EffectiveTaxRate</td><td class="ftype">trailing 12mo</td><td class="fconstraint"><code>Tax expense ÷ Pre-tax income</code></td><td class="freq">P&amp;L derived</td></tr>
+              <tr><td class="fname">Revenue</td><td class="ftype">trailing 12mo</td><td class="fconstraint"><code>4000 (P&amp;L.Revenue)</code></td><td class="freq">P&amp;L</td></tr>
+              <tr><td class="fname">TotalEquity + TotalDebt</td><td class="ftype">period-end balance</td><td class="fconstraint"><code>3000 + 2200 (BS)</code></td><td class="freq">Balance Sheet</td></tr>
+              <tr><td class="fname">CashAndEquivalents</td><td class="ftype">period-end balance</td><td class="fconstraint"><code>1100 (Asset.Current.Cash)</code></td><td class="freq">Balance Sheet</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Formula & benchmark (replaces Allowed values) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Formula &amp; benchmark</h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">ROIC</div>
+            <div class="allowed-rule"><code>NOPAT / Invested Capital  =  (Operating Margin) × (Capital Turnover)  =  (NOPAT/Revenue) × (Revenue/IC)</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">Q1 2026</div>
+            <div class="allowed-rule"><code>13.5% (op margin) × 1.55× (cap turn) = <strong style="color: var(--accent);">20.9%</strong>  ·  WACC spread = +12.7 pp</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">benchmark</div>
+            <div class="allowed-rule"><code>WACC 8.2%  ·  CPG industry median ROIC ~14%  ·  top quartile ~22%  ·  Northstar trailing-4Q avg 20.4%</code></div>
+          </div>
+        </div>
+
+        <!-- Decomposition tree -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Decomposition tree · DuPont-style · Q1 2026 actuals</h3>
+          <div class="curve-card" style="padding: 14px 16px 10px;">
+            <svg viewBox="0 0 640 230" class="metric-tree-svg" preserveAspectRatio="xMidYMid meet">
+              <!-- L1 → L2 connectors -->
+              <line class="tree-line" x1="280" y1="64" x2="160" y2="80"/>
+              <line class="tree-line" x1="360" y1="64" x2="480" y2="80"/>
+              <!-- L2 → L3 connectors -->
+              <line class="tree-line" x1="120" y1="130" x2="80"  y2="170"/>
+              <line class="tree-line" x1="200" y1="130" x2="320" y2="170"/>
+              <line class="tree-line" x1="440" y1="130" x2="320" y2="170"/>
+              <line class="tree-line" x1="520" y1="130" x2="560" y2="170"/>
+
+              <!-- L1: ROIC (root) -->
+              <rect class="tree-box tree-box-root" x="240" y="20" width="160" height="44" rx="6" ry="6"/>
+              <text class="tree-label" x="320" y="36">ROIC</text>
+              <text class="tree-value tree-value-root" x="320" y="56">20.9%</text>
+
+              <!-- × symbol between L2 children -->
+              <text class="tree-op" x="320" y="106">×</text>
+
+              <!-- L2 left: Operating Margin -->
+              <rect class="tree-box" x="80" y="80" width="160" height="50" rx="6" ry="6"/>
+              <text class="tree-label" x="160" y="93">Operating Margin</text>
+              <text class="tree-formula" x="160" y="106">NOPAT ÷ Revenue</text>
+              <text class="tree-value" x="160" y="123">13.5%</text>
+
+              <!-- L2 right: Capital Turnover -->
+              <rect class="tree-box" x="400" y="80" width="160" height="50" rx="6" ry="6"/>
+              <text class="tree-label" x="480" y="93">Capital Turnover</text>
+              <text class="tree-formula" x="480" y="106">Revenue ÷ Invested Capital</text>
+              <text class="tree-value" x="480" y="123">1.55×</text>
+
+              <!-- L3 left: NOPAT -->
+              <rect class="tree-box" x="20" y="170" width="120" height="48" rx="6" ry="6"/>
+              <text class="tree-label" x="80" y="184">NOPAT</text>
+              <text class="tree-formula" x="80" y="195">EBIT × (1 − tax)</text>
+              <text class="tree-value" x="80" y="212">$108M</text>
+
+              <!-- L3 mid: Revenue (shared parent of both L2 boxes) -->
+              <rect class="tree-box" x="260" y="170" width="120" height="48" rx="6" ry="6"/>
+              <text class="tree-label" x="320" y="184">Revenue</text>
+              <text class="tree-formula" x="320" y="195">P&amp;L 4000 trailing 12mo</text>
+              <text class="tree-value" x="320" y="212">$800M</text>
+
+              <!-- L3 right: Invested Capital -->
+              <rect class="tree-box" x="500" y="170" width="120" height="48" rx="6" ry="6"/>
+              <text class="tree-label" x="560" y="184">Invested Capital</text>
+              <text class="tree-formula" x="560" y="195">Equity + Debt − Cash</text>
+              <text class="tree-value" x="560" y="212">$516M</text>
+            </svg>
+            <div class="curve-foot">
+              <span>Margin <strong>+0.4 pp YoY</strong></span>
+              <span>Cap turn <strong>+0.05× YoY</strong></span>
+              <span>ROIC YoY <strong>+1.7 pp</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>EBIT and Revenue must reconcile to <code>ChartOfAccounts</code> rollups; deltas trip Control <code>C-07</code> (statement reconciliation).</li>
+            <li>Effective tax rate must fall within ± 3 pp of trailing-4Q average; outside that band requires analyst commentary (one-time items called out separately).</li>
+            <li>Invested Capital uses period-end balances, <em>not</em> average — Northstar convention; documented in SOP §8.4 (some peers use averaging — disclosure footnote required).</li>
+            <li>Cash &amp; equivalents subtraction excludes restricted cash and short-term investments &gt; 90d maturity (per audit-committee memo).</li>
+            <li>QoQ ROIC change &gt; ± 200 bps requires decomposition commentary identifying which of margin or turnover drove the move.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Operating Model dashboard</span>
+            <span class="rel-chip">Audit committee quarterly pack</span>
+            <span class="rel-chip">Board pack (headline metric)</span>
+            <span class="rel-chip">Projection agent (capital-efficiency check)</span>
+            <span class="rel-chip">FreeCashFlowMargin (companion metric)</span>
+            <span class="rel-chip">Investor relations Q-pack</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §8.4</strong> — capital-efficiency reporting (FP&amp;A_Close_SOP_v3.2.docx, p.46).
+                <em>"Invested Capital is period-end, not averaged. Decomposition into margin × turnover is required for any quarterly board pack."</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 22</strong> — board-pack framing.
+                <em>"ROIC and the WACC spread are the headline. Audit committee asks the same two questions every quarter: did margin move, or did capital turnover move?"</em>
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong><code>ROIC_calc_2026Q1.xlsx</code></strong> — sheet <em>Decomp</em>, cells <code>D8:D14</code>. NOPAT formula and IC convention decoded; tax-rate trailing-4Q derived from quarterly close history.
+              </span>
+            </div>
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>Audit-committee memo</strong> — <code>Audit_FY26_capital.pdf</code> §4 — established the cash-exclusion rule (no restricted cash, no &gt; 90d short-term investments) and the disclosure-footnote requirement.
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Apr26_quarterly_J.Park.mp4 · 0:38:51</strong> — observed manual decomposition step where analyst computes margin × turnover and reconciles to the divisional ROIC; pattern repeats every quarter close.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-15</span>
+              <span class="change-detail">Added Q1 actuals (20.9%); QoQ ROIC change +0.4 pp — within band, no commentary triggered. Decomposition: margin contribution +0.3 pp, turnover contribution +0.1 pp.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-22</span>
+              <span class="change-detail">Tightened cash-exclusion rule per audit-committee memo; surfaced one historical case (Q3 2025) where short-term Treasury holdings were not excluded. Restated retroactively in disclosure footnote.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-25</span>
+              <span class="change-detail">Added QoQ-change-by-driver commentary requirement (margin vs turnover) per M. Chen interview turn 22; previously a single-line ROIC was reported.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-08</span>
+              <span class="change-detail">Initial discovery — DuPont decomposition, period-end IC convention, tax-rate trailing-4Q rule decoded from <code>ROIC_calc_2026Q1.xlsx</code> and SOP §8.4.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_Metric_ROIC</code> template v2.3 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ FREE CASH FLOW MARGIN — full detail card ============ -->
+      <article class="entity-detail" id="detail-fcfm" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">FreeCashFlowMargin</h2>
+          <span class="classification-badge metric">Metric</span>
+          <span class="confidence-pill">confidence 0.91</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_Metric_FCFM</code> template (cross-customer) · last template update Oct 2025 · v1.4
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          Free Cash Flow as a percentage of trailing-12-month Revenue — the single ratio that captures whether revenue actually converts to spendable cash after working-capital needs and capital investment. Northstar's FCF margin has expanded from 7.8% (May 2025) to 11.5% (April 2026), tracking the working-capital releases visible in <code>CashConversionCycle</code>. The metric anchors the projection-agent's cash-flow-from-operations forecast and is the headline cash number in the monthly board pack.
+        </p>
+
+        <!-- Inputs -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Inputs · 3 source values from the close pack</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Input</th><th>Source</th><th>COA reference</th><th>Statement</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">OperatingCashFlow</td><td class="ftype">trailing 12mo</td><td class="fconstraint"><code>7000 (CF.Operating)</code></td><td class="freq">Cash Flow</td></tr>
+              <tr><td class="fname">CapitalExpenditure</td><td class="ftype">trailing 12mo</td><td class="fconstraint"><code>7100 (CF.Investing.PPE)</code></td><td class="freq">Cash Flow</td></tr>
+              <tr><td class="fname">Revenue</td><td class="ftype">trailing 12mo</td><td class="fconstraint"><code>4000 (P&amp;L.Revenue)</code></td><td class="freq">P&amp;L</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Formula & benchmark -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Formula &amp; benchmark</h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">FCF Margin</div>
+            <div class="allowed-rule"><code>(OperatingCashFlow − CapEx) / Revenue</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">Apr 2026</div>
+            <div class="allowed-rule"><code>($128M CFO − $36M CapEx) / $800M = $92M / $800M = <strong style="color: var(--accent);">11.5%</strong></code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">benchmark</div>
+            <div class="allowed-rule"><code>CPG industry median 7.5%  ·  top quartile 11.5%  ·  best-in-class 13%+  ·  Northstar trailing-6mo avg 10.7%</code></div>
+          </div>
+        </div>
+
+        <!-- Trend visualization -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Trend · 12-month rolling · May 2025 → April 2026</h3>
+          <div class="curve-card" style="padding: 14px 16px 10px;">
+            <div class="curve-card-head">
+              <span class="curve-pair">FCF Margin (%) · improving = up</span>
+              <span class="curve-meta">monthly close · trailing 365d numerator &amp; denominator</span>
+            </div>
+            <svg viewBox="0 0 600 180" class="curve-svg" preserveAspectRatio="xMidYMid meet">
+              <line class="curve-grid-line" x1="50" y1="83.3"  x2="580" y2="83.3" />
+              <line class="curve-bench-internal" x1="50" y1="43.3" x2="580" y2="43.3" />
+              <text class="curve-bench-label" x="585" y="43.3" dominant-baseline="middle" fill="var(--accent)" opacity="0.85">CPG top quartile 11.5%</text>
+              <line class="curve-axis" x1="50" y1="30" x2="50" y2="150" />
+              <line class="curve-axis" x1="50" y1="150" x2="580" y2="150" />
+              <text class="curve-y-label" x="46" y="30"    text-anchor="end" dominant-baseline="middle">12%</text>
+              <text class="curve-y-label" x="46" y="83.3"  text-anchor="end" dominant-baseline="middle">10%</text>
+              <text class="curve-y-label" x="46" y="136.7" text-anchor="end" dominant-baseline="middle">8%</text>
+              <text class="curve-x-label" x="50"    y="163">May 25</text>
+              <text class="curve-x-label" x="194.5" y="163">Aug 25</text>
+              <text class="curve-x-label" x="339.1" y="163">Nov 25</text>
+              <text class="curve-x-label" x="483.6" y="163">Feb 26</text>
+              <text class="curve-x-label" x="580"   y="163">Apr 26</text>
+              <polyline class="curve-line" points="50,142.0 98.2,131.3 146.4,123.3 194.5,112.7 242.7,102.0 290.9,94.0 339.1,80.7 387.3,72.7 435.5,64.7 483.6,56.7 531.8,48.7 580,43.3" />
+              <circle class="curve-dot" cx="50"    cy="142.0" r="2.4"/>
+              <circle class="curve-dot" cx="98.2"  cy="131.3" r="2.4"/>
+              <circle class="curve-dot" cx="146.4" cy="123.3" r="2.4"/>
+              <circle class="curve-dot" cx="194.5" cy="112.7" r="2.4"/>
+              <circle class="curve-dot" cx="242.7" cy="102.0" r="2.4"/>
+              <circle class="curve-dot" cx="290.9" cy="94.0"  r="2.4"/>
+              <circle class="curve-dot" cx="339.1" cy="80.7"  r="2.4"/>
+              <circle class="curve-dot" cx="387.3" cy="72.7"  r="2.4"/>
+              <circle class="curve-dot" cx="435.5" cy="64.7"  r="2.4"/>
+              <circle class="curve-dot" cx="483.6" cy="56.7"  r="2.4"/>
+              <circle class="curve-dot" cx="531.8" cy="48.7"  r="2.4"/>
+              <circle class="curve-dot-last" cx="580" cy="43.3" r="3.8"/>
+              <text class="curve-value-label" x="572" y="38" text-anchor="end">11.5%</text>
+            </svg>
+            <div class="curve-foot">
+              <span>start <strong>7.8% (May 2025)</strong></span>
+              <span>12-month expansion <strong>+3.7 pp (+47%)</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Validation rules -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>CFO and CapEx must reconcile to <code>ChartOfAccounts</code> rollups; deltas trip Control <code>C-07</code> (statement reconciliation).</li>
+            <li>CapEx excludes M&amp;A goodwill and capitalized software acquired via acquisition; routine capitalized software is included (per SOP §8.6).</li>
+            <li>Month-on-month FCF Margin change &gt; ± 1.0 pp triggers analyst commentary identifying CFO vs CapEx vs Revenue contribution.</li>
+            <li>One-time items (asset sales &gt; $5M, restructuring cash &gt; $3M) call out separately as <em>Adjusted FCF Margin</em> alongside the headline.</li>
+            <li>FCF Margin &gt; 13% sustained for 2 consecutive quarters triggers a capital-allocation review (deployment vs return-of-capital).</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Operating Model dashboard</span>
+            <span class="rel-chip">Board pack (headline cash metric)</span>
+            <span class="rel-chip">Projection agent (CFO forecast anchor)</span>
+            <span class="rel-chip">CashConversionCycle (cross-reference)</span>
+            <span class="rel-chip">ROICDecomposition (companion metric)</span>
+            <span class="rel-chip">Investor relations Q-pack</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §8.6</strong> — cash conversion reporting (FP&amp;A_Close_SOP_v3.2.docx, p.49).
+                <em>"FCF Margin is the headline cash number; one-time items are reported separately as Adjusted FCF Margin so the underlying trend is preserved."</em>
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong><code>CF_workings_2026.xlsx</code></strong> — sheet <em>FCFM_calc</em>, cells <code>D14:D26</code>. Decoded the trailing-365 convention and the M&amp;A-goodwill exclusion rule.
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 28</strong> — capital-allocation trigger.
+                <em>"If FCF margin holds above 13% for two quarters, we should be talking about either deployment or buybacks. That's not a soft signal — that's a board conversation."</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>J. Park interview · turn 11</strong> — CapEx classification edge cases; capitalized software treatment, sale-leaseback exclusions, M&amp;A-acquired-IP carve-outs.
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Apr26_close_S.Reyes.mp4 · 2:14:32</strong> — observed manual one-time-item carve-out for $4M restructuring cash; analyst noted it as "below threshold but discretionary call". Drove the explicit $3M threshold.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-30</span>
+              <span class="change-detail">April actuals: 11.5% (top-quartile threshold reached). 12-month expansion +3.7 pp tracks the CCC compression (−14d) — Projection agent automatically flagged the cross-metric correlation.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-22</span>
+              <span class="change-detail">Tightened one-time-item carve-out threshold from <em>"discretionary call"</em> to explicit $3M cash / $5M asset-sale floors per S. Reyes recording behavior; reduces analyst-judgement variability.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-15</span>
+              <span class="change-detail">Added 13% capital-allocation-review trigger per M. Chen interview turn 28; previously a soft heuristic.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-04</span>
+              <span class="change-detail">Initial discovery — formula and CapEx classification rules decoded from <code>CF_workings_2026.xlsx</code> + SOP §8.6 + J. Park interview turn 11.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_Metric_FCFM</code> template v1.4 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ PIPELINE COVERAGE RATIO — full detail card ============ -->
+      <article class="entity-detail" id="detail-pcr" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">PipelineCoverageRatio</h2>
+          <span class="classification-badge metric">Metric</span>
+          <span class="confidence-pill" style="background: var(--amber-50); color: var(--amber-800);">confidence 0.79 · newest entity</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_Metric_PipelineCoverage</code> template (cross-customer) · last template update Mar 2026 · v1.0 <em>· promoted from inside Control C-03 in Run #142</em>
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          The newest first-class metric in Northstar's ontology — promoted from inside Control <code>C-03</code> after the 90-day weighted pipeline / 90-day revenue target check tripped for the first time in March 2026. Lower confidence (0.79) reflects limited operational track record, not weak modeling: this metric has only existed as a standalone entity for two cycles. Hard floor is 1.0× (projection blocks below); soft threshold is 1.2× (commentary required between 1.0× and 1.2×). Current value 1.34× sits in the green zone.
+        </p>
+
+        <!-- Inputs -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Inputs · 5 source values from CRM + plan</h3>
+          <table class="fields-table">
+            <thead>
+              <tr><th>Input</th><th>Source</th><th>COA reference</th><th>Statement</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="fname">WeightedPipelineValue</td><td class="ftype">90-day window</td><td class="fconstraint"><code>CRM extract · stage × probability</code></td><td class="freq">CRM (external)</td></tr>
+              <tr><td class="fname">RevenueTarget90d</td><td class="ftype">90-day target</td><td class="fconstraint"><code>FY26 Plan · quarterly / 365 × 90</code></td><td class="freq">Plan</td></tr>
+              <tr><td class="fname">StageProbabilities</td><td class="ftype">stage → probability map</td><td class="fconstraint"><code>{Lead: 5%, Qualified: 25%, Proposal: 50%, Commit: 80%, Closed: 100%}</code></td><td class="freq">Reference</td></tr>
+              <tr><td class="fname">ChannelMixWeights</td><td class="ftype">DTC · Amazon · Wholesale</td><td class="freq">required</td><td class="fconstraint"><code>per-channel pipeline definition</code></td></tr>
+              <tr><td class="fname">PriorQuarterConversion</td><td class="ftype">calibration check</td><td class="fconstraint"><code>actual closed / weighted forecast</code></td><td class="freq">Telemetry</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Formula & benchmark -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Formula &amp; benchmark</h3>
+          <div class="allowed-row">
+            <div class="allowed-canonical">PCR<sub>90d</sub></div>
+            <div class="allowed-rule"><code>(Σ deal_value · stage_probability · channel_weight)<sub>90d</sub>  ÷  RevenueTarget<sub>90d</sub></code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">May 2026</div>
+            <div class="allowed-rule"><code>$268M weighted pipeline ÷ $200M target = <strong style="color: var(--accent);">1.34×</strong>  ·  green zone</code></div>
+          </div>
+          <div class="allowed-row">
+            <div class="allowed-canonical">thresholds</div>
+            <div class="allowed-rule"><code>hard floor 1.00× (Control C-03 blocks projection)  ·  soft threshold 1.20× (commentary required between)  ·  comfort zone ≥ 1.20×</code></div>
+          </div>
+        </div>
+
+        <!-- Coverage gauge visualization -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Coverage gauge · current value vs C-03 thresholds</h3>
+          <div class="curve-card" style="padding: 14px 16px 10px;">
+            <div class="curve-card-head">
+              <span class="curve-pair">PCR · current 1.34× · 90-day window</span>
+              <span class="curve-meta">May 2026 close · CRM run #143</span>
+            </div>
+            <svg viewBox="0 0 600 130" class="metric-tree-svg" preserveAspectRatio="xMidYMid meet">
+              <!-- Bar zones: red 0-1.0, amber 1.0-1.2, green 1.2-2.0 -->
+              <rect x="50"  y="50" width="250" height="24" fill="var(--red-50)"   stroke="var(--border)" stroke-width="0.5"/>
+              <rect x="300" y="50" width="50"  height="24" fill="var(--amber-50)" stroke="var(--border)" stroke-width="0.5"/>
+              <rect x="350" y="50" width="200" height="24" fill="var(--green-50)" stroke="var(--border)" stroke-width="0.5"/>
+
+              <!-- Threshold tick markers (top of bar) -->
+              <line x1="300" y1="44" x2="300" y2="50" stroke="var(--red-600)"   stroke-width="1.6"/>
+              <line x1="350" y1="44" x2="350" y2="50" stroke="var(--amber-600)" stroke-width="1.6"/>
+
+              <!-- Threshold labels above bar -->
+              <text x="296" y="36" text-anchor="end"   font-size="9.5" font-weight="700" fill="var(--red-600)" letter-spacing="0.04em">1.00× HARD FLOOR ◄</text>
+              <text x="354" y="36" text-anchor="start" font-size="9.5" font-weight="700" fill="var(--amber-600)" letter-spacing="0.04em">► 1.20× SOFT THRESHOLD</text>
+
+              <!-- Tick marks below bar -->
+              <line x1="50"  y1="74" x2="50"  y2="80" stroke="var(--border-strong)" stroke-width="0.6"/>
+              <line x1="175" y1="74" x2="175" y2="80" stroke="var(--border-strong)" stroke-width="0.6"/>
+              <line x1="300" y1="74" x2="300" y2="80" stroke="var(--border-strong)" stroke-width="0.6"/>
+              <line x1="425" y1="74" x2="425" y2="80" stroke="var(--border-strong)" stroke-width="0.6"/>
+              <line x1="550" y1="74" x2="550" y2="80" stroke="var(--border-strong)" stroke-width="0.6"/>
+
+              <!-- Tick labels -->
+              <text class="curve-x-label" x="50"  y="92">0×</text>
+              <text class="curve-x-label" x="175" y="92">0.5×</text>
+              <text class="curve-x-label" x="300" y="92">1.0×</text>
+              <text class="curve-x-label" x="425" y="92">1.5×</text>
+              <text class="curve-x-label" x="550" y="92">2.0×</text>
+
+              <!-- Current marker (needle + triangle) at 1.34× → x = 50 + 1.34*250 = 50 + 335 = 385 -->
+              <line x1="385" y1="38" x2="385" y2="86" stroke="var(--accent)" stroke-width="2.5"/>
+              <polygon points="378,86 392,86 385,98" fill="var(--accent)"/>
+              <text class="tree-value tree-value-root" x="385" y="118" text-anchor="middle">1.34×</text>
+              <text class="tree-label" x="385" y="128" text-anchor="middle">CURRENT (MAY 2026)</text>
+            </svg>
+            <div class="curve-foot">
+              <span>weighted pipeline <strong>$268M</strong></span>
+              <span>90-day target <strong>$200M</strong></span>
+              <span>headroom over hard floor <strong>+34 pp</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Validation rules -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Validation rules</h3>
+          <ul class="rules-list">
+            <li>Pipeline value computed at submission of Triage agent's batch — no in-cycle recalculation; CRM snapshot is the system of record per timestamp.</li>
+            <li>Stage probabilities are sourced from <code>FP&amp;A_Metric_PipelineCoverage</code> template v1.0; per-customer overrides require explicit M. Chen approval.</li>
+            <li>Channel-mix weights for DTC subscriptions, Amazon planned promotions, and Wholesale POs are computed differently (each channel has its own pipeline definition); reconciliation rule logged in <code>ChannelTaxonomy.used_by</code>.</li>
+            <li>Falling below 1.0× hard floor blocks the projection-agent run — no alternate path; manual override requires M. Chen + J. Park co-sign.</li>
+            <li>Quarterly calibration: prior-quarter <em>actual closed / weighted forecast</em> ratio must fall within 0.85–1.15; outside that band, the StageProbabilities map is recalibrated.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">Control C-03 (drives the gate)</span>
+            <span class="rel-chip">Projection agent (90-day revenue forecast)</span>
+            <span class="rel-chip">Operating Model dashboard</span>
+            <span class="rel-chip">M. Chen weekly commercial review</span>
+            <span class="rel-chip">Sales-ops calibration cycle (quarterly)</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong>Run #142 telemetry</strong> — first instance of <code>C-03</code> firing on the 90-day weighted pipeline; promoted PipelineCoverageRatio from informal heuristic to first-class ontology entity. <em>(See <code>ControlLibrary</code> change history 2026-04-30.)</em>
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 27</strong> — pipeline discipline.
+                <em>"I want to know coverage every Monday. If we ever drop below 1.2× heading into a close, that's a different conversation, and below 1.0× we don't ship the projection at all."</em>
+              </span>
+            </div>
+            <div class="prov-chip xls">
+              <span class="prov-icon">📊</span>
+              <span class="prov-text">
+                <strong>CRM extract</strong> — <code>Pipeline_2026Q2.csv</code> with stage × probability convention; cross-checked against historical conversion rates for calibration consistency.
+              </span>
+            </div>
+            <div class="prov-chip rec">
+              <span class="prov-icon">🎬</span>
+              <span class="prov-text">
+                <strong>Apr26_pipeline_review_M.Chen.mp4 · 0:14:38</strong> — observed manual coverage ratio computation; M. Chen explicitly asked "what's the coverage" before approving the projection. Drove promotion to first-class metric.
+              </span>
+            </div>
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §6.3</strong> — Control <code>C-03</code> definition (FP&amp;A_Close_SOP_v3.2.docx, p.31) — original location of the coverage logic before promotion.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-30</span>
+              <span class="change-detail">Promoted from informal heuristic inside <code>Control C-03</code> to first-class ontology entity after Run #142 fired the gate; cross-customer template <code>FP&amp;A_Metric_PipelineCoverage v1.0</code> spawned for future engagements. <em>(automatic, ontology custodian notified)</em></span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-04-22</span>
+              <span class="change-detail">Calibrated stage probabilities against trailing-4Q closed/forecast ratios; <em>Proposal</em> stage adjusted from 45% → 50% (Q4 2025 conversion came in at 0.91 — within band but trending higher).</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-04-04</span>
+              <span class="change-detail">Added explicit channel-mix-weights handling — DTC subscription pipeline definition is structurally different from Wholesale POs; previously single weighted-sum across all channels.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-08</span>
+              <span class="change-detail">Initial entity creation — coverage formula and threshold pair (1.0× hard, 1.2× soft) extracted from <code>Control C-03</code> definition + M. Chen interview turn 27.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Concept inherited as a hidden field of Control <code>C-03</code> at engagement kickoff; not yet a first-class entity.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ APPROVAL ROLE — full detail card (Actor classification) ============ -->
+      <article class="entity-detail" id="detail-role" hidden>
+
+        <header class="entity-detail-header">
+          <h2 class="entity-detail-name">ApprovalRole</h2>
+          <span class="classification-badge actor">Actor</span>
+          <span class="confidence-pill">confidence 0.93</span>
+          <div class="inheritance-line">
+            ← derived from <code>FP&amp;A_Roles</code> template (cross-customer) · last template update Nov 2025 · v2.0
+          </div>
+        </header>
+
+        <p class="entity-detail-desc">
+          Encodes who can authorize what across the close, projection, and audit cycles. Holds 7 canonical roles, the 10×7 authority matrix mapping decisions to authorization levels, and the escalation/co-sign rules the audit-trail enforces. The matrix is the system of record — every approval event logs <code>(role, member_at_time, decision_type, timestamp)</code>; HR changes flow into this entity, not into individual control owner fields. M. Chen's always-copy rule on hard escalations and J. Park's variance-commentary discipline both originate here.
+        </p>
+
+        <!-- Authority matrix (replaces Fields for Actor classification) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Authority matrix · 10 decision types × 7 roles · the canonical RACI for approvals</h3>
+          <div class="matrix-scroll">
+            <table class="authority-matrix">
+              <thead>
+                <tr>
+                  <th class="first-col">Decision type</th>
+                  <th>VP FP&amp;A</th>
+                  <th>Director FP&amp;A</th>
+                  <th>Sr. Analyst</th>
+                  <th>CFO</th>
+                  <th>Treasurer</th>
+                  <th>Audit Cmte</th>
+                  <th>Sales Ops</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="decision">Monthly close filing</td>
+                  <td class="auth-A">A</td><td class="auth-C">C</td><td class="auth-I">I</td><td class="auth-I">I</td><td></td><td></td><td></td>
+                </tr>
+                <tr>
+                  <td class="decision">Monthly projection sign-off</td>
+                  <td class="auth-A">A</td><td class="auth-C">C</td><td></td><td class="auth-I">I</td><td></td><td></td><td></td>
+                </tr>
+                <tr>
+                  <td class="decision">FX rate manual override</td>
+                  <td class="auth-C">C</td><td class="auth-C">C</td><td></td><td></td><td class="auth-A">A</td><td></td><td></td>
+                </tr>
+                <tr>
+                  <td class="decision">SKU activation / discontinuation</td>
+                  <td class="auth-A">A</td><td class="auth-R">R</td><td></td><td class="auth-I">I</td><td></td><td></td><td class="auth-I">I</td>
+                </tr>
+                <tr>
+                  <td class="decision">Capital allocation &gt; $5M</td>
+                  <td class="auth-C">C</td><td></td><td></td><td class="auth-A">A</td><td></td><td class="auth-R">R</td><td></td>
+                </tr>
+                <tr>
+                  <td class="decision">Control threshold change</td>
+                  <td class="auth-A">A</td><td class="auth-R">R</td><td></td><td class="auth-C">C</td><td></td><td class="auth-I">I</td><td></td>
+                </tr>
+                <tr>
+                  <td class="decision">Ontology confidence override</td>
+                  <td class="auth-A">A</td><td class="auth-C">C</td><td></td><td></td><td></td><td></td><td></td>
+                </tr>
+                <tr>
+                  <td class="decision">Pipeline stage probability calibration</td>
+                  <td class="auth-A">A</td><td class="auth-R">R</td><td></td><td></td><td></td><td></td><td class="auth-C">C</td>
+                </tr>
+                <tr>
+                  <td class="decision">Variance commentary filing</td>
+                  <td class="auth-I">I</td><td class="auth-A">A</td><td></td><td></td><td></td><td></td><td></td>
+                </tr>
+                <tr>
+                  <td class="decision">Audit-committee Q-disclosure</td>
+                  <td class="auth-C">C</td><td></td><td></td><td class="auth-C">C</td><td></td><td class="auth-A">A</td><td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="auth-legend">
+            <span class="auth-legend-item"><span class="auth-legend-key auth-A">A</span> Approve · final sign-off</span>
+            <span class="auth-legend-item"><span class="auth-legend-key auth-C">C</span> Co-sign required</span>
+            <span class="auth-legend-item"><span class="auth-legend-key auth-R">R</span> Review · must consent</span>
+            <span class="auth-legend-item"><span class="auth-legend-key auth-I">I</span> Informed · notified</span>
+          </div>
+        </div>
+
+        <!-- Roles & members (replaces Allowed values) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Roles &amp; members · 7 canonical roles · current incumbents (May 2026)</h3>
+          <div class="member-row">
+            <div class="member-role">VP_FPA</div>
+            <div class="member-people">
+              <strong>M. Chen</strong> · m.chen@northstar-goods.com
+              <span class="member-meta">Approver-of-last-resort for close, projection, and ontology decisions. Standing always-copy rule on hard escalations (interview turn 11). Reports to CFO.</span>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-role">Director_FPA</div>
+            <div class="member-people">
+              <strong>J. Park</strong> · j.park@northstar-goods.com
+              <span class="member-meta">Operational owner of close cycle, FX policy execution, and SKU master discipline. Co-signs close filing and projection sign-off. Variance commentary filing approver.</span>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-role">Senior_Analyst</div>
+            <div class="member-people">
+              <strong>S. Reyes</strong> · s.reyes@northstar-goods.com  ·  <strong>A. Mehta</strong> · a.mehta@northstar-goods.com
+              <span class="member-meta">Two analysts execute the regional close packs and run the manual ingestion / triage workflow observed in Mar–Apr recordings. A. Mehta promoted from Analyst to Senior in March 2026.</span>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-role">CFO</div>
+            <div class="member-people">
+              <strong>D. Whitfield</strong> · d.whitfield@northstar-goods.com
+              <span class="member-meta">Final approver on capital-allocation decisions &gt; $5M, co-signs control threshold changes and audit-committee disclosures. Informed on close + projection.</span>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-role">Treasurer</div>
+            <div class="member-people">
+              <strong>R. Bahadur</strong> · r.bahadur@northstar-goods.com
+              <span class="member-meta">Sole approver of FX rate manual overrides; owns the source-priority list (Bloomberg → ECB → Treasury_internal) referenced in <code>CurrencyRegistry</code>.</span>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-role">AuditCommittee</div>
+            <div class="member-people">
+              <strong>L. Iverson</strong> (chair, board member)  ·  2 independent directors
+              <span class="member-meta">Approves quarterly disclosure package; reviews capital-allocation decisions &gt; $5M; informed on control-threshold changes. Charter doc <code>Audit_FY26_charter.pdf</code>.</span>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-role">SalesOps_Lead</div>
+            <div class="member-people">
+              <strong>K. Tanaka</strong> · k.tanaka@northstar-goods.com
+              <span class="member-meta">Co-signs pipeline-stage probability calibration; informed on SKU activation / discontinuation. CRM system-of-record owner.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Escalation rules (replaces Validation rules) -->
+        <div class="entity-section">
+          <h3 class="entity-section-head">Escalation rules</h3>
+          <ul class="rules-list">
+            <li><strong>Always-copy:</strong> M. Chen is copied on every hard control failure (<code>C-01, C-02, C-04, C-07</code>) regardless of whether she's the listed owner — interview turn 11 standing rule. J. Park is copied on every soft escalation involving DTC channel.</li>
+            <li><strong>Pager rule:</strong> Hard control fails page the listed Approver immediately; soft control fails page the Approver within 4 business hours. Pages route via the audit-trail system, not direct email.</li>
+            <li><strong>Co-sign timeout:</strong> If a co-sign is required and not received within 24 business hours, the request escalates to the Co-signer's listed backup. The original Approver is notified that escalation occurred but the timeline is not reset.</li>
+            <li><strong>OOO override:</strong> Each Approver designates a backup in the entity itself (currently: J. Park backs up M. Chen; A. Mehta backs up J. Park; R. Bahadur has no backup — escalates to CFO). Activation requires explicit hand-off + audit-trail entry; OOO can't be inferred from calendar alone.</li>
+            <li><strong>Audit committee disclosure:</strong> Quarterly cycle. M. Chen prepares the materials package; CFO co-signs; AuditCommittee approves. No automatic approval shortcuts even for routine quarters — the human review is the control.</li>
+          </ul>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Used by</h3>
+          <div class="rel-chips">
+            <span class="rel-chip">All 7 controls (each control has an owner here)</span>
+            <span class="rel-chip">VarianceTriagePattern (escalation targets)</span>
+            <span class="rel-chip">Triage agent</span>
+            <span class="rel-chip">Projection agent</span>
+            <span class="rel-chip">FX agent</span>
+            <span class="rel-chip">Audit trail (every event logs role identity)</span>
+            <span class="rel-chip">Variance commentary template</span>
+            <span class="rel-chip">Operating Model dashboard (owner badges)</span>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Provenance · 5 source citations</h3>
+          <div class="prov-chips">
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>HR org chart</strong> — <code>NorthstarGoods_OrgChart_2026Q1.pdf</code> — confirmed reporting lines, name spellings, and email conventions; cross-checked against M. Chen + J. Park interview self-references.
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 11</strong> — always-copy rule.
+                <em>"Channel mismatches always escalate to me, even if J. Park could fix them. I want to see the trend."</em> Generalized to all hard-control failures during ontology refinement.
+              </span>
+            </div>
+            <div class="prov-chip int">
+              <span class="prov-icon">💬</span>
+              <span class="prov-text">
+                <strong>M. Chen interview · turn 22</strong> — audit-committee disclosure.
+                <em>"Audit committee asks the same two questions every quarter: did margin move, or did capital turnover move?"</em> Established the prep / co-sign / approve sequence.
+              </span>
+            </div>
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>SOP §1.4</strong> — RACI matrix (FP&amp;A_Close_SOP_v3.2.docx, p.4) — original 8×6 RACI predating the agentic system; expanded during ontology discovery to add Pipeline calibration and Ontology confidence override decisions.
+              </span>
+            </div>
+            <div class="prov-chip doc">
+              <span class="prov-icon">📄</span>
+              <span class="prov-text">
+                <strong>Audit-committee charter</strong> — <code>Audit_FY26_charter.pdf</code> — independent-director composition, quarterly cadence, capital-allocation review threshold ($5M).
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="entity-section">
+          <h3 class="entity-section-head">Change history</h3>
+          <ul class="change-list">
+            <li class="change-row">
+              <span class="change-date">2026-04-30</span>
+              <span class="change-detail">Added <code>SalesOps_Lead</code> as Co-signer on Pipeline stage-probability calibration after PipelineCoverageRatio promotion (Run #142); previously the calibration was unilateral by VP FP&amp;A.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-04-22</span>
+              <span class="change-detail">Added <em>Ontology confidence override</em> as a new decision-type row after the entity-confidence demotion mechanic was formalized in <code>ControlLibrary</code> failure-handling rules.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-03-15</span>
+              <span class="change-detail">A. Mehta promoted from Analyst to Senior_Analyst per HR effective date; backup-of-J.Park assignment activated.</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-02-04</span>
+              <span class="change-detail">Initial discovery — 6 canonical roles enumerated from RACI sheet + interviews; 9 decision types decoded. (SalesOps_Lead and 10th decision type added later.)</span>
+            </li>
+            <li class="change-row">
+              <span class="change-date">2026-01-15</span>
+              <span class="change-detail">Inherited from <code>FP&amp;A_Roles</code> template v2.0 <em>(cross-customer)</em> at engagement kickoff.</span>
+            </li>
+          </ul>
+        </div>
+
+      </article>
+
+      <!-- ============ Generic placeholder for non-Channel entities ============ -->
+      <div class="pane-empty" id="pane-placeholder" hidden>
+        <strong id="placeholder-name" style="color: var(--text); font-style: normal; display: block; margin-bottom: 6px;">—</strong>
+        All 12 entities have detail cards built — pick one from the rail.<br><br>
+        Stage 2 complete: 4 Reference + 1 Transactional + 1 Pattern + 1 Control + 4 Metric + 1 Actor. Section adaptations applied per classification (Inputs / Formula &amp; benchmark for Metric · Match signature / Example variances / Resolution policy for Pattern · Control list / Trigger conditions / Failure handling for Control · Authority matrix / Roles &amp; members / Escalation rules for Actor).
+      </div>
+
+    </section>
+
+  </div>
+
+</main>
+
+<footer>
+  <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+    <span style="font-weight: 800; color: var(--accent); font-size: 16px; letter-spacing: -0.02em;">//</span>
+    <strong style="color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; margin-left: -2px;">PROSSIMO</strong>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>Semantic Alignment (draft)</span>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>Northstar Goods, Inc.</span>
+  </div>
+  Standalone preview — not yet integrated into <code>02_process_map.html</code>. Built in chunked stages for review.<br>
+  <span style="color: var(--text-tertiary);">© 2026 ProssimoTech · Tokyo · <a href="https://www.linkedin.com/company/prossimo-tech/">LinkedIn</a> · info@prossimotech.com</span>
+</footer>
+
+<script>
+  // ---- Entity-item click → set active + show matching detail card or placeholder ----
+  const items = document.querySelectorAll('.entity-item');
+  const placeholder = document.getElementById('pane-placeholder');
+  const placeholderName = document.getElementById('placeholder-name');
+  // Map: entity name → detail-card element id
+  const detailMap = {
+    'ChannelTaxonomy':       'detail-channel',
+    'SKUMaster':             'detail-sku',
+    'CurrencyRegistry':      'detail-currency',
+    'ChartOfAccounts':       'detail-coa',
+    'FXForwardCurve':        'detail-fxcurve',
+    'VarianceTriagePattern': 'detail-pattern',
+    'ControlLibrary':        'detail-control',
+    'CashConversionCycle':   'detail-ccc',
+    'ROICDecomposition':     'detail-roic',
+    'FreeCashFlowMargin':    'detail-fcfm',
+    'PipelineCoverageRatio': 'detail-pcr',
+    'ApprovalRole':          'detail-role',
+  };
+  // Cache all detail articles so we can hide them all then show the active one
+  const detailEls = Object.values(detailMap)
+    .map(id => document.getElementById(id))
+    .filter(el => el !== null);
+  items.forEach(item => {
+    item.addEventListener('click', () => {
+      items.forEach(i => i.classList.remove('active'));
+      item.classList.add('active');
+      const name = item.dataset.entity;
+      // Hide every detail card first
+      detailEls.forEach(el => el.hidden = true);
+      const targetId = detailMap[name];
+      if (targetId) {
+        document.getElementById(targetId).hidden = false;
+        placeholder.hidden = true;
+      } else {
+        placeholder.hidden = false;
+        placeholderName.textContent = name;
+      }
+    });
+  });
+
+  // ---- Search filter — hides items whose name/desc don't match ----
+  const search = document.getElementById('entity-search');
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    document.querySelectorAll('.entity-item').forEach(item => {
+      const name = item.querySelector('.entity-item-name').textContent.toLowerCase();
+      const desc = item.querySelector('.entity-item-desc').textContent.toLowerCase();
+      const match = !q || name.includes(q) || desc.includes(q);
+      item.style.display = match ? '' : 'none';
+    });
+    // Hide group heads whose contents are all filtered out
+    document.querySelectorAll('.rail-group-head').forEach(head => {
+      let next = head.nextElementSibling;
+      let anyVisible = false;
+      while (next && next.classList.contains('entity-item')) {
+        if (next.style.display !== 'none') { anyVisible = true; break; }
+        next = next.nextElementSibling;
+      }
+      head.style.display = anyVisible ? '' : 'none';
+    });
+  });
+</script>
+
+</body>
+</html>

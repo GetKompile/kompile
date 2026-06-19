@@ -16,6 +16,8 @@
 package ai.kompile.app.llm.pipeline;
 
 import ai.kompile.core.llm.LanguageModel;
+import ai.kompile.utils.StringUtils;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -57,7 +59,7 @@ import java.util.Map;
 public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessLanguageModelImpl.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final int DEFAULT_MAX_TOKENS = 256;
     private static final double DEFAULT_TEMPERATURE = 0.0;
 
@@ -157,7 +159,7 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
             } else {
                 logger.error("Subprocess generate returned HTTP {}: {}", response.statusCode(), response.body());
                 return errorResponse("Subprocess HTTP " + response.statusCode() + ": "
-                        + abbreviate(response.body(), 800));
+                        + StringUtils.truncate(response.body(), 800));
             }
         } catch (Exception e) {
             logger.error("Subprocess generate failed: {}", e.getMessage(), e);
@@ -258,11 +260,4 @@ public class SubprocessLanguageModelImpl implements LanguageModel, ChatModel {
         return message;
     }
 
-    private static String abbreviate(String value, int maxChars) {
-        if (value == null) {
-            return "";
-        }
-        int max = Math.max(32, maxChars);
-        return value.length() <= max ? value : value.substring(0, max) + "...";
-    }
 }

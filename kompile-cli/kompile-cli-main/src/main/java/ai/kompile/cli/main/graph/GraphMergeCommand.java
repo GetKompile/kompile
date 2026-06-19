@@ -11,6 +11,7 @@ package ai.kompile.cli.main.graph;
 
 import ai.kompile.cli.main.app.AppClientMixin;
 import ai.kompile.cli.main.app.OutputFormatter;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -49,7 +50,7 @@ public class GraphMergeCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         try {
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = JsonUtils.standardMapper();
             // Parse all input graphs
             List<JsonNode> graphs = new ArrayList<>();
             for (Path p : inputFiles) {

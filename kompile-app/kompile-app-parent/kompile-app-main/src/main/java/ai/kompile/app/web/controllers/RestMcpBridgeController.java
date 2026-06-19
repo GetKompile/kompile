@@ -17,10 +17,10 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
-import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService.DiscoveredTool;
+import ai.kompile.app.services.mcp.DiscoveredTool;
+import ai.kompile.core.mcp.bridge.EndpointTestResult;
 import ai.kompile.core.mcp.bridge.RestMcpBridgeConfig;
 import ai.kompile.core.mcp.bridge.RestMcpBridgeManager;
-import ai.kompile.core.mcp.bridge.RestMcpBridgeManager.EndpointTestResult;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

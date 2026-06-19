@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.run;
 
 import ai.kompile.modelmanager.KompileModelManager;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
@@ -102,7 +103,7 @@ public class RunCommand implements Callable<Integer> {
             description = "Start API server only — do not enter interactive chat")
     private boolean serveOnly;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private volatile Process serverProcess;
 
     @Override

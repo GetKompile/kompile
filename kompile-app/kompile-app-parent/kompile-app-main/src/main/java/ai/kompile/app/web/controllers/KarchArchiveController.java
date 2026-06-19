@@ -16,8 +16,8 @@
 
 package ai.kompile.app.web.controllers;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import ai.kompile.app.web.dto.karch.*;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
@@ -48,7 +48,7 @@ public class KarchArchiveController {
     private static final Path DEFAULT_ARCHIVES_DIR = Paths.get(
             System.getProperty("user.home"), ".kompile", "archives");
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Value("${kompile.archive.path:}")
     private String configuredArchivePath;
@@ -338,103 +338,4 @@ public class KarchArchiveController {
         return count;
     }
 
-    // ==================== DTOs ====================
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ArchiveManifest {
-        @JsonProperty("formatVersion")
-        public String formatVersion;
-
-        @JsonProperty("archiveId")
-        public String archiveId;
-
-        @JsonProperty("contentVersion")
-        public String contentVersion;
-
-        @JsonProperty("description")
-        public String description;
-
-        @JsonProperty("releaseDate")
-        public String releaseDate;
-
-        @JsonProperty("models")
-        public List<ArchiveModelEntry> models = new ArrayList<>();
-
-        @JsonProperty("totalSizeBytes")
-        public Long totalSizeBytes;
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ArchiveModelEntry {
-        @JsonProperty("model_id")
-        public String modelId;
-
-        @JsonProperty("type")
-        public String type;
-
-        @JsonProperty("path")
-        public String path;
-
-        @JsonProperty("embedding_dim")
-        public Integer embeddingDim;
-
-        @JsonProperty("max_sequence_length")
-        public Integer maxSequenceLength;
-
-        @JsonProperty("description")
-        public String description;
-
-        @JsonProperty("checksum")
-        public String checksum;
-    }
-
-    public record ArchiveInfo(
-            String name,
-            String path,
-            String archiveId,
-            String version,
-            String description,
-            int modelCount,
-            long sizeBytes,
-            String lastModified,
-            boolean loaded
-    ) {}
-
-    public static class ArchiveStatus {
-        public boolean loaded;
-        public String archivePath;
-        public String archiveId;
-        public String contentVersion;
-        public String description;
-        public int modelCount;
-        public int encoderCount;
-        public int crossEncoderCount;
-        public String loadedAt;
-    }
-
-    public record ArchiveModelInfo(
-            String modelId,
-            String type,
-            String path,
-            Integer embeddingDim,
-            Integer maxSequenceLength,
-            String description
-    ) {}
-
-    public static class LoadArchiveRequest {
-        public String archivePath;
-    }
-
-    public static class ExtractModelRequest {
-        public String modelId;
-        public String destinationPath;
-    }
-
-    public static class ExtractResult {
-        public boolean success;
-        public String modelId;
-        public String destinationPath;
-        public int filesExtracted;
-        public String error;
-    }
 }

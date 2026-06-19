@@ -18,6 +18,7 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.ingest.domain.JobLogEntry;
 import ai.kompile.app.ingest.domain.JobLogEntry.LogLevel;
+import ai.kompile.app.ingest.domain.JobLogEntry.LogSource;
 import ai.kompile.app.ingest.service.JobLogService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,7 +30,9 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -61,6 +64,7 @@ public class JobLogController {
             @PathVariable String taskId,
             @RequestParam(required = false) String level,
             @RequestParam(required = false) String levels,
+            @RequestParam(required = false) String source,
             @RequestParam(required = false) String search,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "500") int size) {
@@ -95,14 +99,23 @@ public class JobLogController {
                         .collect(Collectors.toList());
             }
 
+            // Parse source filter if provided
+            LogSource sourceFilter = null;
+            if (source != null && !source.isBlank()) {
+                sourceFilter = LogSource.valueOf(source.toUpperCase());
+            }
+
             boolean hasSearch = search != null && !search.isBlank();
             boolean hasLevels = levelList != null && !levelList.isEmpty();
             boolean hasSingleLevel = singleLevel != null;
+            boolean hasSource = sourceFilter != null;
 
             Page<JobLogEntry> pagedLogs;
 
-            // Handle all combinations of level + search filtering
-            if (hasSearch && hasLevels) {
+            // Source filter takes priority — it's a structural filter (e.g. LLM_TRANSCRIPT)
+            if (hasSource) {
+                pagedLogs = jobLogService.getLogsForTaskBySource(taskId, sourceFilter, page, size);
+            } else if (hasSearch && hasLevels) {
                 // Combined: multiple levels + search
                 pagedLogs = jobLogService.searchLogsWithLevels(taskId, search, levelList, page, size);
             } else if (hasSearch && hasSingleLevel) {
@@ -128,15 +141,91 @@ public class JobLogController {
             // Get counts by level for summary
             Map<LogLevel, Long> levelCounts = jobLogService.getLogCountsByLevel(taskId);
 
-            return ResponseEntity.ok(Map.of(
-                    "enabled", true,
-                    "taskId", taskId,
-                    "logs", logs,
-                    "totalCount", totalCount,
-                    "page", page,
-                    "size", size,
-                    "levelCounts", levelCounts
-            ));
+            // ---- Archive transparency ----
+            // When no filters are active and the H2 count is below the per-job cap,
+            // check whether trimmed (archived) entries exist for this task.  If so,
+            // merge the oldest archived page in front of the live H2 entries so that
+            // page=0 always starts from the true beginning of the log, and report the
+            // combined totalCount so the UI paginates correctly.
+            boolean hasArchivedLogs = false;
+            long archivedCount = 0;
+            boolean noFilters = !hasSource && !hasSearch && !hasLevels && !hasSingleLevel;
+            if (noFilters) {
+                try {
+                    hasArchivedLogs = jobLogService.hasArchivedLogsForTask(taskId);
+                    if (hasArchivedLogs) {
+                        List<JobLogService.ArchivedLogEntry> archived = jobLogService.readLogsFromArchive(taskId);
+                        archivedCount = archived.size();
+                        if (archivedCount > 0) {
+                            // Combined virtual total = archived entries + live H2 entries
+                            long combinedTotal = archivedCount + totalCount;
+                            long archivePages = (archivedCount + size - 1) / size;
+                            if (page < archivePages) {
+                                // This page falls entirely (or partially) inside the archive window.
+                                int archiveStart = page * size;
+                                int archiveEnd   = (int) Math.min(archiveStart + size, archivedCount);
+                                List<JobLogService.ArchivedLogEntry> archiveSlice =
+                                        archived.subList(archiveStart, archiveEnd);
+                                int remaining = size - archiveSlice.size();
+                                // Convert archived entries to a compatible map list for the response
+                                List<Map<String, Object>> mergedLogs = new ArrayList<>();
+                                for (JobLogService.ArchivedLogEntry ae : archiveSlice) {
+                                    Map<String, Object> m = new LinkedHashMap<>();
+                                    m.put("taskId", ae.getTaskId());
+                                    m.put("timestamp", ae.getTimestamp());
+                                    m.put("level", ae.getLevel());
+                                    m.put("source", ae.getSource());
+                                    m.put("message", ae.getMessage());
+                                    m.put("sequenceNumber", ae.getSequenceNumber());
+                                    m.put("archived", true);
+                                    mergedLogs.add(m);
+                                }
+                                // Append live H2 entries for any remaining capacity on this page
+                                if (remaining > 0 && !logs.isEmpty()) {
+                                    for (int i = 0; i < Math.min(remaining, logs.size()); i++) {
+                                        mergedLogs.add(entryToMap(logs.get(i)));
+                                    }
+                                }
+                                Map<String, Object> result = new LinkedHashMap<>();
+                                result.put("enabled", true);
+                                result.put("taskId", taskId);
+                                result.put("logs", mergedLogs);
+                                result.put("totalCount", combinedTotal);
+                                result.put("page", page);
+                                result.put("size", size);
+                                result.put("levelCounts", levelCounts);
+                                result.put("hasArchivedLogs", true);
+                                result.put("archivedCount", archivedCount);
+                                result.put("liveCount", totalCount);
+                                return ResponseEntity.ok(result);
+                            } else {
+                                // Page is entirely in the live H2 window; adjust page index
+                                int livePage = (int)(page - archivePages);
+                                Page<JobLogEntry> livePaged = jobLogService.getLogsForTask(taskId, livePage, size);
+                                logs = livePaged.getContent();
+                                totalCount = combinedTotal;
+                            }
+                        }
+                    }
+                } catch (Exception archiveEx) {
+                    logger.warn("Could not merge archived logs for task {}: {}", taskId, archiveEx.getMessage());
+                }
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("enabled", true);
+            result.put("taskId", taskId);
+            result.put("logs", logs);
+            result.put("totalCount", totalCount);
+            result.put("page", page);
+            result.put("size", size);
+            result.put("levelCounts", levelCounts);
+            if (hasArchivedLogs) {
+                result.put("hasArchivedLogs", true);
+                result.put("archivedCount", archivedCount);
+                result.put("liveCount", jobLogService.getLogCount(taskId));
+            }
+            return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of(
                     "error", "Invalid log level: " + e.getMessage()
@@ -386,5 +475,25 @@ public class JobLogController {
                     "error", "Failed to check archived logs: " + e.getMessage()
             ));
         }
+    }
+
+    // ---- Helpers ----
+
+    /** Convert a live JobLogEntry to a plain Map so it can be included alongside archived entries. */
+    private Map<String, Object> entryToMap(JobLogEntry entry) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id",             entry.getId());
+        m.put("taskId",         entry.getTaskId());
+        m.put("timestamp",      entry.getTimestamp() != null ? entry.getTimestamp().toString() : null);
+        m.put("level",          entry.getLevel() != null ? entry.getLevel().name() : null);
+        m.put("source",         entry.getSource() != null ? entry.getSource().name() : null);
+        m.put("message",        entry.getMessage());
+        m.put("loggerName",     entry.getLoggerName());
+        m.put("threadName",     entry.getThreadName());
+        m.put("sequenceNumber", entry.getSequenceNumber());
+        m.put("exceptionClass", entry.getExceptionClass());
+        m.put("stackTrace",     entry.getStackTrace());
+        m.put("archived",       false);
+        return m;
     }
 }

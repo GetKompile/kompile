@@ -43,6 +43,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import ai.kompile.app.web.dto.crossindex.*;
+
 /**
  * REST controller for cross-index tracking and synchronization.
  * Provides endpoints to query cross-index status and trigger sync operations.
@@ -573,126 +575,4 @@ public class CrossIndexController {
         );
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // DTO RECORDS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    public record SyncRequest(
-            Long factSheetId,
-            List<Long> documentIds,
-            List<String> chunkIds,
-            boolean async
-    ) {}
-
-    public record SyncJobResponse(
-            String jobId,
-            String status,
-            Instant startedAt,
-            String message
-    ) {}
-
-    public record SyncJobStatusResponse(
-            String jobId,
-            String status,
-            int documentsProcessed,
-            int passagesProcessed,
-            int totalDocuments,
-            int totalPassages,
-            int progressPercent,
-            List<String> errors
-    ) {}
-
-    public record CrossIndexSummaryResponse(
-            Long factSheetId,
-            String factSheetName,
-            long totalDocuments,
-            long fullyIndexedDocuments,
-            long partialDocuments,
-            long notIndexedDocuments,
-            int documentsNeedingSync,
-            int passagesMissingFromVector,
-            int passagesMissingFromGraph,
-            boolean autoSyncEnabled,
-            Instant lastSyncAt
-    ) {}
-
-    public record CrossIndexStatisticsResponse(
-            Long factSheetId,
-            DocumentStats documentStats,
-            PassageStats passageStats,
-            Map<OverallIndexStatus, Long> statusDistribution
-    ) {}
-
-    public record DocumentStats(
-            long total,
-            long fullyIndexed,
-            long partial,
-            long notIndexed,
-            long failed
-    ) {}
-
-    public record PassageStats(
-            long total,
-            long inKeywordIndex,
-            long inVectorStore,
-            long inGraph
-    ) {}
-
-    public record IndexedDocumentResponse(
-            Long id,
-            String sourceId,
-            String fileName,
-            Long factId,
-            String overallStatus,
-            String keywordStatus,
-            String vectorStatus,
-            String graphStatus,
-            int passageCount,
-            Instant createdAt,
-            Instant updatedAt
-    ) {}
-
-    public record IndexedDocumentDetailResponse(
-            IndexedDocumentResponse document,
-            List<IndexedPassageResponse> passages,
-            Map<String, Integer> statusCounts
-    ) {}
-
-    public record IndexedPassageResponse(
-            Long id,
-            String chunkId,
-            Integer chunkIndex,
-            String contentPreview,
-            String keywordStatus,
-            String vectorStatus,
-            String graphStatus,
-            String vectorId,
-            String graphNodeId
-    ) {}
-
-    public record PassageStatusResponse(
-            String chunkId,
-            boolean inKeywordIndex,
-            boolean inVectorStore,
-            boolean inKnowledgeGraph,
-            boolean fullyIndexed
-    ) {}
-
-    public record AutoSyncConfigRequest(
-            Long factSheetId,
-            boolean enabled,
-            int maxPassagesPerSync,
-            int syncTimeoutSeconds,
-            boolean syncOnSearch,
-            boolean syncOnIngest
-    ) {}
-
-    public record AutoSyncConfigResponse(
-            Long factSheetId,
-            boolean enabled,
-            int maxPassagesPerSync,
-            int syncTimeoutSeconds,
-            boolean syncOnSearch,
-            boolean syncOnIngest
-    ) {}
 }

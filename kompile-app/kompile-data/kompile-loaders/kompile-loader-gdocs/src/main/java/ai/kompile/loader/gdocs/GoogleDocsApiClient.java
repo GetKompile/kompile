@@ -17,6 +17,7 @@
 package ai.kompile.loader.gdocs;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -43,7 +44,7 @@ public class GoogleDocsApiClient {
 
     private static final String DRIVE_API = "https://www.googleapis.com/drive/v3";
     private static final String DOCS_API = "https://docs.googleapis.com/v1/documents";
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final int MAX_RETRIES = 3;
 
     /** Fields requested from Drive file metadata */

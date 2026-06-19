@@ -16,12 +16,12 @@
 
 package ai.kompile.cli.main.chat.harness;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import picocli.CommandLine;
 
 import java.util.*;
@@ -68,8 +68,7 @@ public class HarnessCommand implements Callable<Integer> {
 
         @Override
         public Integer call() {
-            ObjectMapper mapper = new ObjectMapper();
-            mapper.registerModule(new JavaTimeModule());
+            ObjectMapper mapper = JsonUtils.standardMapper();
 
             HarnessConfig config = HarnessConfig.load(mapper);
             ModelPerformanceStore store = new ModelPerformanceStore(
@@ -313,8 +312,7 @@ public class HarnessCommand implements Callable<Integer> {
 
         @Override
         public Integer call() {
-            ObjectMapper mapper = new ObjectMapper();
-            mapper.registerModule(new JavaTimeModule());
+            ObjectMapper mapper = JsonUtils.standardMapper();
 
             HarnessConfig config = HarnessConfig.load(mapper);
             ModelPerformanceStore store = new ModelPerformanceStore(
@@ -406,7 +404,7 @@ public class HarnessCommand implements Callable<Integer> {
 
         @Override
         public Integer call() {
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = JsonUtils.standardMapper();
             HarnessConfig config = HarnessConfig.load(mapper);
 
             boolean modified = false;
@@ -551,8 +549,7 @@ public class HarnessCommand implements Callable<Integer> {
 
         @Override
         public Integer call() {
-            ObjectMapper mapper = new ObjectMapper();
-            mapper.registerModule(new JavaTimeModule());
+            ObjectMapper mapper = JsonUtils.standardMapper();
 
             HarnessConfig config = HarnessConfig.load(mapper);
             ModelPerformanceStore store = new ModelPerformanceStore(

@@ -45,11 +45,11 @@ import java.util.concurrent.atomic.AtomicReference;
 public class UnifiedCrawlJob {
 
     public enum Status {
-        PENDING, RUNNING, PAUSED, COMPLETED, COMPLETED_PENDING_EMBEDDING, FAILED, CANCELLED
+        PENDING, RUNNING, PAUSED, COMPLETED, COMPLETED_PENDING_EMBEDDING, COMPLETED_PENDING_GRAPH, FAILED, CANCELLED
     }
 
     public enum PipelineStepStatus {
-        PENDING, RUNNING, BACKPRESSURE, COMPLETED, FAILED, SKIPPED, DEFERRED, CANCELLED
+        PENDING, RUNNING, BACKPRESSURE, COMPLETED, FAILED, SKIPPED, DEFERRED, ARCHIVED, CANCELLED
     }
 
     /** Unique job identifier */
@@ -359,6 +359,44 @@ public class UnifiedCrawlJob {
     @Builder.Default
     private List<RetryEvent> recentRetryEvents = new CopyOnWriteArrayList<>();
 
+    // ---- Per-LLM-call observability ----
+
+    /** Total individual LLM calls dispatched */
+    @Builder.Default
+    private AtomicLong llmCallsTotal = new AtomicLong(0);
+
+    /** LLM calls that returned a successful response */
+    @Builder.Default
+    private AtomicLong llmCallsSucceeded = new AtomicLong(0);
+
+    /** LLM calls that failed (exception, bad response, etc.) */
+    @Builder.Default
+    private AtomicLong llmCallsFailed = new AtomicLong(0);
+
+    /** LLM calls that timed out */
+    @Builder.Default
+    private AtomicLong llmCallsTimedOut = new AtomicLong(0);
+
+    /** LLM calls that were rate-limited (429 or quota) */
+    @Builder.Default
+    private AtomicLong llmCallsRateLimited = new AtomicLong(0);
+
+    /** LLM calls routed through a circuit-breaker-tripped fallback */
+    @Builder.Default
+    private AtomicLong llmCallsCircuitBroken = new AtomicLong(0);
+
+    /** EMA of per-call LLM latency in ms (x100 for precision) */
+    @Builder.Default
+    private AtomicLong llmCallEmaLatencyMsX100 = new AtomicLong(0);
+
+    /** Peak single-call LLM latency observed in ms */
+    @Builder.Default
+    private AtomicLong llmCallPeakLatencyMs = new AtomicLong(0);
+
+    /** Recent individual LLM call records for UI visibility (bounded to last 50) */
+    @Builder.Default
+    private List<LlmCallRecord> recentLlmCalls = new CopyOnWriteArrayList<>();
+
     /** Rolling list of recently discovered file/URL names (bounded to last 50) for live UI feed */
     @Builder.Default
     private List<DiscoveredItem> recentlyDiscoveredItems = new CopyOnWriteArrayList<>();
@@ -395,6 +433,13 @@ public class UnifiedCrawlJob {
 
     /** Vector index config for deferred embedding (preserved from original request) */
     private VectorIndexConfig deferredVectorIndexConfig;
+
+    /** Chunks awaiting deferred graph extraction (previously-failed chunks that survived in-phase retries) */
+    @Builder.Default
+    private List<Document> deferredGraphChunks = new CopyOnWriteArrayList<>();
+
+    /** Graph extraction config for deferred graph extraction (preserved from original request) */
+    private GraphExtractionConfig deferredGraphExtractionConfig;
 
     /**
      * Progress for an individual source within the unified job.
@@ -564,6 +609,49 @@ public class UnifiedCrawlJob {
         private long backoffMs;
         private boolean succeeded;
         private boolean sentToDeadLetter;
+    }
+
+    /**
+     * Per-LLM-call observability record.
+     * Captures timing, token usage, backend routing, and outcome for every
+     * individual LLM prompt dispatched during a crawl job.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class LlmCallRecord {
+        private Instant timestamp;
+        /** Backend that handled the call (e.g. "default", "claude-cli", "openai-api") */
+        private String backendId;
+        /** Processing task type (e.g. "llm", "vlm", "embedding") */
+        private String taskType;
+        /** Wall-clock latency of the call in milliseconds */
+        private long latencyMs;
+        /** Approximate input tokens (prompt length / 4) */
+        private long inputTokens;
+        /** Approximate output tokens (response length / 4) */
+        private long outputTokens;
+        /** Whether the call returned a usable response */
+        private boolean success;
+        /** Whether the call timed out */
+        private boolean timedOut;
+        /** Whether the call was rate-limited (429 / quota) */
+        private boolean rateLimited;
+        /** Whether a circuit breaker was tripped for this backend */
+        private boolean circuitBroken;
+        /** Error category if failed (from BatchRetryPolicy.FailureCategory) */
+        private String errorCategory;
+        /** Short error message if failed */
+        private String errorMessage;
+        /** Prompt length in characters (for cost correlation) */
+        private int promptChars;
+        /** Response length in characters */
+        private int responseChars;
+        /** Full prompt text sent to the LLM (excluded from progress snapshot to avoid bloat) */
+        private String promptText;
+        /** Full response text from the LLM (excluded from progress snapshot to avoid bloat) */
+        private String responseText;
     }
 
     @Data
@@ -786,6 +874,41 @@ public class UnifiedCrawlJob {
     }
 
     /**
+     * Record an individual LLM call. Updates aggregate counters and maintains
+     * a bounded rolling list of the last 50 calls for UI visibility.
+     */
+    public void recordLlmCall(LlmCallRecord record) {
+        if (record == null) return;
+        llmCallsTotal.incrementAndGet();
+        if (record.isSuccess()) {
+            llmCallsSucceeded.incrementAndGet();
+        } else {
+            llmCallsFailed.incrementAndGet();
+        }
+        if (record.isTimedOut()) {
+            llmCallsTimedOut.incrementAndGet();
+        }
+        if (record.isRateLimited()) {
+            llmCallsRateLimited.incrementAndGet();
+        }
+        if (record.isCircuitBroken()) {
+            llmCallsCircuitBroken.incrementAndGet();
+        }
+        // Update EMA latency (alpha = 0.3)
+        if (record.getLatencyMs() > 0) {
+            long latX100 = record.getLatencyMs() * 100L;
+            llmCallEmaLatencyMsX100.updateAndGet(prev ->
+                    prev == 0 ? latX100 : (long) (0.3 * latX100 + 0.7 * prev));
+            llmCallPeakLatencyMs.updateAndGet(prev ->
+                    Math.max(prev, record.getLatencyMs()));
+        }
+        recentLlmCalls.add(record);
+        while (recentLlmCalls.size() > 50) {
+            recentLlmCalls.remove(0);
+        }
+    }
+
+    /**
      * Build a progress snapshot suitable for serialization.
      */
     public ProgressSnapshot toProgressSnapshot() {
@@ -884,6 +1007,16 @@ public class UnifiedCrawlJob {
                 .deadLetterCount(deadLetterCount.get())
                 .backendsCoolingDown(backendsCoolingDown.get())
                 .recentRetryEvents(recentRetryEvents.isEmpty() ? null : new ArrayList<>(recentRetryEvents))
+                // LLM call observability
+                .llmCallsTotal(llmCallsTotal.get())
+                .llmCallsSucceeded(llmCallsSucceeded.get())
+                .llmCallsFailed(llmCallsFailed.get())
+                .llmCallsTimedOut(llmCallsTimedOut.get())
+                .llmCallsRateLimited(llmCallsRateLimited.get())
+                .llmCallsCircuitBroken(llmCallsCircuitBroken.get())
+                .llmCallEmaLatencyMsX100(llmCallEmaLatencyMsX100.get())
+                .llmCallPeakLatencyMs(llmCallPeakLatencyMs.get())
+                .recentLlmCalls(recentLlmCalls.isEmpty() ? null : new ArrayList<>(recentLlmCalls))
                 .errors(errors.isEmpty() ? null : new ArrayList<>(errors))
                 .recentEvents(recentEvents.isEmpty() ? null : new ArrayList<>(recentEvents))
                 .pipelineSteps(stepSnapshots.isEmpty() ? null : stepSnapshots)
@@ -993,5 +1126,15 @@ public class UnifiedCrawlJob {
         private int deadLetterCount;
         private int backendsCoolingDown;
         private List<RetryEvent> recentRetryEvents;
+        // LLM call observability
+        private long llmCallsTotal;
+        private long llmCallsSucceeded;
+        private long llmCallsFailed;
+        private long llmCallsTimedOut;
+        private long llmCallsRateLimited;
+        private long llmCallsCircuitBroken;
+        private long llmCallEmaLatencyMsX100;
+        private long llmCallPeakLatencyMs;
+        private List<LlmCallRecord> recentLlmCalls;
     }
 }

@@ -1,6 +1,7 @@
 package ai.kompile.compute.graph.store;
 
 import ai.kompile.compute.graph.model.ComputeArtifact;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.extern.slf4j.Slf4j;
@@ -47,7 +48,7 @@ public class WorkflowFileStore {
 
     public WorkflowFileStore(Path workflowsRoot) {
         this.workflowsRoot = workflowsRoot;
-        this.objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         ensureDirectories();
     }
 

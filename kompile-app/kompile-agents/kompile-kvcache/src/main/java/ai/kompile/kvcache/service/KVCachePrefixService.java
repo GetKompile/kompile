@@ -4,8 +4,8 @@ import ai.kompile.kvcache.config.KVCacheProperties;
 import ai.kompile.kvcache.model.PrefixCacheStats;
 import ai.kompile.kvcache.model.PrefixEntry;
 import lombok.extern.slf4j.Slf4j;
-import org.eclipse.deeplearning4j.llm.generation.PrefixLookupResult;
-import org.eclipse.deeplearning4j.llm.generation.RadixPrefixCache;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.PrefixLookupResult;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.RadixPrefixCache;
 
 import java.io.IOException;
 import java.nio.file.Files;

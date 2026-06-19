@@ -16,7 +16,7 @@
 
 package ai.kompile.app.services.difftracker;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -65,7 +65,7 @@ public class DiffTrackerService {
 
     public DiffTrackerService() {
         this.baseDir = Paths.get(System.getProperty("user.home"), ".kompile", "agent-state", "diffs");
-        this.mapper = new ObjectMapper()
+        this.mapper = JsonUtils.newStandardMapper()
                 .enable(SerializationFeature.INDENT_OUTPUT)
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     }
@@ -353,46 +353,4 @@ public class DiffTrackerService {
                 .count();
     }
 
-    // ── Diff model ───────────────────────────────────────────────────────────
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class DiffRecord {
-        private long id;
-        private String sessionId;
-        private String filePath;
-        private String beforeContent;
-        private String afterContent;
-        private String unifiedDiff;
-        private String agentId;
-        private String taskId;
-        private String description;
-        private String timestamp;
-        private long linesAdded;
-        private long linesRemoved;
-
-        public long getId() { return id; }
-        public void setId(long id) { this.id = id; }
-        public String getSessionId() { return sessionId; }
-        public void setSessionId(String sessionId) { this.sessionId = sessionId; }
-        public String getFilePath() { return filePath; }
-        public void setFilePath(String filePath) { this.filePath = filePath; }
-        public String getBeforeContent() { return beforeContent; }
-        public void setBeforeContent(String beforeContent) { this.beforeContent = beforeContent; }
-        public String getAfterContent() { return afterContent; }
-        public void setAfterContent(String afterContent) { this.afterContent = afterContent; }
-        public String getUnifiedDiff() { return unifiedDiff; }
-        public void setUnifiedDiff(String unifiedDiff) { this.unifiedDiff = unifiedDiff; }
-        public String getAgentId() { return agentId; }
-        public void setAgentId(String agentId) { this.agentId = agentId; }
-        public String getTaskId() { return taskId; }
-        public void setTaskId(String taskId) { this.taskId = taskId; }
-        public String getDescription() { return description; }
-        public void setDescription(String description) { this.description = description; }
-        public String getTimestamp() { return timestamp; }
-        public void setTimestamp(String timestamp) { this.timestamp = timestamp; }
-        public long getLinesAdded() { return linesAdded; }
-        public void setLinesAdded(long linesAdded) { this.linesAdded = linesAdded; }
-        public long getLinesRemoved() { return linesRemoved; }
-        public void setLinesRemoved(long linesRemoved) { this.linesRemoved = linesRemoved; }
-    }
 }

@@ -19,6 +19,8 @@ package ai.kompile.modelmanager.cache;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AccessLevel;
+import lombok.Getter;
 
 import java.time.Instant;
 import java.util.Collections;
@@ -37,6 +39,7 @@ import java.util.Map;
  *   <li><b>STAGE_CHECKPOINT</b> - Intermediate stage result for crash recovery</li>
  * </ul>
  */
+@Getter
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class PipelineCacheEntry {
 
@@ -57,6 +60,7 @@ public class PipelineCacheEntry {
     private final String contentHash;
     private final String serializedOutput;
     private final String outputClassName;
+    @Getter(AccessLevel.NONE)
     private final Map<String, Object> metadata;
     private final Instant createdAt;
     private final Instant lastAccessedAt;
@@ -107,20 +111,7 @@ public class PipelineCacheEntry {
                 createdAt, Instant.now(), hitCount + 1, sizeBytes);
     }
 
-    // ========== Accessors ==========
-
-    public String getCacheKey() { return cacheKey; }
-    public EntryType getEntryType() { return entryType; }
-    public String getPipelineId() { return pipelineId; }
-    public String getStageId() { return stageId; }
-    public String getContentHash() { return contentHash; }
-    public String getSerializedOutput() { return serializedOutput; }
-    public String getOutputClassName() { return outputClassName; }
     public Map<String, Object> getMetadata() { return Collections.unmodifiableMap(metadata); }
-    public Instant getCreatedAt() { return createdAt; }
-    public Instant getLastAccessedAt() { return lastAccessedAt; }
-    public long getHitCount() { return hitCount; }
-    public long getSizeBytes() { return sizeBytes; }
 
     public boolean isFinalOutput() { return entryType == EntryType.FINAL_OUTPUT; }
     public boolean isStageCheckpoint() { return entryType == EntryType.STAGE_CHECKPOINT; }

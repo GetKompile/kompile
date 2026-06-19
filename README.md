@@ -729,7 +729,7 @@ mvn clean install -DskipTests
 cd kompile-cli && mvn clean package
 
 # RAG application
-cd kompile-app/kompile-app-main && mvn clean package
+cd kompile-app/kompile-app-parent/kompile-app-main && mvn clean package
 
 # Native image (requires GraalVM 17)
 cd kompile-rag-builds/kompile-sample/project
@@ -741,46 +741,68 @@ kompile build dist
 
 ### Repository structure
 
+The root POM declares three build modules. Everything else is nested inside
+`kompile-cli/` and `kompile-app/`.
+
 ```
 kompile/
-  kompile-cli/                       CLI entry point (Picocli)
-  kompile-cli-common/                Shared CLI utilities
-  kompile-cli-plugin-api/            Plugin SPI for CLI extensions
-  kompile-app-cli/                   Federated CLI: kompile app start/stop/ingest/query
-  kompile-model-cli/                 Federated CLI: kompile model download/convert/serve
-  kompile-agent-cli/                 Federated CLI: kompile agent chat/workflow/logs
-  kompile-component-cli/             Federated CLI: kompile component list/config/status
-  kompile-project-store/             Project manifest read/write
-  kompile-sdk-serving/               SDX Runtime SDK serving layer
-  kompile-app/                       Spring Boot RAG framework (40+ modules)
-    kompile-app-core/                  Core interfaces
-    kompile-app-main/                  Main application + Angular web UI
-    kompile-app-lite/                  Lightweight self-contained RAG app
-    kompile-model-manager/             Model download and cache
-    kompile-model-staging/             Model lifecycle service
-    kompile-embedding-*/               Embedding implementations
-    kompile-vectorstore-*/             Vector store implementations
-    kompile-loader-*/                  Document loaders
-    kompile-source-*/                  Data source connectors (20+)
-    kompile-chunker-*/                 Chunking strategies
-    kompile-tool-*/                    Spring AI / MCP tools
-    kompile-kvcache/                   Paged KV cache for local LLMs
-    kompile-graph-neo4j/               Graph RAG with Neo4j
-    kompile-knowledge-graph/           Knowledge graph construction
-    kompile-ocr-*/                     OCR pipeline
-    kompile-guardrails/                Input/output guardrails
-    kompile-evaluation/                RAG evaluation harness
-    kompile-a2a/                       Agent-to-Agent protocol
-    kompile-kclaw/                     Agent hub (browser-based agent runner)
-    kompile-code-indexer/              Semantic code search and indexing
-    kompile-compute-graph-*/           Workflow engines (Camel, Drools, n8n, Excel, Xircuits)
-    kompile-oauth2-client/             OAuth connections for cloud sources
-  kompile-pipelines-framework/       Pipeline execution engine
-  anserini/                          Lucene IR toolkit + SameDiff dense encoders
-  tokenizers-rust/                   HuggingFace tokenizers -> JavaCPP JNI bindings
-  kompile-model-importer-*/          Model importers (TensorFlow, ONNX, Keras)
-  kompile-e2e-tests/                 End-to-end test suite
-  kompile-dist/                      Distribution assembly (native binaries + tarball)
+  kompile-cli/                             CLI (Picocli) — all CLI modules
+    kompile-cli-main/                        Main CLI entry point
+    kompile-cli-common/                      Shared CLI utilities
+    kompile-cli-plugin-api/                  Plugin SPI for CLI extensions
+    kompile-app-cli/                         Federated CLI: kompile app
+    kompile-model-cli/                       Federated CLI: kompile model
+    kompile-agent-cli/                       Federated CLI: kompile agent
+    kompile-component-cli/                   Federated CLI: kompile component
+  kompile-app/                             Spring Boot RAG framework (~60 modules)
+    kompile-app-parent/                      Application layer
+      kompile-app-core/                        Core interfaces (EmbeddingModel, VectorStore, etc.)
+      kompile-app-main/                        Main application + Angular web UI
+      kompile-app-lite/                        Lightweight self-contained RAG app
+    kompile-agents/                          Agent infrastructure
+      kompile-a2a/                             Agent-to-Agent protocol
+      kompile-agent-gateway-core/              Agent routing and gateway
+      kompile-chat-history/                    Conversation history persistence
+      kompile-kclaw/                           Agent hub (browser-based agent runner)
+      kompile-kvcache/                         Paged KV cache for local LLMs
+      kompile-orchestrator/                    Agent orchestration
+      kompile-react-agent/                     ReAct agent implementation
+    kompile-data/                            Data ingestion, indexing, and knowledge
+      kompile-code/                            Code indexing (ANTLR4 semantic search)
+      kompile-compute-graphs/                  Workflow engines (Camel, Drools, n8n, Excel, Xircuits)
+      kompile-crawlers/                        Unified crawl system + adaptive batching
+      kompile-data-enrichment/                 Data enrichment pipelines
+      kompile-graphs/                          Knowledge graphs, Neo4j, algorithms, change tracking
+      kompile-langdetect/                      Language detection
+      kompile-loaders/                         Document loaders (PDF, Office, email, web, cloud)
+      kompile-pipelines/                       Pipeline definitions and execution
+      kompile-pipelines-framework/             Pipeline execution engine (SameDiff, ONNX, Python steps)
+      kompile-process/                         Process management, event attribution, Bayesian networks
+      kompile-project-store/                   Project manifest read/write
+      kompile-search/                          Search backends
+        anserini/                                Lucene IR toolkit + SameDiff dense encoders
+        kompile-app-anserini/                    Anserini Spring integration
+        kompile-app-pgml-indexer/                PostgresML indexer
+      kompile-sources/                         Data source connectors (13+ providers)
+        kompile-oauth2-client/                   OAuth connections for cloud sources
+        kompile-source-*/                        Confluence, Jira, Notion, Slack, Discord, etc.
+    kompile-middleware/                       Processing pipeline and tools
+      kompile-evaluation/                      RAG evaluation harness
+      kompile-filter-chain/                    Request/response filter chain
+      kompile-guardrails/                      Input/output guardrails
+      kompile-metrics/                         Observability and metrics
+      kompile-query-transformer/               Query rewriting (HyDE, multi-query, step-back)
+      kompile-sdk-serving/                     SDX Runtime SDK serving layer
+      kompile-tools/                           Spring AI / MCP tools (RAG, filesystem, graph, etc.)
+      kompile-vectorstores/                    Vector store backends (Anserini, pgvector, Chroma, Vespa)
+    kompile-models/                          Model lifecycle
+      kompile-llm-parent/                      LLM providers, embeddings, chunkers
+      kompile-model-importers/                 Model importers (TensorFlow, ONNX, Keras)
+      kompile-model-manager/                   Model download, cache, and registry
+      kompile-model-staging/                   Model lifecycle service (download → convert → promote)
+      kompile-ocr/                             OCR pipeline (core, models, integration, postprocessing)
+  kompile-e2e-tests/                       End-to-end test suite
+  kompile-rag-builds/                      Generated application output directory
 ```
 
 ### Key dependencies
@@ -797,4 +819,4 @@ Lombok 1.18.42 . GraalVM 17
 
 ## License
 
-See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+Apache License 2.0

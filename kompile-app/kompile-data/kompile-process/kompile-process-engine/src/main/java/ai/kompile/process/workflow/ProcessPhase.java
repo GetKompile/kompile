@@ -16,6 +16,7 @@
 
 package ai.kompile.process.workflow;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -28,6 +29,7 @@ import java.util.List;
  * Example: "Inputs &amp; intake", "Triage", "Review &amp; approval".
  */
 @Data
+@JsonInclude(JsonInclude.Include.NON_NULL)
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor

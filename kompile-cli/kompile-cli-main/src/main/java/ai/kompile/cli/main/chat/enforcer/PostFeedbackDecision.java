@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -59,7 +60,7 @@ public class PostFeedbackDecision {
             return new PostFeedbackDecision(Status.FAIL, 0.0,
                     List.of("Judge did not return valid JSON"),
                     List.of(), List.of("Run the audit again or inspect evidence manually"),
-                    "", responseText != null ? truncate(responseText, 240) : "");
+                    "", responseText != null ? StringUtils.truncate(responseText, 240) : "");
         }
 
         try {
@@ -79,7 +80,7 @@ public class PostFeedbackDecision {
             return new PostFeedbackDecision(Status.FAIL, 0.0,
                     List.of("Judge JSON parse failed: " + e.getMessage()),
                     List.of(), List.of("Inspect the raw judge response manually"),
-                    "", truncate(responseText, 240));
+                    "", StringUtils.truncate(responseText, 240));
         }
     }
 
@@ -175,10 +176,4 @@ public class PostFeedbackDecision {
         sb.append("\n");
     }
 
-    private static String truncate(String text, int max) {
-        if (text == null || text.length() <= max) {
-            return text;
-        }
-        return text.substring(0, max - 3) + "...";
-    }
 }

@@ -29,10 +29,13 @@ import { LocalAgentChatService } from '../../services/local-agent-chat.service';
 import { AgentService } from '../../services/agent.service';
 import { ChatStorageService } from '../../services/chat-storage.service';
 import { ChatHistoryService, ChatMessageDto } from '../../services/chat-history.service';
-import { CliTranscriptService, CliSessionSummary, CliTranscriptDetail, CliSourceInfo } from '../../services/cli-transcript.service';
+import { CliTranscriptService, CliSessionSummary, CliTranscriptDetail, CliSourceInfo, ChatSyncStatus } from '../../services/cli-transcript.service';
 import { FolderService } from '../../services/folder.service';
 import { ModelContextService } from '../../services/model-context.service';
 import { WebSocketService } from '../../services/websocket.service';
+import { SystemPromptService } from '../../services/system-prompt.service';
+import { SystemPrompt } from '../../models/system-prompt.models';
+import { MarkdownRendererService, MessageSegment } from '../../services/markdown-renderer.service';
 import { MonitorEvent } from '../../models/monitor-models';
 
 // Models
@@ -206,6 +209,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   systemPrompt: string = '';
   useStreaming: boolean = true;
 
+  // System prompt picker state
+  availableSystemPrompts: SystemPrompt[] = [];
+  activeSystemPrompt: SystemPrompt | null = null;
+  systemPromptMode: 'active' | 'custom' = 'active';
+  showPromptContent: boolean = false;
+
   // Reranking
   rerankerTypes: RerankerTypeInfo[] = RERANKER_TYPES;
   rerankerEnabled: boolean = DEFAULT_RERANKER_CONFIG.enabled;
@@ -332,6 +341,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   syncedSessions: ChatSession[] = [];
   sourceFilter: string = 'all'; // Filter for unified sidebar
   syncedSessionsLoading: boolean = false;
+  chatSyncStatus: ChatSyncStatus | null = null;
+  showSyncComplete: boolean = false;
+  private syncPollTimer: any = null;
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // SUBSCRIPTIONS
@@ -359,6 +371,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     private folderService: FolderService,
     private modelContextService: ModelContextService,
     private webSocketService: WebSocketService,
+    private systemPromptService: SystemPromptService,
+    private markdownRenderer: MarkdownRendererService,
     private http: HttpClient,
     private cdr: ChangeDetectorRef,
     private ngZone: NgZone,
@@ -392,6 +406,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.loadFolders();
     this.loadKompileLocalStatus();
     this.initModelContext();
+    this.loadSystemPrompts();
 
     // Subscribe to agent updates
     this.subscriptions.push(
@@ -424,6 +439,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       this.streamingSubscription.unsubscribe();
     }
     this.teardownMonitorSubscription();
+    this.stopSyncPolling();
     this.destroy$.next();
     this.destroy$.complete();
 
@@ -625,6 +641,109 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         this.cdr.markForCheck();
       }
     });
+
+    // Also check current sync status
+    this.pollSyncStatus();
+  }
+
+  triggerChatSync(): void {
+    this.cliTranscriptService.triggerSync().subscribe({
+      next: (result) => {
+        if (result.triggered) {
+          this.startSyncPolling();
+        } else {
+          // Already running, just start polling to show progress
+          this.startSyncPolling();
+        }
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        // Fallback: just refresh
+        this.loadSyncedSessions();
+      }
+    });
+  }
+
+  private startSyncPolling(): void {
+    if (this.syncPollTimer) return;
+    this.pollSyncStatus();
+    this.syncPollTimer = setInterval(() => this.pollSyncStatus(), 2000);
+  }
+
+  private stopSyncPolling(): void {
+    if (this.syncPollTimer) {
+      clearInterval(this.syncPollTimer);
+      this.syncPollTimer = null;
+    }
+  }
+
+  private pollSyncStatus(): void {
+    this.cliTranscriptService.getSyncStatus().subscribe({
+      next: (status) => {
+        const wasRunning = this.chatSyncStatus?.running;
+        this.chatSyncStatus = status;
+
+        if (status.running && !this.syncPollTimer) {
+          // Sync is running (e.g. initial startup sync), start polling
+          this.startSyncPolling();
+        }
+
+        if (wasRunning && !status.running) {
+          // Sync just finished — refresh the session list and show completion
+          this.stopSyncPolling();
+          this.loadSyncedSessionsQuiet();
+          this.showSyncComplete = true;
+          setTimeout(() => {
+            this.showSyncComplete = false;
+            this.cdr.markForCheck();
+          }, 5000);
+        }
+
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.stopSyncPolling();
+      }
+    });
+  }
+
+  private loadSyncedSessionsQuiet(): void {
+    this.chatHistoryService.getSessions().subscribe({
+      next: (backendSessions) => {
+        this.syncedSessions = backendSessions
+          .filter(s => s.source)
+          .map(s => ({
+            id: s.sessionId,
+            name: s.title || 'Imported Chat',
+            messages: [],
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            source: s.source,
+            synced: true,
+            messageCount: s.messageCount
+          }));
+        this.cdr.markForCheck();
+      },
+      error: () => {}
+    });
+  }
+
+  /**
+   * Map an agentName (from cli-agents.json) to the corresponding source filter value
+   * used for synced CLI transcript sessions.
+   */
+  private agentNameToSource(agentName: string | undefined): string | undefined {
+    if (!agentName) return undefined;
+    const map: { [key: string]: string } = {
+      'claude-cli': 'claude-code',
+      'codex-cli': 'codex',
+      'opencode-cli': 'opencode',
+      'qwen-cli': 'qwen',
+      'gemini-cli': 'gemini',
+      'pi-cli': 'pi',
+      'kompile': 'kompile'
+    };
+    return map[agentName] || agentName;
   }
 
   getAllSessions(): ChatSession[] {
@@ -632,12 +751,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     let local = this.sessions.filter(s => s.messages && s.messages.length > 0);
     let all = [...local, ...this.syncedSessions];
 
-    // Source filter
+    // Source filter — match both synced session source AND local session agentName
     if (this.sourceFilter && this.sourceFilter !== 'all') {
       if (this.sourceFilter === 'app') {
-        all = all.filter(s => !s.source);
+        all = all.filter(s => !s.source && !s.agentName);
       } else {
-        all = all.filter(s => s.source === this.sourceFilter);
+        all = all.filter(s =>
+          s.source === this.sourceFilter ||
+          this.agentNameToSource(s.agentName) === this.sourceFilter
+        );
       }
     }
 
@@ -668,6 +790,13 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     });
 
     return all;
+  }
+
+  sessionMatchesSourceFilter(session: ChatSession): boolean {
+    if (this.sourceFilter === 'all') return true;
+    if (this.sourceFilter === 'app') return !session.source && !session.agentName;
+    return session.source === this.sourceFilter ||
+      this.agentNameToSource(session.agentName) === this.sourceFilter;
   }
 
   onSourceFilterChange(source: string): void {
@@ -1167,6 +1296,67 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         }
         this.cdr.detectChanges();
       });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // SYSTEM PROMPTS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  loadSystemPrompts(): void {
+    this.systemPromptService.listPrompts().subscribe({
+      next: (prompts) => {
+        this.availableSystemPrompts = prompts;
+        const active = prompts.find(p => p.isActive);
+        if (active) {
+          this.activeSystemPrompt = active;
+          if (this.systemPromptMode === 'active') {
+            this.systemPrompt = active.content;
+          }
+        }
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.availableSystemPrompts = [];
+      }
+    });
+  }
+
+  onSystemPromptSelect(promptId: string): void {
+    if (promptId === '__custom__') {
+      this.systemPromptMode = 'custom';
+      this.systemPrompt = '';
+      this.activeSystemPrompt = null;
+      this.showPromptContent = true;
+      return;
+    }
+    if (promptId === '__none__') {
+      this.systemPromptMode = 'active';
+      this.systemPrompt = '';
+      this.activeSystemPrompt = null;
+      this.showPromptContent = false;
+      return;
+    }
+    const selected = this.availableSystemPrompts.find(p => p.id === promptId);
+    if (selected) {
+      this.systemPromptMode = 'active';
+      this.activeSystemPrompt = selected;
+      this.systemPrompt = selected.content;
+      this.showPromptContent = true;
+    }
+  }
+
+  onActivateSystemPrompt(): void {
+    if (!this.activeSystemPrompt) return;
+    this.systemPromptService.activatePrompt(this.activeSystemPrompt.id).subscribe({
+      next: (activated) => {
+        this.availableSystemPrompts.forEach(p => {
+          p.isActive = p.id === activated.id;
+        });
+        this.activeSystemPrompt = activated;
+        this.cdr.markForCheck();
+      },
+      error: () => {}
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1857,6 +2047,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     });
   }
 
+  getEffectiveSource(session: ChatSession): string | undefined {
+    return session.source || this.agentNameToSource(session.agentName);
+  }
+
   getSourceDisplayName(source: string): string {
     switch (source) {
       case 'kompile': return 'Kompile';
@@ -1864,6 +2058,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       case 'opencode': return 'OpenCode';
       case 'codex': return 'Codex';
       case 'qwen': return 'Qwen';
+      case 'gemini': return 'Gemini';
+      case 'pi': return 'Pi';
       default: return source;
     }
   }
@@ -1875,6 +2071,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       case 'opencode': return '#2196F3';
       case 'codex': return '#9C27B0';
       case 'qwen': return '#F44336';
+      case 'gemini': return '#1A73E8';
+      case 'pi': return '#FF6F00';
       default: return '#757575';
     }
   }
@@ -2140,11 +2338,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    */
   getContentWithSourceLinks(message: UnifiedMessage): SafeHtml {
     if (!message.sources || message.sources.length === 0 || !message.content) {
-      return this.sanitizer.bypassSecurityTrustHtml(this.escapeHtml(message.content || ''));
+      return this.getRenderedMarkdown(message);
     }
 
-    // Escape HTML first, then transform source references
-    let content = this.escapeHtml(message.content);
+    // Render markdown first, then inject source reference links
+    let content = this.markdownRenderer.renderMarkdown(message.content);
 
     // Replace [n] patterns with clickable links (1-indexed)
     content = content.replace(/\[(\d+)\]/g, (match, num) => {
@@ -2189,6 +2387,71 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   hasToolBlocks(message: UnifiedMessage): boolean {
     if (!message.content) return false;
     return /\[tool:[^\]]+\]/.test(message.content) || /<thinking>/.test(message.content);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // MARKDOWN RENDERING
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private renderedMarkdownCache = new Map<string, SafeHtml>();
+  private segmentCache = new Map<string, MessageSegment[]>();
+
+  getRenderedMarkdown(message: UnifiedMessage): SafeHtml {
+    if (!message.content) {
+      return this.sanitizer.bypassSecurityTrustHtml('');
+    }
+
+    // Don't cache streaming messages — content changes every chunk
+    if (message.isStreaming) {
+      return this.sanitizer.bypassSecurityTrustHtml(
+        this.markdownRenderer.renderMarkdown(message.content)
+      );
+    }
+
+    const cacheKey = message.id + ':' + message.content.length;
+    let cached = this.renderedMarkdownCache.get(cacheKey);
+    if (!cached) {
+      cached = this.sanitizer.bypassSecurityTrustHtml(
+        this.markdownRenderer.renderMarkdown(message.content)
+      );
+      this.renderedMarkdownCache.set(cacheKey, cached);
+      // Keep cache bounded
+      if (this.renderedMarkdownCache.size > 500) {
+        const firstKey = this.renderedMarkdownCache.keys().next().value;
+        if (firstKey !== undefined) {
+          this.renderedMarkdownCache.delete(firstKey);
+        }
+      }
+    }
+    return cached;
+  }
+
+  getMessageSegments(message: UnifiedMessage): MessageSegment[] {
+    if (!message.content) return [];
+
+    if (message.isStreaming) {
+      return this.markdownRenderer.parseMessageSegments(message.content, true);
+    }
+
+    const cacheKey = message.id + ':' + message.content.length;
+    let cached = this.segmentCache.get(cacheKey);
+    if (!cached) {
+      cached = this.markdownRenderer.parseMessageSegments(message.content, false);
+      this.segmentCache.set(cacheKey, cached);
+      if (this.segmentCache.size > 500) {
+        const firstKey = this.segmentCache.keys().next().value;
+        if (firstKey !== undefined) {
+          this.segmentCache.delete(firstKey);
+        }
+      }
+    }
+    return cached;
+  }
+
+  renderSegmentMarkdown(content: string): SafeHtml {
+    return this.sanitizer.bypassSecurityTrustHtml(
+      this.markdownRenderer.renderMarkdown(content)
+    );
   }
 
   handleKeydown(event: KeyboardEvent): void {

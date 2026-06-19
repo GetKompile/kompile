@@ -19,6 +19,8 @@ package ai.kompile.app.tools;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.services.agent.AgentRegistryService;
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
+import ai.kompile.app.services.mcp.DiscoveredTool;
+import ai.kompile.app.services.mcp.ToolParameter;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.util.FieldNames;
 import ai.kompile.core.rag.ConversationalRagOptions;
@@ -719,12 +721,12 @@ public class ChatSessionTool {
                 return Map.of("status", "error", "error", "MCP tool discovery service not available");
             }
 
-            List<BuiltInToolDiscoveryService.DiscoveredTool> tools = toolDiscoveryService.getDiscoveredTools();
+            List<DiscoveredTool> tools = toolDiscoveryService.getDiscoveredTools();
             boolean includeParams = input.includeParameters() != null && input.includeParameters();
 
             // Group by category
             Map<String, List<Map<String, Object>>> toolsByCategory = new LinkedHashMap<>();
-            for (BuiltInToolDiscoveryService.DiscoveredTool tool : tools) {
+            for (DiscoveredTool tool : tools) {
                 String category = extractCategoryFromBeanClass(tool.getBeanClass());
 
                 // Filter by category if specified
@@ -739,7 +741,7 @@ public class ChatSessionTool {
 
                 if (includeParams && tool.getParameters() != null && !tool.getParameters().isEmpty()) {
                     List<Map<String, Object>> params = new ArrayList<>();
-                    for (BuiltInToolDiscoveryService.ToolParameter param : tool.getParameters()) {
+                    for (ToolParameter param : tool.getParameters()) {
                         Map<String, Object> paramInfo = new LinkedHashMap<>();
                         paramInfo.put("name", param.getName());
                         paramInfo.put("type", param.getType());

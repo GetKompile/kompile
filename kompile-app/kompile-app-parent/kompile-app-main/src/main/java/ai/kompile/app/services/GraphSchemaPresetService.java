@@ -21,6 +21,7 @@ import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.cli.common.KompileHome;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import jakarta.annotation.PostConstruct;
@@ -69,7 +70,7 @@ public class GraphSchemaPresetService {
     }
 
     private GraphSchemaPresetService(Path dataDir) {
-        this.objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         this.presetsPath = dataDir.resolve("config").resolve(PRESETS_DIR);
     }
 

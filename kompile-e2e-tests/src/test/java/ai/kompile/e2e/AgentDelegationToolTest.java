@@ -18,6 +18,7 @@ package ai.kompile.e2e;
 import ai.kompile.app.services.agent.AgentChatService;
 import ai.kompile.app.services.agent.AgentProcessDiagnosticService;
 import ai.kompile.app.services.agent.AgentRegistryService;
+import ai.kompile.app.services.agent.AgentSubprocessExecutor;
 import ai.kompile.app.services.agent.ClaudeStreamParser;
 import ai.kompile.app.tools.AgentDelegationTool;
 import ai.kompile.app.web.dto.AgentChatRequest;
@@ -79,6 +80,7 @@ class AgentDelegationToolTest {
             super(registry,
                     new AgentProcessDiagnosticService(),
                     new ClaudeStreamParser(),
+                    new AgentSubprocessExecutor(registry, new AgentProcessDiagnosticService(), new ClaudeStreamParser()),
                     List.of(new NoOpDocumentRetrieverImpl()),
                     List.of(new NoOpVectorStoreImpl()),
                     null, null, null, null, null, null);

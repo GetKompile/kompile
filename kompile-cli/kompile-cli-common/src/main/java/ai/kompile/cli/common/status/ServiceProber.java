@@ -51,7 +51,7 @@ public class ServiceProber {
 
         // Add known services
         for (ServiceDefinition def : KNOWN_SERVICES) {
-            toProbe.put(def.port, def);
+            toProbe.put(def.getPort(), def);
         }
 
         // Add registered instances (dedup by port)
@@ -94,7 +94,7 @@ public class ServiceProber {
      * Probes a single service definition.
      */
     public static ServiceStatus probeOne(ServiceDefinition def) {
-        String url = "http://localhost:" + def.port + def.healthPath;
+        String url = "http://localhost:" + def.getPort() + def.getHealthPath();
         try {
             HttpClient client = HttpClient.newBuilder()
                     .connectTimeout(CONNECT_TIMEOUT)
@@ -112,65 +112,9 @@ public class ServiceProber {
             long elapsed = System.currentTimeMillis() - start;
 
             boolean healthy = response.statusCode() >= 200 && response.statusCode() < 300;
-            return new ServiceStatus(def.name, url, def.port, healthy, elapsed);
+            return new ServiceStatus(def.getName(), url, def.getPort(), healthy, elapsed);
         } catch (Exception e) {
-            return new ServiceStatus(def.name, url, def.port, false, -1);
+            return new ServiceStatus(def.getName(), url, def.getPort(), false, -1);
         }
-    }
-
-    /**
-     * A known service endpoint to probe.
-     */
-    public static class ServiceDefinition {
-        private String name;
-        private int port;
-        private String healthPath;
-
-        public ServiceDefinition() {}
-
-        public ServiceDefinition(String name, int port, String healthPath) {
-            this.name = name;
-            this.port = port;
-            this.healthPath = healthPath;
-        }
-
-        public String getName() { return name; }
-        public void setName(String name) { this.name = name; }
-        public int getPort() { return port; }
-        public void setPort(int port) { this.port = port; }
-        public String getHealthPath() { return healthPath; }
-        public void setHealthPath(String healthPath) { this.healthPath = healthPath; }
-    }
-
-    /**
-     * Result of probing a service.
-     */
-    public static class ServiceStatus {
-        private String name;
-        private String url;
-        private int port;
-        private boolean healthy;
-        private long responseTimeMs;
-
-        public ServiceStatus() {}
-
-        public ServiceStatus(String name, String url, int port, boolean healthy, long responseTimeMs) {
-            this.name = name;
-            this.url = url;
-            this.port = port;
-            this.healthy = healthy;
-            this.responseTimeMs = responseTimeMs;
-        }
-
-        public String getName() { return name; }
-        public void setName(String name) { this.name = name; }
-        public String getUrl() { return url; }
-        public void setUrl(String url) { this.url = url; }
-        public int getPort() { return port; }
-        public void setPort(int port) { this.port = port; }
-        public boolean isHealthy() { return healthy; }
-        public void setHealthy(boolean healthy) { this.healthy = healthy; }
-        public long getResponseTimeMs() { return responseTimeMs; }
-        public void setResponseTimeMs(long responseTimeMs) { this.responseTimeMs = responseTimeMs; }
     }
 }

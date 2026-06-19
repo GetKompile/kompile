@@ -92,10 +92,13 @@ class AgentChatServiceTest {
 
         when(serverPortService.getMcpApiUrl()).thenReturn("http://localhost:8080/api/mcp");
 
+        AgentSubprocessExecutor subprocessExecutor = new AgentSubprocessExecutor(
+                agentRegistry, diagnosticService, streamParser);
         service = new AgentChatService(
                 agentRegistry,
                 diagnosticService,
                 streamParser,
+                subprocessExecutor,
                 List.of(new NoOpDocumentRetrieverImpl()),
                 List.of(new NoOpVectorStoreImpl()),
                 null,        // no GraphRagService

@@ -17,6 +17,7 @@
 package ai.kompile.app.services.enforcer;
 
 import ai.kompile.app.services.agent.AgentChatService;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.app.services.agent.AgentRegistryService;
 import ai.kompile.app.services.agent.ClaudeStreamParser;
 import ai.kompile.core.agent.AgentProvider;
@@ -175,7 +176,7 @@ public class EnforcerSessionManager {
             session.state.incrementTotalTurns();
             session.responseBuffer.setLength(0);
             broadcastEvent(sessionId, "message_sent", Map.of(
-                    "message", truncate(message, 200),
+                    "message", StringUtils.truncate(message, 200),
                     "turn", session.state.getTotalTurns()));
             return true;
         } catch (IOException e) {
@@ -584,10 +585,4 @@ public class EnforcerSessionManager {
         }
     }
 
-    private static String truncate(String text, int max) {
-        if (text == null || text.length() <= max) {
-            return text != null ? text : "";
-        }
-        return text.substring(0, max) + "...";
-    }
 }

@@ -1,6 +1,7 @@
 package ai.kompile.app.subprocess;
 
 import ai.kompile.app.services.pipeline.ParallelIngestPipeline;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -20,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class IngestCheckpointService {
     private static final Logger logger = LoggerFactory.getLogger(IngestCheckpointService.class);
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private final Path checkpointDir;
     private final String taskId;

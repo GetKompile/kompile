@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.enforcer;
 
 import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -182,7 +183,7 @@ public class SubprocessJudgeEvaluator implements EnforcerEvaluator, AutoCloseabl
                 .append("\n[END ENFORCER RULES]\n\n");
 
         sb.append("[USER PROMPT]\n")
-                .append(truncate(userPrompt, 4000))
+                .append(StringUtils.truncateWithSize(userPrompt, 4000))
                 .append("\n[END USER PROMPT]\n\n");
 
         if (context != null && !context.isEmpty()) {
@@ -195,7 +196,7 @@ public class SubprocessJudgeEvaluator implements EnforcerEvaluator, AutoCloseabl
         }
 
         sb.append("[SUBORDINATE LLM RESPONSE, ATTEMPT ").append(attempt).append("]\n")
-                .append(truncate(agentOutput, 8000))
+                .append(StringUtils.truncateWithSize(agentOutput, 8000))
                 .append("\n[END SUBORDINATE LLM RESPONSE]\n\n");
 
         sb.append("You have full tool access. If the subordinate claims to have modified files, ")
@@ -205,10 +206,4 @@ public class SubprocessJudgeEvaluator implements EnforcerEvaluator, AutoCloseabl
         return sb.toString();
     }
 
-    private static String truncate(String text, int max) {
-        if (text == null) return "";
-        if (text.length() <= max) return text;
-        return text.substring(0, max - 64)
-                + "\n... (truncated, " + text.length() + " chars total)";
-    }
 }

@@ -19,6 +19,10 @@ package ai.kompile.cli.main.chat.harness.eval;
 import ai.kompile.cli.main.chat.harness.TaskOutcome;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -30,6 +34,10 @@ import java.util.Map;
  * Aggregate result of running an entire {@link EvalSuite}.
  * Persisted to ~/.kompile/eval-results.json for cross-run comparison.
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class EvalRunResult {
 
@@ -60,8 +68,6 @@ public class EvalRunResult {
     @JsonProperty private float avgJudgeCorrectness;
     @JsonProperty private float avgJudgeCompleteness;
     @JsonProperty private long totalTokens;
-
-    public EvalRunResult() {}
 
     /** Compute all aggregate fields from the case results. */
     public void computeAggregates(double requiredPassRate) {
@@ -139,34 +145,4 @@ public class EvalRunResult {
 
         return sb.toString();
     }
-
-    // Getters
-    public String getRunId() { return runId; }
-    public String getSuiteName() { return suiteName; }
-    public String getSuiteFile() { return suiteFile; }
-    public Instant getStartTime() { return startTime; }
-    public Instant getEndTime() { return endTime; }
-    public long getTotalDurationMs() { return totalDurationMs; }
-    public int getTotalCases() { return totalCases; }
-    public int getPassedCases() { return passedCases; }
-    public int getFailedCases() { return failedCases; }
-    public int getSkippedCases() { return skippedCases; }
-    public double getPassRate() { return passRate; }
-    public boolean isSuitePassed() { return suitePassed; }
-    public double getRequiredPassRate() { return requiredPassRate; }
-    public Map<String, Integer> getOutcomeCounts() { return outcomeCounts; }
-    public List<EvalCaseResult> getCaseResults() { return caseResults; }
-    public float getAvgCompositeScore() { return avgCompositeScore; }
-    public float getAvgJudgeCorrectness() { return avgJudgeCorrectness; }
-    public float getAvgJudgeCompleteness() { return avgJudgeCompleteness; }
-    public long getTotalTokens() { return totalTokens; }
-
-    // Setters
-    public void setRunId(String v) { this.runId = v; }
-    public void setSuiteName(String v) { this.suiteName = v; }
-    public void setSuiteFile(String v) { this.suiteFile = v; }
-    public void setStartTime(Instant v) { this.startTime = v; }
-    public void setEndTime(Instant v) { this.endTime = v; }
-    public void setTotalDurationMs(long v) { this.totalDurationMs = v; }
-    public void setCaseResults(List<EvalCaseResult> v) { this.caseResults = v; }
 }

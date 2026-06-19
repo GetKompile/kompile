@@ -16,12 +16,14 @@
 
 package ai.kompile.loader.slack;
 
+import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 /**
  * Configuration properties for Slack loaders.
  */
+@Data
 @Component
 @ConfigurationProperties(prefix = "kompile.slack")
 public class SlackLoaderProperties {
@@ -42,30 +44,7 @@ public class SlackLoaderProperties {
      */
     private History history = new History();
 
-    public String getToken() {
-        return token;
-    }
-
-    public void setToken(String token) {
-        this.token = token;
-    }
-
-    public int getDefaultLimit() {
-        return defaultLimit;
-    }
-
-    public void setDefaultLimit(int defaultLimit) {
-        this.defaultLimit = defaultLimit;
-    }
-
-    public History getHistory() {
-        return history;
-    }
-
-    public void setHistory(History history) {
-        this.history = history;
-    }
-
+    @Data
     public static class History {
         /**
          * Whether to include thread replies in history loads.
@@ -81,29 +60,5 @@ public class SlackLoaderProperties {
          * Maximum messages to load per channel (0 = unlimited).
          */
         private int maxMessages = 0;
-
-        public boolean isIncludeThreads() {
-            return includeThreads;
-        }
-
-        public void setIncludeThreads(boolean includeThreads) {
-            this.includeThreads = includeThreads;
-        }
-
-        public int getDefaultDays() {
-            return defaultDays;
-        }
-
-        public void setDefaultDays(int defaultDays) {
-            this.defaultDays = defaultDays;
-        }
-
-        public int getMaxMessages() {
-            return maxMessages;
-        }
-
-        public void setMaxMessages(int maxMessages) {
-            this.maxMessages = maxMessages;
-        }
     }
 }

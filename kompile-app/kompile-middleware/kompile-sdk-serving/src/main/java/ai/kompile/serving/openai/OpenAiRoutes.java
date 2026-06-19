@@ -1,12 +1,13 @@
 package ai.kompile.serving.openai;
 
 import ai.kompile.serving.openai.dto.*;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
-import org.eclipse.deeplearning4j.llm.generation.SamplingConfig;
+import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,7 +27,7 @@ public class OpenAiRoutes {
     public OpenAiRoutes(ModelBridge modelBridge, SamplingConfig defaultConfig) {
         this.modelBridge = modelBridge;
         this.defaultConfig = defaultConfig;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

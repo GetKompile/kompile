@@ -29,6 +29,7 @@ import ai.kompile.cli.main.codeindex.CodeIndexCommand;
 import ai.kompile.cli.main.codeindex.LocalCodeIndexer;
 import ai.kompile.cli.main.config.AppConfigWizard;
 import ai.kompile.cli.main.config.ToolGatewayWizard;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -312,7 +313,7 @@ public class ConfigureCommand implements Callable<Integer> {
             try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
                 LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
                 printHeader("Judge Configuration");
-                ObjectMapper mapper = new ObjectMapper();
+                ObjectMapper mapper = JsonUtils.standardMapper();
                 HarnessConfig config = HarnessConfig.load(mapper);
 
                 List<String> modes = List.of(

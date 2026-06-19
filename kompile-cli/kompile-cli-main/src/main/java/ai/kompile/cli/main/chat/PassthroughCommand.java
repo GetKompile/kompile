@@ -17,11 +17,13 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -87,7 +89,7 @@ public class PassthroughCommand implements Callable<Integer> {
     // Cached resolved MCP URL (to avoid double-probing)
     private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // ANSI color codes
     private static final String RESET = "\033[0m";
@@ -337,22 +339,22 @@ public class PassthroughCommand implements Callable<Integer> {
         // Tokens
         body.append("\n").append(BOLD).append("Tokens").append(RESET).append("\n");
         if (metrics.hasActualTokenCounts()) {
-            body.append("  Input:     ").append(formatNumber(metrics.getInputTokens())).append("\n");
-            body.append("  Output:    ").append(formatNumber(metrics.getOutputTokens())).append("\n");
-            body.append("  Total:     ").append(formatNumber(metrics.getTotalTokens())).append("\n");
+            body.append("  Input:     ").append(FormatUtils.formatNumber(metrics.getInputTokens())).append("\n");
+            body.append("  Output:    ").append(FormatUtils.formatNumber(metrics.getOutputTokens())).append("\n");
+            body.append("  Total:     ").append(FormatUtils.formatNumber(metrics.getTotalTokens())).append("\n");
             if (metrics.getCacheReadTokens() > 0) {
-                body.append("  Cache hit: ").append(formatNumber(metrics.getCacheReadTokens())).append("\n");
+                body.append("  Cache hit: ").append(FormatUtils.formatNumber(metrics.getCacheReadTokens())).append("\n");
             }
             if (metrics.getCacheCreationTokens() > 0) {
-                body.append("  Cache new: ").append(formatNumber(metrics.getCacheCreationTokens())).append("\n");
+                body.append("  Cache new: ").append(FormatUtils.formatNumber(metrics.getCacheCreationTokens())).append("\n");
             }
         } else {
             long estInput = metrics.getEstimatedInputTokens();
             long estOutput = metrics.getEstimatedOutputTokens();
             if (estInput + estOutput > 0) {
-                body.append("  ~Input:    ").append(formatNumber(estInput)).append(" (estimated)\n");
-                body.append("  ~Output:   ").append(formatNumber(estOutput)).append(" (estimated)\n");
-                body.append("  ~Total:    ").append(formatNumber(estInput + estOutput)).append(" (estimated)\n");
+                body.append("  ~Input:    ").append(FormatUtils.formatNumber(estInput)).append(" (estimated)\n");
+                body.append("  ~Output:   ").append(FormatUtils.formatNumber(estOutput)).append(" (estimated)\n");
+                body.append("  ~Total:    ").append(FormatUtils.formatNumber(estInput + estOutput)).append(" (estimated)\n");
             } else {
                 body.append("  (no token data available)\n");
             }
@@ -394,8 +396,8 @@ public class PassthroughCommand implements Callable<Integer> {
             history.logSystem("Session ended — " + metrics.formatDuration(duration) +
                     ", " + metrics.getTotalTurns() + " turns" +
                     (metrics.hasActualTokenCounts() ?
-                            ", " + formatNumber(metrics.getTotalTokens()) + " tokens" :
-                            ", ~" + formatNumber(metrics.getEstimatedInputTokens() + metrics.getEstimatedOutputTokens()) + " est. tokens") +
+                            ", " + FormatUtils.formatNumber(metrics.getTotalTokens()) + " tokens" :
+                            ", ~" + FormatUtils.formatNumber(metrics.getEstimatedInputTokens() + metrics.getEstimatedOutputTokens()) + " est. tokens") +
                     (metrics.getTotalToolCalls() > 0 ? ", " + metrics.getTotalToolCalls() + " tool calls" : ""));
         }
     }
@@ -1530,8 +1532,4 @@ public class PassthroughCommand implements Callable<Integer> {
         return mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
     }
 
-    private static String formatNumber(long n) {
-        if (n < 1000) return String.valueOf(n);
-        return String.format("%,d", n);
-    }
 }

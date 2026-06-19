@@ -16,6 +16,7 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.web.dto.vlm.*;
 import ai.kompile.modelmanager.vlm.*;
 import ai.kompile.ocr.integration.OcrPipelineService;
 import org.slf4j.Logger;
@@ -588,50 +589,6 @@ public class VlmModelController {
         info.components = components;
 
         return info;
-    }
-
-    // ==================== DTO Classes ====================
-
-    public static class ModelSetInfo {
-        public String setId;
-        public String displayName;
-        public String description;
-        public String architecture;
-        public int inputSize;
-        public int hiddenSize;
-        public boolean cached;
-        public List<ComponentInfo> components;
-    }
-
-    public static class ComponentInfo {
-        public String componentKey;
-        public String fileName;
-        public String pipelineStage;
-        public String inputShape;
-        public String outputShape;
-    }
-
-    public static class PipelineStageInfo {
-        public String id;
-        public String displayName;
-        public String inputDescription;
-        public String outputDescription;
-        public String modelComponentKey;
-        public boolean requiresModel;
-    }
-
-    public static class ExtractionTypeInfo {
-        public String id;
-        public String description;
-        public String defaultModelSetId;
-        public String defaultModelSetName;
-    }
-
-    public static class PresetInfo {
-        public String id;
-        public String name;
-        public String description;
-        public List<String> enabledExtractions;
     }
 
     private static class DownloadProgress {

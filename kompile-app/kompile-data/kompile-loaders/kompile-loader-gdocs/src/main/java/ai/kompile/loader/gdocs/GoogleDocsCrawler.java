@@ -17,6 +17,7 @@
 package ai.kompile.loader.gdocs;
 
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.crawler.*;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.crawler.AbstractCrawlJob;
@@ -102,12 +103,12 @@ public class GoogleDocsCrawler extends AbstractCrawler {
         Map<String, Object> props = config.getProperties();
 
         String accessToken = (String) props.get("accessToken");
-        String driveQuery = getStringOr(props, "driveQuery", null);
-        String folderId = getStringOr(props, "folderId", null);
-        int daysBack = getIntOr(props, "daysBack", 90);
-        boolean includeComments = getBooleanOr(props, "includeComments", false);
-        boolean includeRevisions = getBooleanOr(props, "includeRevisions", false);
-        boolean useDocsApi = getBooleanOr(props, "useDocsApi", true);
+        String driveQuery = MapUtils.getStringNonBlank(props, "driveQuery", null);
+        String folderId = MapUtils.getStringNonBlank(props, "folderId", null);
+        int daysBack = MapUtils.getInt(props, "daysBack", 90);
+        boolean includeComments = MapUtils.getBoolean(props, "includeComments", false);
+        boolean includeRevisions = MapUtils.getBoolean(props, "includeRevisions", false);
+        boolean useDocsApi = MapUtils.getBoolean(props, "useDocsApi", true);
 
         GoogleDocsApiClient apiClient = new GoogleDocsApiClient(accessToken);
 
@@ -469,27 +470,4 @@ public class GoogleDocsCrawler extends AbstractCrawler {
         return parts.toString();
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────
-
-    private static String getStringOr(Map<String, Object> props, String key, String defaultValue) {
-        Object val = props.get(key);
-        if (val instanceof String s && !s.isBlank()) return s;
-        return defaultValue;
-    }
-
-    private static int getIntOr(Map<String, Object> props, String key, int defaultValue) {
-        Object val = props.get(key);
-        if (val instanceof Number n) return n.intValue();
-        if (val instanceof String s) {
-            try { return Integer.parseInt(s); } catch (NumberFormatException e) { /* fall through */ }
-        }
-        return defaultValue;
-    }
-
-    private static boolean getBooleanOr(Map<String, Object> props, String key, boolean defaultValue) {
-        Object val = props.get(key);
-        if (val instanceof Boolean b) return b;
-        if (val instanceof String s) return Boolean.parseBoolean(s);
-        return defaultValue;
-    }
 }

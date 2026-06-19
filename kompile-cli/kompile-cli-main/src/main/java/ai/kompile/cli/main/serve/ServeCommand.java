@@ -125,8 +125,10 @@ public class ServeCommand implements Callable<Integer> {
 
             // Register in instance registry
             long pid = ProcessHandle.current().pid();
-            InstanceInfo info = new InstanceInfo("kompile-daemon", "daemon", 0, pid,
-                    KompileHome.daemonSocketFile().getAbsolutePath());
+            InstanceInfo info = InstanceInfo.builder()
+                    .name("kompile-daemon").type("daemon").port(0).pid(pid)
+                    .jarPath(KompileHome.daemonSocketFile().getAbsolutePath())
+                    .startedAt(java.time.Instant.now()).build();
             InstanceRegistry.register(info);
 
             long idleMs = idleTimeoutMinutes > 0 ? idleTimeoutMinutes * 60_000L : 0;

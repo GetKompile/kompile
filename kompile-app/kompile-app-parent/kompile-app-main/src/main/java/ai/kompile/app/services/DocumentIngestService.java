@@ -246,17 +246,19 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     @Override
     public void destroy() {
         logger.info("Shutting down DocumentIngestService executors");
+        // Initiate shutdown on all three concurrently so they drain in parallel.
         cleanupScheduler.shutdown();
         batchExecutor.shutdown();
         webSocketExecutor.shutdown();
+        // Each await now runs against an already-draining pool; total wall-clock ~3s.
         try {
-            if (!cleanupScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+            if (!cleanupScheduler.awaitTermination(3, TimeUnit.SECONDS)) {
                 cleanupScheduler.shutdownNow();
             }
-            if (!batchExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+            if (!batchExecutor.awaitTermination(3, TimeUnit.SECONDS)) {
                 batchExecutor.shutdownNow();
             }
-            if (!webSocketExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+            if (!webSocketExecutor.awaitTermination(3, TimeUnit.SECONDS)) {
                 webSocketExecutor.shutdownNow();
             }
         } catch (InterruptedException e) {

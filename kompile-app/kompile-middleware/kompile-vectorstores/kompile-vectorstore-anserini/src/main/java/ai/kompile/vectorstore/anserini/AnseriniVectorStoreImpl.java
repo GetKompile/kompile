@@ -54,6 +54,7 @@ import org.apache.lucene.util.BytesRef;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import org.springframework.beans.factory.DisposableBean;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.Closeable;
@@ -90,7 +91,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
 
     // Static ObjectMapper for JSON serialization - reuse to avoid per-document
     // allocation overhead
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     /**
      * JVM-unique suffix to prevent lock conflicts between concurrent instances.
@@ -1553,18 +1554,12 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         log.debug("Cached reader closed");
 
         synchronized (writerLock) {
-            // Close IndexWriter - this releases the write.lock
+            // Close IndexWriter - this releases the write.lock.
+            // IndexWriter.close() already commits pending changes, so a separate
+            // commit() call is unnecessary on the shutdown path and can add seconds
+            // of latency flushing large segments. Relying on close() keeps shutdown fast.
             if (indexWriter != null) {
                 try {
-                    // Commit any pending changes before closing
-                    if (indexWriter.isOpen()) {
-                        try {
-                            indexWriter.commit();
-                            log.debug("Committed pending changes before closing IndexWriter");
-                        } catch (Exception e) {
-                            log.debug("Could not commit before close: {}", e.getMessage());
-                        }
-                    }
                     indexWriter.close();
                     log.info("IndexWriter closed successfully - write.lock should be released");
                 } catch (Exception e) {

@@ -31,7 +31,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.io.*;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
@@ -254,7 +256,7 @@ public class PassthroughSessionManager {
 
         // Give process time to exit gracefully
         try {
-            boolean exited = session.process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
+            boolean exited = session.process.waitFor(1, TimeUnit.SECONDS);
             if (!exited) {
                 session.process.destroyForcibly();
             }
@@ -420,9 +422,16 @@ public class PassthroughSessionManager {
 
     @PreDestroy
     public void cleanup() {
-        log.info("Cleaning up {} passthrough sessions", sessions.size());
-        for (String sessionId : new ArrayList<>(sessions.keySet())) {
-            endSession(sessionId);
+        List<String> sessionIds = new ArrayList<>(sessions.keySet());
+        log.info("Cleaning up {} passthrough sessions", sessionIds.size());
+        List<CompletableFuture<Void>> futures = sessionIds.stream()
+                .map(id -> CompletableFuture.runAsync(() -> endSession(id)))
+                .collect(java.util.stream.Collectors.toList());
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                    .get(10, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Timed out or interrupted waiting for passthrough sessions to end during shutdown", e);
         }
     }
 

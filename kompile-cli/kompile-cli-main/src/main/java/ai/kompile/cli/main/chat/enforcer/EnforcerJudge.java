@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.enforcer;
 
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
 import ai.kompile.cli.main.chat.harness.JudgeBackendFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -151,7 +152,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 .append("\n[END ENFORCER RULES]\n\n");
 
         prompt.append("[USER PROMPT]\n")
-                .append(truncate(userPrompt, MAX_PROMPT_CHARS))
+                .append(StringUtils.truncateWithSize(userPrompt, MAX_PROMPT_CHARS))
                 .append("\n[END USER PROMPT]\n\n");
 
         appendRecentContext(prompt, context);
@@ -159,7 +160,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
         prompt.append("[SUBORDINATE LLM RESPONSE, ATTEMPT ")
                 .append(attempt)
                 .append("]\n")
-                .append(truncate(agentOutput, MAX_OUTPUT_CHARS))
+                .append(StringUtils.truncateWithSize(agentOutput, MAX_OUTPUT_CHARS))
                 .append("\n[END SUBORDINATE LLM RESPONSE]\n\n");
 
         prompt.append("Evaluate only compliance with the enforcer rules. ")
@@ -177,13 +178,13 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 .append("\n[END ENFORCER RULES]\n\n");
 
         prompt.append("[USER PROMPT]\n")
-                .append(truncate(userPrompt, MAX_PROMPT_CHARS))
+                .append(StringUtils.truncateWithSize(userPrompt, MAX_PROMPT_CHARS))
                 .append("\n[END USER PROMPT]\n\n");
 
         appendRecentContext(prompt, context);
 
         prompt.append("[PARTIAL SUBORDINATE OUTPUT]\n")
-                .append(truncate(partialOutput, MAX_OUTPUT_CHARS))
+                .append(StringUtils.truncateWithSize(partialOutput, MAX_OUTPUT_CHARS))
                 .append("\n[END PARTIAL SUBORDINATE OUTPUT]\n\n");
 
         prompt.append("This is streamed output that may still be incomplete. ")
@@ -205,7 +206,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
 
         prompt.append("[PROPOSED MCP TOOL CALL]\n")
                 .append("Tool: ").append(toolName == null ? "" : toolName).append('\n')
-                .append("Arguments: ").append(truncate(toolInput, MAX_OUTPUT_CHARS))
+                .append("Arguments: ").append(StringUtils.truncateWithSize(toolInput, MAX_OUTPUT_CHARS))
                 .append("\n[END PROPOSED MCP TOOL CALL]\n\n");
 
         prompt.append("Decide before execution whether this MCP call may run under the rules. ")
@@ -226,17 +227,6 @@ public class EnforcerJudge implements EnforcerEvaluator {
         prompt.append("[RECENT CHAT MESSAGES]\n")
                 .append(formatted)
                 .append("\n[END RECENT CHAT MESSAGES]\n\n");
-    }
-
-    private static String truncate(String text, int max) {
-        if (text == null) {
-            return "";
-        }
-        if (text.length() <= max) {
-            return text;
-        }
-        return text.substring(0, max - 64)
-                + "\n... (truncated, " + text.length() + " chars total)";
     }
 
     static final String PARTIAL_SYSTEM_PROMPT = """

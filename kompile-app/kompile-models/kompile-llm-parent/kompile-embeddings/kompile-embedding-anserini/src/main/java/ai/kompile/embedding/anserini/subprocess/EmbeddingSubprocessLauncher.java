@@ -16,9 +16,11 @@
 
 package ai.kompile.embedding.anserini.subprocess;
 
+import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -62,7 +64,7 @@ import java.util.Deque;
 public class EmbeddingSubprocessLauncher implements AutoCloseable {
 
     private static final Logger logger = LoggerFactory.getLogger(EmbeddingSubprocessLauncher.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     // Subprocess state
     private volatile Process process;
@@ -1359,6 +1361,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         // Start process
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false); // Keep stderr separate for logging
+
+        // Propagate all ND4J/CUDA/threading/Triton env vars via central propagator
+        SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
 
         // Add debug-specific environment variables if enabled
         if (debugConfig != null && debugConfig.getMode() != DebugMode.NONE) {

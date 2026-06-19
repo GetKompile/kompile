@@ -52,7 +52,7 @@ class DiffTrackerServiceTest {
 
     @Test
     void record_returnsNonNullDiff() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/src/Foo.java", "old", "new", null, "agent-1", "task-1", "desc");
         assertThat(rec).isNotNull();
         assertThat(rec.getId()).isGreaterThan(0);
@@ -60,56 +60,56 @@ class DiffTrackerServiceTest {
 
     @Test
     void record_setsFilePath() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/src/Bar.java", "before", "after", null, null, null, null);
         assertThat(rec.getFilePath()).isEqualTo("/src/Bar.java");
     }
 
     @Test
     void record_setsSessionId() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/foo", "a", "b", null, null, null, null);
         assertThat(rec.getSessionId()).isEqualTo(sessionId);
     }
 
     @Test
     void record_computesDiff_whenUnifiedDiffNull() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/file.txt", "line1\nline2", "line1\nline3", null, null, null, null);
         assertThat(rec.getUnifiedDiff()).isNotNull().isNotBlank();
     }
 
     @Test
     void record_usesProvidedUnifiedDiff() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/file.txt", "a", "b", "+newline\n-oldline", null, null, null);
         assertThat(rec.getUnifiedDiff()).isEqualTo("+newline\n-oldline");
     }
 
     @Test
     void record_countsLinesAdded() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/f.txt", "old", "new\nextra", null, null, null, null);
         assertThat(rec.getLinesAdded()).isGreaterThanOrEqualTo(0);
     }
 
     @Test
     void record_countsLinesRemoved() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/f.txt", "old\nextra", "new", null, null, null, null);
         assertThat(rec.getLinesRemoved()).isGreaterThanOrEqualTo(0);
     }
 
     @Test
     void record_setsTimestamp() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/f.txt", "a", "b", null, null, null, null);
         assertThat(rec.getTimestamp()).isNotNull().isNotBlank();
     }
 
     @Test
     void record_withNullSession_usesGlobalSession() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 null, "/f.txt", "a", "b", null, "agent", null, null);
         assertThat(rec.getSessionId()).isEqualTo("_global");
     }
@@ -118,9 +118,9 @@ class DiffTrackerServiceTest {
 
     @Test
     void get_returnsExistingRecord() {
-        DiffTrackerService.DiffRecord created = service.record(
+        DiffRecord created = service.record(
                 sessionId, "/foo.java", "x", "y", null, null, null, null);
-        DiffTrackerService.DiffRecord found = service.get(created.getId());
+        DiffRecord found = service.get(created.getId());
         assertThat(found).isNotNull();
         assertThat(found.getId()).isEqualTo(created.getId());
     }
@@ -137,13 +137,13 @@ class DiffTrackerServiceTest {
         service.record(sessionId, "/a.java", "x", "y", null, null, null, null);
         service.record(sessionId, "/b.java", "x", "y", null, null, null, null);
 
-        List<DiffTrackerService.DiffRecord> records = service.listForSession(sessionId, null, null, null, null);
+        List<DiffRecord> records = service.listForSession(sessionId, null, null, null, null);
         assertThat(records).hasSizeGreaterThanOrEqualTo(2);
     }
 
     @Test
     void listForSession_returnsEmpty_forUnknownSession() {
-        List<DiffTrackerService.DiffRecord> records =
+        List<DiffRecord> records =
                 service.listForSession("nonexistent-session-xyz", null, null, null, null);
         assertThat(records).isEmpty();
     }
@@ -153,7 +153,7 @@ class DiffTrackerServiceTest {
         service.record(sessionId, "/match.java", "x", "y", null, null, null, null);
         service.record(sessionId, "/other.java", "x", "y", null, null, null, null);
 
-        List<DiffTrackerService.DiffRecord> records =
+        List<DiffRecord> records =
                 service.listForSession(sessionId, "match", null, null, null);
         assertThat(records).allMatch(r -> r.getFilePath().contains("match"));
     }
@@ -163,7 +163,7 @@ class DiffTrackerServiceTest {
         for (int i = 0; i < 10; i++) {
             service.record(sessionId, "/f" + i + ".java", "x", "y", null, null, null, null);
         }
-        List<DiffTrackerService.DiffRecord> records =
+        List<DiffRecord> records =
                 service.listForSession(sessionId, null, null, null, 3);
         assertThat(records).hasSizeLessThanOrEqualTo(3);
     }
@@ -176,7 +176,7 @@ class DiffTrackerServiceTest {
         service.record(sessionId, "/a.java", "x", "y", null, null, null, null);
         service.record(session2, "/b.java", "x", "y", null, null, null, null);
 
-        List<DiffTrackerService.DiffRecord> all = service.listAll(null, null, null, 100);
+        List<DiffRecord> all = service.listAll(null, null, null, 100);
         assertThat(all).hasSizeGreaterThanOrEqualTo(2);
     }
 
@@ -185,7 +185,7 @@ class DiffTrackerServiceTest {
     @Test
     void listByFile_returnsMatchingRecords() {
         service.record(sessionId, "/specific-file.java", "a", "b", null, null, null, null);
-        List<DiffTrackerService.DiffRecord> found =
+        List<DiffRecord> found =
                 service.listByFile("/specific-file.java", sessionId);
         assertThat(found).isNotEmpty();
         assertThat(found).allMatch(r -> "/specific-file.java".equals(r.getFilePath()));
@@ -221,7 +221,7 @@ class DiffTrackerServiceTest {
 
     @Test
     void delete_removesRecord() {
-        DiffTrackerService.DiffRecord rec = service.record(
+        DiffRecord rec = service.record(
                 sessionId, "/del.java", "a", "b", null, null, null, null);
         boolean deleted = service.delete(rec.getId());
         assertThat(deleted).isTrue();
@@ -243,7 +243,7 @@ class DiffTrackerServiceTest {
         int cleared = service.clearSession(sessionId);
         assertThat(cleared).isGreaterThanOrEqualTo(2);
 
-        List<DiffTrackerService.DiffRecord> remaining =
+        List<DiffRecord> remaining =
                 service.listForSession(sessionId, null, null, null, null);
         assertThat(remaining).isEmpty();
     }

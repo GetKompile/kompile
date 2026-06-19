@@ -7,6 +7,7 @@ import ai.kompile.gateway.core.gateway.channel.ChannelAdapter.IncomingMessage;
 import ai.kompile.gateway.core.model.AgentRequest;
 import ai.kompile.gateway.core.model.AgentResponse;
 import ai.kompile.gateway.core.gateway.channel.SlackApiClient;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
@@ -38,6 +39,9 @@ class SlackChannelAdapterTest {
     @Mock
     private KClawAgentService agentService;
 
+    // Upcast to AgentExecutor to disambiguate execute() overloads in when()/verify() calls
+    private AgentExecutor agentExecutor;
+
     @Mock
     private SlackApiClient slackApiClient;
 
@@ -45,6 +49,7 @@ class SlackChannelAdapterTest {
 
     @BeforeEach
     void setUp() {
+        agentExecutor = agentService;
         adapter = new SlackChannelAdapter(agentService);
         adapter.setApiClient(slackApiClient);
         adapter.setBotToken("xoxb-test-token");
@@ -115,7 +120,7 @@ class SlackChannelAdapterTest {
                 .response("I can help with that!")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -128,7 +133,7 @@ class SlackChannelAdapterTest {
 
         verify(slackApiClient).sendTyping("C12345");
         ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
-        verify(agentService).execute(reqCaptor.capture());
+        verify(agentExecutor).execute(reqCaptor.capture());
         assertEquals("test-agent", reqCaptor.getValue().getAgentId());
         assertEquals("help me with something", reqCaptor.getValue().getMessage());
         verify(slackApiClient).sendMessage(eq("C12345"), eq("I can help with that!"), eq("1234567890.123456"));
@@ -144,7 +149,7 @@ class SlackChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -160,7 +165,7 @@ class SlackChannelAdapterTest {
                 .response("Reply")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -171,7 +176,7 @@ class SlackChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService).execute(any());
+        verify(agentExecutor).execute(any(AgentRequest.class));
     }
 
     // ── Bot Message Filtering ──
@@ -189,7 +194,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(botMessage);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -208,7 +213,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     // ── Channel Whitelisting ──
@@ -231,7 +236,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -250,7 +255,7 @@ class SlackChannelAdapterTest {
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -261,7 +266,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(message);
 
-        verify(agentService).execute(any());
+        verify(agentExecutor).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -276,7 +281,7 @@ class SlackChannelAdapterTest {
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -287,7 +292,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(message);
 
-        verify(agentService).execute(any());
+        verify(agentExecutor).execute(any(AgentRequest.class));
     }
 
     // ── Mention Cleaning ──
@@ -303,7 +308,7 @@ class SlackChannelAdapterTest {
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -315,7 +320,7 @@ class SlackChannelAdapterTest {
         adapter.onAppMention(message);
 
         ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
-        verify(agentService).execute(reqCaptor.capture());
+        verify(agentExecutor).execute(reqCaptor.capture());
         assertEquals("what is the status?", reqCaptor.getValue().getMessage());
     }
 
@@ -337,7 +342,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -352,7 +357,7 @@ class SlackChannelAdapterTest {
 
         adapter.onAppMention(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     // ── Error Response Handling ──
@@ -368,7 +373,7 @@ class SlackChannelAdapterTest {
                 .success(false)
                 .error("Rate limit exceeded")
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(errorResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(errorResponse);
 
         adapter.start();
 
@@ -389,7 +394,7 @@ class SlackChannelAdapterTest {
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        when(agentService.execute(any(AgentRequest.class))).thenThrow(new RuntimeException("Internal failure"));
+        when(agentExecutor.execute(any(AgentRequest.class))).thenThrow(new RuntimeException("Internal failure"));
 
         adapter.start();
 
@@ -416,7 +421,7 @@ class SlackChannelAdapterTest {
                 .response("Thread reply")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -445,7 +450,7 @@ class SlackChannelAdapterTest {
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -457,7 +462,7 @@ class SlackChannelAdapterTest {
         adapter.onAppMention(message);
 
         ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
-        verify(agentService).execute(reqCaptor.capture());
+        verify(agentExecutor).execute(reqCaptor.capture());
         assertEquals("Jane Doe", reqCaptor.getValue().getMetadata().get("userName"));
     }
 

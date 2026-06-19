@@ -25,6 +25,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Pure Java tool gateway interceptor for the CLI chat loop.
@@ -38,8 +45,27 @@ import java.util.Map;
  * It loads the same rules file and applies the same evaluation logic, but runs
  * outside Spring context.
  * </p>
+ * <p>
+ * <b>Important:</b> when enabled, {@link #evaluate} performs a synchronous LLM
+ * round-trip <em>before</em> the gated tool runs. That network call is bounded by
+ * {@code evaluationTimeoutMs} and is skipped entirely for cheap read-only local
+ * tools (see {@link #ALWAYS_ALLOW_TOOLS}) so a mundane {@code grep}/{@code read}
+ * never blocks on — or times out against — the staging LLM.
+ * </p>
  */
 public class CliToolGatewayInterceptor {
+
+    /**
+     * Cheap, read-only, purely-local tools that must NEVER be gated behind a
+     * network LLM evaluation. A catch-all gateway rule (empty {@code toolPatterns}
+     * or {@code "*"}) otherwise matches these, turning a local {@code grep} into a
+     * blocking LLM call that can time out and surface as an MCP "disconnect".
+     */
+    static final Set<String> ALWAYS_ALLOW_TOOLS = Set.of(
+            "read", "grep", "glob", "list");
+
+    /** Floor for the evaluation timeout so a mis-configured {@code 0} can't insta-fail. */
+    private static final long MIN_EVALUATION_TIMEOUT_MS = 1000L;
 
     private final ObjectMapper objectMapper;
     private final DirectLlmClient llmClient;
@@ -48,11 +74,13 @@ public class CliToolGatewayInterceptor {
     private final boolean failOpen;
     private final boolean dryRun;
     private final boolean verboseLogging;
+    private final long evaluationTimeoutMs;
 
     private CliToolGatewayInterceptor(ObjectMapper objectMapper, DirectLlmClient llmClient,
                                        CliToolGatewayRulesLoader rulesLoader,
                                        boolean enabled, boolean failOpen,
-                                       boolean dryRun, boolean verboseLogging) {
+                                       boolean dryRun, boolean verboseLogging,
+                                       long evaluationTimeoutMs) {
         this.objectMapper = objectMapper;
         this.llmClient = llmClient;
         this.rulesLoader = rulesLoader;
@@ -60,6 +88,7 @@ public class CliToolGatewayInterceptor {
         this.failOpen = failOpen;
         this.dryRun = dryRun;
         this.verboseLogging = verboseLogging;
+        this.evaluationTimeoutMs = Math.max(MIN_EVALUATION_TIMEOUT_MS, evaluationTimeoutMs);
     }
 
     /**
@@ -73,13 +102,14 @@ public class CliToolGatewayInterceptor {
         boolean enabled = readFeatureFlag(configDir, objectMapper);
         if (!enabled) {
             return new CliToolGatewayInterceptor(objectMapper, null, null,
-                    false, true, false, false);
+                    false, true, false, false, MIN_EVALUATION_TIMEOUT_MS);
         }
 
         // Load gateway config
         boolean failOpen = true;
         boolean dryRun = false;
         boolean verboseLogging = false;
+        long evaluationTimeoutMs = 10_000L;
         String modelSource = "STAGING";
 
         Path configPath = configDir.resolve("tool-gateway-config.json");
@@ -89,6 +119,7 @@ public class CliToolGatewayInterceptor {
                 failOpen = config.path("failOpen").asBoolean(true);
                 dryRun = config.path("dryRun").asBoolean(false);
                 verboseLogging = config.path("verboseLogging").asBoolean(false);
+                evaluationTimeoutMs = config.path("evaluationTimeoutMs").asLong(10_000L);
                 modelSource = config.path("modelSource").asText("STAGING");
             } catch (Exception e) {
                 System.err.println("[Gateway] Failed to load config: " + e.getMessage());
@@ -100,7 +131,7 @@ public class CliToolGatewayInterceptor {
         CliToolGatewayRulesLoader rulesLoader = new CliToolGatewayRulesLoader(objectMapper);
 
         return new CliToolGatewayInterceptor(objectMapper, llmClient, rulesLoader,
-                true, failOpen, dryRun, verboseLogging);
+                true, failOpen, dryRun, verboseLogging, evaluationTimeoutMs);
     }
 
     /**
@@ -113,6 +144,13 @@ public class CliToolGatewayInterceptor {
             return InterceptResult.allow();
         }
 
+        // Never gate cheap, read-only, local tools behind a network LLM eval —
+        // a catch-all rule would otherwise make grep/read/glob/list block on the
+        // staging LLM and time out.
+        if (isAlwaysAllowed(toolName)) {
+            return InterceptResult.allow();
+        }
+
         List<Map<String, Object>> matchingRules = rulesLoader.getMatchingRules(toolName);
         if (matchingRules.isEmpty()) {
             return InterceptResult.allow();
@@ -122,9 +160,11 @@ public class CliToolGatewayInterceptor {
             String systemPrompt = buildSystemPrompt(rulesLoader.getSystemPrompt());
             String userPrompt = buildUserPrompt(toolName, args, matchingRules);
 
-            DirectLlmClient.StreamResult streamResult =
-                    llmClient.streamOneShot(userPrompt, systemPrompt, null);
-            String response = streamResult.text;
+            // Bound the LLM round-trip by evaluationTimeoutMs. Without this a slow or
+            // hung staging server would stall the gated tool call indefinitely (the
+            // underlying HttpClient read has no timeout), which the MCP client then
+            // sees as a tool/connection timeout.
+            String response = evaluateWithTimeout(userPrompt, systemPrompt);
             InterceptResult result = parseResponse(response);
 
             if (verboseLogging || result.action != InterceptAction.ALLOW) {
@@ -140,6 +180,11 @@ public class CliToolGatewayInterceptor {
 
             return result;
 
+        } catch (TimeoutException te) {
+            System.err.println("[Gateway] Evaluation timed out after " + evaluationTimeoutMs
+                    + "ms for '" + toolName + "'; " + (failOpen ? "allowing" : "blocking"));
+            return failOpen ? InterceptResult.allow()
+                    : InterceptResult.block("Evaluation timed out after " + evaluationTimeoutMs + "ms");
         } catch (Exception e) {
             System.err.println("[Gateway] Evaluation failed for '" + toolName + "': " + e.getMessage());
             return failOpen ? InterceptResult.allow()
@@ -155,15 +200,61 @@ public class CliToolGatewayInterceptor {
     // Private helpers
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /** True for cheap, read-only, local tools that must bypass network gating. */
+    static boolean isAlwaysAllowed(String toolName) {
+        return toolName != null && ALWAYS_ALLOW_TOOLS.contains(toolName);
+    }
+
+    /**
+     * Run the gateway LLM evaluation on a daemon worker, bounded by
+     * {@code evaluationTimeoutMs}. Cancels the in-flight stream on timeout so the
+     * worker can unwind instead of leaking.
+     *
+     * @throws TimeoutException if the LLM does not respond within the budget
+     */
+    private String evaluateWithTimeout(String userPrompt, String systemPrompt) throws Exception {
+        AtomicBoolean cancel = new AtomicBoolean(false);
+        llmClient.setCancelSignal(cancel);
+        ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "gateway-eval");
+            t.setDaemon(true);
+            return t;
+        });
+        Future<String> future = exec.submit(
+                () -> llmClient.streamOneShot(userPrompt, systemPrompt, null).text);
+        try {
+            return future.get(evaluationTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            cancel.set(true);      // best-effort: ask the stream to stop
+            future.cancel(true);
+            throw te;
+        } finally {
+            exec.shutdownNow();
+        }
+    }
+
     private static boolean readFeatureFlag(Path configDir, ObjectMapper objectMapper) {
         Path flagsPath = configDir.resolve("feature-flags-config.json");
         if (!Files.exists(flagsPath)) return false;
         try {
             JsonNode flags = objectMapper.readTree(Files.readString(flagsPath));
-            return flags.path("toolGatewayEnabled").asBoolean(false);
+            return isGatewayFlagEnabled(flags);
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /**
+     * Read the tool-gateway feature flag. The canonical key is
+     * {@code toolGatewayEnabled} (written by GlobalBootstrap/InitProjectCommand and
+     * read by the server-side ToolGatewayConfigService); the shorter
+     * {@code toolGateway} key used by some feature-flags files is honored as a
+     * fallback so the two formats can't silently disagree.
+     */
+    static boolean isGatewayFlagEnabled(JsonNode flags) {
+        if (flags == null) return false;
+        return flags.path("toolGatewayEnabled")
+                .asBoolean(flags.path("toolGateway").asBoolean(false));
     }
 
     private static DirectLlmClient buildLlmClient(String modelSource, ObjectMapper objectMapper) {

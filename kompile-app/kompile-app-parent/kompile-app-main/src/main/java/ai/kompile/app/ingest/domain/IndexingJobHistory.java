@@ -634,6 +634,10 @@ public class IndexingJobHistory {
      * A job is resumable if it is in a terminal or paused state and has a checkpoint path.
      */
     public boolean isResumable() {
+        // Explicit resumable flag (e.g. a crawl with archived steps) wins regardless of status.
+        if (this.resumable) {
+            return true;
+        }
         if (this.checkpointPath == null || this.checkpointPath.isBlank()) {
             return false;
         }

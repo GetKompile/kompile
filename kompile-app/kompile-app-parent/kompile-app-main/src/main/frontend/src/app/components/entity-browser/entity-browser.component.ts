@@ -17,6 +17,7 @@
 import { Component, OnInit, OnDestroy, Input, Output, EventEmitter, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { trigger, state, style, transition, animate } from '@angular/animations';
 import { MatCardModule } from '@angular/material/card';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -76,6 +77,14 @@ interface ConnectionSearchResult {
 @Component({
   selector: 'app-entity-browser',
   standalone: true,
+  animations: [
+    trigger('slideIn', [
+      state('void', style({ transform: 'translateX(100%)', opacity: 0 })),
+      state('*', style({ transform: 'translateX(0)', opacity: 1 })),
+      transition('void => *', [animate('250ms ease-out')]),
+      transition('* => void', [animate('200ms ease-in')])
+    ])
+  ],
   imports: [
     CommonModule,
     FormsModule,
@@ -130,7 +139,7 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
   selectedEntity: GraphNode | null = null;
   entitySearchQuery = '';
   entityTypeFilters: NodeLevel[] = [];
-  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM'];
+  allNodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT'];
   entityPageSize = 20;
   entityPageIndex = 0;
   totalEntities = 0;

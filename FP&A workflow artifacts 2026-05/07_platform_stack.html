@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The 5-Layer Platform Stack</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f5f5f5;
+    --surface-sunken: #ededed;
+    --text: #1a1a1a;
+    --text-secondary: #5a5a5a;
+    --text-tertiary: #858585;
+    --border: rgba(0,0,0,0.10);
+    --border-strong: rgba(0,0,0,0.20);
+    --accent: #DC143C;
+    --accent-bg: #FCE5EA;
+
+    --gray-50: #F1EFE8; --gray-600: #5F5E5A; --gray-800: #444441;
+    --blue-50: #E6F1FB; --blue-600: #185FA5; --blue-800: #0C447C;
+    --amber-50: #FAEEDA; --amber-600: #854F0B; --amber-800: #633806;
+    --green-50: #EAF3DE; --green-600: #3B6D11; --green-800: #27500A;
+    --purple-50: #EEEDFE; --purple-600: #534AB7; --purple-800: #3C3489;
+    --coral-50: #FAECE7; --coral-600: #993C1D; --coral-800: #712B13;
+    --teal-50: #E1F5EE; --teal-600: #0F6E56; --teal-800: #085041;
+    --pink-50: #FBEAF0; --pink-600: #993556; --pink-800: #72243E;
+    --red-50: #FBE9E7; --red-600: #B43124; --red-800: #821E13;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --surface: #1a1a1a;
+      --surface-hover: #262626;
+      --surface-sunken: #0d0d0d;
+      --text: #f5f5f5;
+      --text-secondary: #a8a8a8;
+      --text-tertiary: #707070;
+      --border: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.22);
+      --accent: #F08197;
+      --accent-bg: rgba(220,20,60,0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 22px 32px;
+  }
+  .header-inner { max-width: 1200px; margin: 0 auto; }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .logo-mark {
+    width: 22px; height: 22px; border-radius: 5px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--purple-600) 100%);
+    flex-shrink: 0;
+  }
+  .logo-text { font-size: 12px; color: var(--text-tertiary); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+  .logo-slash {
+    font-family: inherit;
+    font-weight: 800;
+    color: var(--accent);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+  .logo-wordmark {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: -4px;
+  }
+  .logo-divider { color: var(--text-tertiary); margin: 0 4px; font-size: 12px; }
+  .logo-context {
+    font-size: 12px; color: var(--text-tertiary);
+    font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
+  .sub { font-size: 14px; color: var(--text-secondary); margin: 0; max-width: 760px; }
+
+  main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 36px 32px 64px;
+  }
+
+  /* Wedge intro */
+  .wedge {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 18px 24px;
+    margin-bottom: 32px;
+    font-size: 14.5px;
+    color: var(--text);
+  }
+  .wedge strong { color: var(--text); font-weight: 600; }
+  .wedge em { color: var(--accent); font-style: normal; font-weight: 600; }
+
+  /* Section header */
+  .section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin: 32px 0 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-num { font-size: 11px; font-weight: 600; color: var(--text-tertiary); letter-spacing: 0.06em; text-transform: uppercase; }
+  .section-header h2 { font-size: 18px; font-weight: 500; margin: 0; }
+
+  /* Stack */
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    position: relative;
+  }
+  .layer {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0;
+    overflow: hidden;
+    position: relative;
+  }
+  .layer + .layer-arrow + .layer { /* nothing — handled by margin */ }
+  .layer-arrow {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    font-size: 16px;
+  }
+  .layer-arrow::before {
+    content: '↑';
+    font-size: 18px;
+    color: var(--text-tertiary);
+  }
+  .layer-arrow .dep-label {
+    margin-left: 8px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .layer-stripe {
+    height: 4px;
+    width: 100%;
+  }
+  .layer-head {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 16px;
+    align-items: baseline;
+    padding: 16px 22px 8px;
+  }
+  .layer-num {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .layer-name {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .layer-zapier {
+    font-size: 11.5px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .zapier-no  { background: var(--red-50);   color: var(--red-800); }
+  .zapier-yes { background: var(--green-50); color: var(--green-800); }
+  .zapier-partial { background: var(--amber-50); color: var(--amber-800); }
+  @media (prefers-color-scheme: dark) {
+    .zapier-no { background: rgba(180,49,36,0.18); color: #ED8077; }
+    .zapier-yes { background: rgba(59,109,17,0.18); color: #B7E07A; }
+    .zapier-partial { background: rgba(133,79,11,0.18); color: #F0C171; }
+  }
+
+  .layer-tagline {
+    font-size: 14.5px;
+    color: var(--text);
+    margin: 0 22px 14px;
+    font-weight: 500;
+  }
+  .layer-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0;
+    border-top: 1px solid var(--border);
+  }
+  @media (max-width: 880px) {
+    .layer-body { grid-template-columns: 1fr; }
+    .layer-cell + .layer-cell { border-top: 1px solid var(--border); border-left: none !important; }
+  }
+  .layer-cell {
+    padding: 14px 22px 18px;
+    border-left: 1px solid var(--border);
+  }
+  .layer-cell:first-child { border-left: none; }
+  .layer-cell h4 {
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin: 0 0 8px;
+    font-weight: 600;
+  }
+  .layer-cell ul {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .layer-cell ul li {
+    margin: 3px 0;
+    line-height: 1.5;
+  }
+  .layer-cell p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.55;
+  }
+  .layer-cell.moat {
+    background: var(--surface-sunken);
+  }
+  .layer-cell.moat p {
+    color: var(--text-secondary);
+    font-style: italic;
+  }
+
+  /* Layer color stripes */
+  .layer.l1 .layer-stripe { background: var(--blue-600); }
+  .layer.l2 .layer-stripe { background: var(--purple-600); }
+  .layer.l3 .layer-stripe { background: var(--teal-600); }
+  .layer.l4 .layer-stripe { background: var(--gray-600); }
+  .layer.l5 .layer-stripe { background: var(--coral-600); }
+
+  .layer.l1 .layer-name { color: var(--blue-800); }
+  .layer.l2 .layer-name { color: var(--purple-800); }
+  .layer.l3 .layer-name { color: var(--teal-800); }
+  .layer.l4 .layer-name { color: var(--gray-800); }
+  .layer.l5 .layer-name { color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .layer.l1 .layer-name { color: #BEDDF6; }
+    .layer.l2 .layer-name { color: #BEB7F5; }
+    .layer.l3 .layer-name { color: #94CFB8; }
+    .layer.l4 .layer-name { color: #C4C2BB; }
+    .layer.l5 .layer-name { color: #E8A48A; }
+  }
+
+  /* Zapier callout next to layer 4 */
+  .zapier-callout {
+    position: relative;
+    margin: 0 0 0 0;
+  }
+  .zapier-callout-inner {
+    position: absolute;
+    right: -300px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 270px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.06);
+  }
+  .zapier-callout-inner::before {
+    content: '';
+    position: absolute;
+    left: -10px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 0; height: 0;
+    border-style: solid;
+    border-width: 8px 10px 8px 0;
+    border-color: transparent var(--border-strong) transparent transparent;
+  }
+  .zapier-callout-inner::after {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 0; height: 0;
+    border-style: solid;
+    border-width: 7px 9px 7px 0;
+    border-color: transparent var(--surface) transparent transparent;
+  }
+  .zapier-callout-inner strong { color: var(--text); }
+  @media (max-width: 1380px) {
+    .zapier-callout-inner { display: none; }
+  }
+  .zapier-inline {
+    display: none;
+    margin: 8px 22px 14px;
+    padding: 8px 12px;
+    background: var(--gray-50);
+    border-left: 3px solid var(--gray-600);
+    color: var(--gray-800);
+    font-size: 12.5px;
+    border-radius: 0 4px 4px 0;
+  }
+  @media (prefers-color-scheme: dark) {
+    .zapier-inline { background: rgba(95,94,90,0.15); color: var(--text-secondary); }
+  }
+  @media (max-width: 1380px) {
+    .zapier-inline { display: block; }
+  }
+
+  /* Artifact strip */
+  .artifact-strip {
+    margin-top: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 22px;
+  }
+  .artifact-strip h3 {
+    margin: 0 0 4px;
+    font-size: 16px;
+    font-weight: 500;
+  }
+  .artifact-strip .lead {
+    margin: 0 0 14px;
+    color: var(--text-secondary);
+    font-size: 13.5px;
+  }
+  .artifact-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+    margin-top: 8px;
+  }
+  @media (max-width: 880px) {
+    .artifact-row { grid-template-columns: repeat(2, 1fr); }
+  }
+  .artifact-pill {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--text-tertiary);
+  }
+  .artifact-pill.l1 { border-left-color: var(--blue-600); }
+  .artifact-pill.l2 { border-left-color: var(--purple-600); }
+  .artifact-pill.l3 { border-left-color: var(--teal-600); }
+  .artifact-pill.l4 { border-left-color: var(--gray-600); }
+  .artifact-pill.l5 { border-left-color: var(--coral-600); }
+  .artifact-layer {
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+  .artifact-name { font-size: 13.5px; font-weight: 500; color: var(--text); margin-bottom: 2px; }
+  .artifact-form { font-size: 11.5px; color: var(--text-secondary); }
+
+  /* Strategy block */
+  .strategy {
+    margin-top: 18px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 880px) { .strategy { grid-template-columns: 1fr; } }
+  .strat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+  }
+  .strat-card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
+  .strat-card .lead { margin: 0 0 12px; font-size: 12.5px; color: var(--text-secondary); }
+  .strat-card p { margin: 0 0 10px; font-size: 13.5px; color: var(--text); line-height: 1.55; }
+  .strat-card p:last-child { margin-bottom: 0; }
+  .strat-card.moat-card { border-left: 4px solid var(--purple-600); }
+  .strat-card.risk-card { border-left: 4px solid var(--coral-600); }
+
+  footer {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 32px 32px 56px;
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="logo-row">
+      <span class="logo-slash">//</span>
+      <span class="logo-wordmark">PROSSIMO</span>
+      <span class="logo-divider">·</span>
+      <span class="logo-context">Platform Architecture</span>
+    </div>
+    <h1>The 5-Layer Platform Stack</h1>
+    <p class="sub">How "automating the automation" decomposes into a stack of governable, reviewable layers — and where the moat lives versus the table-stakes.</p>
+  </div>
+</header>
+
+<main>
+
+  <div class="wedge">
+    The wedge isn't automating workflows — Zapier and Workato already do that. <strong>It's automating the <em>modeling</em> of workflows</strong>, which today requires a $300/hr consultant to interview ten people for a month before anyone can write the first Zap. The five layers below stack like a dependency chain: each layer's output is a structured artifact the layer above consumes, and a human can audit and edit at every level.
+  </div>
+
+  <div class="section-header">
+    <span class="section-num">Section 1</span>
+    <h2>The stack — bottom to top</h2>
+  </div>
+
+  <div class="stack">
+
+    <!-- Layer 5 -->
+    <div class="layer l5">
+      <div class="layer-stripe"></div>
+      <div class="layer-head">
+        <span class="layer-num">Layer 5</span>
+        <h3 class="layer-name">Agents</h3>
+        <span class="layer-zapier zapier-no">Zapier: ✗</span>
+      </div>
+      <p class="layer-tagline">Specialized agents instantiated for the judgment-laden steps that deterministic RPA can't reach.</p>
+      <div class="layer-body">
+        <div class="layer-cell">
+          <h4>Inputs</h4>
+          <ul>
+            <li>Process model from Layer 3</li>
+            <li>Ontology from Layer 2</li>
+            <li>Integrations from Layer 4</li>
+            <li>Per-task eval set</li>
+          </ul>
+        </div>
+        <div class="layer-cell">
+          <h4>Output (artifact)</h4>
+          <ul>
+            <li><strong>Agent specs</strong> that read like job descriptions: prompt, tools, eval set, escalation policy, audit-trail schema</li>
+            <li>Running instances with HITL hooks</li>
+          </ul>
+        </div>
+        <div class="layer-cell moat">
+          <h4>Why this matters</h4>
+          <p>The spec — not the model — is the deliverable. A spec is reviewable, governable, and survives model upgrades. Without specs, agents are just opaque LLM calls.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="layer-arrow"><span class="dep-label">depends on</span></div>
+
+    <!-- Layer 4 -->
+    <div class="layer l4 zapier-callout">
+      <div class="layer-stripe"></div>
+      <div class="layer-head">
+        <span class="layer-num">Layer 4</span>
+        <h3 class="layer-name">Integrations</h3>
+        <span class="layer-zapier zapier-yes">Zapier: ✓</span>
+      </div>
+      <p class="layer-tagline">Authenticated, observable connections to the source systems the process depends on.</p>
+      <div class="zapier-inline">
+        ← <strong>Zapier-class tools live here.</strong> Plus a hand-written workflow builder that assumes Layers 1–3 already happened in someone's head.
+      </div>
+      <div class="layer-body">
+        <div class="layer-cell">
+          <h4>Inputs</h4>
+          <ul>
+            <li>Process model's required endpoints</li>
+            <li>Customer credentials (OAuth, API keys)</li>
+            <li>Schema mappings from Layer 2</li>
+          </ul>
+        </div>
+        <div class="layer-cell">
+          <h4>Output (artifact)</h4>
+          <ul>
+            <li><strong>Connector library</strong> — typed, observable, rate-limited</li>
+            <li>Per-connector health + lineage telemetry</li>
+          </ul>
+        </div>
+        <div class="layer-cell moat">
+          <h4>Why this matters</h4>
+          <p>This is the table-stakes layer — necessary but commodity. A defensible business is not built here; it's built on the layers below and above.</p>
+        </div>
+      </div>
+      <div class="zapier-callout-inner">
+        <strong>Zapier-class tools sit here.</strong> They assume Layers 1–3 already happened in someone's head, and they have nothing structural for Layer 5.
+      </div>
+    </div>
+
+    <div class="layer-arrow"><span class="dep-label">depends on</span></div>
+
+    <!-- Layer 3 -->
+    <div class="layer l3">
+      <div class="layer-stripe"></div>
+      <div class="layer-head">
+        <span class="layer-num">Layer 3</span>
+        <h3 class="layer-name">Process</h3>
+        <span class="layer-zapier zapier-no">Zapier: ✗</span>
+      </div>
+      <p class="layer-tagline">Versioned process model — both as-is and to-be — with named human approvers gating every state transition.</p>
+      <div class="layer-body">
+        <div class="layer-cell">
+          <h4>Inputs</h4>
+          <ul>
+            <li>Ontology from Layer 2</li>
+            <li>Evidence graph from Layer 1</li>
+            <li>Customer human-in-the-loop validation</li>
+          </ul>
+        </div>
+        <div class="layer-cell">
+          <h4>Output (artifact)</h4>
+          <ul>
+            <li><strong>Process model</strong> with both as-is and to-be states</li>
+            <li>Diff between them, signed off by named humans</li>
+            <li>Validations / controls (the "C-01..C-07" pattern)</li>
+          </ul>
+        </div>
+        <div class="layer-cell moat">
+          <h4>Why this matters</h4>
+          <p>Customers sign off on what gets automated <em>before</em> it goes live, not after. HITL transitions are how trust is earned. This is where SOX/J-SOX defensibility lives.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="layer-arrow"><span class="dep-label">depends on</span></div>
+
+    <!-- Layer 2 -->
+    <div class="layer l2">
+      <div class="layer-stripe"></div>
+      <div class="layer-head">
+        <span class="layer-num">Layer 2</span>
+        <h3 class="layer-name">Ontology</h3>
+        <span class="layer-zapier zapier-no">Zapier: ✗</span>
+      </div>
+      <p class="layer-tagline">Shared vocabulary that turns observed facts into something more than one customer's transcript — entities, relationships, controls, role mappings.</p>
+      <div class="layer-body">
+        <div class="layer-cell">
+          <h4>Inputs</h4>
+          <ul>
+            <li>Evidence graph from Layer 1</li>
+            <li>Domain templates (FP&amp;A, P2P, OTC, ITGC...)</li>
+            <li>Customer-specific overrides via HITL</li>
+          </ul>
+        </div>
+        <div class="layer-cell">
+          <h4>Output (artifact)</h4>
+          <ul>
+            <li><strong>Typed schema</strong>: entity classes, relationships, controls, validations, role &amp; system mappings</li>
+            <li>Confidence per assertion</li>
+          </ul>
+        </div>
+        <div class="layer-cell moat">
+          <h4>Why this matters</h4>
+          <p><strong>This is the strategic moat.</strong> Without ontology, discovery is a transcript and agents are point solutions. With it, "this customer's variance triage rule" and "that customer's expense override" become the same shape of thing — a platform, not consulting.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="layer-arrow"><span class="dep-label">depends on</span></div>
+
+    <!-- Layer 1 -->
+    <div class="layer l1">
+      <div class="layer-stripe"></div>
+      <div class="layer-head">
+        <span class="layer-num">Layer 1</span>
+        <h3 class="layer-name">Discovery</h3>
+        <span class="layer-zapier zapier-no">Zapier: ✗</span>
+      </div>
+      <p class="layer-tagline">Multi-modal process mining — ingests four kinds of evidence to build a factual claim about how work happens today.</p>
+      <div class="layer-body">
+        <div class="layer-cell">
+          <h4>Inputs</h4>
+          <ul>
+            <li>Word / PDF manuals &amp; SOPs</li>
+            <li>Excel workbooks + VBA macros</li>
+            <li>Screen recordings of analysts</li>
+            <li>Structured AI-led interviews</li>
+          </ul>
+        </div>
+        <div class="layer-cell">
+          <h4>Output (artifact)</h4>
+          <ul>
+            <li><strong>Evidence graph</strong> — atomic procedural facts, each linked to its source</li>
+            <li>Confidence score per claim</li>
+            <li>Surfaced gaps &amp; conflicts</li>
+          </ul>
+        </div>
+        <div class="layer-cell moat">
+          <h4>Why this matters</h4>
+          <p>The wedge that breaks the consulting bottleneck. The defensible bar: surface what the customer can <em>not</em> articulate — the undocumented exceptions and the informal escalations nobody put in the SOP.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- First-class artifacts strip -->
+  <div class="section-header">
+    <span class="section-num">Section 2</span>
+    <h2>The first-class artifact principle</h2>
+  </div>
+
+  <div class="artifact-strip">
+    <h3>Each layer emits a structured, reviewable, governable artifact.</h3>
+    <p class="lead">No layer hands an opaque blob to the next. This is what makes the platform defensible against "GPT can do that" — because GPT is the engine inside Layer 5, but Layers 1–4 produce inputs an off-the-shelf model alone cannot.</p>
+    <div class="artifact-row">
+      <div class="artifact-pill l1">
+        <div class="artifact-layer">Layer 1</div>
+        <div class="artifact-name">Evidence graph</div>
+        <div class="artifact-form">JSON · facts + sources + confidence</div>
+      </div>
+      <div class="artifact-pill l2">
+        <div class="artifact-layer">Layer 2</div>
+        <div class="artifact-name">Typed schema</div>
+        <div class="artifact-form">Ontology · entities, relationships, controls</div>
+      </div>
+      <div class="artifact-pill l3">
+        <div class="artifact-layer">Layer 3</div>
+        <div class="artifact-name">Process model</div>
+        <div class="artifact-form">Versioned · as-is + to-be · named approvers</div>
+      </div>
+      <div class="artifact-pill l4">
+        <div class="artifact-layer">Layer 4</div>
+        <div class="artifact-name">Connector library</div>
+        <div class="artifact-form">Typed · observable · rate-limited</div>
+      </div>
+      <div class="artifact-pill l5">
+        <div class="artifact-layer">Layer 5</div>
+        <div class="artifact-name">Agent specs</div>
+        <div class="artifact-form">Prompt + tools + evals + escalation policy</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Strategy: moat + risk -->
+  <div class="section-header">
+    <span class="section-num">Section 3</span>
+    <h2>Moat &amp; risk</h2>
+  </div>
+
+  <div class="strategy">
+    <div class="strat-card moat-card">
+      <h3>The moat — Layer 2 (Ontology)</h3>
+      <p class="lead">Why this layer in particular is defensible.</p>
+      <p>Without ontology, discovery is a transcript and agents are point solutions. With it, the platform recognizes that disparate customer rules are the <em>same shape</em> of thing — variance triage, policy override, exception escalation — and that's what makes it a platform instead of a per-customer consulting engagement.</p>
+      <p>Domain templates (FP&amp;A, P2P, OTC, ITGC...) solve the cold start. Learning customer-specific specializations from observed evidence is the long-term defense.</p>
+    </div>
+    <div class="strat-card risk-card">
+      <h3>The risk — and how we win it</h3>
+      <p class="lead">The most likely attack vector from incumbents.</p>
+      <p>An incumbent — Zapier, ServiceNow, or someone newer — bolts on a Layer 5 with off-the-shelf LLMs and tells the customer that Layers 1–3 are "your problem to scope." That commoditizes us before we've established the moat.</p>
+      <p>We win by making Discovery surface what the customer cannot articulate: not just the workflow they described in the kickoff, but the four undocumented exceptions and the informal escalation that never made it into the SOP. That is the demo's "M. Chen always-escalate channel-mismatches" beat — credible only if the discovery → ontology → process pipeline genuinely sees what the customer cannot.</p>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+    <span style="font-weight: 800; color: var(--accent); font-size: 16px; letter-spacing: -0.02em;">//</span>
+    <strong style="color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; margin-left: -2px;">PROSSIMO</strong>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>Platform Architecture</span>
+  </div>
+  Five-layer stack for automating the automation. Each layer's output is a first-class artifact: auditable, editable, governable. The moat is Layer 2 (ontology). Layer 4 is table-stakes.<br>
+  <span style="color: var(--text-tertiary);">© 2026 ProssimoTech · Tokyo · <a href="https://www.linkedin.com/company/prossimo-tech/" style="color: var(--accent); text-decoration: none;">LinkedIn</a> · info@prossimotech.com</span>
+</footer>
+
+</body>
+</html>

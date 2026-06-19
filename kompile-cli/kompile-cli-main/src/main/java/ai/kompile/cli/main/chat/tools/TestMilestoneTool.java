@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -51,7 +53,7 @@ public class TestMilestoneTool implements CliTool {
     private static final String BASE_DIR = ".kompile/test-milestones";
     private static final String CONFIG_FILE = "config.json";
     private static final String MILESTONES_SUBDIR = "milestones";
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
@@ -463,10 +465,10 @@ public class TestMilestoneTool implements CliTool {
         for (Map<String, Object> r : regressions) {
             sb.append(String.format("%-8s %-45s %-12s %-8s %s\n",
                     str(r.get("id")),
-                    truncate(str(r.get("test")), 45),
-                    truncate(str(r.get("module")), 12),
+                    StringUtils.truncate(str(r.get("test")), 45),
+                    StringUtils.truncate(str(r.get("module")), 12),
                     str(r.get("sinceCommit")),
-                    truncate(str(r.get("notes")), 30)));
+                    StringUtils.truncate(str(r.get("notes")), 30)));
         }
 
         sb.append("\nTotal: ").append(regressions.size()).append(" known regressions");
@@ -695,8 +697,8 @@ public class TestMilestoneTool implements CliTool {
             sb.append(String.format("%-8s %-7s %-20s %-15s %-7s %s\n",
                     m.getOrDefault("id", ""),
                     m.getOrDefault("commitShort", ""),
-                    truncate(str(m.get("branch")), 20),
-                    truncate(str(m.get("module")), 15),
+                    StringUtils.truncate(str(m.get("branch")), 20),
+                    StringUtils.truncate(str(m.get("module")), 15),
                     passing ? "PASS" : "FAIL",
                     str(m.get("timestamp")).length() >= 10
                             ? str(m.get("timestamp")).substring(0, 10) : str(m.get("timestamp"))
@@ -1099,11 +1101,6 @@ public class TestMilestoneTool implements CliTool {
 
     private static String str(Object o) {
         return o != null ? o.toString() : "";
-    }
-
-    private static String truncate(String s, int maxLen) {
-        if (s == null) return "";
-        return s.length() <= maxLen ? s : s.substring(0, maxLen - 2) + "..";
     }
 
     private static void addStringProp(ObjectNode props, String name, String desc) {

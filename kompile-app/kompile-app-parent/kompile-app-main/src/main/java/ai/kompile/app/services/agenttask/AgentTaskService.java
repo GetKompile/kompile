@@ -16,7 +16,7 @@
 
 package ai.kompile.app.services.agenttask;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -65,7 +65,7 @@ public class AgentTaskService {
 
     public AgentTaskService() {
         this.baseDir = Paths.get(System.getProperty("user.home"), ".kompile", "agent-state", "tasks");
-        this.mapper = new ObjectMapper()
+        this.mapper = JsonUtils.newStandardMapper()
                 .enable(SerializationFeature.INDENT_OUTPUT)
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     }
@@ -307,49 +307,4 @@ public class AgentTaskService {
                 .collect(Collectors.toList());
     }
 
-    // ── Task model ───────────────────────────────────────────────────────────
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class AgentTask {
-        private long id;
-        private String sessionId;
-        private String title;
-        private String description;
-        private String status; // pending, in_progress, completed, blocked
-        private String assignee;
-        private String priority; // low, medium, high, critical
-        private List<String> tags;
-        private String parentTaskId;
-        private String completionNote;
-        private String createdAt;
-        private String updatedAt;
-        private String completedAt;
-
-        public long getId() { return id; }
-        public void setId(long id) { this.id = id; }
-        public String getSessionId() { return sessionId; }
-        public void setSessionId(String sessionId) { this.sessionId = sessionId; }
-        public String getTitle() { return title; }
-        public void setTitle(String title) { this.title = title; }
-        public String getDescription() { return description; }
-        public void setDescription(String description) { this.description = description; }
-        public String getStatus() { return status; }
-        public void setStatus(String status) { this.status = status; }
-        public String getAssignee() { return assignee; }
-        public void setAssignee(String assignee) { this.assignee = assignee; }
-        public String getPriority() { return priority; }
-        public void setPriority(String priority) { this.priority = priority; }
-        public List<String> getTags() { return tags; }
-        public void setTags(List<String> tags) { this.tags = tags; }
-        public String getParentTaskId() { return parentTaskId; }
-        public void setParentTaskId(String parentTaskId) { this.parentTaskId = parentTaskId; }
-        public String getCompletionNote() { return completionNote; }
-        public void setCompletionNote(String completionNote) { this.completionNote = completionNote; }
-        public String getCreatedAt() { return createdAt; }
-        public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
-        public String getUpdatedAt() { return updatedAt; }
-        public void setUpdatedAt(String updatedAt) { this.updatedAt = updatedAt; }
-        public String getCompletedAt() { return completedAt; }
-        public void setCompletedAt(String completedAt) { this.completedAt = completedAt; }
-    }
 }

@@ -29,12 +29,15 @@ public enum BuildPreset {
     CLI_AGENT_RAG("CLI Agent RAG application (local, no API keys)",
             "app-main", "app-core", "loaders-orchestrator", "app-anserini", "chat-history", "pipelines-llm",
             "llm-cli-agent",
-            "embedding-anserini",
+            "embedding-anserini", "embedding-sentence-transformer",
             "vectorstore-anserini",
-            "loader-pdf-extended",
-            "chunker-sentence",
-            "tool-filesystem", "tool-rag",
-            "kvcache", "model-manager"
+            "loader-pdf-extended", "loader-tika", "loader-microsoft", "loader-mail",
+            "chunker-sentence", "chunker-recursive-character", "chunker-markdown", "chunker-token",
+            "tool-filesystem", "tool-rag", "tool-table-search",
+            "ocr-core", "ocr-models", "ocr-postprocess", "ocr-integration", "ocr-datapipeline",
+            "crawler-core", "crawl-graph", "process-discovery", "event-attribution", "code-indexer",
+            "data-enrichment", "rag-pipeline",
+            "kvcache", "model-manager", "graph-algorithms", "knowledge-graph"
     ),
 
     /**
@@ -42,13 +45,16 @@ public enum BuildPreset {
      */
     HOSTED_LLM_RAG("Hosted LLM RAG application",
             "app-main", "app-core", "loaders-orchestrator", "app-anserini", "chat-history", "pipelines-llm",
-            "llm-openai",
-            "embedding-anserini",
+            "llm-openai", "llm-anthropic", "llm-gemini",
+            "embedding-openai", "embedding-anserini", "embedding-sentence-transformer",
             "vectorstore-anserini",
-            "loader-pdf-extended",
-            "chunker-sentence",
-            "tool-filesystem", "tool-rag",
-            "kvcache", "model-manager"
+            "loader-pdf-extended", "loader-tika", "loader-microsoft", "loader-mail",
+            "chunker-sentence", "chunker-recursive-character", "chunker-markdown", "chunker-token",
+            "tool-filesystem", "tool-rag", "tool-table-search",
+            "ocr-core", "ocr-models", "ocr-postprocess", "ocr-integration", "ocr-datapipeline",
+            "crawler-core", "crawl-graph", "process-discovery", "event-attribution", "code-indexer",
+            "data-enrichment", "rag-pipeline",
+            "kvcache", "model-manager", "graph-algorithms", "knowledge-graph"
     ),
 
     /**
@@ -56,13 +62,15 @@ public enum BuildPreset {
      */
     SAMEDIFF_RAG("SameDiff RAG application (no hosted LLM)",
             "app-main", "app-core", "loaders-orchestrator", "app-anserini", "chat-history", "pipelines-llm",
-            "embedding-anserini",
+            "embedding-anserini", "embedding-sentence-transformer",
             "vectorstore-anserini",
-            "loader-pdf-extended",
-            "loader-tika",
-            "chunker-sentence",
-            "tool-filesystem", "tool-rag",
-            "kvcache", "model-manager"
+            "loader-pdf-extended", "loader-tika", "loader-microsoft", "loader-mail",
+            "chunker-sentence", "chunker-recursive-character", "chunker-markdown", "chunker-token",
+            "tool-filesystem", "tool-rag", "tool-table-search",
+            "ocr-core", "ocr-models", "ocr-postprocess", "ocr-integration", "ocr-datapipeline",
+            "crawler-core", "crawl-graph", "process-discovery", "event-attribution", "code-indexer",
+            "data-enrichment", "rag-pipeline",
+            "kvcache", "model-manager", "graph-algorithms", "knowledge-graph"
     ),
 
     /**

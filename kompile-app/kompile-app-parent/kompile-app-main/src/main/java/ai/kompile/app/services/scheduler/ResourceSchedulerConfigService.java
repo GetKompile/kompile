@@ -18,6 +18,7 @@ package ai.kompile.app.services.scheduler;
 
 import ai.kompile.app.config.ResourceSchedulerConfig;
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import jakarta.annotation.PostConstruct;
@@ -50,7 +51,7 @@ public class ResourceSchedulerConfigService {
     }
 
     public ResourceSchedulerConfigService(String dataDir) {
-        this.objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         this.configFilePath = Paths.get(dataDir, "config", CONFIG_FILENAME);
         this.currentConfig = ResourceSchedulerConfig.defaults();
     }

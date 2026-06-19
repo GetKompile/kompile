@@ -24,8 +24,8 @@ import java.util.Set;
  * <ul>
  *   <li>{@code POST /api/attribution/explain} — "Why did X happen?" query</li>
  *   <li>{@code POST /api/attribution/predict} — "What will happen next?" query</li>
- *   <li>{@code GET /api/attribution/explain/{nodeId}} — Quick attribution with defaults</li>
- *   <li>{@code GET /api/attribution/predict/{nodeId}} — Quick prediction with defaults</li>
+ *   <li>{@code GET /api/attribution/explain?nodeId=...} — Quick attribution with defaults</li>
+ *   <li>{@code GET /api/attribution/predict?nodeId=...} — Quick prediction with defaults</li>
  * </ul>
  */
 @RestController
@@ -65,9 +65,11 @@ public class EventAttributionController {
     /**
      * Quick attribution with sensible defaults.
      */
-    @GetMapping("/explain/{nodeId}")
+    // nodeId is a query param, not a path segment: document node IDs embed
+    // filesystem paths ('/'), which Tomcat rejects as %2F in the URL path.
+    @GetMapping("/explain")
     public ResponseEntity<AttributionResult> explainQuick(
-            @PathVariable String nodeId,
+            @RequestParam String nodeId,
             @RequestParam(required = false) String question,
             @RequestParam(required = false) Long factSheetId,
             @RequestParam(defaultValue = "5") int maxDepth,
@@ -110,9 +112,11 @@ public class EventAttributionController {
     /**
      * Quick prediction with sensible defaults.
      */
-    @GetMapping("/predict/{nodeId}")
+    // nodeId is a query param, not a path segment (see explainQuick) — slash-bearing
+    // document node IDs cannot be a URL path segment.
+    @GetMapping("/predict")
     public ResponseEntity<PredictionResult> predictQuick(
-            @PathVariable String nodeId,
+            @RequestParam String nodeId,
             @RequestParam(required = false) String context,
             @RequestParam(required = false) Long factSheetId,
             @RequestParam(defaultValue = "3") int maxDepth,

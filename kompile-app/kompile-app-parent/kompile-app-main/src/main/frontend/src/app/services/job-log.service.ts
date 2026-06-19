@@ -20,7 +20,7 @@ import { Observable } from 'rxjs';
 import { backendUrl } from './base.service';
 
 export type LogLevel = 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-export type LogSource = 'STDOUT' | 'STDERR' | 'SYSTEM' | 'APPLICATION' | 'EMBEDDING';
+export type LogSource = 'STDOUT' | 'STDERR' | 'SYSTEM' | 'APPLICATION' | 'EMBEDDING' | 'LLM_TRANSCRIPT';
 
 export interface JobLogEntry {
   id: number;
@@ -118,6 +118,7 @@ export class JobLogService {
     options?: {
       level?: LogLevel;
       levels?: LogLevel[];
+      source?: LogSource;
       search?: string;
       page?: number;
       size?: number;
@@ -125,6 +126,9 @@ export class JobLogService {
   ): Observable<JobLogsResponse> {
     let params = new HttpParams();
 
+    if (options?.source) {
+      params = params.set('source', options.source);
+    }
     if (options?.level) {
       params = params.set('level', options.level);
     }

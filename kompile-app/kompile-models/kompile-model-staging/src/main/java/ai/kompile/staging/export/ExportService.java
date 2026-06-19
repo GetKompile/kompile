@@ -18,6 +18,7 @@ package ai.kompile.staging.export;
 
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.RegistryService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
@@ -52,8 +53,7 @@ public class ExportService {
     @Autowired
     public ExportService(RegistryService registryService) {
         this.registryService = registryService;
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
     }
 
     /**

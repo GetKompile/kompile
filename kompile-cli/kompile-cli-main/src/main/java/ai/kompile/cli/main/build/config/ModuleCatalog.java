@@ -118,7 +118,7 @@ public final class ModuleCatalog {
         register("llm-openai", "ai.kompile", "kompile-app-openai-llm", Category.LLM, "OpenAI LLM provider");
         register("llm-anthropic", "ai.kompile", "kompile-app-anthropic-llm", Category.LLM, "Anthropic LLM provider");
         register("llm-gemini", "ai.kompile", "kompile-app-gemini-llm", Category.LLM, "Google Gemini LLM provider");
-        register("llm-cli-agent", null, null, Category.LLM, "Local CLI agent LLM (no API key required)");
+        register("llm-cli-agent", "ai.kompile", "kompile-app-cli-llm", Category.LLM, "Local CLI agent LLM (no API key required)");
 
         // Embedding providers
         register("embedding-openai", "ai.kompile", "kompile-embedding-openai", Category.EMBEDDING, "OpenAI embeddings");

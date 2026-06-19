@@ -23,10 +23,9 @@ import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.LogPaths;
 import ai.kompile.cli.common.logs.LogRetentionManager;
 import ai.kompile.cli.common.logs.LogRetentionPolicy;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -63,9 +62,7 @@ public class AgentLogsCommand implements Callable<Integer> {
         return 1;
     }
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ISO_INSTANT;
 

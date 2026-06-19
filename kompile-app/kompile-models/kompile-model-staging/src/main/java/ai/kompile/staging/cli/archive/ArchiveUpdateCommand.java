@@ -17,6 +17,7 @@
 package ai.kompile.staging.cli.archive;
 
 import ai.kompile.staging.transfer.TransferProgress;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.staging.update.UpdateInfo;
 import ai.kompile.staging.update.UpdateService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -136,9 +137,9 @@ public class ArchiveUpdateCommand implements Callable<Integer> {
             }
 
             System.out.printf(format,
-                    truncate(update.getArchiveId(), 30),
-                    truncate(update.getCurrentVersion(), 12),
-                    truncate(update.getLatestVersion(), 12),
+                    StringUtils.truncate(update.getArchiveId(), 30),
+                    StringUtils.truncate(update.getCurrentVersion(), 12),
+                    StringUtils.truncate(update.getLatestVersion(), 12),
                     status);
         }
 
@@ -303,12 +304,6 @@ public class ArchiveUpdateCommand implements Callable<Integer> {
         }
         sb.append("]");
         return sb.toString();
-    }
-
-    private String truncate(String s, int maxLength) {
-        if (s == null) return "";
-        if (s.length() <= maxLength) return s;
-        return s.substring(0, maxLength - 3) + "...";
     }
 
     private String escapeJson(String s) {

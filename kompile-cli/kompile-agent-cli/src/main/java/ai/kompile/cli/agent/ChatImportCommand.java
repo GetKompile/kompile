@@ -17,6 +17,7 @@
 package ai.kompile.cli.agent;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.common.chat.aggregate.AggregateChatSourceService;
 import ai.kompile.cli.common.chat.aggregate.ChatTranscriptRetention;
 import ai.kompile.cli.common.chat.aggregate.ChatTranscriptSearch;
@@ -26,11 +27,10 @@ import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import ai.kompile.cli.common.chat.sources.ChatTurn;
 import ai.kompile.cli.common.chat.sources.SourceInfo;
 import ai.kompile.cli.common.http.KompileHttpClient;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -80,9 +80,7 @@ public class ChatImportCommand implements Callable<Integer> {
         return 1;
     }
 
-    static final ObjectMapper MAPPER = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+    static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ISO_INSTANT;
 
@@ -377,7 +375,7 @@ public class ChatImportCommand implements Callable<Integer> {
             }
             for (ChatTranscriptSearch.Hit h : hits) {
                 System.out.printf("[%s:%s #%d %s] %s%n",
-                        h.source(), truncate(h.sessionId(), 10), h.turnIndex(),
+                        h.source(), StringUtils.truncate(h.sessionId(), 10), h.turnIndex(),
                         h.role(), firstLine(h.content()));
                 for (ChatTranscriptSearch.ContextTurn c : h.context()) {
                     System.out.printf("    ctx[%d %s] %s%n", c.turnIndex(), c.role(),
@@ -572,20 +570,15 @@ public class ChatImportCommand implements Callable<Integer> {
                     : "-";
             System.out.printf("%-12s  %-36s  %-5d  %-20s  %s%n",
                     nullToDash(s.source()),
-                    truncate(nullToDash(s.sessionId()), 36),
+                    StringUtils.truncate(nullToDash(s.sessionId()), 36),
                     s.messageCount(),
                     ts,
-                    truncate(nullToDash(s.title()), 60));
+                    StringUtils.truncate(nullToDash(s.title()), 60));
         }
     }
 
     private static String nullToDash(String s) {
         return s == null || s.isBlank() ? "-" : s;
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null) return "-";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
     }
 
     private static String firstLine(String content) {

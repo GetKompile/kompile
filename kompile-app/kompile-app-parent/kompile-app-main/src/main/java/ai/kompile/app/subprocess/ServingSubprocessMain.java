@@ -19,6 +19,7 @@ package ai.kompile.app.subprocess;
 import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
@@ -67,7 +68,7 @@ import java.util.Map;
 public class ServingSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(ServingSubprocessMain.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     public static void main(String[] args) {
         ServingSubprocessArgs servingArgs;

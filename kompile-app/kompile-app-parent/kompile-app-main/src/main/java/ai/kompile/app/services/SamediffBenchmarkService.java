@@ -19,6 +19,7 @@ package ai.kompile.app.services;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SamediffBenchmarkConfig;
 import ai.kompile.app.web.dto.SamediffBenchmarkResult;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -61,7 +62,7 @@ public class SamediffBenchmarkService {
     public SamediffBenchmarkService(
             @Value("${kompile.data.dir:#{null}}") String dataDir,
             Nd4jEnvironmentConfigService nd4jConfigService) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.nd4jConfigService = nd4jConfigService;
 
         String effectiveDataDir = dataDir;

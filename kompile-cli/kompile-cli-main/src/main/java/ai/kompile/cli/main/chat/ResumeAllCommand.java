@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.utils.StringUtils;
 import picocli.CommandLine;
 
 import java.io.IOException;
@@ -191,7 +192,7 @@ public class ResumeAllCommand implements Callable<Integer> {
 
     private int listSessions(SessionRegistry registry) {
         registry.refreshStatuses();
-        List<SessionRegistry.SessionEntry> entries = getFilteredEntries(registry.getAll());
+        List<SessionEntry> entries = getFilteredEntries(registry.getAll());
 
         if (entries.isEmpty()) {
             System.out.println(DIM + "No tracked sessions" +
@@ -208,7 +209,7 @@ public class ResumeAllCommand implements Callable<Integer> {
                 "SESSION", "AGENT", "STATUS", "STARTED", "PROJECT");
         System.out.println("  " + "─".repeat(80));
 
-        for (SessionRegistry.SessionEntry entry : entries) {
+        for (SessionEntry entry : entries) {
             String status = entry.getStatus();
             String statusColor = switch (status) {
                 case "running" -> GREEN;
@@ -224,7 +225,7 @@ public class ResumeAllCommand implements Callable<Integer> {
             String projectShort = shortenPath(entry.getProjectDirectory(), 30);
 
             System.out.printf("  %-12s %-10s %s%-12s%s %-18s %s%n",
-                    truncate(entry.getKompileSessionId(), 12),
+                    StringUtils.truncate(entry.getKompileSessionId(), 12),
                     entry.getAgent(),
                     statusColor, status, RESET,
                     started,
@@ -235,7 +236,7 @@ public class ResumeAllCommand implements Callable<Integer> {
             boolean hasTitle = entry.getTitle() != null && !entry.getTitle().isEmpty();
             if (hasConvId || hasTitle) {
                 String detail = DIM + "  ";
-                if (hasConvId) detail += "conv:" + truncate(entry.getConversationId(), 20);
+                if (hasConvId) detail += "conv:" + StringUtils.truncate(entry.getConversationId(), 20);
                 if (hasTitle) detail += (hasConvId ? "  " : "") + entry.getTitle();
                 System.out.println(detail + RESET);
             }
@@ -252,11 +253,11 @@ public class ResumeAllCommand implements Callable<Integer> {
     // ── Resume sessions ─────────────────────────────────────────────────────
 
     private int resumeSessions(SessionRegistry registry) {
-        List<SessionRegistry.SessionEntry> resumable = getFilteredEntries(registry.getResumable());
+        List<SessionEntry> resumable = getFilteredEntries(registry.getResumable());
 
         if (recentCount != null && recentCount > 0) {
             resumable = resumable.stream()
-                    .sorted(Comparator.comparing(SessionRegistry.SessionEntry::getStartedAt).reversed())
+                    .sorted(Comparator.comparing(SessionEntry::getStartedAt).reversed())
                     .limit(recentCount)
                     .collect(Collectors.toList());
         }
@@ -285,7 +286,7 @@ public class ResumeAllCommand implements Callable<Integer> {
         int launched = 0;
         int failed = 0;
 
-        for (SessionRegistry.SessionEntry entry : resumable) {
+        for (SessionEntry entry : resumable) {
             String sessionLabel = entry.getAgent() + " @ " + shortenPath(entry.getProjectDirectory(), 40);
             String title = entry.getTitle() != null && !entry.getTitle().isEmpty()
                     ? entry.getTitle()
@@ -352,7 +353,7 @@ public class ResumeAllCommand implements Callable<Integer> {
      * Handles both native binary ("kompile") and JVM mode ("java -jar /path/to.jar")
      * by splitting the kompileBin string on spaces when it contains multiple tokens.
      */
-    private List<String> buildResumeCommand(String kompileBin, SessionRegistry.SessionEntry entry) {
+    private List<String> buildResumeCommand(String kompileBin, SessionEntry entry) {
         List<String> cmd = new ArrayList<>();
 
         // kompileBin may be "java -jar /path/to/kompile-cli-shaded.jar" — split it
@@ -380,11 +381,11 @@ public class ResumeAllCommand implements Callable<Integer> {
 
     // ── Filtering ───────────────────────────────────────────────────────────
 
-    private List<SessionRegistry.SessionEntry> getFilteredEntries(List<SessionRegistry.SessionEntry> entries) {
+    private List<SessionEntry> getFilteredEntries(List<SessionEntry> entries) {
         return entries.stream()
                 .filter(e -> filterAgent == null || filterAgent.equalsIgnoreCase(e.getAgent()))
                 .filter(e -> filterProject == null || e.getProjectDirectory().startsWith(filterProject))
-                .sorted(Comparator.comparing(SessionRegistry.SessionEntry::getStartedAt).reversed())
+                .sorted(Comparator.comparing(SessionEntry::getStartedAt).reversed())
                 .collect(Collectors.toList());
     }
 
@@ -519,11 +520,6 @@ public class ResumeAllCommand implements Callable<Integer> {
         TerminalConfig config = new TerminalConfig();
         config.setTerminalCommand(terminal);
         return config;
-    }
-
-    private static String truncate(String s, int maxLen) {
-        if (s == null) return "";
-        return s.length() <= maxLen ? s : s.substring(0, maxLen - 3) + "...";
     }
 
     private static String shortenPath(String path, int maxLen) {

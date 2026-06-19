@@ -16,12 +16,12 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.File;
 import java.io.IOException;
@@ -122,9 +122,7 @@ public class MessageQueue {
     public MessageQueue(String sessionId) {
         this.sessionId = sessionId;
         this.queue = new CopyOnWriteArrayList<>();
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        this.objectMapper = JsonUtils.standardMapper();
         this.queueFile = getQueueFilePath(sessionId);
         loadQueue();
     }
@@ -154,6 +152,32 @@ public class MessageQueue {
             saveQueue();
         }
         return removed;
+    }
+
+    /**
+     * Replaces the content of a queued message while preserving its ID and status.
+     *
+     * @param id the message ID
+     * @param content the new message content
+     * @return true if updated, false if not found
+     */
+    public boolean update(String id, String content) {
+        if (id == null || content == null) return false;
+        for (int i = 0; i < queue.size(); i++) {
+            QueuedMessage existing = queue.get(i);
+            if (existing.getId().equals(id)) {
+                QueuedMessage replacement = new QueuedMessage(
+                        existing.getId(),
+                        content,
+                        existing.getCreatedAt(),
+                        Instant.now(),
+                        existing.getStatus());
+                queue.set(i, replacement);
+                saveQueue();
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -302,23 +326,10 @@ public class MessageQueue {
             QueuedMessage msg = queue.get(i);
             sb.append("  ").append(i + 1).append(". [")
               .append(msg.getId()).append("] ")
-              .append(truncate(msg.getContent(), 60))
+              .append(StringUtils.truncate(msg.getContent(), 60))
               .append("\n");
         }
         return sb.toString();
     }
 
-    /**
-     * Truncates a string to the specified length.
-     *
-     * @param str the string to truncate
-     * @param maxLength the maximum length
-     * @return the truncated string
-     */
-    private String truncate(String str, int maxLength) {
-        if (str == null || str.length() <= maxLength) {
-            return str;
-        }
-        return str.substring(0, maxLength - 3) + "...";
-    }
 }

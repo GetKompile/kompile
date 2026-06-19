@@ -16,9 +16,9 @@
 
 package ai.kompile.cli.main.coordination;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -136,7 +136,7 @@ public class EditCoordinatorCommand implements Callable<Integer> {
                     System.out.println("-".repeat(90));
                     for (EditLockEntry e : edits) {
                         System.out.printf("%-50s %-15s %-6s %s%n",
-                                truncate(e.getFilePath(), 50),
+                                StringUtils.truncate(e.getFilePath(), 50),
                                 e.getAgentName(),
                                 e.getEditType(),
                                 formatAge(e.getAcquiredAt()));
@@ -187,11 +187,11 @@ public class EditCoordinatorCommand implements Callable<Integer> {
                     System.out.println("-".repeat(110));
                     for (AgentEntry a : agents) {
                         System.out.printf("%-25s %-10s %-7s %-5d %-40s %s%n",
-                                truncate(a.getSessionId(), 25),
+                                StringUtils.truncate(a.getSessionId(), 25),
                                 a.getAgentName(),
                                 a.getAgentType(),
                                 a.getDepth(),
-                                truncate(a.getTask(), 40),
+                                StringUtils.truncate(a.getTask(), 40),
                                 formatAge(a.getStartedAt()));
                     }
                     System.out.println("\n" + agents.size() + " agent(s)");
@@ -239,7 +239,7 @@ public class EditCoordinatorCommand implements Callable<Integer> {
                         System.out.printf("%-10s %-15s %-30s %-10s %s%n",
                                 p.getProcessId(),
                                 p.getAgentName(),
-                                truncate(p.getCommand(), 30),
+                                StringUtils.truncate(p.getCommand(), 30),
                                 p.getState(),
                                 formatAge(p.getStartedAt()));
                     }
@@ -324,10 +324,7 @@ public class EditCoordinatorCommand implements Callable<Integer> {
     // ── Shared utilities ──────────────────────────────────────────────────
 
     private static ObjectMapper jsonMapper() {
-        ObjectMapper om = new ObjectMapper();
-        om.registerModule(new JavaTimeModule());
-        om.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        return om;
+        return JsonUtils.standardMapper();
     }
 
     private static String formatAge(Instant since) {
@@ -342,8 +339,4 @@ public class EditCoordinatorCommand implements Callable<Integer> {
         return hours + "h" + minutes + "m";
     }
 
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
-    }
 }

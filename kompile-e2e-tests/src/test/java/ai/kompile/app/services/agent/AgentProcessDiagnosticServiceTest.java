@@ -322,7 +322,7 @@ class AgentProcessDiagnosticServiceTest {
 
     @Test
     void getSummary_noProcesses_summaryIsEmpty() {
-        AgentProcessDiagnosticService.DiagnosticSummary summary = service.getSummary();
+        DiagnosticSummary summary = service.getSummary();
         assertNotNull(summary);
         assertFalse(summary.isHasActiveProcess());
         assertEquals(0, summary.getRecentProcessCount());
@@ -333,7 +333,7 @@ class AgentProcessDiagnosticServiceTest {
         ProcessStatus s = service.startProcess("claude-cli", List.of("claude"));
         service.processStarted(s.getId(), 999L);
 
-        AgentProcessDiagnosticService.DiagnosticSummary summary = service.getSummary();
+        DiagnosticSummary summary = service.getSummary();
         assertTrue(summary.isHasActiveProcess());
         assertEquals(s.getId(), summary.getActiveProcessId());
         assertEquals("claude-cli", summary.getActiveAgentName());
@@ -349,7 +349,7 @@ class AgentProcessDiagnosticServiceTest {
         service.processStarted(s2.getId(), 2L);
         service.processCompleted(s2.getId(), 0);
 
-        AgentProcessDiagnosticService.DiagnosticSummary summary = service.getSummary();
+        DiagnosticSummary summary = service.getSummary();
         assertEquals(1, summary.getFailedProcessCount());
         assertEquals(2, summary.getRecentProcessCount());
     }
@@ -362,7 +362,7 @@ class AgentProcessDiagnosticServiceTest {
         service.processStarted(s.getId(), 1L);
         service.processCompleted(s.getId(), 0);
 
-        AgentProcessDiagnosticService.FullDiagnosticReport report = service.getFullReport();
+        FullDiagnosticReport report = service.getFullReport();
         assertNotNull(report);
         assertNotNull(report.getSummary());
         assertNotNull(report.getRecentProcesses());

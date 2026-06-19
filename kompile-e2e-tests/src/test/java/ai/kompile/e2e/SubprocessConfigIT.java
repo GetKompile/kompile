@@ -45,7 +45,7 @@ class SubprocessConfigIT {
         assertTrue(subprocessConfig.isJvmMode(), "Should be in JVM mode");
         assertFalse(subprocessConfig.isNativeMode(), "Should not be in native mode");
         assertEquals(SubprocessExecutableConfig.LaunchMode.JVM_CLASSPATH,
-                subprocessConfig.getLaunchMode());
+                subprocessConfig.getResolvedLaunchMode());
     }
 
     @Test

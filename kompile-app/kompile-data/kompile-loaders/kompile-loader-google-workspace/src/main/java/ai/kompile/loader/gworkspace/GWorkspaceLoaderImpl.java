@@ -17,6 +17,7 @@
 package ai.kompile.loader.gworkspace;
 
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
@@ -84,7 +85,7 @@ public class GWorkspaceLoaderImpl implements DocumentLoader {
         GWorkspaceApiService api = new GWorkspaceApiService(accessToken);
 
         Set<String> services = parseServices(meta);
-        int daysBack = intVal(meta.get("daysBack"), 30);
+        int daysBack = MapUtils.toInt(meta.get("daysBack"), 30);
         String collectionName = sourceDescriptor.getCollectionName();
 
         List<Document> documents = new ArrayList<>();
@@ -96,7 +97,7 @@ public class GWorkspaceLoaderImpl implements DocumentLoader {
             currentStep++;
             notifyProgress(progressCallback, "Loading Gmail", pct(currentStep, totalSteps, 0), "Fetching messages");
 
-            int maxMessages = intVal(meta.get("gmailMaxMessages"), 100);
+            int maxMessages = MapUtils.toInt(meta.get("gmailMaxMessages"), 100);
             String gmailQuery = str(meta.get("gmailQuery"));
             if (gmailQuery == null || gmailQuery.isEmpty()) {
                 gmailQuery = "after:" + Instant.now().minus(Duration.ofDays(daysBack)).getEpochSecond();
@@ -133,7 +134,7 @@ public class GWorkspaceLoaderImpl implements DocumentLoader {
             currentStep++;
             notifyProgress(progressCallback, "Loading Drive", pct(currentStep, totalSteps, 0), "Fetching files");
 
-            int maxFiles = intVal(meta.get("driveMaxFiles"), 100);
+            int maxFiles = MapUtils.toInt(meta.get("driveMaxFiles"), 100);
             String driveQuery = str(meta.get("driveQuery"));
             String timeMin = Instant.now().minus(Duration.ofDays(daysBack))
                     .atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
@@ -164,7 +165,7 @@ public class GWorkspaceLoaderImpl implements DocumentLoader {
             currentStep++;
             notifyProgress(progressCallback, "Loading Calendar", pct(currentStep, totalSteps, 0), "Fetching events");
 
-            int maxEvents = intVal(meta.get("calendarMaxEvents"), 100);
+            int maxEvents = MapUtils.toInt(meta.get("calendarMaxEvents"), 100);
             String calendarIdsStr = str(meta.get("calendarIds"));
             List<String> calendarIds = (calendarIdsStr != null && !calendarIdsStr.isEmpty())
                     ? Arrays.asList(calendarIdsStr.split(",")) : List.of("primary");
@@ -421,12 +422,6 @@ public class GWorkspaceLoaderImpl implements DocumentLoader {
 
     private static String str(Object obj) {
         return obj != null ? obj.toString().trim() : null;
-    }
-
-    private static int intVal(Object obj, int defaultValue) {
-        if (obj == null) return defaultValue;
-        if (obj instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(obj.toString()); } catch (NumberFormatException e) { return defaultValue; }
     }
 
     private static String resolveDocType(String mimeType, String fileName) {

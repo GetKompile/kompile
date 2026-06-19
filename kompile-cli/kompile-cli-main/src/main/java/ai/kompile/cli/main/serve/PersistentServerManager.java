@@ -16,9 +16,8 @@
 
 package ai.kompile.cli.main.serve;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.*;
 import java.net.*;
@@ -48,9 +47,7 @@ public class PersistentServerManager {
 
     public PersistentServerManager() {
         this.stateDir = Paths.get(System.getProperty("user.home"), ".kompile", "server");
-        this.mapper = new ObjectMapper();
-        this.mapper.registerModule(new JavaTimeModule());
-        this.mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        this.mapper = JsonUtils.standardMapper();
         this.serverId = generateServerId();
         this.clientExecutor = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "server-client-handler");
@@ -167,9 +164,7 @@ public class PersistentServerManager {
         Path registryFile = Paths.get(System.getProperty("user.home"), ".kompile", "server", "server.json");
         if (!Files.exists(registryFile)) return null;
         try {
-            ObjectMapper om = new ObjectMapper();
-            om.registerModule(new JavaTimeModule());
-            return om.readValue(registryFile.toFile(), ServerInfo.class);
+            return JsonUtils.standardMapper().readValue(registryFile.toFile(), ServerInfo.class);
         } catch (IOException e) {
             return null;
         }

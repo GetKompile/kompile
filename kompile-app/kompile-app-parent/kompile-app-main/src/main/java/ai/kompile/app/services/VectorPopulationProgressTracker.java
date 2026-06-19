@@ -23,9 +23,11 @@ import ai.kompile.app.ingest.domain.JobLogEntry.LogLevel;
 import ai.kompile.app.ingest.domain.JobLogEntry.LogSource;
 import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.ingest.service.JobLogService;
-import ai.kompile.app.services.subprocess.VectorPopulationSubprocessLauncher.VectorPopulationHandle;
-import ai.kompile.app.services.subprocess.VectorPopulationSubprocessLauncher.VectorPopulationResult;
+import ai.kompile.app.services.subprocess.VectorPopulationHandle;
+import ai.kompile.app.services.subprocess.VectorPopulationResult;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.MapUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -84,7 +86,7 @@ public class VectorPopulationProgressTracker implements DisposableBean {
         this.nd4jEnvironmentConfigService = nd4jEnvironmentConfigService;
         this.jobHistoryService = jobHistoryService;
         this.jobLogService = jobLogService;
-        this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+        this.objectMapper = objectMapper != null ? objectMapper : JsonUtils.standardMapper();
 
         // Schedule periodic cleanup of old completed tasks
         cleanupScheduler.scheduleAtFixedRate(this::cleanupOldTasks, 1, 1, TimeUnit.MINUTES);
@@ -689,15 +691,15 @@ public class VectorPopulationProgressTracker implements DisposableBean {
             if (statsMap == null)
                 return null;
 
-            int batchSize = getInt(statsMap, "batchSize", 64);
-            int documentsLoaded = getInt(statsMap, "documentsLoaded", 0);
-            int chunksEmbedded = getInt(statsMap, "chunksEmbedded", 0);
+            int batchSize = MapUtils.getInt(statsMap, "batchSize", 64);
+            int documentsLoaded = MapUtils.getInt(statsMap, "documentsLoaded", 0);
+            int chunksEmbedded = MapUtils.getInt(statsMap, "chunksEmbedded", 0);
 
             // Build queue status
             QueueStatusDto queueStatus = new QueueStatusDto(
-                    getInt(statsMap, "chunkQueueSize", 0),
+                    MapUtils.getInt(statsMap, "chunkQueueSize", 0),
                     1000,
-                    getInt(statsMap, "embeddingQueueSize", 0),
+                    MapUtils.getInt(statsMap, "embeddingQueueSize", 0),
                     1000);
 
             // Build embedding batch metrics
@@ -708,60 +710,28 @@ public class VectorPopulationProgressTracker implements DisposableBean {
 
                 embeddingBatch = new EmbeddingBatchMetricsDto(
                         currentBatch, totalBatches, batchSize,
-                        getString(statsMap, "activeStage", "processing"),
+                        MapUtils.getString(statsMap, "activeStage", "processing"),
                         0, 0, 0, false, null, 0, null, null, 0, 0,
-                        getDouble(statsMap, "chunksPerSecond", 0),
+                        MapUtils.getDouble(statsMap, "chunksPerSecond", 0),
                         null, null, null);
             }
 
             return new VectorPopulationStats(
                     documentsLoaded,
-                    getInt(statsMap, "chunksCreated", 0),
+                    MapUtils.getInt(statsMap, "chunksCreated", 0),
                     chunksEmbedded,
-                    getInt(statsMap, "chunksIndexed", 0),
-                    getInt(statsMap, "totalDocuments", 0),
-                    getLong(statsMap, "tokensProcessed", 0),
-                    getLong(statsMap, "totalTokensInIndex", 0),
-                    getLong(statsMap, "elapsedTimeMs", 0),
-                    getDouble(statsMap, "chunksPerSecond", 0),
-                    getDouble(statsMap, "memoryUsagePercent", 0),
+                    MapUtils.getInt(statsMap, "chunksIndexed", 0),
+                    MapUtils.getInt(statsMap, "totalDocuments", 0),
+                    MapUtils.getLong(statsMap, "tokensProcessed", 0),
+                    MapUtils.getLong(statsMap, "totalTokensInIndex", 0),
+                    MapUtils.getLong(statsMap, "elapsedTimeMs", 0),
+                    MapUtils.getDouble(statsMap, "chunksPerSecond", 0),
+                    MapUtils.getDouble(statsMap, "memoryUsagePercent", 0),
                     null, // workerStatuses - populated elsewhere
                     queueStatus,
                     embeddingBatch,
                     null, // batchHistory - populated from subprocess messages
                     null);
-        }
-
-        private static String getString(Map<String, Object> map, String key, String defaultValue) {
-            Object value = map.get(key);
-            if (value instanceof String) {
-                return (String) value;
-            }
-            return defaultValue;
-        }
-
-        private static int getInt(Map<String, Object> map, String key, int defaultValue) {
-            Object value = map.get(key);
-            if (value instanceof Number) {
-                return ((Number) value).intValue();
-            }
-            return defaultValue;
-        }
-
-        private static long getLong(Map<String, Object> map, String key, long defaultValue) {
-            Object value = map.get(key);
-            if (value instanceof Number) {
-                return ((Number) value).longValue();
-            }
-            return defaultValue;
-        }
-
-        private static double getDouble(Map<String, Object> map, String key, double defaultValue) {
-            Object value = map.get(key);
-            if (value instanceof Number) {
-                return ((Number) value).doubleValue();
-            }
-            return defaultValue;
         }
     }
 

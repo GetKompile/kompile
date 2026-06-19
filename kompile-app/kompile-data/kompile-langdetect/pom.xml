@@ -35,6 +35,10 @@
             <artifactId>kompile-model-manager</artifactId>
         </dependency>
         <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.apache.opennlp</groupId>
             <artifactId>opennlp-tools</artifactId>
             <version>2.5.4</version>

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -34,6 +35,10 @@ public class GlobTool implements CliTool {
 
     private static final int MAX_RESULTS = 100;
 
+    /** Hard wall-clock cap on a single glob walk, so a pattern that matches few/no files
+     *  (the match-count early-termination never triggers) cannot walk a huge tree unbounded. */
+    private static final long TIMEOUT_MILLIS = 15_000;
+
     @Override
     public String id() { return "glob"; }
 
@@ -46,7 +51,7 @@ public class GlobTool implements CliTool {
 
     @Override
     public JsonNode parameterSchema() {
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
@@ -87,9 +92,13 @@ public class GlobTool implements CliTool {
             PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
 
             List<Path> matches = new ArrayList<>();
+            final long deadline = System.currentTimeMillis() + TIMEOUT_MILLIS;
             Files.walkFileTree(dir, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (System.currentTimeMillis() > deadline) {
+                        return FileVisitResult.TERMINATE;
+                    }
                     Path relative = dir.relativize(file);
                     if (matcher.matches(relative)) {
                         matches.add(file);
@@ -100,12 +109,16 @@ public class GlobTool implements CliTool {
 
                 @Override
                 public FileVisitResult preVisitDirectory(Path dirPath, BasicFileAttributes attrs) {
-                    String name = dirPath.getFileName() != null ? dirPath.getFileName().toString() : "";
-                    // Skip hidden dirs and common large dirs
-                    if (name.startsWith(".") || "node_modules".equals(name) ||
-                            "target".equals(name) || "__pycache__".equals(name) ||
-                            ".git".equals(name)) {
-                        return FileVisitResult.SKIP_SUBTREE;
+                    if (System.currentTimeMillis() > deadline) {
+                        return FileVisitResult.TERMINATE;
+                    }
+                    // Never prune the explicitly requested root, even if it is hidden or a build
+                    // dir; only prune excluded directories encountered while descending.
+                    if (!dirPath.equals(dir)) {
+                        String name = dirPath.getFileName() != null ? dirPath.getFileName().toString() : "";
+                        if (SearchExclusions.isExcludedDir(name)) {
+                            return FileVisitResult.SKIP_SUBTREE;
+                        }
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -115,6 +128,7 @@ public class GlobTool implements CliTool {
                     return FileVisitResult.CONTINUE;
                 }
             });
+            boolean timedOut = System.currentTimeMillis() > deadline;
 
             // Sort by modification time (most recent first)
             matches.sort((a, b) -> {
@@ -126,10 +140,13 @@ public class GlobTool implements CliTool {
             });
 
             List<Path> limited = matches.stream().limit(MAX_RESULTS).collect(Collectors.toList());
-            boolean truncated = matches.size() > MAX_RESULTS;
+            boolean truncated = matches.size() > MAX_RESULTS || timedOut;
 
             if (limited.isEmpty()) {
-                return ToolResult.success("No files matching: " + pattern);
+                return ToolResult.success(timedOut
+                        ? "Search timed out after " + (TIMEOUT_MILLIS / 1000) + "s before matching: " + pattern
+                          + " (tree too large — narrow the search with 'path')"
+                        : "No files matching: " + pattern);
             }
 
             StringBuilder sb = new StringBuilder();
@@ -138,9 +155,9 @@ public class GlobTool implements CliTool {
             }
 
             return ToolResult.success("glob: " + pattern,
-                    sb.toString().trim(),
+                    sb.toString().trim() + (timedOut ? "\n... (search timed out — results partial)" : ""),
                     Map.of("count", limited.size(), "truncated", truncated,
-                            "totalMatches", matches.size()));
+                            "totalMatches", matches.size(), "timedOut", timedOut));
 
         } catch (Exception e) {
             return ToolResult.error("Error searching files: " + e.getMessage());

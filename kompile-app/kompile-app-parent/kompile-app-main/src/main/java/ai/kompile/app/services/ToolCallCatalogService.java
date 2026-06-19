@@ -17,6 +17,7 @@
 package ai.kompile.app.services;
 
 import ai.kompile.app.services.mcp.McpActionLogService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,7 +46,7 @@ import java.util.stream.Stream;
 public class ToolCallCatalogService {
 
     private static final Logger logger = LoggerFactory.getLogger(ToolCallCatalogService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     @Autowired(required = false)
     private McpActionLogService mcpActionLogService;

@@ -61,11 +61,11 @@ public class McpCliInjectionController {
                     "mcp_servers.kompile",
                     "OpenAI Codex CLI"
             ),
-            "gemini", new AgentConfig(
-                    "Gemini CLI",
-                    ".gemini/settings.json",
+            "agy", new AgentConfig(
+                    "Antigravity CLI",
+                    ".agy/settings.json",
                     "mcpServers.kompile",
-                    "Google Gemini CLI"
+                    "Antigravity CLI"
             ),
             "opencode", new AgentConfig(
                     "OpenCode",

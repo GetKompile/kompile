@@ -16,9 +16,10 @@
 
 package ai.kompile.cli.mcp.stdio;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.FormatUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -54,10 +55,8 @@ public class TaskRegistry {
 
     public TaskRegistry(Path workDir) {
         this.registryDir = workDir.resolve(".kompile").resolve("task-registry");
-        this.mapper = new ObjectMapper();
-        this.mapper.registerModule(new JavaTimeModule());
-        this.mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        this.mapper.enable(SerializationFeature.INDENT_OUTPUT);
+        this.mapper = JsonUtils.newStandardMapper()
+                .enable(SerializationFeature.INDENT_OUTPUT);
         try {
             Files.createDirectories(registryDir);
         } catch (IOException e) {
@@ -287,7 +286,7 @@ public class TaskRegistry {
 
         if (r.getCreatedAt() != null) {
             Duration elapsed = Duration.between(r.getCreatedAt(), r.isTerminal() && r.getCompletedAt() != null ? r.getCompletedAt() : Instant.now());
-            sb.append(" elapsed=").append(formatDuration(elapsed));
+            sb.append(" elapsed=").append(FormatUtils.formatDuration(elapsed));
         }
 
         if (r.getDescription() != null) {
@@ -352,17 +351,6 @@ public class TaskRegistry {
         } catch (Exception e) {
             return false;
         }
-    }
-
-    private static String formatDuration(Duration d) {
-        long s = d.getSeconds();
-        if (s < 60) return s + "s";
-        long m = s / 60;
-        s = s % 60;
-        if (m < 60) return m + "m" + s + "s";
-        long h = m / 60;
-        m = m % 60;
-        return h + "h" + m + "m";
     }
 
     /** Visible for testing. */

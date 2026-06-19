@@ -34,6 +34,10 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
         <!-- Core interfaces -->
         <dependency>
             <groupId>ai.kompile</groupId>

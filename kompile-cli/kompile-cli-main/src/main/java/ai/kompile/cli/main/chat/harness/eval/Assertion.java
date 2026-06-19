@@ -18,6 +18,10 @@ package ai.kompile.cli.main.chat.harness.eval;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * A single deterministic assertion to evaluate against agent output.
@@ -39,6 +43,10 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  *   <li>{@code JUDGE_COMPLETENESS_ABOVE} — judge completeness dimension above threshold</li>
  * </ul>
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class Assertion {
 
@@ -75,16 +83,8 @@ public class Assertion {
     /** If true, this assertion is critical — failure means the entire case fails.
      *  Non-critical assertions contribute to partial score. Default: true. */
     @JsonProperty
+    @Builder.Default
     private boolean critical = true;
-
-    public Assertion() {}
-
-    public Assertion(Type type, String value, String description, boolean critical) {
-        this.type = type;
-        this.value = value;
-        this.description = description;
-        this.critical = critical;
-    }
 
     // Convenience factories
     public static Assertion outputContains(String substring) {
@@ -131,16 +131,4 @@ public class Assertion {
         return new Assertion(Type.SCORE_ABOVE, String.valueOf(threshold),
                 "Composite score above " + threshold, false);
     }
-
-    // Getters
-    public Type getType() { return type; }
-    public String getValue() { return value; }
-    public String getDescription() { return description; }
-    public boolean isCritical() { return critical; }
-
-    // Setters for Jackson
-    public void setType(Type type) { this.type = type; }
-    public void setValue(String value) { this.value = value; }
-    public void setDescription(String description) { this.description = description; }
-    public void setCritical(boolean critical) { this.critical = critical; }
 }

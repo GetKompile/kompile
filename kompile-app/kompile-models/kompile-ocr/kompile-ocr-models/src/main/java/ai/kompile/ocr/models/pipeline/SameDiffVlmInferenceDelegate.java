@@ -19,7 +19,7 @@ package ai.kompile.ocr.models.pipeline;
 import ai.kompile.modelmanager.vlm.VlmExtractionConfig;
 import ai.kompile.modelmanager.vlm.VlmInferenceDelegate;
 import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
-import org.eclipse.deeplearning4j.llm.generation.SamplingConfig;
+import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.vlm.model.VisionLanguageModel;
 import org.eclipse.deeplearning4j.vlm.preprocessing.VLMImagePreprocessor;
 import org.nd4j.linalg.api.ndarray.INDArray;

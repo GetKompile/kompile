@@ -17,6 +17,7 @@
 package ai.kompile.cli.common.config;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -52,7 +53,7 @@ import java.util.zip.ZipOutputStream;
  */
 public class ConfigArchiveService {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     private static final String MANIFEST_ENTRY = "manifest.json";
@@ -229,18 +230,17 @@ public class ConfigArchiveService {
         List<ArchiveInfo> archives = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(archivesDir, "*.zip")) {
             for (Path p : stream) {
-                ArchiveInfo info = new ArchiveInfo();
-                info.setFileName(p.getFileName().toString());
-                info.setFilePath(p.toString());
-                info.setSizeBytes(Files.size(p));
-                info.setLastModified(Files.getLastModifiedTime(p).toInstant().toString());
+                ArchiveInfo.ArchiveInfoBuilder builder = ArchiveInfo.builder()
+                        .fileName(p.getFileName().toString())
+                        .filePath(p.toString())
+                        .sizeBytes(Files.size(p))
+                        .lastModified(Files.getLastModifiedTime(p).toInstant().toString());
                 try {
-                    ConfigArchiveManifest m = readManifest(p);
-                    info.setManifest(m);
+                    builder.manifest(readManifest(p));
                 } catch (IOException ignored) {
                     // corrupt archive — still list it
                 }
-                archives.add(info);
+                archives.add(builder.build());
             }
         }
 
@@ -524,29 +524,4 @@ public class ConfigArchiveService {
         }
     }
 
-    /**
-     * Metadata about a stored archive (for listing).
-     */
-    public static class ArchiveInfo {
-        private String fileName;
-        private String filePath;
-        private long sizeBytes;
-        private String lastModified;
-        private ConfigArchiveManifest manifest;
-
-        public String getFileName() { return fileName; }
-        public void setFileName(String fileName) { this.fileName = fileName; }
-
-        public String getFilePath() { return filePath; }
-        public void setFilePath(String filePath) { this.filePath = filePath; }
-
-        public long getSizeBytes() { return sizeBytes; }
-        public void setSizeBytes(long sizeBytes) { this.sizeBytes = sizeBytes; }
-
-        public String getLastModified() { return lastModified; }
-        public void setLastModified(String lastModified) { this.lastModified = lastModified; }
-
-        public ConfigArchiveManifest getManifest() { return manifest; }
-        public void setManifest(ConfigArchiveManifest manifest) { this.manifest = manifest; }
-    }
 }

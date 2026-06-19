@@ -23,6 +23,7 @@ import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.loader.excel.graph.ExcelFormulaGraphExtractor;
 import ai.kompile.loader.excel.graph.SpreadsheetGraph;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.hpsf.SummaryInformation;
@@ -60,7 +61,7 @@ import org.springframework.core.annotation.Order;
 public class ExcelLoaderImpl implements DocumentLoader {
 
     private static final Logger logger = LoggerFactory.getLogger(ExcelLoaderImpl.class);
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of("xls", "xlsx", "xlsm", "ods");
 

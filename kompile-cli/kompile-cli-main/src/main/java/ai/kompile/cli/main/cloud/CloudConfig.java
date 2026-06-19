@@ -19,8 +19,15 @@ package ai.kompile.cli.main.cloud;
 import ai.kompile.cli.common.KompileHome;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.AccessLevel;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -33,6 +40,10 @@ import java.nio.file.Path;
  * <p>Credentials can be loaded from the JSON file or from environment variables
  * ({@code KOMPILE_TOKEN} and {@code KOMPILE_SAAS_URL}).
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class CloudConfig {
 
@@ -41,38 +52,28 @@ public class CloudConfig {
     private static final String ENV_TOKEN = "KOMPILE_TOKEN";
     private static final String ENV_BASE_URL = "KOMPILE_SAAS_URL";
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     @JsonProperty
     private String token;
 
     @JsonProperty
+    @Builder.Default
+    @Getter(AccessLevel.NONE)
     private String baseUrl = DEFAULT_BASE_URL;
 
     @JsonProperty
     private String username;
 
-    public CloudConfig() {}
-
-    public CloudConfig(String token, String baseUrl, String username) {
-        this.token = token;
-        this.baseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URL;
-        this.username = username;
-    }
-
-    // --- Getters / Setters ---
-
-    public String getToken() { return token; }
-    public void setToken(String token) { this.token = token; }
-
-    public String getBaseUrl() { return baseUrl != null ? baseUrl : DEFAULT_BASE_URL; }
-    public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
-
-    public String getUsername() { return username; }
-    public void setUsername(String username) { this.username = username; }
-
     // --- Instance methods ---
+
+    /**
+     * Returns the baseUrl, defaulting to the canonical API URL if null.
+     */
+    public String getBaseUrl() {
+        return baseUrl != null ? baseUrl : DEFAULT_BASE_URL;
+    }
 
     /**
      * Returns {@code true} if this config holds a non-null, non-empty JWT token.

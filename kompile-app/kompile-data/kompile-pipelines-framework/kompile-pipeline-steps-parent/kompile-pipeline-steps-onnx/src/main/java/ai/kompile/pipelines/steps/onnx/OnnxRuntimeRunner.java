@@ -24,6 +24,7 @@ import ai.kompile.pipelines.framework.api.data.NDArray; // Kompile Pipelines NDA
 import ai.kompile.pipelines.framework.api.data.NDArrayType;
 import ai.kompile.pipelines.framework.core.config.ConfigAccessor;
 import ai.kompile.pipelines.framework.core.config.SchemaRegistry;
+import ai.kompile.pipelines.framework.core.utils.NDArrayTypeConverter;
 import ai.kompile.pipelines.framework.api.configschema.StepSchema;
 import ai.kompile.pipelines.steps.onnx.utils.ONNXUtils; // Kompile's ONNXUtils
 import org.bytedeco.javacpp.*;
@@ -372,32 +373,7 @@ public class OnnxRuntimeRunner implements PipelineStepRunner {
             bb = directBb;
         }
 
-        DataType nd4jDataType;
-        NDArrayType sourceKompileType = kompileNDArray.type();
-
-        switch (sourceKompileType) {
-            case FLOAT:    nd4jDataType = DataType.FLOAT; break;
-            case DOUBLE:   nd4jDataType = DataType.DOUBLE; break;
-            case INT:
-            case INT32:    nd4jDataType = DataType.INT32; break;
-            case LONG:     // Kompile's LONG is an alias for INT64
-                nd4jDataType = DataType.INT64; break;
-            case BYTE:
-            case INT8:     nd4jDataType = DataType.INT8; break;
-            case UINT8:    nd4jDataType = DataType.UINT8; break;
-            case SHORT:
-            case INT16:    nd4jDataType = DataType.INT16; break;
-            case UINT16:   nd4jDataType = DataType.UINT16; break;
-            case UINT32:   nd4jDataType = DataType.UINT32; break;
-            case UINT64:   nd4jDataType = DataType.UINT64; break;
-            case BOOLEAN:  nd4jDataType = DataType.BOOL; break;
-            case FLOAT16:  nd4jDataType = DataType.HALF; break;
-            case BFLOAT16: nd4jDataType = DataType.BFLOAT16; break;
-            case UTF8:
-            default:
-                throw new UnsupportedOperationException(
-                        "Unsupported Kompile NDArrayType '" + sourceKompileType + "' for INDArray conversion for input '" + name + "'.");
-        }
+        DataType nd4jDataType = NDArrayTypeConverter.toNd4jDataType(kompileNDArray.type());
 
         long[] shape = kompileNDArray.shape();
         if (shape == null || shape.length == 0) {
@@ -412,30 +388,7 @@ public class OnnxRuntimeRunner implements PipelineStepRunner {
 
     protected NDArray convertFromINDArray(INDArray indArray, String name) {
         Objects.requireNonNull(indArray, "INDArray to convert cannot be null for name: " + name);
-        final NDArrayType kompileType;
-        DataType sourceNd4jType = indArray.dataType();
-
-        switch (sourceNd4jType) {
-            case FLOAT:    kompileType = NDArrayType.FLOAT; break;
-            case DOUBLE:   kompileType = NDArrayType.DOUBLE; break;
-            case INT:      kompileType = NDArrayType.INT32; break;
-            case LONG:     kompileType = NDArrayType.LONG; break;
-            case BYTE:     kompileType = NDArrayType.INT8; break;
-            case UBYTE:    kompileType = NDArrayType.UINT8; break;
-            case SHORT:    kompileType = NDArrayType.INT16; break;
-            case UINT16:   kompileType = NDArrayType.UINT16; break;
-            case UINT32:     kompileType = NDArrayType.UINT32; break;
-            case UINT64:    kompileType = NDArrayType.UINT64; break;
-            case BOOL:     kompileType = NDArrayType.BOOLEAN; break;
-            case HALF:     kompileType = NDArrayType.FLOAT16; break;
-            case BFLOAT16: kompileType = NDArrayType.BFLOAT16; break;
-            case UTF8:     kompileType = NDArrayType.UTF8; break;
-            case COMPRESSED:
-            case UNKNOWN:
-            default:
-                throw new UnsupportedOperationException(
-                        "Unsupported ND4J DataType '" + sourceNd4jType + "' for Kompile NDArray conversion for output '" + name + "'.");
-        }
+        final NDArrayType kompileType = NDArrayTypeConverter.fromNd4jDataType(indArray.dataType());
 
         INDArray contiguousIndArray = indArray.dup('c');
         ByteBuffer bb = contiguousIndArray.data().asNio().order(ByteOrder.nativeOrder());

@@ -17,6 +17,7 @@ package ai.kompile.cli.main.cloud;
 
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -50,7 +51,7 @@ import java.util.concurrent.Callable;
         })
 public class CloudCommand implements Callable<Integer> {
 
-    private static final ObjectMapper PRETTY = new ObjectMapper()
+    private static final ObjectMapper PRETTY = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     @Override
@@ -136,7 +137,8 @@ public class CloudCommand implements Callable<Integer> {
             }
 
             if (!noSave) {
-                CloudConfig newConfig = new CloudConfig(client.getToken(), baseUrl, username);
+                CloudConfig newConfig = CloudConfig.builder()
+                        .token(client.getToken()).baseUrl(baseUrl).username(username).build();
                 newConfig.save();
                 System.out.println("Logged in as " + username);
                 System.out.println("Credentials saved to " + CloudConfig.configPath());
@@ -226,7 +228,7 @@ public class CloudCommand implements Callable<Integer> {
                 try {
                     client.login(username, password);
                     if (client.isAuthenticated()) {
-                        new CloudConfig(client.getToken(), baseUrl, username).save();
+                        CloudConfig.builder().token(client.getToken()).baseUrl(baseUrl).username(username).build().save();
                         System.out.println("Logged in as " + username);
                         System.out.println("Credentials saved to " + CloudConfig.configPath());
                     }

@@ -51,7 +51,10 @@ export interface FieldDefinition {
 }
 
 export interface RelationshipTypeDefinition {
-  name: string;
+  /** Relationship label as serialized by the backend (e.g. "FEEDS_INTO"). */
+  type?: string;
+  /** Legacy alias for {@link type}; retained for backward compatibility. */
+  name?: string;
   sourceEntityType: string;
   targetEntityType: string;
   cardinality?: string;
@@ -64,6 +67,62 @@ export interface ValidationRule {
   severity?: string;
   expression?: string;
   description?: string;
+}
+
+/** Request to derive an ontology from a fact sheet's crawl graph (LLM-prompt or wizard mode). */
+export interface DeriveOntologyRequest {
+  factSheetId: number;
+  name?: string;
+  guidance?: string;
+  maxEntityTypes?: number;
+  includeRelationships?: boolean;
+  includeValidationRules?: boolean;
+  focusClassifications?: string[];
+  seedEntityTypes?: string[];
+  maxConcepts?: number;
+  /** Provider id to generate with: a CLI agent (e.g. "claude-cli"), a kompile-hosted model, or "default". */
+  modelProvider?: string;
+  /** Model id within the chosen provider (omit for the provider default). */
+  modelName?: string;
+}
+
+/** Status of an asynchronous derivation job (live logs/transcript stream on taskId). */
+export interface DerivationJob {
+  jobId: string;
+  taskId: string;
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED' | string;
+  draft?: OntologySchema;
+  error?: string;
+}
+
+/** A crawl-graph concept proposed as a seed entity type (wizard step 2). */
+export interface OntologyCandidate {
+  concept: string;
+  mentions: number;
+  suggestedEntityName: string;
+  suggestedClassification: string;
+}
+
+/** An edge-type signal proposed as a seed relationship (wizard step 2). */
+export interface RelationshipHint {
+  type: string;
+  count: number;
+  example?: string;
+}
+
+/** Graph-grounded candidates returned by GET /ontology/derive/candidates. */
+export interface OntologyCandidatesResponse {
+  factSheetId: number;
+  factSheetName: string;
+  graphAvailable: boolean;
+  entityCount: number;
+  documentCount: number;
+  distinctConcepts: number;
+  totalNodes: number;
+  totalEdges: number;
+  candidateEntityTypes: OntologyCandidate[];
+  relationshipHints: RelationshipHint[];
+  classifications: string[];
 }
 
 export interface ProcessDefinition {
@@ -314,6 +373,29 @@ export class ProcessEngineService extends BaseService {
       data,
       { params }
     );
+  }
+
+  /** Derive an unsaved draft ontology from a fact sheet's crawl graph. */
+  deriveOntology(request: DeriveOntologyRequest): Observable<OntologySchema> {
+    return this.http.post<OntologySchema>(`${this.baseUrl}/ontology/derive`, request);
+  }
+
+  /** Graph-grounded entity-type / relationship candidates that seed the derivation wizard. */
+  getDerivationCandidates(factSheetId: number, limit: number = 60): Observable<OntologyCandidatesResponse> {
+    const params = new HttpParams()
+      .set('factSheetId', factSheetId.toString())
+      .set('limit', limit.toString());
+    return this.http.get<OntologyCandidatesResponse>(`${this.baseUrl}/ontology/derive/candidates`, { params });
+  }
+
+  /** Start an async derivation that streams live logs + transcript; returns the job/task ids. */
+  deriveOntologyAsync(request: DeriveOntologyRequest): Observable<DerivationJob> {
+    return this.http.post<DerivationJob>(`${this.baseUrl}/ontology/derive/async`, request);
+  }
+
+  /** Poll an async derivation job; when COMPLETED the draft is populated. */
+  getDerivationJob(jobId: string): Observable<DerivationJob> {
+    return this.http.get<DerivationJob>(`${this.baseUrl}/ontology/derive/jobs/${jobId}`);
   }
 
   // ── Process Definitions ───────────────────────────────────────────────────

@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.main.chat.PassthroughStreamParser.PassthroughEvent;
 import ai.kompile.cli.main.chat.PassthroughStreamParser.TextChunk;
 import ai.kompile.cli.main.chat.PassthroughStreamParser.TokenUsage;
@@ -343,10 +344,10 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                             }
                             if (turnInputTokens > 0 || turnOutputTokens > 0) {
                                 if (stats.length() > 0) stats.append(" · ");
-                                stats.append(formatNumber(turnInputTokens)).append(" in / ")
-                                     .append(formatNumber(turnOutputTokens)).append(" out");
+                                stats.append(FormatUtils.formatNumber(turnInputTokens)).append(" in / ")
+                                     .append(FormatUtils.formatNumber(turnOutputTokens)).append(" out");
                                 if (turnCacheRead > 0) {
-                                    stats.append(" · ").append(formatNumber(turnCacheRead)).append(" cached");
+                                    stats.append(" · ").append(FormatUtils.formatNumber(turnCacheRead)).append(" cached");
                                 }
                             }
                             if (stats.length() > 0) {
@@ -403,20 +404,15 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
      */
     private static String formatTokenStats(long input, long output, long cacheRead, long cacheCreate) {
         StringBuilder sb = new StringBuilder("  \033[2m[tokens: ");
-        sb.append(formatNumber(input)).append(" in / ").append(formatNumber(output)).append(" out");
+        sb.append(FormatUtils.formatNumber(input)).append(" in / ").append(FormatUtils.formatNumber(output)).append(" out");
         if (cacheRead > 0) {
-            sb.append(" · ").append(formatNumber(cacheRead)).append(" cached");
+            sb.append(" · ").append(FormatUtils.formatNumber(cacheRead)).append(" cached");
         }
         if (cacheCreate > 0) {
-            sb.append(" · ").append(formatNumber(cacheCreate)).append(" new cache");
+            sb.append(" · ").append(FormatUtils.formatNumber(cacheCreate)).append(" new cache");
         }
         sb.append("]\033[0m");
         return sb.toString();
-    }
-
-    private static String formatNumber(long n) {
-        if (n < 1000) return String.valueOf(n);
-        return String.format("%,d", n);
     }
 
     /**

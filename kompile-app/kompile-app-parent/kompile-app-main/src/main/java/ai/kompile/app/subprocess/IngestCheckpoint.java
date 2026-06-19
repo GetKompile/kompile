@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -51,9 +52,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class IngestCheckpoint {
 
     private static final Logger logger = LoggerFactory.getLogger(IngestCheckpoint.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .enable(SerializationFeature.INDENT_OUTPUT)
-            .findAndRegisterModules();
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
+            .enable(SerializationFeature.INDENT_OUTPUT);
 
     // === Identification ===
 

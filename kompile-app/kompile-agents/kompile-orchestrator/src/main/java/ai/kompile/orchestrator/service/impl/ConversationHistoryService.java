@@ -16,6 +16,7 @@
 package ai.kompile.orchestrator.service.impl;
 
 import ai.kompile.orchestrator.model.event.ConversationMessageEvent;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.orchestrator.model.llm.ConversationMessage;
 import ai.kompile.orchestrator.model.llm.ConversationMessage.MessageRole;
 import ai.kompile.orchestrator.model.llm.LlmSession;
@@ -356,7 +357,7 @@ public class ConversationHistoryService {
                 context.append("[Result from ").append(msg.getToolName()).append("]");
             }
 
-            context.append(truncate(msg.getContent(), 1000)).append("\n\n");
+            context.append(StringUtils.truncate(msg.getContent(), 1000)).append("\n\n");
         }
 
         context.append("=== End History ===\n\n");
@@ -479,12 +480,6 @@ public class ConversationHistoryService {
             case ERROR -> "Error";
             case FEEDBACK -> "Feedback";
         };
-    }
-
-    private String truncate(String text, int maxLength) {
-        if (text == null) return "";
-        if (text.length() <= maxLength) return text;
-        return text.substring(0, maxLength) + "...";
     }
 
     // ==================== DTOs ====================

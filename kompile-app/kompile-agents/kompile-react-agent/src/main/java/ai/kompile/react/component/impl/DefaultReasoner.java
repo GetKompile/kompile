@@ -21,6 +21,7 @@ import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.TokenUsage;
 import ai.kompile.react.model.ToolCall;
 import ai.kompile.react.model.ToolDefinition;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -73,7 +74,7 @@ public class DefaultReasoner implements Reasoner {
         this.name = name != null ? name : "Default Reasoner";
         this.chatClient = chatClient;
         this.systemPrompt = systemPrompt != null ? systemPrompt : DEFAULT_SYSTEM_PROMPT;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     @Override

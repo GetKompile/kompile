@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.mcp;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -176,48 +177,68 @@ public class McpStdioCommand implements Callable<Integer> {
     public Integer call() {
         Path wd = workDir != null ? Paths.get(workDir) : Paths.get(System.getProperty("user.dir"));
 
-        // Auto-detect kompile-app for tools that need the HTTP backend (RAG, GraphRAG).
-        // When launched via stdio (no --url), probe common ports so those tools work
-        // without requiring the user to pass --url explicitly.
-        if (baseUrl == null || baseUrl.isBlank()) {
-            String detected = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
-            if (detected != null) {
-                // Strip /mcp/sse suffix — tools need the base URL (e.g. http://localhost:8080)
-                baseUrl = detected.replaceAll("/mcp/sse$", "");
-                System.err.println("[MCP] Auto-detected kompile-app at " + baseUrl);
-            }
-        }
-
-        // Auto-start daemon if needed, then bridge — collapses N MCP processes into one
-        if (!noDaemon) {
-            ai.kompile.cli.main.serve.DaemonClient client =
-                    ai.kompile.cli.main.serve.DaemonClient.ensureDaemon("mcp", wd);
-            if (client != null) {
-                try {
-                    client.bridgeStdio();
-                    return 0;
-                } catch (Exception e) {
-                    System.err.println("[MCP] Daemon bridge failed, falling back to in-process: " + e.getMessage());
-                    // Fall through to in-process mode
+        // Redirect stderr to a log file for the entire MCP stdio session so warnings,
+        // auto-detect messages, and skill-loading errors do not pollute the client's UI.
+        // stdout is intentionally left alone here so daemon bridgeStdio() can still write
+        // JSON-RPC responses to the real stdout; runInProcess() additionally redirects
+        // stdout once it takes over stdio.
+        ai.kompile.cli.mcp.stdio.McpStderrLogger stderrLogger =
+                new ai.kompile.cli.mcp.stdio.McpStderrLogger();
+        PrintStream originalErr = System.err;
+        System.setErr(stderrLogger.getPrintStream());
+        try {
+            // Auto-detect kompile-app for tools that need the HTTP backend (RAG, GraphRAG).
+            // When launched via stdio (no --url), probe common ports so those tools work
+            // without requiring the user to pass --url explicitly.
+            if (baseUrl == null || baseUrl.isBlank()) {
+                String detected = ai.kompile.cli.main.chat.McpUrlResolver.resolveOnce(null, 0);
+                if (detected != null) {
+                    // Strip /mcp/sse suffix — tools need the base URL (e.g. http://localhost:8080)
+                    baseUrl = detected.replaceAll("/mcp/sse$", "");
+                    System.err.println("[MCP] Auto-detected kompile-app at " + baseUrl);
                 }
             }
-        }
 
-        // In-process mode — original behavior
-        return runInProcess(wd);
+            // Auto-start daemon if needed, then bridge — collapses N MCP processes into one
+            if (!noDaemon) {
+                ai.kompile.cli.main.serve.DaemonClient client =
+                        ai.kompile.cli.main.serve.DaemonClient.ensureDaemon("mcp", wd);
+                if (client != null) {
+                    try {
+                        client.bridgeStdio();
+                        return 0;
+                    } catch (Exception e) {
+                        System.err.println("[MCP] Daemon bridge failed, falling back to in-process: " + e.getMessage());
+                        // Fall through to in-process mode
+                    }
+                }
+            }
+
+            // In-process mode — original behavior
+            return runInProcess(wd, stderrLogger);
+        } finally {
+            System.setErr(originalErr);
+        }
     }
 
-    private int runInProcess(Path wd) {
+    private int runInProcess(Path wd, ai.kompile.cli.mcp.stdio.McpStderrLogger stderrLogger) {
+        // File-backed stderr sink so diagnostics (skill-loading errors, warnings,
+        // third-party library chatter) do not pollute the MCP client's UI.
+        PrintStream originalErr = System.err;
+        PrintStream originalOut = System.out;
+        System.setErr(stderrLogger.getPrintStream());
+
         try {
             // ── Protect stdout: MCP JSON-RPC transport ──────────────────────────
             // Save the real stdout for MCP protocol output, then redirect System.out
-            // to stderr so that ANY library code (ND4J, Anserini, etc.) that calls
-            // System.out.println() from background threads cannot corrupt the
-            // JSON-RPC stream. This must happen before any background threads start.
-            PrintStream realStdout = System.out;
+            // to stderr (which now points at the log file) so that ANY library code
+            // (ND4J, Anserini, etc.) that calls System.out.println() from background
+            // threads cannot corrupt the JSON-RPC stream. This must happen before any
+            // background threads start.
+            PrintStream realStdout = originalOut;
             System.setOut(System.err);
 
-            om = new ObjectMapper();
+            om = JsonUtils.standardMapper();
 
             sessionTracker = new ai.kompile.cli.mcp.stdio.McpSessionTracker(om);
             resultReferenceCache = new ai.kompile.cli.main.chat.tools.ToolResultReferenceCache();
@@ -380,6 +401,10 @@ public class McpStdioCommand implements Callable<Integer> {
             toolExecutor.shutdownNow();
             if (sessionTracker != null) sessionTracker.shutdown();
             if (coordinator != null) coordinator.shutdown();
+            // Restore original stdout/stderr so callers (tests, daemon bridge) are not
+            // left with redirected streams after this method returns.
+            System.setOut(originalOut);
+            System.setErr(originalErr);
         }
         return 0;
     }
@@ -702,6 +727,7 @@ public class McpStdioCommand implements Callable<Integer> {
                             // Auto-cache large results using reference handles
                             if (!tr.isError() && resultReferenceCache != null
                                     && tr.getOutput() != null
+                                    && !"fetch_result".equals(toolName)
                                     && resultReferenceCache.shouldCache(tr.getOutput())) {
                                 tr = resultReferenceCache.storeAndSummarize(
                                         toolName, tr.getTitle(), tr.getOutput(), tr.getMetadata());

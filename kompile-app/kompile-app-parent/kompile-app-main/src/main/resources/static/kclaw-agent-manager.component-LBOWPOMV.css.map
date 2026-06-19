@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/components/kclaw-agent-manager/kclaw-agent-manager.component.css"],
+  "sourcesContent": [".agent-manager {\n  padding: 16px;\n}\n\n.header-row {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  margin-bottom: 16px;\n}\n\n.header-row h3 {\n  margin: 0;\n}\n\n.list-card, .editor-card {\n  margin-bottom: 16px;\n}\n\n.agent-table {\n  width: 100%;\n}\n\n.agent-name {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.default-chip {\n  font-size: 10px;\n  height: 20px;\n}\n\n.tool-chip {\n  font-size: 11px;\n  height: 24px;\n  margin: 2px;\n}\n\n.agent-form {\n  display: flex;\n  flex-direction: column;\n  gap: 16px;\n}\n\n.form-row {\n  display: flex;\n  gap: 16px;\n}\n\n.form-row.half {\n  align-items: center;\n}\n\n.full-width {\n  flex: 1;\n}\n\n.form-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: 8px;\n  margin-top: 16px;\n}\n"],
+  "mappings": ";AAAA,CAAC;AACC,WAAS;AACX;AAEA,CAAC;AACC,WAAS;AACT,mBAAiB;AACjB,eAAa;AACb,iBAAe;AACjB;AAEA,CAPC,WAOW;AACV,UAAQ;AACV;AAEA,CAAC;AAAW,CAAC;AACX,iBAAe;AACjB;AAEA,CAAC;AACC,SAAO;AACT;AAEA,CAAC;AACC,WAAS;AACT,eAAa;AACb,OAAK;AACP;AAEA,CAAC;AACC,aAAW;AACX,UAAQ;AACV;AAEA,CAAC;AACC,aAAW;AACX,UAAQ;AACR,UAAQ;AACV;AAEA,CAAC;AACC,WAAS;AACT,kBAAgB;AAChB,OAAK;AACP;AAEA,CAAC;AACC,WAAS;AACT,OAAK;AACP;AAEA,CALC,QAKQ,CAAC;AACR,eAAa;AACf;AAEA,CAAC;AACC,QAAM;AACR;AAEA,CAAC;AACC,WAAS;AACT,mBAAiB;AACjB,OAAK;AACL,cAAY;AACd;",
+  "names": []
+}

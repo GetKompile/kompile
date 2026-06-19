@@ -18,25 +18,26 @@ package ai.kompile.core.rag;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
 
-// This service will be created ONLY if no other bean implementing RagService is found.
-// Alternatively, you could use @Order(Ordered.LOWEST_PRECEDENCE)
-@Service("noOpRagService")
+/**
+ * Fallback RagService that returns empty results when no real implementation is available.
+ */
+@Service
+@ConditionalOnMissingBean(value = RagService.class, ignored = NoOpRagServiceImpl.class)
 public class NoOpRagServiceImpl implements RagService {
 
     private static final Logger logger = LoggerFactory.getLogger(NoOpRagServiceImpl.class);
 
     public NoOpRagServiceImpl() {
-        logger.warn("No specific RagService implementation found. Initializing NoOpRagServiceImpl. RAG functionality will be disabled or limited.");
+        logger.warn("No RagService implementation found — using NoOp fallback. RAG queries will return empty results.");
     }
 
     @Override
     public RagResult answerQuery(RagQuery query) {
-        String errorMessage = "RAG Service is not fully configured. Cannot process query: " + query.getQuery();
-        logger.warn(errorMessage);
-        return new RagResult("Error: " + errorMessage, "", Collections.emptyList());
+        return new RagResult("RAG service not configured", "", Collections.emptyList());
     }
 }

@@ -16,12 +16,14 @@
 package ai.kompile.process.discovery;
 
 import ai.kompile.core.graphrag.agent.ExtractionLlmService;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -51,7 +53,7 @@ import java.util.stream.Collectors;
 @ConditionalOnBean({KnowledgeGraphService.class, ExtractionLlmServiceRegistry.class})
 public class LlmProcessDiscoveryService {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final int MAX_NODES_FOR_CONTEXT = 200;
     private static final int MAX_SNIPPETS_PER_DOCUMENT = 10;
     private static final int MAX_CONTENT_CHARS = 6000;
@@ -329,11 +331,11 @@ public class LlmProcessDiscoveryService {
             sb.append("type=").append(node.getNodeType());
             if (node.getTitle() != null) sb.append(", title=\"").append(node.getTitle()).append("\"");
             if (node.getDescription() != null) {
-                String desc = truncate(node.getDescription(), 200);
+                String desc = StringUtils.truncate(node.getDescription(), 200);
                 sb.append(", description=\"").append(desc).append("\"");
             }
             if (node.getContentPreview() != null) {
-                String preview = truncate(node.getContentPreview(), 300);
+                String preview = StringUtils.truncate(node.getContentPreview(), 300);
                 sb.append(", content=\"").append(preview).append("\"");
             }
             if (node.getMetadataJson() != null) {
@@ -370,7 +372,7 @@ public class LlmProcessDiscoveryService {
                     if (snippet.getContentPreview() != null && !snippet.getContentPreview().isBlank()) {
                         sb.append("  Chunk ").append(snippet.getTitle() != null ? snippet.getTitle() : "")
                                 .append(": ");
-                        sb.append(truncate(snippet.getContentPreview(), 400));
+                        sb.append(StringUtils.truncate(snippet.getContentPreview(), 400));
                         sb.append("\n");
                     }
                 }
@@ -385,7 +387,7 @@ public class LlmProcessDiscoveryService {
             sb.append(" --[").append(edge.getLabel() != null ? edge.getLabel() : "RELATED_TO").append("]--> ");
             sb.append(nodeRef(edge.getTargetNode()));
             if (edge.getDescription() != null) {
-                sb.append(" (").append(truncate(edge.getDescription(), 100)).append(")");
+                sb.append(" (").append(StringUtils.truncate(edge.getDescription(), 100)).append(")");
             }
             sb.append("\n");
         }
@@ -407,7 +409,7 @@ public class LlmProcessDiscoveryService {
     private String nodeRef(GraphNode node) {
         if (node == null) return "?";
         String title = node.getTitle() != null ? node.getTitle() : node.getNodeId();
-        return "\"" + truncate(title, 60) + "\"[" + node.getNodeId() + "]";
+        return "\"" + StringUtils.truncate(title, 60) + "\"[" + node.getNodeId() + "]";
     }
 
     private String extractEntityType(String metadataJson) {
@@ -418,12 +420,6 @@ public class LlmProcessDiscoveryService {
         int end = metadataJson.indexOf("\"", start);
         if (end < 0) return null;
         return metadataJson.substring(start, end);
-    }
-
-    private String truncate(String s, int maxLen) {
-        if (s == null) return "";
-        s = s.replace("\n", " ").replace("\r", " ");
-        return s.length() <= maxLen ? s : s.substring(0, maxLen) + "...";
     }
 
     public static String getProcessDiscoveryPromptInstructions() {

@@ -17,6 +17,7 @@
 package ai.kompile.loader.gmail;
 
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -79,10 +80,10 @@ public class GmailLoaderImpl implements DocumentLoader {
         }
 
         String gmailQuery = (String) meta.getOrDefault("gmailQuery", "");
-        int maxMessages = getIntOr(meta, "maxMessages", 500);
-        int daysBack = getIntOr(meta, "daysBack", 30);
-        boolean includeAttachments = getBooleanOr(meta, "includeAttachments", true);
-        boolean threadMode = getBooleanOr(meta, "threadMode", false);
+        int maxMessages = MapUtils.getInt(meta, "maxMessages", 500);
+        int daysBack = MapUtils.getInt(meta, "daysBack", 30);
+        boolean includeAttachments = MapUtils.getBoolean(meta, "includeAttachments", true);
+        boolean threadMode = MapUtils.getBoolean(meta, "threadMode", false);
 
         // Build effective query with date filter
         String effectiveQuery = buildEffectiveQuery(gmailQuery, daysBack);
@@ -277,19 +278,4 @@ public class GmailLoaderImpl implements DocumentLoader {
         return userQuery + " " + dateFilter;
     }
 
-    private static int getIntOr(Map<String, Object> meta, String key, int defaultValue) {
-        Object val = meta.get(key);
-        if (val instanceof Number) return ((Number) val).intValue();
-        if (val instanceof String) {
-            try { return Integer.parseInt((String) val); } catch (NumberFormatException e) { /* fall through */ }
-        }
-        return defaultValue;
-    }
-
-    private static boolean getBooleanOr(Map<String, Object> meta, String key, boolean defaultValue) {
-        Object val = meta.get(key);
-        if (val instanceof Boolean) return (Boolean) val;
-        if (val instanceof String) return Boolean.parseBoolean((String) val);
-        return defaultValue;
-    }
 }

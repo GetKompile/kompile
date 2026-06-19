@@ -1,0 +1,1508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Northstar 3-Mo P&L — KAA Process Map + Live Sensitivity</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f5f5f5;
+    --surface-sunken: #ededed;
+    --text: #1a1a1a;
+    --text-secondary: #5a5a5a;
+    --text-tertiary: #858585;
+    --border: rgba(0,0,0,0.10);
+    --border-strong: rgba(0,0,0,0.20);
+    --accent: #DC143C;
+    --accent-bg: #FCE5EA;
+
+    --gray-50: #F1EFE8; --gray-600: #5F5E5A; --gray-800: #444441;
+    --blue-50: #E6F1FB; --blue-600: #185FA5; --blue-800: #0C447C;
+    --amber-50: #FAEEDA; --amber-600: #854F0B; --amber-800: #633806;
+    --green-50: #EAF3DE; --green-600: #3B6D11; --green-800: #27500A;
+    --purple-50: #EEEDFE; --purple-600: #534AB7; --purple-800: #3C3489;
+    --coral-50: #FAECE7; --coral-600: #993C1D; --coral-800: #712B13;
+    --teal-50: #E1F5EE; --teal-600: #0F6E56; --teal-800: #085041;
+    --pink-50: #FBEAF0; --pink-600: #993556; --pink-800: #72243E;
+    --red-50: #FBE9E7; --red-600: #B43124; --red-800: #821E13;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --surface: #1a1a1a;
+      --surface-hover: #262626;
+      --surface-sunken: #0d0d0d;
+      --text: #f5f5f5;
+      --text-secondary: #a8a8a8;
+      --text-tertiary: #707070;
+      --border: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.22);
+      --accent: #F08197;
+      --accent-bg: rgba(220,20,60,0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 22px 32px 0;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  .header-inner { max-width: 1400px; margin: 0 auto; }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .logo-mark {
+    width: 22px; height: 22px; border-radius: 5px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--purple-600) 100%);
+    flex-shrink: 0;
+  }
+  .logo-text { font-size: 12px; color: var(--text-tertiary); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+  .logo-slash {
+    font-family: inherit;
+    font-weight: 800;
+    color: var(--accent);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+  .logo-wordmark {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: -4px;
+  }
+  .logo-divider { color: var(--text-tertiary); margin: 0 4px; font-size: 12px; }
+  .logo-context {
+    font-size: 12px; color: var(--text-tertiary);
+    font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 2px; }
+  .sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; max-width: 800px; }
+
+  .tabs { display: flex; gap: 2px; flex-wrap: wrap; }
+  .tab {
+    padding: 10px 18px; background: transparent; border: none; border-bottom: 2px solid transparent;
+    font: inherit; font-size: 14px; color: var(--text-secondary);
+    cursor: pointer; font-weight: 500;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  main { max-width: 1400px; margin: 0 auto; padding: 28px 32px 64px; }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Common cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
+  .card .lead { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary); }
+
+  .section-header {
+    display: flex; align-items: baseline; gap: 12px;
+    margin: 28px 0 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-num { font-size: 11px; font-weight: 600; color: var(--text-tertiary); letter-spacing: 0.06em; text-transform: uppercase; }
+  .section-header h2 { font-size: 17px; font-weight: 500; margin: 0; }
+
+  /* --- L0 hero --- */
+  .l0-hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--pink-600);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 18px;
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 24px;
+    align-items: center;
+  }
+  @media (max-width: 880px) { .l0-hero { grid-template-columns: 1fr; } }
+  .l0-hero h2 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .l0-hero .lead { margin: 0; font-size: 13.5px; color: var(--text-secondary); }
+  .l0-hero .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--pink-50);
+    color: var(--pink-800);
+    font-size: 11px; font-weight: 600;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  @media (prefers-color-scheme: dark) {
+    .pill { background: rgba(153,53,86,0.18); color: #ECA1B7; }
+  }
+  .baseline-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .bs-tile {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .bs-num { font-size: 18px; font-weight: 600; line-height: 1.1; }
+  .bs-lbl { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* --- KAA Layer cards (vertical stack) --- */
+  .layer-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 10px;
+    position: relative;
+    border-left-width: 4px;
+    border-left-style: solid;
+  }
+  .layer-card.l1 { border-left-color: var(--blue-600); }
+  .layer-card.l2 { border-left-color: var(--purple-600); }
+  .layer-card.l3 { border-left-color: var(--teal-600); }
+  .layer-card.l4 { border-left-color: var(--gray-600); }
+  .layer-card.l5 { border-left-color: var(--coral-600); }
+  .layer-head {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .layer-num {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-tertiary);
+  }
+  .layer-name { font-size: 16px; font-weight: 600; margin: 0; }
+  .layer-card.l1 .layer-name { color: var(--blue-800); }
+  .layer-card.l2 .layer-name { color: var(--purple-800); }
+  .layer-card.l3 .layer-name { color: var(--teal-800); }
+  .layer-card.l4 .layer-name { color: var(--gray-800); }
+  .layer-card.l5 .layer-name { color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .layer-card.l1 .layer-name { color: #BEDDF6; }
+    .layer-card.l2 .layer-name { color: #BEB7F5; }
+    .layer-card.l3 .layer-name { color: #94CFB8; }
+    .layer-card.l4 .layer-name { color: #C4C2BB; }
+    .layer-card.l5 .layer-name { color: #E8A48A; }
+  }
+  .ka-pill {
+    display: inline-flex; padding: 2px 8px; border-radius: 10px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    margin-left: auto;
+  }
+  .ka-pill.k { background: var(--purple-50); color: var(--purple-800); }
+  .ka-pill.a { background: var(--coral-50); color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .ka-pill.k { background: rgba(83,74,183,0.18); color: #BEB7F5; }
+    .ka-pill.a { background: rgba(153,60,29,0.18); color: #E8A48A; }
+  }
+  .layer-body {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 980px) { .layer-body { grid-template-columns: 1fr; } }
+  .lb-cell { font-size: 12.5px; line-height: 1.5; }
+  .lb-cell h5 {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-tertiary);
+    margin: 0 0 6px;
+  }
+  .lb-cell ul { margin: 0; padding-left: 18px; }
+  .lb-cell ul li { margin: 3px 0; }
+  .lb-cell code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    background: var(--surface-sunken);
+    padding: 1px 5px; border-radius: 3px;
+    color: var(--text-secondary);
+  }
+
+  .ka-divider {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 14px;
+    align-items: center;
+    margin: 18px 0;
+  }
+  .ka-divider .line { border-top: 2px dashed var(--border-strong); }
+  .ka-divider .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    font-weight: 600;
+    background: linear-gradient(to right, var(--purple-50), var(--coral-50));
+    padding: 6px 14px;
+    border-radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .ka-divider .label { background: linear-gradient(to right, rgba(83,74,183,0.18), rgba(153,60,29,0.18)); color: var(--text); }
+  }
+
+  /* Planes */
+  .planes-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 980px) { .planes-grid { grid-template-columns: 1fr; } }
+  .plane-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    border-top-width: 4px;
+    border-top-style: solid;
+  }
+  .plane-card.gov  { border-top-color: var(--red-600); }
+  .plane-card.op   { border-top-color: var(--amber-600); }
+  .plane-card.obs  { border-top-color: var(--green-600); }
+  .plane-card h4 {
+    margin: 0 0 8px; font-size: 13px; font-weight: 600;
+  }
+  .plane-card.gov h4 { color: var(--red-800); }
+  .plane-card.op h4  { color: var(--amber-800); }
+  .plane-card.obs h4 { color: var(--green-800); }
+  @media (prefers-color-scheme: dark) {
+    .plane-card.gov h4 { color: #ED8077; }
+    .plane-card.op h4  { color: #F0C171; }
+    .plane-card.obs h4 { color: #B7E07A; }
+  }
+  .plane-card ul {
+    margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.5;
+  }
+  .plane-card ul li { margin: 4px 0; }
+  .plane-card ul li strong { font-weight: 600; }
+
+  /* Feedback loop callouts */
+  .loop-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 980px) { .loop-grid { grid-template-columns: 1fr; } }
+  .loop-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--coral-600);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 12.5px;
+  }
+  .loop-card .from {
+    font-size: 10.5px; font-weight: 600; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+  .loop-card .arrow {
+    color: var(--coral-600); font-size: 11px; margin: 4px 0;
+  }
+  .loop-card .to {
+    color: var(--text); font-weight: 500;
+  }
+  .loop-card .detail {
+    color: var(--text-secondary);
+    margin-top: 4px;
+    line-height: 1.45;
+  }
+
+  /* ============ TAB 2 — P&L SENSITIVITY ============ */
+  .pnl-wrap {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+  @media (max-width: 1080px) { .pnl-wrap { grid-template-columns: 1fr; } }
+
+  .driver-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    height: fit-content;
+    position: sticky;
+    top: 130px;
+  }
+  .driver-panel h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  .driver-panel .lead { font-size: 12px; color: var(--text-secondary); margin: 0 0 14px; }
+
+  .driver { margin-bottom: 16px; }
+  .driver-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+  .driver-label { font-size: 12.5px; font-weight: 500; }
+  .driver-value {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-bg);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .driver input[type=range] {
+    width: 100%;
+    -webkit-appearance: none;
+    background: transparent;
+    margin: 4px 0;
+  }
+  .driver input[type=range]::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+  }
+  .driver input[type=range]::-moz-range-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+  }
+  .driver input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-top: -6px;
+    cursor: pointer;
+    border: 2px solid var(--surface);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .driver input[type=range]::-moz-range-thumb {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--surface);
+  }
+  .driver-range {
+    display: flex; justify-content: space-between;
+    font-size: 10.5px; color: var(--text-tertiary);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .driver-help { font-size: 11px; color: var(--text-tertiary); margin-top: 3px; line-height: 1.4; }
+
+  .driver-actions {
+    display: flex; gap: 8px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .btn {
+    flex: 1; padding: 6px 12px; border-radius: 6px; font: inherit; font-size: 12.5px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--surface-hover); }
+  .btn.primary { background: var(--accent); color: white; border-color: var(--accent); }
+  @media (prefers-color-scheme: dark) { .btn.primary { color: #0C1F3A; } }
+
+  /* P&L output */
+  .pnl-output { }
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  @media (max-width: 700px) { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
+  .kpi {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .kpi-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .kpi-value { font-size: 22px; font-weight: 600; line-height: 1.1; margin-top: 4px; }
+  .kpi-delta { font-size: 11.5px; margin-top: 3px; font-family: ui-monospace, Menlo, monospace; }
+  .delta-pos { color: var(--green-800); }
+  .delta-neg { color: var(--red-800); }
+  .delta-zero { color: var(--text-tertiary); }
+  @media (prefers-color-scheme: dark) {
+    .delta-pos { color: #B7E07A; }
+    .delta-neg { color: #ED8077; }
+  }
+
+  .pnl-table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: auto;
+  }
+  table.pnl {
+    width: 100%; border-collapse: collapse;
+    font-size: 12.5px;
+    font-family: -apple-system, system-ui, sans-serif;
+  }
+  table.pnl th, table.pnl td {
+    padding: 8px 12px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+  }
+  table.pnl th {
+    background: var(--surface-sunken);
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    text-align: right;
+  }
+  table.pnl th:first-child, table.pnl td:first-child {
+    text-align: left;
+  }
+  table.pnl tr.section td {
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  table.pnl tr.subtotal td { font-weight: 600; border-top: 1px solid var(--border-strong); }
+  table.pnl tr.total td {
+    font-weight: 600;
+    background: var(--surface-sunken);
+    border-top: 2px solid var(--text-secondary);
+  }
+  table.pnl td.num {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  table.pnl td.delta-col {
+    color: var(--text-tertiary);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+  }
+  table.pnl tr.subtotal td.delta-col,
+  table.pnl tr.total td.delta-col { color: inherit; }
+
+  /* Tornado chart */
+  .tornado-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-top: 16px;
+  }
+  .tornado-card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  .tornado-card .lead { font-size: 12px; color: var(--text-secondary); margin: 0 0 14px; }
+  .tornado svg { display: block; width: 100%; height: auto; }
+
+  footer {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 24px 32px 48px;
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+
+  /* SVG defaults */
+  .svg-text { fill: var(--text); font-family: inherit; font-size: 11.5px; }
+  .svg-text-sm { fill: var(--text-secondary); font-family: inherit; font-size: 10.5px; }
+  .svg-text-tiny { fill: var(--text-tertiary); font-family: inherit; font-size: 9.5px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="logo-row">
+      <span class="logo-slash">//</span>
+      <span class="logo-wordmark">PROSSIMO</span>
+      <span class="logo-divider">·</span>
+      <span class="logo-context">KAA-aware Process Map</span>
+    </div>
+    <h1>Northstar Goods — 3-Month Rolling P&amp;L Projection</h1>
+    <p class="sub">The original BOJ-style process map, reconstructed through the KAA methodology — six layers, three planes, closed-loop feedback. The output is a live driver-based P&amp;L with sensitivity to FX, volume, mix, COGS, and OpEx inputs.</p>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-view="kaa" role="tab">Process via KAA</button>
+      <button class="tab" data-view="pnl" role="tab">Live P&amp;L · Sensitivity</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================ -->
+<!-- TAB 1 — PROCESS VIA KAA -->
+<!-- ============================================================ -->
+<section class="view active" id="view-kaa">
+
+  <!-- L0 hero -->
+  <div class="l0-hero">
+    <div>
+      <div class="pill">Layer 0 · Engagement &amp; baseline</div>
+      <h2>Why this process — and what we measured before automating it</h2>
+      <p class="lead">Northstar's monthly close + 3-mo P&amp;L projection scored highest on the engagement matrix: $-at-stake (CFO-signed projection drives commitments), automatability (rule-bound, repeats monthly), and risk band (medium — SOX-relevant but not external-reporting-critical). Pilot scope: <strong>Phases 1–2 + FX</strong>; Phases 3–4 mapped but human-led until confidence is earned.</p>
+    </div>
+    <div class="baseline-stats">
+      <div class="bs-tile">
+        <div class="bs-num">28 h</div>
+        <div class="bs-lbl">Analyst time / cycle</div>
+      </div>
+      <div class="bs-tile">
+        <div class="bs-num">BD+10</div>
+        <div class="bs-lbl">Close cycle baseline</div>
+      </div>
+      <div class="bs-tile">
+        <div class="bs-num">~6</div>
+        <div class="bs-lbl">Errors caught / cycle</div>
+      </div>
+      <div class="bs-tile">
+        <div class="bs-num">12 / yr</div>
+        <div class="bs-lbl">Cycle frequency</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- KNOWLEDGE LAYERS -->
+  <div class="section-header">
+    <span class="section-num">Section 1</span>
+    <h2>Knowledge layers — what KAA learns about Northstar's process</h2>
+  </div>
+
+  <!-- L1 -->
+  <div class="layer-card l1">
+    <div class="layer-head">
+      <span class="layer-num">Layer 1</span>
+      <h3 class="layer-name">Discovery</h3>
+      <span class="ka-pill k">Knowledge</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>Evidence ingested for this process</h5>
+        <ul>
+          <li><code>FP&amp;A_Close_SOP_v3.2.docx</code> · 47 pages</li>
+          <li><code>FX_Policy_Memo.pdf</code> · 12 pages</li>
+          <li><code>3MoP&amp;L_Master_2026.xlsm</code> · 47 macros decoded</li>
+          <li><code>Forecast_AMER/EMEA/APAC_*.xlsx</code> · 23 prior submissions</li>
+          <li><strong>3 screen recordings</strong> · Feb / Mar / Apr 2026 close · 42h total</li>
+          <li><strong>6 interviews</strong> · M. Chen, J. Park, S. Reyes, A. Tanaka, L. Okafor, D. Singh</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Output artifact</h5>
+        <ul>
+          <li>Evidence graph — 312 atomic procedural facts, each linked to source</li>
+          <li>Per-fact confidence (0.7–0.99)</li>
+          <li>Open conflicts: 2 (pipeline coverage band, OpEx attrition rate)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>What L1 surfaced that wasn't documented</h5>
+        <ul>
+          <li>M. Chen's "always escalate channel mismatches" rule — only said in interview, not in SOP</li>
+          <li>Slack-DM-based regional escalation (SOP says email)</li>
+          <li>~$130k informal IC adjustment by Controller in Apr cycle</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- L2 -->
+  <div class="layer-card l2">
+    <div class="layer-head">
+      <span class="layer-num">Layer 2</span>
+      <h3 class="layer-name">Ontology</h3>
+      <span class="ka-pill k">Knowledge</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>Northstar-specific entities</h5>
+        <ul>
+          <li><code>RegionalForecast</code> · {AMER, EMEA, APAC} → workbook submissions</li>
+          <li><code>ChannelTaxonomy</code> · {DTC, Amazon, Wholesale} (corp); maps from 11 regional names</li>
+          <li><code>SKUMaster</code> · 13 SKUs · maps from EU internal codes + JP local codes</li>
+          <li><code>FXForwardCurve</code> · 5 currencies · M+1 / M+2 / M+3 horizons</li>
+          <li><code>Control</code> · 7 instances (C-01 through C-07)</li>
+          <li><code>VarianceTriagePattern</code> · 5 instances (SKU mapping, channel mismatch, currency tag, calendar shift, other)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Specialized rules learned</h5>
+        <ul>
+          <li>Channel mismatches → <strong>always escalate</strong> (M. Chen override)</li>
+          <li>Auto-fix budget = ≤ 4 corrections per workbook</li>
+          <li>$ threshold for in-place auto-fix = $25,000</li>
+          <li>Pipeline coverage band = 1.4× – 2.2× (SOP) <em>vs.</em> 1.6× (Sales Ops) → unresolved</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Templates seeded from</h5>
+        <ul>
+          <li><strong>FP&amp;A close template</strong> (cross-customer)</li>
+          <li><strong>CPG/DTC channel-mix template</strong></li>
+          <li><strong>Multi-entity FX template</strong></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- L3 -->
+  <div class="layer-card l3">
+    <div class="layer-head">
+      <span class="layer-num">Layer 3</span>
+      <h3 class="layer-name">Process</h3>
+      <span class="ka-pill k">Knowledge</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>As-is — 14 steps across 4 phases</h5>
+        <ul>
+          <li>Phase 1 · Inputs &amp; intake (5 steps · BD+1–4)</li>
+          <li>Phase 2 · Validate &amp; reconcile (3 steps · BD+5–6)</li>
+          <li>Phase 3 · Project &amp; consolidate (3 steps · BD+7–9)</li>
+          <li>Phase 4 · Review &amp; publish (3 steps · BD+10)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>To-be — same 14 steps, different agency</h5>
+        <ul>
+          <li>9 steps fully <strong>automatable</strong> (AUTO badge)</li>
+          <li>3 steps <strong>auto + HITL approval</strong> (validate/triage, OpEx roll-forward, commentary)</li>
+          <li>2 steps <strong>human-only</strong> (IC eliminations, CFO sign-off)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>HITL approval gates</h5>
+        <ul>
+          <li>Approve auto-correction batch (J. Park)</li>
+          <li>OpEx attrition assumption review (M. Chen)</li>
+          <li>Variance commentary edit (M. Chen → CFO)</li>
+          <li>Close mechanics sign-off (Controller)</li>
+          <li>Projection sign-off (CFO)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- K/A divider -->
+  <div class="ka-divider">
+    <div class="line"></div>
+    <div class="label">▲ Knowledge   ·   Action ▼</div>
+    <div class="line"></div>
+  </div>
+
+  <!-- ACTION LAYERS -->
+  <div class="section-header">
+    <span class="section-num">Section 2</span>
+    <h2>Action layers — what KAA executes for Northstar</h2>
+  </div>
+
+  <!-- L4 -->
+  <div class="layer-card l4">
+    <div class="layer-head">
+      <span class="layer-num">Layer 4</span>
+      <h3 class="layer-name">Integrations</h3>
+      <span class="ka-pill a">Action</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>Connected systems for this process</h5>
+        <ul>
+          <li><code>NetSuite</code> — Trial balance, AR/AP aging (read)</li>
+          <li><code>Shopify Admin API</code> — DTC orders (read)</li>
+          <li><code>Amazon SP-API</code> — Settlement reports (read)</li>
+          <li><code>Salesforce</code> — Pipeline snapshot (read)</li>
+          <li><code>Workday</code> — Roster, comp plan (read)</li>
+          <li><code>Treasury feed</code> — FX forward curve (read)</li>
+          <li><code>Looker</code> — Publish (write)</li>
+          <li><code>S3</code> — Audit archive (write)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Read vs. write</h5>
+        <ul>
+          <li>7 read-only sources (no risk of corruption)</li>
+          <li>2 write destinations (publish only — never write back to source-of-truth ERPs)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Why this is the commodity layer</h5>
+        <ul>
+          <li>Connector quality matters but doesn't differentiate KAA from Zapier-class tools</li>
+          <li>The defensibility lives in <em>what's done with</em> the data, not the act of pulling it</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- L5 -->
+  <div class="layer-card l5">
+    <div class="layer-head">
+      <span class="layer-num">Layer 5</span>
+      <h3 class="layer-name">Agents</h3>
+      <span class="ka-pill a">Action</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>Agents specified for this process</h5>
+        <ul>
+          <li><strong>Ingest agent</strong> · pulls TB / channel / FX / Workday / Salesforce on schedule</li>
+          <li><strong>Watcher agent</strong> · monitors Forecasts/ folder for regional submissions</li>
+          <li><strong>Triage agent</strong> · classifies variance patterns; auto-fixes or escalates</li>
+          <li><strong>FX agent</strong> · applies forward curve; validates USD = local × rate ± $0.01</li>
+          <li><strong>Pipeline agent</strong> · computes coverage ratio per region · enforces band</li>
+          <li><strong>Projection agent</strong> · COGS + OpEx roll-forward · projects 3-mo</li>
+          <li><strong>Commentary agent</strong> · drafts variance commentary in house style</li>
+          <li><strong>Publish agent</strong> · writes Looker + archives audit JSON to S3</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Spec format (per agent)</h5>
+        <ul>
+          <li>Prompt &amp; tools</li>
+          <li>Eval set (golden cycles)</li>
+          <li>Escalation policy + SLA</li>
+          <li>Audit-trail schema</li>
+          <li>Liability boundary</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Why specs &gt; models</h5>
+        <ul>
+          <li>Reviewable by Controller, IT, Audit</li>
+          <li>Survive model upgrades (swap GPT-N for Claude-N+1 without losing definition)</li>
+          <li>Diffable across cycles → drift detection</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- PLANES -->
+  <div class="section-header">
+    <span class="section-num">Section 3</span>
+    <h2>Cross-cutting planes — for this specific process</h2>
+  </div>
+
+  <div class="planes-grid">
+    <div class="plane-card gov">
+      <h4>● Governance</h4>
+      <ul>
+        <li><strong>SOX scope</strong>: Phase 4 sign-off and IC eliminations are ICFR-relevant — agent participation requires control documentation</li>
+        <li><strong>FX policy</strong>: forward as of last BD of prior month (per FX Policy Memo §2) — encoded in FX agent spec</li>
+        <li><strong>Audit retention</strong>: 7-year retention of evidence graph + run logs (S3 with object lock)</li>
+        <li><strong>Data residency</strong>: regional sales data stays in customer cloud; agent specs reference but don't store</li>
+        <li><strong>EU AI Act</strong>: variance triage classified as <em>limited risk</em> (HITL on every auto-fix); commentary classified <em>limited risk</em> (CFO edits final)</li>
+      </ul>
+    </div>
+
+    <div class="plane-card op">
+      <h4>● Operating model</h4>
+      <ul>
+        <li><strong>Customer sponsor</strong>: M. Sato (CFO)</li>
+        <li><strong>Process steward</strong>: M. Chen (VP FP&amp;A)</li>
+        <li><strong>Ontology custodian</strong>: M. Chen + ProssimoTech CS</li>
+        <li><strong>HITL approver pool</strong>: J. Park (regional triage), M. Chen (commentary), L. Okafor (close mechanics), M. Sato (projection)</li>
+        <li><strong>Escalation</strong>: low-confidence triage → analyst within 4h SLA; agent failure → on-call within 1h</li>
+        <li><strong>Cadence</strong>: monthly close + quarterly process review with ProssimoTech CS</li>
+      </ul>
+    </div>
+
+    <div class="plane-card obs">
+      <h4>● Observability / quality</h4>
+      <ul>
+        <li><strong>7 controls</strong> (C-01..C-07) fired every cycle; pass rate displayed in dashboard</li>
+        <li><strong>Eval sets</strong>: golden cycles for triage agent (50 historical workbooks with known correct triage)</li>
+        <li><strong>Drift monitors</strong>: triage hit rate, commentary edit-rate, FX deviation, pipeline coverage band stability</li>
+        <li><strong>Replay sandbox</strong>: run new agent versions against last 6 cycles before promotion</li>
+        <li><strong>Coverage metric</strong>: % of L1 evidence claims still validated by latest evidence</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- FEEDBACK LOOP -->
+  <div class="section-header">
+    <span class="section-num">Section 4</span>
+    <h2>Closed-loop feedback — telemetry from this process</h2>
+  </div>
+
+  <div class="loop-grid">
+    <div class="loop-card">
+      <div class="from">From Layer 5 → Layer 2</div>
+      <div class="arrow">↓ ontology refinement</div>
+      <div class="to">Auto-corrected channel mismatches feed pattern library</div>
+      <div class="detail">Each accepted auto-fix in the Triage agent strengthens the relevant <code>VarianceTriagePattern</code> entry. Rejected fixes update the threshold rules. After 12 cycles, triage hit rate improved from 79% → 92%.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">From Layer 5 → Layer 5</div>
+      <div class="arrow">↓ eval set growth</div>
+      <div class="to">CFO commentary edits become house-style training data</div>
+      <div class="detail">Every M. Chen / CFO edit on auto-drafted variance commentary becomes a held-out eval pair. The Commentary agent's spec eval set grew from 12 examples to 89 over 6 quarters.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">From Layer 5 → Layer 1</div>
+      <div class="arrow">↓ re-discovery trigger</div>
+      <div class="to">ERP migration auto-triggers re-discovery</div>
+      <div class="detail">Detected at the integrations layer (NetSuite saved-search hash drift &gt; 50%). Triggers a re-mining cycle of Layer 1 with focused scope on the changed system; ontology is patched, not rebuilt.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">From Layer 3 → Layer 1</div>
+      <div class="arrow">↓ continuous discovery</div>
+      <div class="to">New SKU launch triggers narrow re-mine</div>
+      <div class="detail">When the SKU master gains an entry (e.g., HYD-110 Sleep Serum), Layer 1 spawns a narrow discovery sub-task — interview product manager, scan launch playbook, surface any new pricing or channel rules.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">From Layer 5 → Layer 3</div>
+      <div class="arrow">↓ process drift detection</div>
+      <div class="to">Recurring exception class triggers process update</div>
+      <div class="detail">If the same exception class fires &gt; 3 cycles in a row, the Process layer is flagged for review. Last quarter, this surfaced a missing rule for the new Sephora gifting channel — codified into Layer 2 ontology.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">From Layer 0 → all</div>
+      <div class="arrow">↓ baseline refresh</div>
+      <div class="to">Quarterly baseline measurement</div>
+      <div class="detail">Engagement-layer metrics (analyst hours, errors caught, cycle time) are re-measured every quarter. Drift &gt; 15% triggers a process review with the customer sponsor (M. Sato).</div>
+    </div>
+  </div>
+
+</section>
+
+
+<!-- ============================================================ -->
+<!-- TAB 2 — LIVE P&L SENSITIVITY -->
+<!-- ============================================================ -->
+<section class="view" id="view-pnl">
+
+  <div class="card" style="margin-bottom: 16px;">
+    <h2>Driver-based P&amp;L · Jun – Aug 2026</h2>
+    <p class="lead">The output of the projection agent at the top of Phase 3, with all input drivers exposed for sensitivity analysis. Move the sliders to see how the consolidated 3-month P&amp;L responds. All deltas are computed against the base case (current forward curve, current forecast, current OpEx plan).</p>
+  </div>
+
+  <div class="pnl-wrap">
+
+    <!-- Driver panel -->
+    <div class="driver-panel">
+      <h3>Drivers</h3>
+      <p class="lead">Adjust to see live P&amp;L impact.</p>
+
+      <div class="driver">
+        <div class="driver-head">
+          <span class="driver-label">Sales volume</span>
+          <span class="driver-value" id="vol-val">+0.0%</span>
+        </div>
+        <input type="range" id="vol" min="-20" max="20" step="0.5" value="0">
+        <div class="driver-range"><span>−20%</span><span>baseline</span><span>+20%</span></div>
+        <div class="driver-help">Applies uniformly to all channels and months.</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head">
+          <span class="driver-label">DTC mix shift</span>
+          <span class="driver-value" id="mix-val">+0 bps</span>
+        </div>
+        <input type="range" id="mix" min="-500" max="500" step="25" value="0">
+        <div class="driver-range"><span>−500 bps</span><span>baseline</span><span>+500 bps</span></div>
+        <div class="driver-help">Shifts wholesale revenue into DTC at the same total. DTC carries higher GM.</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head">
+          <span class="driver-label">EUR / USD forward</span>
+          <span class="driver-value" id="eur-val">1.0832</span>
+        </div>
+        <input type="range" id="eur" min="1.04" max="1.12" step="0.001" value="1.0832">
+        <div class="driver-range"><span>1.04</span><span>1.0832</span><span>1.12</span></div>
+        <div class="driver-help">Affects ~10% of revenue (EMEA EUR-denominated lines).</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head">
+          <span class="driver-label">GBP / USD forward</span>
+          <span class="driver-value" id="gbp-val">1.2461</span>
+        </div>
+        <input type="range" id="gbp" min="1.20" max="1.30" step="0.001" value="1.2461">
+        <div class="driver-range"><span>1.20</span><span>1.2461</span><span>1.30</span></div>
+        <div class="driver-help">Affects ~7% of revenue (EMEA UK).</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head">
+          <span class="driver-label">JPY / USD forward (×100)</span>
+          <span class="driver-value" id="jpy-val">0.6700</span>
+        </div>
+        <input type="range" id="jpy" min="0.58" max="0.76" step="0.001" value="0.67">
+        <div class="driver-range"><span>0.58</span><span>0.67</span><span>0.76</span></div>
+        <div class="driver-help">Affects ~8% of revenue (APAC Japan). Slider × 0.01 = actual rate.</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head">
+          <span class="driver-label">COGS rate inflation</span>
+          <span class="driver-value" id="cogs-val">+0.0%</span>
+        </div>
+        <input type="range" id="cogs" min="-3" max="6" step="0.1" value="0">
+        <div class="driver-range"><span>−3%</span><span>baseline</span><span>+6%</span></div>
+        <div class="driver-help">Standard cost rates on product. Glass packaging vendor renegotiation = +4%.</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head">
+          <span class="driver-label">Marketing spend</span>
+          <span class="driver-value" id="mkt-val">+0.0%</span>
+        </div>
+        <input type="range" id="mkt" min="-25" max="25" step="1" value="0">
+        <div class="driver-range"><span>−25%</span><span>baseline</span><span>+25%</span></div>
+        <div class="driver-help">% change to marketing OpEx. Doesn't auto-affect revenue (deliberate — model has no elasticity built in).</div>
+      </div>
+
+      <div class="driver-actions">
+        <button class="btn" onclick="resetDrivers()">Reset</button>
+        <button class="btn primary" onclick="snapshotBaseline()" id="snapshot-btn">Set as new base</button>
+      </div>
+    </div>
+
+    <!-- P&L output -->
+    <div class="pnl-output">
+
+      <div class="kpi-row">
+        <div class="kpi">
+          <div class="kpi-label">Net revenue</div>
+          <div class="kpi-value" id="kpi-rev">$0</div>
+          <div class="kpi-delta" id="kpi-rev-delta">—</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Gross margin %</div>
+          <div class="kpi-value" id="kpi-gm">—</div>
+          <div class="kpi-delta" id="kpi-gm-delta">—</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">EBITDA</div>
+          <div class="kpi-value" id="kpi-ebitda">$0</div>
+          <div class="kpi-delta" id="kpi-ebitda-delta">—</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">EBITDA margin %</div>
+          <div class="kpi-value" id="kpi-ebm">—</div>
+          <div class="kpi-delta" id="kpi-ebm-delta">—</div>
+        </div>
+      </div>
+
+      <div class="pnl-table-wrap">
+        <table class="pnl" id="pnl-table">
+          <thead>
+            <tr>
+              <th style="width: 30%;">Line item ($K)</th>
+              <th>Jun '26</th>
+              <th>Jul '26</th>
+              <th>Aug '26</th>
+              <th>3-mo total</th>
+              <th>vs. base</th>
+            </tr>
+          </thead>
+          <tbody id="pnl-tbody">
+            <!-- populated by JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tornado-card">
+        <h3>Sensitivity tornado — EBITDA impact at each driver's range extremes</h3>
+        <p class="lead">Holds all other drivers at the current case; varies each driver from low to high end of its slider range. Bars centered on current EBITDA.</p>
+        <div class="tornado">
+          <svg id="tornado-svg" viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</section>
+
+</main>
+
+<footer>
+  <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+    <span style="font-weight: 800; color: var(--accent); font-size: 16px; letter-spacing: -0.02em;">//</span>
+    <strong style="color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; margin-left: -2px;">PROSSIMO</strong>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>KAA-aware Process Map</span>
+  </div>
+  Northstar Goods, Inc. · 3-mo P&L projection. Sensitivity model is illustrative; baseline numbers match Group P&L output (artifact 04b).<br>
+  <span style="color: var(--text-tertiary);">© 2026 ProssimoTech · Tokyo · <a href="https://www.linkedin.com/company/prossimo-tech/" style="color: var(--accent); text-decoration: none;">LinkedIn</a> · info@prossimotech.com</span>
+</footer>
+
+<script>
+  // ============================================================
+  // TAB SWITCHING
+  // ============================================================
+  const tabs = document.querySelectorAll('.tab');
+  const views = document.querySelectorAll('.view');
+  tabs.forEach(t => t.addEventListener('click', () => {
+    tabs.forEach(x => x.classList.remove('active'));
+    views.forEach(v => v.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('view-' + t.dataset.view).classList.add('active');
+    if (t.dataset.view === 'pnl') {
+      // ensure tornado is drawn
+      setTimeout(recompute, 60);
+    }
+  }));
+
+  // ============================================================
+  // BASELINE ($000)
+  // ============================================================
+  const BASELINE = {
+    // Channel × month net revenue (USD $000)
+    dtc:       { jun: 12400, jul: 12900, aug: 13100 },
+    amzn:      { jun:  8320, jul:  8460, aug:  8580 },
+    whlsl:     { jun: 18580, jul: 18720, aug: 18500 },
+    // GM% per channel (used to derive COGS)
+    gmPct:     { dtc: 0.620, amzn: 0.405, whlsl: 0.300 },
+    // Returns + trade discounts as % of gross
+    returnsPct: 0.044,
+    discountsPct: 0.083,
+    // OpEx ($000) — 3-month total
+    opex: {
+      marketing:  13700,
+      sales:       5590,
+      rd:          2790,
+      gaComp:     13090,
+      gaFac:       2070,
+      gaProf:      1010,
+      da:          2175,
+    },
+    // Geo split (approximations — % of net rev exposed to each FX pair)
+    fxExposure: {
+      eur: 0.10,  // EMEA EUR
+      gbp: 0.07,  // EMEA UK
+      jpy: 0.08,  // APAC Japan
+    },
+    // FX baselines
+    fx: { eur: 1.0832, gbp: 1.2461, jpy: 0.0067 },
+  };
+
+  // Initial reference for "vs. base" deltas
+  let REFERENCE = computePnL(getDrivers(true));
+
+  // ============================================================
+  // DRIVER READING
+  // ============================================================
+  function getDrivers(useDefaults) {
+    if (useDefaults) {
+      return { vol: 0, mix: 0, eur: 1.0832, gbp: 1.2461, jpy: 0.0067, cogs: 0, mkt: 0 };
+    }
+    return {
+      vol: +document.getElementById('vol').value,
+      mix: +document.getElementById('mix').value,
+      eur: +document.getElementById('eur').value,
+      gbp: +document.getElementById('gbp').value,
+      jpy: +document.getElementById('jpy').value / 100,  // slider is ×100
+      cogs: +document.getElementById('cogs').value,
+      mkt: +document.getElementById('mkt').value,
+    };
+  }
+
+  // ============================================================
+  // P&L COMPUTATION
+  // ============================================================
+  function computePnL(d) {
+    const volMult = 1 + d.vol / 100;
+    const mixShift = d.mix / 10000;
+    const cogsInfl = 1 + d.cogs / 100;
+    const mktMult = 1 + d.mkt / 100;
+
+    const months = ['jun', 'jul', 'aug'];
+    const result = {
+      months: {},
+      total: {},
+      drivers: d
+    };
+
+    // FX impact: model as a % adjustment to whole net revenue
+    const eurDelta = (d.eur / BASELINE.fx.eur) - 1;
+    const gbpDelta = (d.gbp / BASELINE.fx.gbp) - 1;
+    const jpyDelta = (d.jpy / BASELINE.fx.jpy) - 1;
+    const fxRevMult = 1 +
+      BASELINE.fxExposure.eur * eurDelta +
+      BASELINE.fxExposure.gbp * gbpDelta +
+      BASELINE.fxExposure.jpy * jpyDelta;
+
+    let totals = {
+      grossRev: 0, returns: 0, discounts: 0, netRev: 0,
+      cogsProduct: 0, cogsFreight: 0, cogs3pl: 0, cogsPpv: 0, cogsTotal: 0,
+      grossProfit: 0,
+      opexMarketing: 0, opexSales: 0, opexRd: 0, opexGaComp: 0, opexGaFac: 0, opexGaProf: 0, opexDa: 0,
+      opexTotal: 0,
+      ebit: 0, ebitda: 0,
+    };
+
+    // Per-month
+    months.forEach(m => {
+      // Channel revenues with volume + FX
+      let dtc   = BASELINE.dtc[m]   * volMult * fxRevMult;
+      let amzn  = BASELINE.amzn[m]  * volMult * fxRevMult;
+      let whlsl = BASELINE.whlsl[m] * volMult * fxRevMult;
+
+      // Mix shift: take from wholesale, give to DTC (preserve total)
+      const totalCh = dtc + amzn + whlsl;
+      const shiftAmt = totalCh * mixShift;
+      dtc += shiftAmt;
+      whlsl -= shiftAmt;
+
+      const netRev = dtc + amzn + whlsl;
+      // Gross = net / (1 - returns - discounts)
+      const grossRev = netRev / (1 - BASELINE.returnsPct - BASELINE.discountsPct);
+      const returns = grossRev * BASELINE.returnsPct;
+      const discounts = grossRev * BASELINE.discountsPct;
+
+      // COGS by channel using GM% × cogs inflation
+      const cogsDtc   = dtc   * (1 - BASELINE.gmPct.dtc)   * cogsInfl;
+      const cogsAmzn  = amzn  * (1 - BASELINE.gmPct.amzn)  * cogsInfl;
+      const cogsWhlsl = whlsl * (1 - BASELINE.gmPct.whlsl) * cogsInfl;
+      const cogsTotal = cogsDtc + cogsAmzn + cogsWhlsl;
+
+      // For display, we split COGS roughly: 86% product, 3% freight, 9% 3PL, 2% PPV
+      const cogsProduct = cogsTotal * 0.864;
+      const cogsFreight = cogsTotal * 0.032;
+      const cogs3pl     = cogsTotal * 0.094;
+      const cogsPpv     = cogsTotal * 0.010;
+
+      const grossProfit = netRev - cogsTotal;
+
+      // OpEx — distribute monthly proportionally to baseline shape
+      const monthShare = (m === 'jul') ? 0.36 : 0.32;  // approximation
+      const opexMarketing = BASELINE.opex.marketing * mktMult * monthShare;
+      const opexSales = BASELINE.opex.sales * monthShare;
+      const opexRd = BASELINE.opex.rd * monthShare;
+      const opexGaComp = BASELINE.opex.gaComp * monthShare;
+      const opexGaFac = BASELINE.opex.gaFac * monthShare;
+      const opexGaProf = BASELINE.opex.gaProf * monthShare;
+      const opexDa = BASELINE.opex.da * monthShare;
+      const opexTotal = opexMarketing + opexSales + opexRd + opexGaComp + opexGaFac + opexGaProf + opexDa;
+
+      const ebit = grossProfit - opexTotal;
+      const ebitda = ebit + opexDa;
+
+      result.months[m] = {
+        grossRev, returns, discounts, netRev,
+        cogsProduct, cogsFreight, cogs3pl, cogsPpv, cogsTotal,
+        grossProfit,
+        opexMarketing, opexSales, opexRd, opexGaComp, opexGaFac, opexGaProf, opexDa,
+        opexTotal,
+        ebit, ebitda,
+        dtc, amzn, whlsl,
+      };
+
+      // Accumulate totals
+      Object.keys(totals).forEach(k => {
+        totals[k] += result.months[m][k] || 0;
+      });
+    });
+
+    // Recompute opexTotal to be sure
+    totals.opexTotal = totals.opexMarketing + totals.opexSales + totals.opexRd +
+                        totals.opexGaComp + totals.opexGaFac + totals.opexGaProf + totals.opexDa;
+    totals.grossProfit = totals.netRev - totals.cogsTotal;
+    totals.ebit = totals.grossProfit - totals.opexTotal;
+    totals.ebitda = totals.ebit + totals.opexDa;
+
+    result.total = totals;
+    return result;
+  }
+
+  // ============================================================
+  // FORMATTERS
+  // ============================================================
+  function fmt$(v) {
+    if (Math.abs(v) >= 1000) return '$' + (v / 1000).toFixed(1) + 'M';
+    return '$' + Math.round(v).toLocaleString();
+  }
+  function fmtK(v) {
+    return Math.round(v).toLocaleString();
+  }
+  function fmtPct(v) {
+    return (v * 100).toFixed(1) + '%';
+  }
+  function fmtDelta(v, isPct) {
+    if (Math.abs(v) < 0.0001) return '·';
+    const sign = v > 0 ? '+' : '';
+    if (isPct) return sign + (v * 100).toFixed(1) + ' pp';
+    if (Math.abs(v) >= 1000) return sign + (v / 1000).toFixed(1) + 'M';
+    return sign + Math.round(v).toLocaleString();
+  }
+  function deltaClass(v, goodIsHigh) {
+    if (Math.abs(v) < 0.5) return 'delta-zero';
+    if (goodIsHigh === false) return v > 0 ? 'delta-neg' : 'delta-pos';
+    return v > 0 ? 'delta-pos' : 'delta-neg';
+  }
+
+  // ============================================================
+  // RENDER P&L TABLE
+  // ============================================================
+  function renderPnL(p, ref) {
+    const tbody = document.getElementById('pnl-tbody');
+    const rows = [];
+
+    function row(label, j, jl, a, t, refT, opts = {}) {
+      const indent = opts.indent ? 'style="padding-left: 28px;"' : '';
+      const cls = opts.cls || '';
+      const delta = (refT !== undefined) ? (t - refT) : 0;
+      const deltaCls = deltaClass(delta, opts.good !== false);
+      const deltaStr = (refT !== undefined && Math.abs(delta) >= 0.5) ? fmtDelta(delta) : '·';
+      return `<tr class="${cls}">
+        <td ${indent}>${label}</td>
+        <td class="num">${opts.skipMonths ? '' : fmtK(j)}</td>
+        <td class="num">${opts.skipMonths ? '' : fmtK(jl)}</td>
+        <td class="num">${opts.skipMonths ? '' : fmtK(a)}</td>
+        <td class="num">${fmtK(t)}</td>
+        <td class="num delta-col ${deltaCls}">${deltaStr}</td>
+      </tr>`;
+    }
+
+    function pctRow(label, t, refT, opts = {}) {
+      const cls = opts.cls || '';
+      const delta = (refT !== undefined) ? (t - refT) : 0;
+      const deltaCls = deltaClass(delta, opts.good !== false);
+      const deltaStr = (refT !== undefined && Math.abs(delta) > 0.0001) ? fmtDelta(delta, true) : '·';
+      return `<tr class="${cls}">
+        <td>${label}</td>
+        <td></td><td></td><td></td>
+        <td class="num">${fmtPct(t)}</td>
+        <td class="num delta-col ${deltaCls}">${deltaStr}</td>
+      </tr>`;
+    }
+
+    const m = p.months, t = p.total, rm = ref.months, rt = ref.total;
+
+    rows.push(`<tr class="section"><td colspan="6">Revenue</td></tr>`);
+    rows.push(row('Gross revenue', m.jun.grossRev, m.jul.grossRev, m.aug.grossRev, t.grossRev, rt.grossRev));
+    rows.push(row('Returns &amp; allowances', -m.jun.returns, -m.jul.returns, -m.aug.returns, -t.returns, -rt.returns, { good: false }));
+    rows.push(row('Trade &amp; promo discounts', -m.jun.discounts, -m.jul.discounts, -m.aug.discounts, -t.discounts, -rt.discounts, { good: false }));
+    rows.push(row('Net revenue', m.jun.netRev, m.jul.netRev, m.aug.netRev, t.netRev, rt.netRev, { cls: 'subtotal' }));
+
+    rows.push(`<tr class="section"><td colspan="6">COGS</td></tr>`);
+    rows.push(row('Product cost (std)', m.jun.cogsProduct, m.jul.cogsProduct, m.aug.cogsProduct, t.cogsProduct, rt.cogsProduct, { good: false }));
+    rows.push(row('Freight in', m.jun.cogsFreight, m.jul.cogsFreight, m.aug.cogsFreight, t.cogsFreight, rt.cogsFreight, { good: false }));
+    rows.push(row('3PL &amp; fulfillment', m.jun.cogs3pl, m.jul.cogs3pl, m.aug.cogs3pl, t.cogs3pl, rt.cogs3pl, { good: false }));
+    rows.push(row('PPV reserve', m.jun.cogsPpv, m.jul.cogsPpv, m.aug.cogsPpv, t.cogsPpv, rt.cogsPpv, { good: false }));
+    rows.push(row('Total COGS', m.jun.cogsTotal, m.jul.cogsTotal, m.aug.cogsTotal, t.cogsTotal, rt.cogsTotal, { cls: 'subtotal', good: false }));
+
+    rows.push(row('Gross profit', m.jun.grossProfit, m.jul.grossProfit, m.aug.grossProfit, t.grossProfit, rt.grossProfit, { cls: 'subtotal' }));
+    rows.push(pctRow('Gross margin %', t.grossProfit / t.netRev, rt.grossProfit / rt.netRev));
+
+    rows.push(`<tr class="section"><td colspan="6">OpEx</td></tr>`);
+    rows.push(row('Marketing', m.jun.opexMarketing, m.jul.opexMarketing, m.aug.opexMarketing, t.opexMarketing, rt.opexMarketing, { good: false }));
+    rows.push(row('Sales &amp; biz dev', m.jun.opexSales, m.jul.opexSales, m.aug.opexSales, t.opexSales, rt.opexSales, { good: false }));
+    rows.push(row('R&amp;D / product', m.jun.opexRd, m.jul.opexRd, m.aug.opexRd, t.opexRd, rt.opexRd, { good: false }));
+    rows.push(row('G&amp;A — comp', m.jun.opexGaComp, m.jul.opexGaComp, m.aug.opexGaComp, t.opexGaComp, rt.opexGaComp, { good: false }));
+    rows.push(row('G&amp;A — facilities', m.jun.opexGaFac, m.jul.opexGaFac, m.aug.opexGaFac, t.opexGaFac, rt.opexGaFac, { good: false }));
+    rows.push(row('G&amp;A — prof fees', m.jun.opexGaProf, m.jul.opexGaProf, m.aug.opexGaProf, t.opexGaProf, rt.opexGaProf, { good: false }));
+    rows.push(row('D&amp;A', m.jun.opexDa, m.jul.opexDa, m.aug.opexDa, t.opexDa, rt.opexDa, { good: false }));
+    rows.push(row('Total OpEx', m.jun.opexTotal, m.jul.opexTotal, m.aug.opexTotal, t.opexTotal, rt.opexTotal, { cls: 'subtotal', good: false }));
+
+    rows.push(row('Operating income (EBIT)', m.jun.ebit, m.jul.ebit, m.aug.ebit, t.ebit, rt.ebit, { cls: 'subtotal' }));
+    rows.push(row('EBITDA', m.jun.ebitda, m.jul.ebitda, m.aug.ebitda, t.ebitda, rt.ebitda, { cls: 'total' }));
+    rows.push(pctRow('EBITDA margin %', t.ebitda / t.netRev, rt.ebitda / rt.netRev));
+
+    tbody.innerHTML = rows.join('');
+  }
+
+  // ============================================================
+  // KPI RENDER
+  // ============================================================
+  function renderKPIs(p, ref) {
+    document.getElementById('kpi-rev').textContent = fmt$(p.total.netRev);
+    document.getElementById('kpi-gm').textContent = fmtPct(p.total.grossProfit / p.total.netRev);
+    document.getElementById('kpi-ebitda').textContent = fmt$(p.total.ebitda);
+    document.getElementById('kpi-ebm').textContent = fmtPct(p.total.ebitda / p.total.netRev);
+
+    const dRev = p.total.netRev - ref.total.netRev;
+    const dGm = (p.total.grossProfit / p.total.netRev) - (ref.total.grossProfit / ref.total.netRev);
+    const dEb = p.total.ebitda - ref.total.ebitda;
+    const dEbm = (p.total.ebitda / p.total.netRev) - (ref.total.ebitda / ref.total.netRev);
+
+    function setDelta(id, val, isPct) {
+      const el = document.getElementById(id);
+      el.textContent = fmtDelta(val, isPct);
+      el.className = 'kpi-delta ' + deltaClass(val, true);
+    }
+
+    setDelta('kpi-rev-delta', dRev);
+    setDelta('kpi-gm-delta', dGm, true);
+    setDelta('kpi-ebitda-delta', dEb);
+    setDelta('kpi-ebm-delta', dEbm, true);
+  }
+
+  // ============================================================
+  // TORNADO CHART
+  // ============================================================
+  function renderTornado(currentDrivers) {
+    const sweeps = [
+      { id: 'vol',  label: 'Sales volume',         lo: -20, hi: 20, base: 0, fmt: v => v + '%', mapToDriver: v => ({ vol: v }) },
+      { id: 'mix',  label: 'DTC mix shift',         lo: -500, hi: 500, base: 0, fmt: v => (v>=0?'+':'') + v + ' bps', mapToDriver: v => ({ mix: v }) },
+      { id: 'eur',  label: 'EUR / USD',             lo: 1.04, hi: 1.12, base: 1.0832, fmt: v => v.toFixed(3), mapToDriver: v => ({ eur: v }) },
+      { id: 'gbp',  label: 'GBP / USD',             lo: 1.20, hi: 1.30, base: 1.2461, fmt: v => v.toFixed(3), mapToDriver: v => ({ gbp: v }) },
+      { id: 'jpy',  label: 'JPY / USD (×100)',      lo: 0.58, hi: 0.76, base: 0.67, fmt: v => v.toFixed(3), mapToDriver: v => ({ jpy: v / 100 }) },
+      { id: 'cogs', label: 'COGS rate inflation',   lo: -3, hi: 6, base: 0, fmt: v => (v>=0?'+':'') + v + '%', mapToDriver: v => ({ cogs: v }) },
+      { id: 'mkt',  label: 'Marketing spend',       lo: -25, hi: 25, base: 0, fmt: v => (v>=0?'+':'') + v + '%', mapToDriver: v => ({ mkt: v }) },
+    ];
+
+    const baseEbitda = computePnL(currentDrivers).total.ebitda;
+
+    const sweepResults = sweeps.map(s => {
+      const drvLo = { ...currentDrivers, ...s.mapToDriver(s.lo) };
+      const drvHi = { ...currentDrivers, ...s.mapToDriver(s.hi) };
+      const ebitdaLo = computePnL(drvLo).total.ebitda;
+      const ebitdaHi = computePnL(drvHi).total.ebitda;
+      return {
+        ...s,
+        ebitdaLo, ebitdaHi,
+        deltaLo: ebitdaLo - baseEbitda,
+        deltaHi: ebitdaHi - baseEbitda,
+        magnitude: Math.max(Math.abs(ebitdaLo - baseEbitda), Math.abs(ebitdaHi - baseEbitda))
+      };
+    }).sort((a, b) => b.magnitude - a.magnitude);
+
+    const W = 900, H = 320;
+    const padL = 180, padR = 130, padT = 24, padB = 30;
+    const chartW = W - padL - padR;
+    const rowH = (H - padT - padB) / sweepResults.length;
+    const maxMag = Math.max(...sweepResults.map(r => r.magnitude), 1);
+    const xOf = v => padL + chartW / 2 + (v / maxMag) * (chartW / 2);
+
+    const svg = document.getElementById('tornado-svg');
+    let html = '';
+
+    // Center axis
+    const cx = padL + chartW / 2;
+    html += `<line x1="${cx}" y1="${padT - 4}" x2="${cx}" y2="${H - padB + 4}" stroke="var(--text-secondary)" stroke-width="0.8"/>`;
+
+    // Center label
+    html += `<text x="${cx}" y="${H - 6}" text-anchor="middle" class="svg-text-tiny">$${(baseEbitda / 1000).toFixed(1)}M baseline EBITDA (current case)</text>`;
+
+    // Tick lines (-100% / -50% / +50% / +100%)
+    [-1, -0.5, 0.5, 1].forEach(frac => {
+      const x = padL + chartW / 2 + frac * chartW / 2;
+      const v = frac * maxMag;
+      html += `<line x1="${x}" y1="${padT}" x2="${x}" y2="${H - padB}" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="2 3"/>`;
+      html += `<text x="${x}" y="${padT - 8}" text-anchor="middle" class="svg-text-tiny">${frac > 0 ? '+' : ''}${(v/1000).toFixed(1)}M</text>`;
+    });
+
+    // Bars
+    sweepResults.forEach((r, i) => {
+      const y = padT + i * rowH + rowH * 0.18;
+      const h = rowH * 0.6;
+
+      // Determine bar extents
+      const xLo = xOf(r.deltaLo);
+      const xHi = xOf(r.deltaHi);
+      const xL = Math.min(xLo, xHi);
+      const xR = Math.max(xLo, xHi);
+      const w = xR - xL;
+
+      // Color: green for upside, red for downside; use gradient if both
+      const dlo = r.deltaLo, dhi = r.deltaHi;
+      const isPos = (dlo + dhi) / 2 > 0;
+
+      // Left half (negative side) and right half (positive side)
+      const halfL = Math.max(0, cx - xL);
+      const halfR = Math.max(0, xR - cx);
+
+      if (xL < cx) {
+        html += `<rect x="${xL}" y="${y}" width="${cx - xL}" height="${h}" fill="var(--red-50)" stroke="var(--red-600)" stroke-width="0.6"/>`;
+      }
+      if (xR > cx) {
+        html += `<rect x="${cx}" y="${y}" width="${xR - cx}" height="${h}" fill="var(--green-50)" stroke="var(--green-600)" stroke-width="0.6"/>`;
+      }
+
+      // Label: driver name to left
+      html += `<text x="${padL - 12}" y="${y + h/2 + 4}" text-anchor="end" class="svg-text" font-weight="500">${r.label}</text>`;
+
+      // End-cap labels
+      const loLab = (r.deltaLo >= 0 ? '+' : '') + (r.deltaLo / 1000).toFixed(2) + 'M';
+      const hiLab = (r.deltaHi >= 0 ? '+' : '') + (r.deltaHi / 1000).toFixed(2) + 'M';
+
+      // Show range value (driver value at low and high) under the bar
+      const rangeStr = `${r.fmt(r.lo)}  ↔  ${r.fmt(r.hi)}`;
+      html += `<text x="${W - padR + 14}" y="${y + h/2 + 4}" class="svg-text-sm">${rangeStr}</text>`;
+
+      // Numeric labels at bar ends
+      if (xL < cx - 2) {
+        html += `<text x="${xL - 4}" y="${y + h/2 + 4}" text-anchor="end" class="svg-text-tiny" fill="var(--red-800)" font-weight="600">${loLab}</text>`;
+      }
+      if (xR > cx + 2) {
+        html += `<text x="${xR + 4}" y="${y + h/2 + 4}" class="svg-text-tiny" fill="var(--green-800)" font-weight="600">${hiLab}</text>`;
+      }
+    });
+
+    svg.innerHTML = html;
+  }
+
+  // ============================================================
+  // RECOMPUTE + RENDER
+  // ============================================================
+  function recompute() {
+    // Update slider value displays
+    const d = getDrivers(false);
+    document.getElementById('vol-val').textContent = (d.vol >= 0 ? '+' : '') + d.vol.toFixed(1) + '%';
+    document.getElementById('mix-val').textContent = (d.mix >= 0 ? '+' : '') + d.mix.toFixed(0) + ' bps';
+    document.getElementById('eur-val').textContent = d.eur.toFixed(4);
+    document.getElementById('gbp-val').textContent = d.gbp.toFixed(4);
+    document.getElementById('jpy-val').textContent = (d.jpy * 100).toFixed(4);
+    document.getElementById('cogs-val').textContent = (d.cogs >= 0 ? '+' : '') + d.cogs.toFixed(1) + '%';
+    document.getElementById('mkt-val').textContent = (d.mkt >= 0 ? '+' : '') + d.mkt.toFixed(1) + '%';
+
+    const result = computePnL(d);
+    renderPnL(result, REFERENCE);
+    renderKPIs(result, REFERENCE);
+    renderTornado(d);
+  }
+
+  function resetDrivers() {
+    document.getElementById('vol').value = 0;
+    document.getElementById('mix').value = 0;
+    document.getElementById('eur').value = 1.0832;
+    document.getElementById('gbp').value = 1.2461;
+    document.getElementById('jpy').value = 0.67;
+    document.getElementById('cogs').value = 0;
+    document.getElementById('mkt').value = 0;
+    REFERENCE = computePnL(getDrivers(true));
+    recompute();
+  }
+
+  function snapshotBaseline() {
+    REFERENCE = computePnL(getDrivers(false));
+    recompute();
+  }
+
+  // Wire up sliders
+  ['vol', 'mix', 'eur', 'gbp', 'jpy', 'cogs', 'mkt'].forEach(id => {
+    document.getElementById(id).addEventListener('input', recompute);
+  });
+
+  // Initial render (P&L tab is hidden, but data is ready)
+  recompute();
+</script>
+
+</body>
+</html>

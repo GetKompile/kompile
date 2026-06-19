@@ -18,6 +18,7 @@ package ai.kompile.process.execution;
 
 import ai.kompile.process.controls.ControlAttestation;
 import ai.kompile.process.hitl.ApprovalRequest;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -35,6 +36,7 @@ import java.util.Map;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class WorkflowRun {
 
     /** Unique run identifier, e.g., "wf-2026-05-142". */

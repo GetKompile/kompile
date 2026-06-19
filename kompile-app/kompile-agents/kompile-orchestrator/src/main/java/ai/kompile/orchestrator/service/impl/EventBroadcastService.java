@@ -25,6 +25,7 @@ import ai.kompile.orchestrator.model.event.StateChangeEvent;
 import ai.kompile.orchestrator.model.event.TaskEvent;
 import ai.kompile.orchestrator.model.event.TaskOutputEvent;
 import ai.kompile.orchestrator.model.event.WorkflowEvent;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -43,7 +44,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class EventBroadcastService {
 
     private final OrchestratorProperties properties;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // Optional: WebSocket template for STOMP messaging
     private SimpMessagingTemplate messagingTemplate;

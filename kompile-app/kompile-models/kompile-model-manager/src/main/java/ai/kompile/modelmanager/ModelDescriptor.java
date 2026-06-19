@@ -16,6 +16,10 @@
 
 package ai.kompile.modelmanager;
 
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.ToString;
+
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
@@ -23,6 +27,9 @@ import java.util.Objects;
 /**
  * Describes a downloadable model artifact, its location, and metadata.
  */
+@Getter
+@EqualsAndHashCode(of = {"modelId", "modelType", "version"})
+@ToString(of = {"modelId", "modelType", "downloadUrl", "expectedCacheSubpath", "version"})
 public class ModelDescriptor {
     private final String modelId;
     private final ModelType modelType;
@@ -43,61 +50,7 @@ public class ModelDescriptor {
         this.metadata = metadata == null ? Collections.emptyMap() : metadata;
     }
 
-    public String getModelId() {
-        return modelId;
-    }
-
-    public ModelType getModelType() {
-        return modelType;
-    }
-
-    public String getDownloadUrl() {
-        return downloadUrl;
-    }
-
-    public String getExpectedCacheSubpath() {
-        return expectedCacheSubpath;
-    }
-
-    public String getVersion() {
-        return version;
-    }
-
-    public String getChecksum() {
-        return checksum;
-    }
-
-    public Map<String, Object> getMetadata() {
-        return metadata;
-    }
-
     public String getMetadataString(String key) {
         return metadata.get(key) != null ? metadata.get(key).toString() : null;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        ModelDescriptor that = (ModelDescriptor) o;
-        return modelId.equals(that.modelId) &&
-                modelType == that.modelType &&
-                Objects.equals(version, that.version);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(modelId, modelType, version);
-    }
-
-    @Override
-    public String toString() {
-        return "ModelDescriptor{" +
-                "modelId='" + modelId + '\'' +
-                ", modelType=" + modelType +
-                ", downloadUrl='" + downloadUrl + '\'' +
-                ", expectedCacheSubpath='" + expectedCacheSubpath + '\'' +
-                ", version='" + version + '\'' +
-                '}';
     }
 }

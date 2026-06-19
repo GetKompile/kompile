@@ -40,6 +40,10 @@
             <artifactId>kompile-app-core</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
 
         <!-- Spring Boot Web for REST API -->
         <dependency>
@@ -409,13 +413,16 @@
                                 <!-- Build-time init: pure-Java logging/serialization, safe for AOT -->
                                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
-                                <buildArg>--initialize-at-build-time=org.nd4j.shade.protobuf.UnsafeUtil</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.shade.protobuf</buildArg>
                                 <buildArg>--initialize-at-build-time=com.google.protobuf.UnsafeUtil</buildArg>
                                 <buildArg>--initialize-at-build-time=java.rmi.server.Operation,org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.spi.StandardLevel,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder,org.apache.logging.log4j.util.LoaderUtil,org.apache.logging.log4j.util.Constants</buildArg>
                                 <!-- Run-time init: all native/JNI code MUST init at runtime -->
                                 <buildArg>--initialize-at-run-time=org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Pointer,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.bytedeco.javacpp.Pointer$NativeDeallocator,org.bytedeco.javacpp.PointerScope,org.bytedeco.javacpp.indexer</buildArg>
                                 <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
                                 <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <!-- Critical: ND4J ops/samediff hierarchy must be explicitly runtime-init to prevent points-to analysis hang -->
+                                <buildArg>--initialize-at-run-time=org.nd4j.imports.converters.DifferentialFunctionClassHolder,org.nd4j.linalg.api.ops,org.nd4j.autodiff.samediff,org.nd4j.linalg.factory.Nd4j,org.nd4j.nativeblas.NativeOpsHolder,org.nd4j.linalg.cpu.nativecpu.NDArray,org.nd4j.linalg.cpu.nativecpu.CpuNDArrayFactory,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.nd4j.linalg.learning.config,org.nd4j.linalg.api.memory.deallocation.DeallocatorService</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction</buildArg>
                                 <buildArg>--initialize-at-run-time=org.bytedeco.openblas.presets.openblas,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.openblas.global.openblas,org.bytedeco.openblas.global.openblas_nolapack</buildArg>
                                 <buildArg>--initialize-at-run-time=org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.onnxruntime.global.onnxruntime</buildArg>
                                 <buildArg>--initialize-at-run-time=org.bytedeco.onnx.presets.onnx,org.bytedeco.onnx.global.onnx</buildArg>
@@ -452,6 +459,23 @@
                                 <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.so</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.dll</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/bindings/.*\.dylib</buildArg>
+                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
+                                <!-- Exclude native binaries from image to prevent analysis bloat -->
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.dll$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.dylib$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.dll$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.dylib$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/eclipse/deeplearning4j/tokenizers/.*/lib.*\.so.*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/eclipse/deeplearning4j/tokenizers/.*/libjni.*\.so</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-x86_64/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-x86_64/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-aarch64/.*</buildArg>
+                                <buildArg>-H:ExcludeResources=windows-x86_64/.*</buildArg>
+                                <buildArg>-H:ExcludeResources=macosx-.*/.*</buildArg>
                                 <!-- Debug: trace init problems -->
                                 <buildArg>--trace-object-instantiation=org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread</buildArg>
                             </buildArgs>

@@ -15,6 +15,7 @@
  */
 package ai.kompile.orchestrator.integration.cli;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.agent.ExtractionLlmService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,7 +53,8 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
     private final String displayName;
     private final CliAgentConfig agentConfig;
     private final int timeoutSeconds;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
+    private volatile String modelOverride;
 
     /** Regex covering CSI, OSC, charset, keypad, and string terminator escape sequences. */
     private static final Pattern ANSI_PATTERN = Pattern.compile(
@@ -159,6 +161,23 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
             log.debug("Could not read pool size from config: {}", e.getMessage());
         }
         return DEFAULT_POOL_SIZE;
+    }
+
+    // ─── read-only pool status (no spawning) ───────────────────────────────────
+
+    /**
+     * Returns the agent name used to identify this extraction provider (e.g. "opencode-cli").
+     */
+    public String getAgentName() {
+        return agentName;
+    }
+
+    /**
+     * Returns the number of warm/idle processes currently sitting in the pool.
+     * Cheap, lock-free, never spawns.
+     */
+    public int getPooledCount() {
+        return processPool.size();
     }
 
     @Override
@@ -297,6 +316,44 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
         return agentConfig.checkAvailability();
     }
 
+    @Override
+    public void setModelOverride(String model) {
+        this.modelOverride = (model == null || model.isBlank()) ? null : model.trim();
+        log.info("CLI extraction {} model override set to: {}", agentName, this.modelOverride);
+    }
+
+    @Override
+    public String getEffectiveModel() {
+        return resolveModel();
+    }
+
+    /**
+     * Resolve the model to pass to the CLI: an explicit runtime override wins; otherwise the
+     * per-agent selection persisted in cli-llm-config.json; otherwise null (CLI's own default).
+     */
+    private String resolveModel() {
+        if (modelOverride != null && !modelOverride.isBlank()) {
+            return modelOverride;
+        }
+        try {
+            Path configPath = Path.of(
+                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            if (Files.exists(configPath)) {
+                JsonNode root = objectMapper.readTree(configPath.toFile());
+                JsonNode agentModels = root.get("agentModels");
+                if (agentModels != null && agentModels.has(agentName)) {
+                    JsonNode val = agentModels.get(agentName);
+                    if (val != null && !val.isNull() && !val.asText("").isBlank()) {
+                        return val.asText();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not read configured model for {}: {}", agentName, e.getMessage());
+        }
+        return null;
+    }
+
     /**
      * Shut down the process pool and destroy any remaining pre-spawned processes.
      */
@@ -338,6 +395,15 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
         }
         if (agentConfig.getVerboseFlag() != null) {
             command.add(agentConfig.getVerboseFlag());
+        }
+
+        // Append model selection if configured (runtime override or cli-llm-config.json);
+        // when unset the CLI uses its own default model.
+        String model = resolveModel();
+        if (agentConfig.getModelFlag() != null && !agentConfig.getModelFlag().isBlank()
+                && model != null && !model.isBlank()) {
+            command.add(agentConfig.getModelFlag());
+            command.add(model);
         }
         return command;
     }

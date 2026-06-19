@@ -16,6 +16,7 @@
 
 package ai.kompile.langdetect;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import jakarta.annotation.PostConstruct;
@@ -41,7 +42,7 @@ public class LanguageDetectionConfigService {
     private volatile LanguageDetectionConfig currentConfig;
 
     public LanguageDetectionConfigService() {
-        this.objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         String dataDir = System.getProperty("user.home") + "/.kompile";
         this.configFilePath = Paths.get(dataDir, "config", CONFIG_FILENAME);
         this.currentConfig = LanguageDetectionConfig.defaults();

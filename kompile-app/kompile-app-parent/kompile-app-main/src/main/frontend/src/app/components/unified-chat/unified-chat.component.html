@@ -44,17 +44,53 @@
           <option value="opencode">OpenCode</option>
           <option value="codex">Codex</option>
           <option value="qwen">Qwen</option>
+          <option value="gemini">Gemini</option>
+          <option value="pi">Pi</option>
         </select>
-        <button class="refresh-sync-btn" (click)="loadSyncedSessions()" title="Refresh synced sessions"
-          [disabled]="syncedSessionsLoading">
-          {{ syncedSessionsLoading ? '...' : '↻' }}
+        <button class="refresh-sync-btn" (click)="triggerChatSync()" title="Sync chats from CLI sources"
+          [disabled]="syncedSessionsLoading || chatSyncStatus?.running">
+          {{ chatSyncStatus?.running ? '...' : '↻' }}
         </button>
       </div>
+
+      <!-- Sync Progress Banner -->
+      <ng-container *ngIf="chatSyncStatus as syncSt">
+        <div class="sync-progress-banner" *ngIf="syncSt.running">
+          <div class="sync-progress-info">
+            <span class="sync-progress-label">
+              Syncing {{ syncSt.currentSource || '...' }}
+              ({{ syncSt.sourceIndex }}/{{ syncSt.totalSources }})
+            </span>
+            <span class="sync-progress-detail" *ngIf="syncSt.sourcePending > 0">
+              {{ syncSt.sourceImported }}/{{ syncSt.sourcePending }} sessions
+            </span>
+          </div>
+          <div class="sync-progress-bar">
+            <div class="sync-progress-fill"
+                 [style.width.%]="syncSt.totalSources > 0
+                   ? (syncSt.sourceIndex / syncSt.totalSources) * 100
+                   : 0"></div>
+          </div>
+        </div>
+      </ng-container>
+
+      <!-- Sync Complete Banner (auto-hides) -->
+      <ng-container *ngIf="chatSyncStatus as syncDone">
+        <div class="sync-complete-banner" *ngIf="showSyncComplete">
+          <span *ngIf="syncDone.totalImported > 0">
+            Imported {{ syncDone.totalImported }} chat{{ syncDone.totalImported !== 1 ? 's' : '' }}
+            <span *ngIf="syncDone.totalFailed > 0">({{ syncDone.totalFailed }} failed)</span>
+          </span>
+          <span *ngIf="syncDone.totalImported === 0 && !syncDone.running">
+            All chats up to date
+          </span>
+        </div>
+      </ng-container>
 
       <!-- Chat List -->
       <div class="chat-list">
         <!-- Current Chat (if exists and has messages) -->
-        <div class="chat-item current" *ngIf="currentSession && (currentSession.messages?.length || 0) > 0 && (sourceFilter === 'all' || sourceFilter === 'app' || currentSession.source === sourceFilter)"
+        <div class="chat-item current" *ngIf="currentSession && (currentSession.messages?.length || 0) > 0 && sessionMatchesSourceFilter(currentSession)"
           [class.editing]="editingSessionId === currentSession.id">
 
           <div class="chat-item-content" *ngIf="editingSessionId !== currentSession.id"
@@ -63,9 +99,9 @@
             <div class="chat-details">
               <span class="chat-name">
                 {{ currentSession.name || 'Current Chat' }}
-                <span class="source-badge-inline" *ngIf="currentSession.source"
-                  [style.background-color]="getSourceColor(currentSession.source)">
-                  {{ getSourceDisplayName(currentSession.source) }}
+                <span class="source-badge-inline" *ngIf="getEffectiveSource(currentSession)"
+                  [style.background-color]="getSourceColor(getEffectiveSource(currentSession)!)">
+                  {{ getSourceDisplayName(getEffectiveSource(currentSession)!) }}
                 </span>
               </span>
               <span class="chat-meta">{{ currentSession.messages.length || 0 }} messages</span>
@@ -99,16 +135,16 @@
 
           <div class="chat-item-content" *ngIf="editingSessionId !== session.id"
             (click)="session.synced ? loadSyncedSession(session) : loadSession(session)">
-            <span class="cli-source-dot" *ngIf="session.source"
-              [style.background-color]="getSourceColor(session.source)"
-              [title]="getSourceDisplayName(session.source)"></span>
-            <span class="chat-icon" *ngIf="!session.source">{{ session.archived ? '📦' : '💬' }}</span>
+            <span class="cli-source-dot" *ngIf="getEffectiveSource(session)"
+              [style.background-color]="getSourceColor(getEffectiveSource(session)!)"
+              [title]="getSourceDisplayName(getEffectiveSource(session)!)"></span>
+            <span class="chat-icon" *ngIf="!getEffectiveSource(session)">{{ session.archived ? '📦' : '💬' }}</span>
             <div class="chat-details">
               <span class="chat-name">
                 {{ session.name || 'Unnamed Chat' }}
-                <span class="source-badge-inline" *ngIf="session.source"
-                  [style.background-color]="getSourceColor(session.source)">
-                  {{ getSourceDisplayName(session.source) }}
+                <span class="source-badge-inline" *ngIf="getEffectiveSource(session)"
+                  [style.background-color]="getSourceColor(getEffectiveSource(session)!)">
+                  {{ getSourceDisplayName(getEffectiveSource(session)!) }}
                 </span>
               </span>
               <span class="chat-meta">
@@ -554,6 +590,56 @@
         </div>
         <p class="setting-hint">{{ timeoutSeconds === 0 ? 'Agent can run indefinitely' : 'Agent will stop after ' +
           (timeoutSeconds / 60) + ' minute(s)' }}</p>
+      </div>
+
+      <!-- System Prompt -->
+      <div class="settings-section">
+        <h4>System Prompt</h4>
+
+        <div class="setting-row">
+          <label>Prompt Source</label>
+          <select class="select-input"
+                  [ngModel]="activeSystemPrompt?.id || (systemPromptMode === 'custom' ? '__custom__' : '__none__')"
+                  [ngModelOptions]="{standalone: true}"
+                  (ngModelChange)="onSystemPromptSelect($event)">
+            <option value="__none__">None</option>
+            <option *ngFor="let p of availableSystemPrompts" [value]="p.id">
+              {{ p.name }} (v{{ p.version }}){{ p.isActive ? ' - Active' : '' }}
+            </option>
+            <option value="__custom__">Custom...</option>
+          </select>
+        </div>
+
+        <!-- Active prompt info -->
+        <div *ngIf="activeSystemPrompt && systemPromptMode === 'active'" class="system-prompt-info">
+          <div class="prompt-info-row">
+            <span class="prompt-info-name">{{ activeSystemPrompt.name }}</span>
+            <span *ngIf="activeSystemPrompt.isActive" class="prompt-active-badge">Active</span>
+            <span *ngIf="!activeSystemPrompt.isActive" class="prompt-activate-link" (click)="onActivateSystemPrompt()">Set as active</span>
+          </div>
+          <p class="setting-hint" *ngIf="activeSystemPrompt.description" style="margin-top: 4px">{{ activeSystemPrompt.description }}</p>
+          <button class="text-btn small" (click)="showPromptContent = !showPromptContent" style="margin-top: 4px">
+            {{ showPromptContent ? 'Hide content' : 'Show content' }}
+          </button>
+          <div *ngIf="showPromptContent" class="system-prompt-preview">
+            {{ activeSystemPrompt.content }}
+          </div>
+        </div>
+
+        <!-- Custom prompt textarea -->
+        <div *ngIf="systemPromptMode === 'custom'">
+          <textarea class="system-prompt-textarea"
+                    [(ngModel)]="systemPrompt"
+                    [ngModelOptions]="{standalone: true}"
+                    rows="4"
+                    placeholder="Enter a custom system prompt..."></textarea>
+        </div>
+
+        <p class="setting-hint">
+          {{ availableSystemPrompts.length === 0
+            ? 'No managed prompts. Create prompts in Tools > Prompts.'
+            : 'Select a managed prompt or write a custom one' }}
+        </p>
       </div>
 
       <!-- RAG (Document Lookup) Settings -->
@@ -1017,12 +1103,43 @@
             </div>
           </div>
 
-          <div class="message-content" data-testid="message-content" [class.large-message]="isLargeMessage(message)">
-            <!-- Use inline source linking for assistant messages with sources -->
-            <pre *ngIf="message.role === 'assistant' && hasLinkableSourceRefs(message)"
-              [innerHTML]="getContentWithSourceLinks(message)"></pre>
-            <!-- Regular content for user messages or messages without source refs -->
-            <pre *ngIf="message.role !== 'assistant' || !hasLinkableSourceRefs(message)">{{ message.content }}</pre>
+          <div class="message-content markdown-body" data-testid="message-content" [class.large-message]="isLargeMessage(message)">
+            <!-- Assistant messages: render markdown with segment support -->
+            <ng-container *ngIf="message.role === 'assistant'">
+              <ng-container *ngFor="let segment of getMessageSegments(message)">
+                <!-- Text segments: rendered as markdown -->
+                <div *ngIf="segment.type === 'text'" class="md-rendered"
+                  [innerHTML]="renderSegmentMarkdown(segment.content)"></div>
+
+                <!-- Thinking blocks -->
+                <details *ngIf="segment.type === 'thinking'" class="thinking-block" [attr.open]="segment.isStreaming ? '' : null">
+                  <summary>Thinking{{ segment.isStreaming ? '...' : '' }}</summary>
+                  <div class="thinking-content" [innerHTML]="renderSegmentMarkdown(segment.content)"></div>
+                </details>
+
+                <!-- Tool use blocks -->
+                <div *ngIf="segment.type === 'tool_use'" class="tool-use-block">
+                  <div class="tool-use-header">
+                    <span class="tool-use-icon">&#9881;</span>
+                    <span class="tool-use-name">{{ segment.toolName }}</span>
+                  </div>
+                  <pre *ngIf="segment.toolInput" class="tool-use-input">{{ segment.toolInput }}</pre>
+                  <pre *ngIf="segment.toolResult" class="tool-use-result">{{ segment.toolResult }}</pre>
+                </div>
+              </ng-container>
+
+              <!-- Source reference links (injected into rendered markdown) -->
+              <div *ngIf="hasLinkableSourceRefs(message) && getMessageSegments(message).length === 0"
+                class="md-rendered" [innerHTML]="getContentWithSourceLinks(message)"></div>
+            </ng-container>
+
+            <!-- User messages: render markdown too -->
+            <div *ngIf="message.role === 'user'" class="md-rendered"
+              [innerHTML]="getRenderedMarkdown(message)"></div>
+
+            <!-- System/other messages: plain text fallback -->
+            <pre *ngIf="message.role !== 'assistant' && message.role !== 'user'">{{ message.content }}</pre>
+
             <span class="streaming-cursor" *ngIf="message.isStreaming" data-testid="streaming-cursor">▌</span>
           </div>
 

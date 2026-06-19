@@ -61,6 +61,7 @@ import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
@@ -530,13 +531,13 @@ public class KompilePipelineLanguageModelImpl implements LanguageModel {
     public static class DummyEchoStepRunner implements PipelineStepRunner {
         private static final Logger logger = LoggerFactory.getLogger(DummyEchoStepRunner.class);
         private String prefix = "";
-        private ObjectMapper localObjectMapper = new ObjectMapper();
+        private ObjectMapper localObjectMapper = JsonUtils.standardMapper();
         private boolean initialized = false;
 
         @Override
         public void init(StepConfig sc, Context ctx) {
             this.prefix = sc.getParameters().getString("message_prefix", "[LLM Echo] ");
-            if (this.localObjectMapper == null) this.localObjectMapper = new ObjectMapper();
+            if (this.localObjectMapper == null) this.localObjectMapper = JsonUtils.standardMapper();
             this.initialized = true;
             logger.info("DummyEchoStepRunner initialized with prefix: {}", this.prefix);
         }
@@ -589,11 +590,11 @@ public class KompilePipelineLanguageModelImpl implements LanguageModel {
 
     public static class DummyWeatherToolRunner implements PipelineStepRunner {
         private static final Logger logger = LoggerFactory.getLogger(DummyWeatherToolRunner.class);
-        private ObjectMapper localObjectMapper = new ObjectMapper();
+        private ObjectMapper localObjectMapper = JsonUtils.standardMapper();
         private boolean initialized = false;
 
         @Override public void init(StepConfig sc, Context ctx) {
-            if (this.localObjectMapper == null) this.localObjectMapper = new ObjectMapper();
+            if (this.localObjectMapper == null) this.localObjectMapper = JsonUtils.standardMapper();
             this.initialized = true;
             logger.info("DummyWeatherToolRunner initialized.");
         }

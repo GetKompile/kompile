@@ -16,11 +16,19 @@
 package ai.kompile.project;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * Snapshot of a note sync connection exported to the project's local format.
  * Written to {@code data/note-sync/project-note-sync.json}.
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class KompileProjectNoteSyncConnection {
     private Long id;
@@ -35,40 +43,4 @@ public class KompileProjectNoteSyncConnection {
     private String lastSyncStatus;
     private String createdAt;
     private String updatedAt;
-
-    public Long getId() { return id; }
-    public void setId(Long id) { this.id = id; }
-
-    public String getProvider() { return provider; }
-    public void setProvider(String provider) { this.provider = provider; }
-
-    public String getFactSheetName() { return factSheetName; }
-    public void setFactSheetName(String factSheetName) { this.factSheetName = factSheetName; }
-
-    public String getExternalScope() { return externalScope; }
-    public void setExternalScope(String externalScope) { this.externalScope = externalScope; }
-
-    public String getDirection() { return direction; }
-    public void setDirection(String direction) { this.direction = direction; }
-
-    public boolean isEnabled() { return enabled; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
-
-    public String getRepositoryUrl() { return repositoryUrl; }
-    public void setRepositoryUrl(String repositoryUrl) { this.repositoryUrl = repositoryUrl; }
-
-    public String getGitBranch() { return gitBranch; }
-    public void setGitBranch(String gitBranch) { this.gitBranch = gitBranch; }
-
-    public String getLastSyncAt() { return lastSyncAt; }
-    public void setLastSyncAt(String lastSyncAt) { this.lastSyncAt = lastSyncAt; }
-
-    public String getLastSyncStatus() { return lastSyncStatus; }
-    public void setLastSyncStatus(String lastSyncStatus) { this.lastSyncStatus = lastSyncStatus; }
-
-    public String getCreatedAt() { return createdAt; }
-    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
-
-    public String getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(String updatedAt) { this.updatedAt = updatedAt; }
 }

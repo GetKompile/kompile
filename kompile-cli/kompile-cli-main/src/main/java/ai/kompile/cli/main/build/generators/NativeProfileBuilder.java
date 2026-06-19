@@ -27,8 +27,17 @@ import java.io.StringReader;
 import static ai.kompile.cli.main.build.generators.PomModelBuilder.*;
 
 /**
- * Builds GraalVM native image Maven profiles.
- * Extracted verbatim from RagPomGenerator.addNativeProfile() - these args are fragile.
+ * Builds GraalVM native image Maven profiles for kompile applications.
+ *
+ * <p>The native image args here must match the proven configuration from
+ * kompile-app-main/pom.xml. Key requirements:
+ * <ul>
+ *   <li>All ND4J backends (CPU, CUDA, ZLUDA, TPU, Hexagon, SDX, Minimizer)
+ *       must be initialized at runtime to prevent points-to analysis hang</li>
+ *   <li>All bytedeco libraries must be initialized at runtime at package-level</li>
+ *   <li>Native .so/.dll/.dylib must be EXCLUDED from the image (side-loaded by JavaCPP)</li>
+ *   <li>LargeArrayThreshold prevents image bloat from ND4J constant arrays</li>
+ * </ul>
  */
 public class NativeProfileBuilder {
 
@@ -46,15 +55,13 @@ public class NativeProfileBuilder {
         nativeProfile.setId("native");
         Build nativeProfileBuild = new Build();
 
-        // Spring Boot plugin for native
+        // Spring Boot plugin for native (process-aot + repackage)
         Plugin springBootPluginNative = createPlugin("org.springframework.boot", "spring-boot-maven-plugin",
                 "${spring-boot.version}");
         try {
             Xpp3Dom springBootNativeConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
                             "  <mainClass>" + mainClassFqcn + "</mainClass>" +
-                            "  <classifier>exec</classifier>" +
-                            "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
                             "</configuration>"));
             springBootPluginNative.setConfiguration(springBootNativeConfig);
         } catch (XmlPullParserException | IOException e) {
@@ -65,41 +72,26 @@ public class NativeProfileBuilder {
         processAotExecution.setId("process-aot");
         processAotExecution.addGoal("process-aot");
         springBootPluginNative.addExecution(processAotExecution);
-
-        PluginExecution repackageExecutionNative = new PluginExecution();
-        repackageExecutionNative.setId("repackage-native-profile");
-        repackageExecutionNative.addGoal("repackage");
-        springBootPluginNative.addExecution(repackageExecutionNative);
         nativeProfileBuild.addPlugin(springBootPluginNative);
 
-        // Build helper plugin for AOT sources/resources
-        Plugin buildHelperPlugin = createPlugin("org.codehaus.mojo", "build-helper-maven-plugin",
-                "${build-helper-maven-plugin.version}");
-
-        PluginExecution addAotSources = new PluginExecution();
-        addAotSources.setId("add-spring-aot-sources");
-        addAotSources.addGoal("add-source");
-        addAotSources.setPhase("generate-sources");
-        try {
-            addAotSources.setConfiguration(Xpp3DomBuilder.build(new StringReader(
-                    "<configuration><sources><source>${project.build.directory}/spring-aot/main/sources</source></sources></configuration>")));
-        } catch (XmlPullParserException | IOException e) {
-            throw new RuntimeException("Error configuring build-helper for AOT sources", e);
-        }
-        buildHelperPlugin.addExecution(addAotSources);
-
-        PluginExecution addAotResources = new PluginExecution();
-        addAotResources.setId("add-spring-aot-resources");
-        addAotResources.addGoal("add-resource");
-        addAotResources.setPhase("generate-resources");
-        try {
-            addAotResources.setConfiguration(Xpp3DomBuilder.build(new StringReader(
-                    "<configuration><resources><resource><directory>${project.build.directory}/spring-aot/main/resources</directory></resource></resources></configuration>")));
-        } catch (XmlPullParserException | IOException e) {
-            throw new RuntimeException("Error configuring build-helper for AOT resources", e);
-        }
-        buildHelperPlugin.addExecution(addAotResources);
-        nativeProfileBuild.addPlugin(buildHelperPlugin);
+        // Maven Dependency Plugin — unpack ALL native .so/.dylib/.dll from every JAR on the classpath.
+        // We do NOT restrict by classifier — that would miss libraries in non-classified JARs
+        // (sqlite, snappy, zstd, JNA, etc. bundle native libs without a platform classifier).
+        // includeTypes=jar avoids errors from POM-only dependencies.
+        // These are excluded from the native image via -H:ExcludeResources and side-loaded at runtime.
+        Plugin depPlugin = createPlugin("org.apache.maven.plugins",
+                "maven-dependency-plugin", "3.8.1");
+        PluginExecution unpackNativeLibs = new PluginExecution();
+        unpackNativeLibs.setId("unpack-native-libs");
+        unpackNativeLibs.setPhase("prepare-package");
+        unpackNativeLibs.addGoal("unpack-dependencies");
+        Xpp3Dom depConfig = new Xpp3Dom("configuration");
+        addChild(depConfig, "outputDirectory", "${project.build.directory}/native-libs");
+        addChild(depConfig, "includeTypes", "jar");
+        addChild(depConfig, "includes", "**/*.so,**/*.so.*,**/*.dylib,**/*.dll");
+        unpackNativeLibs.setConfiguration(depConfig);
+        depPlugin.addExecution(unpackNativeLibs);
+        nativeProfileBuild.addPlugin(depPlugin);
 
         // Native Maven Plugin
         Plugin nativeMavenPlugin = createPlugin("org.graalvm.buildtools", "native-maven-plugin",
@@ -109,14 +101,13 @@ public class NativeProfileBuilder {
         Xpp3Dom nativePluginConfig = new Xpp3Dom("configuration");
         addChild(nativePluginConfig, "imageName", "${native.image.name}");
         addChild(nativePluginConfig, "mainClass", mainClassFqcn);
-        addChild(nativePluginConfig, "quickBuild", "false");
-        addChild(nativePluginConfig, "jarArtifact", "${project.build.directory}/${project.build.finalName}-exec.jar");
-
-        Xpp3Dom metadataRepo = addChild(nativePluginConfig, "metadataRepository", null);
-        addChild(metadataRepo, "enabled", "true");
 
         Xpp3Dom buildArgsDom = new Xpp3Dom("buildArgs");
-        addMainNativeBuildArgs(buildArgsDom);
+        addCommonBuildArgs(buildArgsDom);
+        addBuildTimeInitArgs(buildArgsDom);
+        addRuntimeInitArgs(buildArgsDom);
+        addResourceArgs(buildArgsDom);
+        addExcludeResourceArgs(buildArgsDom);
 
         nativePluginConfig.addChild(buildArgsDom);
         nativeMavenPlugin.setConfiguration(nativePluginConfig);
@@ -139,76 +130,211 @@ public class NativeProfileBuilder {
     }
 
     /**
-     * Main native image build args - these are fragile and must be kept verbatim.
+     * Common GraalVM flags shared by all profiles.
      */
-    private void addMainNativeBuildArgs(Xpp3Dom args) {
-        addBuildArg(args, "-J-Xmx16g");
+    private void addCommonBuildArgs(Xpp3Dom args) {
+        addBuildArg(args, "-J-Xmx24g");
         addBuildArg(args, "--verbose");
         addBuildArg(args, "--no-fallback");
         addBuildArg(args, "--allow-incomplete-classpath");
         addBuildArg(args, "-H:+ReportExceptionStackTraces");
-        addBuildArg(args, "-Dspring.native.remove-unused-autoconfig=true");
-        addBuildArg(args, "-H:+AddAllFileSystemProviders");
-        addBuildArg(args, "--enable-url-protocols=http,https");
-        addBuildArg(args, "-Djava.awt.headless=true");
-        addBuildArg(args, "-H:+UnlockExperimentalVMOptions");
-        addBuildArg(args, "-H:+AllowDeprecatedBuilderClassesOnImageClasspath");
-        addBuildArg(args, "-H:+ReportUnsupportedElementsAtRuntime");
-
-        addBuildArg(args, "--initialize-at-build-time=org.nd4j.shade.protobuf.UnsafeUtil");
-        addBuildArg(args, "--initialize-at-build-time=com.google.protobuf.UnsafeUtil");
-
-        addBuildArg(args, "-H:+AddAllFileSystemProviders");
-        addBuildArg(args, "-H:+EnableAllSecurityServices");
-        addBuildArg(args, "--enable-all-security-services");
-
-        addBuildArg(args,
-                "--initialize-at-build-time=java.rmi.server.Operation,org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.spi.StandardLevel,,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder");
-        addBuildArg(args,
-                "--initialize-at-run-time=ai.kompile.app.MainApplication,org.nd4j.linalg.cpu.nativecpu.NDArray,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.nd4j.linalg.api.ops.impl.scalar.LeakyReLU,org.nd4j.linalg.cpu.nativecpu.CpuNDArrayFactory,org.nd4j.jita.constant.ProtectedCachedShapeInfoProvider,org.nd4j.jita.constant.ConstantProtector,org.nd4j.imports.converters.DifferentialFunctionClassHolder,org.nd4j.linalg.api.memory.deallocation.DeallocatorService,org.nd4j.linalg.factory.Nd4j,org.eclipse.deeplearning4j.tokenizers.presets.TokenizersHelper,org.eclipse.deeplearning4j.tokenizers.bindings.TokenizersNative,org.nd4j.autodiff.samediff,org.nd4j.imports.converters.DifferentialFunctionClassHolder,org.nd4j.linalg.api.ops,org.bytedeco.javacpp.indexer,org.nd4j.nativeblas.NativeOpsHolder,org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.tools.PointerBufferPoolMXBean,org.nd4j.linalg.factory.Nd4j,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.learning.config,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.bytedeco.javacpp.Pointer,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.apache.lucene.util.ScalarQuantizer,org.jline.nativ.JLineLibrary,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.global.mklml,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.openblas.global.openblas,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.springframework.ai.chat.client.advisor,reactor.core.scheduler,java.awt.event,org.apache.poi.util.RandomSingleton,sun.awt.X11,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory");
-        addBuildArg(args,
-                "--trace-class-initialization=org.apache.tomcat.util.compat.Jre12Compat,java.lang.ref.WeakReference,java.lang.ref.SoftReference,org.nd4j.nativeblas.NativeOpsHolder,org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.tools.PointerBufferPoolMXBean,java.rmi.server.Operation,org.nd4j.linalg.factory.Nd4j,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.learning.config,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.bytedeco.javacpp.Pointer,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,sun.nio.ch.FileChannelImpl,org.apache.lucene.util.ScalarQuantizer,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.jline.nativ.JLineLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.mkldnn.global.mklml,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.springframework.ai.chat.client.advisor.api.BaseAdvisor,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler$BoundedState,reactor.core.scheduler.BoundedElasticSchedulerSupplier,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.BoundedElasticScheduler$BoundedServices$1,reactor.core.scheduler.BoundedElasticScheduler$BoundedServices");
-
-        // Resource includes
-        addBuildArg(args, "-H:IncludeResources=log4j2.xml");
-        addBuildArg(args, "-H:IncludeResources=log4j2-spring.xml");
-        addBuildArg(args, "-H:IncludeResources=log4j2.component.properties");
-        addBuildArg(args, "-H:IncludeResources=.*Log4j2Plugins.dat$");
-        addBuildArg(args, "-H:IncludeResources=META-INF/services/org.apache.logging.log4j.spi.Provider");
-        addBuildArg(args, "-H:+AllowDeprecatedBuilderClassesOnImageClasspath");
-        addBuildArg(args, "-H:IncludeResources=META-INF/native-image/.*\\.json");
-        addBuildArg(args, "-H:IncludeResources=META-INF/services/.*");
-
-        addBuildArg(args, "-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\\.dll");
-        addBuildArg(args, "-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\\.dylib");
-        addBuildArg(args, "-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\\.so");
-
-        addBuildArg(args, "-H:IncludeResources=ai/kompile/bindings/.*\\.so");
-        addBuildArg(args, "-H:IncludeResources=ai/kompile/bindings/.*\\.dll");
-        addBuildArg(args, "-H:IncludeResources=ai/kompile/bindings/.*\\.dylib");
-
-        addBuildArg(args, "-H:IncludeResources=ai/kompile/.*\\.schema\\.json");
-        addBuildArg(args, "-H:IncludeResources=META-INF/spring/.*\\.imports");
-        addBuildArg(args, "-H:IncludeResources=META-INF/spring\\.components");
         addBuildArg(args, "-H:DeadlockWatchdogInterval=30");
         addBuildArg(args, "-H:+DeadlockWatchdogExitOnTimeout");
-        addBuildArg(args, "-H:IncludeResources=org/apache/pdfbox/resources/afm/.*");
-        addBuildArg(args, "--trace-object-instantiation=org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread");
-        addBuildArg(args, "-H:+ReportUnsupportedElementsAtRuntime");
-        addBuildArg(args, "-H:+AllowVMInspection");
-        addBuildArg(args, "--initialize-at-run-time=org.bytedeco.javacpp.Pointer$NativeDeallocator");
-        addBuildArg(args, "--initialize-at-run-time=org.bytedeco.javacpp.PointerScope");
-        addBuildArg(args, "--initialize-at-run-time=org.apache.lucene");
-
-        // Static UI resources
-        addBuildArg(args, "-H:IncludeResources=static/.*");
-        addBuildArg(args, "-H:IncludeResources=application\\.properties");
-        addBuildArg(args, "-H:IncludeResources=application-.*\\.properties");
-        addBuildArg(args, "-H:IncludeResources=org/bytedeco/.*");
-        addBuildArg(args, "-H:IncludeResources=org/nd4j/.*");
-        addBuildArg(args, "-H:IncludeResources=model-sources\\.yml");
+        addBuildArg(args, "--enable-url-protocols=https,http");
+        addBuildArg(args, "-Dorg.bytedeco.javacpp.nopointergc=true");
+        addBuildArg(args, "-H:+AllowDeprecatedBuilderClassesOnImageClasspath");
+        addBuildArg(args, "-H:LargeArrayThreshold=8192");
     }
 
+    /**
+     * Build-time initialization: logging frameworks + protobuf/gson serializers.
+     */
+    private void addBuildTimeInitArgs(Xpp3Dom args) {
+        addBuildArg(args, "--initialize-at-build-time=org.slf4j");
+        addBuildArg(args, "--initialize-at-build-time=ch.qos.logback");
+        addBuildArg(args, "--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation");
+        addBuildArg(args, "--initialize-at-build-time=org.nd4j.shade.protobuf");
+        addBuildArg(args, "--initialize-at-build-time=com.google.protobuf");
+        addBuildArg(args, "--initialize-at-build-time=com.google.gson");
+    }
+
+    /**
+     * Runtime initialization for ALL backends and native libraries.
+     * Every ND4J/DL4J backend, every bytedeco native library, plus framework
+     * classes that load native code or touch JNI must be deferred to runtime.
+     * Without these, GraalVM's points-to analysis hangs on DifferentialFunctionClassHolder.
+     */
+    private void addRuntimeInitArgs(Xpp3Dom args) {
+        // JavaCPP core
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.bytedeco.javacpp.Loader," +
+                "org.bytedeco.javacpp.Loader$Helper," +
+                "org.bytedeco.javacpp.Pointer," +
+                "org.bytedeco.javacpp.Pointer$DeallocatorThread," +
+                "org.bytedeco.javacpp.Pointer$NativeDeallocator," +
+                "org.bytedeco.javacpp.PointerScope," +
+                "org.bytedeco.javacpp.indexer");
+
+        // DL4J + ND4J top-level packages (catches everything not explicitly listed below)
+        addBuildArg(args, "--initialize-at-run-time=org.eclipse.deeplearning4j");
+        addBuildArg(args, "--initialize-at-run-time=org.nd4j");
+
+        // ND4J core: points-to-hang classes + factory/ops
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.nd4j.imports.converters.DifferentialFunctionClassHolder," +
+                "org.nd4j.linalg.api.ops," +
+                "org.nd4j.autodiff.samediff," +
+                "org.nd4j.linalg.factory.Nd4j," +
+                "org.nd4j.nativeblas.NativeOpsHolder," +
+                "org.nd4j.linalg.learning.config," +
+                "org.nd4j.linalg.api.memory.deallocation.DeallocatorService");
+
+        // ND4J CPU backend
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.nd4j.linalg.cpu.nativecpu.NDArray," +
+                "org.nd4j.linalg.cpu.nativecpu.CpuNDArrayFactory," +
+                "org.nd4j.linalg.cpu.nativecpu.CpuBackend," +
+                "org.nd4j.linalg.cpu.nativecpu.CpuEnvironment," +
+                "org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator," +
+                "org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment");
+
+        // ND4J CUDA backend (jcublas + JITA allocator)
+        addBuildArg(args, "--initialize-at-run-time=org.nd4j.linalg.jcublas,org.nd4j.jita");
+
+        // ND4J ZLUDA/AMD backend
+        addBuildArg(args, "--initialize-at-run-time=org.nd4j.linalg.jzluda");
+
+        // ND4J TPU backend
+        addBuildArg(args, "--initialize-at-run-time=org.nd4j.linalg.jtpu");
+
+        // ND4J Hexagon (Qualcomm DSP) backend
+        addBuildArg(args, "--initialize-at-run-time=org.nd4j.linalg.hexagon");
+
+        // ND4J SDX/DSP runtime + minimizer
+        addBuildArg(args, "--initialize-at-run-time=org.nd4j.dsp,org.nd4j.linalg.minimal");
+
+        // DL4J core
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder," +
+                "org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread," +
+                "org.eclipse.deeplearning4j.linalg.factory.Nd4j," +
+                "org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr," +
+                "org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction," +
+                "org.eclipse.deeplearning4j.tokenizers.presets.TokenizersHelper," +
+                "org.eclipse.deeplearning4j.tokenizers.bindings.TokenizersNative");
+
+        // DL4J CPU backend
+        addBuildArg(args, "--initialize-at-run-time=org.eclipse.deeplearning4j.linalg.cpu.nativecpu");
+
+        // DL4J CUDA backend
+        addBuildArg(args, "--initialize-at-run-time=org.eclipse.deeplearning4j.linalg.jcublas,org.eclipse.deeplearning4j.jita");
+
+        // DL4J ZLUDA/TPU/Hexagon/SDX/Minimizer backends
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.eclipse.deeplearning4j.linalg.jzluda," +
+                "org.eclipse.deeplearning4j.linalg.jtpu," +
+                "org.eclipse.deeplearning4j.linalg.hexagon," +
+                "org.eclipse.deeplearning4j.dsp," +
+                "org.eclipse.deeplearning4j.linalg.minimal");
+
+        // Bytedeco native libraries - package-level covers all presets+globals
+        addBuildArg(args, "--initialize-at-run-time=org.bytedeco.openblas,org.bytedeco.mkl,org.bytedeco.mkldnn,org.bytedeco.dnnl");
+        addBuildArg(args, "--initialize-at-run-time=org.bytedeco.onnxruntime,org.bytedeco.onnx,org.bytedeco.opencl");
+        addBuildArg(args, "--initialize-at-run-time=org.bytedeco.tensorflow,org.bytedeco.tensorrt");
+        // CUDA libraries (cublas, cudnn, cufft, curand, cusolver, cusparse, nccl, nvrtc, npp)
+        addBuildArg(args, "--initialize-at-run-time=org.bytedeco.cuda");
+        // OpenCV, FFmpeg, HDF5
+        addBuildArg(args, "--initialize-at-run-time=org.bytedeco.opencv,org.bytedeco.ffmpeg,org.bytedeco.hdf5");
+        // Javacv transitive libs
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.bytedeco.leptonica,org.bytedeco.tesseract," +
+                "org.bytedeco.artoolkitplus,org.bytedeco.flandmark," +
+                "org.bytedeco.libdc1394,org.bytedeco.libfreenect,org.bytedeco.libfreenect2," +
+                "org.bytedeco.librealsense,org.bytedeco.librealsense2," +
+                "org.bytedeco.flycapture,org.bytedeco.videoinput");
+        // System/scripting/misc bytedeco libs
+        addBuildArg(args, "--initialize-at-run-time=org.bytedeco.systems,org.bytedeco.cpython,org.bytedeco.numpy,org.bytedeco.tvm,org.bytedeco.llvm");
+
+        // Lucene, Netty, JNA, ByteBuddy
+        addBuildArg(args, "--initialize-at-run-time=org.apache.lucene.util.ScalarQuantizer");
+        addBuildArg(args, "--initialize-at-run-time=io.netty.channel.epoll.Epoll");
+        addBuildArg(args, "--initialize-at-run-time=com.sun.jna.Native");
+        addBuildArg(args, "--initialize-at-run-time=net.bytebuddy");
+
+        // Tomcat internals
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.apache.tomcat.util.compat," +
+                "org.apache.catalina.webresources.DirResourceSet," +
+                "org.apache.tomcat.jni.SSL," +
+                "org.apache.tomcat.util.net.openssl.OpenSSLContext," +
+                "org.apache.tomcat.util.net.openssl.OpenSSLEngine," +
+                "org.apache.catalina.mbeans.MBeanUtils," +
+                "org.apache.catalina.mbeans.MBeanFactory");
+
+        // JLine native
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.jline.nativ.JLineLibrary," +
+                "org.jline.terminal.impl.jna," +
+                "org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary");
+
+        // Spring AI / Reactor / Spring Boot
+        addBuildArg(args, "--initialize-at-run-time=" +
+                "org.springframework.ai.chat.client.advisor," +
+                "reactor.core.scheduler," +
+                "org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder," +
+                "org.springframework.boot.loader.ref.DefaultCleaner," +
+                "org.springframework.boot.loader.ref.Cleaner," +
+                "org.springframework.core.io.VfsUtils");
+    }
+
+    /**
+     * Resource inclusion rules.
+     */
+    private void addResourceArgs(Xpp3Dom args) {
+        addBuildArg(args, "-H:IncludeResources=static/.*");
+        addBuildArg(args, "-H:IncludeResources=application.*");
+        addBuildArg(args, "-H:IncludeResources=META-INF/native-image/.*\\.json");
+        addBuildArg(args, "-H:IncludeResources=org/bytedeco/.*");
+        addBuildArg(args, "-H:IncludeResources=org/nd4j/.*");
+        addBuildArg(args, "-H:IncludeResources=META-INF/services/.*");
+        addBuildArg(args, "-H:IncludeResources=META-INF/spring/.*");
+        addBuildArg(args, "-H:IncludeResources=META-INF/spring\\.factories");
+        addBuildArg(args, "-H:IncludeResources=log4j2\\.component\\.properties");
+        // Hibernate service exclusion
+        addBuildArg(args, "-H:ServiceLoaderFeatureExcludeServices=org.hibernate.bytecode.spi.BytecodeProvider");
+        addBuildArg(args, "-H:ExcludeResources=META-INF/services/org.hibernate.bytecode.spi.BytecodeProvider");
+    }
+
+    /**
+     * Exclude native binaries from image — they are side-loaded by JavaCPP's Loader at runtime.
+     * Without these, the image embeds 500MB+ of .so/.dll/.dylib and analysis time explodes.
+     */
+    private void addExcludeResourceArgs(Xpp3Dom args) {
+        // Bytedeco native libs
+        addBuildArg(args, "-H:ExcludeResources=org/bytedeco/.*\\.so$");
+        addBuildArg(args, "-H:ExcludeResources=org/bytedeco/.*\\.so\\..*");
+        addBuildArg(args, "-H:ExcludeResources=org/bytedeco/.*\\.dll$");
+        addBuildArg(args, "-H:ExcludeResources=org/bytedeco/.*\\.dylib$");
+        // ND4J native libs
+        addBuildArg(args, "-H:ExcludeResources=org/nd4j/.*\\.so$");
+        addBuildArg(args, "-H:ExcludeResources=org/nd4j/.*\\.so\\..*");
+        addBuildArg(args, "-H:ExcludeResources=org/nd4j/.*\\.dll$");
+        addBuildArg(args, "-H:ExcludeResources=org/nd4j/.*\\.dylib$");
+        // DL4J tokenizer native libs
+        addBuildArg(args, "-H:ExcludeResources=org/eclipse/deeplearning4j/tokenizers/.*/lib.*\\.so.*");
+        addBuildArg(args, "-H:ExcludeResources=org/eclipse/deeplearning4j/tokenizers/.*/libjni.*\\.so");
+        // Platform-specific directories
+        addBuildArg(args, "-H:ExcludeResources=linux-x86_64/.*\\.so$");
+        addBuildArg(args, "-H:ExcludeResources=linux-x86_64/.*\\.so\\..*");
+        addBuildArg(args, "-H:ExcludeResources=linux-aarch64/.*");
+        addBuildArg(args, "-H:ExcludeResources=windows-x86_64/.*");
+        addBuildArg(args, "-H:ExcludeResources=macosx-.*/.*");
+    }
+
+    /**
+     * Subprocess profiles share the same runtime-init and resource exclusion args
+     * as the main profile. Without the full set, points-to analysis will hang.
+     */
     private void addSubprocessProfile(String profileId, String mainClass, String imageName) {
         Profile profile = new Profile();
         profile.setId(profileId);
@@ -223,24 +349,11 @@ public class NativeProfileBuilder {
         addChild(config, "mainClass", mainClass);
 
         Xpp3Dom buildArgsDom = new Xpp3Dom("buildArgs");
-        addBuildArg(buildArgsDom, "-J-Xmx18g");
-        addBuildArg(buildArgsDom, "--no-fallback");
-        addBuildArg(buildArgsDom, "--allow-incomplete-classpath");
-        addBuildArg(buildArgsDom, "-H:+ReportExceptionStackTraces");
-        addBuildArg(buildArgsDom, "-Dorg.bytedeco.javacpp.nopointergc=true");
-        addBuildArg(buildArgsDom, "--initialize-at-build-time=org.slf4j.LoggerFactory,ch.qos.logback.classic.LoggerContext,ch.qos.logback.classic.spi.StaticLoggerBinder,ch.qos.logback.core.spi.StatusManager");
-        addBuildArg(buildArgsDom, "--initialize-at-build-time=org.slf4j.helpers");
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.Loader");
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.eclipse.deeplearning4j");
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.nd4j");
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.apache.lucene");
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.Pointer");
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.Pointer$NativeDeallocator");
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.PointerScope");
-        addBuildArg(buildArgsDom, "-H:IncludeResources=org/bytedeco/.*");
-        addBuildArg(buildArgsDom, "-H:IncludeResources=org/nd4j/.*");
-        addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/services/.*");
-        addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/native-image/.*\\.json");
+        addCommonBuildArgs(buildArgsDom);
+        addBuildTimeInitArgs(buildArgsDom);
+        addRuntimeInitArgs(buildArgsDom);
+        addResourceArgs(buildArgsDom);
+        addExcludeResourceArgs(buildArgsDom);
         config.addChild(buildArgsDom);
 
         nativeMavenPlugin.setConfiguration(config);

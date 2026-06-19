@@ -5,7 +5,7 @@ import ai.kompile.serving.openai.dto.ChatCompletionResponse;
 import ai.kompile.serving.openai.dto.ChatCompletionChunk;
 import org.eclipse.deeplearning4j.llm.generation.GenerationPipeline;
 import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
-import org.eclipse.deeplearning4j.llm.generation.SamplingConfig;
+import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

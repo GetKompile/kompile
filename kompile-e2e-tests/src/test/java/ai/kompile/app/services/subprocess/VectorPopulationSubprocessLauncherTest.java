@@ -42,11 +42,19 @@ class VectorPopulationSubprocessLauncherTest {
 
     private VectorPopulationSubprocessLauncher launcher;
     private SubprocessRestartManager restartManager;
+    private SubprocessLifecycleManager lifecycleManager;
 
     @BeforeEach
     void setUp() {
         SystemMemoryAnalyzer memoryAnalyzer = new SystemMemoryAnalyzer();
         restartManager = new SubprocessRestartManager(memoryAnalyzer, null);
+
+        SubprocessCommandBuilder commandBuilder = new SubprocessCommandBuilder(null);
+        VectorPopulationStatsConverter statsConverter = new VectorPopulationStatsConverter(restartManager);
+        SubprocessOutputHandler outputHandler = new SubprocessOutputHandler(
+                null, null, null, null, statsConverter);
+        lifecycleManager = new SubprocessLifecycleManager(
+                restartManager, null, null, null, null, statsConverter);
 
         launcher = new VectorPopulationSubprocessLauncher(
                 null,  // SimpMessagingTemplate
@@ -60,7 +68,11 @@ class VectorPopulationSubprocessLauncherTest {
                 null,  // IngestProgressTracker
                 restartManager,
                 null,  // IngestEventService
-                null   // OpTimingService
+                null,  // OpTimingService
+                commandBuilder,
+                outputHandler,
+                lifecycleManager,
+                statsConverter
         );
     }
 
@@ -68,7 +80,7 @@ class VectorPopulationSubprocessLauncherTest {
 
     @Test
     void getStatus_unknownTask_returnsNull() {
-        VectorPopulationSubprocessLauncher.VectorPopulationHandle.Status status =
+        VectorPopulationHandle.Status status =
                 launcher.getStatus("unknown-task");
         assertNull(status, "Status for unknown task should be null");
     }
@@ -77,7 +89,7 @@ class VectorPopulationSubprocessLauncherTest {
 
     @Test
     void getAllStatuses_initiallyEmpty() {
-        List<VectorPopulationSubprocessLauncher.VectorPopulationHandle.Status> statuses =
+        List<VectorPopulationHandle.Status> statuses =
                 launcher.getAllStatuses();
         assertNotNull(statuses);
         assertTrue(statuses.isEmpty(), "No active processes expected initially");
@@ -95,7 +107,7 @@ class VectorPopulationSubprocessLauncherTest {
 
     @Test
     void launchVectorPopulation_returnsNonNullFuture() {
-        CompletableFuture<VectorPopulationSubprocessLauncher.VectorPopulationResult> future =
+        CompletableFuture<VectorPopulationResult> future =
                 launcher.launchVectorPopulation(
                         "vp-task-1",
                         "/tmp/keyword-index",
@@ -108,7 +120,7 @@ class VectorPopulationSubprocessLauncherTest {
     @Test
     void launchVectorPopulation_withOptions_returnsNonNullFuture() {
         Map<String, Object> opts = Map.of("embeddingBatchSize", 32, "parallelIndexing", true);
-        CompletableFuture<VectorPopulationSubprocessLauncher.VectorPopulationResult> future =
+        CompletableFuture<VectorPopulationResult> future =
                 launcher.launchVectorPopulation(
                         "vp-task-2",
                         "/tmp/keyword-index",
@@ -129,21 +141,21 @@ class VectorPopulationSubprocessLauncherTest {
 
     @Test
     void checkStaleProcesses_whenIdle_doesNotThrow() {
-        assertDoesNotThrow(() -> launcher.checkStaleProcesses());
+        assertDoesNotThrow(() -> lifecycleManager.checkStaleProcesses());
     }
 
     // ── checkProgressStalls ───────────────────────────────────────────────────
 
     @Test
     void checkProgressStalls_whenIdle_doesNotThrow() {
-        assertDoesNotThrow(() -> launcher.checkProgressStalls());
+        assertDoesNotThrow(() -> lifecycleManager.checkProgressStalls());
     }
 
     // ── VectorPopulationResult — static factories ──────────────────────────────
 
     @Test
     void vectorPopulationResult_success_isSuccess() {
-        var result = VectorPopulationSubprocessLauncher.VectorPopulationResult
+        var result = VectorPopulationResult
                 .success("task-x", 100, 50, 100, 5000L, "/tmp/vindex");
         assertTrue(result.success());
         assertEquals("task-x", result.taskId());
@@ -158,7 +170,7 @@ class VectorPopulationSubprocessLauncherTest {
 
     @Test
     void vectorPopulationResult_failure_isFailure() {
-        var result = VectorPopulationSubprocessLauncher.VectorPopulationResult
+        var result = VectorPopulationResult
                 .failure("task-y", "EMBEDDING", "OOM error");
         assertFalse(result.success());
         assertEquals("task-y", result.taskId());
@@ -171,16 +183,16 @@ class VectorPopulationSubprocessLauncherTest {
 
     @Test
     void memoryOverrides_none_hasNoOverrides() {
-        VectorPopulationSubprocessLauncher.MemoryOverrides none =
-                VectorPopulationSubprocessLauncher.MemoryOverrides.none();
+        SubprocessCommandBuilder.MemoryOverrides none =
+                SubprocessCommandBuilder.MemoryOverrides.none();
         assertNotNull(none);
         assertFalse(none.hasOverrides());
     }
 
     @Test
     void memoryOverrides_of_hasOverrides() {
-        VectorPopulationSubprocessLauncher.MemoryOverrides overrides =
-                VectorPopulationSubprocessLauncher.MemoryOverrides.of("8g", 4L * 1024 * 1024 * 1024);
+        SubprocessCommandBuilder.MemoryOverrides overrides =
+                SubprocessCommandBuilder.MemoryOverrides.of("8g", 4L * 1024 * 1024 * 1024);
         assertNotNull(overrides);
         assertTrue(overrides.hasOverrides());
         assertEquals("8g", overrides.heapSize());

@@ -16,6 +16,7 @@
 package ai.kompile.cli.main.cloud;
 
 import ai.kompile.cli.common.util.HttpConstants;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -45,7 +46,7 @@ import java.time.Duration;
  */
 public class SaasClient {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private final String baseUrl;
     private final HttpClient httpClient;

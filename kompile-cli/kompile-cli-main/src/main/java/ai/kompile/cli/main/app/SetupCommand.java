@@ -19,6 +19,7 @@ package ai.kompile.cli.main.app;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.main.manage.ServiceManager;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 
@@ -307,7 +308,7 @@ public class SetupCommand implements Callable<Integer> {
                         conn.setReadTimeout(3000);
                         if (conn.getResponseCode() == 200) {
                             String body = new String(conn.getInputStream().readAllBytes());
-                            ObjectMapper mapper = new ObjectMapper();
+                            ObjectMapper mapper = JsonUtils.standardMapper();
                             JsonNode catalog = mapper.readTree(body);
                             System.out.println("  Catalog: " + catalog.size() + " model(s) available");
                         }

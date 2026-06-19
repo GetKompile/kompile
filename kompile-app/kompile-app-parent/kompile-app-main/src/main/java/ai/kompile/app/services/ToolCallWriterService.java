@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,7 +41,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class ToolCallWriterService {
 
     private static final Logger logger = LoggerFactory.getLogger(ToolCallWriterService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final AtomicLong ID_GEN = new AtomicLong(System.currentTimeMillis());
 
     private Path getToolCallsDir() {

@@ -18,9 +18,9 @@ package ai.kompile.filterchain.service;
 
 import ai.kompile.filterchain.config.FilterChainConfig;
 import ai.kompile.filterchain.config.FilterConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,10 +51,7 @@ public class FilterChainConfigService {
     public FilterChainConfigService(
             @Value("${kompile.data.dir:#{null}}") String dataDir) {
 
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
-        this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
         // Determine config directory
         String effectiveDataDir = dataDir;

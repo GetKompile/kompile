@@ -27,6 +27,7 @@ import ai.kompile.knowledgegraph.io.format.SvgGraphExporter;
 import ai.kompile.knowledgegraph.io.model.PortableEdge;
 import ai.kompile.knowledgegraph.io.model.PortableNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,7 +56,7 @@ public class CodeGraphBuilder {
     private final TestCoverageAnalyzer testCoverageAnalyzer;
     private final GitHistoryGraphBuilder gitHistoryGraphBuilder;
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     /** Maps CodeRelationType → knowledge graph EdgeType for relation promotion. */
     private static final Map<CodeRelationType, EdgeType> RELATION_EDGE_TYPE_MAP;

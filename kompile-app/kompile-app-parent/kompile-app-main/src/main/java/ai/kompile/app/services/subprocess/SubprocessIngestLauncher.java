@@ -34,10 +34,12 @@ import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.subprocess.SubprocessArgs;
+import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessMessage;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 // NOTE: Do NOT import Nd4j here - it would initialize ND4J native code in parent process
@@ -210,7 +212,7 @@ public class SubprocessIngestLauncher {
         this.factSheetService = factSheetService;
         this.appIndexConfigService = appIndexConfigService;
         this.ingestConfiguration = ingestConfiguration;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         // Initialize checkpoint directory
         initializeCheckpointDirectory();
@@ -2694,80 +2696,7 @@ public class SubprocessIngestLauncher {
      * @param env The subprocess environment map to populate
      */
     private void propagateNd4jEnvironment(Map<String, String> env) {
-        // List of ND4J-related environment variables to propagate
-        List<String> nd4jEnvVars = List.of(
-                // ND4J core settings
-                "ND4J_BACKEND",
-                "ND4J_DATA_BUFFER_OPS",
-                "ND4J_RESOURCES_DIR",
-                "ND4J_ALLOW_FALLBACK",
-
-                // Thread configuration
-                "OMP_NUM_THREADS",
-                "MKL_NUM_THREADS",
-                "OPENBLAS_NUM_THREADS",
-                "GOTO_NUM_THREADS",
-                "VECLIB_MAXIMUM_THREADS",
-                "NUMEXPR_NUM_THREADS",
-
-                // CUDA/GPU settings
-                "CUDA_VISIBLE_DEVICES",
-                "CUDA_DEVICE_ORDER",
-                "CUDA_LAUNCH_BLOCKING",
-                "CUDA_CACHE_PATH",
-
-                // JavaCPP settings
-                "JAVACPP_PLATFORM",
-                "JAVACPP_CACHESFX",
-
-                // Memory settings
-                "ND4J_HEAP_SPACE",
-                "ND4J_OFF_HEAP_SPACE",
-
-                // Kompile-specific settings
-                "KOMPILE_EMBEDDING_MODEL",
-                "KOMPILE_INDEX_PATH",
-                "KOMPILE_MODELS_DIR");
-
-        int propagated = 0;
-        for (String varName : nd4jEnvVars) {
-            String value = System.getenv(varName);
-            if (value != null && !value.isEmpty()) {
-                env.put(varName, value);
-                propagated++;
-                logger.debug("Propagated env var to subprocess: {}={}", varName, value);
-            }
-        }
-
-        // Also propagate any environment variables starting with ND4J_ or KOMPILE_
-        for (Map.Entry<String, String> entry : System.getenv().entrySet()) {
-            String key = entry.getKey();
-            if ((key.startsWith("ND4J_") || key.startsWith("KOMPILE_")) && !env.containsKey(key)) {
-                env.put(key, entry.getValue());
-                propagated++;
-                logger.debug("Propagated env var to subprocess: {}={}", key, entry.getValue());
-            }
-        }
-
-        // Set OMP_NUM_THREADS to ND4J's maxThreads if not already set
-        // This ensures OpenMP uses the same thread count as ND4J
-        if (!env.containsKey("OMP_NUM_THREADS")) {
-            try {
-                int maxThreads = (int) org.nd4j.linalg.factory.Nd4j.getEnvironment().maxThreads();
-                if (maxThreads > 0) {
-                    env.put("OMP_NUM_THREADS", String.valueOf(maxThreads));
-                    env.put("MKL_NUM_THREADS", String.valueOf(maxThreads));
-                    env.put("OPENBLAS_NUM_THREADS", String.valueOf(maxThreads));
-                    env.put("GOTO_NUM_THREADS", String.valueOf(maxThreads));
-                    logger.info("Set OMP_NUM_THREADS={} from ND4J maxThreads", maxThreads);
-                    propagated += 4;
-                }
-            } catch (Exception e) {
-                logger.debug("Could not get ND4J maxThreads: {}", e.getMessage());
-            }
-        }
-
-        logger.info("Propagated {} ND4J environment variables to subprocess", propagated);
+        SubprocessEnvironmentPropagator.propagateToEnvironment(env);
     }
 
     /**

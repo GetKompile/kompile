@@ -20,8 +20,6 @@ import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -38,8 +36,6 @@ import java.util.Set;
  * This avoids the need for Flyway migrations and handles schema evolution gracefully.
  */
 @Service
-@ConditionalOnClass(name = "ai.kompile.knowledgegraph.embedding.service.KGEmbeddingSchemaBridgeService")
-@ConditionalOnProperty(name = "kompile.kg-embedding.enabled", havingValue = "true", matchIfMissing = true)
 public class KGEmbeddingSchemaBridgeService {
 
     private static final Logger log = LoggerFactory.getLogger(KGEmbeddingSchemaBridgeService.class);

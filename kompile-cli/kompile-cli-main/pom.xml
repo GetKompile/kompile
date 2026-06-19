@@ -32,6 +32,10 @@
     <dependencies>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-plugin-api</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -287,6 +291,8 @@
                                 <buildArg>--initialize-at-build-time=org.sqlite.util.ProcessRunner</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
                                 <buildArg>-H:IncludeResources=cli-agents\.json</buildArg>
+                                <buildArg>-H:IncludeResources=version\.properties</buildArg>
+                                <buildArg>-H:IncludeResources=kompile-cli-versions\.properties</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/.*\.schema\.json</buildArg>
                                 <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
@@ -294,7 +300,8 @@
                                 <buildArg>-H:IncludeResources=org/apache/pdfbox/resources/afm/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/jline/.*</buildArg>
-                                <buildArg>-H:IncludeResources=META-INF/services/org/jline/.*</buildArg> </buildArgs>
+                                <buildArg>-H:IncludeResources=META-INF/services/org/jline/.*</buildArg>
+                                <buildArg>-H:IncludeResources=build-scripts/.*\.sh</buildArg> </buildArgs>
                         </configuration>
                     </plugin>
                 </plugins>
@@ -303,6 +310,33 @@
     </profiles>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>version.properties</exclude>
+                    <exclude>kompile-cli-versions.properties</exclude>
+                </excludes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>version.properties</include>
+                    <include>kompile-cli-versions.properties</include>
+                </includes>
+            </resource>
+            <!-- Bundle build-scripts/ as classpath resources for extraction at runtime -->
+            <resource>
+                <directory>${project.basedir}/../../build-scripts</directory>
+                <targetPath>build-scripts</targetPath>
+                <filtering>false</filtering>
+                <includes>
+                    <include>*.sh</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>

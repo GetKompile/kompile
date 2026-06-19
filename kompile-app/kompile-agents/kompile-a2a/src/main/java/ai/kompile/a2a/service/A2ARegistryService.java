@@ -20,11 +20,9 @@ import ai.kompile.a2a.client.A2AClient;
 import ai.kompile.a2a.client.A2AClientException;
 import ai.kompile.a2a.model.A2AAgentConfig;
 import ai.kompile.a2a.model.AgentCard;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -56,10 +54,7 @@ public class A2ARegistryService {
     private final Path configPath;
 
     public A2ARegistryService() {
-        this.objectMapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+        this.objectMapper = JsonUtils.standardMapper();
 
         String home = System.getProperty("user.home");
         this.configPath = Path.of(home, ".kompile", "config", "a2a-agents.json");

@@ -16,6 +16,7 @@
 
 package ai.kompile.core.graphrag.prompts;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -49,7 +50,7 @@ public class PromptTemplateService {
     private static final Logger log = LoggerFactory.getLogger(PromptTemplateService.class);
 
     private final Map<String, PromptTemplate> templates = new ConcurrentHashMap<>();
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final Path promptsDir;
 
     public PromptTemplateService(

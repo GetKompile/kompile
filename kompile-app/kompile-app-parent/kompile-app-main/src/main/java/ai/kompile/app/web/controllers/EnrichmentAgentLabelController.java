@@ -25,7 +25,7 @@ import ai.kompile.kclaw.model.KClawResponse;
 import ai.kompile.gateway.core.service.AgentRegistry;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -49,7 +49,7 @@ public class EnrichmentAgentLabelController {
 
     private final AutoLabelService autoLabelService;
     private final EntityCategoryServiceImpl categoryService;
-    private final GraphNodeRepository nodeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final ObjectMapper objectMapper;
 
     @Autowired(required = false)
@@ -60,11 +60,11 @@ public class EnrichmentAgentLabelController {
 
     public EnrichmentAgentLabelController(AutoLabelService autoLabelService,
                                           EntityCategoryServiceImpl categoryService,
-                                          GraphNodeRepository nodeRepository,
+                                          KnowledgeGraphService knowledgeGraphService,
                                           ObjectMapper objectMapper) {
         this.autoLabelService = autoLabelService;
         this.categoryService = categoryService;
-        this.nodeRepository = nodeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.objectMapper = objectMapper;
     }
 
@@ -170,18 +170,20 @@ public class EnrichmentAgentLabelController {
                     continue;
                 }
 
-                Optional<GraphNode> nodeOpt = nodeRepository.findByNodeId(nodeId);
+                Optional<GraphNode> nodeOpt = knowledgeGraphService.getNode(nodeId);
                 if (nodeOpt.isEmpty()) continue;
 
                 GraphNode node = nodeOpt.get();
                 try {
-                    var meta = node.getMetadataJson() != null && !node.getMetadataJson().isBlank()
-                            ? (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(node.getMetadataJson())
-                            : objectMapper.createObjectNode();
+                    // Parse existing metadata JSON into a Map for vector-store update
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> meta = node.getMetadataJson() != null && !node.getMetadataJson().isBlank()
+                            ? objectMapper.readValue(node.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
+                            : new LinkedHashMap<>();
                     meta.put("taxonomyCategory", cat.getLabel());
                     meta.put("taxonomyDomain", findRootDomain(cat));
-                    node.setMetadataJson(objectMapper.writeValueAsString(meta));
-                    nodeRepository.save(node);
+                    // Persist via vector store (SSOT)
+                    knowledgeGraphService.updateNode(node.getNodeId(), node.getTitle(), node.getDescription(), meta);
                     applied++;
                 } catch (Exception e) {
                     errors.add("Failed to apply category to " + nodeId + ": " + e.getMessage());
@@ -219,7 +221,7 @@ public class EnrichmentAgentLabelController {
     }
 
     private List<GraphNode> getUncategorizedEntities(Long factSheetId) {
-        return nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY).stream()
+        return knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY).stream()
                 .filter(e -> {
                     try {
                         if (e.getMetadataJson() == null) return true;

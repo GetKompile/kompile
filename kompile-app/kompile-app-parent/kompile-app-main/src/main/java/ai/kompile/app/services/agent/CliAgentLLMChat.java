@@ -17,7 +17,9 @@
 package ai.kompile.app.services.agent;
 
 import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.crawl.graph.AgentCallContext;
 import ai.kompile.core.llm.chat.LLMChat;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -80,7 +82,7 @@ public class CliAgentLLMChat implements LLMChat {
     private final AgentRegistryService agentRegistryService;
     private final AgentSubprocessExecutor subprocessExecutor;
     private final ClaudeStreamParser streamParser;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private volatile AgentProvider cachedAgent;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -97,6 +99,9 @@ public class CliAgentLLMChat implements LLMChat {
     private volatile Map<String, String> poolEnvironment;
     private volatile int targetPoolSize = DEFAULT_POOL_SIZE;
     private final AtomicBoolean poolInitialized = new AtomicBoolean(false);
+    /** In-flight processes (taken from pool or freshly spawned) — tracked so {@code @PreDestroy}
+     *  can force-kill them immediately instead of blocking on each call's wait at shutdown. */
+    private final Set<Process> activeProcesses = ConcurrentHashMap.newKeySet();
 
     public CliAgentLLMChat(AgentRegistryService agentRegistryService,
                            AgentSubprocessExecutor subprocessExecutor,
@@ -282,10 +287,84 @@ public class CliAgentLLMChat implements LLMChat {
         return DEFAULT_POOL_SIZE;
     }
 
+    /** Per-call timeout (seconds), configurable via cli-llm-config.json "timeoutSeconds". */
+    private int readTimeoutFromConfig() {
+        try {
+            Path configPath = Path.of(
+                    System.getProperty("user.home"), ".kompile", "config", "cli-llm-config.json");
+            if (Files.exists(configPath)) {
+                JsonNode root = objectMapper.readTree(configPath.toFile());
+                if (root.has("timeoutSeconds")) {
+                    return Math.max(1, root.get("timeoutSeconds").asInt(DEFAULT_TIMEOUT_SECONDS));
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not read timeout from config: {}", e.getMessage());
+        }
+        return DEFAULT_TIMEOUT_SECONDS;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RUNTIME STATUS — cheap, read-only, never spawns processes
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Snapshot of the CLI LLM agent pool state, safe to call at any time.
+     * All counts reflect live values from the concurrent data structures;
+     * no locks are taken and no processes are spawned.
+     *
+     * @param activeAgent  display name of the currently configured agent, or null if none
+     * @param agentCommand raw CLI command (e.g. "opencode"), or null if none
+     * @param poolSize     configured target pool size ({@code targetPoolSize})
+     * @param pooled       number of warm/idle processes currently in the pool
+     * @param inFlight     number of processes actively serving a call right now
+     * @param liveTotal    pooled + inFlight (the total subprocess count right now)
+     */
+    public record CliAgentRuntimeStatus(
+            String activeAgent,
+            String agentCommand,
+            int poolSize,
+            int pooled,
+            int inFlight,
+            int liveTotal
+    ) {}
+
+    /**
+     * Returns a cheap, null-safe snapshot of the current CLI LLM agent pool state.
+     * Returns zeros for all counts when the pool has never been initialized.
+     */
+    public CliAgentRuntimeStatus getRuntimeStatus() {
+        AgentProvider agent = cachedAgent; // volatile read — no side-effects
+        String agentDisplayName = agent != null ? agent.getDisplayName() : null;
+        String agentCommand = agent != null ? agent.getCommand() : null;
+        int pooled = processPool.size();
+        int inFlight = activeProcesses.size();
+        return new CliAgentRuntimeStatus(
+                agentDisplayName,
+                agentCommand,
+                targetPoolSize,
+                pooled,
+                inFlight,
+                pooled + inFlight
+        );
+    }
+
     @PreDestroy
     public void shutdown() {
-        log.info("Shutting down CLI agent process pool ({} processes)", processPool.size());
+        log.info("Shutting down CLI agent process pool ({} pooled, {} in-flight)",
+                processPool.size(), activeProcesses.size());
         poolReplenisher.shutdownNow();
+        // Force-kill in-flight calls first so caller threads blocked in waitFor() return at once.
+        for (Process inflight : activeProcesses) {
+            try {
+                if (inflight.isAlive()) {
+                    inflight.destroyForcibly();
+                }
+            } catch (Exception ignored) {
+                // best-effort
+            }
+        }
+        activeProcesses.clear();
         Process p;
         while ((p = processPool.poll()) != null) {
             try {
@@ -308,6 +387,8 @@ public class CliAgentLLMChat implements LLMChat {
      * a fresh spawn on pool miss. The pool is replenished asynchronously after each use.
      */
     String executeAgent(String userMessage, String systemMessage) {
+        // Reset any session id left on this (possibly pooled) thread by a previous call.
+        AgentCallContext.clear();
         AgentProvider agent = getActiveAgent();
         if (agent == null) {
             log.warn("No CLI agent available for execution");
@@ -326,8 +407,9 @@ public class CliAgentLLMChat implements LLMChat {
         // Ensure pool is initialized, then try to take a pre-spawned process
         ensurePoolInitialized();
 
+        Process process = null;
         try {
-            Process process = takeFromPool();
+            process = takeFromPool();
             if (process != null) {
                 log.info("CLI agent '{}' pool hit — reusing PID {}", agent.getName(), process.pid());
             } else {
@@ -342,6 +424,9 @@ public class CliAgentLLMChat implements LLMChat {
 
             // Replenish pool asynchronously
             poolReplenisher.submit(this::replenishPool);
+
+            // Track this in-flight process so shutdown can force-kill it immediately.
+            activeProcesses.add(process);
 
             // Write prompt to stdin, then close stdin so the agent knows input is complete
             try (BufferedWriter writer = new BufferedWriter(
@@ -366,6 +451,10 @@ public class CliAgentLLMChat implements LLMChat {
                         try {
                             JsonNode json = objectMapper.readTree(line);
                             String type = json.has("type") ? json.get("type").asText() : null;
+
+                            // Capture the agent chat session id when the CLI first reports it
+                            // (claude: system/init session_id; opencode/others: a session field).
+                            captureSessionId(json);
 
                             // Claude stream-json: extract text from "assistant" events
                             if ("result".equals(type)) {
@@ -399,10 +488,11 @@ public class CliAgentLLMChat implements LLMChat {
                 }
             }
 
-            // Wait for process exit with timeout
-            boolean exited = process.waitFor(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            // Wait for process exit with configurable timeout (cli-llm-config.json "timeoutSeconds")
+            int timeoutSeconds = readTimeoutFromConfig();
+            boolean exited = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!exited) {
-                log.warn("CLI agent '{}' timed out after {}s, destroying", agent.getName(), DEFAULT_TIMEOUT_SECONDS);
+                log.warn("CLI agent '{}' timed out after {}s, destroying", agent.getName(), timeoutSeconds);
                 process.destroyForcibly();
             }
 
@@ -418,6 +508,36 @@ public class CliAgentLLMChat implements LLMChat {
         } catch (Exception e) {
             log.error("Error executing CLI agent '{}': {}", agent.getName(), e.getMessage(), e);
             return "Error executing CLI agent: " + e.getMessage();
+        } finally {
+            if (process != null) {
+                activeProcesses.remove(process);
+            }
+        }
+    }
+
+    /**
+     * Capture the CLI agent's chat session id from a parsed stream-json event, if present,
+     * publishing it to {@link AgentCallContext} for the dispatcher to attach to the transcript.
+     * Only the first session id seen per call is kept.
+     */
+    private void captureSessionId(JsonNode json) {
+        if (AgentCallContext.getSessionId() != null) {
+            return;
+        }
+        for (String key : new String[]{"session_id", "sessionId", "sessionID"}) {
+            JsonNode v = json.get(key);
+            if (v != null && v.isTextual() && !v.asText().isBlank()) {
+                AgentCallContext.setSessionId(v.asText());
+                return;
+            }
+        }
+        JsonNode session = json.get("session");
+        if (session != null) {
+            if (session.isTextual() && !session.asText().isBlank()) {
+                AgentCallContext.setSessionId(session.asText());
+            } else if (session.isObject() && session.has("id") && session.get("id").isTextual()) {
+                AgentCallContext.setSessionId(session.get("id").asText());
+            }
         }
     }
 

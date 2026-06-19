@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.mcp;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.MainCommand;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -37,7 +38,7 @@ import java.util.Locale;
  */
 public final class McpToolInjectionSupport {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
     private static final String SERVER_NAME = "kompile";
 
     private McpToolInjectionSupport() {}

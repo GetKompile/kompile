@@ -17,6 +17,7 @@
 package ai.kompile.ocr.datapipeline.api;
 
 import ai.kompile.ocr.datapipeline.config.DataPipelineConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.slf4j.Logger;
@@ -49,9 +50,8 @@ public class PipelineConfigStore {
      */
     public PipelineConfigStore(Path configDir) {
         this.configDir = configDir;
-        this.mapper = new ObjectMapper()
-                .enable(SerializationFeature.INDENT_OUTPUT)
-                .findAndRegisterModules();
+        this.mapper = JsonUtils.newStandardMapper()
+                .enable(SerializationFeature.INDENT_OUTPUT);
         this.cache = new ConcurrentHashMap<>();
         this.presets = createPresets();
 

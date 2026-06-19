@@ -19,6 +19,7 @@ package ai.kompile.toolgateway.service;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.toolgateway.model.ToolGatewayConfig;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -62,8 +63,7 @@ public class ToolGatewayConfigService {
 
     public ToolGatewayConfigService() {
 
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
         this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
         this.featureFlagsPath = KompileHome.dataDir().toPath().resolve("config").resolve(FEATURE_FLAGS_FILENAME);

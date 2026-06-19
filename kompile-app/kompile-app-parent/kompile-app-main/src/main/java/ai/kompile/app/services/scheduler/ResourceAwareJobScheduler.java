@@ -20,6 +20,7 @@ import ai.kompile.app.config.GpuDevice;
 import ai.kompile.app.config.ResourceSchedulerConfig;
 import ai.kompile.app.services.GpuResourceManager;
 import ai.kompile.app.services.ModelLifecycleManager;
+import ai.kompile.app.services.ResourceGovernor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -80,6 +81,10 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
     private List<ExternalJobSchedulerDelegate> externalDelegates;
     @Autowired(required = false)
     private JobSchedulerHistoryService historyService;
+
+    /** Resource governor — adds CPU/RAM admission gating and dynamic pool sizing. May be absent. */
+    @Autowired(required = false)
+    private ResourceGovernor governor;
 
     // --- Internal state ---
     private final PriorityBlockingQueue<ScheduledJob> queue = new PriorityBlockingQueue<>();
@@ -159,8 +164,12 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                 return t;
             });
 
+            // Pool size derived from CPU count + current load (was hardcoded 4/16).
+            int poolSize = governor != null
+                    ? governor.concurrencyForSchedulerPool()
+                    : Math.max(4, Runtime.getRuntime().availableProcessors() / 2);
             jobExecutionPool = new ThreadPoolExecutor(
-                    4, 16, 60L, TimeUnit.SECONDS,
+                    poolSize, poolSize, 60L, TimeUnit.SECONDS,
                     new LinkedBlockingQueue<>(100),
                     r -> {
                         Thread t = new Thread(r, "scheduler-exec-" + Thread.currentThread().getId());
@@ -169,6 +178,8 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                     },
                     new ThreadPoolExecutor.CallerRunsPolicy()
             );
+            log.info("Scheduler job execution pool sized to {} thread(s) (governor={})",
+                    poolSize, governor != null);
 
             dispatchExecutor.scheduleWithFixedDelay(
                     this::dispatchLoop,
@@ -202,7 +213,7 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
             if (jobExecutionPool != null) {
                 jobExecutionPool.shutdown();
                 try {
-                    if (!jobExecutionPool.awaitTermination(30, TimeUnit.SECONDS)) {
+                    if (!jobExecutionPool.awaitTermination(5, TimeUnit.SECONDS)) {
                         jobExecutionPool.shutdownNow();
                     }
                 } catch (InterruptedException e) {
@@ -601,6 +612,17 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                     if (conflicting.isPresent()) {
                         blockReason = "Conflicts with running " + conflicting.get() + " job";
                     }
+                }
+            }
+
+            // Check CPU / host-RAM admission. The governor adds the CPU/RAM gates the GPU-only
+            // reservation check below cannot see — the main defense against a job pile-up crashing
+            // the host. GPU-requiring jobs are not deferred on CPU pressure (they block on GPU).
+            if (blockReason == null && governor != null) {
+                ResourceGovernor.AdmissionResult admission =
+                        governor.admitJob(candidate.getResourceProfile());
+                if (!admission.admit()) {
+                    blockReason = admission.blockReason();
                 }
             }
 

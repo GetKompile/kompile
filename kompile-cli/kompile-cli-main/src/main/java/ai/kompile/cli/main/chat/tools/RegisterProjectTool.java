@@ -22,6 +22,7 @@ import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import ai.kompile.cli.main.codeindex.IndexFileStore;
 import ai.kompile.cli.main.codeindex.LocalCodeIndexer;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -48,7 +49,7 @@ import java.util.*;
  */
 public class RegisterProjectTool implements CliTool {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     @Override
     public String id() {

@@ -20,6 +20,7 @@ import ai.kompile.pipelines.steps.deeplearning4j.cli.converter.IUpdaterTypeConve
 import ai.kompile.pipelines.steps.deeplearning4j.cli.converter.IScheduleTypeConverter;   // Example of moved converter
 
 // Import other necessary DL4J classes
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
@@ -114,7 +115,7 @@ public class TrainingConfigGenerator implements Callable<Integer> {
         if ("yaml".equalsIgnoreCase(format)) {
             objectMapper = new ObjectMapper(new YAMLFactory()).enable(SerializationFeature.INDENT_OUTPUT).disable(SerializationFeature.FAIL_ON_EMPTY_BEANS);
         } else {
-            objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT).disable(SerializationFeature.FAIL_ON_EMPTY_BEANS);
+            objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT).disable(SerializationFeature.FAIL_ON_EMPTY_BEANS);
         }
 
         Object configuration;

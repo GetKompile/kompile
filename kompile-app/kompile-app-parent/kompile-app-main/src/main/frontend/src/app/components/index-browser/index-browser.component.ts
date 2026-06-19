@@ -27,6 +27,15 @@ import { SourceViewerService } from '../../services/source-viewer.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { CrossIndexService } from '../../services/cross-index.service';
 import { ChunkManagerService } from '../../services/chunk-manager.service';
+import {
+  TableSearchService,
+  TableSummary,
+  TableListResponse,
+  TableDetail,
+  TableAnalysis,
+  SingleColumnAnalysis,
+  ColumnStats
+} from '../../services/table-search.service';
 import { DeduplicationStrategy, KeepPolicy, DuplicateAnalysisResponse } from '../../models/chunk-manager.models';
 import {
   IndexedDocInfo,
@@ -101,6 +110,11 @@ interface DisplayItem {
 // Tab indices
 const TAB_KEYWORD_INDEX = 0;
 const TAB_VECTOR_STORE = 1;
+const TAB_FACTS = 2;
+const TAB_ENTITIES = 3;
+const TAB_TABLES = 4;
+const TAB_GRAPH = 5;
+const TAB_CROSS_INDEX = 6;
 
 @Component({
   selector: 'app-index-browser',
@@ -234,6 +248,28 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   isDeduplicating = false;
   duplicateAnalysis: DuplicateAnalysisResponse | null = null;
 
+  // Graph tab state
+  graphFocusNodeId: string | null = null;
+
+  // Tables tab state
+  tables: TableSummary[] = [];
+  isLoadingTables = false;
+  totalTablesCount = 0;
+  tablesPageSize = 20;
+  tablesCurrentPage = 0;
+  selectedTable: TableDetail | null = null;
+  tableAnalysis: TableAnalysis | null = null;
+  selectedColumnAnalysis: SingleColumnAnalysis | null = null;
+  isAnalyzingTable = false;
+  isLoadingTableDetail = false;
+  tableFilterColumn = '';
+  tableFilterOperator = 'contains';
+  tableFilterValue = '';
+  filteredTableContent: string | null = null;
+  tableSortColumn = '';
+  tableSortDescending = false;
+  sortedTableContent: string | null = null;
+
   constructor(
     private indexBrowserService: IndexBrowserService,
     private websocketService: WebSocketService,
@@ -241,6 +277,7 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     private factSheetService: FactSheetService,
     private crossIndexService: CrossIndexService,
     private chunkManagerService: ChunkManagerService,
+    private tableSearchService: TableSearchService,
     private dialog: MatDialog,
     private cdr: ChangeDetectorRef,
     private snackBar: MatSnackBar,
@@ -1305,9 +1342,14 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
       this.loadVectorDocuments();
     }
 
-    // Load sources when switching to Sources tab (index 2)
-    if (index === 2 && !this.isLoadingSources) {
+    // Load sources when switching to Facts tab
+    if (index === TAB_FACTS && !this.isLoadingSources) {
       this.loadSources();
+    }
+
+    // Load tables when switching to Tables tab
+    if (index === TAB_TABLES && !this.isLoadingTables) {
+      this.loadTables();
     }
   }
 
@@ -1806,6 +1848,199 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
           this.cdr.detectChanges();
         }
       });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ENTITIES TAB METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  onEntitySelectedFromBrowser(entity: any): void {
+    // Entity was selected in the entity browser
+  }
+
+  onNavigateToGraphFromBrowser(entity: any): void {
+    this.navigateToGraphTab(entity.nodeId || entity.id);
+  }
+
+  navigateToGraphTab(nodeId: string): void {
+    this.graphFocusNodeId = nodeId;
+    this.selectedTabIndex = TAB_GRAPH;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // TABLE BROWSER METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  loadTables(): void {
+    this.isLoadingTables = true;
+    const offset = this.tablesCurrentPage * this.tablesPageSize;
+    this.tableSearchService.listTables(offset, this.tablesPageSize)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (resp) => {
+          this.tables = resp.tables || [];
+          this.totalTablesCount = resp.total || 0;
+          this.isLoadingTables = false;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Failed to load tables:', err);
+          this.tables = [];
+          this.isLoadingTables = false;
+          this.cdr.detectChanges();
+        }
+      });
+  }
+
+  onTablesPageChange(event: PageEvent): void {
+    this.tablesPageSize = event.pageSize;
+    this.tablesCurrentPage = event.pageIndex;
+    this.loadTables();
+  }
+
+  viewTableDetail(table: TableSummary): void {
+    this.isLoadingTableDetail = true;
+    this.selectedTable = null;
+    this.tableAnalysis = null;
+    this.selectedColumnAnalysis = null;
+    this.filteredTableContent = null;
+    this.sortedTableContent = null;
+
+    this.tableSearchService.getTable(table.id)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (detail) => {
+          this.selectedTable = detail;
+          this.isLoadingTableDetail = false;
+          this.cdr.detectChanges();
+          // Auto-analyze when viewing detail
+          this.analyzeTable(table.id);
+        },
+        error: (err) => {
+          console.error('Failed to load table detail:', err);
+          this.snackBar.open('Failed to load table details', 'Dismiss', { duration: 3000 });
+          this.isLoadingTableDetail = false;
+          this.cdr.detectChanges();
+        }
+      });
+  }
+
+  closeTableDetail(): void {
+    this.selectedTable = null;
+    this.tableAnalysis = null;
+    this.selectedColumnAnalysis = null;
+    this.filteredTableContent = null;
+    this.sortedTableContent = null;
+  }
+
+  analyzeTable(tableId: string): void {
+    this.isAnalyzingTable = true;
+    this.tableSearchService.analyzeTable(tableId)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (analysis) => {
+          this.tableAnalysis = analysis as TableAnalysis;
+          this.isAnalyzingTable = false;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Failed to analyze table:', err);
+          this.isAnalyzingTable = false;
+          this.cdr.detectChanges();
+        }
+      });
+  }
+
+  analyzeColumn(tableId: string, column: string): void {
+    this.isAnalyzingTable = true;
+    this.selectedColumnAnalysis = null;
+    this.tableSearchService.analyzeTable(tableId, column)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (analysis) => {
+          this.selectedColumnAnalysis = analysis as SingleColumnAnalysis;
+          this.isAnalyzingTable = false;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Failed to analyze column:', err);
+          this.isAnalyzingTable = false;
+          this.cdr.detectChanges();
+        }
+      });
+  }
+
+  filterTableRows(): void {
+    if (!this.selectedTable || !this.tableFilterColumn || !this.tableFilterValue) return;
+    this.tableSearchService.filterTable(this.selectedTable.id, this.tableFilterColumn, this.tableFilterOperator, this.tableFilterValue)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (resp) => {
+          this.filteredTableContent = resp.content;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Failed to filter table:', err);
+          this.snackBar.open('Failed to filter table', 'Dismiss', { duration: 3000 });
+        }
+      });
+  }
+
+  clearTableFilter(): void {
+    this.filteredTableContent = null;
+    this.tableFilterColumn = '';
+    this.tableFilterValue = '';
+  }
+
+  sortTableRows(): void {
+    if (!this.selectedTable || !this.tableSortColumn) return;
+    this.tableSearchService.sortTable(this.selectedTable.id, this.tableSortColumn, this.tableSortDescending)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (resp) => {
+          this.sortedTableContent = resp.content;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Failed to sort table:', err);
+          this.snackBar.open('Failed to sort table', 'Dismiss', { duration: 3000 });
+        }
+      });
+  }
+
+  clearTableSort(): void {
+    this.sortedTableContent = null;
+    this.tableSortColumn = '';
+  }
+
+  exportTable(format: string): void {
+    if (!this.selectedTable) return;
+    this.tableSearchService.exportTable(this.selectedTable.id, format)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (resp) => {
+          const blob = new Blob([resp.content], { type: format === 'csv' ? 'text/csv' : 'application/json' });
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(blob);
+          link.download = `table-${this.selectedTable!.id}.${format === 'json' ? 'json' : format === 'csv' ? 'csv' : 'md'}`;
+          link.click();
+          URL.revokeObjectURL(link.href);
+        },
+        error: (err) => {
+          console.error('Failed to export table:', err);
+          this.snackBar.open('Failed to export table', 'Dismiss', { duration: 3000 });
+        }
+      });
+  }
+
+  getColumnStatsKeys(analysis: TableAnalysis | null): string[] {
+    if (!analysis?.columnStats) return [];
+    return Object.keys(analysis.columnStats);
+  }
+
+  getColumnStat(analysis: TableAnalysis | null, column: string): ColumnStats | null {
+    if (!analysis?.columnStats) return null;
+    return analysis.columnStats[column] || null;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inbox — m.chen@northstar.co</title>
+<style>
+  :root {
+    --bg: #faf9f6;
+    --surface: #ffffff;
+    --surface-hover: #f3f2ee;
+    --surface-sunken: #ebeae5;
+    --text: #2c2c2a;
+    --text-secondary: #5f5e5a;
+    --text-tertiary: #888780;
+    --border: rgba(0,0,0,0.10);
+    --border-strong: rgba(0,0,0,0.18);
+    --accent: #0078d4;
+    --accent-bg: #deecf9;
+    --unread-bar: #0078d4;
+    --avatar-1: #5b8def;
+    --avatar-2: #c66a3a;
+    --avatar-3: #649c4f;
+    --avatar-4: #8e6fbe;
+    --avatar-5: #a3a39e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1f1e1c;
+      --surface: #292826;
+      --surface-hover: #34332f;
+      --surface-sunken: #1a1917;
+      --text: #e5e3da;
+      --text-secondary: #a8a69c;
+      --text-tertiary: #73726c;
+      --border: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.20);
+      --accent: #60a5fa;
+      --accent-bg: rgba(96,165,250,0.15);
+      --unread-bar: #60a5fa;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* App chrome */
+  .app {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    height: 100vh;
+  }
+
+  .sidebar {
+    background: var(--surface-sunken);
+    border-right: 1px solid var(--border);
+    padding: 20px 12px;
+  }
+  .sidebar h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 24px 4px;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sidebar h1::before {
+    content: '';
+    width: 18px; height: 18px; border-radius: 4px;
+    background: var(--accent);
+  }
+  .sb-folder {
+    padding: 8px 12px;
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 2px;
+  }
+  .sb-folder:hover { background: var(--surface-hover); }
+  .sb-folder.active { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+  .sb-count { margin-left: auto; font-size: 11.5px; color: var(--text-tertiary); }
+  .sb-folder.active .sb-count { color: var(--accent); }
+
+  /* Top bar */
+  .main-col {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  .topbar {
+    height: 48px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .search {
+    flex: 1;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 13px;
+    max-width: 480px;
+  }
+
+  .inbox-header {
+    padding: 16px 24px 8px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .inbox-header h2 {
+    margin: 0; font-size: 18px; font-weight: 600;
+  }
+  .inbox-header .meta { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
+
+  /* Email list */
+  .list { background: var(--surface); flex: 1; overflow: auto; }
+  .row {
+    display: grid;
+    grid-template-columns: 4px 36px 1fr 110px;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 24px 12px 0;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    text-decoration: none;
+    color: inherit;
+    background: var(--surface);
+  }
+  .row:hover { background: var(--surface-hover); }
+  .row.unread .bar { background: var(--unread-bar); }
+  .bar { width: 4px; height: 36px; background: transparent; border-radius: 0 2px 2px 0; }
+  .avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  .row.unread .body .from { font-weight: 600; color: var(--text); }
+  .row.unread .body .subj { font-weight: 600; color: var(--text); }
+
+  .body {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .body .from { font-size: 13.5px; color: var(--text-secondary); margin-bottom: 1px; }
+  .body .subj { font-size: 13.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .body .preview {
+    font-size: 12.5px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+  }
+  .body .preview .att { color: var(--accent); margin-right: 4px; }
+  .time { font-size: 12px; color: var(--text-tertiary); text-align: right; padding-right: 12px; }
+  .row.unread .time { color: var(--text-secondary); font-weight: 600; }
+
+  .day-divider {
+    padding: 14px 24px 6px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+  }
+
+  /* Coloring per avatar */
+  .av-1 { background: var(--avatar-1); }
+  .av-2 { background: var(--avatar-2); }
+  .av-3 { background: var(--avatar-3); }
+  .av-4 { background: var(--avatar-4); }
+  .av-5 { background: var(--avatar-5); }
+
+  .att-icon {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-bottom: 1px solid currentColor;
+    border-right: 1px solid currentColor;
+    transform: rotate(-45deg);
+    margin-right: 3px;
+    margin-bottom: -1px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <h1>Outlook</h1>
+    <div class="sb-folder active">
+      Inbox
+      <span class="sb-count">3</span>
+    </div>
+    <div class="sb-folder">Drafts<span class="sb-count">2</span></div>
+    <div class="sb-folder">Sent</div>
+    <div class="sb-folder">Deleted</div>
+    <div class="sb-folder">Archive</div>
+    <div class="sb-folder">Junk</div>
+    <div style="margin-top: 24px; padding: 8px 12px; font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;">Favorites</div>
+    <div class="sb-folder">FP&amp;A — Close Cycle</div>
+    <div class="sb-folder">Forecasts/Inbound</div>
+    <div class="sb-folder">CFO Office</div>
+  </aside>
+
+  <div class="main-col">
+    <div class="topbar">
+      <input class="search" placeholder="Search mail and people" />
+      <span style="margin-left: auto;">m.chen@northstar.co</span>
+    </div>
+
+    <div class="inbox-header">
+      <h2>Inbox</h2>
+      <div class="meta">Monday, May 5, 2026 · 11:42 AM ET</div>
+    </div>
+
+    <div class="list">
+
+      <div class="day-divider">Today</div>
+
+      <a class="row unread" href="06c_email_APAC.html">
+        <div class="bar"></div>
+        <div class="avatar av-3">AT</div>
+        <div class="body">
+          <div class="from">Tanaka, Ayako (APAC)</div>
+          <div class="subj">APAC forecast (FY27 Q1) — some notes, please read first</div>
+          <div class="preview"><span class="att"><span class="att-icon"></span>APAC fcst FY27Q1.xlsx</span> · Hi M-san, attaching FY27 Q1 forecast. Sorry for some confusion on the months — Japan fiscal year starts April so this is Apr-Jun. Please refer country tabs, the…</div>
+        </div>
+        <div class="time">11:08 AM</div>
+      </a>
+
+      <a class="row" href="#">
+        <div class="bar"></div>
+        <div class="avatar av-5">SK</div>
+        <div class="body">
+          <div class="from">Slack</div>
+          <div class="subj">3 mentions in #fpa-close-cycle</div>
+          <div class="preview">@m.chen J. Park said: "Forecast going up tonight, sorry it's late again 😅" · 2 more in thread</div>
+        </div>
+        <div class="time">10:42 AM</div>
+      </a>
+
+      <a class="row unread" href="06b_email_EMEA.html">
+        <div class="bar"></div>
+        <div class="avatar av-4">FV</div>
+        <div class="body">
+          <div class="from">Vasseur, François (EMEA)</div>
+          <div class="subj">EMEA Q3 2026 forecast — for consolidation</div>
+          <div class="preview"><span class="att"><span class="att-icon"></span>EMEA forecast Jun-Aug 2026.xlsx</span> · Dear Mei, please find attached the EMEA Q3 2026 forecast as discussed. Two notes: (1) all amounts are local currency, gross of VAT, in thousands as usual; (2) Boots Q3 PO is not yet…</div>
+        </div>
+        <div class="time">6:34 AM</div>
+      </a>
+
+      <a class="row" href="#">
+        <div class="bar"></div>
+        <div class="avatar av-5">DS</div>
+        <div class="body">
+          <div class="from">DocuSign</div>
+          <div class="subj">Completed: Q2 audit engagement letter</div>
+          <div class="preview">Your document has been completed by all 3 signers.</div>
+        </div>
+        <div class="time">5:18 AM</div>
+      </a>
+
+      <div class="day-divider">Yesterday — Sunday May 4</div>
+
+      <a class="row unread" href="06a_email_AMER.html">
+        <div class="bar"></div>
+        <div class="avatar av-2">SC</div>
+        <div class="body">
+          <div class="from">Chen, Sarah (AMER Sales Ops)</div>
+          <div class="subj">AMER forecast Q3 (FINAL v2) — sorry it's late, attached</div>
+          <div class="preview"><span class="att"><span class="att-icon"></span>AMER_Forecast_Q3_v3_FINAL_v2.xlsx</span> · hey Mei!! sorry this is going up sunday night again 😩 — short version: V2 is the right one, ignore v1 and v3 i sent you in slack earlier today. couple things to flag: target line review still…</div>
+        </div>
+        <div class="time">Sun 8:14 PM</div>
+      </a>
+
+      <a class="row" href="#">
+        <div class="bar"></div>
+        <div class="avatar av-5">CL</div>
+        <div class="body">
+          <div class="from">Calendar</div>
+          <div class="subj">Reminder: Forecast consolidation review — Tue 2 PM</div>
+          <div class="preview">CFO standing review · 60 min · with M. Sato, L. Okafor, M. Chen</div>
+        </div>
+        <div class="time">Sun 4:00 PM</div>
+      </a>
+
+      <div class="day-divider">Earlier last week</div>
+
+      <a class="row" href="#">
+        <div class="bar"></div>
+        <div class="avatar av-4">FV</div>
+        <div class="body">
+          <div class="from">Vasseur, François (EMEA)</div>
+          <div class="subj">FYI — Boots Q3 placement update (verbal)</div>
+          <div class="preview">Quick FYI — had a call with Boots buyer this morning, Q3 placement is verbally confirmed but written PO will likely slip into next week. Will reflect in forecast on Monday…</div>
+        </div>
+        <div class="time">Fri 11:24 AM</div>
+      </a>
+
+      <a class="row" href="#">
+        <div class="bar"></div>
+        <div class="avatar av-5">CL</div>
+        <div class="body">
+          <div class="from">Calendar</div>
+          <div class="subj">FX rate lock — May close cycle</div>
+          <div class="preview">Treasury reminder: FX rates locked at 16:00 ET Friday May 1 — all forecasts to use these rates</div>
+        </div>
+        <div class="time">Fri 10:00 AM</div>
+      </a>
+
+    </div>
+  </div>
+</div>
+</body>
+</html>

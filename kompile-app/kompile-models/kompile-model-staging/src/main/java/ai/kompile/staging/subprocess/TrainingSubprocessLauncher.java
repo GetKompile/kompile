@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.subprocess;
 
+import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.staging.domain.TrainingJobHistory;
@@ -287,14 +288,7 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     }
 
     private void propagateEnvironment(ProcessBuilder pb) {
-        Map<String, String> env = pb.environment();
-        // Propagate ND4J/CUDA environment variables
-        String[] envVars = {"ND4J_BACKEND", "CUDA_VISIBLE_DEVICES", "OMP_NUM_THREADS",
-                "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"};
-        for (String var : envVars) {
-            String value = System.getenv(var);
-            if (value != null) env.put(var, value);
-        }
+        SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
     }
 
     private void startStdoutReader(String jobId, Process process) {

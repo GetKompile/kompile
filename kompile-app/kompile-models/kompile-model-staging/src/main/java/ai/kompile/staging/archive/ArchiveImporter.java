@@ -18,6 +18,7 @@ package ai.kompile.staging.archive;
 
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.RegistryService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Builder;
 import lombok.Data;
@@ -52,7 +53,7 @@ public class ArchiveImporter {
     @Autowired
     public ArchiveImporter(RegistryService registryService) {
         this.registryService = registryService;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

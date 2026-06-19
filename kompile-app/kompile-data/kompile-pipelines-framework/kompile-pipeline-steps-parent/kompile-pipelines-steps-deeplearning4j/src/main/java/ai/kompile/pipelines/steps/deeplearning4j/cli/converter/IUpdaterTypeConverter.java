@@ -17,6 +17,7 @@
 package ai.kompile.pipelines.steps.deeplearning4j.cli.converter;
 
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
+import ai.kompile.utils.MapUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.linalg.learning.config.*;
 import picocli.CommandLine;
@@ -88,15 +89,15 @@ public class IUpdaterTypeConverter implements CommandLine.ITypeConverter<IUpdate
                     "JSON updater config must include a 'type' field. Got: " + json);
         }
 
-        double lr = getDouble(map, "learningRate", getDouble(map, "lr", -1));
+        double lr = MapUtils.getDouble(map, "learningRate", MapUtils.getDouble(map, "lr", -1));
 
         switch (type.toLowerCase()) {
             case "adam": {
                 Adam adam = new Adam();
                 if (lr > 0) adam.setLearningRate(lr);
-                if (map.containsKey("beta1")) adam.setBeta1(getDouble(map, "beta1", 0.9));
-                if (map.containsKey("beta2")) adam.setBeta2(getDouble(map, "beta2", 0.999));
-                if (map.containsKey("epsilon")) adam.setEpsilon(getDouble(map, "epsilon", 1e-8));
+                if (map.containsKey("beta1")) adam.setBeta1(MapUtils.getDouble(map, "beta1", 0.9));
+                if (map.containsKey("beta2")) adam.setBeta2(MapUtils.getDouble(map, "beta2", 0.999));
+                if (map.containsKey("epsilon")) adam.setEpsilon(MapUtils.getDouble(map, "epsilon", 1e-8));
                 return adam;
             }
             case "sgd": {
@@ -107,50 +108,50 @@ public class IUpdaterTypeConverter implements CommandLine.ITypeConverter<IUpdate
             case "nesterov": {
                 Nesterovs nesterovs = new Nesterovs();
                 if (lr > 0) nesterovs.setLearningRate(lr);
-                if (map.containsKey("momentum")) nesterovs.setMomentum(getDouble(map, "momentum", 0.9));
+                if (map.containsKey("momentum")) nesterovs.setMomentum(MapUtils.getDouble(map, "momentum", 0.9));
                 return nesterovs;
             }
             case "rmsprop": {
                 RmsProp rmsProp = new RmsProp();
                 if (lr > 0) rmsProp.setLearningRate(lr);
-                if (map.containsKey("rmsDecay")) rmsProp.setRmsDecay(getDouble(map, "rmsDecay", 0.95));
-                if (map.containsKey("epsilon")) rmsProp.setEpsilon(getDouble(map, "epsilon", 1e-8));
+                if (map.containsKey("rmsDecay")) rmsProp.setRmsDecay(MapUtils.getDouble(map, "rmsDecay", 0.95));
+                if (map.containsKey("epsilon")) rmsProp.setEpsilon(MapUtils.getDouble(map, "epsilon", 1e-8));
                 return rmsProp;
             }
             case "adagrad": {
                 AdaGrad adaGrad = new AdaGrad();
                 if (lr > 0) adaGrad.setLearningRate(lr);
-                if (map.containsKey("epsilon")) adaGrad.setEpsilon(getDouble(map, "epsilon", 1e-6));
+                if (map.containsKey("epsilon")) adaGrad.setEpsilon(MapUtils.getDouble(map, "epsilon", 1e-6));
                 return adaGrad;
             }
             case "adadelta": {
                 AdaDelta adaDelta = new AdaDelta();
-                if (map.containsKey("rho")) adaDelta.setRho(getDouble(map, "rho", 0.95));
-                if (map.containsKey("epsilon")) adaDelta.setEpsilon(getDouble(map, "epsilon", 1e-6));
+                if (map.containsKey("rho")) adaDelta.setRho(MapUtils.getDouble(map, "rho", 0.95));
+                if (map.containsKey("epsilon")) adaDelta.setEpsilon(MapUtils.getDouble(map, "epsilon", 1e-6));
                 return adaDelta;
             }
             case "nadam": {
                 Nadam nadam = new Nadam();
                 if (lr > 0) nadam.setLearningRate(lr);
-                if (map.containsKey("beta1")) nadam.setBeta1(getDouble(map, "beta1", 0.9));
-                if (map.containsKey("beta2")) nadam.setBeta2(getDouble(map, "beta2", 0.999));
-                if (map.containsKey("epsilon")) nadam.setEpsilon(getDouble(map, "epsilon", 1e-8));
+                if (map.containsKey("beta1")) nadam.setBeta1(MapUtils.getDouble(map, "beta1", 0.9));
+                if (map.containsKey("beta2")) nadam.setBeta2(MapUtils.getDouble(map, "beta2", 0.999));
+                if (map.containsKey("epsilon")) nadam.setEpsilon(MapUtils.getDouble(map, "epsilon", 1e-8));
                 return nadam;
             }
             case "amsgrad": {
                 AMSGrad amsGrad = new AMSGrad();
                 if (lr > 0) amsGrad.setLearningRate(lr);
-                if (map.containsKey("beta1")) amsGrad.setBeta1(getDouble(map, "beta1", 0.9));
-                if (map.containsKey("beta2")) amsGrad.setBeta2(getDouble(map, "beta2", 0.999));
-                if (map.containsKey("epsilon")) amsGrad.setEpsilon(getDouble(map, "epsilon", 1e-8));
+                if (map.containsKey("beta1")) amsGrad.setBeta1(MapUtils.getDouble(map, "beta1", 0.9));
+                if (map.containsKey("beta2")) amsGrad.setBeta2(MapUtils.getDouble(map, "beta2", 0.999));
+                if (map.containsKey("epsilon")) amsGrad.setEpsilon(MapUtils.getDouble(map, "epsilon", 1e-8));
                 return amsGrad;
             }
             case "adamax": {
                 AdaMax adaMax = new AdaMax();
                 if (lr > 0) adaMax.setLearningRate(lr);
-                if (map.containsKey("beta1")) adaMax.setBeta1(getDouble(map, "beta1", 0.9));
-                if (map.containsKey("beta2")) adaMax.setBeta2(getDouble(map, "beta2", 0.999));
-                if (map.containsKey("epsilon")) adaMax.setEpsilon(getDouble(map, "epsilon", 1e-8));
+                if (map.containsKey("beta1")) adaMax.setBeta1(MapUtils.getDouble(map, "beta1", 0.9));
+                if (map.containsKey("beta2")) adaMax.setBeta2(MapUtils.getDouble(map, "beta2", 0.999));
+                if (map.containsKey("epsilon")) adaMax.setEpsilon(MapUtils.getDouble(map, "epsilon", 1e-8));
                 return adaMax;
             }
             case "noop":
@@ -190,18 +191,4 @@ public class IUpdaterTypeConverter implements CommandLine.ITypeConverter<IUpdate
         return fromJson(jsonBuilder.toString());
     }
 
-    private static double getDouble(Map<String, Object> map, String key, double defaultValue) {
-        Object val = map.get(key);
-        if (val instanceof Number) {
-            return ((Number) val).doubleValue();
-        }
-        if (val instanceof String) {
-            try {
-                return Double.parseDouble((String) val);
-            } catch (NumberFormatException e) {
-                return defaultValue;
-            }
-        }
-        return defaultValue;
-    }
 }

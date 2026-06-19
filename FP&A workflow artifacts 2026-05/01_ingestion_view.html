@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Process Discovery — Northstar Goods FP&A</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f5f5f5;
+    --surface-sunken: #ededed;
+    --text: #1a1a1a;
+    --text-secondary: #5a5a5a;
+    --text-tertiary: #858585;
+    --border: rgba(0,0,0,0.12);
+    --border-strong: rgba(0,0,0,0.25);
+    --accent: #DC143C;
+    --accent-bg: #FCE5EA;
+
+    --gray-50: #F1EFE8; --gray-600: #5F5E5A; --gray-800: #444441;
+    --blue-50: #E6F1FB; --blue-600: #185FA5; --blue-800: #0C447C;
+    --amber-50: #FAEEDA; --amber-600: #854F0B; --amber-800: #633806;
+    --green-50: #EAF3DE; --green-600: #3B6D11; --green-800: #27500A;
+    --purple-50: #EEEDFE; --purple-600: #534AB7; --purple-800: #3C3489;
+    --coral-50: #FAECE7; --coral-600: #993C1D; --coral-800: #712B13;
+    --teal-50: #E1F5EE; --teal-600: #0F6E56; --teal-800: #085041;
+    --pink-50: #FBEAF0; --pink-600: #993556; --pink-800: #72243E;
+    --red-50: #FBE9E7; --red-600: #B43124; --red-800: #821E13;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --surface: #1a1a1a;
+      --surface-hover: #262626;
+      --surface-sunken: #0d0d0d;
+      --text: #f5f5f5;
+      --text-secondary: #a8a8a8;
+      --text-tertiary: #707070;
+      --border: rgba(255,255,255,0.12);
+      --border-strong: rgba(255,255,255,0.25);
+      --accent: #F08197;
+      --accent-bg: rgba(220,20,60,0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Header */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 32px 0;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  .header-inner { max-width: 1400px; margin: 0 auto; }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .logo-mark {
+    width: 18px; height: 18px; border-radius: 4px;
+    background: linear-gradient(135deg, var(--accent), var(--purple-600));
+  }
+  .logo-text { font-size: 12px; color: var(--text-tertiary); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+  .logo-slash {
+    font-family: inherit;
+    font-weight: 800;
+    color: var(--accent);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+  .logo-wordmark {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: -4px;
+  }
+  .logo-divider { color: var(--text-tertiary); margin: 0 4px; font-size: 12px; }
+  .logo-context {
+    font-size: 12px; color: var(--text-tertiary);
+    font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 2px; }
+  .sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; }
+
+  .tabs { display: flex; gap: 2px; }
+  .tab {
+    padding: 10px 18px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font: inherit;
+    font-size: 14px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    font-weight: 500;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Status banner */
+  .status-banner {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 24px;
+    align-items: center;
+  }
+  .status-banner h2 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .status-banner p { margin: 0; font-size: 13.5px; color: var(--text-secondary); }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    background: var(--green-50);
+    color: var(--green-800);
+    font-size: 12px;
+    font-weight: 500;
+    margin-bottom: 8px;
+  }
+  .status-pill::before {
+    content: '';
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green-600);
+    box-shadow: 0 0 0 3px rgba(59,109,17,0.2);
+  }
+  .status-stats {
+    display: flex;
+    gap: 28px;
+    border-left: 1px solid var(--border);
+    padding-left: 24px;
+  }
+  .status-stat-num { font-size: 22px; font-weight: 500; color: var(--text); margin-bottom: 0; line-height: 1.2; }
+  .status-stat-lbl { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* Source cards */
+  .sources-intro {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin: 8px 0 20px;
+  }
+  .source-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+  @media (max-width: 900px) {
+    .source-grid { grid-template-columns: 1fr; }
+  }
+  .source-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .source-card-head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 36px 1fr auto;
+    gap: 12px;
+    align-items: center;
+  }
+  .source-icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  .source-icon.s-doc { background: var(--blue-50); color: var(--blue-800); }
+  .source-icon.s-xls { background: var(--green-50); color: var(--green-800); }
+  .source-icon.s-rec { background: var(--coral-50); color: var(--coral-800); }
+  .source-icon.s-int { background: var(--purple-50); color: var(--purple-800); }
+  .source-title { font-size: 14px; font-weight: 500; margin: 0; }
+  .source-sub { font-size: 12px; color: var(--text-secondary); margin: 2px 0 0; }
+  .source-status {
+    font-size: 11px; font-weight: 500;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: var(--green-50);
+    color: var(--green-800);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .source-card-body { padding: 16px 20px; }
+  .source-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .source-stat {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .source-stat-num { font-size: 18px; font-weight: 500; line-height: 1.2; }
+  .source-stat-lbl { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .source-files { margin-top: 8px; }
+  .source-files h5 { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 6px; }
+  .file-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    color: var(--text-secondary);
+    margin: 2px 4px 2px 0;
+  }
+  .file-tag.doc::before { content: '📄'; font-size: 11px; }
+  .file-tag.xls::before { content: '📊'; font-size: 11px; }
+  .file-tag.rec::before { content: '🎬'; font-size: 11px; }
+  .file-tag.chat::before { content: '💬'; font-size: 11px; }
+
+  /* Evidence tab */
+  .evidence-grid {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 900px) {
+    .evidence-grid { grid-template-columns: 1fr; }
+  }
+  .evidence-list {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px;
+    height: fit-content;
+    position: sticky;
+    top: 130px;
+  }
+  .evidence-list-item {
+    padding: 12px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border: 1px solid transparent;
+  }
+  .evidence-list-item:hover { background: var(--surface-hover); }
+  .evidence-list-item.active {
+    background: var(--accent-bg);
+    border-color: rgba(24,95,165,0.15);
+  }
+  .evidence-list-item h4 { font-size: 13px; font-weight: 500; margin: 0 0 2px; }
+  .evidence-list-item p { font-size: 12px; color: var(--text-secondary); margin: 0; }
+
+  .evidence-detail {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .evidence-pane { display: none; }
+  .evidence-pane.active { display: block; }
+  .evidence-pane h3 { margin: 0 0 6px; font-size: 16px; font-weight: 500; }
+  .evidence-pane > p.lead { margin: 0 0 16px; color: var(--text-secondary); font-size: 13.5px; }
+
+  .evidence-section { margin-top: 20px; }
+  .evidence-section h4 {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 0 0 8px;
+    font-weight: 500;
+  }
+
+  /* Document mock */
+  .doc-mock {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 16px 20px;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    border-left: 3px solid var(--blue-600);
+  }
+  .doc-mock strong { color: var(--text); font-weight: 500; }
+  .doc-mock .doc-section { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .doc-mock mark {
+    background: var(--amber-50);
+    color: var(--amber-800);
+    padding: 0 3px;
+    border-radius: 2px;
+  }
+
+  /* Excel mock */
+  .xls-mock {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 16px;
+    border-left: 3px solid var(--green-600);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    overflow-x: auto;
+  }
+  .xls-grid {
+    display: grid;
+    grid-template-columns: 32px repeat(5, minmax(80px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+  .xls-cell {
+    background: var(--surface);
+    padding: 4px 8px;
+    font-size: 11.5px;
+    color: var(--text);
+  }
+  .xls-cell.head { background: var(--surface-sunken); color: var(--text-tertiary); font-weight: 500; text-align: center; }
+  .xls-cell.formula { color: var(--blue-800); font-style: italic; }
+  .xls-cell.macro { background: var(--amber-50); color: var(--amber-800); font-weight: 500; }
+  @media (prefers-color-scheme: dark) {
+    .xls-cell.macro { color: var(--amber-50); background: rgba(133, 79, 11, 0.18); }
+    .xls-cell.formula { color: #85B7EB; }
+  }
+
+  /* Screen recording mock */
+  .rec-mock {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 14px 18px;
+    border-left: 3px solid var(--coral-600);
+  }
+  .rec-event {
+    display: grid;
+    grid-template-columns: 70px 80px 1fr;
+    gap: 12px;
+    padding: 6px 0;
+    font-size: 12.5px;
+    border-bottom: 1px dashed var(--border);
+    align-items: baseline;
+  }
+  .rec-event:last-child { border-bottom: none; }
+  .rec-time { font-family: ui-monospace, Menlo, monospace; color: var(--text-tertiary); font-size: 11.5px; }
+  .rec-app {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    width: fit-content;
+    text-align: center;
+  }
+  .rec-action { color: var(--text); }
+  .rec-action em { color: var(--text-tertiary); font-style: normal; }
+
+  /* Interview mock */
+  .chat-mock {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 16px 18px;
+    border-left: 3px solid var(--purple-600);
+  }
+  .chat-turn {
+    margin-bottom: 14px;
+    font-size: 13px;
+  }
+  .chat-turn:last-child { margin-bottom: 0; }
+  .chat-role {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+  .chat-role.agent { color: var(--purple-800); }
+  .chat-role.human { color: var(--text-secondary); }
+  @media (prefers-color-scheme: dark) {
+    .chat-role.agent { color: #BEB7F5; }
+  }
+  .chat-text { color: var(--text); line-height: 1.55; }
+  .chat-text em { color: var(--text-secondary); font-style: italic; }
+
+  /* Synthesis tab — process map */
+  .synth-intro {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 20px;
+    font-size: 13.5px;
+    color: var(--text-secondary);
+  }
+  .synth-intro strong { color: var(--text); font-weight: 500; }
+
+  .synth-flow {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .synth-flow h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
+  .synth-flow-sub { font-size: 12.5px; color: var(--text-secondary); margin: 0 0 16px; }
+  .synth-flow svg { display: block; width: 100%; height: auto; }
+
+  /* Step evidence rows */
+  .step-evidence {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .step-evidence h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
+  .step-evidence-sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 14px; }
+  .se-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1.3fr) 1fr;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    align-items: start;
+  }
+  .se-row:last-child { border-bottom: none; }
+  .se-step-name { font-weight: 500; }
+  .se-step-id { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+  .se-evidence-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ev-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11.5px;
+    font-weight: 500;
+    border: 1px solid;
+  }
+  .ev-tag.doc { background: var(--blue-50); color: var(--blue-800); border-color: rgba(24,95,165,0.2); }
+  .ev-tag.xls { background: var(--green-50); color: var(--green-800); border-color: rgba(59,109,17,0.2); }
+  .ev-tag.rec { background: var(--coral-50); color: var(--coral-800); border-color: rgba(153,60,29,0.2); }
+  .ev-tag.int { background: var(--purple-50); color: var(--purple-800); border-color: rgba(83,74,183,0.2); }
+  .ev-tag::before {
+    width: 6px; height: 6px; border-radius: 50%;
+    content: '';
+    display: inline-block;
+  }
+  .ev-tag.doc::before { background: var(--blue-600); }
+  .ev-tag.xls::before { background: var(--green-600); }
+  .ev-tag.rec::before { background: var(--coral-600); }
+  .ev-tag.int::before { background: var(--purple-600); }
+
+  /* Confidence tab */
+  .conf-summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .conf-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .conf-card h4 {
+    margin: 0 0 6px;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .conf-card.high h4 { color: var(--green-800); }
+  .conf-card.med h4 { color: var(--amber-800); }
+  .conf-card.low h4 { color: var(--red-800); }
+  .conf-card .num { font-size: 28px; font-weight: 500; line-height: 1.1; }
+  .conf-card .lbl { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+  @media (prefers-color-scheme: dark) {
+    .conf-card.high h4 { color: #B7E07A; }
+    .conf-card.med h4 { color: #F0C171; }
+    .conf-card.low h4 { color: #ED8077; }
+  }
+
+  .conf-step-list {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px;
+  }
+  .conf-step {
+    display: grid;
+    grid-template-columns: 28px 200px 1fr auto;
+    gap: 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+    font-size: 13px;
+  }
+  .conf-step:last-child { border-bottom: none; }
+  .conf-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .conf-dot.high { background: var(--green-600); }
+  .conf-dot.med { background: var(--amber-600); }
+  .conf-dot.low { background: var(--red-600); }
+  .conf-step-name { font-weight: 500; }
+  .conf-gap { font-size: 12.5px; color: var(--text-secondary); }
+  .conf-action {
+    font-size: 11.5px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    font-family: inherit;
+  }
+
+  footer {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 24px 32px 48px;
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+
+  /* SVG node styling for synthesis flow */
+  .nd rect { stroke-width: 0.5; cursor: default; }
+  .nd-blue rect   { fill: var(--blue-50);   stroke: var(--blue-600); }
+  .nd-green rect  { fill: var(--green-50);  stroke: var(--green-600); }
+  .nd-amber rect  { fill: var(--amber-50);  stroke: var(--amber-600); }
+  .nd-purple rect { fill: var(--purple-50); stroke: var(--purple-600); }
+  .nd-coral rect  { fill: var(--coral-50);  stroke: var(--coral-600); }
+  .nd-teal rect   { fill: var(--teal-50);   stroke: var(--teal-600); }
+  .nd-blue text   { fill: var(--blue-800); }
+  .nd-green text  { fill: var(--green-800); }
+  .nd-amber text  { fill: var(--amber-800); }
+  .nd-purple text { fill: var(--purple-800); }
+  .nd-coral text  { fill: var(--coral-800); }
+  .nd-teal text   { fill: var(--teal-800); }
+  .nd .th { font-size: 12.5px; font-weight: 500; }
+  .nd .ts { font-size: 10.5px; }
+  .svg-arrow { stroke: var(--text-secondary); fill: none; stroke-width: 1; }
+  .svg-arrow-dashed { stroke: var(--text-tertiary); fill: none; stroke-width: 0.75; stroke-dasharray: 3 3; }
+  .lane-label { font-size: 11px; fill: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="logo-row">
+      <span class="logo-slash">//</span>
+      <span class="logo-wordmark">PROSSIMO</span>
+      <span class="logo-divider">·</span>
+      <span class="logo-context">Process Discovery</span>
+    </div>
+    <h1>Northstar Goods, Inc. — FP&A 3-Month P&L Projection</h1>
+    <p class="sub">Multi-modal observation of how the FP&A team currently runs the monthly close + 3-month rolling projection. Evidence collected over 3 weeks across four channels.</p>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-view="sources" role="tab">Sources</button>
+      <button class="tab" data-view="evidence" role="tab">Extracted evidence</button>
+      <button class="tab" data-view="synthesis" role="tab">Synthesized model</button>
+      <button class="tab" data-view="confidence" role="tab">Confidence &amp; gaps</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ========== SOURCES TAB ========== -->
+<section class="view active" id="view-sources">
+
+  <div class="status-banner">
+    <div>
+      <div class="status-pill">Discovery complete</div>
+      <h2>Northstar's 3-month P&L projection process — observed, decoded, and synthesized.</h2>
+      <p>3 weeks of passive and active observation across 4 evidence channels. The synthesized process model is now ready for human review in the Workflow Designer.</p>
+    </div>
+    <div class="status-stats">
+      <div>
+        <div class="status-stat-num">11</div>
+        <div class="status-stat-lbl">Process steps</div>
+      </div>
+      <div>
+        <div class="status-stat-num">7</div>
+        <div class="status-stat-lbl">Validation rules</div>
+      </div>
+      <div>
+        <div class="status-stat-num">94%</div>
+        <div class="status-stat-lbl">Avg. confidence</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="sources-intro">Each source captures a different facet of the work: the manuals tell us what the team thinks they do, Excel files reveal what the system actually computes, screen recordings show what real analysts actually click, and interviews surface the unwritten judgement calls. Together they synthesize into a single, executable process model.</p>
+
+  <div class="source-grid">
+
+    <!-- Source 1: Word manuals -->
+    <div class="source-card">
+      <div class="source-card-head">
+        <div class="source-icon s-doc">📄</div>
+        <div>
+          <h3 class="source-title">Procedure manuals &amp; SOPs</h3>
+          <p class="source-sub">Word documents, PDFs, internal wiki pages</p>
+        </div>
+        <span class="source-status">Ingested</span>
+      </div>
+      <div class="source-card-body">
+        <div class="source-stats">
+          <div class="source-stat">
+            <div class="source-stat-num">14</div>
+            <div class="source-stat-lbl">Documents</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">312</div>
+            <div class="source-stat-lbl">Procedural rules</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">28</div>
+            <div class="source-stat-lbl">Cross-refs</div>
+          </div>
+        </div>
+        <div class="source-files">
+          <h5>Key files</h5>
+          <span class="file-tag doc">FP&amp;A_Close_SOP_v3.2.docx</span>
+          <span class="file-tag doc">3M_Forecast_Cookbook.docx</span>
+          <span class="file-tag doc">FX_Policy_Memo.pdf</span>
+          <span class="file-tag doc">CommercialFinance_Wiki.html</span>
+          <span class="file-tag doc">Audit_ICFR_Controls.docx</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Source 2: Excel files -->
+    <div class="source-card">
+      <div class="source-card-head">
+        <div class="source-icon s-xls">📊</div>
+        <div>
+          <h3 class="source-title">Spreadsheets, models &amp; macros</h3>
+          <p class="source-sub">Live and archived workbooks, including VBA</p>
+        </div>
+        <span class="source-status">Decoded</span>
+      </div>
+      <div class="source-card-body">
+        <div class="source-stats">
+          <div class="source-stat">
+            <div class="source-stat-num">47</div>
+            <div class="source-stat-lbl">Workbooks</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">2,184</div>
+            <div class="source-stat-lbl">Formulas indexed</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">31</div>
+            <div class="source-stat-lbl">Macros decoded</div>
+          </div>
+        </div>
+        <div class="source-files">
+          <h5>Key files</h5>
+          <span class="file-tag xls">3MoP&amp;L_Master_2026.xlsm</span>
+          <span class="file-tag xls">Forecast_AMER_Apr26.xlsx</span>
+          <span class="file-tag xls">Forecast_EMEA_Apr26.xlsx</span>
+          <span class="file-tag xls">Forecast_APAC_Apr26.xlsx</span>
+          <span class="file-tag xls">FX_Rate_Loader.xlsm</span>
+          <span class="file-tag xls">COGS_Standards_FY26.xlsx</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Source 3: Screen recordings -->
+    <div class="source-card">
+      <div class="source-card-head">
+        <div class="source-icon s-rec">🎬</div>
+        <div>
+          <h3 class="source-title">Screen recordings of live runs</h3>
+          <p class="source-sub">Three full close cycles — Feb, Mar, Apr 2026</p>
+        </div>
+        <span class="source-status">Decoded</span>
+      </div>
+      <div class="source-card-body">
+        <div class="source-stats">
+          <div class="source-stat">
+            <div class="source-stat-num">42h</div>
+            <div class="source-stat-lbl">Recorded</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">1,847</div>
+            <div class="source-stat-lbl">UI events</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">11</div>
+            <div class="source-stat-lbl">Apps in use</div>
+          </div>
+        </div>
+        <div class="source-files">
+          <h5>Captured sessions</h5>
+          <span class="file-tag rec">Feb26_close_J.Park.mp4</span>
+          <span class="file-tag rec">Mar26_close_S.Reyes.mp4</span>
+          <span class="file-tag rec">Apr26_forecast_J.Park.mp4</span>
+          <span class="file-tag rec">Apr26_consolidation_M.Chen.mp4</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Source 4: Interview -->
+    <div class="source-card">
+      <div class="source-card-head">
+        <div class="source-icon s-int">💬</div>
+        <div>
+          <h3 class="source-title">Structured interviews</h3>
+          <p class="source-sub">AI-led conversations with the FP&A team</p>
+        </div>
+        <span class="source-status">Synthesized</span>
+      </div>
+      <div class="source-card-body">
+        <div class="source-stats">
+          <div class="source-stat">
+            <div class="source-stat-num">6</div>
+            <div class="source-stat-lbl">Participants</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">238</div>
+            <div class="source-stat-lbl">Q&amp;A turns</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">19</div>
+            <div class="source-stat-lbl">Edge cases</div>
+          </div>
+        </div>
+        <div class="source-files">
+          <h5>Interviewees</h5>
+          <span class="file-tag chat">M. Chen — VP, FP&amp;A</span>
+          <span class="file-tag chat">J. Park — Sr. Analyst</span>
+          <span class="file-tag chat">S. Reyes — Analyst, EMEA</span>
+          <span class="file-tag chat">A. Tanaka — Analyst, APAC</span>
+          <span class="file-tag chat">L. Okafor — Controller</span>
+          <span class="file-tag chat">D. Singh — Sales Ops</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</section>
+
+<!-- ========== EVIDENCE TAB ========== -->
+<section class="view" id="view-evidence">
+
+  <p class="sources-intro" style="margin-bottom: 16px;">Walk through actual extracts from each source. The discovery system links every claim it makes about the process back to a verifiable piece of evidence — pages in a manual, cells in a workbook, timestamps in a recording, turns in an interview.</p>
+
+  <div class="evidence-grid">
+    <div class="evidence-list">
+      <div class="evidence-list-item active" data-pane="ev-doc">
+        <h4>From the SOP manual</h4>
+        <p>Section 3 — Forecast consolidation</p>
+      </div>
+      <div class="evidence-list-item" data-pane="ev-xls">
+        <h4>From the Excel master</h4>
+        <p>3MoP&amp;L_Master_2026.xlsm</p>
+      </div>
+      <div class="evidence-list-item" data-pane="ev-rec">
+        <h4>From a screen recording</h4>
+        <p>Mar26_close_S.Reyes.mp4 — 0:42:13</p>
+      </div>
+      <div class="evidence-list-item" data-pane="ev-int">
+        <h4>From an interview</h4>
+        <p>J. Park · turn 23 — pipeline reconciliation</p>
+      </div>
+    </div>
+
+    <div class="evidence-detail">
+
+      <div class="evidence-pane active" id="ev-doc">
+        <h3>FP&amp;A_Close_SOP_v3.2.docx — page 14</h3>
+        <p class="lead">A representative page from the procedural manual. The system extracts atomic procedural rules (highlighted) and links them to the relevant process step.</p>
+
+        <div class="evidence-section">
+          <h4>Source excerpt</h4>
+          <div class="doc-mock">
+            <div class="doc-section">3.2 Regional forecast consolidation</div>
+            <p>Each regional finance lead submits their forecast workbook to the shared <strong>Forecasts/2026/Mx/</strong> folder by <mark>EOD on the 4th business day</mark> of the close cycle. The corporate FP&amp;A analyst is responsible for verifying the submission against the standard template before consolidating.</p>
+            <p><mark>If the regional total in cell D60 differs from the sum of the line items on the Detail tab by more than $1,000</mark>, the workbook must be returned to the regional lead with a variance log. <strong>Do not overwrite</strong> the regional submission — append corrections to the <strong>Adjustments</strong> tab so the audit trail is preserved.</p>
+            <p>FX translation is performed using the <mark>3-month forward curve as of the last business day of the prior month</mark>, sourced from the FX Rate Loader workbook (cf. §4.1).</p>
+          </div>
+        </div>
+
+        <div class="evidence-section">
+          <h4>Extracted facts</h4>
+          <ul style="font-size: 13px; color: var(--text-secondary); margin: 0; padding-left: 20px;">
+            <li><strong>Trigger:</strong> Regional submission, due BD+4 17:00 local</li>
+            <li><strong>Validation rule:</strong> |D60 − sum(Detail)| ≤ $1,000 → else return with variance log</li>
+            <li><strong>Mutation rule:</strong> Never overwrite — append to Adjustments tab</li>
+            <li><strong>FX policy:</strong> 3-month forward as of last BD of prior month</li>
+            <li><strong>Cross-reference:</strong> §4.1 (FX Rate Loader)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="evidence-pane" id="ev-xls">
+        <h3>3MoP&amp;L_Master_2026.xlsm — Consolidation tab</h3>
+        <p class="lead">Excerpt from the consolidation logic. The system parses formulas and VBA so the projection can be re-implemented as auditable code (not a black-box macro). Macro-driven cells are highlighted.</p>
+
+        <div class="evidence-section">
+          <h4>Cell-level extract</h4>
+          <div class="xls-mock">
+            <div class="xls-grid">
+              <div class="xls-cell head"></div>
+              <div class="xls-cell head">B</div>
+              <div class="xls-cell head">C</div>
+              <div class="xls-cell head">D</div>
+              <div class="xls-cell head">E</div>
+              <div class="xls-cell head">F</div>
+
+              <div class="xls-cell head">12</div>
+              <div class="xls-cell">Line</div>
+              <div class="xls-cell">Local Ccy</div>
+              <div class="xls-cell">Local Amt</div>
+              <div class="xls-cell">FX rate</div>
+              <div class="xls-cell">USD Amt</div>
+
+              <div class="xls-cell head">13</div>
+              <div class="xls-cell">Net Sales — AMER</div>
+              <div class="xls-cell">USD</div>
+              <div class="xls-cell">42,300,000</div>
+              <div class="xls-cell">1.0000</div>
+              <div class="xls-cell formula">=D13*E13</div>
+
+              <div class="xls-cell head">14</div>
+              <div class="xls-cell">Net Sales — EMEA</div>
+              <div class="xls-cell">EUR</div>
+              <div class="xls-cell">11,800,000</div>
+              <div class="xls-cell formula">=VLOOKUP(C14,FX!$A:$D,4,0)</div>
+              <div class="xls-cell formula">=D14*E14</div>
+
+              <div class="xls-cell head">15</div>
+              <div class="xls-cell">Net Sales — APAC</div>
+              <div class="xls-cell">JPY</div>
+              <div class="xls-cell">1,420,000,000</div>
+              <div class="xls-cell formula">=VLOOKUP(C15,FX!$A:$D,4,0)</div>
+              <div class="xls-cell formula">=D15*E15</div>
+
+              <div class="xls-cell head">60</div>
+              <div class="xls-cell">Group total</div>
+              <div class="xls-cell">USD</div>
+              <div class="xls-cell macro">=Run_Consolidate()</div>
+              <div class="xls-cell"></div>
+              <div class="xls-cell formula">=SUM(F13:F59)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="evidence-section">
+          <h4>Macro decoded — <code>Run_Consolidate()</code></h4>
+          <div class="doc-mock" style="border-left-color: var(--green-600); font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;">
+            <p><strong>Purpose:</strong> Pulls regional submissions from <code>Forecasts/2026/{month}/</code>, validates each against the template, copies values into rows 13–59, and writes a reconciliation report.</p>
+            <p><strong>Side effects:</strong> Touches <code>FX</code> tab (refresh from <code>FX_Rate_Loader.xlsm</code>); writes <code>Recon_Log</code> tab.</p>
+            <p><strong>Note:</strong> Macro depends on a hard-coded path. The discovery system flagged this for replacement with a parameterized connector.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="evidence-pane" id="ev-rec">
+        <h3>Mar26_close_S.Reyes.mp4 — UI events 0:38:42 to 0:44:08</h3>
+        <p class="lead">Annotated extract from a screen recording. The system reconstructs intent from sequences of UI events: which app, which file, which fields, with what timing.</p>
+
+        <div class="evidence-section">
+          <h4>Reconstructed event log</h4>
+          <div class="rec-mock">
+            <div class="rec-event">
+              <span class="rec-time">0:38:42</span>
+              <span class="rec-app">NetSuite</span>
+              <span class="rec-action">Open <em>Saved Search: TB_Apr26_Detail</em>; export to CSV</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:39:07</span>
+              <span class="rec-app">Outlook</span>
+              <span class="rec-action">Read mail from <em>treasury@northstar.co</em>: "FX rates locked Apr-26"</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:39:48</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action">Open <em>3MoP&amp;L_Master_2026.xlsm</em>; refresh data connection on FX tab</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:40:12</span>
+              <span class="rec-app">Slack</span>
+              <span class="rec-action">DM J. Park: <em>"AMER forecast — D60 doesn't tie, off by $4.2k"</em></span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:42:13</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action">Open <em>Forecast_AMER_Apr26.xlsx</em>; navigate to Detail tab; sort by region</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:42:51</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action">Identify miscoded SKU (Line 47, "Hydrate Set"); flag in column M</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:43:26</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action">Switch to <em>3MoP&amp;L_Master_2026.xlsm</em>; <strong>append</strong> correction on Adjustments tab (row 12, $4,217)</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:44:08</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action">Run macro <em>Run_Consolidate()</em> from custom ribbon</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="evidence-section">
+          <h4>What the system inferred</h4>
+          <ul style="font-size: 13px; color: var(--text-secondary); margin: 0; padding-left: 20px;">
+            <li>The reconciliation in §3.2 of the SOP <strong>matches reality</strong> — the analyst follows the rule.</li>
+            <li>Slack DMs are the actual channel for cross-region escalation, not the email-based one in the SOP.</li>
+            <li>The "miscoded SKU" pattern recurs across all 3 recordings — this is a frequent edge case.</li>
+            <li>The analyst preserves audit trail by appending to the Adjustments tab as the SOP requires.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="evidence-pane" id="ev-int">
+        <h3>Interview with J. Park, Sr. Analyst — turn 23</h3>
+        <p class="lead">The agent is interviewing the senior analyst to clarify a pattern observed in the recordings: how she decides when a forecast variance is "real" vs. a coding issue.</p>
+
+        <div class="evidence-section">
+          <h4>Conversation</h4>
+          <div class="chat-mock">
+            <div class="chat-turn">
+              <div class="chat-role agent">Discovery agent</div>
+              <div class="chat-text">In the March recording, you spent ~6 minutes investigating an AMER variance of about $4.2k. The SOP says any variance above $1,000 triggers a return-to-region. But in the recording you didn't return it — you fixed it yourself. Can you walk me through how you decided?</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role human">J. Park</div>
+              <div class="chat-text">Yeah, the SOP rule is right in spirit but in practice if it's clearly a SKU mapping issue and I can fix it in &lt;10 minutes, I just do it and tell them. <em>Returning the workbook costs us a day because they're in different time zones.</em> If it's a real volume or pricing change I send it back.</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role agent">Discovery agent</div>
+              <div class="chat-text">So the actual rule is closer to: if the variance is a known coding pattern (miscoded SKU, channel mismatch, currency tag), correct in place; otherwise return. Does that match?</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role human">J. Park</div>
+              <div class="chat-text">Exactly. There's like 4 or 5 patterns that account for ~80% of variances. If it's one of those, I fix it. If it's something I haven't seen before, I escalate.</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role agent">Discovery agent</div>
+              <div class="chat-text">Got it. I'll model that as: <strong>auto-classify variance → if known pattern, propose correction for human approval; else route to regional lead</strong>. The 4–5 patterns become the agent's first-pass triage. Does anyone else apply different rules here?</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role human">J. Park</div>
+              <div class="chat-text">M. Chen sometimes overrides me on the channel mismatches — she'll want to see them either way for trend analysis. So channel mismatches probably should always escalate even if I could fix them.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="evidence-section">
+          <h4>What the system synthesized</h4>
+          <ul style="font-size: 13px; color: var(--text-secondary); margin: 0; padding-left: 20px;">
+            <li><strong>Refined variance rule</strong>: triage by pattern — auto-correct for SKU mapping, channel mismatch (now flagged "always escalate per M. Chen"), currency tag, calendar-shift.</li>
+            <li><strong>Stakeholder-specific override</strong> captured: channel mismatches always visible to VP FP&amp;A.</li>
+            <li><strong>Latency rationale</strong> recorded: regional time zones make return-to-region a 1-day cost — informs how the agent weighs auto-fix vs. escalate.</li>
+            <li><strong>Open question for next interview</strong>: are there other "stakeholder overrides" we should capture?</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ========== SYNTHESIS TAB ========== -->
+<section class="view" id="view-synthesis">
+
+  <div class="synth-intro">
+    <strong>From four channels to one process.</strong> The discovery system fuses evidence from manuals, spreadsheets, recordings, and interviews into a single executable model. Every step in the model is traceable back to its source evidence — so a controller can audit not just <em>what</em> the agent will do, but <em>why we believe</em> it should do it.
+  </div>
+
+  <div class="synth-flow">
+    <h3>Synthesized 3-month P&amp;L projection — process overview</h3>
+    <p class="synth-flow-sub">11 steps grouped into 4 phases. Colors indicate the dominant evidence channel for each step.</p>
+
+    <svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg">
+      <!-- Phase labels -->
+      <text x="20" y="22" class="lane-label">Phase 1 · Inputs</text>
+      <text x="320" y="22" class="lane-label">Phase 2 · Validate &amp; reconcile</text>
+      <text x="640" y="22" class="lane-label">Phase 3 · Project</text>
+      <text x="940" y="22" class="lane-label">Phase 4 · Review &amp; publish</text>
+
+      <line x1="300" y1="36" x2="300" y2="340" stroke-dasharray="4 4" stroke="var(--border)" stroke-width="0.5"/>
+      <line x1="620" y1="36" x2="620" y2="340" stroke-dasharray="4 4" stroke="var(--border)" stroke-width="0.5"/>
+      <line x1="920" y1="36" x2="920" y2="340" stroke-dasharray="4 4" stroke="var(--border)" stroke-width="0.5"/>
+
+      <!-- Phase 1 nodes -->
+      <g class="nd nd-blue">
+        <rect x="20" y="50" width="260" height="48" rx="6"/>
+        <text x="32" y="70" class="th">1. ERP extract — NetSuite TB</text>
+        <text x="32" y="86" class="ts">GL trial balance, AR/AP aging</text>
+      </g>
+      <g class="nd nd-blue">
+        <rect x="20" y="110" width="260" height="48" rx="6"/>
+        <text x="32" y="130" class="th">2. Channel data — Shopify, 3PL</text>
+        <text x="32" y="146" class="ts">DTC orders, marketplace settlements</text>
+      </g>
+      <g class="nd nd-blue">
+        <rect x="20" y="170" width="260" height="48" rx="6"/>
+        <text x="32" y="190" class="th">3. FX feed — treasury &amp; ECB</text>
+        <text x="32" y="206" class="ts">Spot + 3-month forward curves</text>
+      </g>
+      <g class="nd nd-blue">
+        <rect x="20" y="230" width="260" height="48" rx="6"/>
+        <text x="32" y="250" class="th">4. Regional sales forecasts</text>
+        <text x="32" y="266" class="ts">3 workbooks — AMER / EMEA / APAC</text>
+      </g>
+      <g class="nd nd-blue">
+        <rect x="20" y="290" width="260" height="48" rx="6"/>
+        <text x="32" y="310" class="th">5. Marketing &amp; OpEx plan</text>
+        <text x="32" y="326" class="ts">Campaigns + run-rate OpEx</text>
+      </g>
+
+      <!-- Phase 2 nodes -->
+      <g class="nd nd-purple">
+        <rect x="320" y="80" width="280" height="48" rx="6"/>
+        <text x="332" y="100" class="th">6. Validate forecast workbooks</text>
+        <text x="332" y="116" class="ts">Template + tie checks; variance triage</text>
+      </g>
+      <g class="nd nd-purple">
+        <rect x="320" y="140" width="280" height="48" rx="6"/>
+        <text x="332" y="160" class="th">7. Reconcile to CRM pipeline</text>
+        <text x="332" y="176" class="ts">Forecast ÷ pipeline within band</text>
+      </g>
+      <g class="nd nd-purple">
+        <rect x="320" y="200" width="280" height="48" rx="6"/>
+        <text x="332" y="220" class="th">8. FX-translate to USD</text>
+        <text x="332" y="236" class="ts">Apply forward curve · CTA bookings</text>
+      </g>
+
+      <!-- Phase 3 nodes -->
+      <g class="nd nd-green">
+        <rect x="640" y="110" width="260" height="48" rx="6"/>
+        <text x="652" y="130" class="th">9. Project COGS</text>
+        <text x="652" y="146" class="ts">Standard cost × forecast volumes</text>
+      </g>
+      <g class="nd nd-green">
+        <rect x="640" y="170" width="260" height="48" rx="6"/>
+        <text x="652" y="190" class="th">10. Roll forward OpEx</text>
+        <text x="652" y="206" class="ts">Run-rate + step changes + headcount</text>
+      </g>
+      <g class="nd nd-green">
+        <rect x="640" y="230" width="260" height="48" rx="6"/>
+        <text x="652" y="250" class="th">11. Consolidate &amp; eliminate</text>
+        <text x="652" y="266" class="ts">Group P&amp;L · intercompany nets to 0</text>
+      </g>
+
+      <!-- Phase 4 -->
+      <g class="nd nd-amber">
+        <rect x="940" y="140" width="240" height="48" rx="6"/>
+        <text x="952" y="160" class="th">12. Variance &amp; commentary</text>
+        <text x="952" y="176" class="ts">vs. last fcst · budget · prior yr</text>
+      </g>
+      <g class="nd nd-amber">
+        <rect x="940" y="200" width="240" height="48" rx="6"/>
+        <text x="952" y="220" class="th">13. CFO review &amp; sign-off</text>
+        <text x="952" y="236" class="ts">Human-in-the-loop approval</text>
+      </g>
+      <g class="nd nd-amber">
+        <rect x="940" y="260" width="240" height="48" rx="6"/>
+        <text x="952" y="280" class="th">14. Publish + archive</text>
+        <text x="952" y="296" class="ts">Dashboard + leadership deck</text>
+      </g>
+
+      <!-- Arrows phase 1 -> 2 -->
+      <path class="svg-arrow" d="M 280,134 C 300,134 300,100 320,100" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 280,254 C 300,254 300,160 320,160" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 280,194 C 300,194 300,224 320,224" marker-end="url(#arrowhead)"/>
+
+      <!-- Arrows phase 2 -> 3 -->
+      <path class="svg-arrow" d="M 600,104 C 620,104 620,134 640,134" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 600,164 C 620,164 620,194 640,194" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 600,224 C 620,224 620,254 640,254" marker-end="url(#arrowhead)"/>
+
+      <!-- Phase 1 marketing/OpEx into phase 3 OpEx (skip) -->
+      <path class="svg-arrow-dashed" d="M 280,314 C 460,314 460,194 640,194" />
+
+      <!-- Arrows phase 3 -> 4 -->
+      <path class="svg-arrow" d="M 900,134 C 920,134 920,164 940,164" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 900,194 C 920,194 920,224 940,224" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 900,254 C 920,254 920,284 940,284" marker-end="url(#arrowhead)"/>
+
+      <!-- Approvals chain -->
+      <path class="svg-arrow" d="M 1060,188 L 1060,200" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 1060,248 L 1060,260" marker-end="url(#arrowhead)"/>
+
+      <defs>
+        <marker id="arrowhead" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="var(--text-secondary)"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <div class="step-evidence">
+    <h3>Per-step evidence map</h3>
+    <p class="step-evidence-sub">For each synthesized step, the system records every supporting piece of evidence and a confidence score. Click any tag in the actual review tool to jump to the source.</p>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">Step 6</div>
+        <div class="se-step-name">Validate forecast workbooks &amp; triage variance</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">SOP §3.2 — return rule</span>
+        <span class="ev-tag xls">Run_Consolidate macro · variance check</span>
+        <span class="ev-tag rec">Mar26 0:42:13 — observed in-place fix</span>
+        <span class="ev-tag int">J. Park turn 23 — pattern triage</span>
+        <span class="ev-tag int">M. Chen turn 11 — channel mismatch override</span>
+      </div>
+    </div>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">Step 7</div>
+        <div class="se-step-name">Reconcile forecast to CRM pipeline</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">SOP §3.5 — pipeline coverage band</span>
+        <span class="ev-tag xls">3MoP&amp;L · Pipeline_Recon tab</span>
+        <span class="ev-tag int">D. Singh turn 8 — stale-deal handling</span>
+      </div>
+    </div>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">Step 8</div>
+        <div class="se-step-name">FX-translate to USD using forward curve</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">FX Policy Memo §2</span>
+        <span class="ev-tag xls">FX_Rate_Loader.xlsm</span>
+        <span class="ev-tag rec">Apr26 0:21:08 — refresh observed</span>
+      </div>
+    </div>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">Step 11</div>
+        <div class="se-step-name">Consolidate &amp; intercompany elimination</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">Audit_ICFR_Controls §C-04</span>
+        <span class="ev-tag xls">3MoP&amp;L · IC_Elim tab</span>
+        <span class="ev-tag rec">Apr26 1:14:30 — manual override</span>
+        <span class="ev-tag int">L. Okafor turn 16 — IC truing</span>
+      </div>
+    </div>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">Step 12</div>
+        <div class="se-step-name">Variance commentary</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">3M_Forecast_Cookbook §5</span>
+        <span class="ev-tag rec">Mar26 2:08:42 — drafted in Word</span>
+        <span class="ev-tag int">M. Chen turn 31 — must-explain threshold</span>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ========== CONFIDENCE TAB ========== -->
+<section class="view" id="view-confidence">
+
+  <div class="synth-intro">
+    <strong>Where the model is sure, where it isn't.</strong> Each step's confidence is derived from how many independent sources corroborate it and how consistent they are. Low-confidence and conflict-prone steps are flagged for a follow-up interview round before workflow design begins.
+  </div>
+
+  <div class="conf-summary">
+    <div class="conf-card high">
+      <h4>High confidence</h4>
+      <div class="num">9</div>
+      <div class="lbl">Steps · ≥3 corroborating sources, no conflicts</div>
+    </div>
+    <div class="conf-card med">
+      <h4>Medium confidence</h4>
+      <div class="num">3</div>
+      <div class="lbl">Steps · 1–2 sources or minor conflicts</div>
+    </div>
+    <div class="conf-card low">
+      <h4>Open gaps</h4>
+      <div class="num">2</div>
+      <div class="lbl">Steps · need follow-up before automation</div>
+    </div>
+  </div>
+
+  <div class="conf-step-list">
+
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">1. ERP extract</span>
+      <span class="conf-gap">SOP, recordings, and master macro all agree on the saved-search definition.</span>
+      <span></span>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">3. FX feed</span>
+      <span class="conf-gap">Policy memo + macro + 3 recordings all consistent.</span>
+      <span></span>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">6. Validate &amp; triage</span>
+      <span class="conf-gap">Triage rule reconciled with stakeholder override (M. Chen).</span>
+      <span></span>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">8. FX translation</span>
+      <span class="conf-gap">All sources align; no conflicts.</span>
+      <span></span>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">9. COGS projection</span>
+      <span class="conf-gap">Standard-cost rate library + recording confirm method.</span>
+      <span></span>
+    </div>
+
+    <div class="conf-step">
+      <span class="conf-dot med"></span>
+      <span class="conf-step-name">7. Pipeline reconciliation</span>
+      <span class="conf-gap">SOP defines coverage band as 1.4–2.2×; D. Singh says "we use 1.6× internally". Need to confirm the source of truth.</span>
+      <button class="conf-action">Schedule clarification</button>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot med"></span>
+      <span class="conf-step-name">10. OpEx roll-forward</span>
+      <span class="conf-gap">Headcount-driven comp logic differs in 2 of 3 recordings. Two analysts apply different attrition assumptions.</span>
+      <button class="conf-action">Schedule clarification</button>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot med"></span>
+      <span class="conf-step-name">12. Variance commentary</span>
+      <span class="conf-gap">"Materiality threshold" is qualitative — M. Chen describes it as "anything &gt;5% or &gt;$500k that's not budgeted". Worth codifying.</span>
+      <span></span>
+    </div>
+
+    <div class="conf-step">
+      <span class="conf-dot low"></span>
+      <span class="conf-step-name">11. Intercompany elimination</span>
+      <span class="conf-gap">IC truing logic only partly documented. The Apr26 recording shows L. Okafor making a $130k manual adjustment with no SOP reference. Need controller interview before automating.</span>
+      <button class="conf-action">Schedule interview</button>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot low"></span>
+      <span class="conf-step-name">13. CFO review &amp; sign-off</span>
+      <span class="conf-gap">Approval routing is informal — currently a Slack thread. Need to define an approval pattern (single-approver vs. dual? what do we do if CFO is OOO?).</span>
+      <button class="conf-action">Schedule interview</button>
+    </div>
+
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+    <span style="font-weight: 800; color: var(--accent); font-size: 16px; letter-spacing: -0.02em;">//</span>
+    <strong style="color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; margin-left: -2px;">PROSSIMO</strong>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>Process Discovery</span>
+  </div>
+  Multi-modal process discovery for the KAA reference engagement. Evidence graph, semantic ontology, and confidence-scored claims — the substrate for everything that follows.<br>
+  <span style="color: var(--text-tertiary);">© 2026 ProssimoTech · Tokyo · <a href="https://www.linkedin.com/company/prossimo-tech/" style="color: var(--accent); text-decoration: none;">LinkedIn</a> · info@prossimotech.com</span>
+</footer>
+
+<script>
+  // Tab switching
+  const tabs = document.querySelectorAll('.tab');
+  const views = document.querySelectorAll('.view');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      views.forEach(v => v.classList.remove('active'));
+      tab.classList.add('active');
+      const target = tab.dataset.view;
+      document.getElementById('view-' + target).classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+
+  // Evidence tab — left list switching
+  const evidenceItems = document.querySelectorAll('.evidence-list-item');
+  const evidencePanes = document.querySelectorAll('.evidence-pane');
+  evidenceItems.forEach(item => {
+    item.addEventListener('click', () => {
+      evidenceItems.forEach(i => i.classList.remove('active'));
+      evidencePanes.forEach(p => p.classList.remove('active'));
+      item.classList.add('active');
+      document.getElementById(item.dataset.pane).classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>

@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -41,7 +42,7 @@ import java.util.stream.Collectors;
 public class SessionMetricsService {
 
     private static final Logger logger = LoggerFactory.getLogger(SessionMetricsService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private Path getConversationsDir() {
         return Path.of(System.getProperty("user.home"), ".kompile", "conversations");

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -264,7 +265,7 @@ public class EnforcerDiffArchive {
         }
 
         Instant cutoff = Instant.now().minusSeconds((long) hours * 3600);
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         int purged = 0;
 
         try (var sessions = Files.list(archiveBase)) {

@@ -18,6 +18,7 @@ package ai.kompile.staging.archive;
 
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.RegistryService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.Builder;
@@ -57,8 +58,7 @@ public class ArchiveExporter {
     @Autowired
     public ArchiveExporter(RegistryService registryService) {
         this.registryService = registryService;
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
     }
 
     /**

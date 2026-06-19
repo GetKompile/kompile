@@ -27,6 +27,7 @@
   <description>Parent project for Kompile CLI and Kompile Pipelines framework.</description>
 
   <modules>
+    <module>kompile-utils</module>
     <module>kompile-app</module>
     <module>kompile-cli</module>
     <module>kompile-e2e-tests</module>
@@ -71,7 +72,8 @@
     <conscrypt.version>2.5.2</conscrypt.version>
     <jgit.version>6.8.0.202311291450-r</jgit.version>
     <classgraph.version>4.8.165</classgraph.version>
-    <commons-io.version>2.15.1</commons-io.version>
+    <commons-io.version>2.18.0</commons-io.version>
+    <commons-compress.version>1.27.1</commons-compress.version>
     <commons-lang3.version>3.14.0</commons-lang3.version>
     <guava.version>32.1.3-jre</guava.version>
     <vertx.version>4.5.7</vertx.version>
@@ -109,6 +111,11 @@
   </properties>
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-utils</artifactId>
+        <version>${project.version}</version>
+      </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-model-manager</artifactId>
@@ -221,6 +228,11 @@
         <groupId>commons-io</groupId>
         <artifactId>commons-io</artifactId>
         <version>${commons-io.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-compress</artifactId>
+        <version>${commons-compress.version}</version>
       </dependency>
       <dependency>
         <groupId>org.apache.commons</groupId>

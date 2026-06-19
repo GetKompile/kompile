@@ -372,6 +372,15 @@ public class JobLogService {
     }
 
     /**
+     * Get log entries filtered by source with pagination.
+     */
+    @Transactional(transactionManager = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
+    public Page<JobLogEntry> getLogsForTaskBySource(String taskId, LogSource source, int page, int size) {
+        if (!isEnabled()) return Page.empty();
+        return repository.findByTaskIdAndSourceOrderBySequenceNumberAsc(taskId, source, PageRequest.of(page, size));
+    }
+
+    /**
      * Get all log entries by source type with a limit.
      * Used for retrieving all embedding logs across all models.
      */
@@ -599,6 +608,45 @@ public class JobLogService {
 
         if (!seqNumbers.isEmpty()) {
             long minSequenceToKeep = seqNumbers.get(seqNumbers.size() - 1);
+
+            // Archive the entries that are about to be deleted so they remain
+            // retrievable via getArchivedLogs / checkArchivedLogs.
+            if (archiveEnabled) {
+                try {
+                    List<JobLogEntry> toEvict = repository.findByTaskIdAndTimestampBetweenOrderBySequenceNumberAsc(
+                            taskId, Instant.EPOCH, Instant.now());
+                    // Keep only those below the cut-off sequence number.
+                    toEvict = toEvict.stream()
+                            .filter(e -> e.getSequenceNumber() < minSequenceToKeep)
+                            .collect(Collectors.toList());
+
+                    if (!toEvict.isEmpty()) {
+                        Path archiveDir = ensureArchiveDirectory();
+                        String timestamp = ARCHIVE_DATE_FORMAT.format(Instant.now());
+                        String fileName = String.format("task_%s_%s.log.gz",
+                                sanitizeFileName(taskId), timestamp);
+                        Path archiveFile = archiveDir.resolve(fileName);
+
+                        try (GZIPOutputStream gzos = new GZIPOutputStream(Files.newOutputStream(archiveFile))) {
+                            StringBuilder sb = new StringBuilder();
+                            sb.append("=== Job Logs Archive for Task: ").append(taskId).append(" ===\n");
+                            sb.append("Archived: ").append(Instant.now()).append("\n");
+                            sb.append("Total entries: ").append(toEvict.size()).append("\n");
+                            sb.append("=".repeat(60)).append("\n\n");
+                            for (JobLogEntry log : toEvict) {
+                                sb.append(log.format()).append("\n");
+                            }
+                            gzos.write(sb.toString().getBytes());
+                        }
+                        logger.debug("Archived {} trimmed log entries for task {} to {}",
+                                toEvict.size(), taskId, archiveFile);
+                    }
+                } catch (IOException e) {
+                    logger.warn("Failed to archive trimmed log entries for task {}: {}", taskId, e.getMessage());
+                    // Continue with the trim even if archiving fails.
+                }
+            }
+
             int deleted = repository.deleteOldestForTask(taskId, minSequenceToKeep);
             if (deleted > 0) {
                 logger.debug("Trimmed {} old log entries for task {} (exceeded max {})",
@@ -986,11 +1034,11 @@ public class JobLogService {
                     List<ArchivedLogEntry> logsFromFile = readLogsFromArchiveFile(archiveFile, taskId, isTaskSpecific);
                     allLogs.addAll(logsFromFile);
 
-                    // If we found a task-specific archive, that's likely the most complete one
                     if (isTaskSpecific && !logsFromFile.isEmpty()) {
                         logger.debug("Found {} logs for task {} in task-specific archive: {}",
                                 logsFromFile.size(), taskId, fileName);
-                        break;
+                        // Do NOT break — per-job-cap trimming creates multiple task-specific
+                        // archive files over the lifetime of a long crawl. Accumulate them all.
                     }
                 } catch (IOException e) {
                     logger.warn("Failed to read archive file {}: {}", archiveFile, e.getMessage());

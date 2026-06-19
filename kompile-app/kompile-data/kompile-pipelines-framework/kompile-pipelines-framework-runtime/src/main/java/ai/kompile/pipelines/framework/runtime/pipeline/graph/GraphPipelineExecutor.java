@@ -34,6 +34,7 @@ import ai.kompile.pipelines.framework.core.context.NoOpMetrics;
 import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
 import ai.kompile.pipelines.framework.runtime.pipeline.BasePipelineExecutor;
 import ai.kompile.pipelines.framework.runtime.tooling.PipelineToolCallOrchestrator;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.*;
@@ -104,7 +105,7 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
         this.toolOrchestrator = new PipelineToolCallOrchestrator(
                 this.graphPipeline,
                 super.runnerFactories,
-                new ObjectMapper(),
+                JsonUtils.standardMapper(),
                 this.maxToolCallingDepthConfig
         );
         initializeGraphRunners(this.defaultContextFactoryInternal.get());

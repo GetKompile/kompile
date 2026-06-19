@@ -16,6 +16,7 @@
 
 package ai.kompile.core.loaders;
 
+import ai.kompile.ocr.VlmOutputFormat;
 import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,28 +54,6 @@ public class PdfProcessingConfig {
         AUTO,
         /** Compare multiple loaders and select the one with most content */
         COMPARE
-    }
-
-    /**
-     * VLM output format options.
-     */
-    public enum VlmOutputFormat {
-        /** DocTags structured markup (SmolDocling, Granite-Docling) */
-        DOCTAGS,
-        /** Markdown format (Nougat, GOT-OCR, Kosmos-2.5, Qwen-VL) */
-        MARKDOWN,
-        /** Florence-2 task-specific format */
-        FLORENCE2,
-        /** Donut JSON-mapped tag format */
-        DONUT,
-        /** Plain text output */
-        PLAIN_TEXT,
-        /** @deprecated Use model-specific formats instead */
-        @Deprecated
-        JSON,
-        /** @deprecated Use PLAIN_TEXT instead */
-        @Deprecated
-        TEXT
     }
 
     /**

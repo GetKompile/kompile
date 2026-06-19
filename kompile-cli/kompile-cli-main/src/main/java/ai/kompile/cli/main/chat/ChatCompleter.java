@@ -98,6 +98,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/jobs", "List background jobs");
         COMMANDS.put("/jobs-remove", "Remove a background job");
         COMMANDS.put("/jobs-clear", "Clear all jobs");
+        COMMANDS.put("/activity", "Manage processes, subagents, and logs");
         COMMANDS.put("/processes", "Show processes & subagents");
         COMMANDS.put("/process-kill", "Kill a running process");
         COMMANDS.put("/process-output", "View process output");
@@ -151,6 +152,11 @@ public class ChatCompleter implements Completer {
                 new String[]{"standard", "Standard chat mode"},
                 new String[]{"passthrough", "Agent passthrough mode"},
                 new String[]{"plan", "Planning mode"}
+        ));
+        SUB_ARGS.put("/activity", List.of(
+                new String[]{"logs", "Show activity logs"},
+                new String[]{"kill", "Kill or cancel activity"},
+                new String[]{"close", "Close activity menu"}
         ));
     }
 

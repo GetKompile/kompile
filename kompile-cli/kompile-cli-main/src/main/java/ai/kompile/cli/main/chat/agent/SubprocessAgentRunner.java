@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.McpUrlResolver;
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
@@ -886,9 +887,9 @@ public class SubprocessAgentRunner {
                         tu.cacheReadTokens(), tu.cacheCreationTokens());
             }
             emitLine("");
-            emitLine(renderer.dim("  [tokens: " + formatNum(tu.inputTokens())
-                    + " in / " + formatNum(tu.outputTokens()) + " out"
-                    + (tu.cacheReadTokens() > 0 ? " \u00b7 " + formatNum(tu.cacheReadTokens()) + " cached" : "")
+            emitLine(renderer.dim("  [tokens: " + FormatUtils.formatNumber(tu.inputTokens())
+                    + " in / " + FormatUtils.formatNumber(tu.outputTokens()) + " out"
+                    + (tu.cacheReadTokens() > 0 ? " \u00b7 " + FormatUtils.formatNumber(tu.cacheReadTokens()) + " cached" : "")
                     + "]"));
         } else if (event instanceof PassthroughStreamParser.TurnComplete tc) {
             flushPendingText(pendingText, spinner, spinnerStopped);
@@ -901,17 +902,17 @@ public class SubprocessAgentRunner {
             }
 
             StringBuilder stats = new StringBuilder();
-            if (tc.durationMs() > 0) stats.append(formatDuration(tc.durationMs()));
+            if (tc.durationMs() > 0) stats.append(FormatUtils.formatDuration(tc.durationMs()));
             if (tc.costUsd() > 0) {
                 if (stats.length() > 0) stats.append(" \u00b7 ");
                 stats.append(String.format("$%.4f", tc.costUsd()));
             }
             if (tc.inputTokens() > 0 || tc.outputTokens() > 0) {
                 if (stats.length() > 0) stats.append(" \u00b7 ");
-                stats.append(formatNum(tc.inputTokens())).append(" in / ")
-                     .append(formatNum(tc.outputTokens())).append(" out");
+                stats.append(FormatUtils.formatNumber(tc.inputTokens())).append(" in / ")
+                     .append(FormatUtils.formatNumber(tc.outputTokens())).append(" out");
                 if (tc.cacheReadTokens() > 0) {
-                    stats.append(" \u00b7 ").append(formatNum(tc.cacheReadTokens())).append(" cached");
+                    stats.append(" \u00b7 ").append(FormatUtils.formatNumber(tc.cacheReadTokens())).append(" cached");
                 }
             }
             if (tc.numTurns() > 0) {
@@ -1557,16 +1558,4 @@ public class SubprocessAgentRunner {
         return s.replaceAll(ANSI_REGEX, "");
     }
 
-    private static String formatDuration(long ms) {
-        if (ms < 1000) return ms + "ms";
-        if (ms < 60_000) return String.format("%.1fs", ms / 1000.0);
-        long mins = ms / 60_000;
-        long secs = (ms % 60_000) / 1000;
-        return mins + "m " + secs + "s";
-    }
-
-    private static String formatNum(long n) {
-        if (n < 1000) return String.valueOf(n);
-        return String.format("%,d", n);
-    }
 }

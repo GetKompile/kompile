@@ -96,6 +96,18 @@ export interface FactSheetModelStatusDto {
   crossEncoder: CrossEncoderStatusDto;
 }
 
+// Embedding-subprocess restart governor (manual toggle + native-crash circuit breaker)
+export interface EmbeddingRestartStatusDto {
+  autoRestartEnabled: boolean;
+  nativeCrashThreshold: number;
+  restartsPaused: boolean;
+  consecutiveNativeCrashes: number;
+  pausedReason: string | null;
+  lastCrashReason: string | null;
+  subprocessRunning: boolean;
+  modelAvailable: boolean;
+}
+
 export interface RegistryVersionInfo {
   registryVersion: string;
   updatedAt: string | null;
@@ -272,6 +284,31 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
                [class.red]="!modelStatus?.embedding?.initialized && !modelLoading"></div>
         </div>
 
+        <div class="divider"></div>
+
+        <!-- Embedding Subprocess Restart Governor -->
+        <div class="status-segment restart-segment"
+             [class.ready]="restartStatus && restartStatus.autoRestartEnabled && !restartStatus.restartsPaused"
+             [class.warning]="restartStatus && !restartStatus.autoRestartEnabled && !restartStatus.restartsPaused"
+             [class.not-loaded]="restartStatus?.restartsPaused">
+          <div class="segment-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 2v6h-6"></path>
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path>
+              <path d="M3 22v-6h6"></path>
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path>
+            </svg>
+          </div>
+          <div class="segment-info">
+            <span class="segment-label">Restarts</span>
+            <span class="segment-value">{{ getRestartDisplayText() }}</span>
+          </div>
+          <div class="status-dot"
+               [class.green]="restartStatus && restartStatus.autoRestartEnabled && !restartStatus.restartsPaused"
+               [class.yellow]="restartStatus && !restartStatus.autoRestartEnabled && !restartStatus.restartsPaused"
+               [class.red]="restartStatus?.restartsPaused"></div>
+        </div>
+
         <!-- Expand/Collapse Icon -->
         <div class="expand-icon">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -442,6 +479,53 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
           </div>
         </div>
 
+        <!-- Embedding Subprocess Restarts -->
+        <div class="panel-section" *ngIf="restartStatus">
+          <div class="section-header">
+            <h4>Embedding Subprocess Restarts</h4>
+            <span class="badge"
+                  [class.badge-success]="restartStatus.autoRestartEnabled && !restartStatus.restartsPaused"
+                  [class.badge-warning]="!restartStatus.autoRestartEnabled && !restartStatus.restartsPaused"
+                  [class.badge-error]="restartStatus.restartsPaused">
+              {{ restartStatus.restartsPaused ? 'Paused' : (restartStatus.autoRestartEnabled ? 'Auto-restart on' : 'Auto-restart off') }}
+            </span>
+          </div>
+          <div class="detail-grid">
+            <div class="detail-row">
+              <span class="detail-label">Subprocess</span>
+              <span class="detail-value" [class.status-yes]="restartStatus.subprocessRunning" [class.status-no]="!restartStatus.subprocessRunning">
+                {{ restartStatus.subprocessRunning ? 'Running' : 'Not running' }}
+              </span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Native crashes</span>
+              <span class="detail-value">{{ restartStatus.consecutiveNativeCrashes }} / {{ restartStatus.nativeCrashThreshold }}</span>
+            </div>
+            <div class="detail-row" *ngIf="restartStatus.pausedReason">
+              <span class="detail-label">Paused reason</span>
+              <span class="detail-value status-no">{{ restartStatus.pausedReason }}</span>
+            </div>
+            <div class="detail-row" *ngIf="restartStatus.lastCrashReason">
+              <span class="detail-label">Last crash</span>
+              <span class="detail-value">{{ restartStatus.lastCrashReason }}</span>
+            </div>
+          </div>
+          <div class="action-buttons">
+            <button class="action-btn primary" *ngIf="restartStatus.restartsPaused" (click)="resumeRestarts()" [disabled]="resumingRestarts">
+              <span *ngIf="resumingRestarts">Resuming...</span>
+              <span *ngIf="!resumingRestarts">Resume restarts</span>
+            </button>
+            <button class="action-btn"
+                    [class.primary]="!restartStatus.autoRestartEnabled"
+                    [class.secondary]="restartStatus.autoRestartEnabled"
+                    (click)="setAutoRestart(!restartStatus.autoRestartEnabled)"
+                    [disabled]="savingRestartConfig">
+              <span *ngIf="savingRestartConfig">Saving...</span>
+              <span *ngIf="!savingRestartConfig">{{ restartStatus.autoRestartEnabled ? 'Disable auto-restart' : 'Enable auto-restart' }}</span>
+            </button>
+          </div>
+        </div>
+
         <!-- Current Fact Sheet Configuration -->
         <div class="panel-section">
           <div class="section-header">
@@ -555,6 +639,10 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
     .embedding-segment.ready .segment-icon { color: #4caf50; }
     .embedding-segment.warning .segment-icon { color: #ff9800; }
     .embedding-segment.not-loaded .segment-icon { color: #f44336; }
+
+    .restart-segment.ready .segment-icon { color: #4caf50; }
+    .restart-segment.warning .segment-icon { color: #ff9800; }
+    .restart-segment.not-loaded .segment-icon { color: #f44336; }
 
     .reranker-segment.ready .segment-icon { color: #4caf50; }
     .reranker-segment.warning .segment-icon { color: #ff9800; }
@@ -1008,6 +1096,11 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
   // Force reload state
   forceReloading = false;
 
+  // Embedding-subprocess restart governor state (hot-bar indicator)
+  restartStatus: EmbeddingRestartStatusDto | null = null;
+  resumingRestarts = false;
+  savingRestartConfig = false;
+
   // Subscriptions
   private refreshSubscription?: Subscription;
   private registryChangeSubscription?: Subscription;
@@ -1142,6 +1235,7 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
   refreshAll(): void {
     this.isLoading = true;
     this.clearMessages();
+    this.fetchRestartStatus();
 
     // Build the model status request URL
     const modelStatusUrl = this.factSheetId
@@ -1461,6 +1555,82 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
         model_type: archiveModel.type
       }
     };
+  }
+
+  /**
+   * Fetch the embedding-subprocess restart-governor status for the hot-bar indicator.
+   */
+  private fetchRestartStatus(): void {
+    this.http.get<EmbeddingRestartStatusDto>(`${this.baseService.backendUrl}/embedding-restart/status`).pipe(
+      catchError(() => of(null))
+    ).subscribe(status => {
+      this.restartStatus = status;
+      this.cdr.markForCheck();
+    });
+  }
+
+  /**
+   * Short label for the Restarts segment in the status bar.
+   */
+  getRestartDisplayText(): string {
+    if (!this.restartStatus) return '—';
+    if (this.restartStatus.restartsPaused) return 'Paused';
+    return this.restartStatus.autoRestartEnabled ? 'Auto: on' : 'Auto: off';
+  }
+
+  /**
+   * Clear a paused/tripped embedding-restart state and bring the subprocess back.
+   */
+  resumeRestarts(): void {
+    this.resumingRestarts = true;
+    this.clearMessages();
+    this.http.post<EmbeddingRestartStatusDto>(`${this.baseService.backendUrl}/embedding-restart/resume`, {}).pipe(
+      catchError(() => {
+        this.resumingRestarts = false;
+        this.errorMessage = 'Failed to resume embedding restarts';
+        this.autoHideMessage();
+        this.cdr.markForCheck();
+        return of(null);
+      })
+    ).subscribe(status => {
+      this.resumingRestarts = false;
+      if (status) {
+        this.restartStatus = status;
+        this.successMessage = 'Embedding restarts resumed';
+        this.autoHideMessage();
+      }
+      this.cdr.markForCheck();
+    });
+  }
+
+  /**
+   * Enable or disable embedding auto-restart from the hot bar (persists via the config endpoint).
+   * Enabling also clears a prior pause server-side.
+   */
+  setAutoRestart(enabled: boolean): void {
+    if (!this.restartStatus) return;
+    this.savingRestartConfig = true;
+    this.clearMessages();
+    this.http.put<EmbeddingRestartStatusDto>(`${this.baseService.backendUrl}/embedding-restart/config`, {
+      autoRestartEnabled: enabled,
+      nativeCrashThreshold: this.restartStatus.nativeCrashThreshold
+    }).pipe(
+      catchError(() => {
+        this.savingRestartConfig = false;
+        this.errorMessage = 'Failed to update auto-restart setting';
+        this.autoHideMessage();
+        this.cdr.markForCheck();
+        return of(null);
+      })
+    ).subscribe(status => {
+      this.savingRestartConfig = false;
+      if (status) {
+        this.restartStatus = status;
+        this.successMessage = enabled ? 'Auto-restart enabled' : 'Auto-restart disabled';
+        this.autoHideMessage();
+      }
+      this.cdr.markForCheck();
+    });
   }
 
   openModelStaging(): void {

@@ -17,7 +17,7 @@
 package ai.kompile.app.tools;
 
 import ai.kompile.app.services.agenttask.AgentTaskService;
-import ai.kompile.app.services.agenttask.AgentTaskService.AgentTask;
+import ai.kompile.app.services.agenttask.AgentTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;

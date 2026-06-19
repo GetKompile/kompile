@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -85,7 +86,7 @@ public class EnforcerDecision {
         String json = extractJson(responseText);
         if (json == null) {
             return stop(List.of("Enforcer judge did not return valid JSON"),
-                    responseText != null ? truncate(responseText, 240) : "empty judge response");
+                    responseText != null ? StringUtils.truncate(responseText, 240) : "empty judge response");
         }
 
         try {
@@ -120,7 +121,7 @@ public class EnforcerDecision {
             return new EnforcerDecision(compliant, stop, severity, violations, correction, reasoning);
         } catch (Exception e) {
             return stop(List.of("Enforcer judge JSON parse failed: " + e.getMessage()),
-                    truncate(responseText, 240));
+                    StringUtils.truncate(responseText, 240));
         }
     }
 
@@ -181,10 +182,4 @@ public class EnforcerDecision {
         return null;
     }
 
-    private static String truncate(String text, int max) {
-        if (text == null || text.length() <= max) {
-            return text;
-        }
-        return text.substring(0, max - 3) + "...";
-    }
 }

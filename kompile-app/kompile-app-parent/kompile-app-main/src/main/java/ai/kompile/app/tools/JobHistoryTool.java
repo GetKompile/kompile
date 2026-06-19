@@ -306,7 +306,7 @@ public class JobHistoryTool {
             if (input.taskId() == null) return Map.of("status", "error", "error", "Task ID is required");
             int page = input.page() != null ? input.page() : 0;
             int size = input.size() != null ? input.size() : 100;
-            ResponseEntity<?> response = jobLogController.getLogsForJob(input.taskId(), input.level(), null, null, page, size);
+            ResponseEntity<?> response = jobLogController.getLogsForJob(input.taskId(), input.level(), null, null, null, page, size);
             return Map.of("status", "success", "data", response.getBody());
         } catch (Exception e) {
             logger.error("Error getting job logs: {}", e.getMessage(), e);

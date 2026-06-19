@@ -22,6 +22,7 @@ import ai.kompile.app.services.enforcer.EnforcerSessionManager;
 import ai.kompile.app.services.enforcer.EnforcerSessionState;
 import ai.kompile.app.web.dto.EnforcerEventRequest;
 import ai.kompile.app.web.dto.EnforcerSessionRequest;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -55,7 +56,7 @@ public class EnforcerSessionController {
 
     private static final Logger log = LoggerFactory.getLogger(EnforcerSessionController.class);
     private static final String CONFIG_FILENAME = "enforcer-config.json";
-    private static final ObjectMapper CONFIG_MAPPER = new ObjectMapper()
+    private static final ObjectMapper CONFIG_MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     private final EnforcerSessionManager sessionManager;

@@ -16,6 +16,8 @@
 
 package ai.kompile.modelmanager.vlm;
 
+import ai.kompile.utils.MapUtils;
+
 import java.util.*;
 
 /**
@@ -165,14 +167,14 @@ public class VlmProcessingConfigBridge {
         VlmExtractionConfig.Builder builder = VlmExtractionConfig.builder();
 
         // Parse processing mode
-        String processingMode = getStringValue(pdfConfigMap, "processingMode", "AUTO");
-        boolean useVlm = getBooleanValue(pdfConfigMap, "useVlm", false);
+        String processingMode = MapUtils.getString(pdfConfigMap, "processingMode", "AUTO");
+        boolean useVlm = MapUtils.getBoolean(pdfConfigMap, "useVlm", false);
 
         if ("VLM".equalsIgnoreCase(processingMode) || useVlm) {
             builder.enableExtraction(VlmExtractionType.DOCUMENT_UNDERSTANDING);
 
             // Set model if specified
-            String vlmModelId = getStringValue(pdfConfigMap, "vlmModelId", null);
+            String vlmModelId = MapUtils.getString(pdfConfigMap, "vlmModelId", null);
             if (vlmModelId != null) {
                 VlmModelSet modelSet = VlmModelSet.getModelSet(vlmModelId);
                 if (modelSet != null) {
@@ -186,53 +188,53 @@ public class VlmProcessingConfigBridge {
         }
 
         // Table extraction
-        if (getBooleanValue(pdfConfigMap, "extractTables", true)) {
+        if (MapUtils.getBoolean(pdfConfigMap, "extractTables", true)) {
             builder.enableExtraction(VlmExtractionType.TABLE_EXTRACTION);
         }
 
         // Form extraction
-        if (getBooleanValue(pdfConfigMap, "extractFormFields", false)) {
+        if (MapUtils.getBoolean(pdfConfigMap, "extractFormFields", false)) {
             builder.enableExtraction(VlmExtractionType.FORM_EXTRACTION);
         }
 
         // Parameters
         if (pdfConfigMap.containsKey("pdfRenderDpi")) {
-            builder.setRenderDpi(getIntValue(pdfConfigMap, "pdfRenderDpi", 300));
+            builder.setRenderDpi(MapUtils.getInt(pdfConfigMap, "pdfRenderDpi", 300));
         }
         if (pdfConfigMap.containsKey("maxNewTokens")) {
-            builder.setMaxNewTokens(getIntValue(pdfConfigMap, "maxNewTokens", 4096));
+            builder.setMaxNewTokens(MapUtils.getInt(pdfConfigMap, "maxNewTokens", 4096));
         }
         if (pdfConfigMap.containsKey("temperature")) {
-            builder.setTemperature(getDoubleValue(pdfConfigMap, "temperature", 0.0));
+            builder.setTemperature(MapUtils.getDouble(pdfConfigMap, "temperature", 0.0));
         }
         if (pdfConfigMap.containsKey("topK")) {
-            builder.setTopK(getIntValue(pdfConfigMap, "topK", 0));
+            builder.setTopK(MapUtils.getInt(pdfConfigMap, "topK", 0));
         }
         if (pdfConfigMap.containsKey("topP")) {
-            builder.setTopP(getDoubleValue(pdfConfigMap, "topP", 1.0));
+            builder.setTopP(MapUtils.getDouble(pdfConfigMap, "topP", 1.0));
         }
         if (pdfConfigMap.containsKey("repetitionPenalty")) {
-            builder.setRepetitionPenalty(getDoubleValue(pdfConfigMap, "repetitionPenalty", 1.0));
+            builder.setRepetitionPenalty(MapUtils.getDouble(pdfConfigMap, "repetitionPenalty", 1.0));
         }
         if (pdfConfigMap.containsKey("samplingPreset")) {
-            builder.setSamplingPreset(getStringValue(pdfConfigMap, "samplingPreset", null));
+            builder.setSamplingPreset(MapUtils.getString(pdfConfigMap, "samplingPreset", null));
         }
         if (pdfConfigMap.containsKey("doSample")) {
-            builder.setDoSample(getBooleanValue(pdfConfigMap, "doSample", false));
+            builder.setDoSample(MapUtils.getBoolean(pdfConfigMap, "doSample", false));
         }
         if (pdfConfigMap.containsKey("vlmOutputFormat")) {
-            builder.setOutputFormat(getStringValue(pdfConfigMap, "vlmOutputFormat", "MARKDOWN"));
+            builder.setOutputFormat(MapUtils.getString(pdfConfigMap, "vlmOutputFormat", "MARKDOWN"));
         }
 
         // PDF page selection
         if (pdfConfigMap.containsKey("startPage")) {
-            builder.setStartPage(getIntValue(pdfConfigMap, "startPage", 1));
+            builder.setStartPage(MapUtils.getInt(pdfConfigMap, "startPage", 1));
         }
         if (pdfConfigMap.containsKey("maxPages")) {
-            builder.setMaxPages(getIntValue(pdfConfigMap, "maxPages", Integer.MAX_VALUE));
+            builder.setMaxPages(MapUtils.getInt(pdfConfigMap, "maxPages", Integer.MAX_VALUE));
         }
         if (pdfConfigMap.containsKey("pageRange")) {
-            builder.setPageRange(getStringValue(pdfConfigMap, "pageRange", null));
+            builder.setPageRange(MapUtils.getString(pdfConfigMap, "pageRange", null));
         }
 
         // Auto detect
@@ -295,38 +297,4 @@ public class VlmProcessingConfigBridge {
         return sb.toString();
     }
 
-    // Helper methods for parsing config values
-    private static String getStringValue(Map<String, Object> map, String key, String defaultValue) {
-        Object value = map.get(key);
-        return value != null ? String.valueOf(value) : defaultValue;
-    }
-
-    private static boolean getBooleanValue(Map<String, Object> map, String key, boolean defaultValue) {
-        Object value = map.get(key);
-        if (value == null) return defaultValue;
-        if (value instanceof Boolean) return (Boolean) value;
-        return Boolean.parseBoolean(String.valueOf(value));
-    }
-
-    private static int getIntValue(Map<String, Object> map, String key, int defaultValue) {
-        Object value = map.get(key);
-        if (value == null) return defaultValue;
-        if (value instanceof Number) return ((Number) value).intValue();
-        try {
-            return Integer.parseInt(String.valueOf(value));
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
-    }
-
-    private static double getDoubleValue(Map<String, Object> map, String key, double defaultValue) {
-        Object value = map.get(key);
-        if (value == null) return defaultValue;
-        if (value instanceof Number) return ((Number) value).doubleValue();
-        try {
-            return Double.parseDouble(String.valueOf(value));
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
-    }
 }

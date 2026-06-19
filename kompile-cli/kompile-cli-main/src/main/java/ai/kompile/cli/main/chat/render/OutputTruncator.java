@@ -16,7 +16,9 @@
 
 package ai.kompile.cli.main.chat.render;
 
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.common.KompileHome;
+import lombok.Getter;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -82,7 +84,7 @@ public class OutputTruncator {
         int truncatedBytes = byteSize - previewBytes;
 
         preview.append("\n... ").append(truncatedLines).append(" lines / ")
-                .append(formatBytes(truncatedBytes)).append(" truncated");
+                .append(FormatUtils.formatBytes(truncatedBytes)).append(" truncated");
 
         if (savedFile != null) {
             preview.append("\nFull output saved to: ").append(savedFile);
@@ -128,15 +130,11 @@ public class OutputTruncator {
         } catch (IOException ignored) {}
     }
 
-    private static String formatBytes(int bytes) {
-        if (bytes < 1024) return bytes + "B";
-        if (bytes < 1024 * 1024) return String.format("%.1fKB", bytes / 1024.0);
-        return String.format("%.1fMB", bytes / (1024.0 * 1024));
-    }
 
     /**
      * Result of truncation.
      */
+    @Getter
     public static class TruncationResult {
         private final String output;
         private final boolean truncated;
@@ -147,9 +145,5 @@ public class OutputTruncator {
             this.truncated = truncated;
             this.savedFile = savedFile;
         }
-
-        public String getOutput() { return output; }
-        public boolean isTruncated() { return truncated; }
-        public Path getSavedFile() { return savedFile; }
     }
 }

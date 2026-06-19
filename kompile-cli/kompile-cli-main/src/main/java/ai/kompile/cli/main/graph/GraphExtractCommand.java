@@ -18,6 +18,7 @@ package ai.kompile.cli.main.graph;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.main.app.AppClientMixin;
 import ai.kompile.cli.main.app.OutputFormatter;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -143,7 +144,7 @@ public class GraphExtractCommand implements Callable<Integer> {
     // Command implementation
     // -------------------------------------------------------------------------
 
-    private static final ObjectMapper LOCAL_MAPPER = new ObjectMapper()
+    private static final ObjectMapper LOCAL_MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     @Override

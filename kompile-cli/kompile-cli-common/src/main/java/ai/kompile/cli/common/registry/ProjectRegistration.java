@@ -16,11 +16,14 @@
 
 package ai.kompile.cli.common.registry;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -36,13 +39,15 @@ import java.time.Instant;
  * <p>Also stored at {@code ~/.kompile/registrations/<projectId>.json} for
  * global lookup by project ID.</p>
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ProjectRegistration {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     /** The kompile-app endpoint URL this project is registered with. */
     private String endpointUrl;
@@ -64,19 +69,6 @@ public class ProjectRegistration {
 
     /** Source of the registration (e.g., "claude", "kompile-chat", "mcp-stdio"). */
     private String source;
-
-    public ProjectRegistration() {}
-
-    public ProjectRegistration(String endpointUrl, String projectId, String directory,
-                               boolean active, String sessionId, String source) {
-        this.endpointUrl = endpointUrl;
-        this.projectId = projectId;
-        this.directory = directory;
-        this.registeredAt = Instant.now();
-        this.active = active;
-        this.sessionId = sessionId;
-        this.source = source;
-    }
 
     // ── Persistence ──────────────────────────────────────────────────
 
@@ -138,29 +130,6 @@ public class ProjectRegistration {
             return null;
         }
     }
-
-    // ── Getters/Setters ──────────────────────────────────────────────
-
-    public String getEndpointUrl() { return endpointUrl; }
-    public void setEndpointUrl(String endpointUrl) { this.endpointUrl = endpointUrl; }
-
-    public String getProjectId() { return projectId; }
-    public void setProjectId(String projectId) { this.projectId = projectId; }
-
-    public String getDirectory() { return directory; }
-    public void setDirectory(String directory) { this.directory = directory; }
-
-    public Instant getRegisteredAt() { return registeredAt; }
-    public void setRegisteredAt(Instant registeredAt) { this.registeredAt = registeredAt; }
-
-    public boolean isActive() { return active; }
-    public void setActive(boolean active) { this.active = active; }
-
-    public String getSessionId() { return sessionId; }
-    public void setSessionId(String sessionId) { this.sessionId = sessionId; }
-
-    public String getSource() { return source; }
-    public void setSource(String source) { this.source = source; }
 
     @Override
     public String toString() {

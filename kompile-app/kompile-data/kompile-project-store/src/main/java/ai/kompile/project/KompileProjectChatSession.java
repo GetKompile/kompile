@@ -16,11 +16,19 @@
 package ai.kompile.project;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * Summary of a chat session exported to the project's {@code data/chats/} directory.
  * Used by the chat catalog ({@code data/chats/project-chats.json}).
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class KompileProjectChatSession {
     private String sessionId;
@@ -31,28 +39,4 @@ public class KompileProjectChatSession {
     private int messageCount;
     private String createdAt;
     private String updatedAt;
-
-    public String getSessionId() { return sessionId; }
-    public void setSessionId(String sessionId) { this.sessionId = sessionId; }
-
-    public String getTitle() { return title; }
-    public void setTitle(String title) { this.title = title; }
-
-    public String getSource() { return source; }
-    public void setSource(String source) { this.source = source; }
-
-    public String getFactSheetName() { return factSheetName; }
-    public void setFactSheetName(String factSheetName) { this.factSheetName = factSheetName; }
-
-    public String getCodeProjectId() { return codeProjectId; }
-    public void setCodeProjectId(String codeProjectId) { this.codeProjectId = codeProjectId; }
-
-    public int getMessageCount() { return messageCount; }
-    public void setMessageCount(int messageCount) { this.messageCount = messageCount; }
-
-    public String getCreatedAt() { return createdAt; }
-    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
-
-    public String getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(String updatedAt) { this.updatedAt = updatedAt; }
 }

@@ -18,6 +18,7 @@ package ai.kompile.modelmanager.vlm.registry;
 
 import ai.kompile.modelmanager.vlm.*;
 import ai.kompile.modelmanager.vlm.dynamic.*;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -117,8 +118,7 @@ public class VlmPipelineRegistry {
 
     private VlmPipelineRegistry(Path configDir) {
         this.configDir = configDir;
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
         // Initialize with builtins
         initializeBuiltins();

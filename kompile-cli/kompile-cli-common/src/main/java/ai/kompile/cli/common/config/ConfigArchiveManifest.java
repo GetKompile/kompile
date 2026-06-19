@@ -18,6 +18,9 @@ package ai.kompile.cli.common.config;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,10 +32,14 @@ import java.util.Map;
  * Manifest embedded in every config archive zip.
  * Describes what's inside so consumers can preview before importing.
  */
+@Data
+@Builder
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class ConfigArchiveManifest {
 
     @JsonProperty
+    @Builder.Default
     private String version = "1.0";
 
     @JsonProperty
@@ -46,17 +53,24 @@ public class ConfigArchiveManifest {
 
     /** Kompile config files (from ~/.kompile/config/ and ~/.kompile/*.json) */
     @JsonProperty
+    @Builder.Default
     private List<String> kompileConfigs = new ArrayList<>();
 
     /** Chat provider config files included, keyed by provider name */
     @JsonProperty
+    @Builder.Default
     private Map<String, List<String>> chatProviderConfigs = new LinkedHashMap<>();
 
     /** System prompt files included */
     @JsonProperty
+    @Builder.Default
     private List<String> systemPrompts = new ArrayList<>();
 
     public ConfigArchiveManifest() {
+        this.version = "1.0";
+        this.kompileConfigs = new ArrayList<>();
+        this.chatProviderConfigs = new LinkedHashMap<>();
+        this.systemPrompts = new ArrayList<>();
         this.createdAt = Instant.now().toString();
         try {
             this.hostname = java.net.InetAddress.getLocalHost().getHostName();
@@ -64,25 +78,4 @@ public class ConfigArchiveManifest {
             this.hostname = "unknown";
         }
     }
-
-    public String getVersion() { return version; }
-    public void setVersion(String version) { this.version = version; }
-
-    public String getCreatedAt() { return createdAt; }
-    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
-
-    public String getHostname() { return hostname; }
-    public void setHostname(String hostname) { this.hostname = hostname; }
-
-    public String getDescription() { return description; }
-    public void setDescription(String description) { this.description = description; }
-
-    public List<String> getKompileConfigs() { return kompileConfigs; }
-    public void setKompileConfigs(List<String> kompileConfigs) { this.kompileConfigs = kompileConfigs; }
-
-    public Map<String, List<String>> getChatProviderConfigs() { return chatProviderConfigs; }
-    public void setChatProviderConfigs(Map<String, List<String>> chatProviderConfigs) { this.chatProviderConfigs = chatProviderConfigs; }
-
-    public List<String> getSystemPrompts() { return systemPrompts; }
-    public void setSystemPrompts(List<String> systemPrompts) { this.systemPrompts = systemPrompts; }
 }

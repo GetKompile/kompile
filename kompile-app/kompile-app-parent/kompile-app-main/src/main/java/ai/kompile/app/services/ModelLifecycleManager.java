@@ -31,7 +31,9 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -305,16 +307,27 @@ public class ModelLifecycleManager implements SmartLifecycle {
      * are stopped cleanly before the JVM exits.
      */
     private void shutdownAllManagedServices() {
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (Map.Entry<String, ManagedService> entry : managedServices.entrySet()) {
             ManagedService service = entry.getValue();
             if (service.isRunning() && !service.isSuspended()) {
                 log.info("Shutting down managed service '{}' (running=true)", entry.getKey());
-                try {
-                    service.suspend("Application shutdown");
-                } catch (Exception e) {
-                    log.warn("Error suspending service '{}' during shutdown",
-                            entry.getKey(), e);
-                }
+                futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        service.suspend("Application shutdown");
+                    } catch (Exception e) {
+                        log.warn("Error suspending service '{}' during shutdown",
+                                entry.getKey(), e);
+                    }
+                }));
+            }
+        }
+        if (!futures.isEmpty()) {
+            try {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                        .get(10, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                log.warn("Timed out or interrupted waiting for managed services to suspend during shutdown", e);
             }
         }
     }

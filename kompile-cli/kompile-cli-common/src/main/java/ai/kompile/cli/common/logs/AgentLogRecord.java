@@ -17,6 +17,9 @@
 package ai.kompile.cli.common.logs;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 
@@ -27,6 +30,9 @@ import java.time.Instant;
  * carries the per-run context ({@code processId}, {@code agentName}); these
  * fields are populated only when records are aggregated across files.
  */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class AgentLogRecord {
 
@@ -46,77 +52,10 @@ public class AgentLogRecord {
     private String orchestratorInstanceId;
     private Long sessionId;
 
-    public AgentLogRecord() {
-    }
-
     public AgentLogRecord(Instant ts, Stream stream, String line, Integer seq) {
         this.ts = ts;
         this.stream = stream;
         this.line = line;
         this.seq = seq;
-    }
-
-    public Instant getTs() {
-        return ts;
-    }
-
-    public void setTs(Instant ts) {
-        this.ts = ts;
-    }
-
-    public Stream getStream() {
-        return stream;
-    }
-
-    public void setStream(Stream stream) {
-        this.stream = stream;
-    }
-
-    public String getLine() {
-        return line;
-    }
-
-    public void setLine(String line) {
-        this.line = line;
-    }
-
-    public Integer getSeq() {
-        return seq;
-    }
-
-    public void setSeq(Integer seq) {
-        this.seq = seq;
-    }
-
-    public String getProcessId() {
-        return processId;
-    }
-
-    public void setProcessId(String processId) {
-        this.processId = processId;
-    }
-
-    public String getAgentName() {
-        return agentName;
-    }
-
-    public void setAgentName(String agentName) {
-        this.agentName = agentName;
-    }
-
-    public String getOrchestratorInstanceId() {
-        return orchestratorInstanceId;
-    }
-
-    public void setOrchestratorInstanceId(String orchestratorInstanceId) {
-        this.orchestratorInstanceId = orchestratorInstanceId;
-    }
-
-    public Long getSessionId() {
-        return sessionId;
-    }
-
-    public void setSessionId(Long sessionId) {
-        this.sessionId = sessionId;
     }
 }

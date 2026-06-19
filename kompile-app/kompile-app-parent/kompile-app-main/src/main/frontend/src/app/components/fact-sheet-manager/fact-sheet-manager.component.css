@@ -5907,3 +5907,81 @@
 .stat-value { font-size: 24px; font-weight: 600; line-height: 1.2; }
 .stat-label { font-size: 11px; color: rgba(0,0,0,0.5); text-transform: uppercase; letter-spacing: 0.5px; }
 .passage-stats h4 { margin: 16px 0 4px; font-size: 14px; font-weight: 500; }
+
+/* ── Per-stage accordion (fact-sheet-manager) ──────────────────────────── */
+.fs-stage-accordion-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 5px;
+  background: #fff;
+  overflow: hidden;
+  margin-bottom: 3px;
+  transition: box-shadow 0.15s;
+}
+.fs-stage-accordion-item.fs-stage-active  { border-left: 3px solid #1565c0; }
+.fs-stage-accordion-item.fs-stage-complete { border-left: 3px solid #2e7d32; }
+.fs-stage-accordion-item.fs-stage-inactive { opacity: 0.42; }
+
+.fs-stage-header {
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 6px 3px 4px;
+}
+.fs-stage-header:hover { background: #f8fafc; }
+
+.fs-stage-chevron {
+  font-size: 15px; width: 15px; height: 15px;
+  color: #9ca3af;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.fs-stage-chevron.fs-stage-chevron-open {
+  transform: rotate(90deg);
+  color: #1976d2;
+}
+
+/* ── Expanded detail panel ─────────────────────────────────────────────── */
+.fs-stage-detail-panel {
+  border-top: 1px solid #e5e7eb;
+  background: #f8fafc;
+  padding: 7px 12px 9px;
+}
+.fs-stage-detail-stats {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  font-size: 12px; color: #374151; margin-bottom: 7px;
+}
+.fs-stage-detail-stats strong { color: #1f2937; }
+
+.fs-stage-section-header {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 700; color: #374151;
+  margin: 5px 0 3px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.fs-stage-section-header mat-icon { font-size: 13px; width: 13px; height: 13px; color: #6b7280; }
+
+.fs-stage-events {
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 160px; overflow-y: auto;
+  border: 1px solid #e5e7eb; border-radius: 4px; background: #fff;
+}
+.fs-stage-event-row {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  padding: 3px 7px; font-size: 11px; border-bottom: 1px solid #f0f0f0;
+}
+.fs-stage-event-row:last-child { border-bottom: none; }
+.fs-stage-event-row.fs-event-warn  { background: #fffbeb; }
+.fs-stage-event-row.fs-event-error { background: #fef2f2; }
+.fs-event-time  { font-family: monospace; font-size: 10px; color: #9ca3af; white-space: nowrap; }
+.fs-event-level {
+  font-size: 10px; font-weight: 700; padding: 1px 4px; border-radius: 5px; flex-shrink: 0;
+}
+.fs-level-info  { background: #dbeafe; color: #1e40af; }
+.fs-level-warn  { background: #fef3c7; color: #92400e; }
+.fs-level-error { background: #fee2e2; color: #991b1b; }
+.fs-level-debug { background: #f3f4f6; color: #6b7280; }
+.fs-event-msg { font-weight: 500; flex: 1; }
+
+.fs-stage-detail-empty {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: #9ca3af; padding: 6px;
+  font-style: italic;
+}

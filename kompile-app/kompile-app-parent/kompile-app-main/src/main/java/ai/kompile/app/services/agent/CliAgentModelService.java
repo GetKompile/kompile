@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.services.agent;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -48,7 +49,7 @@ public class CliAgentModelService {
     private static final int DISCOVERY_TIMEOUT_SECONDS = 15;
 
     private final AgentRegistryService agentRegistry;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Autowired(required = false)
     private ExtractionLlmServiceRegistry extractionRegistry;
@@ -67,9 +68,9 @@ public class CliAgentModelService {
                     "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
                     "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex"
             ),
-            "gemini-cli", List.of(
-                    "gemini-3.1-pro", "gemini-3-flash",
-                    "gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash"
+            "agy-cli", List.of(
+                    "agy-3.1-pro", "agy-3-flash",
+                    "agy-3.1-pro-preview", "agy-2.5-pro", "agy-2.5-flash"
             ),
             "qwen-cli", List.of(
                     "qwen3-coder", "qwen3-coder-next", "qwen3.7-max",
@@ -79,6 +80,40 @@ public class CliAgentModelService {
 
     public CliAgentModelService(AgentRegistryService agentRegistry) {
         this.agentRegistry = agentRegistry;
+    }
+
+    /**
+     * Apply per-agent model selections from cli-llm-config.json to the live
+     * {@link AgentProvider} instances at startup, so the configured model is appended to the
+     * CLI command (by {@link AgentSubprocessExecutor}) without needing a UI round-trip after a
+     * restart. Only explicit per-agent entries are applied — never the global fallback, which
+     * must not leak one agent's model onto another.
+     */
+    @jakarta.annotation.PostConstruct
+    public void applyConfiguredModels() {
+        try {
+            JsonNode config = readCliLlmConfig();
+            if (config == null) return;
+            JsonNode agentModels = config.get("agentModels");
+            if (agentModels == null || !agentModels.isObject()) return;
+            int applied = 0;
+            Iterator<Map.Entry<String, JsonNode>> it = agentModels.fields();
+            while (it.hasNext()) {
+                Map.Entry<String, JsonNode> entry = it.next();
+                JsonNode val = entry.getValue();
+                if (val == null || val.isNull() || val.asText("").isBlank()) continue;
+                Optional<AgentProvider> agentOpt = agentRegistry.getAgent(entry.getKey());
+                if (agentOpt.isPresent()) {
+                    agentOpt.get().setModelName(val.asText());
+                    applied++;
+                }
+            }
+            if (applied > 0) {
+                log.info("Applied {} configured CLI agent model selection(s) at startup", applied);
+            }
+        } catch (Exception e) {
+            log.debug("Could not apply configured agent models at startup: {}", e.getMessage());
+        }
     }
 
     /**
@@ -297,6 +332,61 @@ public class CliAgentModelService {
             log.debug("Could not read cli-llm-config.json: {}", e.getMessage());
         }
         return null;
+    }
+
+    /** Read the full cli-llm-config.json as a map (empty map if absent). */
+    public Map<String, Object> getCliLlmConfig() {
+        try {
+            Path configPath = getConfigPath();
+            if (Files.exists(configPath)) {
+                return objectMapper.readValue(configPath.toFile(),
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            }
+        } catch (Exception e) {
+            log.debug("Could not read cli-llm-config.json: {}", e.getMessage());
+        }
+        return new java.util.LinkedHashMap<>();
+    }
+
+    /**
+     * Merge-preserving update of cli-llm-config.json: overlays the given keys onto the existing
+     * file so {@code agentModels} (and any other keys) are preserved — never a full overwrite.
+     * Validates known numeric fields (processPoolSize 1..32, timeoutSeconds &gt;= 1). Settable keys
+     * include {@code command} (active CLI agent), {@code processPoolSize}, {@code timeoutSeconds},
+     * {@code enabled}, {@code skipPermissions}.
+     */
+    public Map<String, Object> updateCliLlmConfig(Map<String, Object> updates) {
+        try {
+            Path configPath = getConfigPath();
+            ObjectNode root;
+            if (Files.exists(configPath)) {
+                JsonNode n = objectMapper.readTree(configPath.toFile());
+                root = n.isObject() ? (ObjectNode) n : objectMapper.createObjectNode();
+            } else {
+                Files.createDirectories(configPath.getParent());
+                root = objectMapper.createObjectNode();
+            }
+            if (updates != null) {
+                for (Map.Entry<String, Object> e : updates.entrySet()) {
+                    String k = e.getKey();
+                    Object v = e.getValue();
+                    if ("processPoolSize".equals(k) && v instanceof Number num) {
+                        root.put(k, Math.max(1, Math.min(32, num.intValue())));
+                    } else if ("timeoutSeconds".equals(k) && v instanceof Number num) {
+                        root.put(k, Math.max(1, num.intValue()));
+                    } else {
+                        root.set(k, objectMapper.valueToTree(v));
+                    }
+                }
+            }
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(configPath.toFile(), root);
+            log.info("Updated cli-llm-config.json keys: {}", updates != null ? updates.keySet() : "[]");
+            return objectMapper.convertValue(root,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.error("Failed to update cli-llm-config.json: {}", e.getMessage(), e);
+            throw new RuntimeException("Failed to update cli-llm-config: " + e.getMessage(), e);
+        }
     }
 
     private Path getConfigPath() {

@@ -17,7 +17,7 @@
 package ai.kompile.app.tools;
 
 import ai.kompile.app.services.difftracker.DiffTrackerService;
-import ai.kompile.app.services.difftracker.DiffTrackerService.DiffRecord;
+import ai.kompile.app.services.difftracker.DiffRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;

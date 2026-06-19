@@ -55,6 +55,7 @@ import { LocalRegistryService, EmbeddingModelStatus } from '../../services/local
 import { ModelRegistryService } from '../../services/model-registry.service';
 import { UnifiedCrawlService, JobSummary as CrawlJobSummary, PipelineStepProgress, CrawlStageEvent } from '../../services/unified-crawl.service';
 import { CrossIndexService } from '../../services/cross-index.service';
+import { JobLogService, JobLogEntry } from '../../services/job-log.service';
 import { SourceViewerDialogComponent, SourceViewerDialogData } from '../source-viewer-dialog/source-viewer-dialog.component';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import {
@@ -204,6 +205,16 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   activeCrawlJobs: CrawlJobSummary[] = [];
   expandedCrawlJobs: Set<string> = new Set();
   expandedCrawlErrors: Set<string> = new Set();
+  /** Per-stage accordion state: key is `${jobId}::${stageId}` */
+  expandedFsStages: Set<string> = new Set<string>();
+
+  /**
+   * Persisted log cache for fact-sheet crawl jobs.
+   * Keyed by taskId ('crawl-<internalJobId>').
+   * null = fetch in-flight; JobLogEntry[] = resolved (may be empty).
+   */
+  fsStageLogCache: Map<string, JobLogEntry[] | null> = new Map();
+
   private crawlPollSubscription: Subscription | null = null;
 
   // Completed jobs notification pane - shows recently completed jobs until dismissed
@@ -394,6 +405,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     private modelRegistryService: ModelRegistryService,
     private unifiedCrawlService: UnifiedCrawlService,
     private crossIndexService: CrossIndexService,
+    private jobLogService: JobLogService,
     private http: HttpClient,
     private fb: FormBuilder,
     private snackBar: MatSnackBar,
@@ -1022,6 +1034,115 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   isCrawlJobExpanded(jobId: string): boolean {
     return this.expandedCrawlJobs.has(jobId);
+  }
+
+  // ─── Per-stage accordion (fact-sheet-manager) ────────────────────────────
+
+  /** Toggle expand/collapse for a specific stage within a job.
+   *  On first open, lazily fetches the persisted logs for this job. */
+  toggleFsStageExpanded(jobId: string, stageId: string): void {
+    const key = `${jobId}::${stageId}`;
+    if (this.expandedFsStages.has(key)) {
+      this.expandedFsStages.delete(key);
+    } else {
+      this.expandedFsStages.add(key);
+      // Find the job and trigger a persisted-log fetch if not already cached/in-flight
+      const job = this.activeCrawlJobs.find(j => j.jobId === jobId);
+      if (job) this.fetchFsJobLogs(job);
+    }
+    this.cdr.markForCheck();
+  }
+
+  /** Returns true when the given stage accordion is open. */
+  isFsStageExpanded(jobId: string, stageId: string): boolean {
+    return this.expandedFsStages.has(`${jobId}::${stageId}`);
+  }
+
+  /** Derive the persisted-log taskId for a fact-sheet crawl job.
+   *  Backend stores logs under 'crawl-<internalJobId>' (the UUID). */
+  private fsTaskId(job: CrawlJobSummary): string {
+    return 'crawl-' + (job.internalJobId || job.jobId);
+  }
+
+  /**
+   * Fetch persisted logs for the job once and cache them.
+   * Subsequent calls for the same taskId are no-ops.
+   */
+  private fetchFsJobLogs(job: CrawlJobSummary): void {
+    const taskId = this.fsTaskId(job);
+    if (this.fsStageLogCache.has(taskId)) return; // already cached or in-flight
+    this.fsStageLogCache.set(taskId, null); // null = loading
+    this.jobLogService.getLogsForJob(taskId, { page: 0, size: 500 }).subscribe({
+      next: (resp) => {
+        this.fsStageLogCache.set(taskId, resp.logs || []);
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.fsStageLogCache.set(taskId, []); // empty on error — show empty state
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  /** True while persisted logs for a job are being fetched (spinner). */
+  isFsStageLogLoading(job: CrawlJobSummary): boolean {
+    return this.fsStageLogCache.get(this.fsTaskId(job)) === null;
+  }
+
+  /**
+   * Map a stage name to the phase strings that appear in recentEvents for that stage.
+   */
+  fsStageToPhases(stageId: string): string[] {
+    const upper = (stageId || '').toUpperCase();
+    const phaseMap: { [key: string]: string[] } = {
+      'DISCOVERY':        ['CRAWLING', 'DISCOVERING'],
+      'LOADING':          ['LOADING'],
+      'CHUNKING':         ['CHUNKING'],
+      'GRAPH_EXTRACTION': ['GRAPH_EXTRACTION', 'ENTITY_RESOLUTION', 'EDGE_COMPUTATION'],
+      'EMBEDDING':        ['EMBEDDING', 'VECTOR_INDEXING'],
+      'INDEXING':         ['INDEXING', 'VECTOR_INDEXING'],
+    };
+    return phaseMap[upper] || [upper];
+  }
+
+  /**
+   * Return log entries for the given stage, filtered by phase.
+   *
+   * Priority:
+   *  1. Persisted logs from the durable API (available during AND after a crawl).
+   *  2. Fallback to live recentEvents from the job object while the fetch is
+   *     in-flight or the persisted store returned nothing.
+   */
+  getFsStageEvents(job: CrawlJobSummary, stageId: string): CrawlStageEvent[] {
+    const taskId = this.fsTaskId(job);
+    const cached = this.fsStageLogCache.get(taskId);
+    const phases = this.fsStageToPhases(stageId);
+    const phaseSet = new Set(phases);
+
+    if (cached !== null && cached !== undefined) {
+      // Cache populated — filter persisted entries to those matching this stage's phases.
+      // JobLogEntry has no dedicated phase field; we match against source strings and
+      // message prefixes in the format '[PHASE] ...' written by the crawl subsystem.
+      const persisted: CrawlStageEvent[] = cached
+        .filter((e: JobLogEntry) =>
+          phases.some(ph => (e.source || '').toUpperCase().includes(ph)) ||
+          phases.some(ph => (e.message || '').toUpperCase().startsWith('[' + ph + ']'))
+        )
+        .map((e: JobLogEntry): CrawlStageEvent => ({
+          timestamp: e.timestamp,
+          phase: stageId,
+          level: e.level,
+          message: e.message
+        }));
+
+      if (cached.length > 0) return persisted;
+      // Persisted returned empty (log storage not yet enabled or job too old) —
+      // fall through to live recentEvents.
+    }
+
+    // Fallback: live recentEvents from the job object (populated by WebSocket during a run)
+    if (!job.recentEvents?.length) return [];
+    return job.recentEvents.filter(e => phaseSet.has((e.phase || '').toUpperCase()));
   }
 
   toggleCrawlErrors(jobId: string): void {

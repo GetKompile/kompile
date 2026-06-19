@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import picocli.CommandLine;
 
@@ -243,7 +244,7 @@ public class ResumeCommand implements Callable<Integer> {
     private int searchConversations(String query, String filterAgent, String filterSource) {
         try {
             ResumeTool tool = new ResumeTool();
-            ObjectMapper om = new ObjectMapper();
+            ObjectMapper om = JsonUtils.standardMapper();
             ObjectNode params = om.createObjectNode();
             params.put("action", "search");
             params.put("query", query);
@@ -569,16 +570,25 @@ public class ResumeCommand implements Callable<Integer> {
             cmd.add("-C");
             cmd.add(exportResult.getWorkingDirectory().toString());
         }
+
+        // Add permission bypass flags via centralized overrides.
+        // Insert them before the resume subcommand so they are parsed as global
+        // flags (e.g. `codex --dangerously-bypass-approvals-and-sandbox resume ...`).
+        // OpenCode's TUI resume (`opencode -s <id>`) does not accept
+        // `--dangerously-skip-permissions`; that flag is only valid for
+        // `opencode run`. Skip it here so the TUI resume actually launches
+        // instead of printing the help page and exiting with code 1.
+        if (!name.contains("opencode")) {
+            ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
+                    cmd, agent, true, exportResult.getWorkingDirectory());
+        }
+
         for (int i = 1; i < resumeParts.length; i++) {
             String part = resumeParts[i];
             if (!part.isEmpty()) {
                 cmd.add(part);
             }
         }
-
-        // Add permission bypass flags via centralized overrides
-        ai.kompile.cli.main.chat.agent.AgentFlagOverrides.addPermissionBypassFlags(
-                cmd, agent, true, exportResult.getWorkingDirectory());
 
         // On resume, inject a system prompt directive to verify MCP tools are
         // connected before proceeding. Claude Code has a race condition where

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.install;
 
+import ai.kompile.cli.common.util.ArchiveUtils;
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.install.InstallMain;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
@@ -160,7 +161,7 @@ public class ComponentInstaller {
             tempExtractDir.mkdirs();
 
             // Use ArchiveUtils for extraction
-            ai.kompile.cli.main.install.ArchiveUtils.unzipFileTo(downloadedFile.getAbsolutePath(), tempExtractDir.getAbsolutePath());
+            ArchiveUtils.unzipFileTo(downloadedFile.getAbsolutePath(), tempExtractDir.getAbsolutePath());
 
             // Find the JAR file in the extracted archive
             File jarFile = findJarInDirectory(tempExtractDir, componentId);

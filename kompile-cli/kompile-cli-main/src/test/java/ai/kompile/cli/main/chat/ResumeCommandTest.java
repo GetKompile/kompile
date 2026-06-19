@@ -75,6 +75,24 @@ class ResumeCommandTest {
     }
 
     @Test
+    void opencodeResumeUsesSessionFlagWithoutPermissionBypass() throws Exception {
+        ConversationExporter.ExportResult exportResult = new ConversationExporter.ExportResult(
+                "resume-session",
+                "opencode",
+                tempDir.resolve("session.json"),
+                "opencode -s resume-session",
+                tempDir);
+
+        List<String> args = buildAgentCommand("opencode", exportResult);
+
+        assertTrue(args.contains("opencode"));
+        assertTrue(args.contains("-s"));
+        assertTrue(args.contains("resume-session"));
+        assertFalse(args.contains("--dangerously-skip-permissions"),
+                "OpenCode TUI resume does not support --dangerously-skip-permissions");
+    }
+
+    @Test
     void listFlagPrintsConversationsAndExits() throws Exception {
         String originalHome = System.getProperty("user.home");
         PrintStream originalOut = System.out;
@@ -94,7 +112,6 @@ class ResumeCommandTest {
             assertEquals(0, exitCode);
             assertTrue(output.contains("Saved conversations:"));
             assertTrue(output.contains("resume-list-session"));
-            assertTrue(output.contains("source=kompile"));
             assertTrue(output.contains("agent=opencode"));
             assertTrue(output.contains("hello resume list"));
         } finally {

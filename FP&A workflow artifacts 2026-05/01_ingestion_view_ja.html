@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>プロセス・ディスカバリー — ベリアン社 FP&A</title>
+<style>
+  /* Dark-mode default · streamlined · high contrast */
+  :root {
+    --bg: #050505;
+    --surface: #1a1a1a;
+    --surface-hover: #242424;
+    --surface-sunken: #0d0d0d;
+    --text: #ffffff;
+    --text-secondary: #c8c8c8;
+    --text-tertiary: #909090;
+    --border: rgba(255,255,255,0.14);
+    --border-strong: rgba(255,255,255,0.28);
+    --accent: #FF4D6A;
+    --accent-strong: #FF7088;
+    --accent-bg: rgba(255,77,106,0.10);
+
+    /* Categorical (dark-tuned, low-saturation fill, high-contrast text) */
+    --blue-50:   rgba(124,176,232,0.10);
+    --blue-600:  #7CB0E8;
+    --blue-800:  #CFE2F5;
+    --green-50:  rgba(150,210,110,0.10);
+    --green-600: #96D26E;
+    --green-800: #D6ECC1;
+    --amber-50:  rgba(232,180,90,0.10);
+    --amber-600: #E8B45A;
+    --amber-800: #F5D8A1;
+    --purple-50: rgba(174,164,240,0.10);
+    --purple-600: #AEA4F0;
+    --purple-800: #DAD3F8;
+    --coral-50:  rgba(236,138,100,0.10);
+    --coral-600: #EC8A64;
+    --coral-800: #F6C0AA;
+    --teal-50:   rgba(96,196,170,0.10);
+    --teal-600:  #60C4AA;
+    --teal-800:  #B5E5D7;
+    --red-50:    rgba(240,90,90,0.12);
+    --red-600:   #F05A5A;
+    --red-800:   #F8A8A8;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Hiragino Sans", "Yu Gothic UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    line-height: 1.55;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Header */
+  header {
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 32px 0;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .header-inner { max-width: 1440px; margin: 0 auto; }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .logo-text { font-size: 11px; color: var(--text-tertiary); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .logo-slash {
+    font-weight: 800;
+    color: var(--accent);
+    font-size: 17px;
+    letter-spacing: -0.02em;
+  }
+  .logo-wordmark {
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-left: -3px;
+  }
+  .logo-divider { color: var(--text-tertiary); margin: 0 4px; font-size: 11px; }
+  .logo-context {
+    font-size: 11px; color: var(--text-tertiary);
+    font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 2px; letter-spacing: -0.01em; color: var(--text); }
+  .sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; }
+
+  .tabs { display: flex; gap: 0; }
+  .tab {
+    padding: 10px 18px 12px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font: inherit;
+    font-size: 13.5px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+
+  main {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 28px 32px 64px;
+  }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Status banner */
+  .status-banner {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px 22px;
+    margin-bottom: 20px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 28px;
+    align-items: center;
+  }
+  .status-banner h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
+  .status-banner p { margin: 0; font-size: 13px; color: var(--text-secondary); }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 10px;
+    border-radius: 2px;
+    background: var(--green-50);
+    color: var(--green-800);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    border: 1px solid rgba(150,210,110,0.20);
+  }
+  .status-pill::before {
+    content: '';
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green-600);
+  }
+  .status-stats {
+    display: flex;
+    gap: 32px;
+    border-left: 1px solid var(--border);
+    padding-left: 28px;
+  }
+  .status-stat-num { font-size: 24px; font-weight: 600; color: var(--text); margin-bottom: 0; line-height: 1.1; letter-spacing: -0.02em; }
+  .status-stat-lbl { font-size: 10.5px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; margin-top: 2px; }
+
+  /* Source cards */
+  .sources-intro {
+    font-size: 13.5px;
+    color: var(--text-secondary);
+    margin: 4px 0 20px;
+    max-width: 980px;
+  }
+  .source-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  @media (max-width: 900px) {
+    .source-grid { grid-template-columns: 1fr; }
+  }
+  .source-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .source-card-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 30px 1fr auto;
+    gap: 12px;
+    align-items: center;
+  }
+  .source-icon {
+    width: 30px; height: 30px;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+    border: 1px solid;
+  }
+  .source-icon.s-doc { background: var(--blue-50);   border-color: rgba(124,176,232,0.25); }
+  .source-icon.s-xls { background: var(--green-50);  border-color: rgba(150,210,110,0.25); }
+  .source-icon.s-rec { background: var(--coral-50);  border-color: rgba(236,138,100,0.25); }
+  .source-icon.s-int { background: var(--purple-50); border-color: rgba(174,164,240,0.25); }
+  .source-title { font-size: 14px; font-weight: 600; margin: 0; color: var(--text); letter-spacing: -0.005em; }
+  .source-sub { font-size: 11.5px; color: var(--text-tertiary); margin: 2px 0 0; }
+  .source-status {
+    font-size: 10px; font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 2px;
+    background: var(--green-50);
+    color: var(--green-800);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border: 1px solid rgba(150,210,110,0.20);
+  }
+  .source-card-body { padding: 14px 18px 16px; }
+  .source-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .source-stat {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 8px 10px;
+  }
+  .source-stat-num { font-size: 18px; font-weight: 600; line-height: 1.1; color: var(--text); letter-spacing: -0.02em; }
+  .source-stat-lbl { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
+
+  .source-files { margin-top: 4px; }
+  .source-files h5 { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 6px; font-weight: 600; }
+  .file-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    padding: 2px 7px;
+    border-radius: 2px;
+    font-size: 11.5px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    color: var(--text-secondary);
+    margin: 2px 4px 2px 0;
+  }
+  .file-tag.doc::before { content: '◇'; color: var(--blue-600);   font-size: 10px; }
+  .file-tag.xls::before { content: '◇'; color: var(--green-600);  font-size: 10px; }
+  .file-tag.rec::before { content: '◇'; color: var(--coral-600);  font-size: 10px; }
+  .file-tag.chat::before { content: '◇'; color: var(--purple-600); font-size: 10px; }
+
+  /* Evidence tab */
+  .evidence-grid {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 900px) {
+    .evidence-grid { grid-template-columns: 1fr; }
+  }
+  .evidence-list {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px;
+    height: fit-content;
+    position: sticky;
+    top: 130px;
+  }
+  .evidence-list-item {
+    padding: 10px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.12s;
+    border-left: 2px solid transparent;
+  }
+  .evidence-list-item:hover { background: var(--surface-hover); }
+  .evidence-list-item.active {
+    background: var(--surface-hover);
+    border-left-color: var(--accent);
+  }
+  .evidence-list-item h4 { font-size: 12.5px; font-weight: 600; margin: 0 0 2px; color: var(--text); }
+  .evidence-list-item p { font-size: 11.5px; color: var(--text-tertiary); margin: 0; }
+
+  .evidence-detail {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 22px 24px;
+  }
+  .evidence-pane { display: none; }
+  .evidence-pane.active { display: block; }
+  .evidence-pane h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
+  .evidence-pane > p.lead { margin: 0 0 16px; color: var(--text-secondary); font-size: 13px; }
+
+  .evidence-section { margin-top: 20px; }
+  .evidence-section h4 {
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 0 0 8px;
+    font-weight: 600;
+  }
+
+  /* Document mock */
+  .doc-mock {
+    background: var(--surface-sunken);
+    border-radius: 3px;
+    padding: 14px 18px;
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    border-left: 2px solid var(--blue-600);
+  }
+  .doc-mock strong { color: var(--text); font-weight: 600; }
+  .doc-mock .doc-section { font-size: 10.5px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; font-weight: 600; }
+  .doc-mock mark {
+    background: rgba(232,180,90,0.18);
+    color: var(--amber-800);
+    padding: 0 3px;
+    border-radius: 1px;
+  }
+
+  /* Excel mock */
+  .xls-mock {
+    background: var(--surface-sunken);
+    border-radius: 3px;
+    padding: 14px;
+    border-left: 2px solid var(--green-600);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    overflow-x: auto;
+  }
+  .xls-grid {
+    display: grid;
+    grid-template-columns: 32px repeat(5, minmax(80px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+  .xls-cell {
+    background: var(--surface);
+    padding: 4px 8px;
+    font-size: 11.5px;
+    color: var(--text);
+  }
+  .xls-cell.head { background: var(--surface-sunken); color: var(--text-tertiary); font-weight: 600; text-align: center; }
+  .xls-cell.formula { color: var(--blue-800); font-style: italic; }
+  .xls-cell.macro { background: rgba(232,180,90,0.14); color: var(--amber-800); font-weight: 600; }
+
+  /* Screen recording mock */
+  .rec-mock {
+    background: var(--surface-sunken);
+    border-radius: 3px;
+    padding: 12px 16px;
+    border-left: 2px solid var(--coral-600);
+  }
+  .rec-event {
+    display: grid;
+    grid-template-columns: 64px 88px 1fr;
+    gap: 12px;
+    padding: 6px 0;
+    font-size: 12.5px;
+    border-bottom: 1px dashed var(--border);
+    align-items: baseline;
+  }
+  .rec-event:last-child { border-bottom: none; }
+  .rec-time { font-family: ui-monospace, Menlo, monospace; color: var(--text-tertiary); font-size: 11.5px; }
+  .rec-app {
+    font-size: 10.5px;
+    padding: 1px 7px;
+    border-radius: 2px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    width: fit-content;
+    text-align: center;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .rec-action { color: var(--text); }
+  .rec-action em { color: var(--text-tertiary); font-style: normal; }
+
+  /* Interview mock */
+  .chat-mock {
+    background: var(--surface-sunken);
+    border-radius: 3px;
+    padding: 14px 18px;
+    border-left: 2px solid var(--purple-600);
+  }
+  .chat-turn {
+    margin-bottom: 14px;
+    font-size: 13px;
+  }
+  .chat-turn:last-child { margin-bottom: 0; }
+  .chat-role {
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+  .chat-role.agent { color: var(--purple-800); }
+  .chat-role.human { color: var(--text-tertiary); }
+  .chat-text { color: var(--text); line-height: 1.6; }
+  .chat-text em { color: var(--text-secondary); font-style: italic; }
+
+  /* Synthesis tab — process map */
+  .synth-intro {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 16px 22px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .synth-intro strong { color: var(--text); font-weight: 600; }
+
+  .synth-flow {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 22px 24px;
+    margin-bottom: 16px;
+  }
+  .synth-flow h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
+  .synth-flow-sub { font-size: 12.5px; color: var(--text-secondary); margin: 0 0 16px; }
+  .synth-flow svg { display: block; width: 100%; height: auto; }
+
+  /* Step evidence rows */
+  .step-evidence {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px 24px;
+    margin-bottom: 14px;
+  }
+  .step-evidence h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
+  .step-evidence-sub { font-size: 12.5px; color: var(--text-secondary); margin: 0 0 14px; }
+  .se-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1.3fr) 1fr;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    align-items: start;
+  }
+  .se-row:last-child { border-bottom: none; }
+  .se-step-name { font-weight: 600; color: var(--text); }
+  .se-step-id { font-size: 10.5px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 2px; font-weight: 600; }
+  .se-evidence-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ev-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 2px;
+    font-size: 11.5px;
+    font-weight: 500;
+    border: 1px solid;
+  }
+  .ev-tag.doc { background: var(--blue-50);   color: var(--blue-800);   border-color: rgba(124,176,232,0.30); }
+  .ev-tag.xls { background: var(--green-50);  color: var(--green-800);  border-color: rgba(150,210,110,0.30); }
+  .ev-tag.rec { background: var(--coral-50);  color: var(--coral-800);  border-color: rgba(236,138,100,0.30); }
+  .ev-tag.int { background: var(--purple-50); color: var(--purple-800); border-color: rgba(174,164,240,0.30); }
+  .ev-tag::before {
+    width: 5px; height: 5px; border-radius: 50%;
+    content: '';
+    display: inline-block;
+  }
+  .ev-tag.doc::before { background: var(--blue-600); }
+  .ev-tag.xls::before { background: var(--green-600); }
+  .ev-tag.rec::before { background: var(--coral-600); }
+  .ev-tag.int::before { background: var(--purple-600); }
+
+  /* Confidence tab */
+  .conf-summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .conf-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 16px 20px;
+    border-top: 2px solid;
+  }
+  .conf-card.high { border-top-color: var(--green-600); }
+  .conf-card.med  { border-top-color: var(--amber-600); }
+  .conf-card.low  { border-top-color: var(--red-600); }
+  .conf-card h4 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .conf-card.high h4 { color: var(--green-800); }
+  .conf-card.med  h4 { color: var(--amber-800); }
+  .conf-card.low  h4 { color: var(--red-800); }
+  .conf-card .num { font-size: 30px; font-weight: 600; line-height: 1.0; color: var(--text); letter-spacing: -0.03em; }
+  .conf-card .lbl { font-size: 12.5px; color: var(--text-secondary); margin-top: 4px; }
+
+  .conf-step-list {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px;
+  }
+  .conf-step {
+    display: grid;
+    grid-template-columns: 24px 200px 1fr auto;
+    gap: 14px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+    font-size: 13px;
+  }
+  .conf-step:last-child { border-bottom: none; }
+  .conf-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .conf-dot.high { background: var(--green-600); }
+  .conf-dot.med  { background: var(--amber-600); }
+  .conf-dot.low  { background: var(--red-600); }
+  .conf-step-name { font-weight: 600; color: var(--text); }
+  .conf-gap { font-size: 12.5px; color: var(--text-secondary); }
+  .conf-action {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 2px;
+    background: var(--accent-bg);
+    color: var(--accent-strong);
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid rgba(255,77,106,0.30);
+    font-family: inherit;
+    letter-spacing: 0.02em;
+    transition: background 0.12s;
+  }
+  .conf-action:hover { background: rgba(255,77,106,0.18); }
+
+  footer {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 24px 32px 48px;
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+
+  /* SVG node styling for synthesis flow */
+  .nd rect { stroke-width: 1; cursor: default; }
+  .nd-blue   rect { fill: var(--blue-50);   stroke: var(--blue-600); }
+  .nd-green  rect { fill: var(--green-50);  stroke: var(--green-600); }
+  .nd-amber  rect { fill: var(--amber-50);  stroke: var(--amber-600); }
+  .nd-purple rect { fill: var(--purple-50); stroke: var(--purple-600); }
+  .nd-coral  rect { fill: var(--coral-50);  stroke: var(--coral-600); }
+  .nd-teal   rect { fill: var(--teal-50);   stroke: var(--teal-600); }
+  .nd-blue   text { fill: var(--blue-800); }
+  .nd-green  text { fill: var(--green-800); }
+  .nd-amber  text { fill: var(--amber-800); }
+  .nd-purple text { fill: var(--purple-800); }
+  .nd-coral  text { fill: var(--coral-800); }
+  .nd-teal   text { fill: var(--teal-800); }
+  .nd .th { font-size: 12.5px; font-weight: 600; }
+  .nd .ts { font-size: 10.5px; opacity: 0.85; }
+  .svg-arrow { stroke: var(--text-tertiary); fill: none; stroke-width: 1; }
+  .svg-arrow-dashed { stroke: var(--text-tertiary); fill: none; stroke-width: 0.75; stroke-dasharray: 3 3; opacity: 0.5; }
+  .lane-label { font-size: 11px; fill: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="logo-row">
+      <span class="logo-slash">//</span>
+      <span class="logo-wordmark">PROSSIMO</span>
+      <span class="logo-divider">·</span>
+      <span class="logo-context">プロセス・ディスカバリー</span>
+    </div>
+    <h1>ベリアン社 FP&A — 3ヶ月 P&L 予測プロセス</h1>
+    <p class="sub">月次決算 + 3ヶ月ローリング予測の現行運用を、4 チャネル・3 週間で多面的に観察した結果。</p>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-view="sources" role="tab">プロセス抽出</button>
+      <button class="tab" data-view="evidence" role="tab">抽出された証跡</button>
+      <button class="tab" data-view="synthesis" role="tab">プロセスマップ</button>
+      <button class="tab" data-view="confidence" role="tab">検証・ギャップ</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ========== SOURCES TAB ========== -->
+<section class="view active" id="view-sources">
+
+  <div class="status-banner">
+    <div>
+      <div class="status-pill">ディスカバリー完了</div>
+      <h2>ベリアン社 3ヶ月 P&L 予測プロセス — 観察・解読・合成済</h2>
+      <p>4 証跡チャネル × 3 週間の受動・能動観察を完了。合成済プロセス・モデルはワークフロー・デザイナーでのヒューマン・レビュー段階に移行可能。</p>
+    </div>
+    <div class="status-stats">
+      <div>
+        <div class="status-stat-num">11</div>
+        <div class="status-stat-lbl">プロセス・ステップ</div>
+      </div>
+      <div>
+        <div class="status-stat-num">7</div>
+        <div class="status-stat-lbl">検証ルール</div>
+      </div>
+      <div>
+        <div class="status-stat-num">94%</div>
+        <div class="status-stat-lbl">平均信頼度</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="sources-intro">各チャネルが業務の異なる側面を捕捉する。マニュアル類は「自分たちがやっていると考えている業務」、Excel ファイル群は「システムが実際に計算している中身」、画面録画は「現場のアナリストが実際にクリックしている操作」、ヒアリングは「文書化されていない判断基準」を、それぞれ明らかにする。これら 4 系統が統合され、単一の実行可能なプロセス・モデルに合成される。</p>
+
+  <div class="source-grid">
+
+    <!-- Source 1: Word manuals -->
+    <div class="source-card">
+      <div class="source-card-head">
+        <div class="source-icon s-doc">📄</div>
+        <div>
+          <h3 class="source-title">業務手順書・SOP</h3>
+          <p class="source-sub">Word 文書、PDF、社内 Wiki</p>
+        </div>
+        <span class="source-status">取込済</span>
+      </div>
+      <div class="source-card-body">
+        <div class="source-stats">
+          <div class="source-stat">
+            <div class="source-stat-num">14</div>
+            <div class="source-stat-lbl">文書数</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">312</div>
+            <div class="source-stat-lbl">手順ルール</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">28</div>
+            <div class="source-stat-lbl">相互参照</div>
+          </div>
+        </div>
+        <div class="source-files">
+          <h5>主要ファイル</h5>
+          <span class="file-tag doc">FP&amp;A_Close_SOP_v3.2.docx</span>
+          <span class="file-tag doc">3M_Forecast_Cookbook.docx</span>
+          <span class="file-tag doc">FX_Policy_Memo.pdf</span>
+          <span class="file-tag doc">CommercialFinance_Wiki.html</span>
+          <span class="file-tag doc">Audit_ICFR_Controls.docx</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Source 2: Excel files -->
+    <div class="source-card">
+      <div class="source-card-head">
+        <div class="source-icon s-xls">📊</div>
+        <div>
+          <h3 class="source-title">スプレッドシート・モデル・マクロ</h3>
+          <p class="source-sub">稼働中・アーカイブのブック(VBA 含む)</p>
+        </div>
+        <span class="source-status">解読済</span>
+      </div>
+      <div class="source-card-body">
+        <div class="source-stats">
+          <div class="source-stat">
+            <div class="source-stat-num">47</div>
+            <div class="source-stat-lbl">ブック数</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">2,184</div>
+            <div class="source-stat-lbl">索引化された数式</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">31</div>
+            <div class="source-stat-lbl">解読済マクロ</div>
+          </div>
+        </div>
+        <div class="source-files">
+          <h5>主要ファイル</h5>
+          <span class="file-tag xls">3MoP&amp;L_Master_2026.xlsm</span>
+          <span class="file-tag xls">Forecast_AMER_Apr26.xlsx</span>
+          <span class="file-tag xls">Forecast_EMEA_Apr26.xlsx</span>
+          <span class="file-tag xls">Forecast_APAC_Apr26.xlsx</span>
+          <span class="file-tag xls">FX_Rate_Loader.xlsm</span>
+          <span class="file-tag xls">COGS_Standards_FY26.xlsx</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Source 3: Screen recordings -->
+    <div class="source-card">
+      <div class="source-card-head">
+        <div class="source-icon s-rec">🎬</div>
+        <div>
+          <h3 class="source-title">実運用の画面録画</h3>
+          <p class="source-sub">月次決算 3 サイクル(2026/2、3、4 月)</p>
+        </div>
+        <span class="source-status">解読済</span>
+      </div>
+      <div class="source-card-body">
+        <div class="source-stats">
+          <div class="source-stat">
+            <div class="source-stat-num">42h</div>
+            <div class="source-stat-lbl">録画時間</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">1,847</div>
+            <div class="source-stat-lbl">UI イベント</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">11</div>
+            <div class="source-stat-lbl">使用アプリ数</div>
+          </div>
+        </div>
+        <div class="source-files">
+          <h5>収録セッション</h5>
+          <span class="file-tag rec">Feb26_close_J.Park.mp4</span>
+          <span class="file-tag rec">Mar26_close_S.Reyes.mp4</span>
+          <span class="file-tag rec">Apr26_forecast_J.Park.mp4</span>
+          <span class="file-tag rec">Apr26_consolidation_M.Chen.mp4</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Source 4: Interview -->
+    <div class="source-card">
+      <div class="source-card-head">
+        <div class="source-icon s-int">💬</div>
+        <div>
+          <h3 class="source-title">構造化ヒアリング</h3>
+          <p class="source-sub">FP&A チームとの AI 主導対話</p>
+        </div>
+        <span class="source-status">合成済</span>
+      </div>
+      <div class="source-card-body">
+        <div class="source-stats">
+          <div class="source-stat">
+            <div class="source-stat-num">6</div>
+            <div class="source-stat-lbl">参加者</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">238</div>
+            <div class="source-stat-lbl">Q&A ターン数</div>
+          </div>
+          <div class="source-stat">
+            <div class="source-stat-num">19</div>
+            <div class="source-stat-lbl">エッジケース</div>
+          </div>
+        </div>
+        <div class="source-files">
+          <h5>ヒアリング対象</h5>
+          <span class="file-tag chat">M. Chen — FP&A 担当 VP</span>
+          <span class="file-tag chat">J. Park — シニア・アナリスト</span>
+          <span class="file-tag chat">S. Reyes — アナリスト(EMEA)</span>
+          <span class="file-tag chat">A. Tanaka — アナリスト(APAC)</span>
+          <span class="file-tag chat">L. Okafor — コントローラ</span>
+          <span class="file-tag chat">D. Singh — Sales Ops</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</section>
+
+<!-- ========== EVIDENCE TAB ========== -->
+<section class="view" id="view-evidence">
+
+  <p class="sources-intro" style="margin-bottom: 16px;">各チャネルから抽出された証跡の実例。ディスカバリー・システムは、プロセスに関する主張をすべて検証可能な証跡(マニュアル該当ページ、ブック内セル、録画タイムスタンプ、ヒアリング発言)に紐付ける。</p>
+
+  <div class="evidence-grid">
+    <div class="evidence-list">
+      <div class="evidence-list-item active" data-pane="ev-doc">
+        <h4>SOP マニュアル</h4>
+        <p>第 3 章 — 予測の連結</p>
+      </div>
+      <div class="evidence-list-item" data-pane="ev-xls">
+        <h4>Excel マスター</h4>
+        <p>3MoP&amp;L_Master_2026.xlsm</p>
+      </div>
+      <div class="evidence-list-item" data-pane="ev-rec">
+        <h4>画面録画</h4>
+        <p>Mar26_close_S.Reyes.mp4 — 0:42:13</p>
+      </div>
+      <div class="evidence-list-item" data-pane="ev-int">
+        <h4>ヒアリング</h4>
+        <p>J. Park · 発言 23 — パイプライン照合</p>
+      </div>
+    </div>
+
+    <div class="evidence-detail">
+
+      <div class="evidence-pane active" id="ev-doc">
+        <h3>FP&amp;A_Close_SOP_v3.2.docx — p. 14</h3>
+        <p class="lead">業務手順マニュアルの代表ページ。システムは個別手順ルール(ハイライト)を抽出し、該当プロセス・ステップに紐付ける。</p>
+
+        <div class="evidence-section">
+          <h4>原文抜粋</h4>
+          <div class="doc-mock">
+            <div class="doc-section">3.2 地域別予測の連結</div>
+            <p>各地域の財務責任者は、自地域の予測ブックを共有フォルダ <strong>Forecasts/2026/Mx/</strong> に、決算サイクル<mark>4 営業日目の終業時刻まで</mark>に提出。コーポレート FP&amp;A のアナリストは、連結前に提出物を標準テンプレートと照合する責任を負う。</p>
+            <p><mark>セル D60 の地域合計が、Detail タブの明細合計と $1,000 を超えて乖離している場合</mark>、当該ブックは差異ログを添えて地域責任者に差し戻すこと。地域からの提出物を<strong>直接上書き禁止</strong>。監査証跡保持のため、修正は <strong>Adjustments</strong> タブに追記する。</p>
+            <p>為替換算は、<mark>前月最終営業日時点の 3 ヶ月フォワード・カーブ</mark>を使用。レートは FX Rate Loader ブックから取得する(§4.1 参照)。</p>
+          </div>
+        </div>
+
+        <div class="evidence-section">
+          <h4>抽出された事実</h4>
+          <ul style="font-size: 13px; color: var(--text-secondary); margin: 0; padding-left: 20px;">
+            <li><strong>トリガー:</strong> 地域提出(BD+4、現地 17:00)</li>
+            <li><strong>検証ルール:</strong> |D60 − sum(Detail)| ≤ $1,000、超過時は差異ログ添付で差し戻し</li>
+            <li><strong>変更ルール:</strong> 上書き禁止、Adjustments タブに追記</li>
+            <li><strong>FX ポリシー:</strong> 前月最終営業日時点の 3 ヶ月フォワード</li>
+            <li><strong>相互参照:</strong> §4.1(FX Rate Loader)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="evidence-pane" id="ev-xls">
+        <h3>3MoP&amp;L_Master_2026.xlsm — Consolidation タブ</h3>
+        <p class="lead">連結ロジックの抜粋。システムは数式と VBA を解析し、ブラックボックス・マクロではなく監査可能なコードとして予測を再実装可能な形式で抽出する。マクロ駆動セルはハイライト表示。</p>
+
+        <div class="evidence-section">
+          <h4>セル単位の抽出</h4>
+          <div class="xls-mock">
+            <div class="xls-grid">
+              <div class="xls-cell head"></div>
+              <div class="xls-cell head">B</div>
+              <div class="xls-cell head">C</div>
+              <div class="xls-cell head">D</div>
+              <div class="xls-cell head">E</div>
+              <div class="xls-cell head">F</div>
+
+              <div class="xls-cell head">12</div>
+              <div class="xls-cell">明細</div>
+              <div class="xls-cell">現地通貨</div>
+              <div class="xls-cell">現地金額</div>
+              <div class="xls-cell">FX レート</div>
+              <div class="xls-cell">USD 金額</div>
+
+              <div class="xls-cell head">13</div>
+              <div class="xls-cell">純売上 — AMER</div>
+              <div class="xls-cell">USD</div>
+              <div class="xls-cell">42,300,000</div>
+              <div class="xls-cell">1.0000</div>
+              <div class="xls-cell formula">=D13*E13</div>
+
+              <div class="xls-cell head">14</div>
+              <div class="xls-cell">純売上 — EMEA</div>
+              <div class="xls-cell">EUR</div>
+              <div class="xls-cell">11,800,000</div>
+              <div class="xls-cell formula">=VLOOKUP(C14,FX!$A:$D,4,0)</div>
+              <div class="xls-cell formula">=D14*E14</div>
+
+              <div class="xls-cell head">15</div>
+              <div class="xls-cell">純売上 — APAC</div>
+              <div class="xls-cell">JPY</div>
+              <div class="xls-cell">1,420,000,000</div>
+              <div class="xls-cell formula">=VLOOKUP(C15,FX!$A:$D,4,0)</div>
+              <div class="xls-cell formula">=D15*E15</div>
+
+              <div class="xls-cell head">60</div>
+              <div class="xls-cell">グループ合計</div>
+              <div class="xls-cell">USD</div>
+              <div class="xls-cell macro">=Run_Consolidate()</div>
+              <div class="xls-cell"></div>
+              <div class="xls-cell formula">=SUM(F13:F59)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="evidence-section">
+          <h4>マクロ解読 — <code>Run_Consolidate()</code></h4>
+          <div class="doc-mock" style="border-left-color: var(--green-600); font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;">
+            <p><strong>目的:</strong> <code>Forecasts/2026/{month}/</code> から地域別提出物を取り込み、テンプレート整合性を検証、値を 13〜59 行目にコピー、照合レポートを書き出す。</p>
+            <p><strong>副作用:</strong> <code>FX</code> タブの参照(<code>FX_Rate_Loader.xlsm</code> から再取得)、<code>Recon_Log</code> タブへの書き込み。</p>
+            <p><strong>所見:</strong> マクロはハードコード・パス依存。ディスカバリー・システムはこの点をパラメータ化コネクタへの置換対象としてフラグ。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="evidence-pane" id="ev-rec">
+        <h3>Mar26_close_S.Reyes.mp4 — UI イベント 0:38:42〜0:44:08</h3>
+        <p class="lead">画面録画の注釈付き抜粋。システムは UI イベント系列から意図を再構築する — どのアプリ、どのファイル、どのフィールドを、どのタイミングで操作したか。</p>
+
+        <div class="evidence-section">
+          <h4>再構築されたイベント・ログ</h4>
+          <div class="rec-mock">
+            <div class="rec-event">
+              <span class="rec-time">0:38:42</span>
+              <span class="rec-app">NetSuite</span>
+              <span class="rec-action"><em>保存検索: TB_Apr26_Detail</em> を開き、CSV にエクスポート</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:39:07</span>
+              <span class="rec-app">Outlook</span>
+              <span class="rec-action"><em>treasury@verian.co</em> からのメール「FX レート確定 26 年 4 月」を確認</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:39:48</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action"><em>3MoP&amp;L_Master_2026.xlsm</em> を開き、FX タブのデータ接続を更新</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:40:12</span>
+              <span class="rec-app">Slack</span>
+              <span class="rec-action">J. Park へ DM:<em>「AMER 予測 — D60 が合わない、$4.2k のズレ」</em></span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:42:13</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action"><em>Forecast_AMER_Apr26.xlsx</em> を開き、Detail タブで地域ソート</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:42:51</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action">SKU コーディング誤り(47 行目「Hydrate Set」)を特定、M 列にフラグ</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:43:26</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action"><em>3MoP&amp;L_Master_2026.xlsm</em> に切替、Adjustments タブに修正を <strong>追記</strong>(12 行目、$4,217)</span>
+            </div>
+            <div class="rec-event">
+              <span class="rec-time">0:44:08</span>
+              <span class="rec-app">Excel</span>
+              <span class="rec-action">カスタム・リボンからマクロ <em>Run_Consolidate()</em> を実行</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="evidence-section">
+          <h4>システム所見</h4>
+          <ul style="font-size: 13px; color: var(--text-secondary); margin: 0; padding-left: 20px;">
+            <li>SOP §3.2 の照合ルールは <strong>実態と一致</strong>。アナリストはルール通りに運用。</li>
+            <li>地域間エスカレーションの実態チャネルは Slack DM、SOP 記載のメールではない。</li>
+            <li>「SKU コーディング誤り」パターンは 3 件の録画すべてで再発、頻出エッジケース。</li>
+            <li>アナリストは SOP の要求通り、Adjustments タブ追記で監査証跡を保持。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="evidence-pane" id="ev-int">
+        <h3><a href="11b_interview_J.Park_demo_ja.md" target="_blank" rel="noopener" style="color: var(--accent-strong); text-decoration: none; border-bottom: 1px dashed var(--accent);">J. Park(シニア・アナリスト)ヒアリング — 発言 23</a> <span style="font-size: 11.5px; color: var(--text-tertiary); font-weight: 500; margin-left: 6px;">↗ 完全版を開く</span></h3>
+        <p class="lead">録画で観察されたパターンの明確化を目的に、エージェントがシニア・アナリストにヒアリング。予測差異を「実態の変動」と「コーディング上の問題」のいずれと判断しているか、をテーマとする。</p>
+
+        <div class="evidence-section">
+          <h4>会話</h4>
+          <div class="chat-mock">
+            <div class="chat-turn">
+              <div class="chat-role agent">ディスカバリー・エージェント</div>
+              <div class="chat-text">3 月の録画で、AMER に発生した約 $4.2k の差異の調査に 6 分ほど使われていました。SOP では $1,000 超の差異は地域へ差し戻しと規定されていますが、録画では差し戻さずご自身で修正されています。判断の背景を確認したい。</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role human">J. Park</div>
+              <div class="chat-text">SOP のルールは方針として正しい。ただ実態としては、明らかに SKU マッピングの問題で 10 分以内に直せるものは、こちらでその場対応して地域に事後連絡しています。<em>差し戻すと時差で 1 日損するんです。</em>本当に数量や価格の変動なら、当然差し戻します。</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role agent">ディスカバリー・エージェント</div>
+              <div class="chat-text">実運用のルールは「既知のコーディング・パターン(SKU 誤コード、チャネル不整合、通貨タグ)であればその場対応、それ以外は差し戻し」、という整理で正しいか。</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role human">J. Park</div>
+              <div class="chat-text">その通りです。4〜5 種類のパターンが差異全体の約 8 割を占めます。該当すれば修正、見たことのないものはエスカレーション、というのが実態です。</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role agent">ディスカバリー・エージェント</div>
+              <div class="chat-text">了解。本システムでは、<strong>差異を自動分類 → 既知パターンは修正案を人の承認用に提示、それ以外は地域責任者にルーティング</strong>、という形でモデル化する。4〜5 種類のパターンがエージェントの第一段階・判別(Triage)を構成。同じ領域で、他メンバーが異なるルールを適用するケースはあるか。</div>
+            </div>
+            <div class="chat-turn">
+              <div class="chat-role human">J. Park</div>
+              <div class="chat-text">Chen は、チャネル不整合についてはこちらの判断を上書きされることがあります。トレンド分析のため、どのみち見ておきたい、と。ですので、チャネル不整合は私が直せる場合でも、常にエスカレーションすべきです。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="evidence-section">
+          <h4>システム合成内容</h4>
+          <ul style="font-size: 13px; color: var(--text-secondary); margin: 0; padding-left: 20px;">
+            <li><strong>差異処理ルールの精緻化:</strong> パターンによる判別 — SKU マッピング、チャネル不整合(「Chen の指示により常にエスカレーション」とフラグ)、通貨タグ、カレンダー・シフトに対応して自動修正。</li>
+            <li><strong>ステークホルダー固有のオーバーライドを捕捉:</strong> チャネル不整合は常に FP&A 担当 VP の可視範囲に置く。</li>
+            <li><strong>レイテンシ論拠を記録:</strong> 地域の時差により差し戻しは 1 日コスト。エージェントの「自動修正 vs エスカレーション」判断の重み付けに反映。</li>
+            <li><strong>次回ヒアリング未確認事項:</strong> 捕捉すべき他の「ステークホルダー・オーバーライド」の有無。</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ========== SYNTHESIS TAB ========== -->
+<section class="view" id="view-synthesis">
+
+  <div class="synth-intro">
+    <strong>4 チャネル → 単一プロセス。</strong>ディスカバリー・システムは、マニュアル・スプレッドシート・録画・ヒアリングの証跡を、単一の実行可能モデルに統合する。モデル内の各ステップは元の証跡まで追跡可能 — コントローラは「エージェントが<em>何を</em>行うか」に加え、「<em>なぜそうすべきと判断したか</em>」まで監査できる。
+  </div>
+
+  <div class="synth-flow">
+    <h3>3 ヶ月 P&amp;L 予測 — プロセスマップ</h3>
+    <p class="synth-flow-sub">11 ステップを 4 フェーズに編成。色は各ステップの主たる証跡チャネルを示す。</p>
+
+    <svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg">
+      <!-- Phase labels -->
+      <text x="20" y="22" class="lane-label">フェーズ 1 · インプット</text>
+      <text x="320" y="22" class="lane-label">フェーズ 2 · 検証と照合</text>
+      <text x="640" y="22" class="lane-label">フェーズ 3 · 予測</text>
+      <text x="940" y="22" class="lane-label">フェーズ 4 · レビューと公開</text>
+
+      <line x1="300" y1="36" x2="300" y2="340" stroke-dasharray="4 4" stroke="var(--border)" stroke-width="0.5"/>
+      <line x1="620" y1="36" x2="620" y2="340" stroke-dasharray="4 4" stroke="var(--border)" stroke-width="0.5"/>
+      <line x1="920" y1="36" x2="920" y2="340" stroke-dasharray="4 4" stroke="var(--border)" stroke-width="0.5"/>
+
+      <!-- Phase 1 nodes -->
+      <g class="nd nd-blue">
+        <rect x="20" y="50" width="260" height="48" rx="6"/>
+        <text x="32" y="70" class="th">1. ERP 抽出 — NetSuite 試算表</text>
+        <text x="32" y="86" class="ts">GL 試算表、売掛・買掛エイジング</text>
+      </g>
+      <g class="nd nd-blue">
+        <rect x="20" y="110" width="260" height="48" rx="6"/>
+        <text x="32" y="130" class="th">2. チャネル・データ — Shopify、3PL</text>
+        <text x="32" y="146" class="ts">DTC 注文、マーケットプレイス精算</text>
+      </g>
+      <g class="nd nd-blue">
+        <rect x="20" y="170" width="260" height="48" rx="6"/>
+        <text x="32" y="190" class="th">3. FX フィード — 自社トレジャリー・ECB</text>
+        <text x="32" y="206" class="ts">スポット + 3ヶ月フォワード・カーブ</text>
+      </g>
+      <g class="nd nd-blue">
+        <rect x="20" y="230" width="260" height="48" rx="6"/>
+        <text x="32" y="250" class="th">4. 地域別売上予測</text>
+        <text x="32" y="266" class="ts">3 ブック — AMER / EMEA / APAC</text>
+      </g>
+      <g class="nd nd-blue">
+        <rect x="20" y="290" width="260" height="48" rx="6"/>
+        <text x="32" y="310" class="th">5. マーケティング・OpEx 計画</text>
+        <text x="32" y="326" class="ts">キャンペーン + ランレート OpEx</text>
+      </g>
+
+      <!-- Phase 2 nodes -->
+      <g class="nd nd-purple">
+        <rect x="320" y="80" width="280" height="48" rx="6"/>
+        <text x="332" y="100" class="th">6. 予測ブックの検証</text>
+        <text x="332" y="116" class="ts">テンプレート・整合性チェック、差異の判別</text>
+      </g>
+      <g class="nd nd-purple">
+        <rect x="320" y="140" width="280" height="48" rx="6"/>
+        <text x="332" y="160" class="th">7. CRM パイプラインとの照合</text>
+        <text x="332" y="176" class="ts">予測 ÷ パイプライン比率がレンジ内か</text>
+      </g>
+      <g class="nd nd-purple">
+        <rect x="320" y="200" width="280" height="48" rx="6"/>
+        <text x="332" y="220" class="th">8. USD への FX 換算</text>
+        <text x="332" y="236" class="ts">フォワード・カーブ適用、CTA 計上</text>
+      </g>
+
+      <!-- Phase 3 nodes -->
+      <g class="nd nd-green">
+        <rect x="640" y="110" width="260" height="48" rx="6"/>
+        <text x="652" y="130" class="th">9. COGS 予測</text>
+        <text x="652" y="146" class="ts">標準原価 × 予測数量</text>
+      </g>
+      <g class="nd nd-green">
+        <rect x="640" y="170" width="260" height="48" rx="6"/>
+        <text x="652" y="190" class="th">10. OpEx ロールフォワード</text>
+        <text x="652" y="206" class="ts">ランレート + 段階的変化 + 人員数</text>
+      </g>
+      <g class="nd nd-green">
+        <rect x="640" y="230" width="260" height="48" rx="6"/>
+        <text x="652" y="250" class="th">11. 連結・消去</text>
+        <text x="652" y="266" class="ts">グループ P&amp;L、関係会社間取引を 0 に</text>
+      </g>
+
+      <!-- Phase 4 -->
+      <g class="nd nd-amber">
+        <rect x="940" y="140" width="240" height="48" rx="6"/>
+        <text x="952" y="160" class="th">12. 差異分析・コメンタリー</text>
+        <text x="952" y="176" class="ts">前回予測・予算・前年との比較</text>
+      </g>
+      <g class="nd nd-amber">
+        <rect x="940" y="200" width="240" height="48" rx="6"/>
+        <text x="952" y="220" class="th">13. CFO レビューと承認</text>
+        <text x="952" y="236" class="ts">人による最終承認(HITL)</text>
+      </g>
+      <g class="nd nd-amber">
+        <rect x="940" y="260" width="240" height="48" rx="6"/>
+        <text x="952" y="280" class="th">14. 公開・アーカイブ</text>
+        <text x="952" y="296" class="ts">ダッシュボード + 経営層向け資料</text>
+      </g>
+
+      <!-- Arrows phase 1 -> 2 -->
+      <path class="svg-arrow" d="M 280,134 C 300,134 300,100 320,100" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 280,254 C 300,254 300,160 320,160" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 280,194 C 300,194 300,224 320,224" marker-end="url(#arrowhead)"/>
+
+      <!-- Arrows phase 2 -> 3 -->
+      <path class="svg-arrow" d="M 600,104 C 620,104 620,134 640,134" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 600,164 C 620,164 620,194 640,194" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 600,224 C 620,224 620,254 640,254" marker-end="url(#arrowhead)"/>
+
+      <!-- Phase 1 marketing/OpEx into phase 3 OpEx (skip) -->
+      <path class="svg-arrow-dashed" d="M 280,314 C 460,314 460,194 640,194" />
+
+      <!-- Arrows phase 3 -> 4 -->
+      <path class="svg-arrow" d="M 900,134 C 920,134 920,164 940,164" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 900,194 C 920,194 920,224 940,224" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 900,254 C 920,254 920,284 940,284" marker-end="url(#arrowhead)"/>
+
+      <!-- Approvals chain -->
+      <path class="svg-arrow" d="M 1060,188 L 1060,200" marker-end="url(#arrowhead)"/>
+      <path class="svg-arrow" d="M 1060,248 L 1060,260" marker-end="url(#arrowhead)"/>
+
+      <defs>
+        <marker id="arrowhead" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="var(--text-secondary)"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <div class="step-evidence">
+    <h3>ステップ別・証跡マップ</h3>
+    <p class="step-evidence-sub">合成された各ステップについて、システムは裏付け証跡と信頼度スコアを記録。実レビュー・ツール上では各タグから元情報源にジャンプ可能。</p>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">ステップ 6</div>
+        <div class="se-step-name">予測ブックの検証と差異の判別</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">SOP §3.2 — 差し戻しルール</span>
+        <span class="ev-tag xls">Run_Consolidate マクロ · 差異チェック</span>
+        <span class="ev-tag rec">3/26 0:42:13 — 現場修正を観察</span>
+        <span class="ev-tag int">J. Park 発言 23 — パターン判別</span>
+        <span class="ev-tag int">M. Chen 発言 11 — チャネル不整合のオーバーライド</span>
+      </div>
+    </div>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">ステップ 7</div>
+        <div class="se-step-name">予測と CRM パイプラインの照合</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">SOP §3.5 — パイプライン・カバレッジ帯域</span>
+        <span class="ev-tag xls">3MoP&amp;L · Pipeline_Recon タブ</span>
+        <span class="ev-tag int">D. Singh 発言 8 — 滞留案件の扱い</span>
+      </div>
+    </div>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">ステップ 8</div>
+        <div class="se-step-name">フォワード・カーブによる USD への FX 換算</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">FX ポリシー・メモ §2</span>
+        <span class="ev-tag xls">FX_Rate_Loader.xlsm</span>
+        <span class="ev-tag rec">4/26 0:21:08 — 更新を観察</span>
+      </div>
+    </div>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">ステップ 11</div>
+        <div class="se-step-name">連結と関係会社間取引の消去</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">Audit_ICFR_Controls §C-04</span>
+        <span class="ev-tag xls">3MoP&amp;L · IC_Elim タブ</span>
+        <span class="ev-tag rec">4/26 1:14:30 — 手動オーバーライド</span>
+        <span class="ev-tag int">L. Okafor 発言 16 — IC 突合せ</span>
+      </div>
+    </div>
+
+    <div class="se-row">
+      <div>
+        <div class="se-step-id">ステップ 12</div>
+        <div class="se-step-name">差異コメンタリー</div>
+      </div>
+      <div class="se-evidence-list">
+        <span class="ev-tag doc">3M_Forecast_Cookbook §5</span>
+        <span class="ev-tag rec">3/26 2:08:42 — Word で起案</span>
+        <span class="ev-tag int">M. Chen 発言 31 — 必須説明の閾値</span>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ========== CONFIDENCE TAB ========== -->
+<section class="view" id="view-confidence">
+
+  <div class="synth-intro">
+    <strong>モデルの確信箇所と未確信箇所。</strong>各ステップの信頼度は、独立した裏付け情報源の数と相互整合度から算出。低信頼度ステップ・矛盾を含むステップは、ワークフロー設計着手前のフォローアップ・ヒアリング対象としてフラグ。
+  </div>
+
+  <div class="conf-summary">
+    <div class="conf-card high">
+      <h4>高信頼度</h4>
+      <div class="num">9</div>
+      <div class="lbl">ステップ · 3 件以上の裏付け、矛盾なし</div>
+    </div>
+    <div class="conf-card med">
+      <h4>中信頼度</h4>
+      <div class="num">3</div>
+      <div class="lbl">ステップ · 1〜2 件の裏付け、または軽微な矛盾</div>
+    </div>
+    <div class="conf-card low">
+      <h4>未解決ギャップ</h4>
+      <div class="num">2</div>
+      <div class="lbl">ステップ · 自動化前のフォローアップ要</div>
+    </div>
+  </div>
+
+  <div class="conf-step-list">
+
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">1. ERP 抽出</span>
+      <span class="conf-gap">SOP・録画・マスター・マクロが保存検索の定義で一致</span>
+      <span></span>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">3. FX フィード</span>
+      <span class="conf-gap">ポリシー・メモ + マクロ + 録画 3 件、いずれも整合</span>
+      <span></span>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">6. 検証と判別</span>
+      <span class="conf-gap">判別ルールはステークホルダー・オーバーライド(Chen)と統合済</span>
+      <span></span>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">8. FX 換算</span>
+      <span class="conf-gap">全情報源で一致、矛盾なし</span>
+      <span></span>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot high"></span>
+      <span class="conf-step-name">9. COGS 予測</span>
+      <span class="conf-gap">標準原価レート・ライブラリ + 録画で手法確認済</span>
+      <span></span>
+    </div>
+
+    <div class="conf-step">
+      <span class="conf-dot med"></span>
+      <span class="conf-step-name">7. パイプライン照合</span>
+      <span class="conf-gap">SOP 規定は 1.4〜2.2×、Singh は「社内運用は 1.6×」と発言。正(Source of Truth)の確認要</span>
+      <button class="conf-action">確認会議を予約</button>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot med"></span>
+      <span class="conf-step-name">10. OpEx ロールフォワード</span>
+      <span class="conf-gap">人員数主導の人件費ロジックが録画 3 件のうち 2 件で異なる。アナリスト 2 名が異なる離職率前提を適用</span>
+      <button class="conf-action">確認会議を予約</button>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot med"></span>
+      <span class="conf-step-name">12. 差異コメンタリー</span>
+      <span class="conf-gap">重要性閾値(マテリアリティ)が定性的 — Chen の定義は「予算外で 5% 超または $500k 超」。コード化の価値あり</span>
+      <span></span>
+    </div>
+
+    <div class="conf-step">
+      <span class="conf-dot low"></span>
+      <span class="conf-step-name">11. 関係会社間取引の消去</span>
+      <span class="conf-gap">IC 突合ロジックは部分文書化のみ。4/26 の録画で Okafor が SOP 記載のない $130k の手動調整を実行。自動化前にコントローラへのヒアリング要</span>
+      <button class="conf-action">ヒアリングを予約</button>
+    </div>
+    <div class="conf-step">
+      <span class="conf-dot low"></span>
+      <span class="conf-step-name">13. CFO レビュー・承認</span>
+      <span class="conf-gap">承認ルーティングが非公式、現状は Slack スレッド。承認パターンの定義要(単独 vs 複数、CFO 不在時運用)</span>
+      <button class="conf-action">ヒアリングを予約</button>
+    </div>
+
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+    <span style="font-weight: 800; color: var(--accent); font-size: 16px; letter-spacing: -0.02em;">//</span>
+    <strong style="color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; margin-left: -2px;">PROSSIMO</strong>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>プロセス・ディスカバリー</span>
+  </div>
+  KAA リファレンス案件における多面的プロセス・ディスカバリーの成果。証跡グラフ、意味的オントロジー、信頼度スコア付きクレーム — 後続のすべてを支える基盤。<br>
+  <span style="color: var(--text-tertiary);">© 2026 プロッシモテック · 東京 · <a href="https://www.linkedin.com/company/prossimo-tech/" style="color: var(--accent); text-decoration: none;">LinkedIn</a> · info@prossimotech.com</span>
+</footer>
+
+<script>
+  // Tab switching
+  const tabs = document.querySelectorAll('.tab');
+  const views = document.querySelectorAll('.view');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      views.forEach(v => v.classList.remove('active'));
+      tab.classList.add('active');
+      const target = tab.dataset.view;
+      document.getElementById('view-' + target).classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+
+  // Evidence tab — left list switching
+  const evidenceItems = document.querySelectorAll('.evidence-list-item');
+  const evidencePanes = document.querySelectorAll('.evidence-pane');
+  evidenceItems.forEach(item => {
+    item.addEventListener('click', () => {
+      evidenceItems.forEach(i => i.classList.remove('active'));
+      evidencePanes.forEach(p => p.classList.remove('active'));
+      item.classList.add('active');
+      document.getElementById(item.dataset.pane).classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>

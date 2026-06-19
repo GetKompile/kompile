@@ -271,3 +271,139 @@
   border-radius: 6px;
   overflow: hidden;
 }
+
+/* Modular pipeline-step breakdown panel (unified crawl jobs) */
+.crawl-steps-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #dfe5e8;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.crawl-steps-summary { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.crawl-step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border-left: 3px solid #cfd8dc;   /* neutral default */
+  font-size: 12px;
+}
+.crawl-step-row .cs-type-icon { font-size: 16px; width: 16px; height: 16px; color: #607d8b; }
+.crawl-step-row .cs-name { font-weight: 600; flex: 0 0 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crawl-step-row .cs-status { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; color: #616161; }
+.crawl-step-row .cs-counts { color: #607d8b; }
+.crawl-step-row .cs-failed-count { color: #c62828; }
+.crawl-step-row .cs-run-now { margin-left: auto; transform: scale(0.8); }
+/* status accents — SKIPPED/ARCHIVED are NEUTRAL, only FAILED is red */
+.crawl-step-row.cs-completed { border-left-color: #66bb6a; }
+.crawl-step-row.cs-completed .cs-status { color: var(--accent-green, #2e7d32); }
+.crawl-step-row.cs-running   { border-left-color: #4dd0e1; background: #f2fbfa; }
+.crawl-step-row.cs-running .cs-status { color: #00695c; }
+.crawl-step-row.cs-failed    { border-left-color: #ef5350; background: #fff6f6; }
+.crawl-step-row.cs-failed .cs-status { color: #c62828; }
+.crawl-step-row.cs-skipped   { border-left-color: #cfd8dc; opacity: 0.6; }
+.crawl-step-row.cs-skipped .cs-status { color: #90a4ae; }
+.crawl-step-row.cs-archived  { border-left-color: #ffb300; }
+.crawl-step-row.cs-archived .cs-status { color: #8a5d00; }
+.crawl-step-row.cs-deferred  { border-left-color: #ffb300; }
+.crawl-step-row.cs-deferred .cs-status { color: #8a5d00; }
+.crawl-step-row.cs-pending   { opacity: 0.5; }
+/* "Partial" chip on the job header (completed with skipped/archived steps) */
+.partial-chip {
+  background: #fff8e1 !important;
+  color: #8a5d00 !important;
+  font-size: 11px !important;
+  font-weight: 600;
+  min-height: 22px !important;
+}
+.steps-btn-note { font-size: 11px; color: var(--text-secondary); margin-left: 4px; }
+
+/* ── Per-step accordion (crawler-manager) ──────────────────────────────── */
+.cm-step-accordion-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 5px;
+  background: #fff;
+  overflow: hidden;
+  margin-bottom: 3px;
+}
+.cm-step-accordion-item.cs-completed { border-left: 3px solid #66bb6a; }
+.cm-step-accordion-item.cs-running   { border-left: 3px solid #4dd0e1; background: #f2fbfa; }
+.cm-step-accordion-item.cs-failed    { border-left: 3px solid #ef5350; background: #fff6f6; }
+.cm-step-accordion-item.cs-skipped   { border-left: 3px solid #cfd8dc; opacity: 0.65; }
+.cm-step-accordion-item.cs-archived  { border-left: 3px solid #ffb300; }
+.cm-step-accordion-item.cs-deferred  { border-left: 3px solid #ffb300; }
+.cm-step-accordion-item.cs-pending   { opacity: 0.5; }
+
+.cm-step-accordion-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+}
+.cm-step-accordion-header:hover { background: #f8fafc; }
+
+.cm-step-chevron {
+  font-size: 16px; width: 16px; height: 16px;
+  color: #9ca3af;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.cm-step-chevron.cm-step-chevron-open {
+  transform: rotate(90deg);
+  color: #1976d2;
+}
+
+/* ── Expanded detail panel ─────────────────────────────────────────────── */
+.cm-step-detail-panel {
+  border-top: 1px solid #e5e7eb;
+  background: #f8fafc;
+  padding: 8px 12px 10px;
+}
+.cm-step-detail-stats {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  font-size: 12px; color: #374151; margin-bottom: 8px;
+}
+.cm-step-detail-stats strong { color: #1f2937; }
+
+.cm-step-section-header {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 700; color: #374151;
+  margin: 6px 0 3px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.cm-step-section-header mat-icon { font-size: 13px; width: 13px; height: 13px; color: #6b7280; }
+
+.cm-step-events {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 180px; overflow-y: auto;
+  border: 1px solid #e5e7eb; border-radius: 4px; background: #fff;
+}
+.cm-step-event-row {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  padding: 3px 7px; font-size: 11px; border-bottom: 1px solid #f0f0f0;
+}
+.cm-step-event-row:last-child { border-bottom: none; }
+.cm-step-event-row.cm-event-warn  { background: #fffbeb; }
+.cm-step-event-row.cm-event-error { background: #fef2f2; }
+.cm-event-time  { font-family: monospace; font-size: 10px; color: #9ca3af; white-space: nowrap; }
+.cm-event-level {
+  font-size: 10px; font-weight: 700; padding: 1px 4px; border-radius: 5px; flex-shrink: 0;
+}
+.cm-level-info  { background: #dbeafe; color: #1e40af; }
+.cm-level-warn  { background: #fef3c7; color: #92400e; }
+.cm-level-error { background: #fee2e2; color: #991b1b; }
+.cm-level-debug { background: #f3f4f6; color: #6b7280; }
+.cm-event-msg { font-weight: 500; flex: 1; }
+
+.cm-step-detail-empty {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: #9ca3af; padding: 6px;
+  font-style: italic;
+}

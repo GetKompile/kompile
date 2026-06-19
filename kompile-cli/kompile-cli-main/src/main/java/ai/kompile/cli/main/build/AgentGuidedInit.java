@@ -20,6 +20,7 @@ import ai.kompile.cli.main.build.config.BuildPreset;
 import ai.kompile.cli.main.build.config.ModuleCatalog;
 import ai.kompile.cli.main.chat.agent.AgentFlagOverrides;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jline.reader.LineReader;
@@ -53,7 +54,7 @@ public class AgentGuidedInit {
     // Loaded dynamically from cli-agents.json via CliAgentRegistry
     private static final int AGENT_TIMEOUT_SECONDS = 180;
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private AgentGuidedInit() {}
 

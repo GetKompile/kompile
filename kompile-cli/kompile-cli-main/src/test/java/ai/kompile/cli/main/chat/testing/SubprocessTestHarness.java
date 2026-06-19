@@ -253,8 +253,7 @@ public class SubprocessTestHarness implements AutoCloseable {
 
     private static String truncate(String s, int max) {
         if (s == null) return "null";
-        if (s.length() <= max) return s;
-        return s.substring(0, max) + "... (" + s.length() + " chars total)";
+        return ai.kompile.utils.StringUtils.truncateWithSize(s, max);
     }
 
     /**

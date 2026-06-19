@@ -427,13 +427,14 @@ public class StagingConfigController {
 
     /**
      * Get the model registry from the active staging service.
+     * Returns 200 with an empty registry when no staging service is configured or reachable,
+     * so clients do not log spurious 503 errors on pages that always load this endpoint.
      */
     @GetMapping("/remote/registry")
     public ResponseEntity<?> getRemoteRegistry() {
         return clientService.getRegistry()
                 .map(registry -> ResponseEntity.ok((Object) registry))
-                .orElse(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                        .body(Map.of("error", "No active staging service or connection failed")));
+                .orElse(ResponseEntity.ok(Map.of("models", Collections.emptyMap(), "available", false)));
     }
 
     /**
@@ -589,6 +590,8 @@ public class StagingConfigController {
     /**
      * Get active models from the remote staging service (one per type).
      * Returns a map of type -> modelId for currently active models.
+     * Returns 200 with empty active map when no staging service is configured or reachable,
+     * so clients do not log spurious 503 errors on pages that always load this endpoint.
      */
     @GetMapping("/remote/active")
     public ResponseEntity<?> getActiveModels() {
@@ -599,8 +602,13 @@ public class StagingConfigController {
                     response.put("types", List.of("encoder", "sparse_encoder", "cross_encoder"));
                     return ResponseEntity.ok((Object) response);
                 })
-                .orElse(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                        .body(Map.of("error", "No active staging service or connection failed")));
+                .orElseGet(() -> {
+                    Map<String, Object> response = new LinkedHashMap<>();
+                    response.put("active", Collections.emptyMap());
+                    response.put("types", List.of("encoder", "sparse_encoder", "cross_encoder"));
+                    response.put("available", false);
+                    return ResponseEntity.ok(response);
+                });
     }
 
     /**

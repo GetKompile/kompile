@@ -2,6 +2,7 @@ package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.PersistentAgentProcess;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.core.agent.CliAgentRegistry;
@@ -199,7 +200,7 @@ public class StdioMultiTaskTool {
 
             if (prompt.isEmpty()) {
                 futures.add(new SubtaskFuture(name, agentTypes.get(0), 1, 0,
-                    CompletableFuture.completedFuture(new SubtaskResult(false, "(empty prompt)"))));
+                    CompletableFuture.completedFuture(SubtaskResult.failed("(empty prompt)"))));
                 continue;
             }
 
@@ -234,6 +235,7 @@ public class StdioMultiTaskTool {
         fullOutput.append("**Subtasks:** ").append(subtasks.size()).append("\n\n");
 
         int succeeded = 0;
+        int timedOut = 0;
         int failed = 0;
         StringBuilder summaryOutput = new StringBuilder();
 
@@ -243,21 +245,34 @@ public class StdioMultiTaskTool {
 
             try {
                 SubtaskResult result = sf.future.get(10, TimeUnit.MINUTES);
-                if (result.success) {
-                    succeeded++;
-                    fullOutput.append(result.output).append("\n\n");
-                    summaryOutput.append("- **").append(sf.name).append("** (").append(sf.agent).append("): ")
-                        .append(truncateForSummary(result.output, 200)).append("\n");
-                } else {
-                    failed++;
-                    fullOutput.append("**Failed:** ").append(result.output).append("\n\n");
-                    summaryOutput.append("- **").append(sf.name).append("** (").append(sf.agent).append("): FAILED — ")
-                        .append(truncateForSummary(result.output, 100)).append("\n");
+                switch (result.outcome) {
+                    case COMPLETED -> {
+                        succeeded++;
+                        fullOutput.append(result.output).append("\n\n");
+                        summaryOutput.append("- **").append(sf.name).append("** (").append(sf.agent).append("): ")
+                            .append(truncateForSummary(result.output, 200)).append("\n");
+                    }
+                    case TIMED_OUT -> {
+                        // TIMED_OUT is NOT success — the agent did not complete its work.
+                        timedOut++;
+                        fullOutput.append("**TIMED OUT** (partial output below, task was NOT completed):\n\n");
+                        fullOutput.append(result.output).append("\n\n");
+                        summaryOutput.append("- **").append(sf.name).append("** (").append(sf.agent)
+                            .append("): TIMED OUT — partial: ")
+                            .append(truncateForSummary(result.output, 100)).append("\n");
+                    }
+                    case FAILED -> {
+                        failed++;
+                        fullOutput.append("**Failed:** ").append(result.output).append("\n\n");
+                        summaryOutput.append("- **").append(sf.name).append("** (").append(sf.agent).append("): FAILED — ")
+                            .append(truncateForSummary(result.output, 100)).append("\n");
+                    }
                 }
             } catch (TimeoutException e) {
-                failed++;
-                fullOutput.append("**Timed out** after 10 minutes.\n\n");
-                summaryOutput.append("- **").append(sf.name).append("** (").append(sf.agent).append("): TIMED OUT\n");
+                // The outer 10-min future timed out — the agent process itself is still running.
+                timedOut++;
+                fullOutput.append("**Timed out** after 10 minutes (outer gate).\n\n");
+                summaryOutput.append("- **").append(sf.name).append("** (").append(sf.agent).append("): TIMED OUT (outer 10m)\n");
             } catch (Exception e) {
                 failed++;
                 fullOutput.append("**Error:** ").append(e.getMessage()).append("\n\n");
@@ -268,11 +283,21 @@ public class StdioMultiTaskTool {
 
         executor.shutdownNow();
 
+        int incomplete = timedOut + failed;
         fullOutput.append("---\n\n");
         fullOutput.append("**Summary:** ").append(succeeded).append("/").append(subtasks.size())
-              .append(" subtasks completed successfully.");
+              .append(" subtasks completed successfully");
+        if (timedOut > 0) {
+            fullOutput.append("; ").append(timedOut).append(" timed out (INCOMPLETE)");
+        }
+        if (failed > 0) {
+            fullOutput.append("; ").append(failed).append(" failed");
+        }
+        fullOutput.append(".");
 
-        System.err.println("\u001B[32m  ✓ Multi-task complete: " + succeeded + "/" + subtasks.size() + " succeeded\u001B[0m");
+        System.err.println("\u001B[32m  \u2713 Multi-task complete: " + succeeded + "/" + subtasks.size() + " succeeded"
+            + (timedOut > 0 ? ", " + timedOut + " timed out" : "")
+            + (failed > 0 ? ", " + failed + " failed" : "") + "\u001B[0m");
         System.err.flush();
 
         // Write full output to file
@@ -282,7 +307,10 @@ public class StdioMultiTaskTool {
         StringBuilder toolResult = new StringBuilder();
         toolResult.append("## Multi-Task Results: ").append(desc).append("\n\n");
         toolResult.append(succeeded).append("/").append(subtasks.size())
-                  .append(" subtasks completed successfully.\n\n");
+                  .append(" subtasks completed successfully");
+        if (timedOut > 0) toolResult.append("; ").append(timedOut).append(" timed out");
+        if (failed > 0) toolResult.append("; ").append(failed).append(" failed");
+        toolResult.append(".\n\n");
         toolResult.append(summaryOutput).append("\n");
         toolResult.append("**Full output written to:** `").append(resultFile.toAbsolutePath()).append("`\n");
         toolResult.append("Use the `read` tool to access the full results for any subtask.");
@@ -290,7 +318,7 @@ public class StdioMultiTaskTool {
         List<String> succeededNames = new ArrayList<>();
         for (SubtaskFuture sf : futures) {
             try {
-                if (sf.future.isDone() && sf.future.get().success) {
+                if (sf.future.isDone() && sf.future.get().isSuccess()) {
                     succeededNames.add(sf.name);
                 }
             } catch (Exception ignored) {}
@@ -300,6 +328,7 @@ public class StdioMultiTaskTool {
             Map.of("description", desc,
                    "totalSubtasks", subtasks.size(),
                    "succeeded", succeeded,
+                   "timedOut", timedOut,
                    "failed", failed,
                    "resultFile", resultFile.toAbsolutePath().toString(),
                    "succeededSubtasks", String.join(",", succeededNames)));
@@ -356,17 +385,26 @@ public class StdioMultiTaskTool {
                 if (result.contains("not found in PATH")) {
                     continue; // Try next agent
                 }
-                return new SubtaskResult(true, result);
+                return SubtaskResult.completed(result);
+            } catch (PersistentAgentProcess.TimedOutException toe) {
+                // The turn timed out — surface as TIMED_OUT, NOT as a success.
+                // Partial output is preserved so it can be written to the result file.
+                String partial = toe.getPartialOutput();
+                String snippet = partial.isEmpty() ? "(no output captured)"
+                    : partial.substring(0, Math.min(80, partial.length()));
+                System.err.println("\u001B[31m    \u23f1 " + name + ": " + agentName
+                    + " timed out. Partial: " + snippet + "\u001B[0m");
+                return SubtaskResult.timedOut(partial);
             } catch (RateLimitException e) {
-                System.err.println("\u001B[33m    ⚠ " + name + ": " + agentName
+                System.err.println("\u001B[33m    \u26a0 " + name + ": " + agentName
                     + " rate limited, trying fallback...\u001B[0m");
                 continue;
             } catch (Exception e) {
-                return new SubtaskResult(false, e.getMessage());
+                return SubtaskResult.failed(e.getMessage());
             }
         }
 
-        return new SubtaskResult(false, "All agents unavailable for subtask '" + name + "'");
+        return SubtaskResult.failed("All agents unavailable for subtask '" + name + "'");
     }
 
     private Path writeResultToFile(String desc, String fullOutput) {
@@ -402,13 +440,43 @@ public class StdioMultiTaskTool {
         return firstLine.substring(0, maxChars) + "...";
     }
 
+    /**
+     * Outcome codes for a completed subtask.
+     * <p>
+     * <b>COMPLETED</b> — the agent produced a result event (stream-json {@code "type":"result"})
+     * and the turn ended normally.  This is the only outcome counted as "succeeded".<br>
+     * <b>TIMED_OUT</b> — the per-turn timeout fired before a result event was received.
+     * The {@code output} field holds whatever partial text was captured up to that point.
+     * This MUST NOT be counted as success; it means the subtask ran out of time.<br>
+     * <b>FAILED</b> — a communication error, process crash, or explicit error return.
+     */
+    enum SubtaskOutcome { COMPLETED, TIMED_OUT, FAILED }
+
     private static class SubtaskResult {
-        final boolean success;
+        final SubtaskOutcome outcome;
         final String output;
 
-        SubtaskResult(boolean success, String output) {
-            this.success = success;
+        SubtaskResult(SubtaskOutcome outcome, String output) {
+            this.outcome = outcome;
             this.output = output;
+        }
+
+        /** Convenience: true only for COMPLETED. */
+        boolean isSuccess() { return outcome == SubtaskOutcome.COMPLETED; }
+
+        /** Convenience: true for TIMED_OUT. */
+        boolean isTimedOut() { return outcome == SubtaskOutcome.TIMED_OUT; }
+
+        static SubtaskResult completed(String output) {
+            return new SubtaskResult(SubtaskOutcome.COMPLETED, output);
+        }
+
+        static SubtaskResult timedOut(String partialOutput) {
+            return new SubtaskResult(SubtaskOutcome.TIMED_OUT, partialOutput);
+        }
+
+        static SubtaskResult failed(String reason) {
+            return new SubtaskResult(SubtaskOutcome.FAILED, reason);
         }
     }
 

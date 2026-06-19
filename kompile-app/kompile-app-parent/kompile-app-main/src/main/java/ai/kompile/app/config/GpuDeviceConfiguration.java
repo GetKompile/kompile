@@ -18,6 +18,7 @@ package ai.kompile.app.config;
 
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.GpuResourceManager;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -60,7 +61,7 @@ public class GpuDeviceConfiguration {
     private DeviceRoutingConfigService deviceRoutingConfigService;
 
     private final Path configFilePath;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     public GpuDeviceConfiguration(
             @Value("${kompile.data.dir:#{null}}") String dataDir) {

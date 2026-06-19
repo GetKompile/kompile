@@ -27,6 +27,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
+import java.time.Instant;
 
 /**
  * Registers the running kompile-app instance in {@code ~/.kompile/instances/}
@@ -59,7 +60,7 @@ public class InstanceRegistrationService {
             int port = serverPortService.getActualPort();
             long pid = ProcessHandle.current().pid();
 
-            InstanceInfo info = new InstanceInfo(INSTANCE_NAME, INSTANCE_TYPE, port, pid, null);
+            InstanceInfo info = new InstanceInfo(INSTANCE_NAME, INSTANCE_TYPE, port, pid, null, null, Instant.now());
             InstanceRegistry.register(info);
             registered = true;
 

@@ -17,8 +17,8 @@
 package ai.kompile.app.services.mcp;
 
 import ai.kompile.app.services.ServerPortService;
-import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService.DiscoveredTool;
-import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService.ToolParameter;
+import ai.kompile.app.services.mcp.DiscoveredTool;
+import ai.kompile.app.services.mcp.ToolParameter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

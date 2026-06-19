@@ -26,6 +26,7 @@ import ai.kompile.crawler.AbstractCrawlJob;
 import ai.kompile.crawler.AbstractCrawler;
 import ai.kompile.oauth.service.OAuthConnectionService;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -121,7 +122,7 @@ public class GoogleDriveCrawler extends AbstractCrawler {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     // -------------------------------------------------------------------------

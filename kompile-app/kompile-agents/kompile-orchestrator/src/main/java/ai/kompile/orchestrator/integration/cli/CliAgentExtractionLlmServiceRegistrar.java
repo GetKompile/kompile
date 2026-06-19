@@ -101,6 +101,7 @@ public class CliAgentExtractionLlmServiceRegistrar {
                 .outputFormat(outputFormat)
                 .verboseFlag(verboseFlag)
                 .promptFlag(null)
+                .modelFlag(agent.getModelFlag())
                 .defaultArgs(args)
                 .environment(agent.getEnvironment() != null ? agent.getEnvironment() : Map.of())
                 .mcpSupported(agent.isMcpSupported())
@@ -109,6 +110,14 @@ public class CliAgentExtractionLlmServiceRegistrar {
                 .mcpAllowToolsFlag(agent.getMcpAllowToolsFlag())
                 .defaultAgent(agent.isDefault())
                 .build();
+    }
+
+    /**
+     * Returns an unmodifiable view of all CLI extraction services registered by this component.
+     * Safe to call at any time after {@code @PostConstruct} has run.
+     */
+    public List<CliAgentExtractionLlmService> getRegisteredServices() {
+        return java.util.Collections.unmodifiableList(services);
     }
 
     @PreDestroy

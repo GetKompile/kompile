@@ -32,7 +32,7 @@ import ai.kompile.knowledgegraph.resolution.SessionEntityState;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -55,13 +55,25 @@ import java.util.stream.Collectors;
  * </p>
  */
 @Service
-@ConditionalOnBean(MatrixGraphStore.class)
+@Primary
 @Slf4j
 public class MatrixGraphRagService implements GraphRagService {
 
-    private final MatrixGraphStore graphStore;
-    private final EmbeddingModel embeddingModel;
-    private final LLMChat llmChat;
+    @Autowired
+    private MatrixGraphStore graphStore;
+    @Autowired(required = false)
+    private EmbeddingModel embeddingModel;
+    @Autowired(required = false)
+    private LLMChat llmChat;
+
+    public MatrixGraphRagService() {}
+
+    /** Test constructor. */
+    public MatrixGraphRagService(MatrixGraphStore graphStore, EmbeddingModel embeddingModel, LLMChat llmChat) {
+        this.graphStore = graphStore;
+        this.embeddingModel = embeddingModel;
+        this.llmChat = llmChat;
+    }
 
     // Per-conversation entity tracking for resolving ambiguous references
     private final Map<String, SessionEntityState> sessionEntities = new ConcurrentHashMap<>();
@@ -71,27 +83,6 @@ public class MatrixGraphRagService implements GraphRagService {
             "\\b(that|the|this|those)\\s+(company|person|organization|place|product|event|ceo|founder|manager)\\b",
             Pattern.CASE_INSENSITIVE
     );
-
-    /**
-     * Creates a new MatrixGraphRagService.
-     *
-     * @param graphStore     Required - the matrix graph store for graph operations
-     * @param embeddingModel Optional - for vector similarity search (falls back to text search if null)
-     * @param llmChat        Optional - for answer synthesis (returns context only if null)
-     */
-    @Autowired
-    public MatrixGraphRagService(
-            MatrixGraphStore graphStore,
-            @Autowired(required = false) EmbeddingModel embeddingModel,
-            @Autowired(required = false) LLMChat llmChat) {
-        this.graphStore = graphStore;
-        this.embeddingModel = embeddingModel;
-        this.llmChat = llmChat;
-
-        log.info("MatrixGraphRagService initialized - EmbeddingModel: {}, LLMChat: {}",
-                embeddingModel != null ? embeddingModel.getClass().getSimpleName() : "N/A (text search only)",
-                llmChat != null ? llmChat.getClass().getSimpleName() : "N/A (context only, no synthesis)");
-    }
 
     /**
      * Default graph ID for RAG queries.

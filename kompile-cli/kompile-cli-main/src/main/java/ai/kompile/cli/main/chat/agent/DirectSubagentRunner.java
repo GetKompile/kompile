@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -64,9 +65,9 @@ public class DirectSubagentRunner implements SubagentRunner {
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         long startTime = System.currentTimeMillis();
         String subagentId = agent.getName() + "-" + Long.toHexString(startTime);
-        System.out.println(renderer.renderSubagentStart(agent.getName(), truncate(prompt, 80)));
+        System.out.println(renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)));
         if (lifecycleListener != null) {
-            lifecycleListener.onSubagentStart(subagentId, agent.getName(), truncate(prompt, 60));
+            lifecycleListener.onSubagentStart(subagentId, agent.getName(), StringUtils.truncate(prompt, 60));
         }
 
         // Create isolated LLM client for this subagent
@@ -179,9 +180,4 @@ public class DirectSubagentRunner implements SubagentRunner {
         return finalResult.isEmpty() ? "(subagent returned empty response)" : finalResult;
     }
 
-    private static String truncate(String text, int maxLen) {
-        if (text == null) return "";
-        if (text.length() <= maxLen) return text;
-        return text.substring(0, maxLen - 3) + "...";
-    }
 }

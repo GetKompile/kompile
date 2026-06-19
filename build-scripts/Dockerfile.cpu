@@ -1,0 +1,205 @@
+###############################################################################
+# Dockerfile.cpu
+#
+# Multi-stage build for kompile with CPU (nd4j-native) backend.
+# Produces a minimal runtime image with native binaries.
+#
+# Usage:
+#   docker build -f build-scripts/Dockerfile.cpu -t kompile:cpu .
+#   docker build -f build-scripts/Dockerfile.cpu \
+#     --build-arg DL4J_BRANCH=release/1.0.0-M3 \
+#     --build-arg KOMPILE_BRANCH=main \
+#     --build-arg NATIVE_TARGETS=cli,app,staging \
+#     -t kompile:cpu-full .
+#
+# Build args:
+#   DL4J_BRANCH       - deeplearning4j branch (default: master)
+#   KOMPILE_BRANCH    - kompile branch (default: main)
+#   BUILD_THREADS     - parallel compile threads (default: nproc)
+#   NATIVE_TARGETS    - native images to build: cli,app,staging (default: cli)
+#   GRAALVM_VERSION   - GraalVM version (default: 21.0.7-graal)
+#   MAVEN_VERSION     - Maven version (default: 3.9.9)
+###############################################################################
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage 1: Builder
+# ═══════════════════════════════════════════════════════════════════════════════
+FROM ubuntu:22.04 AS builder
+
+ARG DL4J_BRANCH=master
+ARG KOMPILE_BRANCH=main
+ARG BUILD_THREADS=""
+ARG NATIVE_TARGETS=all
+ARG GRAALVM_VERSION=21.0.7-graal
+ARG MAVEN_VERSION=3.9.9
+ARG VARIANT=cpu-intel
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System dependencies ────────────────────────────────────────────────────
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    build-essential gcc g++ gfortran cmake ninja-build \
+    pkg-config autoconf automake libtool \
+    git wget curl unzip zip ca-certificates \
+    libdw-dev libelf-dev \
+    zlib1g-dev libssl-dev \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── SDKMAN + GraalVM ───────────────────────────────────────────────────────
+RUN curl -s "https://get.sdkman.io" | bash
+SHELL ["/bin/bash", "-c"]
+RUN source "$HOME/.sdkman/sdkman-init.sh" && \
+    sdk install java ${GRAALVM_VERSION} && \
+    sdk default java ${GRAALVM_VERSION}
+
+ENV JAVA_HOME=/root/.sdkman/candidates/java/current
+ENV GRAALVM_HOME=/root/.sdkman/candidates/java/current
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# ── Maven ──────────────────────────────────────────────────────────────────
+RUN wget -q "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+      -O /tmp/maven.tar.gz && \
+    mkdir -p /opt/maven && \
+    tar -xzf /tmp/maven.tar.gz -C /opt/maven --strip-components=1 && \
+    rm /tmp/maven.tar.gz
+
+ENV MVN=/opt/maven/bin/mvn
+ENV PATH="/opt/maven/bin:${PATH}"
+
+# ── Rust (for tokenizers) ──────────────────────────────────────────────────
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# ── Protobuf ───────────────────────────────────────────────────────────────
+RUN ARCH="$(uname -m)" && \
+    case "$ARCH" in x86_64) PA="x86_64" ;; aarch64) PA="aarch_64" ;; *) PA="$ARCH" ;; esac && \
+    wget -q "https://github.com/protocolbuffers/protobuf/releases/download/v21.7/protoc-21.7-linux-${PA}.zip" \
+      -O /tmp/protoc.zip && \
+    unzip -o /tmp/protoc.zip -d /opt/protobuf && \
+    ln -sf /opt/protobuf/bin/protoc /usr/local/bin/protoc && \
+    rm /tmp/protoc.zip
+
+WORKDIR /build
+
+# ── Clone repos ────────────────────────────────────────────────────────────
+RUN git clone --branch ${DL4J_BRANCH} --depth 1 \
+      https://github.com/deeplearning4j/deeplearning4j.git /build/deeplearning4j
+
+RUN git clone --branch ${KOMPILE_BRANCH} --depth 1 \
+      https://github.com/GetKompile/kompile.git /build/kompile
+
+# ── Build DL4J CPU backend ─────────────────────────────────────────────────
+WORKDIR /build/deeplearning4j
+RUN --mount=type=cache,target=/root/.m2/repository \
+    ${MVN} --no-transfer-progress --batch-mode \
+    -Pcpu -Dlibnd4j.buildthreads=${BUILD_THREADS:-$(nproc)} \
+    -Dlibnd4j.generate.flatc=ON \
+    -DskipTests -Dmaven.javadoc.failOnError=false \
+    -DskipTestResourceEnforcement=true \
+    -pl :libnd4j,:nd4j-native-preset,:nd4j-native \
+    --also-make install \
+    2>&1 | tee /tmp/dl4j-cpu-build.log
+
+# ── Build kompile Java modules ─────────────────────────────────────────────
+WORKDIR /build/kompile
+RUN --mount=type=cache,target=/root/.m2/repository \
+    ${MVN} --batch-mode install -DskipTests \
+    2>&1 | tee /tmp/kompile-java-build.log
+
+# ── Build native images ────────────────────────────────────────────────────
+# Uses a helper script to iterate targets, since Docker RUN can't loop over
+# build args directly. "all" expands to every target.
+RUN --mount=type=cache,target=/root/.m2/repository \
+    ALL="cli,component-cli,app,app-lite,staging,ingest,vector,embedding,model-init,vlm-test,training" && \
+    TARGETS="${NATIVE_TARGETS}" && \
+    [ "${TARGETS}" = "all" ] && TARGETS="${ALL}" && \
+    IFS=',' read -ra T <<< "${TARGETS}" && \
+    for t in "${T[@]}"; do \
+      case "$t" in \
+        cli)           dir=/build/kompile/kompile-cli;                                    prof=native ;; \
+        component-cli) dir=/build/kompile/kompile-cli/kompile-component-cli;              prof=native ;; \
+        app)           dir=/build/kompile/kompile-rag-builds/kompile-sample/project;       prof=native ;; \
+        app-lite)      dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-lite; prof=native ;; \
+        staging)       dir=/build/kompile/kompile-app/kompile-models/kompile-model-staging; prof=native ;; \
+        ingest)        dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-ingest ;; \
+        vector)        dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-vector ;; \
+        embedding)     dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-embedding ;; \
+        model-init)    dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-model-init ;; \
+        vlm-test)      dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-vlm-test ;; \
+        training)      dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-training ;; \
+        *) echo "Unknown native target: $t"; continue ;; \
+      esac && \
+      echo "=== Building native image: $t (profile: $prof) ===" && \
+      cd "$dir" && \
+      JAVA_HOME=${GRAALVM_HOME} ${MVN} package -P"$prof" -DskipTests \
+        2>&1 | tee "/tmp/native-${t}.log" && \
+      cd /build/kompile; \
+    done
+
+# ── Collect artifacts ──────────────────────────────────────────────────────
+RUN mkdir -p /dist/bin /dist/lib /dist/build-scripts /dist/data /dist/sdx-sdk && \
+    # Collect all native image binaries (silently skip missing ones)
+    for pair in \
+      "kompile-cli/target/kompile-cli-main:kompile-cli" \
+      "kompile-cli/kompile-component-cli/target/kompile-component:kompile-component" \
+      "kompile-rag-builds/kompile-sample/project/target/kompile-sample-native:kompile-app" \
+      "kompile-app/kompile-app-parent/kompile-app-lite/target/kompile-app-lite-native:kompile-app-lite" \
+      "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging:kompile-model-staging" \
+      "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-ingest:kompile-ingest" \
+      "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vector:kompile-vector" \
+      "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-embedding:kompile-embedding" \
+      "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-model-init:kompile-model-init" \
+      "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test:kompile-vlm-test" \
+      "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-training:kompile-training"; \
+    do \
+      src="/build/kompile/${pair%%:*}"; \
+      dest="${pair##*:}"; \
+      if [ -f "$src" ]; then cp "$src" "/dist/bin/$dest" && chmod +x "/dist/bin/$dest"; fi; \
+    done && \
+    # SDX runtime SDK artifacts from DL4J build
+    (find /build/deeplearning4j/libnd4j/blasbuild -path '*/sdx-runtime-sdk/dist/*.zip' \
+       -exec cp {} /dist/sdx-sdk/ \; 2>/dev/null || true) && \
+    (find /build/deeplearning4j/libnd4j/blasbuild -path '*/sdx-runtime-sdk/bindings/*/binding.json' \
+       -exec sh -c 'dir=$(basename $(dirname "$1")); mkdir -p /dist/sdx-sdk/$dir && cp "$1" /dist/sdx-sdk/$dir/' _ {} \; 2>/dev/null || true) && \
+    (cp /build/deeplearning4j/build-output/sdx-sdk/*/*.zip /dist/sdx-sdk/ 2>/dev/null || true) && \
+    (rmdir /dist/sdx-sdk 2>/dev/null || true) && \
+    # Build scripts
+    cp /build/kompile/build-scripts/*.sh /dist/build-scripts/ && \
+    chmod +x /dist/build-scripts/*.sh && \
+    # Metadata
+    echo "${VARIANT}" > /dist/.variant && \
+    echo "cpu" > /dist/.backend
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage 2: Runtime
+# ═══════════════════════════════════════════════════════════════════════════════
+FROM ubuntu:22.04 AS runtime
+
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    libgomp1 libstdc++6 zlib1g ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /dist /kompile
+
+ENV PATH="/kompile/bin:${PATH}"
+
+WORKDIR /kompile
+EXPOSE 9191
+
+ENTRYPOINT ["/kompile/bin/kompile-cli"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage 3 (optional): Test — full builder with source and Maven
+#
+# Use with: docker build --target test ...
+# Run with: docker run kompile:cpu-test mvn test -Dtest=MyTest
+# ═══════════════════════════════════════════════════════════════════════════════
+FROM builder AS test
+
+WORKDIR /build/kompile
+
+ENTRYPOINT ["/opt/maven/bin/mvn"]
+CMD ["--batch-mode", "test"]

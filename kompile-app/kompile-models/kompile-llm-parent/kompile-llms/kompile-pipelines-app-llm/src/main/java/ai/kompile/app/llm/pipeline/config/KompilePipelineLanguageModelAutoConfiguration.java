@@ -28,6 +28,7 @@ import ai.kompile.pipelines.framework.api.data.DataFactory;
 import ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline; // Assuming this path
 import ai.kompile.pipelines.framework.api.StepConfig;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.slf4j.Logger;
@@ -97,7 +98,7 @@ public class KompilePipelineLanguageModelAutoConfiguration {
     @ConditionalOnMissingBean
     public ObjectMapper kompileObjectMapper() {
         logger.info("Providing default ObjectMapper bean.");
-        return new ObjectMapper();
+        return JsonUtils.newStandardMapper();
     }
 
     @Bean

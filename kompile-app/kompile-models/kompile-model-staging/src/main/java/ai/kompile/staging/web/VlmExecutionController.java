@@ -19,6 +19,7 @@ package ai.kompile.staging.web;
 import ai.kompile.staging.execution.VlmExecutionService;
 import ai.kompile.staging.execution.VlmImageEmbeddingService;
 import ai.kompile.staging.web.dto.*;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,7 +55,7 @@ public class VlmExecutionController {
     @Autowired
     public VlmExecutionController(VlmExecutionService executionService) {
         this.executionService = executionService;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     // ==================== Model Management ====================

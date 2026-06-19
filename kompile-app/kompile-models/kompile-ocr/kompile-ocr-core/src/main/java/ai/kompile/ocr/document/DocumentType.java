@@ -16,9 +16,12 @@
 
 package ai.kompile.ocr.document;
 
+import lombok.Getter;
+
 /**
  * Classification of document source type based on image characteristics.
  */
+@Getter
 public enum DocumentType {
     /**
      * Pure scanned document - image-only, requires full OCR.
@@ -56,7 +59,4 @@ public enum DocumentType {
         this.description = description;
     }
 
-    public String getDescription() {
-        return description;
-    }
 }

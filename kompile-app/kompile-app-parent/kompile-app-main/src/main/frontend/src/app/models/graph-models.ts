@@ -132,12 +132,17 @@ export interface KnowledgeGraph {
  * Graph statistics
  */
 export interface GraphStatistics {
-  totalNodes: number;
-  totalEdges: number;
-  nodesByType: Record<NodeLevel, number>;
-  edgesByType: Record<EdgeType, number>;
-  averageEdgesPerNode: number;
-  maxDepth: number;
+  totalNodes?: number;
+  totalEdges?: number;
+  nodeCount?: number;
+  edgeCount?: number;
+  nodesByType?: Record<string, number>;
+  edgesByType?: Record<string, number>;
+  nodeTypes?: Record<string, number>;
+  edgeTypes?: Record<string, number>;
+  averageEdgesPerNode?: number;
+  maxDepth?: number;
+  factSheetId?: number;
 }
 
 /**

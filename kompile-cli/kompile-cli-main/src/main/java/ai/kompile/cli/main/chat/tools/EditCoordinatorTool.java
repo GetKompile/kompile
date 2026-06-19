@@ -16,7 +16,9 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.coordination.*;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -60,7 +62,7 @@ public class EditCoordinatorTool implements CliTool {
 
     @Override
     public JsonNode parameterSchema() {
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
@@ -232,9 +234,9 @@ public class EditCoordinatorTool implements CliTool {
 
         for (EditLockEntry e : edits) {
             sb.append(String.format("%-50s %-15s %-10s %-6s %s\n",
-                    truncate(e.getFilePath(), 50),
+                    StringUtils.truncate(e.getFilePath(), 50),
                     e.getAgentName(),
-                    truncate(e.getSessionId(), 10),
+                    StringUtils.truncate(e.getSessionId(), 10),
                     e.getEditType(),
                     formatAge(e.getAcquiredAt())));
         }
@@ -259,8 +261,8 @@ public class EditCoordinatorTool implements CliTool {
             sb.append(String.format("%-10s %-15s %-10s %-30s %-10s %s\n",
                     p.getProcessId(),
                     p.getAgentName(),
-                    truncate(p.getSessionId(), 10),
-                    truncate(p.getCommand(), 30),
+                    StringUtils.truncate(p.getSessionId(), 10),
+                    StringUtils.truncate(p.getCommand(), 30),
                     p.getState(),
                     formatAge(p.getStartedAt())));
         }
@@ -305,11 +307,11 @@ public class EditCoordinatorTool implements CliTool {
 
         for (AgentEntry a : agents) {
             sb.append(String.format("%-25s %-10s %-7s %-5d %-40s %s\n",
-                    truncate(a.getSessionId(), 25),
+                    StringUtils.truncate(a.getSessionId(), 25),
                     a.getAgentName(),
                     a.getAgentType(),
                     a.getDepth(),
-                    truncate(a.getTask(), 40),
+                    StringUtils.truncate(a.getTask(), 40),
                     formatAge(a.getStartedAt())));
         }
 
@@ -369,8 +371,4 @@ public class EditCoordinatorTool implements CliTool {
         return hours + "h" + minutes + "m";
     }
 
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
-    }
 }

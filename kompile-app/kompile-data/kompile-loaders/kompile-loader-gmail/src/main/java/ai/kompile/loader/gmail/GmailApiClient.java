@@ -17,6 +17,7 @@
 package ai.kompile.loader.gmail;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -40,7 +41,7 @@ import java.util.List;
 public class GmailApiClient {
 
     private static final String GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final int MAX_RETRIES = 3;
 
     private final String accessToken;

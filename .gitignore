@@ -61,8 +61,27 @@ convert_pytorch*.py
 **/.claude/
 .codex/
 **/.codex/
+AGENTS.md
+**/AGENTS.md
+CLAUDE.md
+**/CLAUDE.md
+COPILOT.md
+**/COPILOT.md
 *.kompile-backup
 *.kompile-skills-backup
+.gemini/
+**/.gemini/
+javac.*.args
+
+# Eclipse IDE files
+.classpath
+.project
+.factorypath
+.settings/
+**/.classpath
+**/.project
+**/.factorypath
+**/.settings/
 
 # Data/model directories
 anserini-models/

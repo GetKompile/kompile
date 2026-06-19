@@ -29,7 +29,11 @@ import ai.kompile.staging.execution.TextPipelineService;
 import ai.kompile.staging.execution.VlmExecutionService;
 import ai.kompile.staging.export.ExportService;
 import ai.kompile.staging.export.ImportService;
+import ai.kompile.staging.optimization.ComparisonRequest;
+import ai.kompile.staging.optimization.ComparisonResult;
 import ai.kompile.staging.optimization.ComparisonService;
+import ai.kompile.staging.optimization.OptimizationConfig;
+import ai.kompile.staging.optimization.OptimizationResult;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.pipeline.PipelineService;
 import ai.kompile.modelmanager.registry.*;
@@ -40,6 +44,7 @@ import ai.kompile.staging.config.StagingSettings;
 import ai.kompile.staging.config.StagingSettingsService;
 import ai.kompile.staging.training.*;
 import ai.kompile.staging.web.dto.*;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,7 +72,7 @@ import java.util.stream.Collectors;
 public class ModelStagingTool {
 
     private static final Logger logger = LoggerFactory.getLogger(ModelStagingTool.class);
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private final RegistryService registryService;
     private final StagingService stagingService;
@@ -1015,7 +1020,7 @@ public class ModelStagingTool {
             return Map.of("status", "error", "error", "modelId is required");
         }
         try {
-            OptimizationService.OptimizationConfig config = new OptimizationService.OptimizationConfig();
+            OptimizationConfig config = new OptimizationConfig();
             if (input.optimizations() != null && !input.optimizations().isEmpty()) {
                 Set<OptimizationService.OptimizationType> types = new HashSet<>();
                 for (String opt : input.optimizations().split(",")) {
@@ -1032,7 +1037,7 @@ public class ModelStagingTool {
             if (input.createBackup() != null) config.setCreateBackup(input.createBackup());
 
             boolean force = input.force() != null && input.force();
-            OptimizationService.OptimizationResult result = optimizationService.optimize(input.modelId(), config, force);
+            OptimizationResult result = optimizationService.optimize(input.modelId(), config, force);
 
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", result.isSuccess() ? "success" : "error");
@@ -1092,11 +1097,11 @@ public class ModelStagingTool {
             return Map.of("status", "error", "error", "modelId is required");
         }
         try {
-            ComparisonService.ComparisonRequest request = new ComparisonService.ComparisonRequest();
+            ComparisonRequest request = new ComparisonRequest();
             if (input.sampleText() != null) request.setSampleText(input.sampleText());
             if (input.sequenceLength() != null) request.setSequenceLength(input.sequenceLength());
 
-            ComparisonService.ComparisonResult result = comparisonService.compare(input.modelId(), request);
+            ComparisonResult result = comparisonService.compare(input.modelId(), request);
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("status", result.isSuccess() ? "success" : "error");
             response.put(FieldNames.MODEL_ID, result.getModelId());

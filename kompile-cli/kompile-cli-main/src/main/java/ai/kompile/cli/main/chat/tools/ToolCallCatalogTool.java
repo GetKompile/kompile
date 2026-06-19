@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.ToolCallRecord;
 import ai.kompile.cli.main.chat.TranscriptToolCallIndexer;
@@ -39,7 +40,7 @@ import java.util.stream.Collectors;
  */
 public class ToolCallCatalogTool implements CliTool {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     @Override
     public String id() {

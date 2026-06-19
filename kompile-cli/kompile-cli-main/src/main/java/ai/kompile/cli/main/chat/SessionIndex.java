@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -39,7 +40,7 @@ import java.util.stream.Stream;
 public class SessionIndex {
 
     private static final String INDEX_FILE = "index.json";
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private final Path indexFile;
     private final Path conversationsDir;
@@ -326,7 +327,7 @@ public class SessionIndex {
             long lastModified
     ) {
         public ObjectNode toJson() {
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = JsonUtils.standardMapper();
             ObjectNode node = mapper.createObjectNode();
             node.put("sessionId", sessionId);
             node.put("source", source);

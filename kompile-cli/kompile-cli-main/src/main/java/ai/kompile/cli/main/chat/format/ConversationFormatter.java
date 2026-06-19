@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.format;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -43,7 +44,7 @@ public class ConversationFormatter {
             "kompile", "openai", "anthropic", "markdown", "jsonl"
     );
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     /**
      * Formats turns into the specified format.

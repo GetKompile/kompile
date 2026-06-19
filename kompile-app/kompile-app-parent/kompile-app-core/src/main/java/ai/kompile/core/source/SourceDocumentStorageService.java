@@ -16,6 +16,7 @@
 
 package ai.kompile.core.source;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -86,7 +87,7 @@ public class SourceDocumentStorageService {
     public SourceDocumentStorageService(Path storageRoot, boolean enabled) {
         this.storageRoot = storageRoot;
         this.enabled = enabled;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         if (enabled) {
             try {

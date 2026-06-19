@@ -14,6 +14,10 @@
     <description>End-to-end RAG pipeline management with built-in templates, model auto-loading, and FactSheet integration</description>
 
     <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
         <!-- Pipeline Framework -->
         <dependency>
             <groupId>ai.kompile</groupId>

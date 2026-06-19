@@ -17,6 +17,7 @@
 package ai.kompile.loader.gworkspace;
 
 import ai.kompile.core.crawler.*;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
@@ -110,7 +111,7 @@ public class GWorkspaceCrawler extends AbstractCrawler {
         GWorkspaceApiService api = new GWorkspaceApiService(accessToken);
 
         Set<String> services = parseServices(props);
-        int daysBack = intVal(props.get("daysBack"), 30);
+        int daysBack = MapUtils.toInt(props.get("daysBack"), 30);
         String timeMin = Instant.now().minus(Duration.ofDays(daysBack))
                 .atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
 
@@ -121,7 +122,7 @@ public class GWorkspaceCrawler extends AbstractCrawler {
             job.setCurrentItem("Gmail");
             job.setCurrentDepth(0);
 
-            int maxMessages = intVal(props.get("gmailMaxMessages"), 500);
+            int maxMessages = MapUtils.toInt(props.get("gmailMaxMessages"), 500);
             boolean includeAttachments = boolVal(props.get("includeGmailAttachments"), true);
             String gmailQuery = str(props.get("gmailQuery"));
             if (gmailQuery == null || gmailQuery.isEmpty()) {
@@ -179,7 +180,7 @@ public class GWorkspaceCrawler extends AbstractCrawler {
             job.setCurrentItem("Google Drive");
             job.setCurrentDepth(0);
 
-            int maxFiles = intVal(props.get("driveMaxFiles"), 500);
+            int maxFiles = MapUtils.toInt(props.get("driveMaxFiles"), 500);
             boolean includeComments = boolVal(props.get("includeDriveComments"), true);
             String driveQuery = str(props.get("driveQuery"));
             if (driveQuery == null || driveQuery.isEmpty()) {
@@ -243,7 +244,7 @@ public class GWorkspaceCrawler extends AbstractCrawler {
             job.setCurrentItem("Google Calendar");
             job.setCurrentDepth(0);
 
-            int maxEvents = intVal(props.get("calendarMaxEvents"), 500);
+            int maxEvents = MapUtils.toInt(props.get("calendarMaxEvents"), 500);
             String calendarIdsStr = str(props.get("calendarIds"));
             List<String> calendarIds = (calendarIdsStr != null && !calendarIdsStr.isEmpty())
                     ? Arrays.asList(calendarIdsStr.split(",")) : List.of("primary");
@@ -698,12 +699,6 @@ public class GWorkspaceCrawler extends AbstractCrawler {
         if (obj == null) return defaultValue;
         if (obj instanceof Boolean b) return b;
         return Boolean.parseBoolean(obj.toString());
-    }
-
-    private static int intVal(Object obj, int defaultValue) {
-        if (obj == null) return defaultValue;
-        if (obj instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(obj.toString()); } catch (NumberFormatException e) { return defaultValue; }
     }
 
     private static String resolveDocType(String mimeType, String fileName) {

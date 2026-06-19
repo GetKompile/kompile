@@ -1180,34 +1180,4 @@ public class StagingController {
         }
     }
 
-    /**
-     * Request DTO for model conversion.
-     */
-    public static class ConvertModelRequest {
-        private String inputPath;
-        private String format;
-        private String modelId;
-        private String type;
-        private String outputPath;
-        private boolean autoStage = true;
-        private boolean autoPromote = false;
-        private Map<String, Object> metadata;
-
-        public String getInputPath() { return inputPath; }
-        public void setInputPath(String inputPath) { this.inputPath = inputPath; }
-        public String getFormat() { return format; }
-        public void setFormat(String format) { this.format = format; }
-        public String getModelId() { return modelId; }
-        public void setModelId(String modelId) { this.modelId = modelId; }
-        public String getType() { return type; }
-        public void setType(String type) { this.type = type; }
-        public String getOutputPath() { return outputPath; }
-        public void setOutputPath(String outputPath) { this.outputPath = outputPath; }
-        public boolean isAutoStage() { return autoStage; }
-        public void setAutoStage(boolean autoStage) { this.autoStage = autoStage; }
-        public boolean isAutoPromote() { return autoPromote; }
-        public void setAutoPromote(boolean autoPromote) { this.autoPromote = autoPromote; }
-        public Map<String, Object> getMetadata() { return metadata; }
-        public void setMetadata(Map<String, Object> metadata) { this.metadata = metadata; }
-    }
 }
