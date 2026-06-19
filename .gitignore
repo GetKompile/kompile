@@ -257,3 +257,6 @@ glibc-*/
 /test-*.sh
 /test_*.py
 kompile-app/kompile-app-parent/kompile-app-main/src/main/resources/static/
+
+# Generated asciidoc man pages
+src/docs/mantemplates/
