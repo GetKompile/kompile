@@ -42,6 +42,7 @@ import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -1095,6 +1096,8 @@ class GraphExtractionOrchestrator {
                                     entityMeta.put("extraction_method", "llm");
                                     if (sourcePath != null) entityMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
                                     if (entity.properties() != null) entityMeta.putAll(entity.properties());
+                                    // Provenance under the reserved keys (read by /nodes/{id}/provenance, travels via export).
+                                    entityMeta.putAll(GraphProvenanceKeys.crawl(jobId, sourcePath, doc.getId(), config.getModelName()));
 
                                     final Long entityFsId = factSheetId;
                                     Optional<GraphNode> existing = entityNodeCache.computeIfAbsent(
@@ -1444,6 +1447,8 @@ class GraphExtractionOrchestrator {
                                 entityMeta.put("extraction_method", "llm_multi");
                                 if (sourcePath != null) entityMeta.put(GraphConstants.META_SOURCE_PATH, sourcePath);
                                 if (entity.properties() != null) entityMeta.putAll(entity.properties());
+                                // Provenance under the reserved keys (read by /nodes/{id}/provenance, travels via export).
+                                entityMeta.putAll(GraphProvenanceKeys.crawl(jobId, sourcePath, doc.getId(), config.getModelName()));
 
                                 final Long entityFsId = factSheetId;
                                 Optional<GraphNode> existing = entityNodeCache.computeIfAbsent(

@@ -53,4 +53,23 @@ class GraphProvenanceKeysTest {
     void describe_nullNode_returnsEmpty() {
         assertTrue(GraphProvenanceKeys.describe(null).isEmpty());
     }
+
+    @Test
+    void crawl_buildsProvenanceMapWithReservedKeys() {
+        Map<String, Object> m = GraphProvenanceKeys.crawl("job-1", "doc.pdf", "chunk-3", "gpt-x");
+        assertEquals("crawl", m.get(GraphProvenanceKeys.SOURCE));
+        assertEquals("job-1", m.get(GraphProvenanceKeys.CRAWL_RUN_ID));
+        assertEquals("doc.pdf", m.get(GraphProvenanceKeys.SOURCE_DOCUMENT_ID));
+        assertEquals("chunk-3", m.get(GraphProvenanceKeys.SOURCE_CHUNK_ID));
+        assertEquals("gpt-x", m.get(GraphProvenanceKeys.EXTRACTION_MODEL));
+    }
+
+    @Test
+    void crawl_omitsNullFields() {
+        Map<String, Object> m = GraphProvenanceKeys.crawl("job-1", null, null);
+        assertEquals("crawl", m.get(GraphProvenanceKeys.SOURCE));
+        assertEquals("job-1", m.get(GraphProvenanceKeys.CRAWL_RUN_ID));
+        assertFalse(m.containsKey(GraphProvenanceKeys.SOURCE_DOCUMENT_ID));
+        assertFalse(m.containsKey(GraphProvenanceKeys.EXTRACTION_MODEL));
+    }
 }

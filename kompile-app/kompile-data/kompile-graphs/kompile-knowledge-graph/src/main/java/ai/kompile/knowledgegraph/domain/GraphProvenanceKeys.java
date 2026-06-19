@@ -104,4 +104,33 @@ public final class GraphProvenanceKeys {
         out.put("provenance", provenance);
         return out;
     }
+
+    /**
+     * Build a provenance metadata map for a crawl-extracted fact. Null fields are omitted. Merge
+     * the result into a node's metadata so {@code _crawlRunId}/{@code _sourceDocumentId}/etc. are
+     * recorded under the reserved keys the provenance view reads.
+     */
+    public static Map<String, Object> crawl(String crawlRunId, String sourceDocumentId, String sourceChunkId) {
+        return crawl(crawlRunId, sourceDocumentId, sourceChunkId, null);
+    }
+
+    /** As above, additionally recording the extraction model. */
+    public static Map<String, Object> crawl(String crawlRunId, String sourceDocumentId,
+                                            String sourceChunkId, String extractionModel) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put(SOURCE, "crawl");
+        if (crawlRunId != null) {
+            m.put(CRAWL_RUN_ID, crawlRunId);
+        }
+        if (sourceDocumentId != null) {
+            m.put(SOURCE_DOCUMENT_ID, sourceDocumentId);
+        }
+        if (sourceChunkId != null) {
+            m.put(SOURCE_CHUNK_ID, sourceChunkId);
+        }
+        if (extractionModel != null) {
+            m.put(EXTRACTION_MODEL, extractionModel);
+        }
+        return m;
+    }
 }
