@@ -18,6 +18,7 @@ package ai.kompile.app.ontology;
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
 import ai.kompile.core.graphrag.conformance.GraphConformanceChecker;
 import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
+import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -31,7 +32,6 @@ import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -60,11 +60,6 @@ public class GraphOntologyBindingService implements GraphConformanceChecker {
 
     /** Cap on per-report violation detail so the response stays bounded on large graphs. */
     private static final int MAX_VIOLATIONS = 200;
-
-    private static final List<String> CATEGORY_KEYS =
-            List.of("entity_category", "entityCategory", "resolution_category", "resolutionCategory");
-    private static final List<String> TYPE_KEYS = List.of("entity_type", "entityType");
-    private static final List<String> SUBTYPE_KEYS = List.of("entity_subtype", "entitySubtype");
 
     private final ProcessEngineService processEngineService;
     private final KnowledgeGraphService knowledgeGraphService;
@@ -217,35 +212,12 @@ public class GraphOntologyBindingService implements GraphConformanceChecker {
     // ── entity-type extraction ───────────────────────────────────────────────────
 
     /**
-     * Resolve a node's semantic entity type from its metadata, mirroring the cascade used by
-     * GraphCompactionService: {@code entity_category} → {@code entity_type} → {@code entity_subtype}
-     * → the structural {@link NodeLevel} name.
+     * Resolve a node's semantic entity type via the canonical {@link GraphNodeTypes} resolver
+     * ({@code entity_category} → {@code entity_type} → {@code entity_subtype}), falling back to the
+     * structural {@link NodeLevel} name. Shared with the enrichment normalizer so they never diverge.
      */
     private static String extractEntityType(GraphNode node) {
-        Map<String, Object> meta = node.getMetadata();
-        String value = firstNonBlank(meta, CATEGORY_KEYS);
-        if (value == null) {
-            value = firstNonBlank(meta, TYPE_KEYS);
-        }
-        if (value == null) {
-            value = firstNonBlank(meta, SUBTYPE_KEYS);
-        }
-        if (value == null) {
-            value = node.getNodeType() != null ? node.getNodeType().name() : "UNKNOWN";
-        }
-        return value;
-    }
-
-    private static String firstNonBlank(Map<String, Object> meta, List<String> keys) {
-        if (meta == null) {
-            return null;
-        }
-        for (String key : keys) {
-            Object o = meta.get(key);
-            if (o instanceof String s && !s.isBlank()) {
-                return s;
-            }
-        }
-        return null;
+        String fallback = node.getNodeType() != null ? node.getNodeType().name() : "UNKNOWN";
+        return GraphNodeTypes.resolveEntityType(node.getMetadata(), fallback);
     }
 }
