@@ -20,6 +20,7 @@ import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent;
 import ai.kompile.knowledgegraph.io.GraphEmbeddingSidecar;
 import ai.kompile.knowledgegraph.io.GraphIOService;
+import ai.kompile.knowledgegraph.io.NamedGraphPortability;
 import ai.kompile.knowledgegraph.io.model.ExportResult;
 import ai.kompile.knowledgegraph.io.model.ImportResult;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -68,6 +69,8 @@ public class ProjectGraphPortabilityService {
     private KnowledgeGraphService knowledgeGraphService;
     @Autowired(required = false)
     private GraphEmbeddingSidecar embeddingSidecar;
+    @Autowired(required = false)
+    private NamedGraphPortability namedGraphPortability;
     @Autowired
     private ObjectMapper mapper;
 
@@ -94,6 +97,9 @@ public class ProjectGraphPortabilityService {
             }
         }
         exportScope(graphDir.resolve("global.json"), () -> graphIOService.exportGlobalGraph("json"));
+        // NamedGraph registry (identity / hierarchy / schemaJson) — diffable JSON alongside structure.
+        writeBinaryOrDelete(graphDir.resolve("named-graphs.json"),
+                namedGraphPortability != null ? namedGraphPortability.export() : null);
     }
 
     /** Export one fact sheet's structure JSON plus its KG-embedding sidecar. */
@@ -155,10 +161,23 @@ public class ProjectGraphPortabilityService {
             log.debug("Graph already populated; skipping rehydrate from {}", graphDir);
             return;
         }
+        // NamedGraph registry first — the rows that nodes' namedGraphId values point at.
+        Path namedGraphs = graphDir.resolve("named-graphs.json");
+        if (namedGraphPortability != null && Files.isRegularFile(namedGraphs)) {
+            try {
+                int n = namedGraphPortability.importGraphs(Files.readAllBytes(namedGraphs));
+                if (n > 0) {
+                    log.info("Rehydrated {} named graph(s)", n);
+                }
+            } catch (Exception e) {
+                log.warn("Failed to import named graphs: {}", e.getMessage());
+            }
+        }
         List<Path> files;
         try (var paths = Files.list(graphDir)) {
             files = paths.filter(Files::isRegularFile)
                     .filter(p -> p.getFileName().toString().endsWith(".json"))
+                    .filter(p -> !p.getFileName().toString().equals("named-graphs.json"))
                     .sorted()
                     .toList();
         } catch (IOException e) {

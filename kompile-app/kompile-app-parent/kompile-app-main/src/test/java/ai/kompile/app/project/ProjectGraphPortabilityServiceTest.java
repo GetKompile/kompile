@@ -13,6 +13,7 @@ import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.knowledgegraph.io.GraphEmbeddingSidecar;
 import ai.kompile.knowledgegraph.io.GraphIOService;
+import ai.kompile.knowledgegraph.io.NamedGraphPortability;
 import ai.kompile.knowledgegraph.io.model.ExportResult;
 import ai.kompile.knowledgegraph.io.model.ImportResult;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -34,9 +35,9 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Unit tests for {@link ProjectGraphPortabilityService} — export layout (structure
- * JSON + embedding sidecars), the empty-graph rehydrate guard, and cross-file
- * merge-before-import.
+ * Unit tests for {@link ProjectGraphPortabilityService} — export layout (structure JSON +
+ * embedding sidecars + named-graph registry), the empty-graph rehydrate guard, and
+ * cross-file merge-before-import.
  */
 class ProjectGraphPortabilityServiceTest {
 
@@ -44,6 +45,7 @@ class ProjectGraphPortabilityServiceTest {
     private FactSheetService factSheetService;
     private KnowledgeGraphService knowledgeGraphService;
     private GraphEmbeddingSidecar embeddingSidecar;
+    private NamedGraphPortability namedGraphPortability;
     private ProjectGraphPortabilityService service;
 
     @TempDir
@@ -55,11 +57,13 @@ class ProjectGraphPortabilityServiceTest {
         factSheetService = mock(FactSheetService.class);
         knowledgeGraphService = mock(KnowledgeGraphService.class);
         embeddingSidecar = mock(GraphEmbeddingSidecar.class);
+        namedGraphPortability = mock(NamedGraphPortability.class);
         service = new ProjectGraphPortabilityService();
         ReflectionTestUtils.setField(service, "graphIOService", graphIOService);
         ReflectionTestUtils.setField(service, "factSheetService", factSheetService);
         ReflectionTestUtils.setField(service, "knowledgeGraphService", knowledgeGraphService);
         ReflectionTestUtils.setField(service, "embeddingSidecar", embeddingSidecar);
+        ReflectionTestUtils.setField(service, "namedGraphPortability", namedGraphPortability);
         ReflectionTestUtils.setField(service, "mapper", new ObjectMapper());
     }
 
@@ -76,8 +80,7 @@ class ProjectGraphPortabilityServiceTest {
     }
 
     @Test
-    void exportAllGraphs_writesStructureAndEmbeddings_skipsEmptyScopes() throws Exception {
-        // Build the sheets BEFORE the outer stub — nesting when() inside when() is a Mockito misuse.
+    void exportAllGraphs_writesStructureEmbeddingsAndRegistry_skipsEmptyScopes() throws Exception {
         FactSheet s1 = sheet(1);
         FactSheet s2 = sheet(2);
         when(factSheetService.getAllSheets()).thenReturn(List.of(s1, s2));
@@ -85,7 +88,7 @@ class ProjectGraphPortabilityServiceTest {
         when(graphIOService.exportGraph("json", 2L)).thenReturn(export(0, 0));
         when(graphIOService.exportGlobalGraph("json")).thenReturn(export(1, 0));
         when(embeddingSidecar.export(1L)).thenReturn(new byte[]{1, 2, 3});
-        // embeddingSidecar.export(2L) returns null by default → no sidecar file
+        when(namedGraphPortability.export()).thenReturn("[{\"graphId\":\"g1\"}]".getBytes(StandardCharsets.UTF_8));
 
         service.exportAllGraphs(projectRoot);
 
@@ -95,6 +98,7 @@ class ProjectGraphPortabilityServiceTest {
         assertTrue(Files.exists(dir.resolve("global.json")), "global bucket should be written");
         assertTrue(Files.exists(dir.resolve("embeddings/factsheet-1.bin")), "embedding sidecar should be written");
         assertFalse(Files.exists(dir.resolve("embeddings/factsheet-2.bin")), "no sidecar for embedding-less sheet");
+        assertTrue(Files.exists(dir.resolve("named-graphs.json")), "named-graph registry should be written");
     }
 
     @Test
@@ -107,15 +111,17 @@ class ProjectGraphPortabilityServiceTest {
 
         verify(graphIOService, never()).importGraph(anyString(), any(), any());
         verify(embeddingSidecar, never()).importInto(anyLong(), any());
+        verify(namedGraphPortability, never()).importGraphs(any());
     }
 
     @Test
-    void importAllGraphs_mergesFiles_importsStructure_thenEmbeddings_whenEmpty() throws Exception {
+    void importAllGraphs_importsRegistry_mergesStructure_thenEmbeddings_whenEmpty() throws Exception {
         Path dir = Files.createDirectories(projectRoot.resolve("data/graph"));
         Files.writeString(dir.resolve("factsheet-1.json"),
                 "{\"nodes\":[{\"externalId\":\"e1\",\"title\":\"A\",\"nodeType\":\"ENTITY\",\"factSheetId\":1}],\"edges\":[]}");
         Files.writeString(dir.resolve("global.json"),
                 "{\"nodes\":[{\"externalId\":\"g1\",\"title\":\"G\",\"nodeType\":\"ENTITY\"}],\"edges\":[]}");
+        Files.writeString(dir.resolve("named-graphs.json"), "[{\"graphId\":\"ng1\",\"name\":\"NG\"}]");
         Files.createDirectories(dir.resolve("embeddings"));
         Files.write(dir.resolve("embeddings/factsheet-1.bin"), new byte[]{1, 2, 3, 4});
         when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of("totalNodes", 0));
@@ -124,11 +130,13 @@ class ProjectGraphPortabilityServiceTest {
 
         service.importAllGraphs(projectRoot);
 
+        verify(namedGraphPortability).importGraphs(any());
         ArgumentCaptor<byte[]> payload = ArgumentCaptor.forClass(byte[].class);
         verify(graphIOService).importGraph(eq("json"), payload.capture(), isNull());
         String merged = new String(payload.getValue(), StandardCharsets.UTF_8);
         assertTrue(merged.contains("e1"), "merged payload should carry the fact-sheet node");
         assertTrue(merged.contains("g1"), "merged payload should carry the global node");
+        assertFalse(merged.contains("ng1"), "named-graphs.json must not be treated as structure");
         verify(embeddingSidecar).importInto(eq(1L), any());
     }
 }
