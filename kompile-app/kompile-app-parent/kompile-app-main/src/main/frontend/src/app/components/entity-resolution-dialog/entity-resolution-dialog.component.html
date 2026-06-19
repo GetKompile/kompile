@@ -40,14 +40,14 @@
   </div>
 
   <mat-dialog-content>
-    <!-- Barcode identity / recycled-code review queue -->
+    <!-- Identifier resolution review queue -->
     <div class="identity-panel">
       <div class="identity-header">
         <mat-icon>qr_code_2</mat-icon>
-        <span class="identity-title">Barcode identities</span>
+        <span class="identity-title">Identifiers</span>
         <span class="spacer"></span>
         <span class="identity-status" *ngIf="lastMaterialize">
-          {{ lastMaterialize.identifierNodes }} code(s) · {{ lastMaterialize.resolveEdges }} link(s)
+          {{ lastMaterialize.identifierNodes }} identifier(s) · {{ lastMaterialize.resolveEdges }} link(s)
         </span>
         <button mat-stroked-button color="primary" (click)="materializeIdentifiers()" [disabled]="materializing">
           <mat-icon>sync</mat-icon> {{ materializing ? 'Linking…' : 'Refresh links' }}
@@ -60,18 +60,19 @@
 
       <div class="collisions-empty" *ngIf="!collisionsLoading && collisions.length === 0">
         <mat-icon class="ok-icon">verified</mat-icon>
-        <span>No recycled-code collisions</span>
+        <span>No identifier collisions</span>
       </div>
 
       <div class="collision-list" *ngIf="!collisionsLoading && collisions.length > 0">
         <div class="collision-warning">
           <mat-icon>warning</mat-icon>
-          {{ collisions.length }} barcode(s) resolve to multiple products — review needed
+          {{ collisions.length }} identifier(s) resolve to multiple entities — review needed
         </div>
         <div *ngFor="let c of collisions" class="collision-card">
-          <span class="collision-gtin">{{ c.gtin14 }}</span>
+          <span class="collision-kind-badge">{{ c.kind }}</span>
+          <span class="collision-gtin">{{ c.value }}</span>
           <mat-icon class="collision-arrow">arrow_forward</mat-icon>
-          <span class="collision-products">{{ c.productTitles.join(' • ') }}</span>
+          <span class="collision-products">{{ c.entityTitles.join(' • ') }}</span>
         </div>
       </div>
     </div>

@@ -123,9 +123,10 @@ export interface DuplicateReport {
 }
 
 export interface IdentifierCollision {
-  gtin14: string;
-  productNodeIds: string[];
-  productTitles: string[];
+  kind: string;
+  value: string;
+  entityNodeIds: string[];
+  entityTitles: string[];
 }
 
 export interface IdentifierMaterializeResult {
@@ -223,10 +224,10 @@ export class EntityResolutionService extends BaseService {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // BARCODE IDENTITY (many-to-many observed-code ↔ product)
+  // IDENTIFIER RESOLUTION (identifier ↔ entity)
   // ═══════════════════════════════════════════════════════════════
 
-  /** Build/refresh identifier (GTIN-14) nodes + RESOLVES_TO edges. */
+  /** Build/refresh identifier nodes + RESOLVES_TO edges. */
   materializeIdentifiers(factSheetId?: number): Observable<IdentifierMaterializeResult> {
     let params = new HttpParams();
     if (factSheetId != null) {
@@ -237,7 +238,7 @@ export class EntityResolutionService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  /** The review queue: GTIN-14s resolving to more than one product (recycled codes). */
+  /** The review queue: identifiers resolving to more than one entity. */
   getIdentifierCollisions(factSheetId?: number): Observable<IdentifierCollisionReport> {
     let params = new HttpParams();
     if (factSheetId != null) {
@@ -248,17 +249,20 @@ export class EntityResolutionService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  /** Product node IDs that a (possibly noisy) barcode resolves to. */
-  productsForCode(code: string): Observable<{ gtin14: string; productNodeIds: string[] }> {
-    return this.http.get<{ gtin14: string; productNodeIds: string[] }>(
-      `${this.backendUrl}${this.apiPath}/identifiers/by-gtin/${encodeURIComponent(code)}`)
+  /** Entity node IDs that a given identifier (kind + value) resolves to. */
+  resolveIdentifier(kind: string, value: string): Observable<{ kind: string; value: string; entityNodeIds: string[] }> {
+    const params = new HttpParams()
+      .set('kind', kind)
+      .set('value', value);
+    return this.http.get<{ kind: string; value: string; entityNodeIds: string[] }>(
+      `${this.backendUrl}${this.apiPath}/identifiers/resolve`, { params })
       .pipe(catchError(this.handleError));
   }
 
-  /** Canonical GTIN-14s that resolve to a given product node. */
-  codesForProduct(nodeId: string): Observable<{ productNodeId: string; gtins: string[] }> {
-    return this.http.get<{ productNodeId: string; gtins: string[] }>(
-      `${this.backendUrl}${this.apiPath}/identifiers/by-product/${encodeURIComponent(nodeId)}`)
+  /** All identifiers attached to a given entity node. */
+  identifiersForEntity(nodeId: string): Observable<{ entityNodeId: string; identifiers: string[] }> {
+    return this.http.get<{ entityNodeId: string; identifiers: string[] }>(
+      `${this.backendUrl}${this.apiPath}/identifiers/by-entity/${encodeURIComponent(nodeId)}`)
       .pipe(catchError(this.handleError));
   }
 

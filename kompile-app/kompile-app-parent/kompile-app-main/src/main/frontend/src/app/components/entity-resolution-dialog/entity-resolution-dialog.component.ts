@@ -88,7 +88,7 @@ export class EntityResolutionDialogComponent implements OnInit {
 
   showSettings = false;
 
-  // Barcode identity / recycled-code review queue
+  // Identifier resolution review queue
   collisions: IdentifierCollision[] = [];
   collisionsLoading = false;
   materializing = false;
@@ -107,7 +107,7 @@ export class EntityResolutionDialogComponent implements OnInit {
     this.loadCollisions();
   }
 
-  /** Load the recycled-code review queue (barcodes resolving to >1 product). */
+  /** Load the identifier review queue (identifiers resolving to >1 entity). */
   loadCollisions(): void {
     this.collisionsLoading = true;
     this.entityResolutionService.getIdentifierCollisions(this.data.factSheetId).subscribe({
@@ -123,7 +123,7 @@ export class EntityResolutionDialogComponent implements OnInit {
     });
   }
 
-  /** Rebuild identifier nodes + RESOLVES_TO edges, then refresh the collision list. */
+  /** Rebuild identifier nodes + RESOLVES_TO edges, then refresh the identifier collision list. */
   materializeIdentifiers(): void {
     this.materializing = true;
     this.entityResolutionService.materializeIdentifiers(this.data.factSheetId).subscribe({
@@ -132,7 +132,7 @@ export class EntityResolutionDialogComponent implements OnInit {
         this.collisions = res.collisions || [];
         this.materializing = false;
         this.snackBar.open(
-          `Linked ${res.identifierNodes} barcode(s) · ${res.collisions.length} collision(s)`,
+          `Linked ${res.identifierNodes} identifier(s) · ${res.collisions.length} collision(s)`,
           'Close', { duration: 3000 });
         this.cdr.markForCheck();
       },

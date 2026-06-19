@@ -36,14 +36,14 @@ class EntityResolutionControllerTest {
 
     private GraphCompactionService compactionService;
     private EntityResolutionService resolutionService;
-    private BarcodeIdentityGraphService identityGraphService;
+    private IdentityGraphService identityGraphService;
     private EntityResolutionController controller;
 
     @BeforeEach
     void setUp() {
         compactionService = mock(GraphCompactionService.class);
         resolutionService = mock(EntityResolutionService.class);
-        identityGraphService = mock(BarcodeIdentityGraphService.class);
+        identityGraphService = mock(IdentityGraphService.class);
         controller = new EntityResolutionController(compactionService, resolutionService, identityGraphService);
     }
 
@@ -72,11 +72,11 @@ class EntityResolutionControllerTest {
     void compact_alsoMaterializesIdentifiers() {
         when(compactionService.compact(any(), any()))
                 .thenReturn(new CompactionResult(2, 1, 1, 0, 1, List.of(), 5L));
-        BarcodeIdentityGraphService.IdentifierCollision collision =
-                new BarcodeIdentityGraphService.IdentifierCollision(
-                        "00036000291452", List.of("p1", "p2"), List.of("A", "B"));
+        IdentityGraphService.IdentifierCollision collision =
+                new IdentityGraphService.IdentifierCollision(
+                        "GTIN", "00036000291452", List.of("p1", "p2"), List.of("A", "B"));
         when(identityGraphService.materialize(any()))
-                .thenReturn(new BarcodeIdentityGraphService.MaterializeResult(3, 4, List.of(collision)));
+                .thenReturn(new IdentityGraphService.MaterializeResult(3, 4, List.of(collision)));
 
         ResponseEntity<Map<String, Object>> response = controller.compact(0.85, 7L);
         assertEquals(HttpStatus.OK, response.getStatusCode());

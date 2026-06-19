@@ -43,11 +43,11 @@ public class EntityResolutionController {
 
     private final GraphCompactionService compactionService;
     private final EntityResolutionService resolutionService;
-    private final BarcodeIdentityGraphService identityGraphService;
+    private final IdentityGraphService identityGraphService;
 
     public EntityResolutionController(GraphCompactionService compactionService,
                                        EntityResolutionService resolutionService,
-                                       BarcodeIdentityGraphService identityGraphService) {
+                                       IdentityGraphService identityGraphService) {
         this.compactionService = compactionService;
         this.resolutionService = resolutionService;
         this.identityGraphService = identityGraphService;
@@ -58,26 +58,26 @@ public class EntityResolutionController {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Materialize identifier (GTIN-14) nodes and RESOLVES_TO edges for product
-     * entities, giving a durable many-to-many observed-code → product mapping.
+     * Materialize identifier nodes and RESOLVES_TO edges for all entity types,
+     * giving a durable many-to-many observed-identifier → entity mapping.
      *
      * @param factSheetId optional fact-sheet scope (null = all entities)
-     * @return counts of identifier nodes / edges created, plus recycled-code collisions
+     * @return counts of identifier nodes / edges created, plus collisions
      */
     @PostMapping("/identifiers/materialize")
-    public ResponseEntity<BarcodeIdentityGraphService.MaterializeResult> materializeIdentifiers(
+    public ResponseEntity<IdentityGraphService.MaterializeResult> materializeIdentifiers(
             @RequestParam(required = false) Long factSheetId) {
         return ResponseEntity.ok(identityGraphService.materialize(factSheetId));
     }
 
     /**
-     * The review queue: GTIN-14s that resolve to more than one product (likely a
+     * The review queue: identifiers that resolve to more than one entity (likely a
      * recycled / reassigned code). Computed without mutating the graph.
      */
     @GetMapping("/identifiers/collisions")
     public ResponseEntity<Map<String, Object>> identifierCollisions(
             @RequestParam(required = false) Long factSheetId) {
-        List<BarcodeIdentityGraphService.IdentifierCollision> collisions =
+        List<IdentityGraphService.IdentifierCollision> collisions =
                 identityGraphService.previewCollisions(factSheetId);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("collisionCount", collisions.size());
@@ -85,23 +85,26 @@ public class EntityResolutionController {
         return ResponseEntity.ok(response);
     }
 
-    /** Product node IDs that a (possibly noisy) barcode resolves to. */
-    @GetMapping("/identifiers/by-gtin/{code}")
-    public ResponseEntity<Map<String, Object>> productsForCode(@PathVariable String code) {
-        List<String> products = identityGraphService.productNodeIdsForGtin(code);
+    /** Entity node IDs that a raw identifier of the given kind resolves to. */
+    @GetMapping("/identifiers/resolve")
+    public ResponseEntity<Map<String, Object>> resolveIdentifier(
+            @RequestParam(defaultValue = "GTIN") String kind,
+            @RequestParam String value) {
+        List<String> entityNodeIds = identityGraphService.entityNodeIdsForIdentifier(kind, value);
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("gtin14", BarcodeNormalizer.parse(code).gtin14());
-        response.put("productNodeIds", products);
+        response.put("kind", kind);
+        response.put("value", value);
+        response.put("entityNodeIds", entityNodeIds);
         return ResponseEntity.ok(response);
     }
 
-    /** Canonical GTIN-14s that resolve to a given product node. */
-    @GetMapping("/identifiers/by-product/{nodeId}")
-    public ResponseEntity<Map<String, Object>> codesForProduct(@PathVariable String nodeId) {
-        List<String> gtins = identityGraphService.gtinsForProduct(nodeId);
+    /** Canonical identifier values that resolve to a given entity node. */
+    @GetMapping("/identifiers/by-entity/{nodeId}")
+    public ResponseEntity<Map<String, Object>> identifiersForEntity(@PathVariable String nodeId) {
+        List<String> identifiers = identityGraphService.identifiersForEntity(nodeId);
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("productNodeId", nodeId);
-        response.put("gtins", gtins);
+        response.put("entityNodeId", nodeId);
+        response.put("identifiers", identifiers);
         return ResponseEntity.ok(response);
     }
 
@@ -167,13 +170,13 @@ public class EntityResolutionController {
     }
 
     /**
-     * Refresh the barcode identifier graph after a compaction and attach a summary
-     * (identifier nodes / edges created, plus recycled-code collisions for review)
+     * Refresh the identifier graph after a compaction and attach a summary
+     * (identifier nodes / edges created, plus collisions for review)
      * to the response. Best-effort: a failure here must not fail the compaction.
      */
     private void attachIdentifierMaterialization(Map<String, Object> response, Long factSheetId) {
         try {
-            BarcodeIdentityGraphService.MaterializeResult mr = identityGraphService.materialize(factSheetId);
+            IdentityGraphService.MaterializeResult mr = identityGraphService.materialize(factSheetId);
             Map<String, Object> identifiers = new LinkedHashMap<>();
             identifiers.put("identifierNodes", mr.identifierNodes());
             identifiers.put("resolveEdges", mr.resolveEdges());
