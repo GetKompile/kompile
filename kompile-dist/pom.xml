@@ -162,12 +162,18 @@
                             <goal>exec</goal>
                         </goals>
                         <configuration>
-                            <executable>python3</executable>
-                            <workingDirectory>${project.parent.basedir}/kompile-python</workingDirectory>
+                            <!-- kompile-python is an optional, currently-untracked module. Build its
+                                 wheel only when setup.py is present, and never fail the dist build when
+                                 it is absent (e.g. a clean CI checkout where kompile-python/ is not
+                                 present at all). Any prebuilt wheel already in kompile-python/dist/ is
+                                 still bundled as-is by the python fileSet in dist.xml. -->
+                            <executable>bash</executable>
+                            <workingDirectory>${project.parent.basedir}</workingDirectory>
                             <arguments>
-                                <argument>setup.py</argument>
-                                <argument>bdist_wheel</argument>
+                                <argument>-c</argument>
+                                <argument>d="kompile-python"; if [ -f "$d/setup.py" ]; then ( cd "$d" &amp;&amp; python3 setup.py bdist_wheel ); else echo "kompile-python: no setup.py found, skipping optional Python wheel build"; fi</argument>
                             </arguments>
+                            <failOnError>false</failOnError>
                         </configuration>
                     </execution>
                 </executions>
@@ -224,8 +230,8 @@
                             <descriptors>
                                 <descriptor>src/main/assembly/dist.xml</descriptor>
                             </descriptors>
-                            <finalName>kompile-${project.version}</finalName>
-                            <appendAssemblyId>true</appendAssemblyId>
+                            <finalName>kompile-dist-${project.version}</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
                         </configuration>
                     </execution>
                 </executions>

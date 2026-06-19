@@ -25,6 +25,7 @@ import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import ai.kompile.cli.main.manage.ServiceManager;
 import ai.kompile.project.KompileCodingProject;
 import ai.kompile.project.KompileProjectCrawlProfile;
+import ai.kompile.project.KompileProjectGitResult;
 import ai.kompile.project.KompileProjectManifest;
 import ai.kompile.project.KompileProjectModel;
 import ai.kompile.project.KompileProjectOpenState;
@@ -1136,6 +1137,259 @@ public class ProjectServiceCommand implements Callable<Integer> {
             System.out.println("\n" + stopped + " stopped"
                     + (alreadyDead > 0 ? ", " + alreadyDead + " already dead" : "") + ".");
             return 0;
+        }
+    }
+
+    /** Resolved end-to-end steps after applying implications. */
+    public record QuickstartPlan(boolean serve, boolean crawl, boolean push) {}
+
+    /**
+     * Apply the quickstart flag implications: {@code --push} implies {@code --crawl} implies
+     * {@code --serve}. Pure function, extracted so the contract can be unit-tested.
+     */
+    public static QuickstartPlan quickstartPlan(boolean serve, boolean crawl, boolean push) {
+        boolean doPush = push;
+        boolean doCrawl = crawl || doPush;
+        boolean doServe = serve || doCrawl;
+        return new QuickstartPlan(doServe, doCrawl, doPush);
+    }
+
+    /**
+     * One-shot end-to-end orchestration used by {@code kompile project init --serve/--crawl/--push}.
+     * <p>
+     * Starts staging + the main app in the <em>background</em> (so this call keeps control), then
+     * optionally runs the manifest's crawl profiles and waits for them to finish, then optionally
+     * commits all project changes and pushes them to the configured git remote. Unless
+     * {@code keepRunning} is set, the services this method started are stopped before returning —
+     * giving a clean "init → crawl → push → done" single invocation.
+     *
+     * @return process exit code (0 = success)
+     */
+    public static int runQuickstart(Path resolved, int appPort, int stagingPort, boolean noStaging,
+                                    boolean doCrawl, boolean doPush, boolean keepRunning,
+                                    String commitMessage, List<String> jvmArgs) {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectManifest manifest = store.load(resolved);
+        File projectDir = resolved.toFile();
+        String projectName = manifest.getName() != null ? manifest.getName() : projectDir.getName();
+
+        System.out.println("\n=== Quickstart: bringing up services for " + projectName + " ===");
+        GlobalBootstrap.ensureHomeDirectory();
+        GlobalBootstrap.ensureConfigs();
+
+        File appJar = Open.findInstalledAppJar();
+        if (appJar == null) {
+            System.err.println("\nkompile-app-main not installed.");
+            System.err.println("Install it with: kompile install kompile-app");
+            return 1;
+        }
+
+        ServiceManager serviceManager = new ServiceManager();
+        if (serviceManager.checkHealth(appPort)) {
+            System.err.println("  A service is already running on port " + appPort
+                    + ". Stop it first or pass a different --serve-port.");
+            return 1;
+        }
+
+        File logDir = new File(projectDir, "data/logs");
+        logDir.mkdirs();
+        String webInstanceName = projectName + "-web";
+        String stagingInstanceName = projectName + "-staging";
+
+        Process stagingProcess = null;
+        Process appProcess = null;
+        boolean servicesStopped = false;
+        try {
+            // 1. Staging server (background)
+            if (!noStaging) {
+                File stagingJar = Open.findInstalledStagingJar();
+                if (stagingJar == null) {
+                    System.out.println("  Staging: not installed (skipping).");
+                } else if (serviceManager.checkHealth(stagingPort)) {
+                    System.out.println("  Staging: already running on port " + stagingPort + ".");
+                } else {
+                    System.out.println("  Starting staging on port " + stagingPort + "...");
+                    List<String> stagingArgs = Open.buildStagingArgs(projectDir, appPort);
+                    stagingProcess = serviceManager.startProjectComponent(
+                            stagingInstanceName, "kompile-model-staging", stagingJar,
+                            stagingPort, projectDir, null, stagingArgs, logDir, false);
+                    if (serviceManager.waitForHealth(stagingPort, 60)) {
+                        Open.configureStagingCallback(stagingPort, appPort);
+                        System.out.println("  Staging: ready (PID: " + stagingProcess.pid() + ")");
+                    } else {
+                        System.out.println("  Staging: health check timed out (continuing).");
+                    }
+                }
+            }
+
+            // 2. Auto-register models + index coding projects (best effort)
+            boolean stagingUp = !noStaging && serviceManager.checkHealth(stagingPort);
+            if (stagingUp && !manifest.getModels().isEmpty()) {
+                Open.autoStageProjectModels(manifest.getModels(), stagingPort, projectDir);
+            }
+            if (!manifest.getCodingProjects().isEmpty()) {
+                Open.autoIndexCodingProjects(manifest.getCodingProjects());
+            }
+
+            // 3. Main app (background — we keep control to crawl/push/stop)
+            List<String> appArgs = Open.buildProjectAppArgs(projectDir, appPort, stagingPort, stagingUp);
+            System.out.println("  Starting kompile-app-main on port " + appPort + " (background)...");
+            appProcess = serviceManager.startProjectComponent(
+                    webInstanceName, "kompile-app-main", appJar, appPort,
+                    projectDir, jvmArgs, appArgs, logDir, false);
+
+            if (!serviceManager.waitForHealth(appPort, 180)) {
+                System.err.println("  App did not become healthy within 180s. See "
+                        + new File(logDir, webInstanceName + ".err.log"));
+                stopServices(appProcess, stagingProcess, webInstanceName, stagingInstanceName);
+                servicesStopped = true;
+                return 1;
+            }
+            System.out.println("  App: ready at http://localhost:" + appPort + " (PID: " + appProcess.pid() + ")");
+
+            // 4. Crawl + wait for completion
+            if (doCrawl) {
+                if (manifest.getCrawlProfiles().isEmpty()) {
+                    System.out.println("  No crawl profiles in the manifest; nothing to crawl.");
+                    System.out.println("  Tip: re-run init with --detect-sources or --auto-crawl to create one.");
+                } else {
+                    Open.triggerAutoCrawl(appPort, manifest);
+                    waitForCrawlsToComplete(appPort, 60 * 60); // up to 1 hour
+                }
+            }
+
+            // 5. Commit + push
+            if (doPush) {
+                // Stop services first (unless keep-running) so every index/file is flushed to disk
+                // before we capture the working tree.
+                if (!keepRunning) {
+                    stopServices(appProcess, stagingProcess, webInstanceName, stagingInstanceName);
+                    servicesStopped = true;
+                }
+                String msg = (commitMessage == null || commitMessage.isBlank())
+                        ? "Initialize Kompile project" : commitMessage;
+                System.out.println("\n  Committing project changes...");
+                KompileProjectGitResult commit = store.gitCommitAll(resolved, msg);
+                printGitOutput(commit);
+                System.out.println("  Pushing to remote...");
+                KompileProjectGitResult push = store.gitPush(resolved);
+                printGitOutput(push);
+                if (push.getExitCode() != 0) {
+                    System.err.println("  Push failed (exit " + push.getExitCode() + "). "
+                            + "Ensure a remote is configured (init with --backend git --remote <url>).");
+                    return push.getExitCode();
+                }
+                System.out.println("  Pushed.");
+            }
+
+            return 0;
+        } catch (Exception e) {
+            System.err.println("  Quickstart failed: " + e.getMessage());
+            return 1;
+        } finally {
+            if (!keepRunning && !servicesStopped) {
+                stopServices(appProcess, stagingProcess, webInstanceName, stagingInstanceName);
+            } else if (keepRunning) {
+                System.out.println("\n  Services left running:");
+                System.out.println("    App:     http://localhost:" + appPort);
+                if (!noStaging) {
+                    System.out.println("    Staging: http://localhost:" + stagingPort);
+                }
+                System.out.println("  Stop them with: kompile project stop --root " + resolved);
+            }
+        }
+    }
+
+    private static void printGitOutput(KompileProjectGitResult result) {
+        if (result != null && result.getOutput() != null && !result.getOutput().isBlank()) {
+            System.out.println("    " + result.getOutput().trim().replace("\n", "\n    "));
+        }
+    }
+
+    /** Gracefully stop background services started by quickstart and clean up registry entries. */
+    private static void stopServices(Process appProcess, Process stagingProcess,
+                                     String webInstanceName, String stagingInstanceName) {
+        System.out.println("\n  Stopping services...");
+        destroyProcess(appProcess);
+        destroyProcess(stagingProcess);
+        try { InstanceRegistry.unregister(webInstanceName); } catch (Exception ignored) {}
+        try { InstanceRegistry.unregister(stagingInstanceName); } catch (Exception ignored) {}
+    }
+
+    private static void destroyProcess(Process process) {
+        if (process == null || !process.isAlive()) {
+            return;
+        }
+        process.destroy();
+        try {
+            if (!process.waitFor(15, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Poll {@code GET /api/unified-crawl/jobs/active} until no jobs are running (two consecutive
+     * empty responses) or the timeout elapses. Best-effort: transient HTTP failures are ignored.
+     */
+    static void waitForCrawlsToComplete(int appPort, int maxWaitSeconds) {
+        System.out.println("  Waiting for crawl(s) to finish...");
+        HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        long deadline = System.currentTimeMillis() + maxWaitSeconds * 1000L;
+        // Give the job time to register before treating an empty active-list as "done".
+        sleepQuietly(8000);
+        int consecutiveEmpty = 0;
+        int lastActive = -1;
+        while (System.currentTimeMillis() < deadline) {
+            Integer active = countActiveCrawlJobs(client, appPort);
+            if (active == null) {
+                sleepQuietly(5000);
+                continue;
+            }
+            if (active == 0) {
+                if (++consecutiveEmpty >= 2) {
+                    System.out.println("  Crawl(s) finished.");
+                    sleepQuietly(5000); // brief grace for final index/embedding flush
+                    return;
+                }
+            } else {
+                consecutiveEmpty = 0;
+                if (active != lastActive) {
+                    System.out.println("    " + active + " crawl job(s) running...");
+                    lastActive = active;
+                }
+            }
+            sleepQuietly(5000);
+        }
+        System.out.println("  Crawl wait timed out after " + maxWaitSeconds + "s; proceeding.");
+    }
+
+    /** @return number of active crawl jobs, or {@code null} if the endpoint could not be read. */
+    private static Integer countActiveCrawlJobs(HttpClient client, int appPort) {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:" + appPort + "/api/unified-crawl/jobs/active"))
+                    .timeout(Duration.ofSeconds(10))
+                    .GET().build();
+            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                return null;
+            }
+            JsonNode node = JsonUtils.standardMapper().readTree(resp.body());
+            return (node != null && node.isArray()) ? node.size() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

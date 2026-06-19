@@ -23,7 +23,7 @@ INSTALL_DIR="${KOMPILE_INSTALL_DIR:-${HOME}/.kompile}"
 BASE_URL="${KOMPILE_BASE_URL:-}"
 VERSION="${KOMPILE_VERSION:-}"
 VARIANT="${KOMPILE_VARIANT:-hosted}"
-GITHUB_REPO="KonduitAI/kompile"
+GITHUB_REPO="GetKompile/kompile"
 VERBOSE=false
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -297,8 +297,9 @@ if [[ ":${PATH}:" != *":${BIN_DIR}:"* ]]; then
 fi
 
 echo "Get started:"
-echo "  kompile web                    # launch the web UI"
-echo "  kompile init-project           # create a new RAG project"
-echo "  kompile chat                   # start an AI chat"
-echo "  kompile --help                 # see all commands"
+echo "  kompile project init                  # scaffold a Kompile project in the current directory"
+echo "  kompile project init --crawl --push   # scaffold + serve + index docs + push to git (one shot)"
+echo "  kompile chat                          # start an AI chat"
+echo "  kompile web                           # launch the web UI"
+echo "  kompile --help                        # see all commands"
 echo ""
