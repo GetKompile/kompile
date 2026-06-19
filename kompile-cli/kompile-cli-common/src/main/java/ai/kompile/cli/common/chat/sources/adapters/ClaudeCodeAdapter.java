@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class ClaudeCodeAdapter implements ChatSourceAdapter {
@@ -106,14 +107,31 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
     protected Optional<Path> findSessionFile(String sessionId) throws IOException {
         Path dir = rootDir();
         if (!Files.isDirectory(dir)) return Optional.empty();
-        String needle = sessionId.endsWith(".jsonl") ? sessionId : sessionId + ".jsonl";
+        String needle = sessionId.endsWith(".jsonl")
+                ? sessionId.substring(0, sessionId.length() - 6) : sessionId;
+        List<Path> files;
         try (Stream<Path> stream = Files.walk(dir)) {
-            return stream
-                    .filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().equals(needle)
-                            || p.getFileName().toString().equals(sessionId))
-                    .findFirst();
+            files = stream.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().endsWith(".jsonl"))
+                    .collect(Collectors.toList());
         }
+        // Fast path: the on-disk file name is the session's slug or canonical UUID.
+        for (Path p : files) {
+            String fname = p.getFileName().toString();
+            String base = fname.substring(0, fname.length() - 6);
+            if (base.equals(needle) || fname.equals(sessionId)) {
+                return Optional.of(p);
+            }
+        }
+        // Fallback: a session is also addressable by the canonical sessionId, custom title or slug
+        // carried inside the file, which may differ from the on-disk name.
+        for (Path p : files) {
+            SessionMeta meta = readMeta(p);
+            if (needle.equals(meta.sessionId()) || needle.equals(meta.title()) || needle.equals(meta.slug())) {
+                return Optional.of(p);
+            }
+        }
+        return Optional.empty();
     }
 
     protected static List<ChatTurn> parseJsonl(Path file) throws IOException {
@@ -157,15 +175,64 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
     }
 
     private ChatSessionSummary toSummary(Path path) {
-        String file = path.getFileName().toString();
-        String id = file.endsWith(".jsonl") ? file.substring(0, file.length() - 6) : file;
+        SessionMeta meta = readMeta(path);
+        String fname = path.getFileName().toString();
+        String fallbackId = fname.endsWith(".jsonl") ? fname.substring(0, fname.length() - 6) : fname;
+        // The canonical session id lives inside the file; the on-disk name may be a human-readable slug.
+        String id = meta.sessionId() != null ? meta.sessionId() : fallbackId;
         int turns = 0;
         try {
             turns = parseJsonl(path).size();
         } catch (IOException ignore) {
         }
-        return new ChatSessionSummary(id, id(), "(untitled)", id(),
-                turns, ChatAdapterSupport.lastModified(path));
+        return new ChatSessionSummary(id, id(), meta.title(), id(),
+                turns, ChatAdapterSupport.lastModified(path), meta.workingDirectory());
+    }
+
+    /** Reads the canonical session id and display title (custom-title &gt; slug &gt; agent-name) from a file. */
+    private SessionMeta readMeta(Path path) {
+        String sessionId = null;
+        String customTitle = null;
+        String slug = null;
+        String agentName = null;
+        String cwd = null;
+        try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) continue;
+                try {
+                    JsonNode node = ChatAdapterSupport.MAPPER.readTree(line);
+                    if (sessionId == null) {
+                        String sid = node.path("sessionId").asText(null);
+                        if (sid != null && !sid.isBlank()) sessionId = sid;
+                    }
+                    if (cwd == null) {
+                        String c = node.path("cwd").asText(null);
+                        if (c != null && !c.isBlank()) cwd = c;
+                    }
+                    String type = node.path("type").asText("");
+                    if ("custom-title".equals(type)) {
+                        String ct = node.path("customTitle").asText(null);
+                        if (ct != null && !ct.isBlank()) customTitle = ct;
+                    } else if ("agent-name".equals(type)) {
+                        String an = node.path("agentName").asText(null);
+                        if (an != null && !an.isBlank()) agentName = an;
+                    }
+                    String s = node.path("slug").asText(null);
+                    if (s != null && !s.isBlank()) slug = s;
+                } catch (Exception ignore) {
+                }
+            }
+        } catch (IOException ignore) {
+        }
+        String title = customTitle != null ? customTitle
+                : slug != null ? slug
+                : agentName != null ? agentName
+                : "(untitled)";
+        return new SessionMeta(sessionId, title, slug, cwd);
+    }
+
+    private record SessionMeta(String sessionId, String title, String slug, String workingDirectory) {
     }
 
     private int countSessions(Path dir) {

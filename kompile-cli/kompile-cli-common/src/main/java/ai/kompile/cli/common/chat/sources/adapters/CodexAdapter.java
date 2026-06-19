@@ -33,10 +33,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -72,17 +74,24 @@ public class CodexAdapter implements ChatSourceAdapter {
 
     @Override
     public SourceInfo discover() {
-        int count = 0;
+        // Count DISTINCT sessions: a single session can span multiple resume rollout files AND also
+        // appear in history.jsonl, so dedup by session id (matching list()) rather than counting files.
+        Set<String> ids = new LinkedHashSet<>();
         boolean hasSomething = false;
         Path sessions = sessionsDir();
         if (Files.isDirectory(sessions)) {
             hasSomething = true;
             try (Stream<Path> stream = Files.walk(sessions)) {
-                count += (int) stream.filter(Files::isRegularFile)
+                stream.filter(Files::isRegularFile)
                         .filter(p -> {
                             String n = p.getFileName().toString();
                             return n.endsWith(".jsonl") || n.endsWith(".jsonl.zst");
-                        }).count();
+                        })
+                        .forEach(p -> {
+                            String name = p.getFileName().toString();
+                            String sid = extractIdFromRollout(name);
+                            ids.add(sid != null ? sid : name);
+                        });
             } catch (IOException ignore) {
             }
         }
@@ -90,25 +99,23 @@ public class CodexAdapter implements ChatSourceAdapter {
         if (Files.exists(history)) {
             hasSomething = true;
             try (BufferedReader reader = Files.newBufferedReader(history, StandardCharsets.UTF_8)) {
-                Map<String, Boolean> ids = new LinkedHashMap<>();
                 String line;
                 while ((line = reader.readLine()) != null) {
                     if (line.isBlank()) continue;
                     try {
                         JsonNode node = ChatAdapterSupport.MAPPER.readTree(line);
                         String sid = node.path("session_id").asText(null);
-                        if (sid != null) ids.put(sid, Boolean.TRUE);
+                        if (sid != null) ids.add(sid);
                     } catch (Exception ignore) {
                     }
                 }
-                count += ids.size();
             } catch (IOException ignore) {
             }
         }
         if (!hasSomething) {
             return SourceInfo.unavailable(id(), displayName(), codexHome().toString(), "not found");
         }
-        return SourceInfo.available(id(), displayName(), codexHome().toString(), count);
+        return SourceInfo.available(id(), displayName(), codexHome().toString(), ids.size());
     }
 
     @Override
