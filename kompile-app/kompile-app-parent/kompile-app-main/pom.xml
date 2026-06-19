@@ -353,6 +353,20 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Process attribution (Bayesian/MEBN process risk + step attribution) -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-process-attribution</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Event observation + empirical event priors (feeds the Bayesian/MEBN priors) -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-event-observation</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Tool crawler -->
         <dependency>
             <groupId>ai.kompile</groupId>

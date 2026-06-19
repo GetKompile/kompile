@@ -14,6 +14,7 @@ import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.graph.algorithms.community.CommunitySummary;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,12 +34,13 @@ class GraphCommunityToolTest {
 
     @Mock private GraphAlgorithmService algorithmService;
     @Mock private GraphNodeRepository nodeRepository;
+    @Mock private KnowledgeGraphService graphService;
 
     private GraphCommunityTool tool;
 
     @BeforeEach
     void setUp() {
-        tool = new GraphCommunityTool(algorithmService, nodeRepository);
+        tool = new GraphCommunityTool(algorithmService, graphService);
     }
 
     @Test
@@ -101,7 +103,7 @@ class GraphCommunityToolTest {
         Map<String, Integer> assignments = Map.of("n1", 0, "n2", 0, "n3", 1);
         when(algorithmService.louvainCommunities(isNull(), eq(20)))
                 .thenReturn(assignments);
-        when(nodeRepository.findByNodeIdIn(anyList()))
+        when(graphService.getNodesByIds(anyList()))
                 .thenReturn(List.of(
                         GraphSearchToolTest.createNode("n1", "Node 1", NodeLevel.ENTITY),
                         GraphSearchToolTest.createNode("n2", "Node 2", NodeLevel.DOCUMENT)
@@ -162,7 +164,7 @@ class GraphCommunityToolTest {
         assignments.put("n3", 1);
         when(algorithmService.louvainCommunities(isNull(), eq(20)))
                 .thenReturn(assignments);
-        when(nodeRepository.findByNodeIdIn(anyList()))
+        when(graphService.getNodesByIds(anyList()))
                 .thenReturn(List.of(
                         GraphSearchToolTest.createNode("n2", "Co-member", NodeLevel.ENTITY)
                 ));
@@ -185,7 +187,7 @@ class GraphCommunityToolTest {
         );
         when(algorithmService.jaccardTopK(isNull(), eq(20), eq(0.1)))
                 .thenReturn(pairs);
-        when(nodeRepository.findByNodeIdIn(anyList()))
+        when(graphService.getNodesByIds(anyList()))
                 .thenReturn(List.of(
                         GraphSearchToolTest.createNode("a", "Alpha", NodeLevel.ENTITY),
                         GraphSearchToolTest.createNode("b", "Beta", NodeLevel.ENTITY)
@@ -206,7 +208,7 @@ class GraphCommunityToolTest {
     void similarPairs_respectsTopKAndThreshold() {
         when(algorithmService.jaccardTopK(isNull(), eq(5), eq(0.3)))
                 .thenReturn(List.of());
-        when(nodeRepository.findByNodeIdIn(anyList())).thenReturn(List.of());
+        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         var result = tool.findSimilarPairs(
                 new GraphCommunityTool.SimilarNodePairsInput(null, 5, 0.3));

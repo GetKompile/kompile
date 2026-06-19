@@ -38,6 +38,8 @@ import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Subject, Subscription, takeUntil, debounceTime, interval, filter } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import { BayesianPanelComponent } from './bayesian-panel.component';
+import { MarkdownRendererComponent } from '../markdown-renderer/markdown-renderer.component';
+import { TableRendererComponent } from '../table-renderer/table-renderer.component';
 
 import { GraphCanvasComponent } from './graph-canvas.component';
 import { GraphService, GraphBuildStatus, FactSheetGraphStatistics } from '../../services/graph.service';
@@ -87,7 +89,9 @@ import {
     MatDialogModule,
     GraphCanvasComponent,
     ConfirmDialogComponent,
-    BayesianPanelComponent
+    BayesianPanelComponent,
+    MarkdownRendererComponent,
+    TableRendererComponent
   ],
   template: `
     <div class="graph-visualizer">
@@ -236,6 +240,14 @@ import {
                     <span class="label">Metadata:</span>
                     <pre class="value metadata">{{selectedNode.metadata | json}}</pre>
                   </div>
+                  <!-- Rendered table for TABLE nodes — works for any graph backend -->
+                  <div class="detail-row detail-table-view" *ngIf="isTableNode(selectedNode)">
+                    <span class="label">Table:</span>
+                    <app-table-renderer
+                      [markdownContent]="getNodeTableMarkdown(selectedNode)"
+                      [showExport]="true">
+                    </app-table-renderer>
+                  </div>
                   <div class="node-actions">
                     <button mat-stroked-button (click)="expandNode()">
                       <mat-icon>unfold_more</mat-icon>
@@ -295,7 +307,7 @@ import {
                           </span>
                         </div>
                         <div *ngIf="attributionResult.synthesizedExplanation" class="attr-explanation">
-                          {{attributionResult.synthesizedExplanation}}
+                          <app-markdown-renderer [content]="attributionResult.synthesizedExplanation"></app-markdown-renderer>
                         </div>
                         <div *ngFor="let chain of attributionResult.chains; let i = index" class="chain-card">
                           <div class="chain-header">
@@ -305,7 +317,9 @@ import {
                             </span>
                             <span class="chain-timestamp" *ngIf="chain.computedAt">{{chain.computedAt | slice:11:19}}</span>
                           </div>
-                          <div *ngIf="chain.narrative" class="chain-narrative">{{chain.narrative}}</div>
+                          <div *ngIf="chain.narrative" class="chain-narrative">
+                            <app-markdown-renderer [content]="chain.narrative"></app-markdown-renderer>
+                          </div>
                           <div class="chain-path">
                             <span class="chain-root">{{chain.rootCauseTitle}}</span>
                             <div *ngFor="let hop of chain.hops" class="chain-hop">
@@ -431,7 +445,7 @@ import {
                           </span>
                         </div>
                         <div *ngIf="predictionResult.synthesizedForecast" class="attr-explanation">
-                          {{predictionResult.synthesizedForecast}}
+                          <app-markdown-renderer [content]="predictionResult.synthesizedForecast"></app-markdown-renderer>
                         </div>
                         <div *ngFor="let pred of predictionResult.predictions" class="pred-entry">
                           <div class="pred-header">
@@ -2252,6 +2266,16 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
 
   onSearchChange(query: string): void {
     this.searchSubject.next(query);
+  }
+
+  /** True when a graph node should render as a table — store-agnostic (JPA or vector backend). */
+  isTableNode(node: D3Node | null): boolean {
+    return !!node && (node.type === 'TABLE' || !!node.metadata?.['fullTableContent']);
+  }
+
+  /** Best-available table markdown for a node: full content if persisted, else the preview. */
+  getNodeTableMarkdown(node: D3Node | null): string {
+    return (node?.metadata?.['fullTableContent'] as string) || node?.description || '';
   }
 
   onNodeSelected(node: D3Node | null): void {

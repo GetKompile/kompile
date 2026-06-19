@@ -1055,7 +1055,7 @@
       </div>
 
       <!-- Messages -->
-      <div *ngFor="let message of messages; let i = index" class="message-wrapper" data-testid="message-wrapper"
+      <div *ngFor="let message of messages; let i = index; trackBy: trackByMessageId" class="message-wrapper" data-testid="message-wrapper"
         [class.user-wrapper]="message.role === 'user'" [class.bot-wrapper]="message.role === 'assistant'"
         [class.system-wrapper]="message.role === 'system'">
 
@@ -1109,12 +1109,12 @@
               <ng-container *ngFor="let segment of getMessageSegments(message)">
                 <!-- Text segments: rendered as markdown -->
                 <div *ngIf="segment.type === 'text'" class="md-rendered"
-                  [innerHTML]="renderSegmentMarkdown(segment.content)"></div>
+                  [innerHTML]="segment.renderedContent"></div>
 
                 <!-- Thinking blocks -->
                 <details *ngIf="segment.type === 'thinking'" class="thinking-block" [attr.open]="segment.isStreaming ? '' : null">
                   <summary>Thinking{{ segment.isStreaming ? '...' : '' }}</summary>
-                  <div class="thinking-content" [innerHTML]="renderSegmentMarkdown(segment.content)"></div>
+                  <div class="thinking-content" [innerHTML]="segment.renderedContent"></div>
                 </details>
 
                 <!-- Tool use blocks -->

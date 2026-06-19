@@ -16,22 +16,20 @@
 package ai.kompile.knowledgegraph.maintenance;
 
 import ai.kompile.core.graphrag.maintenance.model.ConfidencePrunePolicy;
+import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceTask;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +45,10 @@ import java.util.Map;
  *   <li>When {@code policy.requireExtractedProvenance()} is {@code true}, edges whose
  *       provenance is {@link EdgeProvenance#AMBIGUOUS} are also soft-deleted.</li>
  * </ul>
+ *
+ * <p>This class depends only on {@link KnowledgeGraphService} and is therefore
+ * store-agnostic — it works with both the JPA and the matrix/vector-store
+ * backends without modification.</p>
  */
 @Slf4j
 @Component
@@ -54,21 +56,20 @@ public class ConfidencePruner {
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
-    private  GraphNodeRepository nodeRepository;
-    private  GraphEdgeRepository edgeRepository;
-    private  ObjectMapper objectMapper;
+    private final KnowledgeGraphService knowledgeGraphService;
+    private final ObjectMapper objectMapper;
 
-    public ConfidencePruner(GraphNodeRepository nodeRepository,
-                            GraphEdgeRepository edgeRepository,
+    public ConfidencePruner(KnowledgeGraphService knowledgeGraphService,
                             ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.objectMapper = objectMapper;
     }
 
     /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
-    protected ConfidencePruner() {}
-
+    protected ConfidencePruner() {
+        this.knowledgeGraphService = null;
+        this.objectMapper = null;
+    }
 
     /**
      * Execute confidence-based pruning for the given fact sheet.
@@ -78,76 +79,84 @@ public class ConfidencePruner {
      * @param dryRun      when {@code true} no writes are performed
      * @return a {@link TaskReport} summarising the operation
      */
-    @Transactional
     public TaskReport execute(Long factSheetId, ConfidencePrunePolicy policy, boolean dryRun) {
         Instant start = Instant.now();
-        LocalDateTime now = LocalDateTime.now();
         int scanned = 0;
         int affected = 0;
         int skipped = 0;
         List<String> warnings = new ArrayList<>();
 
         // ── 1. Prune low-confidence entities ────────────────────────────────────
-        List<GraphNode> lowConfidenceEntities =
-                nodeRepository.findLowConfidenceEntities(factSheetId, policy.minEntityConfidence());
-        scanned += lowConfidenceEntities.size();
+        List<String> lowConfidenceNodeIds =
+                knowledgeGraphService.findLowConfidenceNodeIds(factSheetId, policy.minEntityConfidence());
+        scanned += lowConfidenceNodeIds.size();
         log.debug("ConfidencePruner: {} low-confidence entities (below {}) for factSheet={}",
-                lowConfidenceEntities.size(), policy.minEntityConfidence(), factSheetId);
+                lowConfidenceNodeIds.size(), policy.minEntityConfidence(), factSheetId);
 
-        List<Long> entityIdsToMark = new ArrayList<>();
-        for (GraphNode entity : lowConfidenceEntities) {
-            // Check corroborating mentions heuristic: if minCorroboratingMentions > 1,
-            // only prune entities whose metadata indicates a single sourceChunkId
-            if (policy.minCorroboratingMentions() > 1 && isCorroborated(entity, policy.minCorroboratingMentions())) {
-                skipped++;
-                log.debug("Skipping corroborated low-confidence entity {} for factSheet={}",
-                        entity.getNodeId(), factSheetId);
-                continue;
+        // Apply corroborating-mentions heuristic when needed
+        List<String> entityIdsToMark = new ArrayList<>();
+        if (policy.minCorroboratingMentions() > 1) {
+            for (String nodeId : lowConfidenceNodeIds) {
+                knowledgeGraphService.getNode(nodeId).ifPresent(node -> {
+                    if (isCorroborated(node, policy.minCorroboratingMentions())) {
+                        log.debug("Skipping corroborated low-confidence entity {} for factSheet={}",
+                                nodeId, factSheetId);
+                        // do not add to mark list — node stays
+                    } else {
+                        entityIdsToMark.add(nodeId);
+                    }
+                });
             }
-            entityIdsToMark.add(entity.getId());
-            affected++;
+            skipped += lowConfidenceNodeIds.size() - entityIdsToMark.size();
+        } else {
+            entityIdsToMark.addAll(lowConfidenceNodeIds);
         }
+        affected += entityIdsToMark.size();
 
-        if (!dryRun && !entityIdsToMark.isEmpty()) {
-            nodeRepository.bulkMarkStale(entityIdsToMark, now);
-            log.info("ConfidencePruner: marked {} low-confidence entities as stale for factSheet={}",
-                    entityIdsToMark.size(), factSheetId);
+        if (!entityIdsToMark.isEmpty()) {
+            GraphPruneResult nodeResult = knowledgeGraphService.pruneNodes(
+                    entityIdsToMark, /* softDelete= */ true, null, dryRun);
+            if (!dryRun) {
+                log.info("ConfidencePruner: marked {} low-confidence entities as stale for factSheet={}",
+                        nodeResult.affectedCount(), factSheetId);
+            }
         }
 
         // ── 2. Prune low-confidence edges ────────────────────────────────────────
-        List<GraphEdge> lowConfidenceEdges =
-                edgeRepository.findLowConfidenceEdges(factSheetId, policy.minRelationshipConfidence());
-        scanned += lowConfidenceEdges.size();
+        List<String> lowConfidenceEdgeIds =
+                knowledgeGraphService.findLowConfidenceEdgeIds(factSheetId, policy.minRelationshipConfidence());
+        scanned += lowConfidenceEdgeIds.size();
         log.debug("ConfidencePruner: {} low-confidence edges (below {}) for factSheet={}",
-                lowConfidenceEdges.size(), policy.minRelationshipConfidence(), factSheetId);
+                lowConfidenceEdgeIds.size(), policy.minRelationshipConfidence(), factSheetId);
 
-        List<Long> edgeIdsToMark = new ArrayList<>();
-        for (GraphEdge edge : lowConfidenceEdges) {
-            edgeIdsToMark.add(edge.getId());
-            affected++;
-        }
+        List<String> edgeIdsToMark = new ArrayList<>(lowConfidenceEdgeIds);
+        affected += edgeIdsToMark.size();
 
         // ── 3. Prune AMBIGUOUS provenance edges (if requireExtractedProvenance) ───
         if (policy.requireExtractedProvenance()) {
-            List<GraphEdge> allActiveEdges = edgeRepository.findActiveEdges(factSheetId);
-            scanned += allActiveEdges.size();
-            for (GraphEdge edge : allActiveEdges) {
-                // Skip if already queued via low-confidence path
-                if (edgeIdsToMark.contains(edge.getId())) continue;
-
-                String prov = edge.getProvenance();
-                if (EdgeProvenance.AMBIGUOUS.name().equalsIgnoreCase(prov)) {
-                    log.debug("Flagging AMBIGUOUS provenance edge {} for pruning", edge.getEdgeId());
-                    edgeIdsToMark.add(edge.getId());
-                    affected++;
-                }
+            List<String> activeEdgeIds = knowledgeGraphService.findActiveEdgeIds(factSheetId);
+            scanned += activeEdgeIds.size();
+            for (String edgeId : activeEdgeIds) {
+                if (edgeIdsToMark.contains(edgeId)) continue; // already queued
+                knowledgeGraphService.getEdge(edgeId).ifPresent(edge -> {
+                    String prov = edge.getProvenance();
+                    if (EdgeProvenance.AMBIGUOUS.name().equalsIgnoreCase(prov)) {
+                        log.debug("Flagging AMBIGUOUS provenance edge {} for pruning", edgeId);
+                        edgeIdsToMark.add(edgeId);
+                    }
+                });
             }
+            // Recalculate affected count after AMBIGUOUS scan
+            affected = entityIdsToMark.size() + edgeIdsToMark.size();
         }
 
-        if (!dryRun && !edgeIdsToMark.isEmpty()) {
-            edgeRepository.bulkMarkStale(edgeIdsToMark, now);
-            log.info("ConfidencePruner: marked {} edges as stale for factSheet={}",
-                    edgeIdsToMark.size(), factSheetId);
+        if (!edgeIdsToMark.isEmpty()) {
+            GraphPruneResult edgeResult = knowledgeGraphService.pruneEdges(
+                    edgeIdsToMark, /* softDelete= */ true, dryRun);
+            if (!dryRun) {
+                log.info("ConfidencePruner: marked {} edges as stale for factSheet={}",
+                        edgeResult.affectedCount(), factSheetId);
+            }
         }
 
         log.info("ConfidencePruner (dryRun={}): scanned={}, affected={}, skipped={} for factSheet={}",

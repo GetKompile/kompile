@@ -112,6 +112,31 @@ class GrepToolFifoTest {
         }
     }
 
+    /**
+     * Regression: a regex with {@code |} alternation must match. Plain grep is BRE, where
+     * {@code |} is a literal, so {@code alpha|gamma} would search for that literal text and
+     * silently miss. The grep fallback uses {@code -E} (extended regex) to match ripgrep's
+     * default semantics.
+     */
+    @Test
+    void grepHandlesRegexAlternation() throws Exception {
+        Path tmp = Files.createTempDirectory("grep-alt-test");
+        try {
+            Files.writeString(tmp.resolve("a.txt"), "first ALPHA_TOKEN line\nsecond line\n");
+            ObjectNode params = om.createObjectNode();
+            params.put("pattern", "ALPHA_TOKEN|NOPE_TOKEN");
+
+            ToolContext ctx = ctxFor(tmp);
+            ToolResult result = assertTimeoutPreemptively(Duration.ofSeconds(10),
+                    () -> tool.execute(params, ctx));
+            assertFalse(result.isError(), "grep should succeed: " + result.getOutput());
+            assertTrue(result.getOutput().contains("ALPHA_TOKEN"),
+                    "alternation a|b must match (needs -E / extended regex): " + result.getOutput());
+        } finally {
+            deleteRecursively(tmp);
+        }
+    }
+
     @Test
     void grepNoMatchReturnsCleanly() throws Exception {
         Path tmp = Files.createTempDirectory("grep-nomatch-test");

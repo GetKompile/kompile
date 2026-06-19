@@ -68,6 +68,10 @@ public class AgentProvider {
     // Interactive mode configuration
     private String interactivePromptPattern; // Regex pattern to detect when agent is waiting for input
 
+    // Stream parsing mode (from cli-agents.json "outputMode"): e.g. "stream-json",
+    // "tui-scrape", "kompile-json". Drives how subprocess stdout is parsed into SSE events.
+    private String outputMode;
+
     // MCP Server configuration
     private boolean mcpSupported;
     private String mcpServerFlag;           // e.g., "--mcp-server" for Claude
@@ -150,6 +154,11 @@ public class AgentProvider {
 
         public Builder interactivePromptPattern(String pattern) {
             provider.interactivePromptPattern = pattern;
+            return this;
+        }
+
+        public Builder outputMode(String outputMode) {
+            provider.outputMode = outputMode;
             return this;
         }
 

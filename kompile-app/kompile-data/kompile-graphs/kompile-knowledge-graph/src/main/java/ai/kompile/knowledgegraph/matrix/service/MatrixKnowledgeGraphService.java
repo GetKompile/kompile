@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.matrix.service;
 
+import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.matrix.algorithms.MatrixGraphAlgorithms;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
@@ -28,6 +29,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
@@ -818,20 +820,33 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                         Collectors.counting()
                 ));
 
-        stats.put("sourceCount", typeCounts.getOrDefault("SOURCE", 0L));
-        stats.put("documentCount", typeCounts.getOrDefault("DOCUMENT", 0L));
-        stats.put("snippetCount", typeCounts.getOrDefault("SNIPPET", 0L));
-        stats.put("entityCount", typeCounts.getOrDefault("ENTITY", 0L));
-        stats.put("customCount", typeCounts.getOrDefault("CUSTOM", 0L));
+        // Census EVERY NodeLevel (incl. TABLE, ATTACHMENT) into nodesByType — identical contract
+        // to the JPA store so the index-browser renders the same regardless of active backend.
+        Map<String, Long> nodesByType = new LinkedHashMap<>();
+        for (NodeLevel level : NodeLevel.values()) {
+            nodesByType.put(level.name(), typeCounts.getOrDefault(level.name(), 0L));
+        }
+        stats.put("nodesByType", nodesByType);
+
+        stats.put("sourceCount", nodesByType.getOrDefault("SOURCE", 0L));
+        stats.put("documentCount", nodesByType.getOrDefault("DOCUMENT", 0L));
+        stats.put("snippetCount", nodesByType.getOrDefault("SNIPPET", 0L));
+        stats.put("entityCount", nodesByType.getOrDefault("ENTITY", 0L));
+        stats.put("customCount", nodesByType.getOrDefault("CUSTOM", 0L));
+        stats.put("tableCount", nodesByType.getOrDefault("TABLE", 0L));
+        stats.put("attachmentCount", nodesByType.getOrDefault("ATTACHMENT", 0L));
         stats.put("totalEdges", matrixStats.getOrDefault("edgeCount", 0));
 
         // Edge type counts
         @SuppressWarnings("unchecked")
         Set<String> edgeTypes = (Set<String>) matrixStats.getOrDefault("edgeTypes", Collections.emptySet());
+        Map<String, Long> edgesByType = new LinkedHashMap<>();
         for (String edgeType : edgeTypes) {
-            stats.put("edges_" + edgeType.toLowerCase(),
-                    countEdgesByType(DEFAULT_GRAPH_ID, edgeType));
+            long count = countEdgesByType(DEFAULT_GRAPH_ID, edgeType);
+            edgesByType.put(edgeType, count);
+            stats.put("edges_" + edgeType.toLowerCase(), count);
         }
+        stats.put("edgesByType", edgesByType);
 
         return stats;
     }
@@ -972,13 +987,17 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     }
 
     private int getTypeOrder(String type) {
+        // Must match KnowledgeGraphServiceImpl.getTypeOrder(NodeLevel) so visualization ordering
+        // is identical across stores; TABLE sorts right after DOCUMENT (not last).
         return switch (type) {
             case "SOURCE" -> 0;
             case "DOCUMENT" -> 1;
-            case "ENTITY" -> 2;
-            case "CUSTOM" -> 3;
-            case "SNIPPET" -> 4;
-            default -> 5;
+            case "TABLE" -> 2;
+            case "ENTITY" -> 3;
+            case "CUSTOM" -> 4;
+            case "SNIPPET" -> 5;
+            case "ATTACHMENT" -> 6;
+            default -> 7;
         };
     }
 
@@ -1049,6 +1068,10 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             map.put("edgeCount", 0);
         }
 
+        // Parsed metadata so the visualizer can render TABLE / structured nodes (parity with JPA).
+        map.put("metadata", node.getMetadata() != null
+                ? node.getMetadata() : Collections.<String, Object>emptyMap());
+
         return map;
     }
 
@@ -1089,6 +1112,209 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             graphStore.removeNode(DEFAULT_GRAPH_ID, node.getNodeId());
         }
         log.info("Deleted {} nodes for factSheetId={}", toDelete.size(), factSheetId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRUNING / MAINTENANCE QUERIES — matrix/vector-store backend
+    //
+    // "Stale" is tracked in node/edge metadata under the "_stale" key (Boolean
+    // true).  Nodes whose matrixStore-level metadata contains "_stale=true" are
+    // considered soft-deleted; hardDeleteStaleNodes purges them once the grace
+    // period (stored as "_staleAt" epoch-millis string) has elapsed.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns nodeIds of ENTITY nodes in the fact sheet with degree 0
+     * (no edges to or from them) that are not already soft-deleted.
+     */
+    @Override
+    public List<String> findOrphanNodeIds(Long factSheetId) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .filter(n -> "ENTITY".equals(n.getNodeType()))
+                .filter(n -> !isMatrixNodeStale(n))
+                .filter(n -> {
+                    List<Map.Entry<String, Double>> edges =
+                            graphStore.getEdges(DEFAULT_GRAPH_ID, n.getNodeId(), null);
+                    return edges == null || edges.isEmpty();
+                })
+                .map(MatrixGraphNode::getNodeId)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Returns nodeIds of non-stale nodes in the fact sheet whose metadata
+     * "confidence" value is below {@code minConfidence}.
+     */
+    @Override
+    public List<String> findLowConfidenceNodeIds(Long factSheetId, double minConfidence) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .filter(n -> !isMatrixNodeStale(n))
+                .filter(n -> {
+                    Object conf = n.getMetadata() != null ? n.getMetadata().get("confidence") : null;
+                    if (conf instanceof Number num) {
+                        return num.doubleValue() < minConfidence;
+                    }
+                    return false;
+                })
+                .map(MatrixGraphNode::getNodeId)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * The matrix store does not persist edges as independent objects with
+     * confidence scores, so this always returns empty (coherent with the
+     * matrix store's edge representation as weighted adjacency rows).
+     */
+    @Override
+    public List<String> findLowConfidenceEdgeIds(Long factSheetId, double minConfidence) {
+        // Matrix store edges are weight-only; no confidence metadata on edges.
+        return Collections.emptyList();
+    }
+
+    /**
+     * Count non-stale nodes in the fact sheet (all types).
+     */
+    @Override
+    public long countActiveNodes(Long factSheetId) {
+        return graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .filter(n -> !isMatrixNodeStale(n))
+                .count();
+    }
+
+    /**
+     * The matrix store has no persisted edge IDs; returns empty (callers that
+     * enumerate active edge IDs are JPA-only code paths).
+     */
+    @Override
+    public List<String> findActiveEdgeIds(Long factSheetId) {
+        return Collections.emptyList();
+    }
+
+    /**
+     * Soft-delete: sets {@code _stale=true} and {@code _staleAt} in node metadata.
+     * Hard-delete: calls {@link MatrixGraphStore#removeNode} immediately.
+     * Dry-run: returns the IDs without mutating.
+     */
+    @Override
+    public GraphPruneResult pruneNodes(Collection<String> nodeIds,
+                                       boolean softDelete,
+                                       Duration grace,
+                                       boolean dryRun) {
+        if (nodeIds == null || nodeIds.isEmpty()) {
+            return GraphPruneResult.empty(dryRun);
+        }
+        List<String> ids = new ArrayList<>(nodeIds);
+        if (dryRun) {
+            return GraphPruneResult.ofSoftDelete(ids, true);
+        }
+        if (softDelete) {
+            String nowStr = String.valueOf(System.currentTimeMillis());
+            for (String nodeId : ids) {
+                graphStore.getNode(DEFAULT_GRAPH_ID, nodeId).ifPresent(n -> {
+                    if (n.getMetadata() == null) n.setMetadata(new HashMap<>());
+                    n.getMetadata().put("_stale", true);
+                    n.getMetadata().put("_staleAt", nowStr);
+                    graphStore.updateNode(DEFAULT_GRAPH_ID, n);
+                });
+            }
+            return GraphPruneResult.ofSoftDelete(ids, false);
+        } else {
+            int deleted = 0;
+            for (String nodeId : ids) {
+                try {
+                    graphStore.removeNode(DEFAULT_GRAPH_ID, nodeId);
+                    deleted++;
+                } catch (Exception e) {
+                    log.warn("pruneNodes: could not remove node {}: {}", nodeId, e.getMessage());
+                }
+            }
+            return new GraphPruneResult(ids, deleted, deleted, false);
+        }
+    }
+
+    /**
+     * The matrix store does not have edge IDs; hard-delete removes the underlying
+     * edge via source::target parsing.  Soft-delete is not supported for edges
+     * (no metadata on adjacency entries) — soft path immediately removes.
+     */
+    @Override
+    public GraphPruneResult pruneEdges(Collection<String> edgeIds,
+                                       boolean softDelete,
+                                       boolean dryRun) {
+        if (edgeIds == null || edgeIds.isEmpty()) {
+            return GraphPruneResult.empty(dryRun);
+        }
+        List<String> ids = new ArrayList<>(edgeIds);
+        if (dryRun) {
+            return GraphPruneResult.ofSoftDelete(ids, true);
+        }
+        int deleted = 0;
+        for (String edgeId : ids) {
+            // Edge ID format in the matrix store: "sourceId::targetId::TYPE"
+            String[] parts = edgeId.split("::");
+            if (parts.length >= 2) {
+                String edgeType = parts.length >= 3 ? parts[2] : null;
+                try {
+                    graphStore.removeEdge(DEFAULT_GRAPH_ID, parts[0], parts[1], edgeType);
+                    deleted++;
+                } catch (Exception e) {
+                    log.warn("pruneEdges: could not remove edge {}: {}", edgeId, e.getMessage());
+                }
+            }
+        }
+        return new GraphPruneResult(ids, deleted, deleted, false);
+    }
+
+    /**
+     * Purges nodes in the fact sheet whose {@code _stale=true} metadata was
+     * written before the grace period cutoff.
+     */
+    @Override
+    public GraphPruneResult hardDeleteStaleNodes(Long factSheetId, Duration grace) {
+        long graceDays = grace != null ? grace.toDays() : 7L;
+        long cutoffMillis = System.currentTimeMillis() - graceDays * 86_400_000L;
+        List<MatrixGraphNode> expired = graphStore.getAllNodes(DEFAULT_GRAPH_ID).stream()
+                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .filter(n -> {
+                    if (n.getMetadata() == null) return false;
+                    Object staleFlag = n.getMetadata().get("_stale");
+                    if (!Boolean.TRUE.equals(staleFlag)) return false;
+                    Object staleAt = n.getMetadata().get("_staleAt");
+                    if (staleAt == null) return true; // no timestamp → assume expired
+                    try {
+                        long ts = Long.parseLong(staleAt.toString());
+                        return ts < cutoffMillis;
+                    } catch (NumberFormatException ex) {
+                        return true; // unparseable → assume expired
+                    }
+                })
+                .collect(Collectors.toList());
+        int deleted = 0;
+        for (MatrixGraphNode n : expired) {
+            try {
+                graphStore.removeNode(DEFAULT_GRAPH_ID, n.getNodeId());
+                deleted++;
+            } catch (Exception e) {
+                log.warn("hardDeleteStaleNodes: could not remove node {}: {}", n.getNodeId(), e.getMessage());
+            }
+        }
+        if (deleted > 0) {
+            log.info("hardDeleteStaleNodes: permanently removed {} expired stale nodes for factSheetId={}",
+                    deleted, factSheetId);
+        }
+        return GraphPruneResult.ofHardDelete(deleted, false);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private helpers for stale-flag checking in the matrix store
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private boolean isMatrixNodeStale(MatrixGraphNode n) {
+        if (n.getMetadata() == null) return false;
+        return Boolean.TRUE.equals(n.getMetadata().get("_stale"));
     }
 
     /**

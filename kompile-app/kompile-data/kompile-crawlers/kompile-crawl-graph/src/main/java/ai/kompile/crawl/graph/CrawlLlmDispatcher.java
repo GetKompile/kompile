@@ -16,6 +16,7 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.agent.CliAgentRunner;
 import ai.kompile.core.crawl.graph.AgentCallContext;
 import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.core.crawl.graph.ProcessingCapacityTracker;
@@ -73,6 +74,9 @@ class CrawlLlmDispatcher {
 
     @Autowired(required = false)
     private CliAgentQuotaLedger cliAgentQuotaLedger;
+
+    @Autowired(required = false)
+    private CliAgentRunner cliAgentRunner;
 
     // ---- Configurable timeouts (synced from CrawlRuntimeConfigManager) ----
 
@@ -450,6 +454,28 @@ class CrawlLlmDispatcher {
             agentName = "claude-cli";
         }
 
+        // Route through the shared persistent CLI-agent subprocess infra (the same
+        // AgentSubprocessExecutor the LLMChat pool uses): it builds the proper command,
+        // strips ANSI/TUI escapes, and parses the agent's JSON stream — instead of a raw
+        // one-shot `<agent> -p <prompt>` spawn that captures the agent's banner/help.
+        if (cliAgentRunner != null) {
+            try {
+                String output = cliAgentRunner.run(agentName, prompt, timeoutSeconds);
+                if (output != null && cliAgentQuotaLedger != null) {
+                    cliAgentQuotaLedger.recordConsumption(agentName,
+                            prompt != null ? prompt.length() / 4L : 0L,
+                            output.length() / 4L);
+                }
+                return output;
+            } catch (Exception e) {
+                log.warn("[Job {}] CLI agent '{}' (runner) failed: {}",
+                        job.getJobId(), agentName, e.getMessage());
+                return null;
+            }
+        }
+
+        // Fallback: legacy one-shot spawn, used only when the CliAgentRunner bean is
+        // absent (e.g. the crawl module running outside the app-main agent runtime).
         try {
             ProcessBuilder pb = new ProcessBuilder();
             List<String> command = new ArrayList<>();

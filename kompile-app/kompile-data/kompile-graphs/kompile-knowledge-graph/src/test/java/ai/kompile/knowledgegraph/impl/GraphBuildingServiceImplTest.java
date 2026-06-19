@@ -56,8 +56,7 @@ class GraphBuildingServiceImplTest {
     @BeforeEach
     void setUp() {
         service = new GraphBuildingServiceImpl(
-                nodeRepository, edgeRepository, entityMentionRepository,
-                entityExtractionService, knowledgeGraphService);
+                entityMentionRepository, entityExtractionService, knowledgeGraphService);
     }
 
     private BuildConfig syncConfig() {

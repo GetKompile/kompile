@@ -18,8 +18,7 @@ package ai.kompile.knowledgegraph.maintenance;
 import ai.kompile.core.graphrag.maintenance.model.ProvenanceCheck;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -59,15 +58,12 @@ public class ProvenanceValidator {
             "documentId", "document_id"
     );
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final ObjectMapper objectMapper;
 
-    public ProvenanceValidator(GraphNodeRepository nodeRepository,
-                               GraphEdgeRepository edgeRepository,
+    public ProvenanceValidator(KnowledgeGraphService knowledgeGraphService,
                                ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.objectMapper = objectMapper;
     }
 
@@ -80,11 +76,11 @@ public class ProvenanceValidator {
      */
     public List<ProvenanceCheck> validate(Long factSheetId) {
         // Load all ENTITY nodes for the fact sheet
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         log.debug("ProvenanceValidator: checking {} entities for factSheet={}", entities.size(), factSheetId);
 
         // Load all DOCUMENT nodes for fast lookup (use externalId as key since that is the natural doc ID)
-        List<GraphNode> allDocuments = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.DOCUMENT);
+        List<GraphNode> allDocuments = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.DOCUMENT);
         Map<String, GraphNode> docByExternalId = new HashMap<>();
         Map<String, GraphNode> docByNodeId = new HashMap<>();
         for (GraphNode doc : allDocuments) {

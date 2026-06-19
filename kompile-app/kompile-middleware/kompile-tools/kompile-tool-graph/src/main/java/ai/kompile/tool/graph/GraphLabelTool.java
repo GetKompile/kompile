@@ -11,8 +11,6 @@ package ai.kompile.tool.graph;
 
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -39,8 +37,7 @@ public class GraphLabelTool {
     private static final Logger log = LoggerFactory.getLogger(GraphLabelTool.class);
     private static final String LABELS_KEY = "labels";
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
+    private final KnowledgeGraphService graphService;
     private final ObjectMapper objectMapper;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -84,11 +81,9 @@ public class GraphLabelTool {
     public record ListAllLabelsInput(Long factSheetId) {}
 
     @Autowired
-    public GraphLabelTool(GraphNodeRepository nodeRepository,
-                          GraphEdgeRepository edgeRepository,
+    public GraphLabelTool(KnowledgeGraphService graphService,
                           @Autowired(required = false) ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+        this.graphService = graphService;
         this.objectMapper = objectMapper != null ? objectMapper : JsonUtils.standardMapper();
     }
 
@@ -110,7 +105,7 @@ public class GraphLabelTool {
         }
 
         try {
-            Optional<GraphNode> opt = nodeRepository.findByNodeId(input.nodeId());
+            Optional<GraphNode> opt = graphService.getNode(input.nodeId());
             if (opt.isEmpty()) {
                 return Map.of("error", "Node not found: " + input.nodeId());
             }
@@ -121,7 +116,7 @@ public class GraphLabelTool {
             existing.addAll(input.labels());
             metadata.put(LABELS_KEY, new ArrayList<>(existing));
             node.setMetadataJson(objectMapper.writeValueAsString(metadata));
-            nodeRepository.save(node);
+            graphService.saveNode(node);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("nodeId", input.nodeId());
@@ -147,7 +142,7 @@ public class GraphLabelTool {
         }
 
         try {
-            Optional<GraphNode> opt = nodeRepository.findByNodeId(input.nodeId());
+            Optional<GraphNode> opt = graphService.getNode(input.nodeId());
             if (opt.isEmpty()) {
                 return Map.of("error", "Node not found: " + input.nodeId());
             }
@@ -158,7 +153,7 @@ public class GraphLabelTool {
             existing.removeAll(input.labels());
             metadata.put(LABELS_KEY, new ArrayList<>(existing));
             node.setMetadataJson(objectMapper.writeValueAsString(metadata));
-            nodeRepository.save(node);
+            graphService.saveNode(node);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("nodeId", input.nodeId());
@@ -180,7 +175,7 @@ public class GraphLabelTool {
         }
 
         try {
-            Optional<GraphNode> opt = nodeRepository.findByNodeId(input.nodeId());
+            Optional<GraphNode> opt = graphService.getNode(input.nodeId());
             if (opt.isEmpty()) {
                 return Map.of("error", "Node not found: " + input.nodeId());
             }
@@ -215,9 +210,9 @@ public class GraphLabelTool {
         try {
             List<GraphNode> candidates;
             if (input.factSheetId() != null) {
-                candidates = nodeRepository.findByFactSheetId(input.factSheetId());
+                candidates = graphService.getNodesInFactSheet(input.factSheetId());
             } else {
-                candidates = nodeRepository.findAll();
+                candidates = graphService.getAllNodes(5000);
             }
 
             var nodeType = GraphSearchTool.parseNodeLevel(input.nodeType());
@@ -264,7 +259,7 @@ public class GraphLabelTool {
         }
 
         try {
-            Optional<GraphEdge> opt = edgeRepository.findByEdgeId(input.edgeId());
+            Optional<GraphEdge> opt = graphService.getEdge(input.edgeId());
             if (opt.isEmpty()) {
                 return Map.of("error", "Edge not found: " + input.edgeId());
             }
@@ -275,7 +270,7 @@ public class GraphLabelTool {
             existing.addAll(input.labels());
             metadata.put(LABELS_KEY, new ArrayList<>(existing));
             edge.setMetadataJson(objectMapper.writeValueAsString(metadata));
-            edgeRepository.save(edge);
+            graphService.saveEdge(edge);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("edgeId", input.edgeId());
@@ -300,7 +295,7 @@ public class GraphLabelTool {
         }
 
         try {
-            Optional<GraphEdge> opt = edgeRepository.findByEdgeId(input.edgeId());
+            Optional<GraphEdge> opt = graphService.getEdge(input.edgeId());
             if (opt.isEmpty()) {
                 return Map.of("error", "Edge not found: " + input.edgeId());
             }
@@ -311,7 +306,7 @@ public class GraphLabelTool {
             existing.removeAll(input.labels());
             metadata.put(LABELS_KEY, new ArrayList<>(existing));
             edge.setMetadataJson(objectMapper.writeValueAsString(metadata));
-            edgeRepository.save(edge);
+            graphService.saveEdge(edge);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("edgeId", input.edgeId());
@@ -338,7 +333,7 @@ public class GraphLabelTool {
         }
 
         try {
-            List<GraphNode> nodes = nodeRepository.findByNodeIdIn(input.nodeIds());
+            List<GraphNode> nodes = graphService.getNodesByIds(input.nodeIds());
             int updated = 0;
 
             for (GraphNode node : nodes) {
@@ -347,10 +342,9 @@ public class GraphLabelTool {
                 existing.addAll(input.labels());
                 metadata.put(LABELS_KEY, new ArrayList<>(existing));
                 node.setMetadataJson(objectMapper.writeValueAsString(metadata));
+                graphService.saveNode(node);
                 updated++;
             }
-
-            nodeRepository.saveAll(nodes);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("requestedCount", input.nodeIds().size());
@@ -372,9 +366,9 @@ public class GraphLabelTool {
         try {
             List<GraphNode> nodes;
             if (input.factSheetId() != null) {
-                nodes = nodeRepository.findByFactSheetId(input.factSheetId());
+                nodes = graphService.getNodesInFactSheet(input.factSheetId());
             } else {
-                nodes = nodeRepository.findAll();
+                nodes = graphService.getAllNodes(5000);
             }
 
             Map<String, Long> labelCounts = new TreeMap<>();

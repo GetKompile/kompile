@@ -19,7 +19,7 @@ import ai.kompile.graph.algorithms.adjacency.AdjacencyView;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.*;
+import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,12 +42,6 @@ public class GraphLocalizationService {
 
     private final KnowledgeGraphService graphService;
     private final GraphAlgorithmService algorithmService;
-
-    @Autowired(required = false)
-    private GraphNodeRepository nodeRepository;
-
-    @Autowired(required = false)
-    private GraphEdgeRepository edgeRepository;
 
     @Autowired(required = false)
     private EntityMentionRepository entityMentionRepository;
@@ -104,8 +98,8 @@ public class GraphLocalizationService {
             int currentDepth = nodeDepths.get(currentId);
             if (currentDepth >= depth) continue;
 
-            List<GraphEdge> edges = (factSheetId != null && edgeRepository != null)
-                    ? edgeRepository.findAllEdgesForNodeIdInFactSheet(currentId, factSheetId)
+            List<GraphEdge> edges = (factSheetId != null)
+                    ? graphService.getEdgesForNodeInFactSheet(currentId, factSheetId)
                     : graphService.getEdgesForNode(currentId);
 
             for (GraphEdge edge : edges) {
@@ -498,8 +492,8 @@ public class GraphLocalizationService {
             int currentDepth = depthMap.get(current);
             if (currentDepth >= maxLen) continue;
 
-            List<GraphEdge> edges = (factSheetId != null && edgeRepository != null)
-                    ? edgeRepository.findAllEdgesForNodeIdInFactSheet(current, factSheetId)
+            List<GraphEdge> edges = (factSheetId != null)
+                    ? graphService.getEdgesForNodeInFactSheet(current, factSheetId)
                     : graphService.getEdgesForNode(current);
 
             for (GraphEdge edge : edges) {

@@ -15,6 +15,11 @@
  */
 
 import { Component, Input, OnChanges, SimpleChanges, ChangeDetectionStrategy } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { MatIconModule } from '@angular/material/icon';
+import { MatButtonModule } from '@angular/material/button';
+import { MatChipsModule } from '@angular/material/chips';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { ParsedTable, IndexedPassageItem } from '../../models/api-models';
 
 /**
@@ -29,7 +34,8 @@ import { ParsedTable, IndexedPassageItem } from '../../models/api-models';
  */
 @Component({
   selector: 'app-table-renderer',
-  standalone: false,
+  standalone: true,
+  imports: [CommonModule, MatIconModule, MatButtonModule, MatChipsModule, MatTooltipModule],
   templateUrl: './table-renderer.component.html',
   styleUrls: ['./table-renderer.component.css'],
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -95,15 +101,77 @@ export class TableRendererComponent implements OnChanges {
 
     try {
       this.parsedTable = this.parseMarkdownTable(content);
-
-      // Auto-collapse large tables
-      if (this.parsedTable.rowCount > this.maxRowsBeforePagination) {
-        this.isCollapsed = true;
-      }
     } catch (error) {
-      this.parseError = `Failed to parse table: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      console.error('Table parsing error:', error);
+      // Not strict GFM markdown — fall back to a delimited parse (TSV / CSV / pipe table without a
+      // separator row) so tabular content from ANY loader or graph backend still renders as a table
+      // instead of an error.
+      this.parsedTable = this.parseDelimitedTable(content);
+      if (!this.parsedTable) {
+        this.parseError = `Failed to parse table: ${error instanceof Error ? error.message : 'Unknown error'}`;
+        console.error('Table parsing error:', error);
+        return;
+      }
     }
+
+    // Auto-collapse large tables
+    if (this.parsedTable.rowCount > this.maxRowsBeforePagination) {
+      this.isCollapsed = true;
+    }
+  }
+
+  /**
+   * Fallback parser for tabular content that is not strict GFM markdown. Detects the most likely
+   * delimiter (tab, pipe, or comma) from the first line and treats it as the header row. Returns
+   * null when the content has no consistent multi-column structure.
+   */
+  private parseDelimitedTable(content: string): ParsedTable | null {
+    const lines = content.trim().split('\n').filter(line => line.trim());
+    if (lines.length < 1) {
+      return null;
+    }
+
+    // Pick the delimiter that yields the most columns on the first line.
+    const candidates = [
+      { delim: '\t', count: lines[0].split('\t').length },
+      { delim: '|', count: lines[0].split('|').length },
+      { delim: ',', count: lines[0].split(',').length }
+    ].sort((a, b) => b.count - a.count);
+    const best = candidates[0];
+    if (best.count < 2) {
+      return null; // single column — not actually tabular
+    }
+
+    const splitRow = (line: string): string[] => {
+      let cells = line.split(best.delim).map(c => c.trim());
+      // Pipe rows usually carry empty leading/trailing cells from the outer pipes.
+      if (best.delim === '|') {
+        if (cells.length && cells[0] === '') cells = cells.slice(1);
+        if (cells.length && cells[cells.length - 1] === '') cells = cells.slice(0, -1);
+      }
+      return cells;
+    };
+
+    const headers = splitRow(lines[0]);
+    const rows: string[][] = [];
+    for (let i = 1; i < lines.length; i++) {
+      if (this.isSeparatorRow(lines[i])) {
+        continue; // tolerate a markdown separator if one happens to be present
+      }
+      const row = splitRow(lines[i]);
+      while (row.length < headers.length) {
+        row.push('');
+      }
+      rows.push(row.slice(0, headers.length));
+    }
+
+    return {
+      headers,
+      rows,
+      rowCount: rows.length,
+      columnCount: headers.length,
+      tableType: 'delimited',
+      rawMarkdown: content
+    };
   }
 
   /**

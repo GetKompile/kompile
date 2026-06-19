@@ -42,7 +42,7 @@ class GraphTraversalToolTest {
 
     @BeforeEach
     void setUp() {
-        tool = new GraphTraversalTool(graphService, algorithmService, nodeRepository, graphRagService);
+        tool = new GraphTraversalTool(graphService, algorithmService, graphRagService);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -57,7 +57,7 @@ class GraphTraversalToolTest {
 
     @Test
     void bfsTraversal_noAlgorithmService_returnsError() {
-        var toolNoAlgo = new GraphTraversalTool(graphService, null, nodeRepository, graphRagService);
+        var toolNoAlgo = new GraphTraversalTool(graphService, null, graphRagService);
         var result = toolNoAlgo.bfsTraversal(new GraphTraversalTool.BfsTraversalInput("n1", null, null));
         assertEquals("Graph algorithm service not available", result.get("error"));
     }
@@ -69,7 +69,7 @@ class GraphTraversalToolTest {
         levels.put(1, List.of("n2", "n3"));
         when(algorithmService.bfsTraversal(isNull(), eq("n1"), eq(3)))
                 .thenReturn(levels);
-        when(nodeRepository.findByNodeIdIn(anyList()))
+        when(graphService.getNodesByIds(anyList()))
                 .thenReturn(List.of(
                         GraphSearchToolTest.createNode("n1", "Root", NodeLevel.ENTITY),
                         GraphSearchToolTest.createNode("n2", "Child 1", NodeLevel.DOCUMENT),
@@ -88,7 +88,7 @@ class GraphTraversalToolTest {
     void bfsTraversal_clampsMaxDepthTo5() {
         when(algorithmService.bfsTraversal(isNull(), eq("n1"), eq(5)))
                 .thenReturn(Map.of());
-        when(nodeRepository.findByNodeIdIn(anyList())).thenReturn(List.of());
+        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         tool.bfsTraversal(new GraphTraversalTool.BfsTraversalInput("n1", null, 10));
 
@@ -257,7 +257,7 @@ class GraphTraversalToolTest {
 
     @Test
     void hybridSearch_noService_returnsError() {
-        var toolNoRag = new GraphTraversalTool(graphService, algorithmService, nodeRepository, null);
+        var toolNoRag = new GraphTraversalTool(graphService, algorithmService, null);
         var result = toolNoRag.hybridGraphSearch(
                 new GraphTraversalTool.HybridGraphSearchInput("test", null, null, null, null, null, null, null));
         assertEquals("Graph RAG service not available", result.get("error"));

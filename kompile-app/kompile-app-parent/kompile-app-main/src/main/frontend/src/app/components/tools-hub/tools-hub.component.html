@@ -79,6 +79,20 @@
     </button>
     <button
       class="sub-tab"
+      [class.active]="activeSubTab === 'eventObservation'"
+      (click)="selectSubTab('eventObservation')">
+      <mat-icon class="tab-icon">query_stats</mat-icon>
+      <span class="tab-label">Event Observation</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'causalAttribution'"
+      (click)="selectSubTab('causalAttribution')">
+      <mat-icon class="tab-icon">psychology</mat-icon>
+      <span class="tab-label">Causal Attribution</span>
+    </button>
+    <button
+      class="sub-tab"
       [class.active]="activeSubTab === 'workflows'"
       (click)="selectSubTab('workflows')">
       <mat-icon class="tab-icon">device_hub</mat-icon>
@@ -131,6 +145,12 @@
     </div>
     <div *ngIf="activeSubTab === 'processEngine'">
       <app-process-engine-dashboard></app-process-engine-dashboard>
+    </div>
+    <div *ngIf="activeSubTab === 'eventObservation'">
+      <app-event-observation-dashboard></app-event-observation-dashboard>
+    </div>
+    <div *ngIf="activeSubTab === 'causalAttribution'">
+      <app-causal-attribution-panel></app-causal-attribution-panel>
     </div>
     <div *ngIf="activeSubTab === 'workflows'">
       <app-workflows-hub></app-workflows-hub>

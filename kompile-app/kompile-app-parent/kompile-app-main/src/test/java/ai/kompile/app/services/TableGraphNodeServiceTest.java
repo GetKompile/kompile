@@ -17,7 +17,6 @@ package ai.kompile.app.services;
 
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,14 +31,12 @@ import static org.mockito.Mockito.*;
 class TableGraphNodeServiceTest {
 
     private KnowledgeGraphService knowledgeGraphService;
-    private GraphNodeRepository graphNodeRepository;
     private TableGraphNodeService service;
 
     @BeforeEach
     void setUp() {
         knowledgeGraphService = mock(KnowledgeGraphService.class);
-        graphNodeRepository = mock(GraphNodeRepository.class);
-        service = new TableGraphNodeService(knowledgeGraphService, graphNodeRepository);
+        service = new TableGraphNodeService(knowledgeGraphService);
     }
 
     // --- promoteTableNodes ---
@@ -76,7 +73,7 @@ class TableGraphNodeServiceTest {
         Document tableDoc = new Document("Table content", meta);
 
         GraphNode parentNode = mockGraphNode("parent-id", "report.xlsx", NodeLevel.DOCUMENT);
-        when(graphNodeRepository.findByExternalIdAndNodeType("/docs/report.xlsx", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("/docs/report.xlsx", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(parentNode));
         GraphNode tableNode = mockGraphNode("table-id", "Q1 Data", NodeLevel.TABLE);
         when(knowledgeGraphService.createTableNode(eq("parent-id"), anyString(), eq("Q1 Data"),
@@ -102,7 +99,7 @@ class TableGraphNodeServiceTest {
         Document tableDoc = new Document("Table content", meta);
 
         GraphNode parentNode = mockGraphNode("parent-id", "page.html", NodeLevel.DOCUMENT);
-        when(graphNodeRepository.findByExternalIdAndNodeType("/docs/page.html", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("/docs/page.html", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(parentNode));
         GraphNode tableNode = mockGraphNode("table-id", "Revenue Summary", NodeLevel.TABLE);
         when(knowledgeGraphService.createTableNode(eq("parent-id"), contains("Revenue Summary"),
@@ -122,9 +119,9 @@ class TableGraphNodeServiceTest {
         meta.put("sheetName", "Sheet1");
         Document tableDoc = new Document("Table content", meta);
 
-        when(graphNodeRepository.findByExternalIdAndNodeType("/unknown/path.xlsx", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("/unknown/path.xlsx", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.empty());
-        when(graphNodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(List.of());
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of());
 
         int created = service.promoteTableNodes(List.of(tableDoc), "task-1");
 
@@ -142,7 +139,7 @@ class TableGraphNodeServiceTest {
 
         // source_path is null, so fallback to fileName search
         GraphNode parentNode = mockGraphNode("parent-id", "report.xlsx", NodeLevel.DOCUMENT);
-        when(graphNodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(List.of(parentNode));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(List.of(parentNode));
         GraphNode tableNode = mockGraphNode("table-id", "Data", NodeLevel.TABLE);
         when(knowledgeGraphService.createTableNode(eq("parent-id"), anyString(), eq("Data"),
                 anyInt(), anyInt(), anyList(), any(), anyMap()))
@@ -168,7 +165,7 @@ class TableGraphNodeServiceTest {
 
         GraphNode parentNode = mockGraphNode("parent-id", "data.xlsx", NodeLevel.DOCUMENT);
         GraphNode tableNode = mockGraphNode("tbl-id", "Sheet", NodeLevel.TABLE);
-        when(graphNodeRepository.findByExternalIdAndNodeType("/docs/data.xlsx", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("/docs/data.xlsx", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(parentNode));
         when(knowledgeGraphService.createTableNode(eq("parent-id"), anyString(), anyString(),
                 anyInt(), anyInt(), anyList(), any(), anyMap()))
@@ -198,13 +195,13 @@ class TableGraphNodeServiceTest {
         GraphNode goodParent = mockGraphNode("good-parent", "good.xlsx", NodeLevel.DOCUMENT);
         GraphNode goodTable = mockGraphNode("tbl-id", "GoodSheet", NodeLevel.TABLE);
 
-        when(graphNodeRepository.findByExternalIdAndNodeType("/docs/bad.xlsx", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("/docs/bad.xlsx", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(badParent));
         when(knowledgeGraphService.createTableNode(eq("bad-parent"), anyString(), eq("BadSheet"),
                 anyInt(), anyInt(), anyList(), any(), anyMap()))
                 .thenThrow(new RuntimeException("DB error"));
 
-        when(graphNodeRepository.findByExternalIdAndNodeType("/docs/good.xlsx", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("/docs/good.xlsx", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(goodParent));
         when(knowledgeGraphService.createTableNode(eq("good-parent"), anyString(), eq("GoodSheet"),
                 anyInt(), anyInt(), anyList(), any(), anyMap()))
@@ -228,7 +225,7 @@ class TableGraphNodeServiceTest {
 
         GraphNode parentNode = mockGraphNode("parent-id", "data.xlsx", NodeLevel.DOCUMENT);
         GraphNode tableNode = mockGraphNode("tbl-id", "Sheet1", NodeLevel.TABLE);
-        when(graphNodeRepository.findByExternalIdAndNodeType("/docs/data.xlsx", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("/docs/data.xlsx", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(parentNode));
         when(knowledgeGraphService.createTableNode(eq("parent-id"), anyString(), anyString(),
                 anyInt(), anyInt(), anyList(), any(), anyMap()))
@@ -261,7 +258,7 @@ class TableGraphNodeServiceTest {
 
         GraphNode parentNode = mockGraphNode("parent-id", "big.xlsx", NodeLevel.DOCUMENT);
         GraphNode tableNode = mockGraphNode("tbl-id", "BigSheet", NodeLevel.TABLE);
-        when(graphNodeRepository.findByExternalIdAndNodeType("/docs/big.xlsx", NodeLevel.DOCUMENT))
+        when(knowledgeGraphService.getNodeByExternalId("/docs/big.xlsx", NodeLevel.DOCUMENT))
                 .thenReturn(Optional.of(parentNode));
         when(knowledgeGraphService.createTableNode(eq("parent-id"), anyString(), anyString(),
                 anyInt(), anyInt(), anyList(), any(), anyMap()))

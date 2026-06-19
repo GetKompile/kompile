@@ -63,6 +63,8 @@ import { StagingConfigComponent } from './components/staging-config/staging-conf
 import { ArchiveManagerComponent } from './components/archive-manager/archive-manager.component';
 import { ArchiveAssemblyComponent } from './components/archive-assembly/archive-assembly.component';
 import { TableRendererComponent } from './components/table-renderer/table-renderer.component';
+import { EventObservationDashboardComponent } from './components/event-observation/event-observation-dashboard.component';
+import { CausalAttributionPanelComponent } from './components/event-observation/causal-attribution-panel.component';
 import { IndexStatusBannerComponent } from './components/index-status-banner/index-status-banner.component';
 import { BackupManagerComponent } from './components/backup-manager/backup-manager.component';
 import { ModelStatusIndicatorComponent } from './components/model-status-indicator/model-status-indicator.component';
@@ -209,7 +211,6 @@ import { MatNativeDateModule } from '@angular/material/core';
     ContextualRagDebugComponent,
     ProcessingSettingsComponent,
     CrossIndexStatusComponent,
-    TableRendererComponent,
     ChunkManagerComponent,
     KGEmbeddingsComponent,
     TaskDefinitionEditorComponent,
@@ -249,6 +250,10 @@ import { MatNativeDateModule } from '@angular/material/core';
     AutoConfigureComponent
   ],
   imports: [
+    // Standalone, reused across module-declared and standalone components.
+    TableRendererComponent,
+    EventObservationDashboardComponent,
+    CausalAttributionPanelComponent,
     BrowserModule,
     HttpClientModule,
     FormsModule,

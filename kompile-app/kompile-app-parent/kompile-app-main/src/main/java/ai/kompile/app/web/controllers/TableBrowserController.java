@@ -82,17 +82,15 @@ public class TableBrowserController {
         summary.put("externalId", node.getExternalId());
         summary.put("title", node.getTitle());
         summary.put("preview", node.getDescription());
-        summary.put("fullContent", node.getDescription());
 
-        // Parse table dimensions from metadata stored as JSON
-        com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
-        Map<String, Object> meta = Collections.emptyMap();
-        if (node.getMetadataJson() != null && !node.getMetadataJson().isEmpty()) {
-            try {
-                meta = om.readValue(node.getMetadataJson(),
-                        om.getTypeFactory().constructMapType(LinkedHashMap.class, String.class, Object.class));
-            } catch (Exception ignored) {}
-        }
+        // Store-agnostic parsed metadata (works for JPA, vector/matrix, and any future backend).
+        Map<String, Object> meta = node.getMetadata();
+
+        // Prefer the FULL table markdown persisted under "fullTableContent" at promotion time so the
+        // renderer shows the whole table — the description is only a 500-char preview.
+        Object full = meta.get("fullTableContent");
+        summary.put("fullContent", full instanceof String s && !s.isBlank()
+                ? s : node.getDescription());
 
         Object rowCount = meta.get("rowCount");
         Object colCount = meta.get("columnCount");
@@ -100,8 +98,13 @@ public class TableBrowserController {
 
         summary.put("rowCount", rowCount instanceof Number ? ((Number) rowCount).intValue() : 0);
         summary.put("columnCount", colCount instanceof Number ? ((Number) colCount).intValue() : 0);
-        summary.put("headers", headers instanceof String h
-                ? Arrays.asList(h.split(",")) : Collections.emptyList());
+        if (headers instanceof List<?> hl) {
+            summary.put("headers", hl);
+        } else if (headers instanceof String h) {
+            summary.put("headers", Arrays.asList(h.split(",")));
+        } else {
+            summary.put("headers", Collections.emptyList());
+        }
         summary.put("sourceFile", meta.get("source_path"));
         summary.put("sourceType", "graph_node");
         return summary;

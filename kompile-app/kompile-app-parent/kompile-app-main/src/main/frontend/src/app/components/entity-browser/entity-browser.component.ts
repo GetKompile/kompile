@@ -40,6 +40,7 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Subject, takeUntil, debounceTime, filter } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
+import { TableRendererComponent } from '../table-renderer/table-renderer.component';
 
 import { GraphService } from '../../services/graph.service';
 import { BayesianService } from '../../services/bayesian.service';
@@ -108,7 +109,8 @@ interface ConnectionSearchResult {
     MatMenuModule,
     MatExpansionModule,
     MatDialogModule,
-    ConfirmDialogComponent
+    ConfirmDialogComponent,
+    TableRendererComponent
   ],
   templateUrl: './entity-browser.component.html',
   styleUrls: ['./entity-browser.component.css']
@@ -736,6 +738,20 @@ export class EntityBrowserComponent implements OnInit, OnDestroy {
 
   getTypeCount(type: NodeLevel): number {
     return this.statistics?.nodesByType?.[type] || 0;
+  }
+
+  /**
+   * True when this entity should render as a table — independent of which knowledge-graph
+   * store produced it. TABLE nodes always qualify; so does any node carrying full table
+   * markdown in metadata (defensive: some backends may tag table content on other levels).
+   */
+  isTableEntity(entity: GraphNode | null): boolean {
+    return !!entity && (entity.nodeType === 'TABLE' || !!entity.metadata?.['fullTableContent']);
+  }
+
+  /** Best-available table markdown: full content if persisted, otherwise the preview description. */
+  getTableMarkdown(entity: GraphNode | null): string {
+    return (entity?.metadata?.['fullTableContent'] as string) || entity?.description || '';
   }
 
   getEdgeTypeCount(type: EdgeType): number {

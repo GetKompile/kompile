@@ -275,4 +275,96 @@ class EntityResolutionServiceTest {
         // "microsft" vs "microsoft" — similarity < 0.99
         assertEquals(2, result.mergedEntities().size());
     }
+
+    // ─── Barcode / UPC identity resolution ──────────────────────────────
+
+    private ExtractedEntity product(String id, String name, Map<String, String> props) {
+        return new ExtractedEntity(id, name, "PRODUCT", List.of(), null, 1.0, props);
+    }
+
+    private ExtractedEntity productWithUpc(String id, String name, String upc) {
+        return product(id, name, Map.of("upc", upc));
+    }
+
+    @Test
+    void barcode_mergesAcrossFormatsWhenNamesAgree() {
+        // Same product, names differ but share tokens, code seen as UPC-A and EAN-13.
+        List<ExtractedEntity> entities = List.of(
+                productWithUpc("e1", "Acme Widget Standard", "036000291452"),
+                productWithUpc("e2", "Acme Widget Deluxe Edition", "0036000291452"));
+
+        EntityMergeResult result = service.mergeEntities(entities);
+        assertEquals(1, result.mergedEntities().size(), "shared barcode should merge corroborated names");
+        Map<String, String> props = result.mergedEntities().get(0).properties();
+        assertEquals("00036000291452", props.get("canonicalGtin"));
+        assertEquals("00036000291452", props.get("observedGtins"));
+    }
+
+    @Test
+    void barcode_recycledCodeNotMergedWhenNamesConflict() {
+        // Same code, unrelated names → likely a recycled/reassigned UPC → withhold.
+        List<ExtractedEntity> entities = List.of(
+                productWithUpc("e1", "Vintage Vinyl Record", "036000291452"),
+                productWithUpc("e2", "Bluetooth Speaker", "036000291452"));
+
+        EntityMergeResult result = service.mergeEntities(entities);
+        assertEquals(2, result.mergedEntities().size(), "recycled code must not fuse different products");
+    }
+
+    @Test
+    void barcode_ambiguousSameNameDifferentValidCodesWithheld() {
+        // Same name, two different valid global barcodes → ambiguous (distinct SKUs
+        // vs multi-vendor) → withheld for review rather than auto-fused.
+        List<ExtractedEntity> entities = List.of(
+                productWithUpc("e1", "Acme Widget", "036000291452"),
+                productWithUpc("e2", "Acme Widget", "4006381333931"));
+
+        EntityMergeResult result = service.mergeEntities(entities);
+        assertEquals(2, result.mergedEntities().size());
+    }
+
+    @Test
+    void barcode_fiveNoisyObservationsCollapseToOneCanonical() {
+        // The "5 observed = canonical UPC" case: one product, one code, five noisy
+        // renderings (extra zeros, GTIN-14, truncated check digit, whitespace).
+        List<ExtractedEntity> entities = List.of(
+                productWithUpc("e1", "Acme Widget", "036000291452"),
+                productWithUpc("e2", "Acme Widget", "0036000291452"),
+                productWithUpc("e3", "Acme Widget", "00036000291452"),
+                productWithUpc("e4", "Acme Widget", "03600029145"),
+                productWithUpc("e5", "Acme Widget", " 036000 291452 "));
+
+        EntityMergeResult result = service.mergeEntities(entities);
+        assertEquals(1, result.mergedEntities().size());
+        Map<String, String> props = result.mergedEntities().get(0).properties();
+        assertEquals("00036000291452", props.get("canonicalGtin"));
+        assertEquals("1", props.get("observedGtinCount"));
+    }
+
+    @Test
+    void barcode_singleEntityRecordsAllObservedCodes() {
+        ExtractedEntity withTwoCodes = product("e1", "Acme Widget",
+                Map.of("upc", "036000291452", "ean", "4006381333931"));
+
+        EntityMergeResult result = service.mergeEntities(List.of(withTwoCodes));
+        Map<String, String> props = result.mergedEntities().get(0).properties();
+        assertEquals("2", props.get("observedGtinCount"));
+        assertTrue(props.get("observedGtins").contains("00036000291452"));
+        assertTrue(props.get("observedGtins").contains("04006381333931"));
+    }
+
+    @Test
+    void barcode_restrictedStoreCodeDoesNotDriveMerge() {
+        // An in-store (number system 2) code is not a global identity, so two
+        // differently named products sharing one must not merge on it.
+        String inStore = "20000000000" + BarcodeNormalizer.computeCheckDigit("20000000000");
+        List<ExtractedEntity> entities = List.of(
+                productWithUpc("e1", "Deli Ham Counter", inStore),
+                productWithUpc("e2", "Bulk Coffee Beans", inStore));
+
+        EntityMergeResult result = service.mergeEntities(entities);
+        assertEquals(2, result.mergedEntities().size());
+        // ...and the restricted code is not promoted to a canonical identity.
+        assertNull(result.mergedEntities().get(0).properties().get("canonicalGtin"));
+    }
 }

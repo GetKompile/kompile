@@ -1,5 +1,6 @@
 package ai.kompile.graphchangetracking.service;
 
+import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.graphchangetracking.event.EdgeMutationEvent;
 import ai.kompile.graphchangetracking.event.NodeMutationEvent;
 import ai.kompile.knowledgegraph.domain.*;
@@ -13,6 +14,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -439,6 +442,55 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     @Override
     public void deleteByFactSheetId(Long factSheetId) {
         delegate.deleteByFactSheetId(factSheetId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PRUNING / MAINTENANCE — pure delegation (read-only, no events published)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public List<String> findOrphanNodeIds(Long factSheetId) {
+        return delegate.findOrphanNodeIds(factSheetId);
+    }
+
+    @Override
+    public List<String> findLowConfidenceNodeIds(Long factSheetId, double minConfidence) {
+        return delegate.findLowConfidenceNodeIds(factSheetId, minConfidence);
+    }
+
+    @Override
+    public List<String> findLowConfidenceEdgeIds(Long factSheetId, double minConfidence) {
+        return delegate.findLowConfidenceEdgeIds(factSheetId, minConfidence);
+    }
+
+    @Override
+    public long countActiveNodes(Long factSheetId) {
+        return delegate.countActiveNodes(factSheetId);
+    }
+
+    @Override
+    public List<String> findActiveEdgeIds(Long factSheetId) {
+        return delegate.findActiveEdgeIds(factSheetId);
+    }
+
+    @Override
+    public GraphPruneResult pruneNodes(Collection<String> nodeIds,
+                                       boolean softDelete,
+                                       Duration grace,
+                                       boolean dryRun) {
+        return delegate.pruneNodes(nodeIds, softDelete, grace, dryRun);
+    }
+
+    @Override
+    public GraphPruneResult pruneEdges(Collection<String> edgeIds,
+                                       boolean softDelete,
+                                       boolean dryRun) {
+        return delegate.pruneEdges(edgeIds, softDelete, dryRun);
+    }
+
+    @Override
+    public GraphPruneResult hardDeleteStaleNodes(Long factSheetId, Duration grace) {
+        return delegate.hardDeleteStaleNodes(factSheetId, grace);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

@@ -207,6 +207,7 @@ class KnowledgeGraphServiceImplTest {
         when(nodeRepository.countByNodeType(NodeLevel.SNIPPET)).thenReturn(50L);
         when(nodeRepository.countByNodeType(NodeLevel.ENTITY)).thenReturn(15L);
         when(nodeRepository.countByNodeType(NodeLevel.CUSTOM)).thenReturn(0L);
+        when(nodeRepository.countByNodeType(NodeLevel.TABLE)).thenReturn(7L);
         when(edgeRepository.count()).thenReturn(200L);
         when(edgeRepository.countByEdgeType(any())).thenReturn(0L);
 
@@ -218,6 +219,14 @@ class KnowledgeGraphServiceImplTest {
         assertEquals(50L, stats.get("snippetCount"));
         assertEquals(15L, stats.get("entityCount"));
         assertEquals(200L, stats.get("totalEdges"));
+        // TABLE nodes must surface in statistics so the index-browser shows table counts.
+        assertEquals(7L, stats.get("tableCount"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Long> nodesByType = (Map<String, Long>) stats.get("nodesByType");
+        assertNotNull(nodesByType, "nodesByType map must be present for the index-browser");
+        assertEquals(7L, nodesByType.get("TABLE"));
+        assertEquals(5L, nodesByType.get("SOURCE"));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

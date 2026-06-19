@@ -20,7 +20,6 @@ import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,14 +53,11 @@ class CrossDocumentRelationExtractorGraphNodeTest {
     @Mock
     private KnowledgeGraphService knowledgeGraphService;
 
-    @Mock
-    private GraphNodeRepository graphNodeRepository;
-
     private CrossDocumentRelationExtractor extractor;
 
     @BeforeEach
     void setUp() {
-        extractor = new CrossDocumentRelationExtractor(knowledgeGraphService, graphNodeRepository);
+        extractor = new CrossDocumentRelationExtractor(knowledgeGraphService);
         // Default: no edges exist yet (both 2-arg and 5-arg overloads)
         when(knowledgeGraphService.edgeExists(anyString(), anyString())).thenReturn(false);
         when(knowledgeGraphService.edgeExists(anyString(), anyString(), any(), anyString(), anyLong())).thenReturn(false);
@@ -109,20 +105,20 @@ class CrossDocumentRelationExtractorGraphNodeTest {
     private void stubDocNodes(Long factSheetId, GraphNode... nodes) {
         List<GraphNode> list = Arrays.asList(nodes);
         if (factSheetId != null) {
-            when(graphNodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.DOCUMENT))
+            when(knowledgeGraphService.getNodesByTypeInFactSheet(eq(factSheetId), eq(NodeLevel.DOCUMENT)))
                     .thenReturn(list);
         } else {
-            when(graphNodeRepository.findByNodeType(NodeLevel.DOCUMENT)).thenReturn(list);
+            when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT)).thenReturn(list);
         }
     }
 
     private void stubTableNodes(Long factSheetId, GraphNode... nodes) {
         List<GraphNode> list = Arrays.asList(nodes);
         if (factSheetId != null) {
-            when(graphNodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.TABLE))
+            when(knowledgeGraphService.getNodesByTypeInFactSheet(eq(factSheetId), eq(NodeLevel.TABLE)))
                     .thenReturn(list);
         } else {
-            when(graphNodeRepository.findByNodeType(NodeLevel.TABLE)).thenReturn(list);
+            when(knowledgeGraphService.getNodesByType(NodeLevel.TABLE)).thenReturn(list);
         }
     }
 
@@ -148,7 +144,7 @@ class CrossDocumentRelationExtractorGraphNodeTest {
 
         @Test
         void returnsZeroWhenNoDocNodes() {
-            when(graphNodeRepository.findByFactSheetIdAndNodeType(FACT_SHEET_ID, NodeLevel.DOCUMENT))
+            when(knowledgeGraphService.getNodesByTypeInFactSheet(FACT_SHEET_ID, NodeLevel.DOCUMENT))
                     .thenReturn(Collections.emptyList());
 
             int result = extractor.extractRelationsFromGraphNodes(FACT_SHEET_ID);
@@ -157,7 +153,7 @@ class CrossDocumentRelationExtractorGraphNodeTest {
 
         @Test
         void returnsZeroWhenRepositoryReturnsNull() {
-            when(graphNodeRepository.findByFactSheetIdAndNodeType(FACT_SHEET_ID, NodeLevel.DOCUMENT))
+            when(knowledgeGraphService.getNodesByTypeInFactSheet(FACT_SHEET_ID, NodeLevel.DOCUMENT))
                     .thenReturn(null);
 
             int result = extractor.extractRelationsFromGraphNodes(FACT_SHEET_ID);
@@ -170,13 +166,13 @@ class CrossDocumentRelationExtractorGraphNodeTest {
             GraphNode n2 = makeDocNode("n2", "report_v2.xlsx");
             stubDocNodes(null, n1, n2);
             // TABLE query for strategy C
-            when(graphNodeRepository.findByNodeType(NodeLevel.TABLE))
+            when(knowledgeGraphService.getNodesByType(NodeLevel.TABLE))
                     .thenReturn(Collections.emptyList());
 
             extractor.extractRelationsFromGraphNodes(null);
 
-            verify(graphNodeRepository).findByNodeType(NodeLevel.DOCUMENT);
-            verify(graphNodeRepository, never()).findByFactSheetIdAndNodeType(anyLong(), eq(NodeLevel.DOCUMENT));
+            verify(knowledgeGraphService).getNodesByType(NodeLevel.DOCUMENT);
+            verify(knowledgeGraphService, never()).getNodesByTypeInFactSheet(anyLong(), eq(NodeLevel.DOCUMENT));
         }
 
         @Test

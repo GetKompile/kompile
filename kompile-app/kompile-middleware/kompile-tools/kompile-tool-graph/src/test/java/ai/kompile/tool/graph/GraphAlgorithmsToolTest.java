@@ -14,6 +14,7 @@ import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -31,12 +32,13 @@ class GraphAlgorithmsToolTest {
 
     @Mock private GraphAlgorithmService algorithmService;
     @Mock private GraphNodeRepository nodeRepository;
+    @Mock private KnowledgeGraphService graphService;
 
     private GraphAlgorithmsTool tool;
 
     @BeforeEach
     void setUp() {
-        tool = new GraphAlgorithmsTool(algorithmService, nodeRepository);
+        tool = new GraphAlgorithmsTool(algorithmService, graphService);
     }
 
     @Test
@@ -47,7 +49,7 @@ class GraphAlgorithmsToolTest {
         scores.put("n3", 0.1);
         when(algorithmService.pageRank(isNull(), eq(0.85), eq(100), eq(1e-6)))
                 .thenReturn(scores);
-        when(nodeRepository.findByNodeIdIn(anyList()))
+        when(graphService.getNodesByIds(anyList()))
                 .thenReturn(List.of(
                         GraphSearchToolTest.createNode("n1", "Top Node", NodeLevel.ENTITY),
                         GraphSearchToolTest.createNode("n2", "Mid Node", NodeLevel.DOCUMENT)
@@ -71,7 +73,7 @@ class GraphAlgorithmsToolTest {
         }
         when(algorithmService.pageRank(any(), anyDouble(), anyInt(), anyDouble()))
                 .thenReturn(scores);
-        when(nodeRepository.findByNodeIdIn(anyList())).thenReturn(List.of());
+        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         var result = tool.pageRank(new GraphAlgorithmsTool.PageRankInput(null, null, null, 5));
 
@@ -84,7 +86,7 @@ class GraphAlgorithmsToolTest {
     void degreeCentrality_parsesTypeCorrectly() {
         when(algorithmService.degreeCentrality(any(), any()))
                 .thenReturn(Map.of("n1", 5.0));
-        when(nodeRepository.findByNodeIdIn(anyList())).thenReturn(List.of());
+        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         var result = tool.degreeCentrality(
                 new GraphAlgorithmsTool.DegreeCentralityInput(null, "in", 10));
@@ -103,7 +105,7 @@ class GraphAlgorithmsToolTest {
     void betweennessCentrality_returnsRankedResult() {
         when(algorithmService.betweennessCentrality(isNull(), eq(100), eq(42L)))
                 .thenReturn(Map.of("bridge", 0.8));
-        when(nodeRepository.findByNodeIdIn(anyList())).thenReturn(List.of());
+        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         var result = tool.betweennessCentrality(
                 new GraphAlgorithmsTool.BetweennessCentralityInput(null, null, null));
@@ -138,7 +140,7 @@ class GraphAlgorithmsToolTest {
     void shortestPath_pathFound_returnsNodes() {
         when(algorithmService.shortestPath(isNull(), eq("a"), eq("c"), eq(false)))
                 .thenReturn(new ShortestPathAlgorithm.PathResult(List.of("a", "b", "c"), 2.0, true));
-        when(nodeRepository.findByNodeIdIn(List.of("a", "b", "c")))
+        when(graphService.getNodesByIds(List.of("a", "b", "c")))
                 .thenReturn(List.of(
                         GraphSearchToolTest.createNode("a", "Start", NodeLevel.ENTITY),
                         GraphSearchToolTest.createNode("b", "Middle", NodeLevel.ENTITY),
@@ -162,7 +164,7 @@ class GraphAlgorithmsToolTest {
     void shortestPath_weighted_usesDijkstra() {
         when(algorithmService.shortestPath(isNull(), eq("a"), eq("b"), eq(true)))
                 .thenReturn(new ShortestPathAlgorithm.PathResult(List.of("a", "b"), 0.5, true));
-        when(nodeRepository.findByNodeIdIn(anyList())).thenReturn(List.of());
+        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         var result = tool.shortestPath(
                 new GraphAlgorithmsTool.ShortestPathInput("a", "b", null, true));
@@ -181,7 +183,7 @@ class GraphAlgorithmsToolTest {
     void nodeSimilarity_returnsScoreAndInterpretation() {
         when(algorithmService.jaccardSimilarity(isNull(), eq("a"), eq("b")))
                 .thenReturn(0.75);
-        when(nodeRepository.findByNodeIdIn(List.of("a", "b")))
+        when(graphService.getNodesByIds(List.of("a", "b")))
                 .thenReturn(List.of(
                         GraphSearchToolTest.createNode("a", "Node A", NodeLevel.ENTITY),
                         GraphSearchToolTest.createNode("b", "Node B", NodeLevel.ENTITY)
@@ -200,7 +202,7 @@ class GraphAlgorithmsToolTest {
     void nodeSimilarity_lowScore_returnsLowInterpretation() {
         when(algorithmService.jaccardSimilarity(isNull(), eq("a"), eq("b")))
                 .thenReturn(0.05);
-        when(nodeRepository.findByNodeIdIn(anyList())).thenReturn(List.of());
+        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         var result = tool.nodeSimilarity(
                 new GraphAlgorithmsTool.NodeSimilarityInput("a", "b", null));
@@ -212,7 +214,7 @@ class GraphAlgorithmsToolTest {
     void nodeSimilarity_moderateScore_returnsModerateInterpretation() {
         when(algorithmService.jaccardSimilarity(isNull(), eq("a"), eq("b")))
                 .thenReturn(0.35);
-        when(nodeRepository.findByNodeIdIn(anyList())).thenReturn(List.of());
+        when(graphService.getNodesByIds(anyList())).thenReturn(List.of());
 
         var result = tool.nodeSimilarity(
                 new GraphAlgorithmsTool.NodeSimilarityInput("a", "b", null));

@@ -420,4 +420,25 @@ class MatrixKnowledgeGraphServiceTest {
                 "Statistics should include node or edge count keys");
     }
 
+    @Test
+    void getGraphStatisticsCensusesTableNodes() {
+        when(graphStore.getGraphStatistics(DEFAULT_GRAPH_ID)).thenReturn(
+                Map.of("nodeCount", 2, "edgeCount", 0));
+        when(graphStore.getAllNodes(DEFAULT_GRAPH_ID)).thenReturn(java.util.List.of(
+                MatrixGraphNode.builder().nodeId("table_1").nodeType("TABLE").title("T1").build(),
+                MatrixGraphNode.builder().nodeId("doc_1").nodeType("DOCUMENT").title("D1").build()));
+
+        Map<String, Object> stats = service.getGraphStatistics();
+
+        // TABLE must surface identically to the JPA backend (store-agnostic statistics contract).
+        assertEquals(1L, stats.get("tableCount"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Long> nodesByType = (Map<String, Long>) stats.get("nodesByType");
+        assertNotNull(nodesByType, "nodesByType map must be present for the index-browser");
+        assertEquals(1L, nodesByType.get("TABLE"));
+        assertEquals(1L, nodesByType.get("DOCUMENT"));
+        assertEquals(0L, nodesByType.get("ENTITY"));
+    }
+
 }

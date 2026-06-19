@@ -45,11 +45,11 @@ class KnowledgeGraphToolImplTest {
 
     @BeforeEach
     void setUp() {
-        // KnowledgeGraphToolImpl takes 5 args: graphService, weightingService,
-        // entityMentionRepository, nodeRepository, McpOptimizationConfigProvider
+        // KnowledgeGraphToolImpl takes 4 args: graphService, weightingService,
+        // entityMentionRepository, McpOptimizationConfigProvider
         tool = new KnowledgeGraphToolImpl(
                 graphService, weightingService,
-                entityMentionRepository, nodeRepository,
+                entityMentionRepository,
                 null  // no MCP optimization
         );
     }

@@ -13,7 +13,7 @@ import ai.kompile.graph.algorithms.DegreeCentrality;
 import ai.kompile.graph.algorithms.ShortestPathAlgorithm;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -35,7 +35,7 @@ public class GraphAlgorithmsTool {
     private static final Logger log = LoggerFactory.getLogger(GraphAlgorithmsTool.class);
 
     private final GraphAlgorithmService algorithmService;
-    private final GraphNodeRepository nodeRepository;
+    private final KnowledgeGraphService graphService;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -75,9 +75,9 @@ public class GraphAlgorithmsTool {
 
     @Autowired
     public GraphAlgorithmsTool(GraphAlgorithmService algorithmService,
-                               GraphNodeRepository nodeRepository) {
+                               KnowledgeGraphService graphService) {
         this.algorithmService = algorithmService;
-        this.nodeRepository = nodeRepository;
+        this.graphService = graphService;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -190,7 +190,7 @@ public class GraphAlgorithmsTool {
             }
 
             // Resolve node details for the path
-            List<GraphNode> nodes = nodeRepository.findByNodeIdIn(pathResult.path());
+            List<GraphNode> nodes = graphService.getNodesByIds(pathResult.path());
             Map<String, GraphNode> nodeMap = nodes.stream()
                     .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
 
@@ -233,7 +233,7 @@ public class GraphAlgorithmsTool {
                     input.factSheetId(), input.nodeIdA(), input.nodeIdB());
 
             // Resolve titles
-            List<GraphNode> nodes = nodeRepository.findByNodeIdIn(
+            List<GraphNode> nodes = graphService.getNodesByIds(
                     List.of(input.nodeIdA(), input.nodeIdB()));
             Map<String, String> titles = nodes.stream()
                     .collect(Collectors.toMap(
@@ -271,7 +271,7 @@ public class GraphAlgorithmsTool {
 
         // Resolve node titles
         List<String> topIds = sorted.stream().map(Map.Entry::getKey).collect(Collectors.toList());
-        Map<String, GraphNode> nodeMap = nodeRepository.findByNodeIdIn(topIds).stream()
+        Map<String, GraphNode> nodeMap = graphService.getNodesByIds(topIds).stream()
                 .collect(Collectors.toMap(GraphNode::getNodeId, n -> n, (a, b) -> a));
 
         List<Map<String, Object>> ranked = sorted.stream()

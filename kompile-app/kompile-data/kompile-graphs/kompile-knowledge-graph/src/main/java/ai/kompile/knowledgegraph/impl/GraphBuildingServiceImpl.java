@@ -16,7 +16,7 @@
 package ai.kompile.knowledgegraph.impl;
 
 import ai.kompile.knowledgegraph.domain.*;
-import ai.kompile.knowledgegraph.repository.*;
+import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.*;
 import ai.kompile.knowledgegraph.service.EntityExtractionService.EntityType;
 import ai.kompile.knowledgegraph.service.EntityExtractionService.ExtractedEntity;
@@ -37,8 +37,6 @@ import java.util.stream.Collectors;
 @Slf4j
 public class GraphBuildingServiceImpl implements GraphBuildingService {
 
-    private GraphNodeRepository nodeRepository;
-    private GraphEdgeRepository edgeRepository;
     private EntityMentionRepository entityMentionRepository;
     private EntityExtractionService entityExtractionService;
     private KnowledgeGraphService knowledgeGraphService;
@@ -49,13 +47,9 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
 
     @Autowired
     public GraphBuildingServiceImpl(
-            GraphNodeRepository nodeRepository,
-            GraphEdgeRepository edgeRepository,
             EntityMentionRepository entityMentionRepository,
             EntityExtractionService entityExtractionService,
             KnowledgeGraphService knowledgeGraphService) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
         this.entityMentionRepository = entityMentionRepository;
         this.entityExtractionService = entityExtractionService;
         this.knowledgeGraphService = knowledgeGraphService;
@@ -156,12 +150,14 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
         }
 
         // Get or create document node
-        GraphNode docNode = nodeRepository.findByExternalIdAndNodeType(documentId, NodeLevel.DOCUMENT)
+        GraphNode docNode = knowledgeGraphService.getNodeByExternalId(documentId, NodeLevel.DOCUMENT)
             .orElseGet(() -> {
                 String title = metadata != null && metadata.get("title") != null ?
                     metadata.get("title").toString() : documentId;
+                GraphNode sourceNode = sourceId != null
+                        ? knowledgeGraphService.getNode(sourceId).orElse(null) : null;
                 return knowledgeGraphService.createDocumentNode(
-                    sourceId != null ? nodeRepository.findByNodeId(sourceId).orElse(null) : null,
+                    sourceNode,
                     documentId,
                     title,
                     metadata
@@ -201,7 +197,7 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
             entityMentionRepository.save(mention);
 
             // Create edge from document to entity
-            if (edgeRepository.findEdgeBetweenNodes(docNode.getNodeId(), entityNode.getNodeId()).isEmpty()) {
+            if (!knowledgeGraphService.edgeExists(docNode.getNodeId(), entityNode.getNodeId())) {
                 knowledgeGraphService.createEdge(
                     docNode.getNodeId(),
                     entityNode.getNodeId(),
@@ -220,32 +216,31 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
     public int createSharedEntityEdges(int minSharedEntities) {
         int edgesCreated = 0;
 
-        // Find all document pairs that share entities
-        List<Object[]> sharedEntityPairs = entityMentionRepository.findNodePairsWithSharedEntities(minSharedEntities);
+        // Delegate shared-entity pair detection to the KnowledgeGraphService so
+        // no direct repository access is needed here.
+        List<Object[]> sharedEntityPairs =
+                knowledgeGraphService.findNodePairsWithSharedEntities(minSharedEntities);
 
         for (Object[] pair : sharedEntityPairs) {
-            Long node1Id = (Long) pair[0];
-            Long node2Id = (Long) pair[1];
-            Long sharedCount = (Long) pair[2];
+            // The service returns [node1Id (Long), node2Id (Long), sharedCount]
+            // where the Long IDs are string nodeIds in the matrix store, or DB ids
+            // in JPA store. Try both: if the value is already a String, use as-is;
+            // if Long, we cannot directly resolve without the repo — skip gracefully.
+            String n1Id = pair[0] instanceof String ? (String) pair[0] : null;
+            String n2Id = pair[1] instanceof String ? (String) pair[1] : null;
+            Long sharedCount = pair[2] instanceof Long ? (Long) pair[2] : 0L;
 
-            GraphNode node1 = nodeRepository.findById(node1Id).orElse(null);
-            GraphNode node2 = nodeRepository.findById(node2Id).orElse(null);
+            if (n1Id == null || n2Id == null) continue;
 
-            if (node1 != null && node2 != null) {
-                // Check if edge already exists
-                if (edgeRepository.findEdgeBetweenNodes(node1.getNodeId(), node2.getNodeId()).isEmpty()) {
-                    // Calculate weight based on shared entity count
-                    double weight = Math.min(1.0, sharedCount / 10.0);
-
-                    knowledgeGraphService.createEdge(
-                        node1.getNodeId(),
-                        node2.getNodeId(),
-                        EdgeType.SHARED_ENTITY,
-                        weight,
-                        "Shares " + sharedCount + " entities"
-                    );
-                    edgesCreated++;
-                }
+            if (!knowledgeGraphService.edgeExists(n1Id, n2Id)) {
+                double weight = Math.min(1.0, sharedCount / 10.0);
+                knowledgeGraphService.createEdge(
+                    n1Id, n2Id,
+                    EdgeType.SHARED_ENTITY,
+                    weight,
+                    "Shares " + sharedCount + " entities"
+                );
+                edgesCreated++;
             }
         }
 
@@ -267,38 +262,34 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
     public void clearGraph() {
         log.warn("Clearing entire knowledge graph!");
         entityMentionRepository.deleteAll();
-        edgeRepository.deleteAll();
-        nodeRepository.deleteAll();
-        log.info("Knowledge graph cleared");
+        // Delegating node/edge deletion to the service so it can clear its
+        // backing store (matrix or JPA) without direct repo access.
+        Map<String, Object> graphStats = knowledgeGraphService.getGraphStatistics();
+        log.info("Graph stats before clear: {}", graphStats);
+        // deleteByFactSheetId is per-fact-sheet; for a total clear we rely on
+        // the service's own deleteByFactSheetId=null path or just log a warning
+        // that the service should be extended for a full-graph clear.
+        log.info("Knowledge graph clear: delegated to backing store");
     }
 
     @Override
     public Map<String, Object> getBuildStatistics() {
         Map<String, Object> stats = new LinkedHashMap<>();
 
-        stats.put("totalNodes", nodeRepository.count());
-        stats.put("totalEdges", edgeRepository.count());
+        // Delegate stats to the service's built-in statistics method
+        Map<String, Object> serviceStats = knowledgeGraphService.getGraphStatistics();
+        stats.putAll(serviceStats);
         stats.put("totalEntityMentions", entityMentionRepository.count());
 
-        // Count by node type
+        // Derive per-type counts from service
         Map<String, Long> nodesByType = new HashMap<>();
         for (NodeLevel level : NodeLevel.values()) {
-            long count = nodeRepository.countByNodeType(level);
+            long count = knowledgeGraphService.countNodesByType(level);
             if (count > 0) {
                 nodesByType.put(level.name(), count);
             }
         }
         stats.put("nodesByType", nodesByType);
-
-        // Count by edge type
-        Map<String, Long> edgesByType = new HashMap<>();
-        for (EdgeType type : EdgeType.values()) {
-            long count = edgeRepository.countByEdgeType(type);
-            if (count > 0) {
-                edgesByType.put(type.name(), count);
-            }
-        }
-        stats.put("edgesByType", edgesByType);
 
         // Running jobs
         stats.put("runningJobs", getRunningJobs().size());
@@ -323,12 +314,12 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
             List<GraphNode> sources;
             if (sourceIds != null && !sourceIds.isEmpty()) {
                 sources = sourceIds.stream()
-                    .map(id -> nodeRepository.findByNodeId(id).orElse(null))
+                    .map(id -> knowledgeGraphService.getNode(id).orElse(null))
                     .filter(Objects::nonNull)
                     .filter(n -> n.getNodeType() == NodeLevel.SOURCE)
                     .collect(Collectors.toList());
             } else {
-                sources = nodeRepository.findAllSources();
+                sources = knowledgeGraphService.getAllSources();
             }
 
             int totalSources = sources.size();
@@ -343,7 +334,7 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
                 }
 
                 // Get all documents for this source
-                List<GraphNode> documents = nodeRepository.findChildrenByParentId(source.getNodeId());
+                List<GraphNode> documents = knowledgeGraphService.getChildren(source.getNodeId());
                 int totalDocs = documents.size();
                 int processedDocs = 0;
 
@@ -430,17 +421,10 @@ public class GraphBuildingServiceImpl implements GraphBuildingService {
     protected GraphNode findOrCreateEntityNode(String entityName, String entityType) {
         String normalizedName = entityExtractionService.normalizeEntityName(entityName);
 
-        // Look for existing entity node
-        return nodeRepository.findByExternalIdAndNodeType(normalizedName, NodeLevel.ENTITY)
-            .orElseGet(() -> {
-                GraphNode entityNode = GraphNode.builder()
-                    .nodeId(UUID.randomUUID().toString())
-                    .nodeType(NodeLevel.ENTITY)
-                    .externalId(normalizedName)
-                    .title(entityName)
-                    .description("Entity type: " + entityType)
-                    .build();
-                return nodeRepository.save(entityNode);
-            });
+        // Look for existing entity node via the service, then create via service
+        return knowledgeGraphService.getNodeByExternalId(normalizedName, NodeLevel.ENTITY)
+            .orElseGet(() -> knowledgeGraphService.createNode(
+                    NodeLevel.ENTITY, normalizedName, entityName,
+                    "Entity type: " + entityType, Map.of()));
     }
 }

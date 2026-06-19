@@ -153,6 +153,9 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         assertReferenceBinding(keyMap.getBound("\033[6~"), "scroll-page-down");
         assertReferenceBinding(keyMap.getBound("\033[1;5H"), "scroll-top");
         assertReferenceBinding(keyMap.getBound("\033[1;5F"), "scroll-bottom");
+        // X10 mouse reports (ESC[M…) route through the wheel widget so the wheel
+        // scrolls the transcript instead of the host terminal's native scrollback.
+        assertReferenceBinding(keyMap.getBound("\033[M"), "scroll-mouse-wheel");
 
         Binding plainHome = keyMap.getBound("\033[H");
         if (plainHome instanceof Reference ref) {
@@ -162,6 +165,40 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         if (plainEnd instanceof Reference ref) {
             assertNotEquals("scroll-bottom", ref.name(), "Plain End must stay available for input editing");
         }
+    }
+
+    @Test
+    void wheelCaptureEnablesOnlyWhileADecoderOwnsTheScreen() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+
+        // No decoder yet (raw passthrough / pre-launch) → the wheel stays with the
+        // host terminal; Kompile must not grab it.
+        terminalOutput.reset();
+        invokeNoArg(command, "enableTranscriptMouse");
+        assertFalse(terminalOutput.toString(StandardCharsets.UTF_8).contains("\033[?1000h"),
+                "Mouse tracking must stay off until a decoder owns the screen");
+        assertFalse((Boolean) getField(command, "transcriptMouseEnabled"));
+
+        // Decoder-owned agent (OpenCode renders into Kompile's transcript) → capture wheel.
+        setField(command, "agentDecoder", new ai.kompile.cli.main.chat.tui.OpenCodeDecoder());
+        terminalOutput.reset();
+        invokeNoArg(command, "enableTranscriptMouse");
+        assertTrue(terminalOutput.toString(StandardCharsets.UTF_8).contains("\033[?1000h"),
+                "Decoder-owned screen should enable real-terminal wheel capture");
+        assertTrue((Boolean) getField(command, "transcriptMouseEnabled"));
+
+        // Idempotent: re-enabling while already tracking must not re-emit the sequence.
+        terminalOutput.reset();
+        invokeNoArg(command, "enableTranscriptMouse");
+        assertFalse(terminalOutput.toString(StandardCharsets.UTF_8).contains("\033[?1000h"),
+                "Re-enabling while already tracking must not re-emit the enable sequence");
+
+        // Disabling restores the terminal's native selection/scrollback.
+        terminalOutput.reset();
+        invokeNoArg(command, "disableTranscriptMouse");
+        assertTrue(terminalOutput.toString(StandardCharsets.UTF_8).contains("\033[?1000l"),
+                "Disable should turn real-terminal mouse tracking back off");
+        assertFalse((Boolean) getField(command, "transcriptMouseEnabled"));
     }
 
     @Test

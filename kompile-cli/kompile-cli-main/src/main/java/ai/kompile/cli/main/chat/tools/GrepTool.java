@@ -156,6 +156,10 @@ public class GrepTool implements CliTool {
         } else {
             cmd.add("grep");
             cmd.add("-r");
+            // -E: extended regex, so a pattern is interpreted like ripgrep's default — alternation
+            // (a|b), groups, and +/?/{n} quantifiers all work. Plain grep is BRE, where `|` is a
+            // LITERAL character, so `a|b` silently matches nothing (a false negative).
+            cmd.add("-E");
             // -I: skip binary files (.git objects, model blobs, .so/.jar) — avoids wasted work
             // and "Binary file ... matches" noise.
             cmd.add("-I");
