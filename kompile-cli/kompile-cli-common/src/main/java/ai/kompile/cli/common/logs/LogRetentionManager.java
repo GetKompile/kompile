@@ -88,6 +88,26 @@ public final class LogRetentionManager {
         return new RetentionResult(deletedByAge, deletedByPerAgent, deletedBySize);
     }
 
+    /**
+     * Applies retention to crawl logs under {@code logs/crawls/*.log} (one flat file per crawl job).
+     * The per-agent cap is reinterpreted as a per-crawls-directory cap.
+     */
+    public RetentionResult applyToCrawls() {
+        File crawlsRoot = LogPaths.crawlsRoot();
+        if (!crawlsRoot.isDirectory()) {
+            return RetentionResult.empty();
+        }
+        List<File> allLogs = collectCrawlLogs(crawlsRoot);
+        int deletedByAge = deleteByAge(allLogs);
+        int deletedByCap = capLeafDirectory(crawlsRoot);
+        long currentSize = totalSize(collectCrawlLogs(crawlsRoot));
+        int deletedBySize = 0;
+        if (currentSize > policy.maxTotalBytes()) {
+            deletedBySize = deleteBySize(collectCrawlLogs(crawlsRoot), currentSize);
+        }
+        return new RetentionResult(deletedByAge, deletedByCap, deletedBySize);
+    }
+
     private List<File> collectAgentLogs(File agentsRoot) {
         List<File> out = new ArrayList<>();
         File[] instances = agentsRoot.listFiles(File::isDirectory);
@@ -115,6 +135,15 @@ public final class LogRetentionManager {
         for (File type : types) {
             File[] logs = type.listFiles((d, name) -> name.endsWith(".log"));
             if (logs == null) continue;
+            java.util.Collections.addAll(out, logs);
+        }
+        return out;
+    }
+
+    private List<File> collectCrawlLogs(File crawlsRoot) {
+        List<File> out = new ArrayList<>();
+        File[] logs = crawlsRoot.listFiles((d, name) -> name.endsWith(".log"));
+        if (logs != null) {
             java.util.Collections.addAll(out, logs);
         }
         return out;

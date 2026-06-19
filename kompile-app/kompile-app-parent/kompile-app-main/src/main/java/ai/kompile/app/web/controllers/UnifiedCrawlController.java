@@ -29,6 +29,7 @@ import ai.kompile.app.services.GraphSchemaPresetService;
 import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
 import ai.kompile.core.crawl.graph.*;
 import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
+import ai.kompile.cli.common.logs.CrawlLogWriter;
 import ai.kompile.crawl.graph.CrawlPipelineStepRegistry;
 import ai.kompile.knowledgegraph.service.FactSheetGraphService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -56,6 +57,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1248,6 +1250,15 @@ public class UnifiedCrawlController {
                                         event.getTimestamp() != null ? event.getTimestamp() : java.time.Instant.now(),
                                         seq));
                     }
+                    // Mirror the event into the central ~/.kompile/logs/crawls/<jobId>.log so crawl logs are
+                    // CLI-accessible and retention-managed alongside agent/subprocess logs (H2 stays canonical).
+                    CrawlLogWriter.append(job.getJobId(), new CrawlLogWriter.CrawlLogRecord(
+                            event.getTimestamp() != null ? event.getTimestamp() : Instant.now(),
+                            event.getPhase(),
+                            level.name(),
+                            message,
+                            event.getDetails(),
+                            seq));
                 }
 
             } catch (Exception e) {

@@ -52,12 +52,14 @@ public class AgentLogRetentionService {
         LogRetentionManager manager = new LogRetentionManager(policy);
         LogRetentionManager.RetentionResult agentResult = manager.applyToAgents();
         LogRetentionManager.RetentionResult subprocessResult = manager.applyToSubprocesses();
-        int totalDeleted = agentResult.totalDeleted() + subprocessResult.totalDeleted();
+        LogRetentionManager.RetentionResult crawlResult = manager.applyToCrawls();
+        int totalDeleted = agentResult.totalDeleted() + subprocessResult.totalDeleted() + crawlResult.totalDeleted();
         if (totalDeleted > 0) {
-            log.info("Log retention swept {} runs — agents(age={}, perAgent={}, size={}), subprocesses(age={}, perType={}, size={})",
+            log.info("Log retention swept {} runs — agents(age={}, perAgent={}, size={}), subprocesses(age={}, perType={}, size={}), crawls(age={}, perDir={}, size={})",
                     totalDeleted,
                     agentResult.deletedByAge(), agentResult.deletedByPerAgent(), agentResult.deletedBySize(),
-                    subprocessResult.deletedByAge(), subprocessResult.deletedByPerAgent(), subprocessResult.deletedBySize());
+                    subprocessResult.deletedByAge(), subprocessResult.deletedByPerAgent(), subprocessResult.deletedBySize(),
+                    crawlResult.deletedByAge(), crawlResult.deletedByPerAgent(), crawlResult.deletedBySize());
         } else {
             log.debug("Log retention swept — nothing to delete");
         }

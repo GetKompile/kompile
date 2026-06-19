@@ -116,11 +116,29 @@ public final class LogPaths {
         return dir;
     }
 
+    /** {@code ~/.kompile/logs/crawls} */
+    public static File crawlsRoot() {
+        return new File(logsDirectory(), "crawls");
+    }
+
+    /** {@code <crawlsRoot>/<jobId>.log} — one flat file per crawl job. */
+    public static File crawlLogFile(String jobId) {
+        return new File(crawlsRoot(), safe(jobId, "_unknown") + ".log");
+    }
+
+    /** Creates the crawls log directory if missing. Returns the directory. */
+    public static File ensureCrawlsDir() throws java.io.IOException {
+        File dir = crawlsRoot();
+        ensureDir(dir);
+        return dir;
+    }
+
     /** Creates the root log directory tree ({@code logs/agents}, {@code logs/cli}). */
     public static void ensureRootDirs() throws java.io.IOException {
         ensureDir(agentsRoot());
         ensureDir(cliRoot());
         ensureDir(subprocessesRoot());
+        ensureDir(crawlsRoot());
     }
 
     private static void ensureDir(File dir) throws java.io.IOException {
