@@ -22,6 +22,7 @@ import ai.kompile.core.crawl.graph.BatchRetryPolicy.RetryDecision;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -96,7 +97,7 @@ class BatchRetryPolicyTest {
 
         List<String> items = List.of("a", "b");
         RetryDecision<String> decision = policy.evaluateFailure(
-                items, 10, "401 Unauthorized", "backend-1", null, null);
+                "batch-0", items, 10, "401 Unauthorized", "backend-1", null, null);
 
         assertEquals(RetryAction.ABORT, decision.getAction());
         assertEquals(1, decision.getAttempt());
@@ -113,7 +114,7 @@ class BatchRetryPolicyTest {
 
         List<String> items = List.of("a", "b", "c");
         RetryDecision<String> decision = policy.evaluateFailure(
-                items, 10, "OutOfMemoryError", "backend-1", null, null);
+                "batch-0", items, 10, "OutOfMemoryError", "backend-1", null, null);
 
         assertEquals(RetryAction.RETRY_SAME_BACKEND, decision.getAction());
         assertEquals(5, decision.getReducedBatchSize()); // 10 * 0.5
@@ -131,7 +132,7 @@ class BatchRetryPolicyTest {
 
         List<String> items = List.of("a", "b");
         RetryDecision<String> decision = policy.evaluateFailure(
-                items, 6, "Out of memory", "backend-1", null, null);
+                "batch-0", items, 6, "Out of memory", "backend-1", null, null);
 
         assertEquals(RetryAction.RETRY_SAME_BACKEND, decision.getAction());
         assertEquals(4, decision.getReducedBatchSize()); // max(4, 6*0.5=3) = 4
@@ -146,7 +147,7 @@ class BatchRetryPolicyTest {
 
         List<String> items = List.of("a");
         RetryDecision<String> decision = policy.evaluateFailure(
-                items, 10, "Connection timed out", "backend-1", null, null);
+                "batch-0", items, 10, "Connection timed out", "backend-1", null, null);
 
         assertEquals(RetryAction.RETRY_SAME_BACKEND, decision.getAction());
         assertEquals(10, decision.getReducedBatchSize()); // unchanged for timeout
@@ -160,13 +161,11 @@ class BatchRetryPolicyTest {
                 .build();
 
         List<String> items = List.of("a", "b");
-        // Attempt 1
-        policy.evaluateFailure(items, 10, "timed out", "b1", null, null);
-        // Attempt 2
-        policy.evaluateFailure(items, 10, "timed out", "b1", null, null);
-        // Attempt 3 — exceeds maxRetries=2
+        // Same batch key across attempts → counter accumulates for this batch
+        policy.evaluateFailure("batch-0", items, 10, "timed out", "b1", null, null); // attempt 1
+        policy.evaluateFailure("batch-0", items, 10, "timed out", "b1", null, null); // attempt 2
         RetryDecision<String> decision = policy.evaluateFailure(
-                items, 10, "timed out", "b1", null, null);
+                "batch-0", items, 10, "timed out", "b1", null, null); // attempt 3 > maxRetries=2
 
         assertEquals(RetryAction.DEAD_LETTER, decision.getAction());
         assertEquals(2, policy.getDeadLetterCount());
@@ -181,14 +180,92 @@ class BatchRetryPolicyTest {
                 .build();
 
         List<String> items = List.of("a");
-        policy.evaluateFailure(items, 10, "timed out", "b1", null, null);
+        policy.evaluateFailure("batch-0", items, 10, "timed out", "b1", null, null);
         // Now at attempt 1 — next would be dead letter
         policy.resetAttempts();
         // After reset, should start fresh
         RetryDecision<String> decision = policy.evaluateFailure(
-                items, 10, "timed out", "b1", null, null);
+                "batch-0", items, 10, "timed out", "b1", null, null);
         assertEquals(RetryAction.RETRY_SAME_BACKEND, decision.getAction());
         assertEquals(1, decision.getAttempt());
+    }
+
+    /**
+     * Regression: attempts must be scoped per batch. Previously a single shared counter accumulated
+     * failures across every batch, so a healthy batch could be dead-lettered on its first failure
+     * once earlier batches had used up the retry budget. This is silent data loss.
+     */
+    @Test
+    void testAttemptsAreScopedPerBatch() {
+        BatchRetryPolicy<String> policy = BatchRetryPolicy.<String>builder()
+                .stage("TEST")
+                .maxRetries(2)
+                .build();
+
+        List<String> batchA = List.of("a");
+        List<String> batchB = List.of("b");
+
+        // Batch A exhausts its own budget (3 failures > maxRetries=2) and dead-letters.
+        policy.evaluateFailure("batch-A", batchA, 10, "timed out", "b1", null, null);
+        policy.evaluateFailure("batch-A", batchA, 10, "timed out", "b1", null, null);
+        RetryDecision<String> aDecision =
+                policy.evaluateFailure("batch-A", batchA, 10, "timed out", "b1", null, null);
+        assertEquals(RetryAction.DEAD_LETTER, aDecision.getAction());
+
+        // Batch B's FIRST failure must still be a retry — NOT dead-lettered by A's history.
+        RetryDecision<String> bDecision =
+                policy.evaluateFailure("batch-B", batchB, 10, "timed out", "b1", null, null);
+        assertEquals(RetryAction.RETRY_SAME_BACKEND, bDecision.getAction());
+        assertEquals(1, bDecision.getAttempt());
+    }
+
+    @Test
+    void testRateLimitedReroutesViaSelector() {
+        BatchRetryPolicy<String> policy = BatchRetryPolicy.<String>builder()
+                .stage("GRAPH_EXTRACTION")
+                .maxRetries(3)
+                .build();
+
+        FallbackBackendSelector selector = (stage, exclude) -> Optional.of("fallback-2");
+        RetryDecision<String> decision = policy.evaluateFailure(
+                "batch-0", List.of("x"), 10, "429 Too Many Requests", "primary-1", selector, null);
+
+        assertEquals(RetryAction.RETRY_FALLBACK_BACKEND, decision.getAction());
+        assertEquals("fallback-2", decision.getFallbackBackendId());
+    }
+
+    @Test
+    void testRateLimitedHeavierBackoffWithoutSelector() {
+        BatchRetryPolicy<String> policy = BatchRetryPolicy.<String>builder()
+                .stage("TEST")
+                .maxRetries(3)
+                .initialBackoffMs(1000)
+                .backoffMultiplier(2.0)
+                .maxBackoffMs(60_000)
+                .rateLimitBackoffMultiplier(3.0)
+                .build();
+
+        // No selector → same backend, but with a heavier rate-limit backoff (1000 * 3.0).
+        RetryDecision<String> decision = policy.evaluateFailure(
+                "batch-0", List.of("x"), 10, "rate limit exceeded", "b1", null, null);
+
+        assertEquals(RetryAction.RETRY_SAME_BACKEND, decision.getAction());
+        assertEquals(3000, decision.getBackoffMs());
+    }
+
+    @Test
+    void testRateLimitedSelectorReturningSameBackendFallsBackToRetry() {
+        BatchRetryPolicy<String> policy = BatchRetryPolicy.<String>builder()
+                .stage("TEST")
+                .maxRetries(3)
+                .build();
+
+        // Selector offers the SAME backend → not a real reroute → retry same backend.
+        FallbackBackendSelector selector = (stage, exclude) -> Optional.of("b1");
+        RetryDecision<String> decision = policy.evaluateFailure(
+                "batch-0", List.of("x"), 10, "quota exceeded", "b1", selector, null);
+
+        assertEquals(RetryAction.RETRY_SAME_BACKEND, decision.getAction());
     }
 
     @Test
@@ -203,19 +280,19 @@ class BatchRetryPolicyTest {
 
         List<String> items = List.of("a");
 
-        RetryDecision<String> d1 = policy.evaluateFailure(items, 10, "timed out", "b1", null, null);
+        RetryDecision<String> d1 = policy.evaluateFailure("batch-0", items, 10, "timed out", "b1", null, null);
         assertEquals(1000, d1.getBackoffMs()); // 1000 * 2^0
 
-        RetryDecision<String> d2 = policy.evaluateFailure(items, 10, "timed out", "b1", null, null);
+        RetryDecision<String> d2 = policy.evaluateFailure("batch-0", items, 10, "timed out", "b1", null, null);
         assertEquals(2000, d2.getBackoffMs()); // 1000 * 2^1
 
-        RetryDecision<String> d3 = policy.evaluateFailure(items, 10, "timed out", "b1", null, null);
+        RetryDecision<String> d3 = policy.evaluateFailure("batch-0", items, 10, "timed out", "b1", null, null);
         assertEquals(4000, d3.getBackoffMs()); // 1000 * 2^2
 
-        RetryDecision<String> d4 = policy.evaluateFailure(items, 10, "timed out", "b1", null, null);
+        RetryDecision<String> d4 = policy.evaluateFailure("batch-0", items, 10, "timed out", "b1", null, null);
         assertEquals(8000, d4.getBackoffMs()); // 1000 * 2^3
 
-        RetryDecision<String> d5 = policy.evaluateFailure(items, 10, "timed out", "b1", null, null);
+        RetryDecision<String> d5 = policy.evaluateFailure("batch-0", items, 10, "timed out", "b1", null, null);
         assertEquals(10000, d5.getBackoffMs()); // capped at maxBackoff
     }
 
@@ -244,7 +321,7 @@ class BatchRetryPolicyTest {
         UnifiedCrawlJob job = UnifiedCrawlJob.builder().jobId("test-job").build();
         List<String> items = List.of("chunk-1", "chunk-2");
 
-        policy.evaluateFailure(items, 10, "timed out", "backend-1", null, job);
+        policy.evaluateFailure("batch-0", items, 10, "timed out", "backend-1", null, job);
 
         assertEquals(1, job.getRetriedBatches().get());
         assertEquals(2, job.getRetriedItems().get());

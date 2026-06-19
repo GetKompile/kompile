@@ -16,6 +16,7 @@
 
 package ai.kompile.pipeline.serving.subprocess;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,7 +60,7 @@ public class PipelineServingProgressReporter implements AutoCloseable {
     public PipelineServingProgressReporter(String taskId, PrintStream out, long heartbeatIntervalMs) {
         this.taskId = taskId;
         this.out = out;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.startTimeMs = System.currentTimeMillis();
         this.heartbeatIntervalMs = heartbeatIntervalMs;
         this.heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> {

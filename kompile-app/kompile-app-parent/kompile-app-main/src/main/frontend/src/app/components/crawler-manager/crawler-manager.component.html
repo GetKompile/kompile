@@ -66,6 +66,10 @@
       <div *ngFor="let job of jobs" class="job-row">
         <div class="job-header">
           <mat-chip [color]="getStatusColor(job.status)">{{ job.status }}</mat-chip>
+          <mat-chip *ngIf="hasPartialCompletion(job)" class="partial-chip"
+                    [matTooltip]="'Completed — some steps were intentionally skipped/archived: ' + stepStatusSummary(job)">
+            Partial
+          </mat-chip>
           <mat-chip *ngIf="job.resumedFromCheckpoint" class="resumed-chip"
                     [matTooltip]="'Resumed from checkpoint' + (job.resumedUrlCount ? ' (' + job.resumedUrlCount + ' URLs already visited)' : '')">
             <mat-icon>replay</mat-icon> Resumed
@@ -156,6 +160,11 @@
                   (click)="toggleLogs(job.jobId)" matTooltip="Crawler job logs">
             <mat-icon>terminal</mat-icon> Job Logs
           </button>
+          <button mat-button *ngIf="hasSteps(job)"
+                  (click)="toggleSteps(job.jobId)" matTooltip="Pipeline step breakdown (what ran / skipped / archived)">
+            <mat-icon>checklist</mat-icon> Steps
+            <span *ngIf="hasPartialCompletion(job)" class="steps-btn-note">({{ stepStatusSummary(job) }})</span>
+          </button>
         </div>
 
         <div class="pipeline-log-panel"
@@ -173,6 +182,79 @@
             logSource="ingest"
             [maxTailLogs]="80">
           </app-job-log-viewer>
+        </div>
+
+        <div class="crawl-steps-panel" *ngIf="expandedStepsJobId === job.jobId">
+          <div class="crawl-steps-summary" *ngIf="stepStatusSummary(job)">{{ stepStatusSummary(job) }}</div>
+          <!-- Per-step accordion -->
+          <div class="cm-step-accordion-item"
+               *ngFor="let step of getJobSteps(job)"
+               [ngClass]="getStepStatusClass(step.status)">
+
+            <!-- Clickable header row -->
+            <div class="cm-step-accordion-header"
+                 (click)="toggleCmStepExpanded(job, step.stepId)"
+                 role="button"
+                 [attr.aria-expanded]="isCmStepExpanded(job.jobId, step.stepId)">
+              <mat-icon class="cm-step-chevron"
+                        [class.cm-step-chevron-open]="isCmStepExpanded(job.jobId, step.stepId)">
+                chevron_right
+              </mat-icon>
+              <mat-icon class="cs-type-icon">{{ getStepIcon(step.stepType) }}</mat-icon>
+              <span class="cs-name">{{ step.displayName || step.stepId }}</span>
+              <span class="cs-status">{{ step.status || 'PENDING' }}</span>
+              <span class="cs-counts" *ngIf="step.totalItems">{{ step.completedItems || 0 }}/{{ step.totalItems }}</span>
+              <span class="cs-counts cs-failed-count" *ngIf="step.failedItems">{{ step.failedItems }} failed</span>
+              <button mat-stroked-button class="cs-run-now"
+                      *ngIf="step.status === 'ARCHIVED' || step.status === 'DEFERRED'"
+                      (click)="runStep(job.jobId, step.stepId); $event.stopPropagation()">
+                <mat-icon>play_circle</mat-icon> Run now
+              </button>
+            </div>
+
+            <!-- Expanded detail panel -->
+            <div class="cm-step-detail-panel" *ngIf="isCmStepExpanded(job.jobId, step.stepId)">
+              <!-- Step counts -->
+              <div class="cm-step-detail-stats">
+                <span *ngIf="step.totalItems">
+                  <strong>Items:</strong> {{ step.completedItems || 0 }}/{{ step.totalItems }}
+                </span>
+                <span *ngIf="step.failedItems">
+                  <strong>Failed:</strong> {{ step.failedItems }}
+                </span>
+                <span *ngIf="step.progressPercent">
+                  <strong>Progress:</strong> {{ step.progressPercent }}%
+                </span>
+              </div>
+              <!-- Loading indicator while persisted logs are being fetched -->
+              <div class="cm-step-detail-loading" *ngIf="isCmStepLogLoading(job)">
+                <mat-icon inline>sync</mat-icon> Loading activity log...
+              </div>
+              <!-- Activity log filtered to this step's phase (persisted + live fallback) -->
+              <ng-container *ngIf="!isCmStepLogLoading(job)">
+                <ng-container *ngIf="getCmStepEvents(job, step) as stepEvents">
+                  <div class="cm-step-section-header" *ngIf="stepEvents.length > 0">
+                    <mat-icon inline>receipt_long</mat-icon>
+                    <span>&#9658; Activity</span>
+                  </div>
+                  <div class="cm-step-events" *ngIf="stepEvents.length > 0">
+                    <div *ngFor="let ev of stepEvents | slice:-20"
+                         class="cm-step-event-row"
+                         [class.cm-event-warn]="ev.level === 'WARN'"
+                         [class.cm-event-error]="ev.level === 'ERROR'">
+                      <span class="cm-event-time" *ngIf="ev.timestamp">{{ ev.timestamp | slice:11:19 }}</span>
+                      <span class="cm-event-level" [class]="'cm-level-' + (ev.level || 'info').toLowerCase()">{{ ev.level }}</span>
+                      <span class="cm-event-msg">{{ ev.message }}</span>
+                    </div>
+                  </div>
+                  <div class="cm-step-detail-empty" *ngIf="stepEvents.length === 0">
+                    <mat-icon inline>hourglass_empty</mat-icon>
+                    No activity recorded for this step.
+                  </div>
+                </ng-container>
+              </ng-container>
+            </div>
+          </div>
         </div>
       </div>
     </mat-card-content>

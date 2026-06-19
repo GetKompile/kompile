@@ -19,6 +19,7 @@ package ai.kompile.ocr.integration;
 import ai.kompile.core.loaders.PdfProcessingConfig;
 import ai.kompile.ocr.OcrPipeline;
 import ai.kompile.ocr.OcrPipelineConfig;
+import ai.kompile.ocr.VlmOutputFormat;
 import ai.kompile.ocr.document.ParsedDocument;
 import ai.kompile.ocr.postprocess.OcrPostProcessor;
 import org.slf4j.Logger;
@@ -176,7 +177,7 @@ public class OcrPipelineService {
         if (shouldUseVlm && vlmPipeline != null) {
             builder.useVlm(true)
                     .vlmModelId(uiConfig.getVlmModelId())
-                    .vlmOutputFormat(convertVlmOutputFormat(uiConfig.getVlmOutputFormat()))
+                    .vlmOutputFormat(uiConfig.getVlmOutputFormat() != null ? uiConfig.getVlmOutputFormat() : VlmOutputFormat.DOCTAGS)
                     .maxNewTokens(uiConfig.getMaxNewTokens())
                     .temperature(uiConfig.getTemperature())
                     .topP(uiConfig.getTopP())
@@ -212,28 +213,12 @@ public class OcrPipelineService {
         return results;
     }
 
-    private OcrPipelineConfig.VlmOutputFormat convertVlmOutputFormat(PdfProcessingConfig.VlmOutputFormat format) {
-        if (format == null) {
-            return OcrPipelineConfig.VlmOutputFormat.DOCTAGS;
-        }
-        switch (format) {
-            case MARKDOWN: return OcrPipelineConfig.VlmOutputFormat.MARKDOWN;
-            case FLORENCE2: return OcrPipelineConfig.VlmOutputFormat.FLORENCE2;
-            case DONUT: return OcrPipelineConfig.VlmOutputFormat.DONUT;
-            case PLAIN_TEXT: return OcrPipelineConfig.VlmOutputFormat.PLAIN_TEXT;
-            case JSON: return OcrPipelineConfig.VlmOutputFormat.JSON;
-            case TEXT: return OcrPipelineConfig.VlmOutputFormat.TEXT;
-            case DOCTAGS:
-            default: return OcrPipelineConfig.VlmOutputFormat.DOCTAGS;
-        }
-    }
-
     public List<ParsedDocument> processPdfWithVlm(File pdfFile, String vlmModelId) {
-        return processPdfWithVlm(pdfFile, vlmModelId, OcrPipelineConfig.VlmOutputFormat.DOCTAGS, null);
+        return processPdfWithVlm(pdfFile, vlmModelId, VlmOutputFormat.DOCTAGS, null);
     }
 
     public List<ParsedDocument> processPdfWithVlm(File pdfFile, String vlmModelId,
-                                                   OcrPipelineConfig.VlmOutputFormat outputFormat,
+                                                   VlmOutputFormat outputFormat,
                                                    Consumer<OcrPipeline.PipelineProgress> progressCallback) {
         if (vlmPipeline == null) {
             logger.error("VLM pipeline not available");
@@ -315,7 +300,7 @@ public class OcrPipelineService {
         if (useVlmByDefault && vlmPipeline != null) {
             builder.useVlm(true)
                     .vlmModelId(defaultVlmModel)
-                    .vlmOutputFormat(OcrPipelineConfig.VlmOutputFormat.DOCTAGS);
+                    .vlmOutputFormat(VlmOutputFormat.DOCTAGS);
         } else {
             builder.useVlm(false)
                     .detectionModelId(defaultDetectionModel)

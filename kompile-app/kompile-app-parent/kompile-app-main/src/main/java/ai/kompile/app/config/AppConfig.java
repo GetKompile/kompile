@@ -17,8 +17,8 @@
 package ai.kompile.app.config;
 
 import ai.kompile.app.MainApplication;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.servlet.MultipartConfigElement;
 import org.apache.tomcat.util.compat.JreCompat;
 import org.slf4j.Logger;
@@ -214,12 +214,7 @@ public class AppConfig {
 
     @Bean
     public ObjectMapper objectMapper() {
-        ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.registerModule(new JavaTimeModule());
-        // Serialize Instant/LocalDateTime as ISO-8601 strings instead of epoch timestamps
-        // This ensures frontend JavaScript correctly parses dates
-        objectMapper.configure(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
-        return objectMapper;
+        return JsonUtils.newStandardMapper();
     }
 
     @Bean

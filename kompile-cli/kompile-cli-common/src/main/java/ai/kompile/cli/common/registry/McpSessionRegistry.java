@@ -17,10 +17,9 @@
 package ai.kompile.cli.common.registry;
 
 import ai.kompile.cli.common.KompileHome;
-import com.fasterxml.jackson.databind.DeserializationFeature;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.File;
 import java.io.IOException;
@@ -41,10 +40,7 @@ import java.util.List;
  */
 public class McpSessionRegistry {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     /**

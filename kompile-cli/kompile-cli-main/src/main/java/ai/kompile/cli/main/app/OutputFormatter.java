@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.app;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -25,7 +26,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
  */
 public class OutputFormatter {
 
-    private static final ObjectMapper PRETTY_MAPPER = new ObjectMapper()
+    private static final ObjectMapper PRETTY_MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     /**

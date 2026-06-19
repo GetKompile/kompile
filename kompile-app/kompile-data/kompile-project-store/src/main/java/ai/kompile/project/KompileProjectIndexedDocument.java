@@ -16,7 +16,15 @@
 package ai.kompile.project;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class KompileProjectIndexedDocument {
     private Long id;
@@ -33,46 +41,4 @@ public class KompileProjectIndexedDocument {
     private String overallStatus;
     private String createdAt;
     private String updatedAt;
-
-    public Long getId() { return id; }
-    public void setId(Long id) { this.id = id; }
-
-    public String getSourceId() { return sourceId; }
-    public void setSourceId(String sourceId) { this.sourceId = sourceId; }
-
-    public String getFileName() { return fileName; }
-    public void setFileName(String fileName) { this.fileName = fileName; }
-
-    public String getChecksum() { return checksum; }
-    public void setChecksum(String checksum) { this.checksum = checksum; }
-
-    public String getFactSheetName() { return factSheetName; }
-    public void setFactSheetName(String factSheetName) { this.factSheetName = factSheetName; }
-
-    public String getKeywordIndexStatus() { return keywordIndexStatus; }
-    public void setKeywordIndexStatus(String keywordIndexStatus) { this.keywordIndexStatus = keywordIndexStatus; }
-
-    public int getKeywordPassageCount() { return keywordPassageCount; }
-    public void setKeywordPassageCount(int keywordPassageCount) { this.keywordPassageCount = keywordPassageCount; }
-
-    public String getVectorStoreStatus() { return vectorStoreStatus; }
-    public void setVectorStoreStatus(String vectorStoreStatus) { this.vectorStoreStatus = vectorStoreStatus; }
-
-    public int getVectorPassageCount() { return vectorPassageCount; }
-    public void setVectorPassageCount(int vectorPassageCount) { this.vectorPassageCount = vectorPassageCount; }
-
-    public String getGraphStatus() { return graphStatus; }
-    public void setGraphStatus(String graphStatus) { this.graphStatus = graphStatus; }
-
-    public int getGraphNodeCount() { return graphNodeCount; }
-    public void setGraphNodeCount(int graphNodeCount) { this.graphNodeCount = graphNodeCount; }
-
-    public String getOverallStatus() { return overallStatus; }
-    public void setOverallStatus(String overallStatus) { this.overallStatus = overallStatus; }
-
-    public String getCreatedAt() { return createdAt; }
-    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
-
-    public String getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(String updatedAt) { this.updatedAt = updatedAt; }
 }

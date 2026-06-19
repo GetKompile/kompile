@@ -20,26 +20,30 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Service;
+
 import java.util.Collections;
 import java.util.List;
 
-@Service("noOpDocumentRetriever") // Explicit bean name for clarity
+/**
+ * Fallback DocumentRetriever that returns empty results when no real implementation is available.
+ */
+@Service
+@ConditionalOnMissingBean(value = DocumentRetriever.class, ignored = NoOpDocumentRetrieverImpl.class)
 public class NoOpDocumentRetrieverImpl implements DocumentRetriever {
+
     private static final Logger logger = LoggerFactory.getLogger(NoOpDocumentRetrieverImpl.class);
 
     public NoOpDocumentRetrieverImpl() {
-        logger.warn("No specific DocumentRetriever implementation found. Initializing NoOpDocumentRetrieverImpl. Document retrieval will return no results.");
+        logger.warn("No DocumentRetriever implementation found — using NoOp fallback. Retrieval will return empty results.");
     }
 
     @Override
     public List<String> retrieve(String query, int maxResults) {
-        logger.warn("NoOpDocumentRetriever called for query: {}. Returning empty list.", query);
         return Collections.emptyList();
     }
 
     @Override
     public List<RetrievedDoc> retrieveWithDetails(String query, int maxResults) {
-        logger.warn("NoOpDocumentRetriever called for detailed query: {}. Returning empty list.", query);
         return Collections.emptyList();
     }
 }

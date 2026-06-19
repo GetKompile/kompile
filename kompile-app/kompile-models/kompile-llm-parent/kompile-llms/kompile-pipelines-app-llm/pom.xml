@@ -46,7 +46,17 @@
     <dependencies>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
             <version>${project.version}</version>
         </dependency>
 
@@ -94,6 +104,12 @@
         </dependency>
 
 
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <dependency>
             <groupId>jakarta.annotation</groupId>

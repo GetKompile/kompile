@@ -16,6 +16,8 @@
 
 package ai.kompile.modelmanager;
 
+import lombok.Getter;
+
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
@@ -25,6 +27,7 @@ import java.util.Objects;
  * platform-independent), an SDK has N platform artifacts (e.g., iOS .xcframework,
  * Android .aar, desktop .zip).
  */
+@Getter
 public class SdkDescriptor {
 
     private final String sdkId;
@@ -38,22 +41,6 @@ public class SdkDescriptor {
         this.version = Objects.requireNonNull(version, "version cannot be null");
         this.baseDownloadUrl = Objects.requireNonNull(baseDownloadUrl, "baseDownloadUrl cannot be null");
         this.platformArtifacts = platformArtifacts == null ? Collections.emptyMap() : platformArtifacts;
-    }
-
-    public String getSdkId() {
-        return sdkId;
-    }
-
-    public String getVersion() {
-        return version;
-    }
-
-    public String getBaseDownloadUrl() {
-        return baseDownloadUrl;
-    }
-
-    public Map<String, PlatformArtifact> getPlatformArtifacts() {
-        return platformArtifacts;
     }
 
     /**
@@ -78,6 +65,7 @@ public class SdkDescriptor {
     /**
      * A single platform-specific artifact within an SDK.
      */
+    @Getter
     public static class PlatformArtifact {
         private final String platform;
         private final String artifactFileName;
@@ -92,26 +80,6 @@ public class SdkDescriptor {
             this.packaging = Objects.requireNonNull(packaging);
             this.downloadUrl = Objects.requireNonNull(downloadUrl);
             this.checksum = checksum;
-        }
-
-        public String getPlatform() {
-            return platform;
-        }
-
-        public String getArtifactFileName() {
-            return artifactFileName;
-        }
-
-        public String getPackaging() {
-            return packaging;
-        }
-
-        public String getDownloadUrl() {
-            return downloadUrl;
-        }
-
-        public String getChecksum() {
-            return checksum;
         }
 
         @Override

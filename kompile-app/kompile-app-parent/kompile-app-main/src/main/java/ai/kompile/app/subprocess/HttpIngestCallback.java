@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,7 +65,7 @@ public class HttpIngestCallback implements AutoCloseable {
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .build();
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         // Force early class loading of inner records to avoid NoClassDefFoundError
         // when JVM is under memory pressure during error handling

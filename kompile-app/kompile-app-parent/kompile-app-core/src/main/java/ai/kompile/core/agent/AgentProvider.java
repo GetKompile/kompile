@@ -61,6 +61,10 @@ public class AgentProvider {
     // Model discovery: command to list available models for this agent
     private List<String> modelListCommand;
 
+    // CLI model selection: the flag used to pass a model to the CLI agent (e.g. "--model").
+    // Loaded from cli-agents.json; the chosen model itself is carried in {@link #modelName}.
+    private String modelFlag;
+
     // Interactive mode configuration
     private String interactivePromptPattern; // Regex pattern to detect when agent is waiting for input
 
@@ -191,6 +195,16 @@ public class AgentProvider {
 
         public Builder modelName(String modelName) {
             provider.modelName = modelName;
+            return this;
+        }
+
+        public Builder modelFlag(String modelFlag) {
+            provider.modelFlag = modelFlag;
+            return this;
+        }
+
+        public Builder modelListCommand(List<String> modelListCommand) {
+            provider.modelListCommand = modelListCommand;
             return this;
         }
 

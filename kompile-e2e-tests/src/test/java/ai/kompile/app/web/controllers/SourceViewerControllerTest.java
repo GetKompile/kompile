@@ -38,7 +38,7 @@ class SourceViewerControllerTest {
     @BeforeEach
     void setUp() {
         // All dependencies are optional — pass null to use defaults
-        controller = new SourceViewerController(null, null, null);
+        controller = new SourceViewerController(null, null, null, null);
     }
 
     // ─── listSources ──────────────────────────────────────────────────────────

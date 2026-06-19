@@ -16,8 +16,8 @@
 
 package ai.kompile.core.agent;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
@@ -52,8 +52,7 @@ public final class CliAgentRegistry {
                     // Don't cache — resource may become available later (native image runtime vs build time)
                     return Collections.emptyList();
                 }
-                ObjectMapper mapper = new ObjectMapper();
-                mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+                ObjectMapper mapper = JsonUtils.standardMapper();
                 List<CliAgentDef> defs = mapper.readValue(is, new TypeReference<>() {});
                 List<AgentProvider> providers = new ArrayList<>();
                 for (CliAgentDef def : defs) {
@@ -66,7 +65,9 @@ public final class CliAgentRegistry {
                             .available(false)
                             .isDefault(def.isDefault)
                             .description(def.description)
-                            .interactivePromptPattern(def.interactivePromptPattern);
+                            .interactivePromptPattern(def.interactivePromptPattern)
+                            .modelFlag(def.modelFlag)
+                            .modelListCommand(def.modelListCommand);
                     if (def.args != null) {
                         for (String arg : def.args) b.addArg(arg);
                     }

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -50,7 +51,7 @@ public final class ToolSchemaOptimizer {
 
     private static final String ELLIPSIS = "...";
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     /**
      * Schema fields that are stripped at the AGGRESSIVE level because they

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.SessionIndex;
@@ -67,7 +68,7 @@ import java.util.Comparator;
  */
 public class ResumeTool implements CliTool {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final DateTimeFormatter TIMESTAMP_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
                     .withZone(ZoneId.systemDefault());
@@ -180,7 +181,7 @@ public class ResumeTool implements CliTool {
 
     @Override
     public JsonNode parameterSchema() {
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
@@ -2484,7 +2485,7 @@ public class ResumeTool implements CliTool {
         filterSource = source;
         applyFilters();
 
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode result = om.createObjectNode();
         result.put("count", filteredConversations.size());
         result.put("hint", "Use the 'index' number with resume/view/migrate actions as session_id (e.g. session_id='1')");
@@ -2531,7 +2532,7 @@ public class ResumeTool implements CliTool {
                         sessionId + "-migrated." + format);
                 Files.writeString(outputPath, migrated);
 
-                ObjectMapper om = new ObjectMapper();
+                ObjectMapper om = JsonUtils.standardMapper();
                 ObjectNode result = om.createObjectNode();
                 result.put("session_id", sessionId);
                 result.put("format", format);
@@ -2576,7 +2577,7 @@ public class ResumeTool implements CliTool {
             List<ChatHistory.Turn> turns = conversation.turns();
             String conversationJson = ConversationFormatter.format(turns, "openai");
 
-            ObjectMapper om = new ObjectMapper();
+            ObjectMapper om = JsonUtils.standardMapper();
             ObjectNode result = om.createObjectNode();
             result.put("session_id", sessionId);
             result.put("target_agent", agent);
@@ -2622,7 +2623,7 @@ public class ResumeTool implements CliTool {
         try {
             LoadedConversation conversation = loadConversation(sessionId);
             String transcript = ConversationFormatter.format(conversation.turns(), "kompile");
-            ObjectMapper om = new ObjectMapper();
+            ObjectMapper om = JsonUtils.standardMapper();
             ObjectNode result = om.createObjectNode();
             result.put("session_id", sessionId);
             result.put("source", conversation.source());

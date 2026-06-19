@@ -24,9 +24,11 @@ import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.subprocess.ServingSubprocessArgs;
 import ai.kompile.app.subprocess.SubprocessBackendResolver;
+import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JEnvironmentVars;
 import org.nd4j.common.config.ND4JSystemProperties;
@@ -278,7 +280,7 @@ public class ServingSubprocessLauncher {
 
     /** Lazily resolved ObjectMapper (may be null if Jackson is not on classpath). */
     private ObjectMapper resolvedMapper() {
-        return objectMapper != null ? objectMapper : new ObjectMapper();
+        return objectMapper != null ? objectMapper : JsonUtils.standardMapper();
     }
 
     // ── Auto-start ────────────────────────────────────────────────────────────
@@ -1176,56 +1178,10 @@ public class ServingSubprocessLauncher {
      * into the subprocess's environment map.
      */
     private void propagateNd4jEnvironment(Map<String, String> env, Nd4jEnvironmentConfig nd4jConfig) {
-        List<String> knownVars = List.of(
-                "ND4J_BACKEND", "ND4J_RESOURCES_DIR",
-                "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-                "GOTO_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
-                "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "CUDA_LAUNCH_BLOCKING",
-                "CUDA_CACHE_PATH", "JAVACPP_PLATFORM", "JAVACPP_CACHESFX",
-                "ND4J_HEAP_SPACE", "ND4J_OFF_HEAP_SPACE", "KOMPILE_MODELS_DIR",
-                ND4JEnvironmentVars.ND4J_TRITON_CACHE_DIR, ND4JEnvironmentVars.ND4J_TRITON_DUMP_DIR
-        );
-        for (String var : knownVars) {
-            String val = System.getenv(var);
-            if (val != null && !val.isEmpty()) {
-                env.put(var, val);
-            }
-        }
-        // Also propagate any ND4J_ / KOMPILE_ prefixed env vars not in the list above
-        for (Map.Entry<String, String> e : System.getenv().entrySet()) {
-            String key = e.getKey();
-            if ((key.startsWith("ND4J_") || key.startsWith("KOMPILE_")) && !env.containsKey(key)) {
-                env.put(key, e.getValue());
-            }
-        }
-
-        // When DSP diagnostics are enabled, ensure the subprocess uses "full" level
-        // so C++ actually echoes [DSP_DIAG] lines to stdout (level 2).
-        // "detailed" (level 1) does NOT produce live stdout output.
-        if (env.containsKey("ND4J_DSP_DIAGNOSTICS") && !env.containsKey("ND4J_DSP_DIAGNOSTICS_LEVEL")) {
-            env.put("ND4J_DSP_DIAGNOSTICS_LEVEL", "full");
-            logger.info("Auto-set ND4J_DSP_DIAGNOSTICS_LEVEL=full for serving subprocess (DSP diagnostics enabled)");
-        }
-
-        // Propagate triton cache/dump dirs from config when not already set via env var.
-        // The native code checks ND4J_TRITON_CACHE_DIR directly — without this,
-        // the subprocess resolves to a different default dir and misses the kernel cache.
-        if (nd4jConfig != null) {
-            if (!env.containsKey(ND4JEnvironmentVars.ND4J_TRITON_CACHE_DIR)) {
-                String cacheDir = nd4jConfig.tritonCacheDir();
-                if (cacheDir != null && !cacheDir.isBlank()) {
-                    env.put(ND4JEnvironmentVars.ND4J_TRITON_CACHE_DIR, cacheDir);
-                    logger.info("Set {}={} from config for serving subprocess",
-                            ND4JEnvironmentVars.ND4J_TRITON_CACHE_DIR, cacheDir);
-                }
-            }
-            if (!env.containsKey(ND4JEnvironmentVars.ND4J_TRITON_DUMP_DIR)) {
-                String dumpDir = nd4jConfig.tritonDumpDir();
-                if (dumpDir != null && !dumpDir.isBlank()) {
-                    env.put(ND4JEnvironmentVars.ND4J_TRITON_DUMP_DIR, dumpDir);
-                }
-            }
-        }
+        String tritonCacheDir = nd4jConfig != null ? nd4jConfig.tritonCacheDir() : null;
+        String tritonDumpDir = nd4jConfig != null ? nd4jConfig.tritonDumpDir() : null;
+        SubprocessEnvironmentPropagator.propagateToEnvironment(
+                env, tritonCacheDir, tritonDumpDir);
     }
 
     // ── Utility helpers ───────────────────────────────────────────────────────

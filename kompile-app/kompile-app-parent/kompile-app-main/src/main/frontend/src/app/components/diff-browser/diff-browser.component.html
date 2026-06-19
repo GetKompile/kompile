@@ -1,0 +1,360 @@
+<div class="diff-browser" [class.sidebar-collapsed]="sidebarCollapsed">
+
+  <!-- ── Toolbar ──────────────────────────────────────────────── -->
+  <div class="toolbar">
+    <button mat-icon-button (click)="sidebarCollapsed = !sidebarCollapsed"
+            [matTooltip]="sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'">
+      <mat-icon>{{ sidebarCollapsed ? 'chevron_right' : 'chevron_left' }}</mat-icon>
+    </button>
+
+    <div class="toolbar-title">
+      <mat-icon>difference</mat-icon>
+      <span>Diff Browser</span>
+    </div>
+
+    <!-- Quick stats -->
+    <div class="toolbar-stats" *ngIf="stats">
+      <span class="tstat">{{ formatNumber(stats.totalEntries) }} diffs</span>
+      <span class="tstat">{{ formatNumber(stats.uniqueFiles) }} files</span>
+      <span class="tstat add-stat">+{{ formatNumber(stats.totalLinesAdded) }}</span>
+      <span class="tstat rm-stat">-{{ formatNumber(stats.totalLinesRemoved) }}</span>
+    </div>
+
+    <div class="toolbar-spacer"></div>
+
+    <!-- View mode toggle -->
+    <mat-button-toggle-group [(ngModel)]="diffViewMode" *ngIf="selectedEntry">
+      <mat-button-toggle value="unified" matTooltip="Unified view">
+        <mat-icon>view_stream</mat-icon>
+      </mat-button-toggle>
+      <mat-button-toggle value="split" matTooltip="Side-by-side view">
+        <mat-icon>view_column</mat-icon>
+      </mat-button-toggle>
+    </mat-button-toggle-group>
+
+    <button mat-icon-button [matMenuTriggerFor]="toolbarMenu" matTooltip="More actions">
+      <mat-icon>more_vert</mat-icon>
+    </button>
+    <mat-menu #toolbarMenu="matMenu">
+      <button mat-menu-item (click)="showLineNumbers = !showLineNumbers">
+        <mat-icon>{{ showLineNumbers ? 'check_box' : 'check_box_outline_blank' }}</mat-icon>
+        <span>Line numbers</span>
+      </button>
+      <mat-divider></mat-divider>
+      <button mat-menu-item (click)="triggerReindex()" [disabled]="reindexing">
+        <mat-icon>sync</mat-icon>
+        <span>{{ reindexing ? 'Indexing in progress...' : 'Index tool calls from CLI transcripts' }}</span>
+      </button>
+    </mat-menu>
+  </div>
+
+  <mat-progress-bar *ngIf="loading && !reindexing" mode="indeterminate" class="global-progress"></mat-progress-bar>
+
+  <!-- Reindex progress banner -->
+  <div class="reindex-progress" *ngIf="reindexing">
+    <div class="reindex-header">
+      <mat-icon class="spin">sync</mat-icon>
+      <span>{{ reindexMessage || 'Indexing tool calls from CLI transcripts...' }}</span>
+    </div>
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+    <div class="reindex-stats">
+      <span>{{ reindexSources }} sources scanned</span>
+      <span>{{ reindexSessions }} sessions</span>
+      <span>{{ reindexNewEntries }} new diffs found</span>
+      <span *ngIf="reindexErrorCount > 0" style="color: #c62828">{{ reindexErrorCount }} errors</span>
+    </div>
+  </div>
+
+  <!-- Reindex success banner -->
+  <div class="reindex-done" *ngIf="reindexDone && !reindexing">
+    <mat-icon>check_circle</mat-icon>
+    <span>{{ reindexMessage }}</span>
+    <button mat-icon-button (click)="dismissReindexStatus()" matTooltip="Dismiss">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Reindex error banner -->
+  <div class="reindex-error" *ngIf="reindexError && !reindexing">
+    <mat-icon>error</mat-icon>
+    <span>{{ reindexError }}</span>
+    <button mat-icon-button (click)="dismissReindexStatus()" matTooltip="Dismiss">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <div class="main-layout">
+
+    <!-- ── Sidebar ──────────────────────────────────────────── -->
+    <div class="sidebar" *ngIf="!sidebarCollapsed">
+
+      <!-- Search -->
+      <div class="sidebar-search">
+        <mat-form-field appearance="outline" class="compact-field">
+          <mat-icon matPrefix>search</mat-icon>
+          <input matInput [(ngModel)]="searchQuery" placeholder="Search diffs..."
+                 (keyup.enter)="applySearch()">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="compact-field">
+          <mat-icon matPrefix>insert_drive_file</mat-icon>
+          <input matInput [(ngModel)]="fileFilter" placeholder="Filter by file path..."
+                 (keyup.enter)="applySearch()">
+        </mat-form-field>
+      </div>
+
+      <!-- Agent filter chips -->
+      <div class="filter-section" *ngIf="agents.length > 0">
+        <div class="filter-label">Agents</div>
+        <div class="filter-chips">
+          <button class="filter-chip" [class.active]="!selectedAgent"
+                  (click)="setAgent(null)">All</button>
+          <button class="filter-chip" *ngFor="let a of agents"
+                  [class.active]="selectedAgent === a.agent"
+                  (click)="setAgent(a.agent)">
+            <mat-icon class="chip-icon">{{ getAgentIcon(a.agent) }}</mat-icon>
+            {{ a.agent }}
+            <span class="chip-count">{{ a.entryCount }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Project filter chips (hidden when scoped to a specific project) -->
+      <div class="filter-section" *ngIf="projects.length > 0 && !externalProject">
+        <div class="filter-label">Projects</div>
+        <div class="filter-chips">
+          <button class="filter-chip" [class.active]="!selectedProject"
+                  (click)="setProject(null)">All</button>
+          <button class="filter-chip" *ngFor="let p of projects"
+                  [class.active]="selectedProject === p.projectDirectory"
+                  [matTooltip]="p.projectDirectory"
+                  (click)="setProject(p.projectDirectory)">
+            <mat-icon class="chip-icon">folder</mat-icon>
+            {{ p.projectName }}
+            <span class="chip-count">{{ p.entryCount }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Diff type filter -->
+      <div class="filter-section">
+        <div class="filter-label">Type</div>
+        <div class="filter-chips">
+          <button class="filter-chip" [class.active]="!diffTypeFilter" (click)="setDiffType(null)">All</button>
+          <button class="filter-chip" [class.active]="diffTypeFilter === 'edit'" (click)="setDiffType('edit')">
+            <mat-icon class="chip-icon" style="color: #ff9800">edit</mat-icon> Edit
+          </button>
+          <button class="filter-chip" [class.active]="diffTypeFilter === 'write'" (click)="setDiffType('write')">
+            <mat-icon class="chip-icon" style="color: #4caf50">note_add</mat-icon> Write
+          </button>
+          <button class="filter-chip" [class.active]="diffTypeFilter === 'patch'" (click)="setDiffType('patch')">
+            <mat-icon class="chip-icon" style="color: #2196f3">difference</mat-icon> Patch
+          </button>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Active filters -->
+      <div class="active-filters" *ngIf="activeFilterCount > 0">
+        <button mat-button class="clear-btn" (click)="clearFilters()">
+          <mat-icon>filter_list_off</mat-icon> Clear {{ activeFilterCount }} filter(s)
+        </button>
+      </div>
+
+      <!-- File tree -->
+      <div class="file-tree">
+        <div class="tree-header">
+          <span>{{ filteredEntries.length }} changes in {{ fileTree.length }} directories</span>
+        </div>
+
+        <div class="tree-nodes">
+          <div *ngFor="let dir of fileTree" class="tree-dir">
+            <div class="tree-dir-header" (click)="toggleDir(dir)">
+              <mat-icon class="tree-toggle">{{ dir.expanded ? 'expand_more' : 'chevron_right' }}</mat-icon>
+              <mat-icon class="tree-folder-icon">{{ dir.expanded ? 'folder_open' : 'folder' }}</mat-icon>
+              <span class="tree-dir-name" [matTooltip]="dir.path">{{ dir.name }}</span>
+              <span class="tree-count">{{ dir.totalDiffs }}</span>
+            </div>
+
+            <div class="tree-files" *ngIf="dir.expanded">
+              <div *ngFor="let file of dir.children" class="tree-file-group">
+                <div *ngFor="let entry of file.entries" class="tree-file"
+                     [class.tree-file-selected]="selectedEntry?.id === entry.id"
+                     (click)="selectFileEntry(entry)">
+                  <mat-icon class="tree-file-icon" [style.color]="getDiffTypeColor(entry.diffType)">
+                    {{ getDiffTypeIcon(entry.diffType) }}
+                  </mat-icon>
+                  <span class="tree-file-name">{{ file.name }}</span>
+                  <span class="tree-file-stats">
+                    <span class="tfs-add" *ngIf="entry.linesAdded">+{{ entry.linesAdded }}</span>
+                    <span class="tfs-rm" *ngIf="entry.linesRemoved">-{{ entry.linesRemoved }}</span>
+                  </span>
+                  <mat-icon class="tree-agent-icon" [matTooltip]="entry.agent">
+                    {{ getAgentIcon(entry.agent) }}
+                  </mat-icon>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tree-empty" *ngIf="fileTree.length === 0 && !loading">
+          <mat-icon>search_off</mat-icon>
+          <p>No diffs found.</p>
+          <p style="font-size: 11px; margin: 4px 0 12px">Click below to scan CLI transcripts (Claude Code, Codex, Aider, etc.) for file edits.</p>
+          <button mat-stroked-button color="primary" (click)="triggerReindex()" *ngIf="!reindexing">
+            <mat-icon>sync</mat-icon> Index Tool Calls
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Main content area ────────────────────────────────── -->
+    <div class="content-area">
+
+      <!-- No selection state -->
+      <div class="no-selection" *ngIf="!selectedEntry">
+        <mat-icon>difference</mat-icon>
+        <h3>Select a file to view its diff</h3>
+        <p>Browse the file tree or use the search/filter controls in the sidebar.</p>
+        <div class="quick-stats-grid" *ngIf="stats">
+          <div class="qs-card">
+            <div class="qs-value">{{ formatNumber(stats.totalEntries) }}</div>
+            <div class="qs-label">Total Diffs</div>
+          </div>
+          <div class="qs-card">
+            <div class="qs-value">{{ formatNumber(stats.uniqueFiles) }}</div>
+            <div class="qs-label">Files Changed</div>
+          </div>
+          <div class="qs-card">
+            <div class="qs-value">{{ formatNumber(stats.uniqueProjects) }}</div>
+            <div class="qs-label">Projects</div>
+          </div>
+          <div class="qs-card">
+            <div class="qs-value add-stat">+{{ formatNumber(stats.totalLinesAdded) }}</div>
+            <div class="qs-label">Lines Added</div>
+          </div>
+          <div class="qs-card">
+            <div class="qs-value rm-stat">-{{ formatNumber(stats.totalLinesRemoved) }}</div>
+            <div class="qs-label">Lines Removed</div>
+          </div>
+          <div class="qs-card" *ngIf="stats.byAgent">
+            <div class="qs-value">{{ (stats.byAgent | keyvalue).length }}</div>
+            <div class="qs-label">Agents</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Diff viewer -->
+      <div class="diff-viewer" *ngIf="selectedEntry">
+
+        <!-- File header bar -->
+        <div class="diff-file-header">
+          <div class="dfh-left">
+            <mat-icon [style.color]="getDiffTypeColor(selectedEntry.diffType)">
+              {{ getDiffTypeIcon(selectedEntry.diffType) }}
+            </mat-icon>
+            <span class="dfh-path">{{ selectedEntry.filePath }}</span>
+            <span class="dfh-badge" [style.background]="getDiffTypeColor(selectedEntry.diffType)">
+              {{ selectedEntry.diffType }}
+            </span>
+          </div>
+          <div class="dfh-right">
+            <span class="dfh-added" *ngIf="selectedEntry.linesAdded">+{{ selectedEntry.linesAdded }}</span>
+            <span class="dfh-removed" *ngIf="selectedEntry.linesRemoved">-{{ selectedEntry.linesRemoved }}</span>
+            <button mat-icon-button (click)="clearSelection()" matTooltip="Close">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- Metadata strip -->
+        <div class="diff-meta-strip">
+          <span class="dms-item">
+            <mat-icon class="dms-icon">{{ getAgentIcon(selectedEntry.agent) }}</mat-icon>
+            {{ selectedEntry.agent }}
+          </span>
+          <span class="dms-item" *ngIf="selectedEntry.projectDirectory">
+            <mat-icon class="dms-icon">folder</mat-icon>
+            {{ selectedEntry.projectDirectory }}
+          </span>
+          <span class="dms-item">
+            <mat-icon class="dms-icon">build</mat-icon>
+            {{ selectedEntry.toolName }}
+          </span>
+          <span class="dms-item">
+            <mat-icon class="dms-icon">schedule</mat-icon>
+            {{ formatDate(selectedEntry.timestamp) }}
+          </span>
+        </div>
+
+        <!-- Unified view -->
+        <div class="diff-code" *ngIf="diffViewMode === 'unified' && parsedDiff.length > 0">
+          <table class="diff-table">
+            <tbody>
+              <tr *ngFor="let line of parsedDiff"
+                  [class.diff-line-add]="line.type === 'add'"
+                  [class.diff-line-remove]="line.type === 'remove'"
+                  [class.diff-line-header]="line.type === 'header'"
+                  [class.diff-line-file]="line.type === 'file'">
+                <td class="line-gutter old-gutter" *ngIf="showLineNumbers">
+                  {{ line.oldLineNo || '' }}
+                </td>
+                <td class="line-gutter new-gutter" *ngIf="showLineNumbers">
+                  {{ line.newLineNo || '' }}
+                </td>
+                <td class="line-indicator">
+                  <span *ngIf="line.type === 'add'">+</span>
+                  <span *ngIf="line.type === 'remove'">-</span>
+                </td>
+                <td class="line-content">
+                  <pre>{{ line.text }}</pre>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Split view -->
+        <div class="diff-code diff-split" *ngIf="diffViewMode === 'split' && parsedDiff.length > 0">
+          <table class="diff-table split-table">
+            <tbody>
+              <tr *ngFor="let pair of getSplitPairs()"
+                  [class.diff-line-header]="pair.left?.type === 'header'"
+                  [class.diff-line-file]="pair.left?.type === 'file'">
+                <!-- Left side (old) -->
+                <td class="line-gutter old-gutter" *ngIf="showLineNumbers">
+                  {{ pair.left?.oldLineNo || (pair.left?.type === 'context' ? pair.left?.oldLineNo : '') }}
+                </td>
+                <td class="split-cell left-cell"
+                    [class.diff-line-remove]="pair.left?.type === 'remove'"
+                    [class.diff-line-context]="pair.left?.type === 'context'"
+                    [class.split-empty]="!pair.left || pair.left.type === 'add'">
+                  <pre *ngIf="pair.left && pair.left.type !== 'add'">{{ pair.left.text }}</pre>
+                </td>
+                <!-- Right side (new) -->
+                <td class="line-gutter new-gutter" *ngIf="showLineNumbers">
+                  {{ pair.right?.newLineNo || (pair.right?.type === 'context' ? pair.right?.newLineNo : '') }}
+                </td>
+                <td class="split-cell right-cell"
+                    [class.diff-line-add]="pair.right?.type === 'add'"
+                    [class.diff-line-context]="pair.right?.type === 'context'"
+                    [class.split-empty]="!pair.right || pair.right.type === 'remove'">
+                  <pre *ngIf="pair.right && pair.right.type !== 'remove'">{{ pair.right.text }}</pre>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Fallback: raw content for entries with no parseable diff -->
+        <div class="diff-code" *ngIf="parsedDiff.length === 0 && selectedEntry.newString">
+          <div class="diff-file-header" style="margin-top: 8px;">
+            <span class="dfh-path">File content ({{ selectedEntry.diffType }})</span>
+          </div>
+          <pre class="raw-content">{{ selectedEntry.newString }}</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

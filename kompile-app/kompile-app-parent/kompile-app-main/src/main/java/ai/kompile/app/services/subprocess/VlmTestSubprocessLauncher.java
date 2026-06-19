@@ -22,11 +22,13 @@ import ai.kompile.app.services.GpuResourceManager;
 import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
+import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessMessage;
 import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.app.subprocess.VlmTestSubprocessArgs;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -54,7 +56,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class VlmTestSubprocessLauncher {
 
     private static final Logger logger = LoggerFactory.getLogger(VlmTestSubprocessLauncher.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     // Fallback values if SubprocessConfigService is not available
     @Value("${kompile.vlm-test.subprocess.java-path:java}")
@@ -76,7 +78,7 @@ public class VlmTestSubprocessLauncher {
     private final ServerPortService serverPortService;
     private final SubprocessConfigService subprocessConfigService;
     private final Nd4jEnvironmentConfigService nd4jEnvironmentConfigService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Autowired(required = false)
     private SimpMessagingTemplate messagingTemplate;
@@ -1026,49 +1028,7 @@ public class VlmTestSubprocessLauncher {
     }
 
     private void propagateNd4jEnvironment(Map<String, String> env) {
-        List<String> nd4jEnvVars = List.of(
-                "ND4J_BACKEND", "ND4J_DATA_BUFFER_OPS", "ND4J_RESOURCES_DIR", "ND4J_ALLOW_FALLBACK",
-                "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "GOTO_NUM_THREADS",
-                "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
-                "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "CUDA_LAUNCH_BLOCKING", "CUDA_CACHE_PATH",
-                "JAVACPP_PLATFORM", "JAVACPP_CACHESFX",
-                "ND4J_HEAP_SPACE", "ND4J_OFF_HEAP_SPACE",
-                "KOMPILE_MODELS_DIR");
-
-        int propagated = 0;
-        for (String varName : nd4jEnvVars) {
-            String value = System.getenv(varName);
-            if (value != null && !value.isEmpty()) {
-                env.put(varName, value);
-                propagated++;
-            }
-        }
-
-        // Also propagate any ND4J_ or KOMPILE_ prefixed env vars
-        for (Map.Entry<String, String> entry : System.getenv().entrySet()) {
-            String key = entry.getKey();
-            if ((key.startsWith("ND4J_") || key.startsWith("KOMPILE_")) && !env.containsKey(key)) {
-                env.put(key, entry.getValue());
-                propagated++;
-            }
-        }
-
-        // Set OMP_NUM_THREADS from ND4J if not already set
-        if (!env.containsKey("OMP_NUM_THREADS")) {
-            try {
-                int maxThreads = (int) org.nd4j.linalg.factory.Nd4j.getEnvironment().maxThreads();
-                if (maxThreads > 0) {
-                    env.put("OMP_NUM_THREADS", String.valueOf(maxThreads));
-                    env.put("MKL_NUM_THREADS", String.valueOf(maxThreads));
-                    env.put("OPENBLAS_NUM_THREADS", String.valueOf(maxThreads));
-                    propagated += 3;
-                }
-            } catch (Exception e) {
-                logger.debug("Could not get ND4J maxThreads: {}", e.getMessage());
-            }
-        }
-
-        logger.info("Propagated {} ND4J environment variables to VLM subprocess", propagated);
+        SubprocessEnvironmentPropagator.propagateToEnvironment(env);
     }
 
     @PreDestroy

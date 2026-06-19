@@ -21,6 +21,7 @@ import ai.kompile.app.services.GraphExtractionConfigService.GraphExtractionConfi
 import ai.kompile.app.services.GraphSchemaPresetService;
 import ai.kompile.orchestrator.api.LlmIntegrationService;
 import ai.kompile.orchestrator.api.LlmProvider;
+import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,6 +46,9 @@ public class GraphExtractionController {
     private final GraphExtractionConfigService configService;
     private final LlmIntegrationService llmIntegrationService;
     private final GraphSchemaPresetService schemaPresetService;
+
+    @Autowired(required = false)
+    private ExtractionLlmServiceRegistry extractionRegistry;
 
     public GraphExtractionController(
             GraphExtractionConfigService configService,
@@ -237,6 +241,31 @@ public class GraphExtractionController {
             logger.debug("Retrieved {} LLM providers from integration service", llmProviders.size());
         } else {
             logger.warn("LlmIntegrationService not available, returning only default provider");
+        }
+
+        // Also surface extraction LLM providers (CLI agents discovered at startup: claude-cli,
+        // opencode-cli, gemini-cli, ...) from the ExtractionLlmServiceRegistry so they are
+        // selectable as the extraction provider. These are NOT in the LlmProvider enum above.
+        if (extractionRegistry != null) {
+            java.util.Set<Object> existingIds = new java.util.HashSet<>();
+            for (Map<String, Object> p : providers) {
+                existingIds.add(p.get("id"));
+            }
+            for (ExtractionLlmServiceRegistry.ProviderInfo info : extractionRegistry.listProviders()) {
+                if (existingIds.contains(info.id())) {
+                    continue;
+                }
+                Map<String, Object> pi = new HashMap<>();
+                pi.put("id", info.id());
+                pi.put("name", info.description());
+                pi.put("available", info.available());
+                pi.put("supportsModelListing", false);
+                pi.put("models", List.of());
+                if (info.effectiveModel() != null) {
+                    pi.put("effectiveModel", info.effectiveModel());
+                }
+                providers.add(pi);
+            }
         }
 
         return ResponseEntity.ok(providers);

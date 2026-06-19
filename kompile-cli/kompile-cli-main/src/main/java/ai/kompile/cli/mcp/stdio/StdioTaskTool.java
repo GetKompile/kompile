@@ -2,6 +2,7 @@ package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.PersistentAgentProcess;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.core.agent.CliAgentRegistry;
@@ -124,9 +125,17 @@ public class StdioTaskTool {
                 return ToolResult.success("task:" + agentName, result,
                     Map.of("agent", agentName, "description", desc, "mode", "external-process",
                            "fallbacksUsed", String.valueOf(rateLimitedAgents.size())));
+            } catch (PersistentAgentProcess.TimedOutException toe) {
+                // Turn timed out -- surface the partial output so the caller
+                // knows this was NOT a successful completion.
+                String partial = toe.getPartialOutput();
+                String timedOutMsg = "Subagent '" + agentName + "' timed out after turn limit.\n\n"
+                    + "**This task was NOT completed -- the output below is partial:**\n\n"
+                    + (partial.isEmpty() ? "(no output captured)" : partial);
+                return ToolResult.error(timedOutMsg);
             } catch (RateLimitException e) {
                 rateLimitedAgents.add(agentName);
-                System.err.println("\u001B[33m  ⚠ " + agentName + " rate limited, trying fallback...\u001B[0m");
+                System.err.println("\u001B[33m  \u26a0 " + agentName + " rate limited, trying fallback...\u001B[0m");
                 // Continue to next agent
             } catch (Exception e) {
                 return ToolResult.error("Subagent execution failed: " + e.getMessage());

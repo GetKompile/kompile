@@ -15,6 +15,7 @@ import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,7 +89,7 @@ public class GraphLabelTool {
                           @Autowired(required = false) ObjectMapper objectMapper) {
         this.nodeRepository = nodeRepository;
         this.edgeRepository = edgeRepository;
-        this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+        this.objectMapper = objectMapper != null ? objectMapper : JsonUtils.standardMapper();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

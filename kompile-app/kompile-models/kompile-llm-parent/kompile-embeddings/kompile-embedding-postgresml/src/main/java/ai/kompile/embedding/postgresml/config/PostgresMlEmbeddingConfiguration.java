@@ -16,6 +16,7 @@
 
 package ai.kompile.embedding.postgresml.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,7 +54,7 @@ public class PostgresMlEmbeddingConfiguration {
 
     public PostgresMlEmbeddingConfiguration(PostgresMlEmbeddingProperties properties) {
         this.properties = properties;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         logger.info("PostgresMlEmbeddingConfiguration initialized with properties: {}", properties);
     }
 

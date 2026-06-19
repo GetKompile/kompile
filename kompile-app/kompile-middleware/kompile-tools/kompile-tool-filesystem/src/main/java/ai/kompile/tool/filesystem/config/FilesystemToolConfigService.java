@@ -18,6 +18,7 @@ package ai.kompile.tool.filesystem.config;
 
 import ai.kompile.cli.common.KompileHome;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -53,7 +54,7 @@ public class FilesystemToolConfigService {
     private volatile FilesystemToolConfig config;
 
     public FilesystemToolConfigService() {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
         this.config = FilesystemToolConfig.defaults();
         log.info("FilesystemToolConfigService initialized, config path: {}", configFilePath);

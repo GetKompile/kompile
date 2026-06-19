@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.component.output;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.dataformat.csv.CsvMapper;
@@ -39,7 +40,7 @@ public class OutputFormatter {
         TABLE
     }
 
-    private static final ObjectMapper JSON_MAPPER = new ObjectMapper()
+    private static final ObjectMapper JSON_MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
     
     private static final YAMLMapper YAML_MAPPER = new YAMLMapper();

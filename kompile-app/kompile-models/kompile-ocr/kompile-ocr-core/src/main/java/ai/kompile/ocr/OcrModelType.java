@@ -16,10 +16,13 @@
 
 package ai.kompile.ocr;
 
+import lombok.Getter;
+
 /**
  * Enumeration of OCR model types.
  * Each type represents a different capability in the OCR pipeline.
  */
+@Getter
 public enum OcrModelType {
     /**
      * Text detection - finds text regions in images.
@@ -63,20 +66,6 @@ public enum OcrModelType {
     OcrModelType(String registryType, String displayName) {
         this.registryType = registryType;
         this.displayName = displayName;
-    }
-
-    /**
-     * Gets the registry type string used in model registry.
-     */
-    public String getRegistryType() {
-        return registryType;
-    }
-
-    /**
-     * Gets the human-readable display name.
-     */
-    public String getDisplayName() {
-        return displayName;
     }
 
     /**

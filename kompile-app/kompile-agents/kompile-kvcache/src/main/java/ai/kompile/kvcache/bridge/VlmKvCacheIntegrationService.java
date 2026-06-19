@@ -22,10 +22,10 @@ import ai.kompile.kvcache.service.KVCacheManager;
 import ai.kompile.kvcache.service.KVCacheStatisticsCollector;
 import ai.kompile.kvcache.service.ManagedKVCache;
 import lombok.extern.slf4j.Slf4j;
-import org.eclipse.deeplearning4j.llm.generation.KvCacheManager;
-import org.eclipse.deeplearning4j.llm.generation.KvCacheStrategy;
 import org.eclipse.deeplearning4j.llm.generation.ModelIOConfig;
-import org.eclipse.deeplearning4j.llm.generation.UnifiedKvCacheManager;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.KvCacheManager;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.KvCacheStrategy;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.UnifiedKvCacheManager;
 
 import jakarta.annotation.PreDestroy;
 import java.util.concurrent.ConcurrentHashMap;

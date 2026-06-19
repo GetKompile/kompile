@@ -86,8 +86,14 @@ public class UnifiedCrawlGraphTool {
             String name,
             List<SourceInput> sources,
             GraphConfigInput graphExtraction,
-            IndexConfigInput vectorIndex
+            IndexConfigInput vectorIndex,
+            /** Step IDs to enable (e.g. "VECTOR_INDEXING", "GRAPH_EXTRACTION"); null/empty means all steps run. */
+            List<String> enabledSteps,
+            /** Step IDs whose pending inputs should be archived to disk instead of processed immediately. */
+            List<String> archivedSteps
     ) {}
+
+    record StepInput(String jobId, String stepId) {}
 
     record JobIdInput(String jobId) {}
 
@@ -109,7 +115,9 @@ public class UnifiedCrawlGraphTool {
 
             UnifiedCrawlRequest.UnifiedCrawlRequestBuilder builder = UnifiedCrawlRequest.builder()
                     .name(input.name() != null ? input.name() : "Unified crawl")
-                    .sources(sources);
+                    .sources(sources)
+                    .enabledSteps(input.enabledSteps() != null ? input.enabledSteps() : List.of())
+                    .archivedSteps(input.archivedSteps() != null ? input.archivedSteps() : List.of());
 
             if (input.graphExtraction() != null) {
                 builder.graphExtraction(toGraphConfig(input.graphExtraction()));
@@ -208,6 +216,48 @@ public class UnifiedCrawlGraphTool {
             return Map.of("message", "Job cancelled", "jobId", input.jobId());
         }
         return Map.of("error", "Job not found or already finished: " + input.jobId());
+    }
+
+    @Tool(name = "unified_crawl_run_step", description = "Resume a previously archived pipeline step for a crawl job. "
+            + "Replays the step's archived inputs and returns how many items were processed. "
+            + "Returns an error if the step cannot be resumed (not archived or job not found).")
+    public Map<String, Object> runArchivedStep(StepInput input) {
+        try {
+            int processed = unifiedCrawlService.resumeArchivedStep(input.jobId(), input.stepId());
+            if (processed >= 0) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("jobId", input.jobId());
+                result.put("stepId", input.stepId());
+                result.put("itemsProcessed", processed);
+                result.put("message", "Step resumed successfully. Items processed: " + processed);
+                return result;
+            }
+            return Map.of("error", "Step is not resumable (not archived or job not found): jobId=" + input.jobId() + ", stepId=" + input.stepId());
+        } catch (Exception e) {
+            log.error("Failed to resume archived step jobId={} stepId={}", input.jobId(), input.stepId(), e);
+            return Map.of("error", "Failed to resume step: " + e.getMessage());
+        }
+    }
+
+    @Tool(name = "unified_crawl_archive_step", description = "Archive a pipeline step's pending inputs to disk for a crawl job. "
+            + "Defers processing of that step; the archived inputs can later be replayed via unified_crawl_run_step. "
+            + "Returns the archive directory path, or an error if there is nothing to archive.")
+    public Map<String, Object> archiveStep(StepInput input) {
+        try {
+            String archiveDir = unifiedCrawlService.archiveStep(input.jobId(), input.stepId());
+            if (archiveDir != null) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("jobId", input.jobId());
+                result.put("stepId", input.stepId());
+                result.put("archiveDir", archiveDir);
+                result.put("message", "Step archived successfully to: " + archiveDir);
+                return result;
+            }
+            return Map.of("error", "Nothing to archive for jobId=" + input.jobId() + ", stepId=" + input.stepId());
+        } catch (Exception e) {
+            log.error("Failed to archive step jobId={} stepId={}", input.jobId(), input.stepId(), e);
+            return Map.of("error", "Failed to archive step: " + e.getMessage());
+        }
     }
 
     @Tool(name = "unified_crawl_source_types", description = "List available source types for unified crawl-to-graph jobs. "

@@ -3,6 +3,7 @@ package ai.kompile.app.services.agent;
 import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.AgentType;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -29,7 +30,7 @@ public class KompileLocalModelService {
     private static final int READ_TIMEOUT_MS = 5000;
 
     private final AgentRegistryService agentRegistryService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private volatile String stagingUrl = KompileServerConstants.DEFAULT_STAGING_URL;
 

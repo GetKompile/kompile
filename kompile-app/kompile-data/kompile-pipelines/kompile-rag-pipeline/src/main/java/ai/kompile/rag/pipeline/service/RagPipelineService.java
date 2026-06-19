@@ -15,9 +15,9 @@ import ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline;
 import ai.kompile.rag.pipeline.domain.*;
 import ai.kompile.rag.pipeline.steps.*;
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.AllArgsConstructor;
@@ -58,10 +58,7 @@ public class RagPipelineService {
     private LanguageModel languageModel;
 
     public RagPipelineService() {
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
         this.storageDir = KompileHome.dataDir().toPath().resolve("rag-pipelines");
     }

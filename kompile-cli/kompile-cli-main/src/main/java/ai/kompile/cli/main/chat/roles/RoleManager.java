@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.roles;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.core.agent.CliAgentRegistry;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -48,7 +49,7 @@ public class RoleManager {
     private final Map<String, String> agentRoleMap = new ConcurrentHashMap<>(); // agent name → role name
 
     // JSON persistence
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final Path agentRolesFilePath;
     private final Object agentRolesLock = new Object();
 

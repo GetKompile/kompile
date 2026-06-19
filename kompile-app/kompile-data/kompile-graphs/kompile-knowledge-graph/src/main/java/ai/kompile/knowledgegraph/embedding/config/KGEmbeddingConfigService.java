@@ -19,6 +19,7 @@ package ai.kompile.knowledgegraph.embedding.config;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.persistence.EntityManager;
@@ -73,7 +74,7 @@ public class KGEmbeddingConfigService {
     }
 
     private KGEmbeddingConfigService(Path dataDir) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         this.configFilePath = dataDir.resolve("config").resolve(CONFIG_FILENAME);
 

@@ -1,7 +1,7 @@
 package ai.kompile.e2e;
 
 import ai.kompile.kclaw.gateway.OAuthController;
-import ai.kompile.kclaw.gateway.channel.ChannelManager;
+import ai.kompile.gateway.core.gateway.channel.ChannelManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;

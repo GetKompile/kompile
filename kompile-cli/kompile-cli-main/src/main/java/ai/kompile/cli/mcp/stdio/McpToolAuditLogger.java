@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.mcp.stdio;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -49,7 +50,7 @@ public class McpToolAuditLogger {
         this.projectDirectory = projectDirectory != null
                 ? projectDirectory.toAbsolutePath().normalize().toString()
                 : null;
-        this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+        this.objectMapper = objectMapper != null ? objectMapper : JsonUtils.standardMapper();
     }
 
     public void recordExecuted(String toolName, Map<String, Object> arguments,

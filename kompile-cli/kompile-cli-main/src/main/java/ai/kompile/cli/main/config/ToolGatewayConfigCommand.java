@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -44,7 +46,7 @@ import java.util.concurrent.Callable;
         description = "Configure the LLM-based tool gateway (rules, behavior, enable/disable)")
 public class ToolGatewayConfigCommand implements Callable<Integer> {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     @Option(names = {"--wizard", "-w"}, description = "Run interactive setup wizard")
     private boolean wizard;
@@ -231,7 +233,7 @@ public class ToolGatewayConfigCommand implements Callable<Integer> {
                     r.getOrDefault("action", "BLOCK"),
                     r.getOrDefault("priority", 0),
                     r.getOrDefault("enabled", true),
-                    truncate((String) r.getOrDefault("condition", ""), 40));
+                    StringUtils.truncate((String) r.getOrDefault("condition", ""), 40));
         }
         return 0;
     }
@@ -306,8 +308,4 @@ public class ToolGatewayConfigCommand implements Callable<Integer> {
         MAPPER.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), config);
     }
 
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
-    }
 }

@@ -25,6 +25,7 @@ import ai.kompile.pipelines.steps.samediff.nlp.SameDiffHuggingFaceTokenizer;
 import ai.kompile.pipelines.steps.samediff.nlp.SameDiffLLMTokenizer; // Using the SameDiff specific tokenizer
 import ai.kompile.pipelines.steps.samediff.nlp.SameDiffWordPieceTokenizer; // Concrete SameDiff tokenizer
 import com.fasterxml.jackson.core.type.TypeReference;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.autodiff.samediff.SameDiff;
@@ -55,7 +56,7 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
     private LLMStepConfig config;
     private SameDiff sameDiffModel;
     private SameDiffLLMTokenizer tokenizer;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final Random random = new Random();
     private volatile boolean initialized = false;
 

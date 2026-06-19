@@ -17,6 +17,9 @@
 package ai.kompile.cli.common.logs;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 import java.util.List;
@@ -27,6 +30,9 @@ import java.util.List;
  *
  * <p>Populated on start and rewritten on end by {@link SubprocessLogWriter}.
  */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class SubprocessLogMetadata {
 
@@ -46,135 +52,4 @@ public class SubprocessLogMetadata {
     private String heapSize;
     private Boolean oomDetected;
     private Boolean gpuOomDetected;
-
-    public SubprocessLogMetadata() {
-    }
-
-    public String getSubprocessType() {
-        return subprocessType;
-    }
-
-    public void setSubprocessType(String subprocessType) {
-        this.subprocessType = subprocessType;
-    }
-
-    public String getRunId() {
-        return runId;
-    }
-
-    public void setRunId(String runId) {
-        this.runId = runId;
-    }
-
-    public String getParentTaskId() {
-        return parentTaskId;
-    }
-
-    public void setParentTaskId(String parentTaskId) {
-        this.parentTaskId = parentTaskId;
-    }
-
-    public List<String> getCommand() {
-        return command;
-    }
-
-    public void setCommand(List<String> command) {
-        this.command = command;
-    }
-
-    public String getWorkingDirectory() {
-        return workingDirectory;
-    }
-
-    public void setWorkingDirectory(String workingDirectory) {
-        this.workingDirectory = workingDirectory;
-    }
-
-    public Instant getStartedAt() {
-        return startedAt;
-    }
-
-    public void setStartedAt(Instant startedAt) {
-        this.startedAt = startedAt;
-    }
-
-    public Instant getEndedAt() {
-        return endedAt;
-    }
-
-    public void setEndedAt(Instant endedAt) {
-        this.endedAt = endedAt;
-    }
-
-    public Long getDurationMs() {
-        return durationMs;
-    }
-
-    public void setDurationMs(Long durationMs) {
-        this.durationMs = durationMs;
-    }
-
-    public String getState() {
-        return state;
-    }
-
-    public void setState(String state) {
-        this.state = state;
-    }
-
-    public Integer getExitCode() {
-        return exitCode;
-    }
-
-    public void setExitCode(Integer exitCode) {
-        this.exitCode = exitCode;
-    }
-
-    public String getErrorMessage() {
-        return errorMessage;
-    }
-
-    public void setErrorMessage(String errorMessage) {
-        this.errorMessage = errorMessage;
-    }
-
-    public Integer getLinesWritten() {
-        return linesWritten;
-    }
-
-    public void setLinesWritten(Integer linesWritten) {
-        this.linesWritten = linesWritten;
-    }
-
-    public Long getPid() {
-        return pid;
-    }
-
-    public void setPid(Long pid) {
-        this.pid = pid;
-    }
-
-    public String getHeapSize() {
-        return heapSize;
-    }
-
-    public void setHeapSize(String heapSize) {
-        this.heapSize = heapSize;
-    }
-
-    public Boolean getOomDetected() {
-        return oomDetected;
-    }
-
-    public void setOomDetected(Boolean oomDetected) {
-        this.oomDetected = oomDetected;
-    }
-
-    public Boolean getGpuOomDetected() {
-        return gpuOomDetected;
-    }
-
-    public void setGpuOomDetected(Boolean gpuOomDetected) {
-        this.gpuOomDetected = gpuOomDetected;
-    }
 }

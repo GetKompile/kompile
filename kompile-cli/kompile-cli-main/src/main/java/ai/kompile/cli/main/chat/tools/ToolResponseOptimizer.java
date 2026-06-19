@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -47,7 +48,7 @@ public final class ToolResponseOptimizer {
     /** Number of tail characters preserved for head+tail tool strategies. */
     private static final int TAIL_CHARS = 500;
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     private ToolResponseOptimizer() {
         throw new UnsupportedOperationException("ToolResponseOptimizer is a utility class");

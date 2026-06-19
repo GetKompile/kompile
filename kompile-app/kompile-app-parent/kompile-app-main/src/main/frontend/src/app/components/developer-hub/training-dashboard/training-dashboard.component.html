@@ -1,0 +1,382 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="training-dashboard">
+  <!-- Header Bar -->
+  <div class="dashboard-header">
+    <div class="header-title">
+      <mat-icon>insights</mat-icon>
+      <span>Training Dashboard</span>
+      <span class="job-id-chip">{{ job?.taskId }}</span>
+      <span class="status-chip" [ngClass]="'status-' + (job?.status || '').toLowerCase()">{{ job?.status }}</span>
+      <span *ngIf="isLive && connected" class="live-indicator">
+        <span class="live-dot"></span> LIVE
+      </span>
+    </div>
+    <div class="header-info">
+      <span class="info-item"><strong>Model:</strong> {{ job?.modelId }}</span>
+      <span class="info-item"><strong>Type:</strong> {{ job?.trainingType }}</span>
+      <span *ngIf="job?.peftType" class="info-item"><strong>PEFT:</strong> {{ job?.peftType }}</span>
+    </div>
+  </div>
+
+  <!-- DSP Recompilation Alert Banner -->
+  <div class="dsp-alert-banner" *ngIf="showDspAlertBanner && latestDspAlert">
+    <mat-icon>warning</mat-icon>
+    <div class="alert-content">
+      <strong>DSP Recompilation Detected</strong>
+      <span>{{ latestDspAlert.message }}</span>
+    </div>
+    <span class="alert-count" *ngIf="dspAlerts.length > 1">({{ dspAlerts.length }} total)</span>
+    <button mat-icon-button (click)="dismissDspAlert()">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Waiting for metrics indicator -->
+  <div class="metrics-waiting" *ngIf="isLive && connected && !metricsReady && metrics.length === 0">
+    <mat-spinner diameter="20"></mat-spinner>
+    <span>Initializing training subprocess... Metrics will appear once the first training step completes.</span>
+  </div>
+
+  <!-- Summary Metric Cards -->
+  <div class="metric-cards">
+    <div class="metric-card">
+      <div class="metric-label">Step</div>
+      <div class="metric-value">{{ currentStep }}</div>
+      <div class="metric-sub" *ngIf="job?.totalSteps">/ {{ job?.totalSteps }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Epoch</div>
+      <div class="metric-value">{{ currentEpoch }}</div>
+      <div class="metric-sub" *ngIf="job?.totalEpochs">/ {{ job?.totalEpochs }}</div>
+    </div>
+    <div class="metric-card highlight-loss">
+      <div class="metric-label">Train Loss</div>
+      <div class="metric-value">{{ formatNumber(currentLoss, 6) }}</div>
+      <div class="metric-sub loss-change" *ngIf="getLossChange() != null"
+           [class.positive]="(getLossChange() ?? 0) < 0"
+           [class.negative]="(getLossChange() ?? 0) > 0">
+        {{ (getLossChange() ?? 0) > 0 ? '+' : '' }}{{ formatNumber(getLossChange() ?? 0, 1) }}%
+      </div>
+    </div>
+    <div class="metric-card" *ngIf="currentEvalLoss > 0">
+      <div class="metric-label">Eval Loss</div>
+      <div class="metric-value">{{ formatNumber(currentEvalLoss, 6) }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Learning Rate</div>
+      <div class="metric-value">{{ formatScientific(currentLR) }}</div>
+    </div>
+    <div class="metric-card" *ngIf="currentTokPerSec > 0">
+      <div class="metric-label">Tokens/sec</div>
+      <div class="metric-value">{{ formatThroughput(currentTokPerSec) }}</div>
+    </div>
+    <div class="metric-card" *ngIf="currentSampPerSec > 0">
+      <div class="metric-label">Samples/sec</div>
+      <div class="metric-value">{{ formatThroughput(currentSampPerSec) }}</div>
+    </div>
+    <div class="metric-card" *ngIf="currentGradNorm > 0">
+      <div class="metric-label">Grad Norm</div>
+      <div class="metric-value">{{ formatNumber(currentGradNorm, 4) }}</div>
+    </div>
+  </div>
+
+  <!-- Progress Bar (for active jobs) -->
+  <div class="progress-section" *ngIf="job?.totalEpochs && (isLive || job?.currentEpoch)">
+    <div class="progress-labels">
+      <span>Epoch {{ currentEpoch || job?.currentEpoch || 0 }} / {{ job?.totalEpochs }}</span>
+      <span>{{ ((currentEpoch || job?.currentEpoch || 0) / (job?.totalEpochs || 1) * 100) | number:'1.0-0' }}%</span>
+    </div>
+    <mat-progress-bar mode="determinate"
+      [value]="((currentEpoch || job?.currentEpoch || 0) / (job?.totalEpochs || 1)) * 100">
+    </mat-progress-bar>
+  </div>
+
+  <!-- Training Completed Banner -->
+  <div class="completion-banner" *ngIf="completionEvent">
+    <mat-icon>check_circle</mat-icon>
+    <div class="completion-content">
+      <strong>Training Complete</strong>
+      <span>Final loss: {{ formatNumber(completionEvent.finalLoss, 6) }} | Steps: {{ completionEvent.totalSteps }} | Epochs: {{ completionEvent.totalEpochs }}</span>
+      <span *ngIf="completionEvent.registeredModelId" class="registered-model">
+        Registered as: <strong>{{ completionEvent.registeredModelId }}</strong>
+      </span>
+    </div>
+  </div>
+
+  <!-- Eval Results Section -->
+  <div class="eval-results-section" *ngIf="evalResults">
+    <div class="eval-title">
+      <mat-icon>assessment</mat-icon> Post-Training Evaluation Results
+    </div>
+    <div class="eval-grid">
+      <div class="eval-benchmark" *ngFor="let benchmark of getEvalBenchmarks()">
+        <div class="eval-benchmark-name">{{ benchmark }}</div>
+        <div class="eval-metric" *ngFor="let metric of getEvalMetrics(benchmark)">
+          <span class="eval-metric-name">{{ metric.name }}</span>
+          <span class="eval-metric-value">{{ formatNumber(metric.value, 4) }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts Section -->
+  <div class="charts-section" *ngIf="metrics.length >= 2">
+    <!-- Loss Chart -->
+    <div class="chart-panel">
+      <div class="chart-title">
+        <mat-icon>show_chart</mat-icon> Loss vs Step
+        <span class="chart-subtitle">Smoothed with EMA (alpha={{ 0.1 }})</span>
+      </div>
+      <div class="chart-container" #lossChart></div>
+    </div>
+
+    <!-- Learning Rate Chart -->
+    <div class="chart-panel">
+      <div class="chart-title">
+        <mat-icon>tune</mat-icon> Learning Rate Schedule
+      </div>
+      <div class="chart-container" #lrChart></div>
+    </div>
+
+    <!-- Throughput Chart -->
+    <div class="chart-panel">
+      <div class="chart-title">
+        <mat-icon>speed</mat-icon> Throughput
+      </div>
+      <div class="chart-container" #throughputChart></div>
+    </div>
+
+    <!-- Gradient Norm Chart -->
+    <div class="chart-panel">
+      <div class="chart-title">
+        <mat-icon>trending_up</mat-icon> Gradient Norm
+        <span class="chart-subtitle" *ngIf="job?.maxGradNorm">Clip threshold: {{ job?.maxGradNorm }}</span>
+      </div>
+      <div class="chart-container" #gradNormChart></div>
+    </div>
+
+    <!-- Resource Monitor Section -->
+    <div class="resource-section" *ngIf="hasMemoryData">
+      <div class="resource-header">
+        <mat-icon>developer_board</mat-icon>
+        <span>Resource Monitor</span>
+        <span class="chart-subtitle">GPU memory, JVM heap, and device scheduling</span>
+      </div>
+
+      <!-- Resource Summary Cards -->
+      <div class="resource-cards">
+        <div class="resource-card" *ngIf="hasGpuData">
+          <div class="resource-card-label">GPU Memory</div>
+          <div class="resource-card-value" [class.mem-warn]="getGpuUsagePercent() >= 85" [class.mem-critical]="getGpuUsagePercent() >= 95">
+            {{ formatBytes(gpuMemUsedBytes) }} / {{ formatBytes(gpuMemTotalBytes) }}
+          </div>
+          <div class="resource-card-bar">
+            <div class="resource-bar-fill gpu-bar" [style.width.%]="getGpuUsagePercent()"></div>
+          </div>
+          <div class="resource-card-sub">{{ formatNumber(getGpuUsagePercent(), 1) }}% used</div>
+        </div>
+        <div class="resource-card" *ngIf="hasGpuData && gpuPoolReservedBytes > 0">
+          <div class="resource-card-label">CUDA Memory Pool</div>
+          <div class="resource-card-value">{{ formatBytes(gpuPoolUsedBytes) }} / {{ formatBytes(gpuPoolReservedBytes) }}</div>
+          <div class="resource-card-sub">Reserved by cudaMallocAsync</div>
+        </div>
+        <div class="resource-card">
+          <div class="resource-card-label">JVM Heap</div>
+          <div class="resource-card-value" [class.mem-warn]="heapUsagePercent >= 80" [class.mem-critical]="heapUsagePercent >= 95">
+            {{ formatBytes(heapUsedBytes) }} / {{ formatBytes(heapMaxBytes) }}
+          </div>
+          <div class="resource-card-bar">
+            <div class="resource-bar-fill heap-bar" [style.width.%]="heapUsagePercent"></div>
+          </div>
+          <div class="resource-card-sub">{{ formatNumber(heapUsagePercent, 1) }}% used</div>
+        </div>
+        <div class="resource-card" *ngIf="numGpuDevices > 0">
+          <div class="resource-card-label">GPU Devices</div>
+          <div class="resource-card-value">{{ numGpuDevices }}</div>
+          <div class="resource-card-sub" *ngIf="gpuDeviceNames">{{ gpuDeviceNames }}</div>
+        </div>
+      </div>
+
+      <!-- GPU Memory Chart -->
+      <div class="chart-panel" *ngIf="hasGpuData">
+        <div class="chart-title">
+          <mat-icon>memory</mat-icon> GPU Memory Usage
+          <span class="chart-subtitle" *ngIf="gpuDeviceNames">{{ gpuDeviceNames }}</span>
+        </div>
+        <div class="chart-container" #gpuMemChart></div>
+      </div>
+
+      <!-- JVM Heap Chart -->
+      <div class="chart-panel">
+        <div class="chart-title">
+          <mat-icon>storage</mat-icon> JVM Heap Usage
+        </div>
+        <div class="chart-container" #heapChart></div>
+      </div>
+    </div>
+
+    <!-- DSP Monitoring Section -->
+    <div class="dsp-section" *ngIf="hasDspData">
+      <div class="dsp-header">
+        <div class="dsp-title">
+          <mat-icon>memory</mat-icon> DSP (Dynamic Shape Plan) Monitor
+          <span class="chart-subtitle">Tracks plan compilations, cache replays, and recompilation events</span>
+        </div>
+      </div>
+
+      <!-- DSP Summary Cards -->
+      <div class="dsp-cards">
+        <div class="dsp-card">
+          <div class="dsp-card-label">Plan Phase</div>
+          <div class="dsp-card-value" [ngClass]="getDspPhaseClass()">{{ getDspPhaseLabel() }}</div>
+        </div>
+        <div class="dsp-card">
+          <div class="dsp-card-label">Cache Hit Rate</div>
+          <div class="dsp-card-value" [class.dsp-hit-good]="dspHitRate >= 90" [class.dsp-hit-warn]="dspHitRate >= 50 && dspHitRate < 90" [class.dsp-hit-bad]="dspHitRate < 50 && dspTotalHits + dspTotalMisses > 0">
+            {{ formatNumber(dspHitRate, 1) }}%
+          </div>
+          <div class="dsp-card-sub">{{ dspTotalHits }} hits / {{ dspTotalMisses }} misses</div>
+        </div>
+        <div class="dsp-card" [class.dsp-alert]="dspRecompilationCount > 0">
+          <div class="dsp-card-label">Recompilations</div>
+          <div class="dsp-card-value">{{ dspRecompilationCount }}</div>
+          <div class="dsp-card-sub" *ngIf="dspRecompilationCount > 0">Performance impact detected</div>
+        </div>
+        <div class="dsp-card">
+          <div class="dsp-card-label">Frozen Executions</div>
+          <div class="dsp-card-value">{{ dspFrozenExecutionCount }}</div>
+        </div>
+        <div class="dsp-card">
+          <div class="dsp-card-label">Plan Segments</div>
+          <div class="dsp-card-value">{{ dspNumSegments }}</div>
+        </div>
+        <div class="dsp-card">
+          <div class="dsp-card-label">Captured Graphs</div>
+          <div class="dsp-card-value">{{ dspCapturedGraphSegments }}</div>
+        </div>
+        <div class="dsp-card" *ngIf="dspStepTimeMs > 0">
+          <div class="dsp-card-label">DSP Overhead</div>
+          <div class="dsp-card-value">{{ formatNumber(dspStepTimeMs, 2) }}ms</div>
+          <div class="dsp-card-sub">per step collection</div>
+        </div>
+      </div>
+
+      <!-- Per-Segment Execution Breakdown -->
+      <div class="segment-breakdown" *ngIf="dspSegmentsReplayed + dspSegmentsWarmup + dspSegmentsCaptured + dspSegmentsSlotBySlot + dspSegmentsFailed > 0">
+        <div class="segment-title">Segment Execution Breakdown (last step)</div>
+        <div class="segment-bar-container">
+          <div class="segment-bar-track">
+            <div class="segment-bar-fill seg-replayed" [style.flex]="dspSegmentsReplayed"
+                 *ngIf="dspSegmentsReplayed > 0" [matTooltip]="'Replaying: ' + dspSegmentsReplayed"></div>
+            <div class="segment-bar-fill seg-captured" [style.flex]="dspSegmentsCaptured"
+                 *ngIf="dspSegmentsCaptured > 0" [matTooltip]="'Captured: ' + dspSegmentsCaptured"></div>
+            <div class="segment-bar-fill seg-warmup" [style.flex]="dspSegmentsWarmup"
+                 *ngIf="dspSegmentsWarmup > 0" [matTooltip]="'Warmup: ' + dspSegmentsWarmup"></div>
+            <div class="segment-bar-fill seg-slot" [style.flex]="dspSegmentsSlotBySlot"
+                 *ngIf="dspSegmentsSlotBySlot > 0" [matTooltip]="'Slot-by-Slot: ' + dspSegmentsSlotBySlot"></div>
+            <div class="segment-bar-fill seg-failed" [style.flex]="dspSegmentsFailed"
+                 *ngIf="dspSegmentsFailed > 0" [matTooltip]="'Failed: ' + dspSegmentsFailed"></div>
+          </div>
+        </div>
+        <div class="segment-legend">
+          <span class="seg-legend-item" *ngIf="dspSegmentsReplayed > 0"><span class="seg-dot seg-replayed-dot"></span> Replaying ({{ dspSegmentsReplayed }})</span>
+          <span class="seg-legend-item" *ngIf="dspSegmentsCaptured > 0"><span class="seg-dot seg-captured-dot"></span> Captured ({{ dspSegmentsCaptured }})</span>
+          <span class="seg-legend-item" *ngIf="dspSegmentsWarmup > 0"><span class="seg-dot seg-warmup-dot"></span> Warmup ({{ dspSegmentsWarmup }})</span>
+          <span class="seg-legend-item" *ngIf="dspSegmentsSlotBySlot > 0"><span class="seg-dot seg-slot-dot"></span> Slot-by-Slot ({{ dspSegmentsSlotBySlot }})</span>
+          <span class="seg-legend-item" *ngIf="dspSegmentsFailed > 0"><span class="seg-dot seg-failed-dot"></span> Failed ({{ dspSegmentsFailed }})</span>
+        </div>
+      </div>
+
+      <!-- Buffer Pool Stats -->
+      <div class="buffer-stats" *ngIf="dspBufferPoolBytes > 0 || dspColoringSavedBytes > 0">
+        <div class="buffer-stats-row">
+          <span class="buffer-stat" *ngIf="dspBufferPoolBytes > 0">
+            <span class="buffer-label">Buffer Pool:</span> {{ formatBytes(dspBufferPoolBytes) }}
+          </span>
+          <span class="buffer-stat" *ngIf="dspBufferPoolReused > 0">
+            <span class="buffer-label">Pool Reuse:</span> {{ dspBufferPoolReused }} buffers
+          </span>
+          <span class="buffer-stat" *ngIf="dspColoringSavedBytes > 0">
+            <span class="buffer-label">Coloring Saved:</span> {{ formatBytes(dspColoringSavedBytes) }}
+          </span>
+        </div>
+      </div>
+
+      <!-- DSP Cache Chart -->
+      <div class="chart-panel dsp-chart-panel">
+        <div class="chart-title">
+          <mat-icon>cached</mat-icon> DSP Replay Cache: Hits vs Misses
+          <span class="chart-subtitle">Misses indicate recompilation overhead</span>
+        </div>
+        <div class="chart-container" #dspChart></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- No data message -->
+  <div class="no-data" *ngIf="metrics.length < 2">
+    <mat-icon>hourglass_empty</mat-icon>
+    <span *ngIf="isLive">Waiting for training metrics...</span>
+    <span *ngIf="!isLive">No detailed metrics recorded for this job.</span>
+  </div>
+
+  <!-- Training Configuration -->
+  <div class="config-section">
+    <div class="config-title">
+      <mat-icon>settings</mat-icon> Training Configuration
+    </div>
+    <div class="config-grid">
+      <div class="config-item"><span class="ck">Batch Size</span><span class="cv">{{ job?.batchSize || '-' }}</span></div>
+      <div class="config-item"><span class="ck">Grad Accum Steps</span><span class="cv">{{ job?.gradientAccumulationSteps || '-' }}</span></div>
+      <div class="config-item"><span class="ck">LR Schedule</span><span class="cv">{{ job?.lrSchedule || '-' }}</span></div>
+      <div class="config-item"><span class="ck">Warmup Ratio</span><span class="cv">{{ job?.warmupRatio || '-' }}</span></div>
+      <div class="config-item"><span class="ck">Max Grad Norm</span><span class="cv">{{ job?.maxGradNorm || '-' }}</span></div>
+      <div class="config-item"><span class="ck">FP16</span><span class="cv">{{ job?.fp16 ?? '-' }}</span></div>
+      <div class="config-item"><span class="ck">BF16</span><span class="cv">{{ job?.bf16 ?? '-' }}</span></div>
+      <div class="config-item"><span class="ck">PEFT Type</span><span class="cv">{{ job?.peftType || '-' }}</span></div>
+      <div class="config-item" *ngIf="job?.nd4jBackend"><span class="ck">ND4J Backend</span><span class="cv">{{ job?.nd4jBackend }}</span></div>
+      <div class="config-item" *ngIf="job?.outputModelPath"><span class="ck">Output</span><span class="cv monospace">{{ job?.outputModelPath }}</span></div>
+    </div>
+  </div>
+
+  <!-- Live Log Viewer -->
+  <div class="log-section" *ngIf="logs.length > 0">
+    <div class="log-title">
+      <mat-icon>terminal</mat-icon> Training Log
+      <span class="log-count">({{ logs.length }} entries)</span>
+    </div>
+    <div class="log-container" #logContainer>
+      <div class="log-entry" *ngFor="let entry of logs" [ngClass]="getLogLevelClass(entry.level)">
+        <span class="log-time">{{ entry.timestamp | slice:11:19 }}</span>
+        <span class="log-level">{{ entry.level }}</span>
+        <span class="log-step" *ngIf="entry.step > 0">[step {{ entry.step }}]</span>
+        <span class="log-loss" *ngIf="entry.loss > 0">loss={{ formatNumber(entry.loss, 6) }}</span>
+        <span class="log-msg">{{ entry.message }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error Section -->
+  <div class="error-section" *ngIf="job?.failureReason && job?.failureReason !== 'NONE'">
+    <div class="error-title">
+      <mat-icon color="warn">error</mat-icon> Failure: {{ job?.failureReason }}
+    </div>
+    <div class="error-detail" *ngIf="job?.errorType">{{ job?.errorType }}: {{ job?.errorMessage }}</div>
+    <pre class="error-stack" *ngIf="job?.stackTrace">{{ job?.stackTrace }}</pre>
+  </div>
+</div>

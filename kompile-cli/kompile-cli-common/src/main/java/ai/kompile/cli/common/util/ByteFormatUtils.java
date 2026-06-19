@@ -16,42 +16,21 @@
 
 package ai.kompile.cli.common.util;
 
+import ai.kompile.utils.FormatUtils;
+
 /**
- * Shared utility for formatting byte counts as human-readable strings.
- *
- * <p>This is the single canonical implementation used across all Kompile modules.
- * Use this instead of local copies of formatBytes().</p>
+ * @deprecated Use {@link FormatUtils#formatBytes(long)} directly.
  */
+@Deprecated
 public final class ByteFormatUtils {
 
-    private ByteFormatUtils() {
-        // utility class
-    }
+    private ByteFormatUtils() {}
 
     /**
-     * Format a byte count as a human-readable string (e.g., "4.50 GB").
-     *
-     * <p>Returns "unknown" for negative values, then scales through B / KB / MB / GB / TB.</p>
-     *
-     * @param bytes byte count (may be 0; negative returns "unknown")
-     * @return formatted string such as "512.0 MB" or "1.25 GB"
+     * @deprecated Use {@link FormatUtils#formatBytes(long)} directly.
      */
+    @Deprecated
     public static String formatBytes(long bytes) {
-        if (bytes < 0) {
-            return "unknown";
-        }
-        if (bytes < 1024) {
-            return bytes + " B";
-        }
-        if (bytes < 1024 * 1024) {
-            return String.format("%.1f KB", bytes / 1024.0);
-        }
-        if (bytes < 1024L * 1024 * 1024) {
-            return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        }
-        if (bytes < 1024L * 1024 * 1024 * 1024) {
-            return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-        }
-        return String.format("%.2f TB", bytes / (1024.0 * 1024 * 1024 * 1024));
+        return FormatUtils.formatBytes(bytes);
     }
 }

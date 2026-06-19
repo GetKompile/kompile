@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,7 +41,7 @@ import java.util.*;
  */
 public class ProjectConfigTool implements CliTool {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private static final String AGENTS_MD_RESOURCE = "/templates/AGENTS.md";
     private static final String SYSTEM_PROMPT_RESOURCE = "/templates/system-prompt.md";

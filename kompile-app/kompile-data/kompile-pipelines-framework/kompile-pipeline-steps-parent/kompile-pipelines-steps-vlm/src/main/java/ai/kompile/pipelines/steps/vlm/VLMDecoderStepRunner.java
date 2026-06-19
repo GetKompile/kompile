@@ -24,7 +24,7 @@ import ai.kompile.pipelines.framework.api.data.NDArray;
 import ai.kompile.pipelines.framework.api.kvcache.KVCache;
 import ai.kompile.pipelines.steps.vlm.cache.Nd4jKVCache;
 import ai.kompile.pipelines.steps.vlm.util.VLMSameDiffUtils;
-import org.eclipse.deeplearning4j.llm.generation.DecoderUtils;
+import org.eclipse.deeplearning4j.llm.generation.DecoderInputBuilder;
 import org.eclipse.deeplearning4j.llm.generation.ModelIOConfig;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.api.buffer.DataType;
@@ -162,8 +162,8 @@ public class VLMDecoderStepRunner implements PipelineStepRunner {
         boolean isFirstStep = (kvCache == null || kvCache.getCurrentSequenceLength() == 0);
 
         if (kvCache == null && numKvLayers > 0) {
-            // Use DecoderUtils to create empty KV cache template (returns a single empty INDArray)
-            INDArray emptyKv = DecoderUtils.createEmptyKvCache(
+            // Create empty KV cache template (returns a single empty INDArray)
+            INDArray emptyKv = ModelIOConfig.createEmptyKvCache(
                     sd, "input_ids", 1, numHeads * headDim);
             if (emptyKv != null) {
                 // Build layer-indexed cache from the template shape
@@ -203,14 +203,14 @@ public class VLMDecoderStepRunner implements PipelineStepRunner {
                     placeholders.put("use_cache_branch",
                             Nd4j.scalar(DataType.BOOL, !isFirstStep ? 1 : 0));
                 } else if (ioConfig.isCausalMask(modelInput) && input.has(VLMConstants.KEY_ATTENTION_MASK)) {
-                    // Build causal mask using DecoderUtils
+                    // Build causal mask
                     INDArray attnMask = VLMSameDiffUtils.toINDArray(
                             input.getNDArray(VLMConstants.KEY_ATTENTION_MASK));
                     long currentSeqLen = isFirstStep ?
                             (input.has(VLMConstants.KEY_INPUTS_EMBEDS) ?
                                     VLMSameDiffUtils.toINDArray(input.getNDArray(VLMConstants.KEY_INPUTS_EMBEDS)).shape()[1] : 1) : 1;
                     long totalSeqLen = attnMask.shape()[1];
-                    INDArray causalMask = DecoderUtils.buildCausalMask(currentSeqLen, totalSeqLen);
+                    INDArray causalMask = DecoderInputBuilder.buildInGraphCausalMask(currentSeqLen, totalSeqLen, DataType.FLOAT);
                     placeholders.put(modelInput, causalMask);
                 } else if (ioConfig.isKvCacheInput(modelInput) && kvCache != null) {
                     // Parse layer index and key/value

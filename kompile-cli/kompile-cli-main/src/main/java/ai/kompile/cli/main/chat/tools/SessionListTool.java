@@ -17,6 +17,9 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.registry.InstanceInfo;
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.FormatUtils;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import ai.kompile.cli.common.registry.McpSessionInfo;
 import ai.kompile.cli.common.registry.McpSessionRegistry;
@@ -58,7 +61,7 @@ public class SessionListTool implements CliTool {
 
     public SessionListTool(CoordinationStateManager coordinator) {
         this.coordinator = coordinator;
-        this.mapper = new ObjectMapper();
+        this.mapper = JsonUtils.standardMapper();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(3))
                 .build();
@@ -153,7 +156,7 @@ public class SessionListTool implements CliTool {
                             info.getPid(),
                             isProcessAlive(info.getPid()) ? "ALIVE" : "STALE"));
                     if (info.getStartedAt() != null) {
-                        String uptime = formatDuration(Duration.between(info.getStartedAt(), Instant.now()));
+                        String uptime = FormatUtils.formatDuration(Duration.between(info.getStartedAt(), Instant.now()));
                         sb.append("                       uptime: ").append(uptime).append("\n");
                     }
                 }
@@ -176,7 +179,7 @@ public class SessionListTool implements CliTool {
             sb.append("  (none)\n");
         } else {
             for (var a : agents) {
-                String dur = formatDuration(Duration.between(a.getStartedAt(), Instant.now()));
+                String dur = FormatUtils.formatDuration(Duration.between(a.getStartedAt(), Instant.now()));
                 sb.append(String.format("  %-30s %-12s depth=%d  pid=%-7d  %s\n",
                         a.getSessionId(),
                         a.getAgentName(),
@@ -184,7 +187,7 @@ public class SessionListTool implements CliTool {
                         a.getPid(),
                         dur));
                 if (a.getTask() != null && !a.getTask().isEmpty()) {
-                    sb.append("    task: ").append(truncate(a.getTask(), 60)).append("\n");
+                    sb.append("    task: ").append(StringUtils.truncate(a.getTask(), 60)).append("\n");
                 }
             }
         }
@@ -194,9 +197,9 @@ public class SessionListTool implements CliTool {
         if (!edits.isEmpty()) {
             sb.append("\n  Active Edit Locks (").append(edits.size()).append("):\n");
             for (var e : edits) {
-                String age = formatDuration(Duration.between(e.getAcquiredAt(), Instant.now()));
+                String age = FormatUtils.formatDuration(Duration.between(e.getAcquiredAt(), Instant.now()));
                 sb.append(String.format("    %-50s %-6s %s\n",
-                        truncate(e.getFilePath(), 50), e.getEditType(), age));
+                        StringUtils.truncate(e.getFilePath(), 50), e.getEditType(), age));
             }
         }
         sb.append("\n");
@@ -214,12 +217,12 @@ public class SessionListTool implements CliTool {
             sb.append("  (none)\n");
         } else {
             for (var p : processes) {
-                String dur = formatDuration(Duration.between(p.getStartedAt(), Instant.now()));
+                String dur = FormatUtils.formatDuration(Duration.between(p.getStartedAt(), Instant.now()));
                 sb.append(String.format("  %-12s %-10s %-30s %s\n",
                         p.getProcessId(), p.getState(),
-                        truncate(p.getCommand(), 30), dur));
+                        StringUtils.truncate(p.getCommand(), 30), dur));
                 if (p.getDescription() != null && !p.getDescription().isEmpty()) {
-                    sb.append("    ").append(truncate(p.getDescription(), 60)).append("\n");
+                    sb.append("    ").append(StringUtils.truncate(p.getDescription(), 60)).append("\n");
                 }
             }
         }
@@ -283,7 +286,7 @@ public class SessionListTool implements CliTool {
             } else {
                 for (McpSessionInfo info : sessions) {
                     sb.append(String.format("  %-35s [%-7s] pid=%-7d",
-                            truncate(info.getSessionId(), 35),
+                            StringUtils.truncate(info.getSessionId(), 35),
                             info.getAgentType(),
                             info.getPid()));
                     if (info.getA2aPort() > 0) {
@@ -297,7 +300,7 @@ public class SessionListTool implements CliTool {
                         sb.append("                                      dir: ").append(info.getWorkDir()).append("\n");
                     }
                     if (info.getStartedAt() != null) {
-                        String uptime = formatDuration(Duration.between(info.getStartedAt(), Instant.now()));
+                        String uptime = FormatUtils.formatDuration(Duration.between(info.getStartedAt(), Instant.now()));
                         sb.append("                                      uptime: ").append(uptime).append("\n");
                     }
                 }
@@ -319,20 +322,4 @@ public class SessionListTool implements CliTool {
         }
     }
 
-    private static String formatDuration(Duration d) {
-        long totalSeconds = d.getSeconds();
-        if (totalSeconds < 0) return "0s";
-        if (totalSeconds < 60) return totalSeconds + "s";
-        long minutes = totalSeconds / 60;
-        long seconds = totalSeconds % 60;
-        if (minutes < 60) return minutes + "m" + seconds + "s";
-        long hours = minutes / 60;
-        minutes = minutes % 60;
-        return hours + "h" + minutes + "m";
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
-    }
 }

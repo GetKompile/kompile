@@ -16,8 +16,8 @@
 
 package ai.kompile.modelmanager.cache;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -108,8 +108,7 @@ public class FileBasedPipelineOutputCache implements PipelineOutputCache {
         this.checkpointsDir = cacheDir.resolve(CHECKPOINTS_DIR);
         this.ttlDays = ttlDays;
         this.maxSizeBytes = maxSizeBytes;
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
+        this.objectMapper = JsonUtils.standardMapper();
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "pipeline-cache-writer");
             t.setDaemon(true);

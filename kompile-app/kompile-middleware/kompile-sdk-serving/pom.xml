@@ -15,6 +15,10 @@
     <description>OpenAI-compatible HTTP server for DL4J/SameDiff LLM inference</description>
 
     <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
         <!-- Vert.x HTTP server -->
         <dependency>
             <groupId>io.vertx</groupId>

@@ -24,6 +24,7 @@ import ai.kompile.app.services.pipeline.PipelineResult;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.indexers.IndexerService;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.retrievers.RetrievedDoc;
@@ -57,7 +58,7 @@ import java.util.Map;
 public class IngestPipelineRunner {
 
     private static final Logger logger = LoggerFactory.getLogger(IngestPipelineRunner.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     private final List<DocumentLoader> documentLoaders;
     private final List<TextChunker> textChunkers;

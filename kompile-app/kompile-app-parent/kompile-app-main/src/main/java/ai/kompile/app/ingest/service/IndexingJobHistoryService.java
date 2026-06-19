@@ -272,6 +272,18 @@ public class IndexingJobHistoryService {
     }
 
     /**
+     * Update the additionalDetails JSON blob for a job.
+     * Used to persist the full crawl job snapshot so historical jobs retain rich detail.
+     */
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
+    public void updateAdditionalDetails(String taskId, String additionalDetailsJson) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.setAdditionalDetails(additionalDetailsJson);
+            repository.save(job);
+        });
+    }
+
+    /**
      * Update memory usage.
      */
     @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
@@ -413,6 +425,26 @@ public class IndexingJobHistoryService {
             repository.save(job);
             log.debug("Linked resumed job {} to original {}", newTaskId, originalTaskId);
         });
+    }
+
+    /**
+     * Mark (or clear) a crawl job's resumable flag — set when it has archived steps persisted on disk.
+     */
+    @Transactional(PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER)
+    public void markJobResumable(String taskId, boolean resumable) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.setResumable(resumable);
+            repository.save(job);
+            log.debug("Marked job {} resumable={}", taskId, resumable);
+        });
+    }
+
+    /**
+     * List crawl jobs flagged resumable (archived steps on disk awaiting a later run).
+     */
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
+    public List<IndexingJobHistory> listResumableCrawlJobs() {
+        return repository.findResumableCrawlJobs();
     }
 
     /**
@@ -599,6 +631,23 @@ public class IndexingJobHistoryService {
     public Page<IndexingJobHistory> getJobsByStatus(JobStatus status, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "startTime"));
         return repository.findByStatus(status, pageable);
+    }
+
+    /**
+     * Get crawl job history entries (taskId starts with "crawl-").
+     */
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
+    public List<IndexingJobHistory> getCrawlJobs() {
+        return repository.findCrawlJobs();
+    }
+
+    /**
+     * Get crawl job history entries with pagination.
+     */
+    @Transactional(value = PrimaryDataSourceConfig.INGEST_EVENT_TRANSACTION_MANAGER, readOnly = true)
+    public Page<IndexingJobHistory> getCrawlJobs(int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "startTime"));
+        return repository.findCrawlJobs(pageable);
     }
 
     /**

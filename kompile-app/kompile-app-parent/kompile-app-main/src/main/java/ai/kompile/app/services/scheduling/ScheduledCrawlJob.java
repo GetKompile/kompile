@@ -16,10 +16,10 @@
 
 package ai.kompile.app.services.scheduling;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.UnifiedCrawlService;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.Job;
@@ -69,8 +69,7 @@ public class ScheduledCrawlJob implements Job {
 
         UnifiedCrawlRequest request;
         try {
-            ObjectMapper mapper = objectMapper != null ? objectMapper.copy() : new ObjectMapper();
-            mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+            ObjectMapper mapper = objectMapper != null ? objectMapper.copy() : JsonUtils.standardMapper();
             request = mapper.readValue(json, UnifiedCrawlRequest.class);
         } catch (Exception e) {
             throw new JobExecutionException("Failed to deserialize crawl request", e);

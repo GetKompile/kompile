@@ -17,8 +17,8 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.agent.AgentProcessDiagnosticService;
-import ai.kompile.app.services.agent.AgentProcessDiagnosticService.DiagnosticSummary;
-import ai.kompile.app.services.agent.AgentProcessDiagnosticService.FullDiagnosticReport;
+import ai.kompile.app.services.agent.DiagnosticSummary;
+import ai.kompile.app.services.agent.FullDiagnosticReport;
 import ai.kompile.app.services.agent.AgentRegistryService;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.ProcessStatus;

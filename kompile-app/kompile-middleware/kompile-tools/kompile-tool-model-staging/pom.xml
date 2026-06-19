@@ -30,6 +30,10 @@
     <description>MCP tool for model staging operations: registry management, download, conversion, staging, promotion, and optimization</description>
 
     <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
         <!-- Model staging services -->
         <dependency>
             <groupId>ai.kompile</groupId>

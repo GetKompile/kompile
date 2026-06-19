@@ -17,6 +17,7 @@ package ai.kompile.graph.neo4j;
 
 import ai.kompile.cli.common.KompileHome;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Condition;
 import org.springframework.context.annotation.ConditionContext;
@@ -37,7 +38,7 @@ import java.nio.file.Paths;
 public class Neo4jEnabledCondition implements Condition {
 
     private static final String CONFIG_FILENAME = "kg-embedding-config.json";
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     @Override
     public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {

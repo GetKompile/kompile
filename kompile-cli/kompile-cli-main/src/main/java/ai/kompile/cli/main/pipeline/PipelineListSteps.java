@@ -2,6 +2,7 @@ package ai.kompile.cli.main.pipeline;
 
 import ai.kompile.pipelines.framework.api.PipelineStepRunnerFactory;
 import ai.kompile.pipelines.framework.api.configschema.StepSchema;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.pipelines.framework.core.config.SchemaRegistry;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -121,9 +122,9 @@ public class PipelineListSteps implements Callable<Integer> {
         System.err.println("-".repeat(nameWidth + classWidth + descWidth + paramWidth + 6));
 
         for (Map<String, Object> step : steps) {
-            String name = truncate(String.valueOf(step.get("name")), nameWidth);
-            String cls = truncate(String.valueOf(step.get("runnerClass")), classWidth);
-            String desc = step.get("description") != null ? truncate(String.valueOf(step.get("description")), descWidth) : "";
+            String name = StringUtils.truncate(String.valueOf(step.get("name")), nameWidth);
+            String cls = StringUtils.truncate(String.valueOf(step.get("runnerClass")), classWidth);
+            String desc = step.get("description") != null ? StringUtils.truncate(String.valueOf(step.get("description")), descWidth) : "";
             Object params = step.get("parameterCount");
             System.err.printf(fmt, name, cls, desc, params != null ? params : "0");
         }
@@ -131,7 +132,4 @@ public class PipelineListSteps implements Callable<Integer> {
         System.err.println("\n" + steps.size() + " step type(s) available");
     }
 
-    private String truncate(String s, int max) {
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
-    }
 }

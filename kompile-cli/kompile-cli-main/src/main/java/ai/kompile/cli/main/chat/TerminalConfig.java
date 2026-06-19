@@ -17,9 +17,14 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -32,9 +37,13 @@ import java.nio.file.Path;
  * Users can configure which terminal emulator to use for spawning sessions.
  * If not configured, a sane system default is auto-detected.
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class TerminalConfig {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     private static final Path CONFIG_FILE =
@@ -42,14 +51,6 @@ public class TerminalConfig {
 
     private String terminalCommand;
     private String terminalArgs;
-
-    public TerminalConfig() {}
-
-    public String getTerminalCommand() { return terminalCommand; }
-    public void setTerminalCommand(String v) { this.terminalCommand = v; }
-
-    public String getTerminalArgs() { return terminalArgs; }
-    public void setTerminalArgs(String v) { this.terminalArgs = v; }
 
     /**
      * Load terminal config from disk. Returns default (empty) config if file doesn't exist.

@@ -19,6 +19,7 @@ package ai.kompile.pipelines.steps.vlm.cache;
 import ai.kompile.pipelines.framework.api.data.NDArray;
 import ai.kompile.pipelines.framework.api.data.NDArrayType;
 import ai.kompile.pipelines.framework.api.kvcache.KVCache;
+import ai.kompile.pipelines.framework.core.utils.NDArrayTypeConverter;
 import org.nd4j.common.util.ArrayUtil;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
@@ -284,28 +285,10 @@ public class Nd4jKVCache implements KVCache {
     }
 
     private static org.nd4j.linalg.api.buffer.DataType mapType(NDArrayType type) {
-        switch (type) {
-            case FLOAT: return org.nd4j.linalg.api.buffer.DataType.FLOAT;
-            case DOUBLE: return org.nd4j.linalg.api.buffer.DataType.DOUBLE;
-            case LONG: return org.nd4j.linalg.api.buffer.DataType.INT64;
-            case INT: case INT32: return org.nd4j.linalg.api.buffer.DataType.INT32;
-            case FLOAT16: return org.nd4j.linalg.api.buffer.DataType.HALF;
-            case BFLOAT16: return org.nd4j.linalg.api.buffer.DataType.BFLOAT16;
-            case BOOLEAN: return org.nd4j.linalg.api.buffer.DataType.BOOL;
-            default: throw new UnsupportedOperationException("Unsupported NDArrayType: " + type);
-        }
+        return NDArrayTypeConverter.toNd4jDataType(type);
     }
 
     private static NDArrayType mapTypeReverse(org.nd4j.linalg.api.buffer.DataType type) {
-        switch (type) {
-            case FLOAT: return NDArrayType.FLOAT;
-            case DOUBLE: return NDArrayType.DOUBLE;
-            case LONG: return NDArrayType.LONG;
-            case INT: return NDArrayType.INT32;
-            case HALF: return NDArrayType.FLOAT16;
-            case BFLOAT16: return NDArrayType.BFLOAT16;
-            case BOOL: return NDArrayType.BOOLEAN;
-            default: throw new UnsupportedOperationException("Unsupported DataType: " + type);
-        }
+        return NDArrayTypeConverter.fromNd4jDataType(type);
     }
 }

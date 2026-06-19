@@ -13,6 +13,7 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -30,7 +31,7 @@ import java.util.stream.Collectors;
 public class GraphKnowledgeBase implements KnowledgeBase {
 
     private static final Logger log = LoggerFactory.getLogger(GraphKnowledgeBase.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private final KnowledgeGraphService graphService;
 

@@ -19,11 +19,10 @@ import ai.kompile.gateway.core.service.SessionService;
 import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.ToolCall;
 import ai.kompile.react.model.TokenUsage;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -50,9 +49,7 @@ public class JsonlSessionService implements SessionService {
 
     public JsonlSessionService(String workspace) throws IOException {
         this.sessionsDir = Path.of(workspace, "sessions");
-        this.objectMapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+        this.objectMapper = JsonUtils.newStandardMapper()
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);
         Files.createDirectories(sessionsDir);
         log.info("Session storage initialized at: {}", sessionsDir);

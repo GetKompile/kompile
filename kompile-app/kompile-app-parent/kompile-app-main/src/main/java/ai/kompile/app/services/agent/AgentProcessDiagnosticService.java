@@ -277,60 +277,12 @@ public class AgentProcessDiagnosticService {
      * Get full diagnostic report.
      */
     public FullDiagnosticReport getFullReport() {
-        FullDiagnosticReport report = new FullDiagnosticReport();
-        report.setSummary(getSummary());
-        report.setCurrentProcess(getCurrentProcess().orElse(null));
-        report.setRecentProcesses(getHistory());
+        FullDiagnosticReport report = FullDiagnosticReport.builder()
+                .summary(getSummary())
+                .currentProcess(getCurrentProcess().orElse(null))
+                .recentProcesses(getHistory())
+                .build();
         return report;
     }
 
-    // DTOs
-
-    public static class DiagnosticSummary {
-        private boolean hasActiveProcess;
-        private String activeProcessId;
-        private String activeAgentName;
-        private ProcessState activeProcessState;
-        private long activeProcessDurationMs;
-        private int activeProcessLinesReceived;
-        private int recentProcessCount;
-        private int failedProcessCount;
-        private String lastProcessTime;
-        private String lastError;
-
-        // Getters and Setters
-        public boolean isHasActiveProcess() { return hasActiveProcess; }
-        public void setHasActiveProcess(boolean hasActiveProcess) { this.hasActiveProcess = hasActiveProcess; }
-        public String getActiveProcessId() { return activeProcessId; }
-        public void setActiveProcessId(String activeProcessId) { this.activeProcessId = activeProcessId; }
-        public String getActiveAgentName() { return activeAgentName; }
-        public void setActiveAgentName(String activeAgentName) { this.activeAgentName = activeAgentName; }
-        public ProcessState getActiveProcessState() { return activeProcessState; }
-        public void setActiveProcessState(ProcessState activeProcessState) { this.activeProcessState = activeProcessState; }
-        public long getActiveProcessDurationMs() { return activeProcessDurationMs; }
-        public void setActiveProcessDurationMs(long activeProcessDurationMs) { this.activeProcessDurationMs = activeProcessDurationMs; }
-        public int getActiveProcessLinesReceived() { return activeProcessLinesReceived; }
-        public void setActiveProcessLinesReceived(int activeProcessLinesReceived) { this.activeProcessLinesReceived = activeProcessLinesReceived; }
-        public int getRecentProcessCount() { return recentProcessCount; }
-        public void setRecentProcessCount(int recentProcessCount) { this.recentProcessCount = recentProcessCount; }
-        public int getFailedProcessCount() { return failedProcessCount; }
-        public void setFailedProcessCount(int failedProcessCount) { this.failedProcessCount = failedProcessCount; }
-        public String getLastProcessTime() { return lastProcessTime; }
-        public void setLastProcessTime(String lastProcessTime) { this.lastProcessTime = lastProcessTime; }
-        public String getLastError() { return lastError; }
-        public void setLastError(String lastError) { this.lastError = lastError; }
-    }
-
-    public static class FullDiagnosticReport {
-        private DiagnosticSummary summary;
-        private ProcessStatus currentProcess;
-        private List<ProcessStatus> recentProcesses;
-
-        public DiagnosticSummary getSummary() { return summary; }
-        public void setSummary(DiagnosticSummary summary) { this.summary = summary; }
-        public ProcessStatus getCurrentProcess() { return currentProcess; }
-        public void setCurrentProcess(ProcessStatus currentProcess) { this.currentProcess = currentProcess; }
-        public List<ProcessStatus> getRecentProcesses() { return recentProcesses; }
-        public void setRecentProcesses(List<ProcessStatus> recentProcesses) { this.recentProcesses = recentProcesses; }
-    }
 }

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -70,7 +71,7 @@ public class UnifiedSearchTool implements CliTool {
 
     @Override
     public JsonNode parameterSchema() {
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
@@ -131,12 +132,12 @@ public class UnifiedSearchTool implements CliTool {
 
         // Non-search actions route directly to semantic memory
         if ("memory_stats".equals(action)) {
-            ObjectNode memParams = new ObjectMapper().createObjectNode();
+            ObjectNode memParams = JsonUtils.standardMapper().createObjectNode();
             memParams.put("action", "stats");
             return semanticMemoryTool.execute(memParams, context);
         }
         if ("index_turn".equals(action)) {
-            ObjectNode memParams = new ObjectMapper().createObjectNode();
+            ObjectNode memParams = JsonUtils.standardMapper().createObjectNode();
             memParams.put("action", "index_turn");
             memParams.put("content", params.path("content").asText(""));
             memParams.put("role", params.path("role").asText("user"));
@@ -169,7 +170,7 @@ public class UnifiedSearchTool implements CliTool {
     }
 
     private ToolResult executeMemory(JsonNode params, ToolContext context) throws ToolExecutionException {
-        ObjectNode memParams = new ObjectMapper().createObjectNode();
+        ObjectNode memParams = JsonUtils.standardMapper().createObjectNode();
         memParams.put("action", "search");
         memParams.put("query", params.path("query").asText(""));
         memParams.put("top_k", params.path("max_results").asInt(5));

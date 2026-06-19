@@ -67,7 +67,9 @@ public class AppStartCommand implements Callable<Integer> {
         Process process = pb.start();
 
         long pid = process.pid();
-        InstanceRegistry.register(new InstanceInfo(name, "app", port, pid, jar.getAbsolutePath()));
+        InstanceRegistry.register(InstanceInfo.builder()
+                .name(name).type("app").port(port).pid(pid).jarPath(jar.getAbsolutePath())
+                .startedAt(java.time.Instant.now()).build());
 
         System.out.println("Started Kompile app '" + name + "' on port " + port + " (PID: " + pid + ")");
         return 0;

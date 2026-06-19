@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.llm.pipeline;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -57,7 +58,7 @@ import java.util.Objects;
 public class LlmObservabilityService {
 
     private static final Logger logger = LoggerFactory.getLogger(LlmObservabilityService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private final String servingUrl;
     private final HttpClient httpClient;

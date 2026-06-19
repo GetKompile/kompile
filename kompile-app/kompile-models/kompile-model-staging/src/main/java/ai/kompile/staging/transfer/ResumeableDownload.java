@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.transfer;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,7 +45,7 @@ public class ResumeableDownload {
 
     private static final Logger log = LoggerFactory.getLogger(ResumeableDownload.class);
     private static final String STATE_FILE_SUFFIX = ".download-state";
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     /**
      * Source URL of the download.

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -79,7 +80,7 @@ public class IndexHealthScorer {
         if (Files.exists(metaFile)) {
             try {
                 @SuppressWarnings("unchecked")
-                Map<String, Object> m = new ObjectMapper().readValue(metaFile.toFile(), Map.class);
+                Map<String, Object> m = JsonUtils.standardMapper().readValue(metaFile.toFile(), Map.class);
                 metadata = m;
             } catch (IOException ignored) {}
         }

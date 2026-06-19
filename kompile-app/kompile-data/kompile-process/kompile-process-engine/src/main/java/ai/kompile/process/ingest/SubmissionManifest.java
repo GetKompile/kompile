@@ -18,6 +18,7 @@ package ai.kompile.process.ingest;
 
 import ai.kompile.process.hitl.Assumption;
 import ai.kompile.process.hitl.CellExclusion;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -37,6 +38,7 @@ import java.util.Map;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class SubmissionManifest {
 
     private String id;

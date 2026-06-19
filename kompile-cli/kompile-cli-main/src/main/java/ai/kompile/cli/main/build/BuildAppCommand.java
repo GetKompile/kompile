@@ -19,7 +19,7 @@ package ai.kompile.cli.main.build;
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.build.config.*;
 import ai.kompile.cli.main.build.generators.*;
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import ai.kompile.modelmanager.KompileModelManager;
 import ai.kompile.modelmanager.ModelConstants;
 import ai.kompile.modelmanager.ModelDescriptor;
@@ -138,6 +138,9 @@ public class BuildAppCommand implements Callable<Integer> {
 
     @Option(names = {"--graalVmHome"}, description = "Path to GraalVM installation (for native builds)")
     private File graalVmHome;
+
+    @Option(names = {"--kompileSourceDir"}, description = "Path to kompile source repository root (for building companion native images: model-staging, CLI)")
+    private File kompileSourceDir;
 
     // --- App metadata ---
     @Option(names = {"--appTitle"}, description = "Application title for UI banner", defaultValue = "Kompile RAG Console")
@@ -312,21 +315,50 @@ public class BuildAppCommand implements Callable<Integer> {
         DatabaseSchemaGenerator dbGen = new DatabaseSchemaGenerator(config);
         dbGen.generate(projectBuildDir);
 
-        // 9. Copy archive if specified
+        // 9. Generate distribution assembly (launcher scripts, data scaffolding, assembly descriptor)
+        AppDistAssemblyGenerator distGen = new AppDistAssemblyGenerator(config);
+        distGen.generate(projectBuildDir);
+
+        // 11. Copy archive if specified
         if (archivePath != null && archivePath.exists()) {
             embedArchive(projectBuildDir);
         }
 
-        // 10. Print module summary
+        // 12. Print module summary
         printEnabledModules(modules);
 
-        // 11. Invoke Maven build (unless explicitly skipped)
+        // 13. Invoke Maven build (unless explicitly skipped)
         if (skipMavenBuild) {
             System.out.println("\n--skipMavenBuild set; generated POM + application.properties only.");
             System.out.println("  Project: " + projectBuildDir.getAbsolutePath());
             return 0;
         }
-        return invokeMaven(projectBuildDir, pomFile);
+
+        // Resolve build tools early — shared by companion and main builds
+        File effectiveGraalVm = null;
+        if (buildNative) {
+            effectiveGraalVm = (graalVmHome != null && graalVmHome.exists()) ? graalVmHome : Info.graalvmDirectory();
+            if (effectiveGraalVm == null || !effectiveGraalVm.exists()) {
+                System.err.println("GraalVM not found. Native build requires --graalVmHome or 'kompile install graalvm'.");
+                return 1;
+            }
+        }
+        File effectiveMaven = (mavenHome != null && mavenHome.exists()) ? mavenHome : EnvironmentUtils.defaultMavenHome();
+        if (effectiveMaven == null || !effectiveMaven.exists()) {
+            System.err.println("Maven not found. Set M2_HOME/MAVEN_HOME or use --mavenHome.");
+            return 1;
+        }
+
+        // 14. Build companion native images (model-staging, CLI)
+        if (buildNative) {
+            int companionResult = buildCompanionNatives(projectBuildDir, effectiveGraalVm, effectiveMaven);
+            if (companionResult != 0) {
+                System.err.println("Companion native image build failed!");
+                return companionResult;
+            }
+        }
+
+        return invokeMaven(projectBuildDir, pomFile, effectiveGraalVm, effectiveMaven);
     }
 
     private BuildPreset resolvePreset(String name) {
@@ -452,7 +484,8 @@ public class BuildAppCommand implements Callable<Integer> {
         FileUtils.writeStringToFile(archiveProps, sb.toString(), "UTF-8");
     }
 
-    private int invokeMaven(File projectBuildDir, File pomFile) throws MavenInvocationException {
+    private int invokeMaven(File projectBuildDir, File pomFile,
+                            File resolvedGraalVm, File resolvedMaven) throws MavenInvocationException {
         InvocationRequest request = new DefaultInvocationRequest();
         request.setPomFile(pomFile);
 
@@ -475,31 +508,24 @@ public class BuildAppCommand implements Callable<Integer> {
         List<String> profiles = new ArrayList<>();
         if (buildNative) {
             profiles.add("native");
-            File effectiveGraalVm = (graalVmHome != null && graalVmHome.exists()) ? graalVmHome : Info.graalvmDirectory();
-            if (effectiveGraalVm != null && effectiveGraalVm.exists()) {
-                System.out.println("Using GraalVM: " + effectiveGraalVm.getAbsolutePath());
-                request.setJavaHome(effectiveGraalVm);
-            } else {
-                System.err.println("GraalVM not found. Native build requires --graalVmHome or 'kompile install graalvm'.");
-                return 1;
+            if (resolvedGraalVm != null) {
+                System.out.println("Using GraalVM: " + resolvedGraalVm.getAbsolutePath());
+                request.setJavaHome(resolvedGraalVm);
             }
         }
         if (buildContainer) {
             profiles.add("container");
         }
+        // Always activate dist profile to produce zip/tar.gz distribution
+        profiles.add("dist");
         if (!profiles.isEmpty()) {
             request.setProfiles(profiles);
         }
 
         Invoker invoker = new DefaultInvoker();
-        File effectiveMaven = (mavenHome != null && mavenHome.exists()) ? mavenHome : EnvironmentUtils.defaultMavenHome();
-        if (effectiveMaven == null || !effectiveMaven.exists()) {
-            System.err.println("Maven not found. Set M2_HOME/MAVEN_HOME or use --mavenHome.");
-            return 1;
-        }
 
         request.setMavenOpts("-Dfile.encoding=UTF-8");
-        invoker.setMavenHome(effectiveMaven);
+        invoker.setMavenHome(resolvedMaven);
         invoker.setWorkingDirectory(projectBuildDir);
         invoker.setOutputHandler(System.out::println);
         invoker.setErrorHandler(System.err::println);
@@ -544,7 +570,160 @@ public class BuildAppCommand implements Callable<Integer> {
                 System.out.println("  Run: java -jar " + jar.getAbsolutePath());
             }
         }
+        // Companion binaries in distribution
+        File companionDir = new File(projectBuildDir, "companion-binaries");
+        if (companionDir.isDirectory()) {
+            File[] companions = companionDir.listFiles(File::isFile);
+            if (companions != null && companions.length > 0) {
+                System.out.println("  Companion binaries:");
+                for (File c : companions) {
+                    System.out.println("    " + c.getName() + " (" + (c.length() / (1024 * 1024)) + "MB)");
+                }
+            }
+        }
+        // Distribution archives
+        File distZip = new File(targetDir, configName + "-" + instanceVersion + "-dist.zip");
+        File distTarGz = new File(targetDir, configName + "-" + instanceVersion + "-dist.tar.gz");
+        if (distZip.exists()) {
+            System.out.println("  Distribution (zip): " + distZip.getAbsolutePath());
+        }
+        if (distTarGz.exists()) {
+            System.out.println("  Distribution (tar.gz): " + distTarGz.getAbsolutePath());
+        }
         return 0;
+    }
+
+    // --- Companion native image builds (model-staging, CLI) ---
+
+    private int buildCompanionNatives(File projectBuildDir, File graalVm, File maven)
+            throws MavenInvocationException, IOException {
+        File companionDir = new File(projectBuildDir, "companion-binaries");
+        if (!companionDir.exists() && !companionDir.mkdirs()) {
+            throw new IOException("Could not create companion-binaries directory: " + companionDir);
+        }
+
+        File repoRoot = resolveKompileSourceDir();
+        if (repoRoot == null) {
+            System.err.println("Warning: kompile source directory not found. Skipping companion native builds.");
+            System.err.println("  Use --kompileSourceDir to specify the kompile repository root.");
+            return 0;
+        }
+
+        System.out.println("\n=== Building companion native images ===");
+        System.out.println("  Kompile source: " + repoRoot.getAbsolutePath());
+
+        // Build model-staging native image (-Pnative)
+        File modelStagingDir = new File(repoRoot, "kompile-app/kompile-models/kompile-model-staging");
+        int rc = buildAndCopyCompanion(modelStagingDir, "kompile-model-staging",
+                List.of("native"), null, companionDir, graalVm, maven);
+        if (rc != 0) return rc;
+
+        // Build CLI native image (activated by -Dkompile.dist property)
+        File cliDir = new File(repoRoot, "kompile-cli/kompile-cli-main");
+        rc = buildAndCopyCompanion(cliDir, "kompile-cli-main",
+                Collections.emptyList(), "kompile.dist", companionDir, graalVm, maven);
+        if (rc != 0) return rc;
+
+        System.out.println("=== Companion native images complete ===\n");
+        return 0;
+    }
+
+    private int buildAndCopyCompanion(File moduleDir, String binaryName, List<String> profiles,
+                                       String activationProperty, File companionDir,
+                                       File graalVm, File maven)
+            throws MavenInvocationException, IOException {
+        // Check if pre-built binary already exists in target/
+        File preBuilt = new File(moduleDir, "target/" + binaryName);
+        if (preBuilt.exists() && preBuilt.canExecute()) {
+            System.out.println("  Found pre-built " + binaryName + " (" +
+                    (preBuilt.length() / (1024 * 1024)) + "MB)");
+            FileUtils.copyFileToDirectory(preBuilt, companionDir);
+            new File(companionDir, binaryName).setExecutable(true);
+            return 0;
+        }
+
+        if (!moduleDir.exists() || !new File(moduleDir, "pom.xml").exists()) {
+            System.err.println("  Warning: Module directory not found: " + moduleDir);
+            return 0;
+        }
+
+        System.out.println("  Building " + binaryName + " native image...");
+        System.out.println("    Module: " + moduleDir.getAbsolutePath());
+
+        InvocationRequest request = new DefaultInvocationRequest();
+        request.setPomFile(new File(moduleDir, "pom.xml"));
+
+        List<String> goals = new ArrayList<>();
+        if (javacppPlatform != null && !javacppPlatform.isEmpty()) {
+            goals.add("-Djavacpp.platform=" + javacppPlatform);
+            goals.add("-Dorg.eclipse.python4j.numpyimport=false");
+        }
+        goals.add("clean");
+        goals.add("package");
+        request.setGoals(goals);
+
+        Properties sysProps = new Properties();
+        sysProps.setProperty("skipTests", "true");
+        if (activationProperty != null) {
+            sysProps.setProperty(activationProperty, "true");
+        }
+        request.setProperties(sysProps);
+
+        if (profiles != null && !profiles.isEmpty()) {
+            request.setProfiles(profiles);
+        }
+
+        request.setJavaHome(graalVm);
+        request.setMavenOpts("-Dfile.encoding=UTF-8");
+
+        Invoker invoker = new DefaultInvoker();
+        invoker.setMavenHome(maven);
+        invoker.setWorkingDirectory(moduleDir);
+        invoker.setOutputHandler(System.out::println);
+        invoker.setErrorHandler(System.err::println);
+
+        InvocationResult result = invoker.execute(request);
+        if (result.getExitCode() != 0) {
+            System.err.println("  Failed to build " + binaryName + " (exit code: " + result.getExitCode() + ")");
+            return result.getExitCode();
+        }
+
+        // Copy built binary
+        File builtBinary = new File(moduleDir, "target/" + binaryName);
+        if (!builtBinary.exists()) {
+            System.err.println("  Error: Built binary not found at: " + builtBinary);
+            return 1;
+        }
+
+        FileUtils.copyFileToDirectory(builtBinary, companionDir);
+        new File(companionDir, binaryName).setExecutable(true);
+        System.out.println("  Built " + binaryName + " (" + (builtBinary.length() / (1024 * 1024)) + "MB)");
+        return 0;
+    }
+
+    private File resolveKompileSourceDir() {
+        if (kompileSourceDir != null && kompileSourceDir.exists()) {
+            if (isKompileRepoRoot(kompileSourceDir)) return kompileSourceDir;
+        }
+        String envDir = System.getenv("KOMPILE_SOURCE_DIR");
+        if (envDir != null) {
+            File dir = new File(envDir);
+            if (isKompileRepoRoot(dir)) return dir;
+        }
+        // Walk up from current working directory
+        File current = new File(System.getProperty("user.dir"));
+        while (current != null) {
+            if (isKompileRepoRoot(current)) return current;
+            current = current.getParentFile();
+        }
+        return null;
+    }
+
+    private boolean isKompileRepoRoot(File dir) {
+        return dir.isDirectory()
+                && new File(dir, "kompile-cli").isDirectory()
+                && new File(dir, "kompile-app").isDirectory()
+                && new File(dir, "pom.xml").isFile();
     }
 
     private String resolveContainerImageName() {

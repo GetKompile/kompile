@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.agent;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.app.web.dto.AgentChatRequest;
@@ -51,7 +52,7 @@ public class ApiAgentChatExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(ApiAgentChatExecutor.class);
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final ExecutorService executorService = new java.util.concurrent.ThreadPoolExecutor(
             2, 16, 60L, java.util.concurrent.TimeUnit.SECONDS,
             new java.util.concurrent.LinkedBlockingQueue<>(200),

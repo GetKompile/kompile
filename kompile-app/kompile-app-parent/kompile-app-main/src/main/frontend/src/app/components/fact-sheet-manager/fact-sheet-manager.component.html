@@ -1196,135 +1196,337 @@
                    *ngIf="job.documentsDiscovered > 0 || job.documentsLoaded > 0 || job.chunksCreated || job.currentPhase">
 
                 <!-- Discovery -->
-                <div class="stage-row" [ngClass]="{
-                  'active': isStageActive(job, 'DISCOVERY'),
-                  'complete': isStageComplete(job, 'DISCOVERY'),
-                  'inactive': !isStageActive(job, 'DISCOVERY') && !isStageComplete(job, 'DISCOVERY') && job.documentsDiscovered === 0
+                <div class="fs-stage-accordion-item" [ngClass]="{
+                  'fs-stage-active': isStageActive(job, 'DISCOVERY'),
+                  'fs-stage-complete': isStageComplete(job, 'DISCOVERY'),
+                  'fs-stage-inactive': !isStageActive(job, 'DISCOVERY') && !isStageComplete(job, 'DISCOVERY') && job.documentsDiscovered === 0
                 }">
-                  <div class="stage-row-label">
-                    <mat-icon>search</mat-icon>
-                    <span class="stage-name">Discovery</span>
+                  <div class="stage-row fs-stage-header"
+                       (click)="toggleFsStageExpanded(job.jobId, 'DISCOVERY')"
+                       role="button"
+                       [attr.aria-expanded]="isFsStageExpanded(job.jobId, 'DISCOVERY')">
+                    <mat-icon class="fs-stage-chevron"
+                              [class.fs-stage-chevron-open]="isFsStageExpanded(job.jobId, 'DISCOVERY')">chevron_right</mat-icon>
+                    <div class="stage-row-label">
+                      <mat-icon>search</mat-icon>
+                      <span class="stage-name">Discovery</span>
+                    </div>
+                    <div class="stage-row-bar">
+                      <mat-progress-bar
+                        [mode]="isStageActive(job, 'DISCOVERY') ? 'indeterminate' : 'determinate'"
+                        [value]="job.documentsDiscovered > 0 ? 100 : 0">
+                      </mat-progress-bar>
+                    </div>
+                    <span class="stage-row-stat">{{ job.documentsDiscovered }} found</span>
                   </div>
-                  <div class="stage-row-bar">
-                    <mat-progress-bar
-                      [mode]="isStageActive(job, 'DISCOVERY') ? 'indeterminate' : 'determinate'"
-                      [value]="job.documentsDiscovered > 0 ? 100 : 0">
-                    </mat-progress-bar>
+                  <div class="fs-stage-detail-panel" *ngIf="isFsStageExpanded(job.jobId, 'DISCOVERY')">
+                    <div class="fs-stage-detail-stats">
+                      <span><strong>Documents found:</strong> {{ job.documentsDiscovered }}</span>
+                    </div>
+                    <div class="fs-stage-detail-loading" *ngIf="isFsStageLogLoading(job)">
+                      <mat-icon inline>sync</mat-icon> Loading activity log...
+                    </div>
+                    <ng-container *ngIf="!isFsStageLogLoading(job)">
+                      <ng-container *ngIf="getFsStageEvents(job, 'DISCOVERY') as stageEvents">
+                        <div class="fs-stage-section-header" *ngIf="stageEvents.length > 0">
+                          <mat-icon inline>receipt_long</mat-icon><span>&#9658; Activity</span>
+                        </div>
+                        <div class="fs-stage-events" *ngIf="stageEvents.length > 0">
+                          <div *ngFor="let ev of stageEvents | slice:-20" class="fs-stage-event-row"
+                               [class.fs-event-warn]="ev.level === 'WARN'" [class.fs-event-error]="ev.level === 'ERROR'">
+                            <span class="fs-event-time" *ngIf="ev.timestamp">{{ formatEventTime(ev.timestamp) }}</span>
+                            <span class="fs-event-level" [class]="'fs-level-' + (ev.level || 'info').toLowerCase()">{{ ev.level }}</span>
+                            <span class="fs-event-msg">{{ ev.message }}</span>
+                          </div>
+                        </div>
+                        <div class="fs-stage-detail-empty" *ngIf="stageEvents.length === 0">
+                          <mat-icon inline>hourglass_empty</mat-icon> No activity recorded for this stage.
+                        </div>
+                      </ng-container>
+                    </ng-container>
                   </div>
-                  <span class="stage-row-stat">{{ job.documentsDiscovered }} found</span>
                 </div>
 
                 <!-- Loading -->
-                <div class="stage-row" [ngClass]="{
-                  'active': isStageActive(job, 'LOADING'),
-                  'complete': isStageComplete(job, 'LOADING'),
-                  'inactive': !isStageActive(job, 'LOADING') && !isStageComplete(job, 'LOADING') && job.documentsLoaded === 0
+                <div class="fs-stage-accordion-item" [ngClass]="{
+                  'fs-stage-active': isStageActive(job, 'LOADING'),
+                  'fs-stage-complete': isStageComplete(job, 'LOADING'),
+                  'fs-stage-inactive': !isStageActive(job, 'LOADING') && !isStageComplete(job, 'LOADING') && job.documentsLoaded === 0
                 }">
-                  <div class="stage-row-label">
-                    <mat-icon>description</mat-icon>
-                    <span class="stage-name">Loading</span>
+                  <div class="stage-row fs-stage-header"
+                       (click)="toggleFsStageExpanded(job.jobId, 'LOADING')"
+                       role="button"
+                       [attr.aria-expanded]="isFsStageExpanded(job.jobId, 'LOADING')">
+                    <mat-icon class="fs-stage-chevron"
+                              [class.fs-stage-chevron-open]="isFsStageExpanded(job.jobId, 'LOADING')">chevron_right</mat-icon>
+                    <div class="stage-row-label">
+                      <mat-icon>description</mat-icon>
+                      <span class="stage-name">Loading</span>
+                    </div>
+                    <div class="stage-row-bar">
+                      <mat-progress-bar
+                        mode="determinate"
+                        [value]="getStageProgress(job, 'LOADING')">
+                      </mat-progress-bar>
+                    </div>
+                    <span class="stage-row-stat">{{ job.documentsLoaded }}/{{ job.documentsDiscovered || '?' }}
+                      <span class="stage-pct" *ngIf="getStageProgress(job, 'LOADING') > 0">({{ getStageProgress(job, 'LOADING') }}%)</span>
+                    </span>
                   </div>
-                  <div class="stage-row-bar">
-                    <mat-progress-bar
-                      mode="determinate"
-                      [value]="getStageProgress(job, 'LOADING')">
-                    </mat-progress-bar>
+                  <div class="fs-stage-detail-panel" *ngIf="isFsStageExpanded(job.jobId, 'LOADING')">
+                    <div class="fs-stage-detail-stats">
+                      <span><strong>Loaded:</strong> {{ job.documentsLoaded }}/{{ job.documentsDiscovered || '?' }}</span>
+                      <span *ngIf="getStageProgress(job, 'LOADING') > 0"><strong>Progress:</strong> {{ getStageProgress(job, 'LOADING') }}%</span>
+                    </div>
+                    <div class="fs-stage-detail-loading" *ngIf="isFsStageLogLoading(job)">
+                      <mat-icon inline>sync</mat-icon> Loading activity log...
+                    </div>
+                    <ng-container *ngIf="!isFsStageLogLoading(job)">
+                      <ng-container *ngIf="getFsStageEvents(job, 'LOADING') as stageEvents">
+                        <div class="fs-stage-section-header" *ngIf="stageEvents.length > 0">
+                          <mat-icon inline>receipt_long</mat-icon><span>&#9658; Activity</span>
+                        </div>
+                        <div class="fs-stage-events" *ngIf="stageEvents.length > 0">
+                          <div *ngFor="let ev of stageEvents | slice:-20" class="fs-stage-event-row"
+                               [class.fs-event-warn]="ev.level === 'WARN'" [class.fs-event-error]="ev.level === 'ERROR'">
+                            <span class="fs-event-time" *ngIf="ev.timestamp">{{ formatEventTime(ev.timestamp) }}</span>
+                            <span class="fs-event-level" [class]="'fs-level-' + (ev.level || 'info').toLowerCase()">{{ ev.level }}</span>
+                            <span class="fs-event-msg">{{ ev.message }}</span>
+                          </div>
+                        </div>
+                        <div class="fs-stage-detail-empty" *ngIf="stageEvents.length === 0">
+                          <mat-icon inline>hourglass_empty</mat-icon> No activity recorded for this stage.
+                        </div>
+                      </ng-container>
+                    </ng-container>
                   </div>
-                  <span class="stage-row-stat">{{ job.documentsLoaded }}/{{ job.documentsDiscovered || '?' }}
-                    <span class="stage-pct" *ngIf="getStageProgress(job, 'LOADING') > 0">({{ getStageProgress(job, 'LOADING') }}%)</span>
-                  </span>
                 </div>
 
                 <!-- Chunking -->
-                <div class="stage-row" [ngClass]="{
-                  'active': isStageActive(job, 'CHUNKING'),
-                  'complete': isStageComplete(job, 'CHUNKING'),
-                  'inactive': !isStageActive(job, 'CHUNKING') && !isStageComplete(job, 'CHUNKING') && !(job.chunksCreated || job.chunksProcessed)
+                <div class="fs-stage-accordion-item" [ngClass]="{
+                  'fs-stage-active': isStageActive(job, 'CHUNKING'),
+                  'fs-stage-complete': isStageComplete(job, 'CHUNKING'),
+                  'fs-stage-inactive': !isStageActive(job, 'CHUNKING') && !isStageComplete(job, 'CHUNKING') && !(job.chunksCreated || job.chunksProcessed)
                 }">
-                  <div class="stage-row-label">
-                    <mat-icon>content_cut</mat-icon>
-                    <span class="stage-name">Chunking</span>
+                  <div class="stage-row fs-stage-header"
+                       (click)="toggleFsStageExpanded(job.jobId, 'CHUNKING')"
+                       role="button"
+                       [attr.aria-expanded]="isFsStageExpanded(job.jobId, 'CHUNKING')">
+                    <mat-icon class="fs-stage-chevron"
+                              [class.fs-stage-chevron-open]="isFsStageExpanded(job.jobId, 'CHUNKING')">chevron_right</mat-icon>
+                    <div class="stage-row-label">
+                      <mat-icon>content_cut</mat-icon>
+                      <span class="stage-name">Chunking</span>
+                    </div>
+                    <div class="stage-row-bar">
+                      <mat-progress-bar
+                        [mode]="isStageActive(job, 'CHUNKING') && getStageProgress(job, 'CHUNKING') === 0 ? 'indeterminate' : 'determinate'"
+                        [value]="getStageProgress(job, 'CHUNKING')">
+                      </mat-progress-bar>
+                    </div>
+                    <span class="stage-row-stat">{{ job.chunksCreated || job.chunksProcessed || 0 }} chunks</span>
                   </div>
-                  <div class="stage-row-bar">
-                    <mat-progress-bar
-                      [mode]="isStageActive(job, 'CHUNKING') && getStageProgress(job, 'CHUNKING') === 0 ? 'indeterminate' : 'determinate'"
-                      [value]="getStageProgress(job, 'CHUNKING')">
-                    </mat-progress-bar>
+                  <div class="fs-stage-detail-panel" *ngIf="isFsStageExpanded(job.jobId, 'CHUNKING')">
+                    <div class="fs-stage-detail-stats">
+                      <span><strong>Chunks:</strong> {{ job.chunksCreated || job.chunksProcessed || 0 }}</span>
+                    </div>
+                    <div class="fs-stage-detail-loading" *ngIf="isFsStageLogLoading(job)">
+                      <mat-icon inline>sync</mat-icon> Loading activity log...
+                    </div>
+                    <ng-container *ngIf="!isFsStageLogLoading(job)">
+                      <ng-container *ngIf="getFsStageEvents(job, 'CHUNKING') as stageEvents">
+                        <div class="fs-stage-section-header" *ngIf="stageEvents.length > 0">
+                          <mat-icon inline>receipt_long</mat-icon><span>&#9658; Activity</span>
+                        </div>
+                        <div class="fs-stage-events" *ngIf="stageEvents.length > 0">
+                          <div *ngFor="let ev of stageEvents | slice:-20" class="fs-stage-event-row"
+                               [class.fs-event-warn]="ev.level === 'WARN'" [class.fs-event-error]="ev.level === 'ERROR'">
+                            <span class="fs-event-time" *ngIf="ev.timestamp">{{ formatEventTime(ev.timestamp) }}</span>
+                            <span class="fs-event-level" [class]="'fs-level-' + (ev.level || 'info').toLowerCase()">{{ ev.level }}</span>
+                            <span class="fs-event-msg">{{ ev.message }}</span>
+                          </div>
+                        </div>
+                        <div class="fs-stage-detail-empty" *ngIf="stageEvents.length === 0">
+                          <mat-icon inline>hourglass_empty</mat-icon> No activity recorded for this stage.
+                        </div>
+                      </ng-container>
+                    </ng-container>
                   </div>
-                  <span class="stage-row-stat">{{ job.chunksCreated || job.chunksProcessed || 0 }} chunks</span>
                 </div>
 
                 <!-- Graph Extraction (if enabled) -->
-                <div class="stage-row" *ngIf="job.graphExtractionEnabled" [ngClass]="{
-                  'active': isStageActive(job, 'GRAPH_EXTRACTION'),
-                  'complete': isStageComplete(job, 'GRAPH_EXTRACTION'),
-                  'inactive': !isStageActive(job, 'GRAPH_EXTRACTION') && !isStageComplete(job, 'GRAPH_EXTRACTION') && !(job.graphChunksProcessed)
+                <div class="fs-stage-accordion-item" *ngIf="job.graphExtractionEnabled" [ngClass]="{
+                  'fs-stage-active': isStageActive(job, 'GRAPH_EXTRACTION'),
+                  'fs-stage-complete': isStageComplete(job, 'GRAPH_EXTRACTION'),
+                  'fs-stage-inactive': !isStageActive(job, 'GRAPH_EXTRACTION') && !isStageComplete(job, 'GRAPH_EXTRACTION') && !(job.graphChunksProcessed)
                 }">
-                  <div class="stage-row-label">
-                    <mat-icon>hub</mat-icon>
-                    <span class="stage-name">Graph Extraction</span>
-                  </div>
-                  <div class="stage-row-bar">
-                    <mat-progress-bar
-                      mode="determinate"
-                      [value]="getStageProgress(job, 'GRAPH_EXTRACTION')"
-                      color="accent">
-                    </mat-progress-bar>
-                  </div>
-                  <span class="stage-row-stat">
-                    {{ job.graphChunksProcessed || 0 }}/{{ job.graphChunksTotal || '?' }}
-                    <span class="stage-pct" *ngIf="getStageProgress(job, 'GRAPH_EXTRACTION') > 0">({{ getStageProgress(job, 'GRAPH_EXTRACTION') }}%)</span>
-                    <span *ngIf="job.entitiesExtracted" style="margin-left:4px;color:var(--text-secondary)">
-                      {{ job.entitiesExtracted }} entities, {{ job.relationshipsExtracted }} rels
+                  <div class="stage-row fs-stage-header"
+                       (click)="toggleFsStageExpanded(job.jobId, 'GRAPH_EXTRACTION')"
+                       role="button"
+                       [attr.aria-expanded]="isFsStageExpanded(job.jobId, 'GRAPH_EXTRACTION')">
+                    <mat-icon class="fs-stage-chevron"
+                              [class.fs-stage-chevron-open]="isFsStageExpanded(job.jobId, 'GRAPH_EXTRACTION')">chevron_right</mat-icon>
+                    <div class="stage-row-label">
+                      <mat-icon>hub</mat-icon>
+                      <span class="stage-name">Graph Extraction</span>
+                    </div>
+                    <div class="stage-row-bar">
+                      <mat-progress-bar
+                        mode="determinate"
+                        [value]="getStageProgress(job, 'GRAPH_EXTRACTION')"
+                        color="accent">
+                      </mat-progress-bar>
+                    </div>
+                    <span class="stage-row-stat">
+                      {{ job.graphChunksProcessed || 0 }}/{{ job.graphChunksTotal || '?' }}
+                      <span class="stage-pct" *ngIf="getStageProgress(job, 'GRAPH_EXTRACTION') > 0">({{ getStageProgress(job, 'GRAPH_EXTRACTION') }}%)</span>
+                      <span *ngIf="job.entitiesExtracted" style="margin-left:4px;color:var(--text-secondary)">
+                        {{ job.entitiesExtracted }} entities, {{ job.relationshipsExtracted }} rels
+                      </span>
                     </span>
-                  </span>
+                  </div>
+                  <div class="fs-stage-detail-panel" *ngIf="isFsStageExpanded(job.jobId, 'GRAPH_EXTRACTION')">
+                    <div class="fs-stage-detail-stats">
+                      <span><strong>Chunks processed:</strong> {{ job.graphChunksProcessed || 0 }}/{{ job.graphChunksTotal || '?' }}</span>
+                      <span *ngIf="job.entitiesExtracted"><strong>Entities:</strong> {{ job.entitiesExtracted }}</span>
+                      <span *ngIf="job.relationshipsExtracted"><strong>Relationships:</strong> {{ job.relationshipsExtracted }}</span>
+                    </div>
+                    <div class="fs-stage-detail-loading" *ngIf="isFsStageLogLoading(job)">
+                      <mat-icon inline>sync</mat-icon> Loading activity log...
+                    </div>
+                    <ng-container *ngIf="!isFsStageLogLoading(job)">
+                      <ng-container *ngIf="getFsStageEvents(job, 'GRAPH_EXTRACTION') as stageEvents">
+                        <div class="fs-stage-section-header" *ngIf="stageEvents.length > 0">
+                          <mat-icon inline>receipt_long</mat-icon><span>&#9658; Activity</span>
+                        </div>
+                        <div class="fs-stage-events" *ngIf="stageEvents.length > 0">
+                          <div *ngFor="let ev of stageEvents | slice:-20" class="fs-stage-event-row"
+                               [class.fs-event-warn]="ev.level === 'WARN'" [class.fs-event-error]="ev.level === 'ERROR'">
+                            <span class="fs-event-time" *ngIf="ev.timestamp">{{ formatEventTime(ev.timestamp) }}</span>
+                            <span class="fs-event-level" [class]="'fs-level-' + (ev.level || 'info').toLowerCase()">{{ ev.level }}</span>
+                            <span class="fs-event-msg">{{ ev.message }}</span>
+                          </div>
+                        </div>
+                        <div class="fs-stage-detail-empty" *ngIf="stageEvents.length === 0">
+                          <mat-icon inline>hourglass_empty</mat-icon> No activity recorded for this stage.
+                        </div>
+                      </ng-container>
+                    </ng-container>
+                  </div>
                 </div>
 
                 <!-- Embedding (if vector index enabled) -->
-                <div class="stage-row" *ngIf="job.vectorIndexEnabled" [ngClass]="{
-                  'active': isStageActive(job, 'EMBEDDING'),
-                  'complete': isStageComplete(job, 'EMBEDDING'),
-                  'inactive': !isStageActive(job, 'EMBEDDING') && !isStageComplete(job, 'EMBEDDING') && !(job.chunksEmbedded)
+                <div class="fs-stage-accordion-item" *ngIf="job.vectorIndexEnabled" [ngClass]="{
+                  'fs-stage-active': isStageActive(job, 'EMBEDDING'),
+                  'fs-stage-complete': isStageComplete(job, 'EMBEDDING'),
+                  'fs-stage-inactive': !isStageActive(job, 'EMBEDDING') && !isStageComplete(job, 'EMBEDDING') && !(job.chunksEmbedded)
                 }">
-                  <div class="stage-row-label">
-                    <mat-icon>memory</mat-icon>
-                    <span class="stage-name">Embedding</span>
-                  </div>
-                  <div class="stage-row-bar">
-                    <mat-progress-bar
-                      mode="determinate"
-                      [value]="getStageProgress(job, 'EMBEDDING')">
-                    </mat-progress-bar>
-                  </div>
-                  <span class="stage-row-stat">
-                    {{ job.chunksEmbedded || 0 }}/{{ job.chunksQueuedForEmbedding || job.chunksCreated || job.chunksProcessed || '?' }}
-                    <span class="stage-pct" *ngIf="getStageProgress(job, 'EMBEDDING') > 0">({{ getStageProgress(job, 'EMBEDDING') }}%)</span>
-                    <span *ngIf="job.vectorBatchesTotal" style="margin-left:4px;color:var(--text-secondary)">
-                      batch {{ job.vectorBatchesCompleted || 0 }}/{{ job.vectorBatchesTotal }}
+                  <div class="stage-row fs-stage-header"
+                       (click)="toggleFsStageExpanded(job.jobId, 'EMBEDDING')"
+                       role="button"
+                       [attr.aria-expanded]="isFsStageExpanded(job.jobId, 'EMBEDDING')">
+                    <mat-icon class="fs-stage-chevron"
+                              [class.fs-stage-chevron-open]="isFsStageExpanded(job.jobId, 'EMBEDDING')">chevron_right</mat-icon>
+                    <div class="stage-row-label">
+                      <mat-icon>memory</mat-icon>
+                      <span class="stage-name">Embedding</span>
+                    </div>
+                    <div class="stage-row-bar">
+                      <mat-progress-bar
+                        mode="determinate"
+                        [value]="getStageProgress(job, 'EMBEDDING')">
+                      </mat-progress-bar>
+                    </div>
+                    <span class="stage-row-stat">
+                      {{ job.chunksEmbedded || 0 }}/{{ job.chunksQueuedForEmbedding || job.chunksCreated || job.chunksProcessed || '?' }}
+                      <span class="stage-pct" *ngIf="getStageProgress(job, 'EMBEDDING') > 0">({{ getStageProgress(job, 'EMBEDDING') }}%)</span>
+                      <span *ngIf="job.vectorBatchesTotal" style="margin-left:4px;color:var(--text-secondary)">
+                        batch {{ job.vectorBatchesCompleted || 0 }}/{{ job.vectorBatchesTotal }}
+                      </span>
+                      <span *ngIf="job.currentBatchStep" style="margin-left:4px;color:var(--text-tertiary);font-style:italic">
+                        {{ job.currentBatchStep }}
+                      </span>
                     </span>
-                    <span *ngIf="job.currentBatchStep" style="margin-left:4px;color:var(--text-tertiary);font-style:italic">
-                      {{ job.currentBatchStep }}
-                    </span>
-                  </span>
+                  </div>
+                  <div class="fs-stage-detail-panel" *ngIf="isFsStageExpanded(job.jobId, 'EMBEDDING')">
+                    <div class="fs-stage-detail-stats">
+                      <span><strong>Embedded:</strong> {{ job.chunksEmbedded || 0 }}/{{ job.chunksQueuedForEmbedding || job.chunksCreated || '?' }}</span>
+                      <span *ngIf="job.vectorBatchesTotal"><strong>Batches:</strong> {{ job.vectorBatchesCompleted || 0 }}/{{ job.vectorBatchesTotal }}</span>
+                    </div>
+                    <div class="fs-stage-detail-loading" *ngIf="isFsStageLogLoading(job)">
+                      <mat-icon inline>sync</mat-icon> Loading activity log...
+                    </div>
+                    <ng-container *ngIf="!isFsStageLogLoading(job)">
+                      <ng-container *ngIf="getFsStageEvents(job, 'EMBEDDING') as stageEvents">
+                        <div class="fs-stage-section-header" *ngIf="stageEvents.length > 0">
+                          <mat-icon inline>receipt_long</mat-icon><span>&#9658; Activity</span>
+                        </div>
+                        <div class="fs-stage-events" *ngIf="stageEvents.length > 0">
+                          <div *ngFor="let ev of stageEvents | slice:-20" class="fs-stage-event-row"
+                               [class.fs-event-warn]="ev.level === 'WARN'" [class.fs-event-error]="ev.level === 'ERROR'">
+                            <span class="fs-event-time" *ngIf="ev.timestamp">{{ formatEventTime(ev.timestamp) }}</span>
+                            <span class="fs-event-level" [class]="'fs-level-' + (ev.level || 'info').toLowerCase()">{{ ev.level }}</span>
+                            <span class="fs-event-msg">{{ ev.message }}</span>
+                          </div>
+                        </div>
+                        <div class="fs-stage-detail-empty" *ngIf="stageEvents.length === 0">
+                          <mat-icon inline>hourglass_empty</mat-icon> No activity recorded for this stage.
+                        </div>
+                      </ng-container>
+                    </ng-container>
+                  </div>
                 </div>
 
                 <!-- Indexing (if vector index enabled) -->
-                <div class="stage-row" *ngIf="job.vectorIndexEnabled" [ngClass]="{
-                  'active': isStageActive(job, 'INDEXING'),
-                  'complete': isStageComplete(job, 'INDEXING'),
-                  'inactive': !isStageActive(job, 'INDEXING') && !isStageComplete(job, 'INDEXING') && !job.documentsIndexed
+                <div class="fs-stage-accordion-item" *ngIf="job.vectorIndexEnabled" [ngClass]="{
+                  'fs-stage-active': isStageActive(job, 'INDEXING'),
+                  'fs-stage-complete': isStageComplete(job, 'INDEXING'),
+                  'fs-stage-inactive': !isStageActive(job, 'INDEXING') && !isStageComplete(job, 'INDEXING') && !job.documentsIndexed
                 }">
-                  <div class="stage-row-label">
-                    <mat-icon>storage</mat-icon>
-                    <span class="stage-name">Indexing</span>
+                  <div class="stage-row fs-stage-header"
+                       (click)="toggleFsStageExpanded(job.jobId, 'INDEXING')"
+                       role="button"
+                       [attr.aria-expanded]="isFsStageExpanded(job.jobId, 'INDEXING')">
+                    <mat-icon class="fs-stage-chevron"
+                              [class.fs-stage-chevron-open]="isFsStageExpanded(job.jobId, 'INDEXING')">chevron_right</mat-icon>
+                    <div class="stage-row-label">
+                      <mat-icon>storage</mat-icon>
+                      <span class="stage-name">Indexing</span>
+                    </div>
+                    <div class="stage-row-bar">
+                      <mat-progress-bar
+                        mode="determinate"
+                        [value]="getStageProgress(job, 'INDEXING')">
+                      </mat-progress-bar>
+                    </div>
+                    <span class="stage-row-stat">{{ job.documentsIndexed || 0 }} indexed</span>
                   </div>
-                  <div class="stage-row-bar">
-                    <mat-progress-bar
-                      mode="determinate"
-                      [value]="getStageProgress(job, 'INDEXING')">
-                    </mat-progress-bar>
+                  <div class="fs-stage-detail-panel" *ngIf="isFsStageExpanded(job.jobId, 'INDEXING')">
+                    <div class="fs-stage-detail-stats">
+                      <span><strong>Indexed:</strong> {{ job.documentsIndexed || 0 }}</span>
+                    </div>
+                    <div class="fs-stage-detail-loading" *ngIf="isFsStageLogLoading(job)">
+                      <mat-icon inline>sync</mat-icon> Loading activity log...
+                    </div>
+                    <ng-container *ngIf="!isFsStageLogLoading(job)">
+                      <ng-container *ngIf="getFsStageEvents(job, 'INDEXING') as stageEvents">
+                        <div class="fs-stage-section-header" *ngIf="stageEvents.length > 0">
+                          <mat-icon inline>receipt_long</mat-icon><span>&#9658; Activity</span>
+                        </div>
+                        <div class="fs-stage-events" *ngIf="stageEvents.length > 0">
+                          <div *ngFor="let ev of stageEvents | slice:-20" class="fs-stage-event-row"
+                               [class.fs-event-warn]="ev.level === 'WARN'" [class.fs-event-error]="ev.level === 'ERROR'">
+                            <span class="fs-event-time" *ngIf="ev.timestamp">{{ formatEventTime(ev.timestamp) }}</span>
+                            <span class="fs-event-level" [class]="'fs-level-' + (ev.level || 'info').toLowerCase()">{{ ev.level }}</span>
+                            <span class="fs-event-msg">{{ ev.message }}</span>
+                          </div>
+                        </div>
+                        <div class="fs-stage-detail-empty" *ngIf="stageEvents.length === 0">
+                          <mat-icon inline>hourglass_empty</mat-icon> No activity recorded for this stage.
+                        </div>
+                      </ng-container>
+                    </ng-container>
                   </div>
-                  <span class="stage-row-stat">{{ job.documentsIndexed || 0 }} indexed</span>
                 </div>
               </div>
 

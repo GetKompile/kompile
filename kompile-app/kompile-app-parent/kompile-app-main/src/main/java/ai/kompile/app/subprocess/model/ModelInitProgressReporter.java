@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess.model;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -88,7 +89,7 @@ public class ModelInitProgressReporter implements AutoCloseable {
         this.taskId = taskId;
         this.modelId = modelId;
         this.out = out;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.startTimeMs = System.currentTimeMillis();
         this.currentPhaseStartTime = startTimeMs;
         this.heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> {

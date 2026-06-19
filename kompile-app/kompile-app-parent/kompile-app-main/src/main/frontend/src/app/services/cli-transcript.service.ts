@@ -53,6 +53,22 @@ export interface ExportResult {
   sessionId: string;
 }
 
+export interface ChatSyncStatus {
+  running: boolean;
+  startedAt?: string;
+  completedAt?: string;
+  currentSource?: string;
+  sourceIndex: number;
+  totalSources: number;
+  sourcePending: number;
+  sourceImported: number;
+  sourceFailed: number;
+  totalImported: number;
+  totalFailed: number;
+  totalPending: number;
+  errors: string[];
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -111,6 +127,23 @@ export class CliTranscriptService extends BaseService {
   exportSession(sessionId: string): Observable<ExportResult> {
     return this.http.post<ExportResult>(
       `${this.cliUrl}/export/${encodeURIComponent(sessionId)}`,
+      null
+    );
+  }
+
+  /**
+   * Get the current background sync status.
+   */
+  getSyncStatus(): Observable<ChatSyncStatus> {
+    return this.http.get<ChatSyncStatus>(`${this.cliUrl}/sync/status`);
+  }
+
+  /**
+   * Manually trigger a full sync of all chat sources.
+   */
+  triggerSync(): Observable<{ triggered: boolean; message: string }> {
+    return this.http.post<{ triggered: boolean; message: string }>(
+      `${this.cliUrl}/sync/trigger`,
       null
     );
   }

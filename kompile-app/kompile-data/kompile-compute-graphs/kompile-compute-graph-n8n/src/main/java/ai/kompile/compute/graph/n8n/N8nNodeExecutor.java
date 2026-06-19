@@ -6,6 +6,7 @@ import ai.kompile.compute.graph.model.*;
 import ai.kompile.compute.graph.n8n.model.N8nExecutionResult;
 import ai.kompile.compute.graph.n8n.model.N8nWorkflow;
 import com.fasterxml.jackson.core.type.TypeReference;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -57,7 +58,7 @@ public class N8nNodeExecutor implements NodeExecutor {
     }
 
     public N8nNodeExecutor(String defaultExecutable, String defaultNpxExecutable) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.defaultExecutable = defaultExecutable;
         this.defaultNpxExecutable = defaultNpxExecutable;
     }

@@ -1,5 +1,6 @@
 package ai.kompile.compute.graph.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.extern.slf4j.Slf4j;
@@ -26,7 +27,7 @@ public class ComputeGraphConfigService {
     private final Path configPath;
 
     public ComputeGraphConfigService() {
-        this.objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         this.configPath = Paths.get(System.getProperty("user.home"), CONFIG_DIR, CONFIG_FILE);
         this.config = new AtomicReference<>(loadOrDefault());
     }

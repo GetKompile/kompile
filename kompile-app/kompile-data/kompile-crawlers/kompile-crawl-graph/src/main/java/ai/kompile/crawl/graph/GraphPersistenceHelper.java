@@ -30,6 +30,7 @@ import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.repository.EntityMentionRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,7 +53,7 @@ class GraphPersistenceHelper {
 
     private static final Logger log = LoggerFactory.getLogger(GraphPersistenceHelper.class);
 
-    static final ObjectMapper EDGE_METADATA_MAPPER = new ObjectMapper();
+    static final ObjectMapper EDGE_METADATA_MAPPER = JsonUtils.standardMapper();
 
     private static final Pattern ENTITY_SUFFIX_PATTERN = Pattern.compile(
             "\\b(Inc\\.?|Corp\\.?|Corporation|Ltd\\.?|Limited|LLC|Co\\.?|Company|Group|Plc\\.?)$",

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, Input } from '@angular/core';
+import { Component, OnInit, OnDestroy, OnChanges, SimpleChanges, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
@@ -27,11 +27,12 @@ import { Subject, takeUntil } from 'rxjs';
 import { GraphVisualizerComponent } from '../graph-visualizer/graph-visualizer.component';
 import { EntityBrowserComponent } from '../entity-browser/entity-browser.component';
 import { KnowledgeGraphBuilderComponent } from '../knowledge-graph-builder/knowledge-graph-builder.component';
+import { GraphHierarchyComponent } from '../graph-hierarchy/graph-hierarchy.component';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { GraphNode } from '../../models/graph-models';
 import { FactSheet } from '../../models/api-models';
 
-type KnowledgeGraphTab = 'visualizer' | 'browser' | 'builder';
+type KnowledgeGraphTab = 'visualizer' | 'browser' | 'builder' | 'hierarchy';
 
 @Component({
   selector: 'app-knowledge-graph-hub',
@@ -46,7 +47,8 @@ type KnowledgeGraphTab = 'visualizer' | 'browser' | 'builder';
     MatSnackBarModule,
     GraphVisualizerComponent,
     EntityBrowserComponent,
-    KnowledgeGraphBuilderComponent
+    KnowledgeGraphBuilderComponent,
+    GraphHierarchyComponent
   ],
   template: `
     <div class="knowledge-graph-hub">
@@ -83,6 +85,13 @@ type KnowledgeGraphTab = 'visualizer' | 'browser' | 'builder';
             <mat-icon>construction</mat-icon>
             Builder
           </button>
+          <button mat-stroked-button
+                  [class.active]="activeTab === 'hierarchy'"
+                  (click)="setActiveTab('hierarchy')"
+                  matTooltip="Browse Graph Hierarchy Tree">
+            <mat-icon>account_tree</mat-icon>
+            Hierarchy
+          </button>
         </div>
       </div>
 
@@ -108,6 +117,15 @@ type KnowledgeGraphTab = 'visualizer' | 'browser' | 'builder';
         <!-- Knowledge Graph Builder Tab -->
         <div class="tab-panel" *ngIf="activeTab === 'builder'">
           <app-knowledge-graph-builder></app-knowledge-graph-builder>
+        </div>
+
+        <!-- Graph Hierarchy Tab -->
+        <div class="tab-panel" *ngIf="activeTab === 'hierarchy'">
+          <app-graph-hierarchy
+            [factSheetId]="activeFactSheet?.id || null"
+            (navigateToGraph)="onNavigateToGraph($event)"
+            (viewSubGraph)="onNavigateToGraph($event)">
+          </app-graph-hierarchy>
         </div>
       </div>
     </div>
@@ -216,8 +234,10 @@ type KnowledgeGraphTab = 'visualizer' | 'browser' | 'builder';
     }
   `]
 })
-export class KnowledgeGraphHubComponent implements OnInit, OnDestroy {
+export class KnowledgeGraphHubComponent implements OnInit, OnDestroy, OnChanges {
   private destroy$ = new Subject<void>();
+
+  @Input() focusNodeId: string | null = null;
 
   activeTab: KnowledgeGraphTab = 'visualizer';
   activeFactSheet: FactSheet | null = null;
@@ -235,6 +255,14 @@ export class KnowledgeGraphHubComponent implements OnInit, OnDestroy {
       .subscribe(sheet => {
         this.activeFactSheet = sheet;
       });
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['focusNodeId'] && this.focusNodeId) {
+      this.focusedNodeId = this.focusNodeId;
+      this.activeTab = 'visualizer';
+      this.snackBar.open(`Focusing on node in graph`, 'Dismiss', { duration: 2000 });
+    }
   }
 
   ngOnDestroy(): void {

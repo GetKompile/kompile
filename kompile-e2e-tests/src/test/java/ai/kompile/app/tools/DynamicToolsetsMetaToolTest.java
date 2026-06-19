@@ -17,7 +17,7 @@
 package ai.kompile.app.tools;
 
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
-import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService.DiscoveredTool;
+import ai.kompile.app.services.mcp.DiscoveredTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

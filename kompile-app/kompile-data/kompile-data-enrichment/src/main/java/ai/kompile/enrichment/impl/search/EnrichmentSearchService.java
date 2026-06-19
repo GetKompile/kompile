@@ -20,7 +20,7 @@ import ai.kompile.enrichment.domain.TaxonomyNode;
 import ai.kompile.enrichment.repository.DomainTaxonomyRepository;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -39,14 +39,14 @@ public class EnrichmentSearchService {
     private static final Logger log = LoggerFactory.getLogger(EnrichmentSearchService.class);
 
     private final DomainTaxonomyRepository taxonomyRepository;
-    private final GraphNodeRepository nodeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final ObjectMapper objectMapper;
 
     public EnrichmentSearchService(DomainTaxonomyRepository taxonomyRepository,
-                                   GraphNodeRepository nodeRepository,
+                                   KnowledgeGraphService knowledgeGraphService,
                                    ObjectMapper objectMapper) {
         this.taxonomyRepository = taxonomyRepository;
-        this.nodeRepository = nodeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.objectMapper = objectMapper;
     }
 
@@ -78,7 +78,7 @@ public class EnrichmentSearchService {
      * Search entities by category and/or text query.
      */
     public List<GraphNode> searchByCategory(Long factSheetId, String categoryLabel, String query, int maxResults) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
 
         return entities.stream()
                 .filter(e -> {
@@ -101,7 +101,7 @@ public class EnrichmentSearchService {
      * Get category facets (distinct taxonomyCategory values with counts).
      */
     public Map<String, Long> getCategoryFacets(Long factSheetId) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         Map<String, Long> facets = new LinkedHashMap<>();
         for (GraphNode entity : entities) {
             String category = extractMetadataField(entity, "taxonomyCategory");
@@ -118,7 +118,7 @@ public class EnrichmentSearchService {
      * Get entity type facets for dual-axis filtering.
      */
     public Map<String, Long> getEntityTypeFacets(Long factSheetId) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         Map<String, Long> facets = new LinkedHashMap<>();
         for (GraphNode entity : entities) {
             String type = extractMetadataField(entity, "entity_type");

@@ -16,9 +16,12 @@
 
 package ai.kompile.ocr.document;
 
+import lombok.Getter;
+
 /**
  * Classification of document complexity for pipeline routing.
  */
+@Getter
 public enum DocumentComplexity {
     /**
      * Simple document - plain text, single column.
@@ -65,10 +68,6 @@ public enum DocumentComplexity {
         this.hasTables = hasTables;
         this.hasForms = hasForms;
         this.hasHandwriting = hasHandwriting;
-    }
-
-    public String getDescription() {
-        return description;
     }
 
     public boolean hasTables() {

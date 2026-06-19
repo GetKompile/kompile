@@ -193,15 +193,17 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
 
             // Truncate chunk text to keep prompt within reasonable token limits.
             // For local models, use a smaller limit to leave room for output tokens.
+            // Limits are configurable via ExtractionConfig options:
+            //   "maxCharsPerChunk"    (default 2000 for external, 800 for llm-chat)
+            //   "maxCharsPerChunkVlm" (default 3000 for external VLM content)
             String chunkText = chunk.getText();
             boolean isVlmContent = chunk.getMetadata() != null
                     && Boolean.TRUE.equals(chunk.getMetadata().get(GraphConstants.META_VLM_PROCESSED));
-            int maxChars = "llm-chat".equals(llmService.getId()) ? 800 : 2000;
-            // VLM content contains structural markup that is valuable for extraction;
-            // allow slightly more text for external models to preserve document structure.
-            if (isVlmContent && !"llm-chat".equals(llmService.getId())) {
-                maxChars = 3000;
-            }
+            boolean isLocalModel = "llm-chat".equals(llmService.getId());
+            int defaultMaxChars = isLocalModel ? 800 : 2000;
+            int defaultMaxCharsVlm = isLocalModel ? 800 : 3000;
+            int maxChars = optionInt(config, isVlmContent ? "maxCharsPerChunkVlm" : "maxCharsPerChunk",
+                    isVlmContent ? defaultMaxCharsVlm : defaultMaxChars);
             if (chunkText.length() > maxChars) {
                 chunkText = chunkText.substring(0, maxChars);
             }
@@ -526,6 +528,20 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
             seen.putIfAbsent(key, r);
         }
         return new ArrayList<>(seen.values());
+    }
+
+    /**
+     * Reads an integer value from {@link ExtractionConfig#options()}, returning
+     * {@code defaultValue} when the key is absent or the value is not a valid integer.
+     */
+    private static int optionInt(ExtractionConfig config, String key, int defaultValue) {
+        if (config == null || config.options() == null) return defaultValue;
+        Object val = config.options().get(key);
+        if (val instanceof Number n) return n.intValue();
+        if (val instanceof String s) {
+            try { return Integer.parseInt(s.trim()); } catch (NumberFormatException ignored) {}
+        }
+        return defaultValue;
     }
 
     private ExtractionResult emptyResult(int chunksProcessed, long elapsedMs) {

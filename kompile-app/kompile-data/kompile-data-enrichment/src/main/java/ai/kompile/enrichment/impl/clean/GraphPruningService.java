@@ -21,8 +21,6 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -39,19 +37,13 @@ import java.util.Map;
 public class GraphPruningService {
     private static final Logger log = LoggerFactory.getLogger(GraphPruningService.class);
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
     private final KnowledgeGraphService knowledgeGraphService;
     private final EnrichmentAuditService auditService;
     private final ObjectMapper objectMapper;
 
-    public GraphPruningService(GraphNodeRepository nodeRepository,
-                               GraphEdgeRepository edgeRepository,
-                               KnowledgeGraphService knowledgeGraphService,
+    public GraphPruningService(KnowledgeGraphService knowledgeGraphService,
                                EnrichmentAuditService auditService,
                                ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
         this.knowledgeGraphService = knowledgeGraphService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
@@ -66,7 +58,7 @@ public class GraphPruningService {
     }
 
     private int pruneOrphanEntities(Long factSheetId, String jobId, double confidenceThreshold) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         int pruned = 0;
         for (GraphNode entity : entities) {
             double confidence = entity.getConfidence() != null ? entity.getConfidence() : 1.0;
@@ -83,7 +75,7 @@ public class GraphPruningService {
     }
 
     private int pruneBlankOrphanEntities(Long factSheetId, String jobId) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         int pruned = 0;
         for (GraphNode entity : entities) {
             int edgeCount = entity.getEdgeCount() != null ? entity.getEdgeCount() : 0;
@@ -101,13 +93,13 @@ public class GraphPruningService {
 
     private int pruneWeakEdges(Long factSheetId, String jobId, double edgeWeightThreshold) {
         int pruned = 0;
-        // Scope weak edge pruning to this factSheet only
+        // Scope weak edge pruning to this factSheet only (via vector store SSOT)
         for (EdgeType edgeType : List.of(EdgeType.EMBEDDING_SIMILARITY, EdgeType.SHARED_ENTITY)) {
-            List<GraphEdge> edges = edgeRepository.findByFactSheetIdAndEdgeType(factSheetId, edgeType);
+            List<GraphEdge> edges = knowledgeGraphService.getEdgesByTypeInFactSheet(factSheetId, edgeType);
             for (GraphEdge edge : edges) {
                 if (edge.getWeight() != null && edge.getWeight() < edgeWeightThreshold) {
                     try {
-                        edgeRepository.delete(edge);
+                        knowledgeGraphService.deleteEdge(edge.getEdgeId());
                         pruned++;
                     } catch (Exception e) {
                         log.warn("Failed to prune edge {}: {}", edge.getEdgeId(), e.getMessage());

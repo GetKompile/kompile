@@ -17,7 +17,7 @@
 package ai.kompile.cli.main.util;
 
 import ai.kompile.cli.main.Info;
-import ai.kompile.cli.main.install.ArchiveUtils;
+import ai.kompile.cli.common.util.ArchiveUtils;
 import ai.kompile.cli.main.install.ProgressInputStream;
 import org.apache.commons.io.FileUtils;
 

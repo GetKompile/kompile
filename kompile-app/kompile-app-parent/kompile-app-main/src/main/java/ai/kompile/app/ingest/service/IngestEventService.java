@@ -23,6 +23,7 @@ import ai.kompile.app.ingest.domain.IngestEvent.EventType;
 import ai.kompile.app.ingest.domain.IngestEvent.IngestPhase;
 import ai.kompile.app.ingest.repository.IngestEventRepository;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -55,7 +56,7 @@ public class IngestEventService {
 
     /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
     protected IngestEventService() {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
 
@@ -102,7 +103,7 @@ public class IngestEventService {
         this.repository = repository;
         this.messagingTemplate = messagingTemplate;
         this.nd4jEnvironmentConfigService = nd4jEnvironmentConfigService;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     @PostConstruct

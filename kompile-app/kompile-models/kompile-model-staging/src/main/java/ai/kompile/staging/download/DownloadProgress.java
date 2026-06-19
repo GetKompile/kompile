@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.download;
 
+import ai.kompile.utils.FormatUtils;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -156,27 +157,21 @@ public class DownloadProgress {
      * Format bytes to human-readable string.
      */
     public String getFormattedBytesDownloaded() {
-        return formatBytes(bytesDownloaded);
+        return FormatUtils.formatBytes(bytesDownloaded);
     }
 
     /**
      * Format total bytes to human-readable string.
      */
     public String getFormattedTotalBytes() {
-        return totalBytes > 0 ? formatBytes(totalBytes) : "unknown";
+        return totalBytes > 0 ? FormatUtils.formatBytes(totalBytes) : "unknown";
     }
 
     /**
      * Format speed to human-readable string.
      */
     public String getFormattedSpeed() {
-        return formatBytes(bytesPerSecond) + "/s";
+        return FormatUtils.formatBytes(bytesPerSecond) + "/s";
     }
 
-    private static String formatBytes(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
 }

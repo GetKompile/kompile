@@ -16,7 +16,7 @@
 
 package ai.kompile.cli.main.build;
 
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.maven.model.Model;
 import org.apache.maven.shared.invoker.*;

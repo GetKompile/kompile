@@ -54,9 +54,7 @@ class DetachedAgentTrackingTest {
     void taskRemainsVisibleAfterTimeout() {
         // Simulate: task record created before process launch
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "long running analysis", "Investigate all usages of...",
-                "session-1", tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("long running analysis").promptSummary("Investigate all usages of...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         registry.create(record);
 
         // Simulate: process started
@@ -81,9 +79,7 @@ class DetachedAgentTrackingTest {
     void detachedTaskRemainsPolllable() {
         // Create and mark as detached (timeout occurred)
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "qwen",
-                "detached work", "Build and test...",
-                "session-1", tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("qwen").description("detached work").promptSummary("Build and test...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         record.markRunning(ProcessHandle.current().pid());
         record.markDetached();
         registry.create(record);
@@ -105,15 +101,13 @@ class DetachedAgentTrackingTest {
     void multiTaskParentAndChildIdsPersisted() {
         // Simulate multi_task creating parent record first
         String parentId = TaskRegistry.generateId("multi");
-        TaskRecord parent = new TaskRecord(parentId, "multi_task", "multi",
-                "parallel build", "Backend + tests", "session-1", tempDir.toString());
+        TaskRecord parent = TaskRecord.builder().taskId(parentId).taskType("multi_task").agentName("multi").description("parallel build").promptSummary("Backend + tests").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         parent.markRunning(ProcessHandle.current().pid());
         registry.create(parent);
 
         // Each subtask gets its own record with parent reference
         String child1 = TaskRegistry.generateId("agent");
-        TaskRecord c1 = new TaskRecord(child1, "task", "claude",
-                "backend impl", "Implement...", "session-1", tempDir.toString());
+        TaskRecord c1 = TaskRecord.builder().taskId(child1).taskType("task").agentName("claude").description("backend impl").promptSummary("Implement...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         c1.setParentTaskId(parentId);
         c1.setSubtaskName("backend");
         c1.markRunning(ProcessHandle.current().pid());
@@ -121,8 +115,7 @@ class DetachedAgentTrackingTest {
         registry.update(parentId, r -> r.addChildTaskId(child1));
 
         String child2 = TaskRegistry.generateId("agent");
-        TaskRecord c2 = new TaskRecord(child2, "task", "qwen",
-                "test writing", "Write tests...", "session-1", tempDir.toString());
+        TaskRecord c2 = TaskRecord.builder().taskId(child2).taskType("task").agentName("qwen").description("test writing").promptSummary("Write tests...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         c2.setParentTaskId(parentId);
         c2.setSubtaskName("tests");
         c2.markRunning(ProcessHandle.current().pid());
@@ -146,8 +139,7 @@ class DetachedAgentTrackingTest {
     @Test
     void resultCollectedAfterDetachedChildCompletes() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "analysis task", "Analyze...", "session-1", tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("analysis task").promptSummary("Analyze...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         record.markRunning(ProcessHandle.current().pid());
         record.markDetached(); // caller timed out
         registry.create(record);
@@ -179,15 +171,13 @@ class DetachedAgentTrackingTest {
     void pollReportsActiveChildrenAfterOriginalTimeout() {
         // Create parent and children
         String parentId = TaskRegistry.generateId("multi");
-        TaskRecord parent = new TaskRecord(parentId, "multi_task", "multi",
-                "timed out multi", "...", "session-1", tempDir.toString());
+        TaskRecord parent = TaskRecord.builder().taskId(parentId).taskType("multi_task").agentName("multi").description("timed out multi").promptSummary("...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         parent.markRunning(ProcessHandle.current().pid());
         registry.create(parent);
 
         // Child 1 completed
         String c1Id = TaskRegistry.generateId("agent");
-        TaskRecord c1 = new TaskRecord(c1Id, "task", "claude",
-                "fast child", "...", "session-1", tempDir.toString());
+        TaskRecord c1 = TaskRecord.builder().taskId(c1Id).taskType("task").agentName("claude").description("fast child").promptSummary("...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         c1.setParentTaskId(parentId);
         c1.markCompleted(0, "done", null);
         registry.create(c1);
@@ -195,8 +185,7 @@ class DetachedAgentTrackingTest {
 
         // Child 2 still running
         String c2Id = TaskRegistry.generateId("agent");
-        TaskRecord c2 = new TaskRecord(c2Id, "task", "qwen",
-                "slow child", "...", "session-1", tempDir.toString());
+        TaskRecord c2 = TaskRecord.builder().taskId(c2Id).taskType("task").agentName("qwen").description("slow child").promptSummary("...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         c2.setParentTaskId(parentId);
         c2.markRunning(ProcessHandle.current().pid());
         registry.create(c2);
@@ -224,8 +213,7 @@ class DetachedAgentTrackingTest {
     @Test
     void cancelDetachedTaskUpdatesStatus() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "to cancel", "...", "session-1", tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("to cancel").promptSummary("...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         record.markRunning(ProcessHandle.current().pid());
         record.markDetached();
         registry.create(record);
@@ -243,8 +231,7 @@ class DetachedAgentTrackingTest {
     @Test
     void cannotCancelAlreadyCompletedTask() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "already done", "...", "session-1", tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("already done").promptSummary("...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         record.markCompleted(0, "done", null);
         registry.create(record);
 
@@ -261,9 +248,7 @@ class DetachedAgentTrackingTest {
     void resultFileContainsTaskMetadata() {
         String taskId = TaskRegistry.generateId("agent");
         String parentId = TaskRegistry.generateId("multi");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "metadata test", "Analyze the codebase...",
-                "session-123", tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("metadata test").promptSummary("Analyze the codebase...").sessionId("session-123").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         record.setParentTaskId(parentId);
         record.setSubtaskName("analysis");
         record.setRoleName("researcher");
@@ -311,15 +296,13 @@ class DetachedAgentTrackingTest {
     void staleRecordCleanupDoesNotRemoveActive() {
         // Active task (should not be evicted)
         String activeId = TaskRegistry.generateId("agent");
-        TaskRecord active = new TaskRecord(activeId, "task", "claude",
-                "active", "...", "session-1", tempDir.toString());
+        TaskRecord active = TaskRecord.builder().taskId(activeId).taskType("task").agentName("claude").description("active").promptSummary("...").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         active.markRunning(ProcessHandle.current().pid());
         registry.create(active);
 
         // Very old completed task (should be evicted)
         String oldId = TaskRegistry.generateId("agent");
-        TaskRecord old = new TaskRecord(oldId, "task", "qwen",
-                "old", "...", "session-2", tempDir.toString());
+        TaskRecord old = TaskRecord.builder().taskId(oldId).taskType("task").agentName("qwen").description("old").promptSummary("...").sessionId("session-2").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         old.markCompleted(0, "done", null);
         old.setCompletedAt(Instant.now().minusSeconds(48 * 3600));
         registry.create(old);

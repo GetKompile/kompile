@@ -3,9 +3,9 @@ package ai.kompile.kvcache.service;
 import ai.kompile.kvcache.config.KVCacheProperties;
 import ai.kompile.kvcache.model.CheckpointInfo;
 import lombok.extern.slf4j.Slf4j;
-import org.eclipse.deeplearning4j.llm.generation.KVCacheCheckpoint;
-import org.eclipse.deeplearning4j.llm.generation.KVCacheCheckpointManager;
-import org.eclipse.deeplearning4j.llm.generation.PagedKVCache;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.KVCacheCheckpoint;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.KVCacheCheckpointManager;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.PagedKVCache;
 
 import java.io.IOException;
 import java.nio.file.Files;

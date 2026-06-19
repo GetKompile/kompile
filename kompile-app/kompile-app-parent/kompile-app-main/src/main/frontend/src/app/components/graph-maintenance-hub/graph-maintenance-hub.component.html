@@ -1,0 +1,520 @@
+<div class="maintenance-hub">
+  <!-- Tab bar -->
+  <div class="tab-bar">
+    <button mat-stroked-button [class.active]="activeTab === 'overview'" (click)="setTab('overview')">
+      <mat-icon>dashboard</mat-icon> Overview
+    </button>
+    <button mat-stroked-button [class.active]="activeTab === 'pruning'" (click)="setTab('pruning')">
+      <mat-icon>content_cut</mat-icon> Pruning
+    </button>
+    <button mat-stroked-button [class.active]="activeTab === 'quality'" (click)="setTab('quality')">
+      <mat-icon>verified</mat-icon> Quality
+    </button>
+    <button mat-stroked-button [class.active]="activeTab === 'snapshots'" (click)="setTab('snapshots')">
+      <mat-icon>photo_camera</mat-icon> Snapshots
+    </button>
+    <button mat-stroked-button [class.active]="activeTab === 'scheduler'" (click)="setTab('scheduler')">
+      <mat-icon>schedule</mat-icon> Scheduler
+    </button>
+    <button mat-stroked-button [class.active]="activeTab === 'history'" (click)="setTab('history')">
+      <mat-icon>history</mat-icon> History
+    </button>
+  </div>
+
+  <div class="tab-content" *ngIf="!factSheetId">
+    <div class="empty-state">
+      <mat-icon>info</mat-icon>
+      <p>Select a fact sheet to manage graph maintenance.</p>
+    </div>
+  </div>
+
+  <!-- Loading spinner -->
+  <div class="loading-overlay" *ngIf="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <!-- ── Overview Tab ──────────────────────────────────────────────────── -->
+  <div class="tab-content" *ngIf="activeTab === 'overview' && factSheetId">
+    <div class="section-header">
+      <h2>Graph Health Overview</h2>
+      <div class="actions">
+        <button mat-stroked-button color="primary" (click)="runFullMaintenance(true)" matTooltip="Preview what would be affected">
+          <mat-icon>preview</mat-icon> Dry Run
+        </button>
+        <button mat-flat-button color="warn" (click)="runFullMaintenance(false)" matTooltip="Run all maintenance tasks">
+          <mat-icon>play_arrow</mat-icon> Run Full Maintenance
+        </button>
+      </div>
+    </div>
+
+    <div class="stats-grid" *ngIf="healthReport">
+      <mat-card class="stat-card">
+        <mat-card-content>
+          <div class="stat-value">{{ healthReport.totalNodes | number }}</div>
+          <div class="stat-label">Total Nodes</div>
+        </mat-card-content>
+      </mat-card>
+      <mat-card class="stat-card">
+        <mat-card-content>
+          <div class="stat-value">{{ healthReport.totalEdges | number }}</div>
+          <div class="stat-label">Total Edges</div>
+        </mat-card-content>
+      </mat-card>
+      <mat-card class="stat-card warn" *ngIf="healthReport.orphanEntityCount > 0">
+        <mat-card-content>
+          <div class="stat-value">{{ healthReport.orphanEntityCount }}</div>
+          <div class="stat-label">Orphan Entities</div>
+        </mat-card-content>
+      </mat-card>
+      <mat-card class="stat-card" [class.warn]="healthReport.lowConfidenceCount > 0">
+        <mat-card-content>
+          <div class="stat-value">{{ healthReport.lowConfidenceCount }}</div>
+          <div class="stat-label">Low Confidence</div>
+        </mat-card-content>
+      </mat-card>
+      <mat-card class="stat-card" [class.warn]="healthReport.danglingEdgeCount > 0">
+        <mat-card-content>
+          <div class="stat-value">{{ healthReport.danglingEdgeCount }}</div>
+          <div class="stat-label">Dangling Edges</div>
+        </mat-card-content>
+      </mat-card>
+      <mat-card class="stat-card" [class.warn]="healthReport.duplicateEdgeCount > 0">
+        <mat-card-content>
+          <div class="stat-value">{{ healthReport.duplicateEdgeCount }}</div>
+          <div class="stat-label">Duplicate Edges</div>
+        </mat-card-content>
+      </mat-card>
+    </div>
+
+    <!-- Issues list -->
+    <mat-card class="issues-card" *ngIf="healthReport?.issues?.length">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>warning</mat-icon> Issues ({{ healthReport!.issues!.length }})
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="issue-item" *ngFor="let issue of healthReport!.issues">
+          <mat-icon class="issue-icon">error_outline</mat-icon>
+          <span>{{ issue }}</span>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Entity type distribution -->
+    <mat-card *ngIf="healthReport?.entityTypeDistribution" class="distribution-card">
+      <mat-card-header>
+        <mat-card-title>Entity Type Distribution</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="distribution-list">
+          <div class="distribution-row" *ngFor="let entry of healthReport!.entityTypeDistribution | keyvalue">
+            <span class="dist-label">{{ entry.key }}</span>
+            <span class="dist-value">{{ entry.value }}</span>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Last report -->
+    <ng-container *ngIf="lastPruneReport">
+      <ng-container *ngTemplateOutlet="reportCard; context: { $implicit: lastPruneReport, title: 'Last Operation Result' }"></ng-container>
+    </ng-container>
+  </div>
+
+  <!-- ── Pruning Tab ───────────────────────────────────────────────────── -->
+  <div class="tab-content" *ngIf="activeTab === 'pruning' && factSheetId">
+    <!-- TTL Sweep -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>timer_off</mat-icon> TTL Sweep
+        </mat-panel-title>
+        <mat-panel-description>Remove expired nodes and edges</mat-panel-description>
+      </mat-expansion-panel-header>
+      <div class="panel-body">
+        <mat-form-field appearance="outline">
+          <mat-label>TTL (days)</mat-label>
+          <input matInput type="number" [(ngModel)]="ttlDays" min="1">
+          <mat-hint>Items older than this are considered expired</mat-hint>
+        </mat-form-field>
+        <div class="panel-actions">
+          <button mat-stroked-button (click)="runTtlSweep(true)">
+            <mat-icon>preview</mat-icon> Preview
+          </button>
+          <button mat-flat-button color="warn" (click)="runTtlSweep(false)">
+            <mat-icon>delete_sweep</mat-icon> Execute
+          </button>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Orphan Pruning -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>link_off</mat-icon> Orphan Pruning
+        </mat-panel-title>
+        <mat-panel-description>Remove disconnected nodes</mat-panel-description>
+      </mat-expansion-panel-header>
+      <div class="panel-body">
+        <button mat-stroked-button (click)="scanOrphans()" class="scan-btn">
+          <mat-icon>search</mat-icon> Scan for Orphans
+        </button>
+        <div class="orphan-result" *ngIf="orphanScan">
+          <div class="orphan-stat">
+            Found <strong>{{ orphanScan.orphanCount }}</strong> orphaned nodes
+            out of <strong>{{ orphanScan.totalNodes }}</strong> total
+          </div>
+          <div class="orphan-details" *ngIf="orphanScan.orphanDetails?.length">
+            <div *ngFor="let detail of orphanScan.orphanDetails.slice(0, 20)" class="orphan-detail-item">
+              {{ detail }}
+            </div>
+            <div *ngIf="orphanScan.orphanDetails.length > 20" class="more-indicator">
+              ...and {{ orphanScan.orphanDetails.length - 20 }} more
+            </div>
+          </div>
+        </div>
+        <mat-divider></mat-divider>
+        <mat-form-field appearance="outline">
+          <mat-label>Grace period (days)</mat-label>
+          <input matInput type="number" [(ngModel)]="orphanGraceDays" min="0">
+          <mat-hint>Nodes orphaned for fewer days are spared</mat-hint>
+        </mat-form-field>
+        <div class="panel-actions">
+          <button mat-stroked-button (click)="pruneOrphans(true)">
+            <mat-icon>preview</mat-icon> Preview
+          </button>
+          <button mat-flat-button color="warn" (click)="pruneOrphans(false)">
+            <mat-icon>delete</mat-icon> Prune Orphans
+          </button>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Confidence Pruning -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>trending_down</mat-icon> Confidence Pruning
+        </mat-panel-title>
+        <mat-panel-description>Remove low-confidence entities and edges</mat-panel-description>
+      </mat-expansion-panel-header>
+      <div class="panel-body">
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Min entity confidence</mat-label>
+            <input matInput type="number" [(ngModel)]="minEntityConfidence" min="0" max="1" step="0.05">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Min relationship confidence</mat-label>
+            <input matInput type="number" [(ngModel)]="minRelConfidence" min="0" max="1" step="0.05">
+          </mat-form-field>
+        </div>
+        <div class="panel-actions">
+          <button mat-stroked-button (click)="pruneByConfidence(true)">
+            <mat-icon>preview</mat-icon> Preview
+          </button>
+          <button mat-flat-button color="warn" (click)="pruneByConfidence(false)">
+            <mat-icon>low_priority</mat-icon> Prune
+          </button>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Component Pruning -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>bubble_chart</mat-icon> Component Pruning
+        </mat-panel-title>
+        <mat-panel-description>Remove small disconnected sub-graphs</mat-panel-description>
+      </mat-expansion-panel-header>
+      <div class="panel-body">
+        <mat-form-field appearance="outline">
+          <mat-label>Minimum component size</mat-label>
+          <input matInput type="number" [(ngModel)]="minComponentSize" min="1">
+          <mat-hint>Components with fewer nodes are removed</mat-hint>
+        </mat-form-field>
+        <div class="panel-actions">
+          <button mat-stroked-button (click)="pruneSmallComponents(true)">
+            <mat-icon>preview</mat-icon> Preview
+          </button>
+          <button mat-flat-button color="warn" (click)="pruneSmallComponents(false)">
+            <mat-icon>auto_delete</mat-icon> Prune
+          </button>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Last pruning result -->
+    <ng-container *ngIf="lastPruneReport">
+      <ng-container *ngTemplateOutlet="reportCard; context: { $implicit: lastPruneReport, title: 'Last Pruning Result' }"></ng-container>
+    </ng-container>
+  </div>
+
+  <!-- ── Quality Tab ───────────────────────────────────────────────────── -->
+  <div class="tab-content" *ngIf="activeTab === 'quality' && factSheetId">
+    <!-- Contradictions -->
+    <mat-card class="quality-card">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>compare_arrows</mat-icon> Contradiction Detection
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="quality-actions">
+          <button mat-stroked-button color="primary" (click)="detectContradictions()">
+            <mat-icon>search</mat-icon> Scan for Contradictions
+          </button>
+        </div>
+
+        <div *ngIf="contradictions.length > 0" class="contradiction-list">
+          <div class="result-count">Found {{ contradictions.length }} contradiction(s)</div>
+          <div class="contradiction-item" *ngFor="let c of contradictions">
+            <div class="contradiction-header">
+              <mat-icon class="warn-icon">warning</mat-icon>
+              <span class="contradiction-type">{{ c.contradictionType }}</span>
+            </div>
+            <div class="contradiction-body">
+              <div>{{ c.description }}</div>
+              <div class="contradiction-meta">
+                Entities: {{ c.sourceEntityId }} &harr; {{ c.targetEntityId }}
+                &middot; {{ c.conflictingEdgeIds.length }} conflicting edges
+              </div>
+            </div>
+          </div>
+
+          <mat-divider></mat-divider>
+          <div class="resolve-section">
+            <mat-form-field appearance="outline">
+              <mat-label>Resolution Strategy</mat-label>
+              <mat-select [(ngModel)]="resolutionStrategy">
+                <mat-option value="FLAG_FOR_REVIEW">Flag for Review</mat-option>
+                <mat-option value="NEWER_WINS">Newer Wins</mat-option>
+                <mat-option value="HIGHER_CONFIDENCE_WINS">Higher Confidence Wins</mat-option>
+                <mat-option value="KEEP_BOTH">Keep Both</mat-option>
+                <mat-option value="LLM_JUDGE">LLM Judge</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <div class="panel-actions">
+              <button mat-stroked-button (click)="resolveContradictions(true)">
+                <mat-icon>preview</mat-icon> Preview Resolution
+              </button>
+              <button mat-flat-button color="warn" (click)="resolveContradictions(false)">
+                <mat-icon>gavel</mat-icon> Resolve
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div *ngIf="contradictions.length === 0" class="empty-result">
+          No contradictions detected. Run a scan to check.
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Provenance Validation -->
+    <mat-card class="quality-card">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>fact_check</mat-icon> Provenance Validation
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="quality-actions">
+          <button mat-stroked-button color="primary" (click)="validateProvenance()">
+            <mat-icon>verified_user</mat-icon> Validate Sources
+          </button>
+        </div>
+
+        <div *ngIf="provenanceChecks.length > 0" class="provenance-list">
+          <div class="result-count">
+            Checked {{ provenanceChecks.length }} entities &middot;
+            <span class="warn-text" *ngIf="getInvalidProvenanceCount() > 0">
+              {{ getInvalidProvenanceCount() }} with invalid sources
+            </span>
+            <span *ngIf="getInvalidProvenanceCount() === 0" class="ok-text">
+              All sources valid
+            </span>
+          </div>
+          <div class="provenance-item" *ngFor="let p of provenanceChecks"
+               [class.invalid]="p.allSourcesInvalid">
+            <div class="provenance-header">
+              <mat-icon [class.warn-icon]="p.allSourcesInvalid"
+                        [class.ok-icon]="!p.allSourcesInvalid">
+                {{ p.allSourcesInvalid ? 'error' : 'check_circle' }}
+              </mat-icon>
+              <span>Entity #{{ p.entityId }}</span>
+            </div>
+            <div class="provenance-meta">
+              {{ p.validSources }} valid / {{ p.invalidSources }} invalid source(s)
+            </div>
+          </div>
+        </div>
+
+        <div *ngIf="provenanceChecks.length === 0" class="empty-result">
+          No provenance checks yet. Run validation to check source traceability.
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Last quality result -->
+    <ng-container *ngIf="lastPruneReport">
+      <ng-container *ngTemplateOutlet="reportCard; context: { $implicit: lastPruneReport, title: 'Last Quality Result' }"></ng-container>
+    </ng-container>
+  </div>
+
+  <!-- ── Snapshots Tab ─────────────────────────────────────────────────── -->
+  <div class="tab-content" *ngIf="activeTab === 'snapshots' && factSheetId">
+    <div class="section-header">
+      <h2>Graph Snapshots</h2>
+    </div>
+
+    <mat-card class="snapshot-create-card">
+      <mat-card-content>
+        <div class="snapshot-form">
+          <mat-form-field appearance="outline" class="snapshot-reason">
+            <mat-label>Snapshot reason</mat-label>
+            <input matInput [(ngModel)]="snapshotReason" placeholder="e.g. before pruning">
+          </mat-form-field>
+          <button mat-flat-button color="primary" (click)="createSnapshot()">
+            <mat-icon>add_a_photo</mat-icon> Create Snapshot
+          </button>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <div class="snapshot-list" *ngIf="snapshots.length > 0">
+      <mat-card *ngFor="let s of snapshots" class="snapshot-item">
+        <mat-card-content>
+          <div class="snapshot-header">
+            <mat-icon>photo_camera</mat-icon>
+            <div class="snapshot-info">
+              <div class="snapshot-id">{{ s.snapshotId }}</div>
+              <div class="snapshot-meta">
+                {{ formatDate(s.createdAt) }} &middot;
+                {{ s.nodeCount }} nodes, {{ s.edgeCount }} edges
+              </div>
+            </div>
+            <mat-chip-listbox>
+              <mat-chip>{{ s.reason }}</mat-chip>
+            </mat-chip-listbox>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </div>
+
+    <div class="empty-result" *ngIf="snapshots.length === 0">
+      No snapshots yet. Create one to capture the current graph state.
+    </div>
+  </div>
+
+  <!-- ── Scheduler Tab ─────────────────────────────────────────────────── -->
+  <div class="tab-content" *ngIf="activeTab === 'scheduler'">
+    <div class="section-header">
+      <h2>Maintenance Scheduler</h2>
+    </div>
+
+    <mat-card class="scheduler-card">
+      <mat-card-content>
+        <div class="scheduler-status">
+          <div class="scheduler-indicator" [class.enabled]="schedulerStatus?.enabled">
+            <mat-icon>{{ schedulerStatus?.enabled ? 'alarm_on' : 'alarm_off' }}</mat-icon>
+            <div>
+              <div class="scheduler-state">{{ schedulerStatus?.enabled ? 'Enabled' : 'Disabled' }}</div>
+              <div class="scheduler-detail" *ngIf="schedulerStatus?.enabled">
+                Running daily at 3:00 AM for fact sheet #{{ schedulerStatus?.targetFactSheetId }}
+              </div>
+              <div class="scheduler-detail" *ngIf="!schedulerStatus?.enabled">
+                No scheduled maintenance is running
+              </div>
+            </div>
+          </div>
+
+          <button mat-flat-button
+                  [color]="schedulerStatus?.enabled ? 'warn' : 'primary'"
+                  (click)="toggleScheduler()">
+            <mat-icon>{{ schedulerStatus?.enabled ? 'pause' : 'play_arrow' }}</mat-icon>
+            {{ schedulerStatus?.enabled ? 'Disable' : 'Enable' }}
+          </button>
+        </div>
+
+        <mat-divider></mat-divider>
+
+        <div class="scheduler-info">
+          <h3>Scheduled Tasks</h3>
+          <p>When enabled, the following tasks run daily:</p>
+          <div class="task-list">
+            <div class="task-item"><mat-icon>timer_off</mat-icon> TTL Sweep</div>
+            <div class="task-item"><mat-icon>link_off</mat-icon> Orphan Cleanup</div>
+            <div class="task-item"><mat-icon>trending_down</mat-icon> Confidence Prune</div>
+            <div class="task-item"><mat-icon>bubble_chart</mat-icon> Component Prune</div>
+            <div class="task-item"><mat-icon>compare_arrows</mat-icon> Contradiction Detection</div>
+            <div class="task-item"><mat-icon>fact_check</mat-icon> Source Validation</div>
+            <div class="task-item"><mat-icon>bar_chart</mat-icon> Stats Refresh</div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- ── History Tab ───────────────────────────────────────────────────── -->
+  <div class="tab-content" *ngIf="activeTab === 'history'">
+    <div class="section-header">
+      <h2>Maintenance History</h2>
+      <button mat-stroked-button (click)="loadHistory()">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+    </div>
+
+    <div *ngIf="historyReports.length > 0" class="history-list">
+      <ng-container *ngFor="let report of historyReports">
+        <ng-container *ngTemplateOutlet="reportCard; context: { $implicit: report, title: 'Report ' + report.reportId }"></ng-container>
+      </ng-container>
+    </div>
+
+    <div *ngIf="historyReports.length === 0" class="empty-result">
+      No maintenance history yet.
+    </div>
+  </div>
+</div>
+
+<!-- ── Report card template ──────────────────────────────────────────── -->
+<ng-template #reportCard let-report let-title="title">
+  <mat-card class="report-card" [class.dry-run]="report.dryRun">
+    <mat-card-header>
+      <mat-card-title>
+        {{ title }}
+        <mat-chip-listbox *ngIf="report.dryRun" class="dry-run-chip">
+          <mat-chip color="accent" highlighted>DRY RUN</mat-chip>
+        </mat-chip-listbox>
+      </mat-card-title>
+      <mat-card-subtitle>
+        {{ formatDate(report.startedAt) }}
+        <span *ngIf="report.completedAt"> &mdash; {{ formatDate(report.completedAt) }}</span>
+      </mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="task-reports" *ngIf="getTaskReportEntries(report) as entries">
+        <div class="task-report-row" *ngFor="let entry of entries">
+          <div class="task-name">{{ entry.key }}</div>
+          <div class="task-stats">
+            <span class="scanned">{{ entry.value.itemsScanned }} scanned</span>
+            <span class="affected" [class.nonzero]="entry.value.itemsAffected > 0">
+              {{ entry.value.itemsAffected }} affected
+            </span>
+            <span class="skipped" *ngIf="entry.value.itemsSkipped > 0">
+              {{ entry.value.itemsSkipped }} skipped
+            </span>
+          </div>
+          <div class="task-warnings" *ngIf="entry.value.warnings?.length">
+            <div *ngFor="let w of entry.value.warnings" class="warning-item">
+              <mat-icon>warning_amber</mat-icon> {{ w }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</ng-template>

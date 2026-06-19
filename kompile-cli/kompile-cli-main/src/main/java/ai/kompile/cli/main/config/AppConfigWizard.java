@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.MapUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -45,7 +47,7 @@ public class AppConfigWizard {
     private static final String YELLOW = "\033[33m";
     private static final String RED    = "\033[31m";
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     public static final String APP_INDEX_CONFIG = "app-index-config.json";
     public static final String MODEL_ROLES_CONFIG = "model-roles-config.json";
@@ -150,7 +152,7 @@ public class AppConfigWizard {
         printSection("Vector Store & Indexing");
         Map<String, Object> config = loadConfig(APP_INDEX_CONFIG);
 
-        String currentType = getString(config, "vectorStoreType", "ANSERINI");
+        String currentType = MapUtils.getString(config, "vectorStoreType", "ANSERINI");
         String[] types = {"ANSERINI", "VESPA", "PGVECTOR", "CHROMA"};
         String[] typeDescs = {
                 "ANSERINI — Lucene-backed HNSW indexing (default, embedded)",
@@ -177,16 +179,16 @@ public class AppConfigWizard {
             } catch (NumberFormatException ignored) {}
         }
 
-        String selectedType = getString(config, "vectorStoreType", "ANSERINI");
+        String selectedType = MapUtils.getString(config, "vectorStoreType", "ANSERINI");
 
         // Common path settings
         String defaultDataDir = System.getProperty("user.home") + "/.kompile";
         config.put("vectorStorePath", promptWithDefault(reader,
                 "  Vector index path",
-                getString(config, "vectorStorePath", defaultDataDir + "/anserini/indexes/vector_index")));
+                MapUtils.getString(config, "vectorStorePath", defaultDataDir + "/anserini/indexes/vector_index")));
         config.put("keywordIndexPath", promptWithDefault(reader,
                 "  Keyword index path",
-                getString(config, "keywordIndexPath", defaultDataDir + "/anserini/indexes/default_index")));
+                MapUtils.getString(config, "keywordIndexPath", defaultDataDir + "/anserini/indexes/default_index")));
 
         // Type-specific settings
         switch (selectedType) {
@@ -221,10 +223,10 @@ public class AppConfigWizard {
                 ? (Map<String, Object>) config.get("hnsw")
                 : new LinkedHashMap<>();
 
-        hnsw.put("enabled", promptBoolean(reader, "  HNSW enabled", getBoolean(hnsw, "enabled", true)));
-        if (getBoolean(hnsw, "enabled", true)) {
-            hnsw.put("m", promptInt(reader, "  HNSW M (connections per node, 8-32)", getInt(hnsw, "m", 16)));
-            hnsw.put("efConstruction", promptInt(reader, "  HNSW efConstruction (50-500)", getInt(hnsw, "efConstruction", 100)));
+        hnsw.put("enabled", promptBoolean(reader, "  HNSW enabled", MapUtils.getBoolean(hnsw, "enabled", true)));
+        if (MapUtils.getBoolean(hnsw, "enabled", true)) {
+            hnsw.put("m", promptInt(reader, "  HNSW M (connections per node, 8-32)", MapUtils.getInt(hnsw, "m", 16)));
+            hnsw.put("efConstruction", promptInt(reader, "  HNSW efConstruction (50-500)", MapUtils.getInt(hnsw, "efConstruction", 100)));
         }
         config.put("hnsw", hnsw);
     }
@@ -236,23 +238,23 @@ public class AppConfigWizard {
 
         config.put("vespaEndpoint", promptWithDefault(reader,
                 "  Vespa endpoint URL",
-                getString(config, "vespaEndpoint", "http://localhost:8080")));
+                MapUtils.getString(config, "vespaEndpoint", "http://localhost:8080")));
         config.put("vespaNamespace", promptWithDefault(reader,
                 "  Vespa namespace",
-                getString(config, "vespaNamespace", "kompile")));
+                MapUtils.getString(config, "vespaNamespace", "kompile")));
         config.put("vespaDocumentType", promptWithDefault(reader,
                 "  Vespa document type",
-                getString(config, "vespaDocumentType", "document")));
+                MapUtils.getString(config, "vespaDocumentType", "document")));
         config.put("vespaVectorField", promptWithDefault(reader,
                 "  Vespa vector field",
-                getString(config, "vespaVectorField", "embedding")));
+                MapUtils.getString(config, "vespaVectorField", "embedding")));
         config.put("vespaHybridSearchEnabled", promptBoolean(reader,
                 "  Vespa hybrid search enabled",
-                getBoolean(config, "vespaHybridSearchEnabled", false)));
-        if (getBoolean(config, "vespaHybridSearchEnabled", false)) {
+                MapUtils.getBoolean(config, "vespaHybridSearchEnabled", false)));
+        if (MapUtils.getBoolean(config, "vespaHybridSearchEnabled", false)) {
             config.put("vespaHybridVectorWeight", promptDouble(reader,
                     "  Vespa hybrid vector weight (0.0-1.0)",
-                    getDouble(config, "vespaHybridVectorWeight", 0.7)));
+                    MapUtils.getDouble(config, "vespaHybridVectorWeight", 0.7)));
         }
     }
 
@@ -263,12 +265,12 @@ public class AppConfigWizard {
 
         config.put("pgvectorUrl", promptWithDefault(reader,
                 "  JDBC URL",
-                getString(config, "pgvectorUrl", "jdbc:postgresql://localhost:5432/kompile")));
+                MapUtils.getString(config, "pgvectorUrl", "jdbc:postgresql://localhost:5432/kompile")));
         config.put("pgvectorUsername", promptWithDefault(reader,
                 "  Username",
-                getString(config, "pgvectorUsername", "kompile")));
+                MapUtils.getString(config, "pgvectorUsername", "kompile")));
 
-        String currentPw = getString(config, "pgvectorPassword", "");
+        String currentPw = MapUtils.getString(config, "pgvectorPassword", "");
         String pwPrompt = currentPw.isEmpty() ? "  Password: " : "  Password (Enter to keep current): ";
         String pw = prompt(reader, pwPrompt);
         if (pw != null && !pw.trim().isEmpty()) {
@@ -277,7 +279,7 @@ public class AppConfigWizard {
 
         config.put("pgvectorTableName", promptWithDefault(reader,
                 "  Table name",
-                getString(config, "pgvectorTableName", "vector_store")));
+                MapUtils.getString(config, "pgvectorTableName", "vector_store")));
     }
 
     private static void editChromaSettings(LineReader reader, Map<String, Object> config) {
@@ -287,13 +289,13 @@ public class AppConfigWizard {
 
         config.put("chromaHost", promptWithDefault(reader,
                 "  Chroma host",
-                getString(config, "chromaHost", "localhost")));
+                MapUtils.getString(config, "chromaHost", "localhost")));
         config.put("chromaPort", promptInt(reader,
                 "  Chroma port",
-                getInt(config, "chromaPort", 8000)));
+                MapUtils.getInt(config, "chromaPort", 8000)));
         config.put("chromaCollectionName", promptWithDefault(reader,
                 "  Collection name",
-                getString(config, "chromaCollectionName", "kompile_documents")));
+                MapUtils.getString(config, "chromaCollectionName", "kompile_documents")));
     }
 
     // ── Section 2: Embedding Configuration ─────────────────────────────────
@@ -316,7 +318,7 @@ public class AppConfigWizard {
                 "Custom..."
         };
 
-        String currentModel = getString(config, "embeddingModelId", "bge-base-en-v1.5");
+        String currentModel = MapUtils.getString(config, "embeddingModelId", "bge-base-en-v1.5");
         System.out.println("  " + DIM + "Current embedding model: " + currentModel + RESET);
         System.out.println();
 
@@ -346,15 +348,15 @@ public class AppConfigWizard {
 
         config.put("embeddingTargetBatchSize", promptInt(reader,
                 "  Target embedding batch size (16-256)",
-                getInt(config, "embeddingTargetBatchSize", 64)));
+                MapUtils.getInt(config, "embeddingTargetBatchSize", 64)));
         config.put("adaptiveBatchSize", promptBoolean(reader,
                 "  Adaptive batch sizing (auto-adjusts based on memory)",
-                getBoolean(config, "adaptiveBatchSize", true)));
+                MapUtils.getBoolean(config, "adaptiveBatchSize", true)));
 
         saveConfig(APP_INDEX_CONFIG, config);
         System.out.println(GREEN + "  Embedding configuration saved." + RESET);
 
-        String selectedModel = getString(config, "embeddingModelId", "bge-base-en-v1.5");
+        String selectedModel = MapUtils.getString(config, "embeddingModelId", "bge-base-en-v1.5");
         System.out.println();
         System.out.println("  " + DIM + "Also set in application.properties:" + RESET);
         System.out.println("    " + BOLD + "kompile.embedding.anserini.model-identifier=" + selectedModel + RESET);
@@ -374,7 +376,7 @@ public class AppConfigWizard {
 
         config.put("indexBatchSize", promptInt(reader,
                 "  Index batch size",
-                getInt(config, "indexBatchSize", 100)));
+                MapUtils.getInt(config, "indexBatchSize", 100)));
 
         saveConfig(APP_INDEX_CONFIG, config);
 
@@ -395,7 +397,7 @@ public class AppConfigWizard {
                 "table-aware — Preserve table structure during splitting"
         };
 
-        String currentStrategy = getString(pipelineConfig, "chunkingStrategy", "table-aware");
+        String currentStrategy = MapUtils.getString(pipelineConfig, "chunkingStrategy", "table-aware");
         System.out.println("  " + DIM + "Current strategy: " + currentStrategy + RESET);
         System.out.println();
         for (int i = 0; i < strategyDescs.length; i++) {
@@ -416,10 +418,10 @@ public class AppConfigWizard {
 
         pipelineConfig.put("chunkSize", promptInt(reader,
                 "  Chunk size (characters)",
-                getInt(pipelineConfig, "chunkSize", 2000)));
+                MapUtils.getInt(pipelineConfig, "chunkSize", 2000)));
         pipelineConfig.put("chunkOverlap", promptInt(reader,
                 "  Chunk overlap (characters)",
-                getInt(pipelineConfig, "chunkOverlap", 200)));
+                MapUtils.getInt(pipelineConfig, "chunkOverlap", 200)));
 
         saveConfig("pipeline-config.json", pipelineConfig);
         System.out.println(GREEN + "  Document ingestion configuration saved." + RESET);
@@ -439,11 +441,11 @@ public class AppConfigWizard {
 
         config.put("subprocessEnabled", promptBoolean(reader,
                 "  Subprocess mode enabled",
-                getBoolean(config, "subprocessEnabled", true)));
+                MapUtils.getBoolean(config, "subprocessEnabled", true)));
 
-        if (getBoolean(config, "subprocessEnabled", true)) {
+        if (MapUtils.getBoolean(config, "subprocessEnabled", true)) {
             String[] heapOptions = {"2g", "4g", "6g", "8g", "12g", "16g"};
-            String currentHeap = getString(config, "subprocessHeapSize", "4g");
+            String currentHeap = MapUtils.getString(config, "subprocessHeapSize", "4g");
             System.out.println();
             System.out.println("  " + DIM + "Current heap: " + currentHeap + RESET);
             for (int i = 0; i < heapOptions.length; i++) {
@@ -485,7 +487,7 @@ public class AppConfigWizard {
         Map<String, Object> config = loadConfig(MODEL_ROLES_CONFIG);
 
         String[] denseModels = {"bge-base-en-v1.5", "arctic-embed-l", "cosdpr-distil", "bge-small-en-v1.5"};
-        String currentDense = getString(config, "denseRetrievalModel", "bge-base-en-v1.5");
+        String currentDense = MapUtils.getString(config, "denseRetrievalModel", "bge-base-en-v1.5");
         System.out.println(BOLD + "  Dense Retrieval Model:" + RESET);
         System.out.println("  " + DIM + "Current: " + currentDense + RESET);
         for (int i = 0; i < denseModels.length; i++) {
@@ -511,11 +513,11 @@ public class AppConfigWizard {
         System.out.println();
         String sparseModel = promptWithDefault(reader,
                 "  Sparse retrieval model (blank to disable)",
-                getString(config, "sparseRetrievalModel", ""));
+                MapUtils.getString(config, "sparseRetrievalModel", ""));
         config.put("sparseRetrievalModel", sparseModel);
 
         String[] rerankModels = {"ms-marco-MiniLM-L-6-v2", "ms-marco-MiniLM-L-12-v2"};
-        String currentRerank = getString(config, "rerankingModel", "ms-marco-MiniLM-L-6-v2");
+        String currentRerank = MapUtils.getString(config, "rerankingModel", "ms-marco-MiniLM-L-6-v2");
         System.out.println();
         System.out.println(BOLD + "  Reranking Model:" + RESET);
         System.out.println("  " + DIM + "Current: " + currentRerank + RESET);
@@ -542,17 +544,17 @@ public class AppConfigWizard {
         System.out.println();
         config.put("hybridEnabled", promptBoolean(reader,
                 "  Hybrid retrieval (dense + sparse)",
-                getBoolean(config, "hybridEnabled", false)));
+                MapUtils.getBoolean(config, "hybridEnabled", false)));
 
-        if (getBoolean(config, "hybridEnabled", false)) {
+        if (MapUtils.getBoolean(config, "hybridEnabled", false)) {
             config.put("hybridDenseWeight", promptDouble(reader,
                     "  Dense weight in hybrid mode (0.0-1.0)",
-                    getDouble(config, "hybridDenseWeight", 0.7)));
+                    MapUtils.getDouble(config, "hybridDenseWeight", 0.7)));
         }
 
         config.put("rerankingTopK", promptInt(reader,
                 "  Reranking top-K (0 = all retrieved)",
-                getInt(config, "rerankingTopK", 50)));
+                MapUtils.getInt(config, "rerankingTopK", 50)));
 
         saveConfig(MODEL_ROLES_CONFIG, config);
         System.out.println(GREEN + "  Model roles configuration saved." + RESET);
@@ -560,16 +562,16 @@ public class AppConfigWizard {
         // Print property equivalents
         System.out.println();
         System.out.println("  " + DIM + "Equivalent application.properties:" + RESET);
-        System.out.println("    kompile.models.roles.dense-retrieval=" + getString(config, "denseRetrievalModel", "bge-base-en-v1.5"));
-        String sparse = getString(config, "sparseRetrievalModel", "");
+        System.out.println("    kompile.models.roles.dense-retrieval=" + MapUtils.getString(config, "denseRetrievalModel", "bge-base-en-v1.5"));
+        String sparse = MapUtils.getString(config, "sparseRetrievalModel", "");
         if (!sparse.isEmpty()) {
             System.out.println("    kompile.models.roles.sparse-retrieval=" + sparse);
         }
-        if (getBoolean(config, "rerankingEnabled", true)) {
-            System.out.println("    kompile.models.roles.reranking=" + getString(config, "rerankingModel", "ms-marco-MiniLM-L-6-v2"));
+        if (MapUtils.getBoolean(config, "rerankingEnabled", true)) {
+            System.out.println("    kompile.models.roles.reranking=" + MapUtils.getString(config, "rerankingModel", "ms-marco-MiniLM-L-6-v2"));
         }
-        System.out.println("    kompile.models.reranking.enabled=" + getBoolean(config, "rerankingEnabled", true));
-        System.out.println("    kompile.models.hybrid.enabled=" + getBoolean(config, "hybridEnabled", false));
+        System.out.println("    kompile.models.reranking.enabled=" + MapUtils.getBoolean(config, "rerankingEnabled", true));
+        System.out.println("    kompile.models.hybrid.enabled=" + MapUtils.getBoolean(config, "hybridEnabled", false));
         System.out.println();
         return true;
     }
@@ -606,14 +608,14 @@ public class AppConfigWizard {
 
         while (true) {
             for (int i = 0; i < flagKeys.length; i++) {
-                boolean on = getBoolean(config, flagKeys[i], defaults[i]);
+                boolean on = MapUtils.getBoolean(config, flagKeys[i], defaults[i]);
                 String checkbox = on ? CHECK : UNCHECK_STR;
                 System.out.printf("  " + CYAN + "%2d" + RESET + "  %s  %s%n", i + 1, checkbox, flagLabels[i]);
             }
             System.out.println();
 
             int enabledCount = 0;
-            for (String key : flagKeys) if (getBoolean(config, key, false)) enabledCount++;
+            for (String key : flagKeys) if (MapUtils.getBoolean(config, key, false)) enabledCount++;
             System.out.println("  " + DIM + "Enabled: " + enabledCount + "/" + flagKeys.length + RESET);
             System.out.println();
 
@@ -635,7 +637,7 @@ public class AppConfigWizard {
                 int n = Integer.parseInt(trimmed);
                 if (n >= 1 && n <= flagKeys.length) {
                     String key = flagKeys[n - 1];
-                    config.put(key, !getBoolean(config, key, defaults[n - 1]));
+                    config.put(key, !MapUtils.getBoolean(config, key, defaults[n - 1]));
                 }
             } catch (NumberFormatException ignored) {}
         }
@@ -646,12 +648,12 @@ public class AppConfigWizard {
         // Print property equivalents
         System.out.println();
         System.out.println("  " + DIM + "Equivalent application.properties:" + RESET);
-        System.out.println("    kompile.guardrails.input.enabled=" + getBoolean(config, "guardrailsInputEnabled", false));
-        System.out.println("    kompile.guardrails.output.enabled=" + getBoolean(config, "guardrailsOutputEnabled", false));
-        System.out.println("    kompile.query.transformer.enabled=" + getBoolean(config, "queryTransformationEnabled", false));
-        System.out.println("    kompile.tool-gateway.enabled=" + getBoolean(config, "toolGatewayEnabled", false));
-        System.out.println("    kompile.evaluation.enabled=" + getBoolean(config, "evaluationEnabled", false));
-        System.out.println("    kompile.kvcache.enabled=" + getBoolean(config, "kvCacheEnabled", false));
+        System.out.println("    kompile.guardrails.input.enabled=" + MapUtils.getBoolean(config, "guardrailsInputEnabled", false));
+        System.out.println("    kompile.guardrails.output.enabled=" + MapUtils.getBoolean(config, "guardrailsOutputEnabled", false));
+        System.out.println("    kompile.query.transformer.enabled=" + MapUtils.getBoolean(config, "queryTransformationEnabled", false));
+        System.out.println("    kompile.tool-gateway.enabled=" + MapUtils.getBoolean(config, "toolGatewayEnabled", false));
+        System.out.println("    kompile.evaluation.enabled=" + MapUtils.getBoolean(config, "evaluationEnabled", false));
+        System.out.println("    kompile.kvcache.enabled=" + MapUtils.getBoolean(config, "kvCacheEnabled", false));
         System.out.println();
         return true;
     }
@@ -674,7 +676,7 @@ public class AppConfigWizard {
                 "Custom       — OpenAI-compatible endpoint"
         };
 
-        String currentProvider = getString(config, "provider", "");
+        String currentProvider = MapUtils.getString(config, "provider", "");
         System.out.println("  " + DIM + "Current provider: " + (currentProvider.isEmpty() ? "(not configured)" : currentProvider) + RESET);
         System.out.println();
 
@@ -694,7 +696,7 @@ public class AppConfigWizard {
             } catch (NumberFormatException ignored) {}
         }
 
-        String selectedProvider = getString(config, "provider", "");
+        String selectedProvider = MapUtils.getString(config, "provider", "");
         if (selectedProvider.isEmpty()) {
             System.out.println(YELLOW + "  No provider selected. Skipping." + RESET);
             System.out.println();
@@ -719,7 +721,7 @@ public class AppConfigWizard {
                     }
                 }
             } else {
-                String currentKey = getString(config, "apiKey", "");
+                String currentKey = MapUtils.getString(config, "apiKey", "");
                 String keyPrompt = currentKey.isEmpty() ? "  API key: " : "  API key (Enter to keep current): ";
                 String key = prompt(reader, keyPrompt);
                 if (key != null && !key.trim().isEmpty()) {
@@ -742,7 +744,7 @@ public class AppConfigWizard {
         String[] modelOptions = provIdx >= 0 ? modelsByProvider[provIdx] : new String[]{};
 
         if (modelOptions.length > 0) {
-            String currentModel = getString(config, "model", "");
+            String currentModel = MapUtils.getString(config, "model", "");
             System.out.println();
             System.out.println(BOLD + "  Select Model:" + RESET);
             if (!currentModel.isEmpty()) {
@@ -770,14 +772,14 @@ public class AppConfigWizard {
             }
         } else {
             config.put("model", promptWithDefault(reader, "  Model name",
-                    getString(config, "model", "")));
+                    MapUtils.getString(config, "model", "")));
         }
 
         // Base URL for ollama/custom
         if ("ollama".equals(selectedProvider) || "custom".equals(selectedProvider)) {
             String defaultUrl = "ollama".equals(selectedProvider) ? "http://localhost:11434" : "";
             config.put("baseUrl", promptWithDefault(reader, "  Base URL",
-                    getString(config, "baseUrl", defaultUrl)));
+                    MapUtils.getString(config, "baseUrl", defaultUrl)));
         }
 
         saveConfig(LLM_PROVIDER_CONFIG, config);
@@ -789,22 +791,22 @@ public class AppConfigWizard {
         switch (selectedProvider) {
             case "openai":
                 System.out.println("    spring.ai.openai.api-key=<your-key>");
-                System.out.println("    spring.ai.openai.chat.options.model=" + getString(config, "model", "gpt-4o"));
+                System.out.println("    spring.ai.openai.chat.options.model=" + MapUtils.getString(config, "model", "gpt-4o"));
                 break;
             case "anthropic":
                 System.out.println("    spring.ai.anthropic.api-key=<your-key>");
-                System.out.println("    spring.ai.anthropic.chat.options.model=" + getString(config, "model", "claude-opus-4-6"));
+                System.out.println("    spring.ai.anthropic.chat.options.model=" + MapUtils.getString(config, "model", "claude-opus-4-6"));
                 break;
             case "gemini":
-                System.out.println("    spring.ai.vertex.ai.gemini.chat.options.model=" + getString(config, "model", "gemini-2.5-pro"));
+                System.out.println("    spring.ai.vertex.ai.gemini.chat.options.model=" + MapUtils.getString(config, "model", "gemini-2.5-pro"));
                 break;
             case "ollama":
-                System.out.println("    spring.ai.ollama.base-url=" + getString(config, "baseUrl", "http://localhost:11434"));
-                System.out.println("    spring.ai.ollama.chat.options.model=" + getString(config, "model", "llama3"));
+                System.out.println("    spring.ai.ollama.base-url=" + MapUtils.getString(config, "baseUrl", "http://localhost:11434"));
+                System.out.println("    spring.ai.ollama.chat.options.model=" + MapUtils.getString(config, "model", "llama3"));
                 break;
             case "custom":
-                System.out.println("    spring.ai.openai.base-url=" + getString(config, "baseUrl", ""));
-                System.out.println("    spring.ai.openai.chat.options.model=" + getString(config, "model", ""));
+                System.out.println("    spring.ai.openai.base-url=" + MapUtils.getString(config, "baseUrl", ""));
+                System.out.println("    spring.ai.openai.chat.options.model=" + MapUtils.getString(config, "model", ""));
                 break;
         }
         System.out.println();
@@ -820,19 +822,19 @@ public class AppConfigWizard {
 
         config.put("enabled", promptBoolean(reader,
                 "  Backup enabled",
-                getBoolean(config, "enabled", true)));
+                MapUtils.getBoolean(config, "enabled", true)));
 
-        if (getBoolean(config, "enabled", true)) {
+        if (MapUtils.getBoolean(config, "enabled", true)) {
             config.put("backupPath", promptWithDefault(reader,
                     "  Backup path",
-                    getString(config, "backupPath", System.getProperty("user.home") + "/.kompile/backups")));
+                    MapUtils.getString(config, "backupPath", System.getProperty("user.home") + "/.kompile/backups")));
             config.put("retentionDays", promptInt(reader,
                     "  Retention period (days)",
-                    getInt(config, "retentionDays", 7)));
+                    MapUtils.getInt(config, "retentionDays", 7)));
 
             String[] intervals = {"3600000", "21600000", "43200000", "86400000"};
             String[] intervalDescs = {"1 hour", "6 hours (default)", "12 hours", "24 hours"};
-            String currentInterval = getString(config, "fixedRateMs", "21600000");
+            String currentInterval = MapUtils.getString(config, "fixedRateMs", "21600000");
 
             System.out.println();
             System.out.println(BOLD + "  Backup Interval:" + RESET);
@@ -854,14 +856,14 @@ public class AppConfigWizard {
 
             config.put("includeDatabase", promptBoolean(reader,
                     "  Include databases in backup",
-                    getBoolean(config, "includeDatabase", true)));
+                    MapUtils.getBoolean(config, "includeDatabase", true)));
             config.put("includeIndexes", promptBoolean(reader,
                     "  Include indexes in backup",
-                    getBoolean(config, "includeIndexes", true)));
+                    MapUtils.getBoolean(config, "includeIndexes", true)));
 
             String[] formats = {"COMPRESSED", "DIRECTORY"};
             config.put("format", promptBoolean(reader, "  Compressed format (tar.gz)",
-                    "COMPRESSED".equals(getString(config, "format", "COMPRESSED")))
+                    "COMPRESSED".equals(MapUtils.getString(config, "format", "COMPRESSED")))
                     ? "COMPRESSED" : "DIRECTORY");
         }
 
@@ -1140,38 +1142,6 @@ public class AppConfigWizard {
         }
     }
 
-    // ── Config value accessors ─────────────────────────────────────────────
-
-    private static String getString(Map<String, Object> config, String key, String defaultValue) {
-        Object val = config.get(key);
-        return val != null ? String.valueOf(val) : defaultValue;
-    }
-
-    private static boolean getBoolean(Map<String, Object> config, String key, boolean defaultValue) {
-        Object val = config.get(key);
-        if (val instanceof Boolean) return (Boolean) val;
-        if (val instanceof String) return Boolean.parseBoolean((String) val);
-        return defaultValue;
-    }
-
-    private static int getInt(Map<String, Object> config, String key, int defaultValue) {
-        Object val = config.get(key);
-        if (val instanceof Number) return ((Number) val).intValue();
-        if (val instanceof String) {
-            try { return Integer.parseInt((String) val); } catch (NumberFormatException e) { return defaultValue; }
-        }
-        return defaultValue;
-    }
-
-    private static double getDouble(Map<String, Object> config, String key, double defaultValue) {
-        Object val = config.get(key);
-        if (val instanceof Number) return ((Number) val).doubleValue();
-        if (val instanceof String) {
-            try { return Double.parseDouble((String) val); } catch (NumberFormatException e) { return defaultValue; }
-        }
-        return defaultValue;
-    }
-
     // ── Display helpers ────────────────────────────────────────────────────
 
     static void printHeader(String title) {
@@ -1221,6 +1191,7 @@ public class AppConfigWizard {
             case "backup" -> BACKUP_CONFIG;
             case "tool-gateway" -> "tool-gateway-config.json";
             case "pipeline" -> "pipeline-config.json";
+            case "embedding-restart" -> "embedding-restart-config.json";
             default -> null;
         };
     }

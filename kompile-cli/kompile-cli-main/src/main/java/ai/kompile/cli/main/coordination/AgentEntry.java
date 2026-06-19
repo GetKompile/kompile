@@ -18,6 +18,8 @@ package ai.kompile.cli.main.coordination;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 
@@ -25,6 +27,8 @@ import java.time.Instant;
  * Represents an active agent session. Serialized as JSON to
  * {@code <workDir>/.kompile/coordination/agents/<sessionId>.agent.json}.
  */
+@Data
+@NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class AgentEntry {
 
@@ -61,8 +65,6 @@ public class AgentEntry {
     @JsonProperty("ttlSeconds")
     private int ttlSeconds;
 
-    public AgentEntry() {}
-
     public AgentEntry(String sessionId, String agentName, String agentType,
                       String parentSessionId, int depth, String task,
                       String workDir, long pid, Instant startedAt, int ttlSeconds) {
@@ -78,24 +80,6 @@ public class AgentEntry {
         this.lastHeartbeat = startedAt;
         this.ttlSeconds = ttlSeconds;
     }
-
-    public String getSessionId() { return sessionId; }
-    public String getAgentName() { return agentName; }
-    public String getAgentType() { return agentType; }
-    public String getParentSessionId() { return parentSessionId; }
-    public int getDepth() { return depth; }
-    public String getTask() { return task; }
-    public String getWorkDir() { return workDir; }
-    public long getPid() { return pid; }
-    public Instant getStartedAt() { return startedAt; }
-    public Instant getLastHeartbeat() { return lastHeartbeat; }
-    public int getTtlSeconds() { return ttlSeconds; }
-
-    public void setLastHeartbeat(Instant lastHeartbeat) {
-        this.lastHeartbeat = lastHeartbeat;
-    }
-
-    public void setTask(String task) { this.task = task; }
 
     /**
      * Returns true if this entry has exceeded its TTL based on the last heartbeat.

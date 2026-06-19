@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
@@ -75,9 +76,9 @@ public class ServerSubagentRunner implements SubagentRunner {
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         long startTime = System.currentTimeMillis();
         String subagentId = agent.getName() + "-" + Long.toHexString(startTime);
-        System.out.println(renderer.renderSubagentStart(agent.getName(), truncate(prompt, 80)));
+        System.out.println(renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)));
         if (lifecycleListener != null) {
-            lifecycleListener.onSubagentStart(subagentId, agent.getName(), truncate(prompt, 60));
+            lifecycleListener.onSubagentStart(subagentId, agent.getName(), StringUtils.truncate(prompt, 60));
         }
 
         // Build the system prompt with available tools
@@ -216,9 +217,4 @@ public class ServerSubagentRunner implements SubagentRunner {
         }
     }
 
-    private static String truncate(String text, int maxLen) {
-        if (text == null) return "";
-        if (text.length() <= maxLen) return text;
-        return text.substring(0, maxLen - 3) + "...";
-    }
 }

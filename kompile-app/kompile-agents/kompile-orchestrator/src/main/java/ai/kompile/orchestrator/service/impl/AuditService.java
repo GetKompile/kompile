@@ -24,9 +24,9 @@ import ai.kompile.orchestrator.model.task.TaskInstance;
 import ai.kompile.orchestrator.model.workflow.Workflow;
 import ai.kompile.orchestrator.model.workflow.WorkflowStep;
 import ai.kompile.orchestrator.repository.AuditLogRepository;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
@@ -55,13 +55,7 @@ public class AuditService {
 
     @Autowired
     private final AuditLogRepository auditRepository;
-    private final ObjectMapper objectMapper = createObjectMapper();
-
-    private static ObjectMapper createObjectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
-        return mapper;
-    }
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // ==================== Orchestrator Lifecycle ====================
 

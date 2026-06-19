@@ -595,10 +595,13 @@ class AgentStreamingEndToEndTest {
         void agentChatServiceStreamsViaEmitter() throws Exception {
             // Build the service with real ClaudeStreamParser
             ClaudeStreamParser realParser = new ClaudeStreamParser();
+            AgentSubprocessExecutor subprocessExecutor = new AgentSubprocessExecutor(
+                    agentRegistry, diagnosticService, realParser);
             AgentChatService service = new AgentChatService(
                     agentRegistry,
                     diagnosticService,
                     realParser,
+                    subprocessExecutor,
                     List.of(new NoOpDocumentRetrieverImpl()),
                     List.of(new NoOpVectorStoreImpl()),
                     null, null,
@@ -713,8 +716,12 @@ class AgentStreamingEndToEndTest {
     // =========================================================================
 
     private static AgentChatService createService() {
+        ClaudeStreamParser parser = new ClaudeStreamParser();
+        AgentSubprocessExecutor subprocessExecutor = new AgentSubprocessExecutor(
+                null, null, parser);
         return new AgentChatService(
-                null, null, new ClaudeStreamParser(),
+                null, null, parser,
+                subprocessExecutor,
                 List.of(new NoOpDocumentRetrieverImpl()),
                 List.of(new NoOpVectorStoreImpl()),
                 null, null, null, null, null, null

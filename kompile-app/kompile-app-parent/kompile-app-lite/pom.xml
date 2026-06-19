@@ -34,6 +34,10 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
         <!-- Spring Boot -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -139,7 +143,8 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
-            <artifactId>kompile-app-gemini-llm</artifactId>
+            <artifactId>kompile-app-agy-llm</artifactId>
+            <version>${project.version}</version>
             <optional>true</optional>
         </dependency>
 
@@ -285,21 +290,38 @@
                                 <buildArg>-H:+DeadlockWatchdogExitOnTimeout</buildArg>
                                 <buildArg>--enable-url-protocols=https,http</buildArg>
                                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
-                                <!-- Build-time initialization (logging + ND4J deallocation) -->
+                                <!-- Build-time initialization (logging + ND4J deallocation + shaded protobuf) -->
                                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
                                 <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.shade.protobuf</buildArg>
+                                <buildArg>--initialize-at-build-time=com.google.protobuf</buildArg>
+                                <buildArg>--initialize-at-build-time=com.google.gson</buildArg>
                                 <!-- Runtime initialization (ND4J, JavaCPP, Lucene, JNI) -->
-                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Pointer,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.bytedeco.javacpp.Pointer$NativeDeallocator,org.bytedeco.javacpp.PointerScope,org.bytedeco.javacpp.indexer</buildArg>
                                 <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
                                 <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
-                                <buildArg>--initialize-at-run-time=org.apache.lucene</buildArg>
+                                <!-- Critical: ND4J ops/samediff hierarchy must be runtime-init to prevent points-to analysis hang -->
+                                <buildArg>--initialize-at-run-time=org.nd4j.imports.converters.DifferentialFunctionClassHolder,org.nd4j.linalg.api.ops,org.nd4j.autodiff.samediff,org.nd4j.linalg.factory.Nd4j,org.nd4j.nativeblas.NativeOpsHolder,org.nd4j.linalg.cpu.nativecpu.NDArray,org.nd4j.linalg.cpu.nativecpu.CpuNDArrayFactory,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.nd4j.linalg.learning.config,org.nd4j.linalg.api.memory.deallocation.DeallocatorService</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.eclipse.deeplearning4j.tokenizers.presets.TokenizersHelper,org.eclipse.deeplearning4j.tokenizers.bindings.TokenizersNative</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.openblas.presets.openblas,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.openblas.global.openblas,org.bytedeco.openblas.global.openblas_nolapack</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.onnxruntime.global.onnxruntime</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.onnx.presets.onnx,org.bytedeco.onnx.global.onnx</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.opencl.presets.OpenCL,org.bytedeco.opencl.global.OpenCL</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.dnnl.presets.dnnl,org.bytedeco.dnnl.global.dnnl</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.mkldnn.presets.mklml,org.bytedeco.mkldnn.global.mklml,org.bytedeco.mkldnn.global.mkldnn</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.tensorflow.presets.tensorflow</buildArg>
+                                <buildArg>--initialize-at-run-time=org.apache.lucene.util.ScalarQuantizer</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.channel.epoll.Epoll</buildArg>
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
+                                <buildArg>--initialize-at-run-time=org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.apache.tomcat.jni.SSL,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory</buildArg>
+                                <buildArg>--initialize-at-run-time=org.jline.nativ.JLineLibrary,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary</buildArg>
+                                <buildArg>--initialize-at-run-time=org.springframework.ai.chat.client.advisor,reactor.core.scheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.springframework.boot.loader.ref.Cleaner,org.springframework.core.io.VfsUtils</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
                                 <!-- Exclude ByteBuddy bytecode provider from ServiceLoader -->
                                 <buildArg>-H:ServiceLoaderFeatureExcludeServices=org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
+                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Lite-specific native-image configs -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/lite</buildArg>
                                 <!-- Resource inclusion -->
@@ -308,6 +330,22 @@
                                 <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
                                 <buildArg>-H:IncludeResources=model-sources\.yml</buildArg>
+                                <!-- Exclude native binaries from image to prevent analysis bloat -->
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.dll$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.dylib$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.dll$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.dylib$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/eclipse/deeplearning4j/tokenizers/.*/lib.*\.so.*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/eclipse/deeplearning4j/tokenizers/.*/libjni.*\.so</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-x86_64/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-x86_64/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-aarch64/.*</buildArg>
+                                <buildArg>-H:ExcludeResources=windows-x86_64/.*</buildArg>
+                                <buildArg>-H:ExcludeResources=macosx-.*/.*</buildArg>
                             </buildArgs>
                         </configuration>
                     </plugin>

@@ -16,7 +16,7 @@
 
 package ai.kompile.cli.main.build;
 
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import ai.kompile.cli.main.util.OSResolver;
 import org.apache.maven.shared.invoker.*;
 import picocli.CommandLine;

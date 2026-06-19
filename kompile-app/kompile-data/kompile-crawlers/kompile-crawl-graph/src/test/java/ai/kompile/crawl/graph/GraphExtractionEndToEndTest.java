@@ -17,20 +17,21 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.*;
-import ai.kompile.core.embeddings.VectorStore;
-import ai.kompile.core.graphrag.GraphConstructor;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.llm.chat.LLMChat;
 import org.junit.jupiter.api.*;
-import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.mockito.junit.jupiter.MockitoSettings;
-import org.mockito.quality.Strictness;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.FilterType;
 
-import java.lang.reflect.Field;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -43,27 +44,64 @@ import static org.mockito.Mockito.*;
  * Covers complex multi-document scenarios, diverse entity type mixes, relationship
  * chains, entity resolution across sources, and confidence-based filtering.
  */
-@ExtendWith(MockitoExtension.class)
-@MockitoSettings(strictness = Strictness.LENIENT)
+@SpringBootTest(classes = GraphExtractionEndToEndTest.TestConfig.class)
 class GraphExtractionEndToEndTest {
 
-    @Mock private DocumentLoader loader;
-    @Mock private LLMChat llmChat;
-    @Mock private LLMChat.ChatClientRequestSpec requestSpec;
-    @Mock private LLMChat.CallResponseSpec callResponseSpec;
+    /**
+     * Minimal context: component-scan the crawl-graph package; external leaf beans are @MockBean'd.
+     * The exclude filters keep OTHER test classes' nested @SpringBootConfiguration/@TestConfiguration
+     * (e.g. the sibling suite's mock-chunker config) out of THIS context — they live in the same
+     * package, so an unfiltered scan would pull in foreign, unstubbed beans and corrupt the wiring.
+     */
+    @SpringBootConfiguration
+    @ComponentScan(
+            basePackageClasses = UnifiedCrawlGraphServiceImpl.class,
+            excludeFilters = @ComponentScan.Filter(
+                    type = FilterType.ANNOTATION,
+                    classes = {SpringBootConfiguration.class, TestConfiguration.class}))
+    static class TestConfig {
+    }
 
-    private UnifiedCrawlGraphServiceImpl service;
+    @Autowired private UnifiedCrawlGraphServiceImpl service;
+
+    // External / leaf collaborators are mocked beans; the service, orchestrator, trackers, memory
+    // monitor and helpers are wired for real by Spring. No reflection — a field rename now fails at
+    // compile time, not as a runtime NoSuchField.
+    //
+    // The runtime config manager is a real (component-scanned) bean, spied so we can force
+    // retainResultGraph=true; its real applyRuntimeConfig() still pushes the production defaults
+    // (LLM timeout, batch sizes, parallelism) onto the live orchestrator/dispatcher/helpers — the
+    // exact wiring a mock would have silently zeroed out.
+    @SpyBean private CrawlRuntimeConfigManager runtimeConfigManager;
+    @MockBean private CrawlSourceLoadingService sourceLoadingService;
+    @MockBean private LLMChat llmChat;
+
+    // Plain (non-bean) mocks for the LLM call chain and the loader the source service bridges to.
+    private final DocumentLoader loader = mock(DocumentLoader.class);
+    private LLMChat.ChatClientRequestSpec requestSpec;
+    private LLMChat.CallResponseSpec callResponseSpec;
 
     @BeforeEach
     void setUp() throws Exception {
-        service = new UnifiedCrawlGraphServiceImpl();
-        setField(service, "documentLoaders", List.of(loader));
-        setField(service, "llmChat", llmChat);
-        // retainResultGraph must be true so job.getResultGraph() is non-null after completion
-        setField(service, "retainResultGraph", true);
+        requestSpec = mock(LLMChat.ChatClientRequestSpec.class);
+        callResponseSpec = mock(LLMChat.CallResponseSpec.class);
 
-        when(loader.supports(any())).thenReturn(true);
-        when(loader.getName()).thenReturn("Test Loader");
+        // Real config defaults (300s LLM timeout, sane batch/parallelism) but with the in-memory
+        // result graph retained so the assertions can inspect entities/relationships. Only
+        // refreshRuntimeConfig() is stubbed; the real applyRuntimeConfig() then configures every
+        // downstream bean from this config. doReturn(...) avoids invoking the real JSON-loading read.
+        CrawlRuntimeConfigManager.CrawlRuntimeConfig cfg =
+                CrawlRuntimeConfigManager.CrawlRuntimeConfig.defaults();
+        cfg.retainResultGraph = true;
+        doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
+
+        // Loading moved to CrawlSourceLoadingService; bridge it back to the per-test DocumentLoader stubs.
+        // Return a MUTABLE list — the service clears the results list after aggregating (executeJob),
+        // matching the real loadSources contract; List.of(...) would throw UnsupportedOperationException.
+        DocumentSourceDescriptor anyDescriptor = mock(DocumentSourceDescriptor.class);
+        when(sourceLoadingService.loadSources(any(), anyInt(), any())).thenAnswer(inv ->
+                new ArrayList<>(List.of(
+                        new CrawlSourceLoadingService.SourceLoadResult(0, "test", loader.load(anyDescriptor, null)))));
         when(llmChat.prompt(anyString())).thenReturn(requestSpec);
         when(requestSpec.call()).thenReturn(callResponseSpec);
     }
@@ -572,19 +610,32 @@ class GraphExtractionEndToEndTest {
                 List.of(relation("e5", "e6", "WORKS_AT", "w", 0.8))
         );
 
-        // Good, bad, good, bad, good
-        when(callResponseSpec.content())
-                .thenReturn(good1)
-                .thenReturn("Not valid JSON at all")
-                .thenReturn(good3)
-                .thenReturn(null)
-                .thenReturn(good5);
+        // Key the LLM response on the chunk content (the prompt embeds the document text), NOT on
+        // call order. Doc 2 ("broken text") and Doc 4 ("also broken") must stay failures across the
+        // orchestrator's in-phase per-chunk retry passes — call-order stubbing would let a retry pick
+        // up a later "good" response and spuriously recover them.
+        when(llmChat.prompt(anyString())).thenAnswer(inv -> {
+            String prompt = inv.getArgument(0);
+            String content;
+            if (prompt.contains("Alice")) content = good1;
+            else if (prompt.contains("Bob")) content = good3;
+            else if (prompt.contains("Charlie")) content = good5;
+            else if (prompt.contains("also broken")) content = null;          // null-response failure
+            else content = "Not valid JSON at all";                            // invalid-JSON failure
+            LLMChat.CallResponseSpec resp = mock(LLMChat.CallResponseSpec.class);
+            when(resp.content()).thenReturn(content);
+            LLMChat.ChatClientRequestSpec spec = mock(LLMChat.ChatClientRequestSpec.class);
+            when(spec.call()).thenReturn(resp);
+            return spec;
+        });
 
         UnifiedCrawlJob job = startJobWithGraph(null);
         awaitCompletion(job);
 
+        // The 2 broken chunks survive all in-phase retries; with no durable archive service wired they
+        // are surfaced via a warning (never silently dropped) and the job still completes.
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        // 3 successful docs × 2 entities each = 6
+        // 3 successful docs × 2 entities each = 6 (broken chunks never extract, even after retries)
         assertEquals(6, job.getEntitiesExtracted().get());
         // 3 successful docs × 1 relationship each = 3
         assertEquals(3, job.getRelationshipsExtracted().get());
@@ -763,6 +814,8 @@ class GraphExtractionEndToEndTest {
         while (System.currentTimeMillis() < deadline) {
             UnifiedCrawlJob.Status status = job.getStatus().get();
             if (status == UnifiedCrawlJob.Status.COMPLETED
+                    || status == UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH
+                    || status == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
                     || status == UnifiedCrawlJob.Status.FAILED
                     || status == UnifiedCrawlJob.Status.CANCELLED) {
                 return;
@@ -770,11 +823,5 @@ class GraphExtractionEndToEndTest {
             Thread.sleep(50);
         }
         fail("Job did not complete within 10 seconds. Status: " + job.getStatus().get());
-    }
-
-    private static void setField(Object target, String fieldName, Object value) throws Exception {
-        Field field = target.getClass().getDeclaredField(fieldName);
-        field.setAccessible(true);
-        field.set(target, value);
     }
 }

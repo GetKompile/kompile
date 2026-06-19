@@ -30,6 +30,10 @@
     <description>Configurable data pipelines for OCR preprocessing, output parsing, and entity indexing</description>
 
     <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
         <!-- OCR Core interfaces -->
         <dependency>
             <groupId>ai.kompile</groupId>

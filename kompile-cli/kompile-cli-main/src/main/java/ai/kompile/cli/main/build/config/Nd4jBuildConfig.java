@@ -50,6 +50,52 @@ public class Nd4jBuildConfig {
     private ZludaTarget zludaTarget;
 
     // =============================================
+    // ZLUDA-Specific Options
+    // =============================================
+
+    /**
+     * ROCm version for AMD ZLUDA target (e.g., "6.0", "6.1")
+     */
+    private String rocmVersion;
+
+    /**
+     * HIP version for AMD ZLUDA target (e.g., "6.0")
+     */
+    private String hipVersion;
+
+    /**
+     * MIOpen version for AMD deep learning acceleration (e.g., "3.1")
+     */
+    private String miopenVersion;
+
+    /**
+     * AMD GPU architecture targets (e.g., "gfx900;gfx1030;gfx1100").
+     * Semicolon-separated list of GCN/RDNA/CDNA ISA targets.
+     * Common values:
+     *   gfx900  - Vega (MI25, Radeon VII)
+     *   gfx906  - Vega 20 (MI50/MI60)
+     *   gfx908  - CDNA (MI100)
+     *   gfx90a  - CDNA2 (MI210/MI250)
+     *   gfx942  - CDNA3 (MI300)
+     *   gfx1030 - RDNA2 (RX 6800/6900)
+     *   gfx1100 - RDNA3 (RX 7900)
+     *   gfx1150 - RDNA3.5 (RX 9070)
+     *   gfx1200 - RDNA4 (RX 9060)
+     */
+    private String amdGpuTargets;
+
+    /**
+     * Intel oneAPI version for Intel ZLUDA target (e.g., "2024.1")
+     */
+    private String oneApiVersion;
+
+    /**
+     * Path to ZLUDA installation directory.
+     * ZLUDA translates CUDA API calls to run on AMD/Intel GPUs.
+     */
+    private String zludaPath;
+
+    // =============================================
     // Type Profiles (controls which data types are compiled)
     // =============================================
 
@@ -132,12 +178,6 @@ public class Nd4jBuildConfig {
      */
     @Builder.Default
     private boolean helperMiopen = false;
-
-    /**
-     * Enable LlamaCpp for LLM operations
-     */
-    @Builder.Default
-    private boolean helperLlamacpp = false;
 
     /**
      * Enable VLM for Vision-Language Models
@@ -457,7 +497,6 @@ public class Nd4jBuildConfig {
         if (helperMlir) append(sb, "mlir");
         if (helperPjrt) append(sb, "pjrt");
         if (helperMiopen) append(sb, "miopen");
-        if (helperLlamacpp) append(sb, "llamacpp");
         if (helperVlm) append(sb, "vlm");
 
         return sb.toString();
@@ -561,6 +600,47 @@ public class Nd4jBuildConfig {
                 .typeProfile(TypeProfile.MINIMAL_INDEXING)
                 .semanticFiltering(true)
                 .aggressiveSemanticFiltering(true)
+                .build();
+    }
+
+    /**
+     * Create a ZLUDA AMD training configuration.
+     * ZLUDA translates CUDA calls to HIP/ROCm for AMD GPUs.
+     *
+     * @param rocmVersion ROCm version (e.g., "6.1")
+     * @param amdGpuTargets semicolon-separated GCN/RDNA/CDNA targets (e.g., "gfx1030;gfx1100")
+     */
+    public static Nd4jBuildConfig zludaAmdTraining(String rocmVersion, String amdGpuTargets) {
+        return Nd4jBuildConfig.builder()
+                .backend(Backend.ZLUDA)
+                .zludaTarget(ZludaTarget.AMD)
+                .typeProfile(TypeProfile.TRAINING)
+                .helperMiopen(true)
+                .rocmVersion(rocmVersion)
+                .amdGpuTargets(amdGpuTargets)
+                .dynamicKernelSelection(true)
+                .semanticFiltering(true)
+                .build();
+    }
+
+    /**
+     * Create a ZLUDA AMD inference configuration.
+     *
+     * @param rocmVersion ROCm version (e.g., "6.1")
+     * @param amdGpuTargets semicolon-separated GCN/RDNA/CDNA targets (e.g., "gfx1030;gfx1100")
+     */
+    public static Nd4jBuildConfig zludaAmdInference(String rocmVersion, String amdGpuTargets) {
+        return Nd4jBuildConfig.builder()
+                .backend(Backend.ZLUDA)
+                .zludaTarget(ZludaTarget.AMD)
+                .typeProfile(TypeProfile.INFERENCE)
+                .helperMiopen(true)
+                .rocmVersion(rocmVersion)
+                .amdGpuTargets(amdGpuTargets)
+                .dynamicKernelSelection(true)
+                .semanticFiltering(true)
+                .aggressiveSemanticFiltering(true)
+                .useLto(true)
                 .build();
     }
 }

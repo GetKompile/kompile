@@ -24,8 +24,8 @@ import ai.kompile.modelmanager.vlm.dynamic.VlmPipelineDefinition;
 import ai.kompile.modelmanager.vlm.dynamic.VlmPipelineStageConfig;
 import ai.kompile.modelmanager.vlm.dynamic.VlmStageDefinition;
 import ai.kompile.modelmanager.vlm.registry.VlmPipelineRegistry;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -122,8 +122,7 @@ public class VlmContentExtractor {
         this.resolver = new VlmModelResolver();
         this.resolvedModels = new HashMap<>();
         this.outputCache = outputCache != null ? outputCache : new NoOpPipelineOutputCache();
-        this.cacheObjectMapper = new ObjectMapper();
-        this.cacheObjectMapper.registerModule(new JavaTimeModule());
+        this.cacheObjectMapper = JsonUtils.standardMapper();
     }
 
     /**

@@ -79,7 +79,7 @@ public class CustomToolBridge implements CliTool {
         context.checkPermission(permissionKey(),
                 "Execute custom tool: " + definition.getName());
 
-        CustomToolDefinition.ExecuteConfig exec = definition.getExecute();
+        ExecuteConfig exec = definition.getExecute();
         return switch (exec.getType()) {
             case "bash" -> executeBash(exec, params, context);
             case "http" -> executeHttp(exec, params);
@@ -87,7 +87,7 @@ public class CustomToolBridge implements CliTool {
         };
     }
 
-    private ToolResult executeBash(CustomToolDefinition.ExecuteConfig exec,
+    private ToolResult executeBash(ExecuteConfig exec,
                                    JsonNode params, ToolContext context) {
         String command = substituteTemplateVars(exec.getCommand(), params, true);
 
@@ -121,7 +121,7 @@ public class CustomToolBridge implements CliTool {
         return ToolResult.success(definition.getName(), output, meta);
     }
 
-    private ToolResult executeHttp(CustomToolDefinition.ExecuteConfig exec, JsonNode params) {
+    private ToolResult executeHttp(ExecuteConfig exec, JsonNode params) {
         String url = substituteTemplateVars(exec.getUrl(), params, false);
         String method = exec.getMethod() != null ? exec.getMethod().toUpperCase() : "GET";
 

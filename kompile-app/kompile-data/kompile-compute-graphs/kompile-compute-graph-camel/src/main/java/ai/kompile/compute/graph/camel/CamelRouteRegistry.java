@@ -1,5 +1,6 @@
 package ai.kompile.compute.graph.camel;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.AllArgsConstructor;
@@ -33,7 +34,7 @@ public class CamelRouteRegistry {
 
     public CamelRouteRegistry() {
         this.routesPath = Paths.get(System.getProperty("user.home"), ROUTES_DIR);
-        this.objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         loadAll();
     }
 

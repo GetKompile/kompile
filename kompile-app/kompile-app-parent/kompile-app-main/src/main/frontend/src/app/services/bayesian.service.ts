@@ -42,8 +42,10 @@ export class BayesianService extends BaseService {
       .set('maxDepth', maxDepth.toString())
       .set('maxNodes', maxNodes.toString());
 
+    // nodeId is a query param, not a path segment: KG node IDs can contain '/'
+    // (document paths), which Tomcat rejects as %2F in the URL path.
     return this.http.get<BayesianInferenceResult>(
-      `${this.backendUrl}${this.apiPath}/query/${encodeURIComponent(nodeId)}`, { params }
+      `${this.backendUrl}${this.apiPath}/query`, { params: params.set('nodeId', nodeId) }
     );
   }
 
@@ -65,7 +67,7 @@ export class BayesianService extends BaseService {
       .set('maxNodes', maxNodes.toString());
 
     return this.http.get<Record<string, any>>(
-      `${this.backendUrl}${this.apiPath}/network/${encodeURIComponent(nodeId)}/stats`, { params }
+      `${this.backendUrl}${this.apiPath}/network/stats`, { params: params.set('nodeId', nodeId) }
     );
   }
 
@@ -91,7 +93,7 @@ export class BayesianService extends BaseService {
       .set('maxNodes', maxNodes.toString());
 
     return this.http.get<BayesianInferenceResult>(
-      `${this.backendUrl}${this.apiPath}/mebn/query/${encodeURIComponent(nodeId)}`, { params }
+      `${this.backendUrl}${this.apiPath}/mebn/query`, { params: params.set('nodeId', nodeId) }
     );
   }
 
@@ -104,7 +106,7 @@ export class BayesianService extends BaseService {
       .set('maxNodes', maxNodes.toString());
 
     return this.http.get<BayesianInferenceResult>(
-      `${this.backendUrl}${this.apiPath}/mebn/structure/${encodeURIComponent(nodeId)}`, { params }
+      `${this.backendUrl}${this.apiPath}/mebn/structure`, { params: params.set('nodeId', nodeId) }
     );
   }
 
@@ -117,7 +119,7 @@ export class BayesianService extends BaseService {
       .set('maxNodes', maxNodes.toString());
 
     return this.http.get<Record<string, any>>(
-      `${this.backendUrl}${this.apiPath}/mebn/stats/${encodeURIComponent(nodeId)}`, { params }
+      `${this.backendUrl}${this.apiPath}/mebn/stats`, { params: params.set('nodeId', nodeId) }
     );
   }
 
@@ -152,7 +154,7 @@ export class BayesianService extends BaseService {
       .set('maxNodes', maxNodes.toString());
 
     return this.http.get<SensitivityResult>(
-      `${this.backendUrl}${this.apiPath}/sensitivity/${encodeURIComponent(nodeId)}`, { params }
+      `${this.backendUrl}${this.apiPath}/sensitivity`, { params: params.set('nodeId', nodeId) }
     );
   }
 

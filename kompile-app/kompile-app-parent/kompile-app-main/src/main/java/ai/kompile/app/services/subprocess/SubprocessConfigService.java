@@ -19,6 +19,7 @@ package ai.kompile.app.services.subprocess;
 import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.common.util.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -227,7 +228,7 @@ public class SubprocessConfigService {
             ServerPortService serverPortService,
             String dataDir) {
         this.serverPortService = serverPortService;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         this.configFilePath = Paths.get(dataDir, "config", CONFIG_FILENAME);
         log.info("SubprocessConfigService initialized, config path: {}", configFilePath);

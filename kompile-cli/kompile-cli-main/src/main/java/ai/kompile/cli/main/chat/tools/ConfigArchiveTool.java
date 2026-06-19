@@ -19,9 +19,10 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.cli.common.config.ComponentFilter;
 import ai.kompile.cli.common.config.ConfigArchiveManifest;
 import ai.kompile.cli.common.config.ConfigArchiveService;
-import ai.kompile.cli.common.config.ConfigArchiveService.ArchiveInfo;
+import ai.kompile.cli.common.config.ArchiveInfo;
 import ai.kompile.cli.common.config.ConfigArchiveService.ImportResult;
 import ai.kompile.cli.common.config.ImportMode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -42,7 +43,7 @@ import java.util.*;
  */
 public class ConfigArchiveTool implements CliTool {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     @Override
     public String id() { return "config_archive"; }

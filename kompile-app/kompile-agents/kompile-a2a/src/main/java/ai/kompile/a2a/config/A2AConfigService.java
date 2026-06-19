@@ -16,10 +16,8 @@
 
 package ai.kompile.a2a.config;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -47,10 +45,7 @@ public class A2AConfigService {
     private static final Path CONFIG_PATH = Path.of(
             System.getProperty("user.home"), ".kompile", "config", "a2a-config.json");
 
-    private final ObjectMapper objectMapper = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private final AtomicReference<A2AConfig> config = new AtomicReference<>(new A2AConfig());
 

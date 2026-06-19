@@ -86,6 +86,10 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     @Autowired(required = false)
     private SubprocessRegistry subprocessRegistry;
 
+    // Restart-governor configuration (manual toggle + native-crash threshold), read live.
+    @Autowired(required = false)
+    private ai.kompile.embedding.anserini.config.EmbeddingRestartConfigService restartConfigService;
+
     // Model state (mirrors subprocess state)
     private volatile String modelIdentifier;
     private volatile int embeddingDimensions = -1;
@@ -129,6 +133,17 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     // during GPU preemption by higher-priority services (e.g., VLM)
     private volatile boolean preempted = false;
     private volatile String preemptionReason = null;
+
+    // Restart governor: manual master switch + native-crash circuit breaker.
+    // State lives on this long-lived @Service (NOT the per-launch EmbeddingSubprocessLauncher),
+    // because ensureInitialized()/reloadModel() build a fresh launcher on each call, which would
+    // reset any launcher-local counter and defeat the breaker — the root cause of the observed
+    // hours-long embedding crash loop.
+    private final java.util.concurrent.atomic.AtomicInteger consecutiveNativeCrashes =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+    private volatile boolean restartsPaused = false;
+    private volatile String restartsPausedReason = null;
+    private volatile String lastObservedCrashReason = null;
 
     /** No-arg for Spring AOT */
     public AnseriniEmbeddingModelImpl() {
@@ -247,6 +262,16 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             if (initialized) {
                 return;
             }
+            // Restart governor: do NOT (re)spawn the subprocess when auto-restart is disabled, or
+            // restarts are paused (breaker tripped). This is the single choke point that EVERY
+            // respawn path funnels through — crash handler, background polling, the scheduled
+            // ModelAutoInitializationService, and on-demand requests all reach ensureInitialized() —
+            // so gating here makes the manual OFF toggle authoritative across every caller.
+            if (!isAutoRestartEnabled() || restartsPaused) {
+                log.warn("ensureInitialized() skipped — embedding (re)start suppressed (autoRestartEnabled={}, paused={}, reason={})",
+                        isAutoRestartEnabled(), restartsPaused, restartsPausedReason);
+                return;
+            }
             if (modelSource == ModelSource.FAILED) {
                 return;
             }
@@ -359,6 +384,8 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 this.modelSource = ModelSource.REGISTRY;
                 this.initialized = true;
                 this.initializationError = null;
+                // Healthy load — reset the native-crash circuit-breaker counter.
+                consecutiveNativeCrashes.set(0);
 
                 loadingPhase = LoadingPhase.COMPLETE;
                 loadingMessage = "Model loaded successfully in subprocess";
@@ -469,6 +496,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
     private void handleCrash(Exception e) {
         log.error("[subprocess] CRASH", e);
+        this.lastObservedCrashReason = (e != null ? e.getMessage() : null);
         publishEvent(EmbeddingSubprocessEvent.subprocessCrashed(this, modelIdentifier, e.getMessage()));
         // Subprocess launcher will handle restart via RestartPolicyCallback
     }
@@ -486,6 +514,18 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 // The lifecycle manager will call resumeFromPreemption() when ready.
                 if (preempted) {
                     log.info("Restart suppressed — service is preempted by lifecycle manager: {}", preemptionReason);
+                    return null;
+                }
+
+                // Restart governor: manual master switch. When disabled, never auto-restart; pause so
+                // the on-demand and polling paths also stay down until the user re-enables/resumes.
+                if (!isAutoRestartEnabled()) {
+                    pauseRestarts("Auto-restart disabled by configuration");
+                    return null;
+                }
+                // Circuit breaker already tripped — stay down until manually resumed.
+                if (restartsPaused) {
+                    log.warn("Restart suppressed — embedding subprocess restarts are paused: {}", restartsPausedReason);
                     return null;
                 }
 
@@ -508,6 +548,22 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 }
 
                 String reason = categorizeFailureReason(exitCode, crashReason);
+
+                // Native-crash circuit breaker: count CONSECUTIVE native crashes (SIGABRT/SIGSEGV).
+                // After the configured threshold, trip the breaker and stop respawning until resumed.
+                // The counter lives on the @Service so it survives the fresh launcher built by each
+                // ensureInitialized()/reloadModel() — otherwise it would reset every respawn and loop forever.
+                if (isNativeCrash(exitCode)) {
+                    int crashes = consecutiveNativeCrashes.incrementAndGet();
+                    int threshold = nativeCrashThreshold();
+                    if (crashes >= threshold) {
+                        pauseRestarts("Circuit breaker: " + crashes
+                                + " consecutive native crashes (exit " + exitCode + ", " + reason + ")");
+                        return null;
+                    }
+                    log.warn("Native crash {} of {} before embedding restart circuit breaker trips (exit {})",
+                            crashes, threshold, exitCode);
+                }
 
                 // Use current configuration (could be enhanced to adjust based on failure type)
                 long heapBytes = 4L * 1024 * 1024 * 1024; // 4GB default
@@ -929,6 +985,71 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         }
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Restart governor: manual master switch + native-crash circuit breaker.
+    // ---------------------------------------------------------------------------------------------
+
+    private boolean isAutoRestartEnabled() {
+        return restartConfigService == null || restartConfigService.getConfig().isAutoRestartEnabledOrDefault();
+    }
+
+    private int nativeCrashThreshold() {
+        return restartConfigService == null
+                ? ai.kompile.embedding.anserini.config.EmbeddingRestartConfig.DEFAULT_NATIVE_CRASH_THRESHOLD
+                : restartConfigService.getConfig().nativeCrashThresholdOrDefault();
+    }
+
+    private static boolean isNativeCrash(int exitCode) {
+        // 134 = SIGABRT, 136 = SIGFPE/other, 139 = SIGSEGV — matches the NATIVE_CRASH categorization.
+        return exitCode == 134 || exitCode == 136 || exitCode == 139;
+    }
+
+    private void pauseRestarts(String reason) {
+        this.restartsPaused = true;
+        this.restartsPausedReason = reason;
+        log.warn("Embedding subprocess restarts PAUSED: {} (resume via the UI or POST /api/embedding-restart/resume)",
+                reason);
+    }
+
+    /**
+     * Manually clear a paused/tripped restart state and attempt to bring the subprocess back.
+     * Invoked by the Resume action in the UI/REST API.
+     *
+     * @return true if the subprocess is initialized after the resume attempt
+     */
+    public boolean resumeRestarts() {
+        synchronized (launcherLock) {
+            log.info("Resuming embedding subprocess restarts (was paused={}, reason={})",
+                    restartsPaused, restartsPausedReason);
+            this.restartsPaused = false;
+            this.restartsPausedReason = null;
+            this.consecutiveNativeCrashes.set(0);
+            this.initializationError = null;
+            if (modelSource == ModelSource.FAILED) {
+                this.modelSource = ModelSource.NOT_INITIALIZED;
+            }
+            // Attempt re-init — will start the subprocess and load the model.
+            ensureInitialized();
+            log.info("Embedding restart resume complete (initialized={})", initialized);
+            return initialized;
+        }
+    }
+
+    /** Returns the current restart-governor state for the status REST endpoint and UI. */
+    public ai.kompile.embedding.anserini.config.EmbeddingRestartStatus getRestartGovernorStatus() {
+        boolean running = subprocessLauncher != null && subprocessLauncher.isRunning();
+        return ai.kompile.embedding.anserini.config.EmbeddingRestartStatus.builder()
+                .autoRestartEnabled(isAutoRestartEnabled())
+                .nativeCrashThreshold(nativeCrashThreshold())
+                .restartsPaused(restartsPaused)
+                .consecutiveNativeCrashes(consecutiveNativeCrashes.get())
+                .pausedReason(restartsPausedReason)
+                .lastCrashReason(lastObservedCrashReason)
+                .subprocessRunning(running)
+                .modelAvailable(true)
+                .build();
+    }
+
     /**
      * Check if this service is currently preempted (suspended by lifecycle manager).
      * When preempted, the auto-restart policy should NOT restart the subprocess.
@@ -1050,6 +1171,10 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
      * - Either there's no error, or the error is retriable (transient)
      */
     public boolean shouldContinuePolling() {
+        // Restart governor: stop background respawn polling when restarts are paused or disabled.
+        if (restartsPaused || !isAutoRestartEnabled()) {
+            return false;
+        }
         if (initialized) {
             return false; // Model is ready, no need to poll
         }

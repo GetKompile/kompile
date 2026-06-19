@@ -16,10 +16,12 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import lombok.Data;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -35,11 +37,12 @@ import java.util.List;
  * <p>This config stores all the options that would otherwise be passed via CLI flags,
  * so teams can check in a shared enforcer configuration.</p>
  */
+@Data
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class EnforcerConfig {
 
     private static final String CONFIG_FILENAME = "enforcer-config.json";
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     // ── Agent settings ─────────────────────────────────────────────────────
@@ -141,10 +144,6 @@ public class EnforcerConfig {
 
     @JsonProperty
     private List<String> bannedKeywords = new ArrayList<>();
-
-    // ── Constructor ────────────────────────────────────────────────────────
-
-    public EnforcerConfig() {}
 
     // ── Persistence ────────────────────────────────────────────────────────
 
@@ -296,89 +295,4 @@ public class EnforcerConfig {
         return sb.toString().trim();
     }
 
-    // ── Getters & Setters ──────────────────────────────────────────────────
-
-    public String getAgent() { return agent; }
-    public void setAgent(String agent) { this.agent = agent; }
-
-    public boolean isSkipPermissions() { return skipPermissions; }
-    public void setSkipPermissions(boolean skipPermissions) { this.skipPermissions = skipPermissions; }
-
-    public boolean isInjectTools() { return injectTools; }
-    public void setInjectTools(boolean injectTools) { this.injectTools = injectTools; }
-
-    public boolean isInjectSkills() { return injectSkills; }
-    public void setInjectSkills(boolean injectSkills) { this.injectSkills = injectSkills; }
-
-    public String getRuleFile() { return ruleFile; }
-    public void setRuleFile(String ruleFile) { this.ruleFile = ruleFile; }
-
-    public String getInlineRules() { return inlineRules; }
-    public void setInlineRules(String inlineRules) { this.inlineRules = inlineRules; }
-
-    public int getMaxCorrections() { return maxCorrections; }
-    public void setMaxCorrections(int maxCorrections) { this.maxCorrections = maxCorrections; }
-
-    public boolean isKeywordMode() { return keywordMode; }
-    public void setKeywordMode(boolean keywordMode) { this.keywordMode = keywordMode; }
-
-    public boolean isArchiveDiffs() { return archiveDiffs; }
-    public void setArchiveDiffs(boolean archiveDiffs) { this.archiveDiffs = archiveDiffs; }
-
-    public boolean isAutoRollbackOnViolation() { return autoRollbackOnViolation; }
-    public void setAutoRollbackOnViolation(boolean autoRollbackOnViolation) { this.autoRollbackOnViolation = autoRollbackOnViolation; }
-
-    public int getArchiveRetentionHours() { return archiveRetentionHours; }
-    public void setArchiveRetentionHours(int archiveRetentionHours) { this.archiveRetentionHours = archiveRetentionHours; }
-
-    public String getDiffPatternsFile() { return diffPatternsFile; }
-    public void setDiffPatternsFile(String diffPatternsFile) { this.diffPatternsFile = diffPatternsFile; }
-
-    public List<String> getDiffPatternRules() { return diffPatternRules; }
-    public void setDiffPatternRules(List<String> diffPatternRules) { this.diffPatternRules = diffPatternRules; }
-
-    public String getPrimaryLanguage() { return primaryLanguage; }
-    public void setPrimaryLanguage(String primaryLanguage) { this.primaryLanguage = primaryLanguage; }
-
-    public String getJudgeMode() { return judgeMode; }
-    public void setJudgeMode(String judgeMode) { this.judgeMode = judgeMode; }
-
-    public String getJudgeProvider() { return judgeProvider; }
-    public void setJudgeProvider(String judgeProvider) { this.judgeProvider = judgeProvider; }
-
-    public String getJudgeModel() { return judgeModel; }
-    public void setJudgeModel(String judgeModel) { this.judgeModel = judgeModel; }
-
-    public String getJudgeApiKey() { return judgeApiKey; }
-    public void setJudgeApiKey(String judgeApiKey) { this.judgeApiKey = judgeApiKey; }
-
-    public String getJudgeBaseUrl() { return judgeBaseUrl; }
-    public void setJudgeBaseUrl(String judgeBaseUrl) { this.judgeBaseUrl = judgeBaseUrl; }
-
-    public String getKompileUrl() { return kompileUrl; }
-    public void setKompileUrl(String kompileUrl) { this.kompileUrl = kompileUrl; }
-
-    public int getMcpPort() { return mcpPort; }
-    public void setMcpPort(int mcpPort) { this.mcpPort = mcpPort; }
-
-    public List<String> getBannedTools() { return bannedTools; }
-    public void setBannedTools(List<String> bannedTools) { this.bannedTools = bannedTools; }
-
-    public List<String> getBannedCommands() { return bannedCommands; }
-    public void setBannedCommands(List<String> bannedCommands) { this.bannedCommands = bannedCommands; }
-
-    public List<String> getBannedKeywords() { return bannedKeywords; }
-    public void setBannedKeywords(List<String> bannedKeywords) { this.bannedKeywords = bannedKeywords; }
-
-    public String getSemanticMode() { return semanticMode; }
-    public void setSemanticMode(String semanticMode) { this.semanticMode = semanticMode; }
-
-    public double getSemanticThreshold() { return semanticThreshold; }
-    public void setSemanticThreshold(double semanticThreshold) { this.semanticThreshold = semanticThreshold; }
-
-    public String getEmbeddingUrl() { return embeddingUrl; }
-    public void setEmbeddingUrl(String embeddingUrl) { this.embeddingUrl = embeddingUrl; }
-
-    public String getSynonymDictionaryPath() { return synonymDictionaryPath; }
-    public void setSynonymDictionaryPath(String synonymDictionaryPath) { this.synonymDictionaryPath = synonymDictionaryPath; }
 }

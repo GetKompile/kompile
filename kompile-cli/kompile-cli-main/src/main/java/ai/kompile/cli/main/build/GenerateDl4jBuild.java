@@ -18,7 +18,7 @@ package ai.kompile.cli.main.build;
 
 import ai.kompile.cli.main.build.config.Nd4jBuildConfig;
 import ai.kompile.cli.main.build.config.Nd4jBuildConfig.*;
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import ai.kompile.cli.main.util.OSResolver;
 import org.apache.maven.shared.invoker.DefaultInvocationRequest;
 import org.apache.maven.shared.invoker.DefaultInvoker;
@@ -127,11 +127,21 @@ public class GenerateDl4jBuild implements Callable<Void> {
     @CommandLine.Option(names = {"--helper-accelerate"}, description = "Enable Apple Accelerate (macOS)")
     private boolean helperAccelerate = false;
 
-    @CommandLine.Option(names = {"--helper-llamacpp"}, description = "Enable LlamaCpp for LLM operations")
-    private boolean helperLlamacpp = false;
+    @CommandLine.Option(names = {"--helper-miopen"}, description = "Enable MIOpen for AMD GPUs (ZLUDA)")
+    private boolean helperMiopen = false;
 
     @CommandLine.Option(names = {"--helpers"}, description = "Comma-separated list of helpers")
     private String helpersList;
+
+    // =============================================
+    // ZLUDA Options
+    // =============================================
+
+    @CommandLine.Option(names = {"--amd-gpu-targets"}, description = "AMD GPU architecture targets (semicolon-separated, e.g., gfx1030;gfx1100)")
+    private String amdGpuTargets;
+
+    @CommandLine.Option(names = {"--rocm-version"}, description = "ROCm version for AMD ZLUDA target (e.g., 6.1)")
+    private String rocmVersion;
 
     // =============================================
     // CUDA Options
@@ -266,6 +276,8 @@ public class GenerateDl4jBuild implements Callable<Void> {
                 break;
             case ZLUDA:
                 goals.add("-DSD_ZLUDA=ON");
+                if (amdGpuTargets != null) goals.add("-DSD_AMD_GPU_TARGETS=" + amdGpuTargets);
+                if (rocmVersion != null) goals.add("-DROCM_VERSION=" + rocmVersion);
                 break;
             default:
                 goals.add("-DSD_CPU=ON");
@@ -291,7 +303,7 @@ public class GenerateDl4jBuild implements Callable<Void> {
             if (helperArmcompute) goals.add("-DHELPERS_armcompute=ON");
             if (helperMps) goals.add("-DHELPERS_mps=ON");
             if (helperAccelerate) goals.add("-DHELPERS_accelerate=ON");
-            if (helperLlamacpp) goals.add("-DHELPERS_llamacpp=ON");
+            if (helperMiopen) goals.add("-DHELPERS_miopen=ON");
         }
 
         // Optimization options
@@ -334,7 +346,7 @@ public class GenerateDl4jBuild implements Callable<Void> {
         if (helperArmcompute) append(sb, "armcompute");
         if (helperMps) append(sb, "mps");
         if (helperAccelerate) append(sb, "accelerate");
-        if (helperLlamacpp) append(sb, "llamacpp");
+        if (helperMiopen) append(sb, "miopen");
 
         return sb.toString();
     }

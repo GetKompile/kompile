@@ -1,0 +1,222 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { Component, OnInit, OnDestroy } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
+import { MatCardModule } from '@angular/material/card';
+import { MatIconModule } from '@angular/material/icon';
+import { MatButtonModule } from '@angular/material/button';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatSelectModule } from '@angular/material/select';
+import { MatChipsModule } from '@angular/material/chips';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
+import { EvaluationService } from '../../services/evaluation.service';
+import { StandardDatasetInfo, DatasetDownloadStatus } from '../../models/api-models';
+
+@Component({
+  selector: 'app-standard-dataset-catalog',
+  standalone: true,
+  imports: [
+    CommonModule, FormsModule, MatSnackBarModule, MatCardModule,
+    MatIconModule, MatButtonModule, MatProgressBarModule,
+    MatProgressSpinnerModule, MatSelectModule, MatChipsModule, MatTooltipModule
+  ],
+  templateUrl: './standard-dataset-catalog.component.html',
+  styleUrls: ['./standard-dataset-catalog.component.css']
+})
+export class StandardDatasetCatalogComponent implements OnInit, OnDestroy {
+
+  private destroy$ = new Subject<void>();
+
+  datasets: StandardDatasetInfo[] = [];
+  loading = false;
+  downloadStatuses: Map<string, DatasetDownloadStatus> = new Map();
+  selectedCategory = '';
+  categories: string[] = [];
+
+  constructor(
+    private evaluationService: EvaluationService,
+    private snackBar: MatSnackBar
+  ) {}
+
+  ngOnInit(): void {
+    this.loadDatasets();
+  }
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
+
+  loadDatasets(): void {
+    this.loading = true;
+    this.evaluationService.getStandardDatasets().subscribe({
+      next: (datasets) => {
+        this.datasets = datasets;
+        this.categories = [...new Set(datasets.map((d: StandardDatasetInfo) => d.category))] as string[];
+        this.loading = false;
+      },
+      error: (err) => {
+        this.snackBar.open('Failed to load dataset catalog: ' + err.message, 'Close', { duration: 5000 });
+        this.loading = false;
+      }
+    });
+  }
+
+  get filteredDatasets(): StandardDatasetInfo[] {
+    if (!this.selectedCategory) return this.datasets;
+    return this.datasets.filter(d => d.category === this.selectedCategory);
+  }
+
+  get downloadedCount(): number {
+    return this.datasets.filter(d => d.downloaded).length;
+  }
+
+  downloadDataset(dataset: StandardDatasetInfo): void {
+    if (this.isDownloading(dataset.id)) return;
+
+    // Set initial status immediately
+    this.downloadStatuses.set(dataset.id, {
+      datasetId: dataset.id,
+      name: dataset.name,
+      phase: 'QUEUED',
+      progressPercent: 0,
+      samplesDownloaded: 0,
+      totalSamples: dataset.sampleCount,
+      message: 'Starting download...',
+      startedAtMs: Date.now(),
+      elapsedMs: 0
+    });
+
+    // Kick off async download
+    this.evaluationService.downloadStandardDataset(dataset.id).subscribe({
+      next: () => {
+        // Start polling for progress
+        this.pollDownload(dataset);
+      },
+      error: (err) => {
+        this.downloadStatuses.delete(dataset.id);
+        this.snackBar.open(`Failed to start download for ${dataset.name}: ` + err.message, 'Close', { duration: 5000 });
+      }
+    });
+  }
+
+  private pollDownload(dataset: StandardDatasetInfo): void {
+    this.evaluationService.pollDownloadStatus(dataset.id, 1000)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (status) => {
+          this.downloadStatuses.set(dataset.id, status);
+
+          if (status.phase === 'COMPLETED') {
+            dataset.downloaded = true;
+            this.snackBar.open(`Downloaded ${dataset.name}`, 'Close', { duration: 3000 });
+            // Clean up status after a moment
+            setTimeout(() => this.downloadStatuses.delete(dataset.id), 3000);
+          } else if (status.phase === 'FAILED') {
+            this.snackBar.open(`Download failed: ${status.error || 'Unknown error'}`, 'Close', { duration: 5000 });
+            setTimeout(() => this.downloadStatuses.delete(dataset.id), 5000);
+          }
+        },
+        error: () => {
+          // Polling error - check if it completed anyway
+          this.downloadStatuses.delete(dataset.id);
+        }
+      });
+  }
+
+  downloadAll(): void {
+    const toDownload = this.filteredDatasets.filter(d => !d.downloaded && !this.isDownloading(d.id));
+    if (toDownload.length === 0) {
+      this.snackBar.open('All datasets already downloaded', 'Close', { duration: 3000 });
+      return;
+    }
+    for (const ds of toDownload) {
+      this.downloadDataset(ds);
+    }
+  }
+
+  getDownloadStatus(id: string): DatasetDownloadStatus | undefined {
+    return this.downloadStatuses.get(id);
+  }
+
+  isDownloading(id: string): boolean {
+    const status = this.downloadStatuses.get(id);
+    return !!status && status.phase !== 'COMPLETED' && status.phase !== 'FAILED';
+  }
+
+  getProgressPercent(id: string): number {
+    return this.downloadStatuses.get(id)?.progressPercent || 0;
+  }
+
+  getPhaseLabel(phase: string): string {
+    switch (phase) {
+      case 'QUEUED': return 'Queued';
+      case 'CONNECTING': return 'Connecting...';
+      case 'DOWNLOADING': return 'Downloading...';
+      case 'WRITING': return 'Writing to disk...';
+      case 'COMPLETED': return 'Complete';
+      case 'FAILED': return 'Failed';
+      default: return phase;
+    }
+  }
+
+  formatElapsed(ms: number): string {
+    if (ms < 1000) return '<1s';
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+
+  getCategoryCount(category: string): number {
+    return this.datasets.filter(d => d.category === category).length;
+  }
+
+  getCategoryLabel(category: string): string {
+    const labels: { [key: string]: string } = {
+      'reasoning': 'Reasoning',
+      'commonsense': 'Commonsense',
+      'knowledge': 'Knowledge',
+      'truthfulness': 'Truthfulness',
+      'math': 'Math',
+      'coding': 'Coding',
+      'expert_knowledge': 'Expert Knowledge',
+      'instruction_following': 'Instruction Following',
+      'reading_comprehension': 'Reading Comprehension'
+    };
+    return labels[category] || category;
+  }
+
+  getCategoryIcon(category: string): string {
+    const icons: { [key: string]: string } = {
+      'reasoning': 'psychology',
+      'commonsense': 'lightbulb',
+      'knowledge': 'school',
+      'truthfulness': 'verified',
+      'math': 'calculate',
+      'coding': 'code',
+      'expert_knowledge': 'science',
+      'instruction_following': 'checklist',
+      'reading_comprehension': 'menu_book'
+    };
+    return icons[category] || 'dataset';
+  }
+}

@@ -17,6 +17,7 @@
 package ai.kompile.cli.common.status;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
@@ -28,7 +29,7 @@ import java.util.Map;
  */
 public class ConfigReader {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     /**
      * Reads all {@code *.json} files from the config directory.

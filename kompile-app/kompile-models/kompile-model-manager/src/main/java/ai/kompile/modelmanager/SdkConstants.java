@@ -62,7 +62,6 @@ public class SdkConstants {
     public static final String SUFFIX_COMPILE_NNAPI = "compile-nnapi";
     public static final String SUFFIX_NNAPI = "nnapi";
     public static final String SUFFIX_ARMCOMPUTE = "armcompute";
-    public static final String SUFFIX_LLAMACPP = "llamacpp";
 
     // ==================== Platform Groups ====================
 
@@ -101,10 +100,10 @@ public class SdkConstants {
 
     static {
         Map<String, List<String>> map = new LinkedHashMap<>();
-        map.put(LINUX_X86_64, List.of(SUFFIX_AVX2, SUFFIX_AVX512, SUFFIX_ONEDNN, SUFFIX_COMPILE, SUFFIX_LLAMACPP));
-        map.put(MACOSX_X86_64, List.of(SUFFIX_AVX2, SUFFIX_ONEDNN, SUFFIX_LLAMACPP));
+        map.put(LINUX_X86_64, List.of(SUFFIX_AVX2, SUFFIX_AVX512, SUFFIX_ONEDNN, SUFFIX_COMPILE));
+        map.put(MACOSX_X86_64, List.of(SUFFIX_AVX2, SUFFIX_ONEDNN));
         map.put(MACOSX_ARM64, List.of(SUFFIX_COMPILE));
-        map.put(WINDOWS_X86_64, List.of(SUFFIX_AVX2, SUFFIX_AVX512, SUFFIX_ONEDNN, SUFFIX_LLAMACPP));
+        map.put(WINDOWS_X86_64, List.of(SUFFIX_AVX2, SUFFIX_AVX512, SUFFIX_ONEDNN));
         map.put(ANDROID_ARM64, List.of(SUFFIX_NNAPI, SUFFIX_ARMCOMPUTE, SUFFIX_COMPILE, SUFFIX_COMPILE_NNAPI));
         map.put(ANDROID_X86_64, List.of(SUFFIX_ONEDNN, SUFFIX_COMPILE, SUFFIX_COMPILE_NNAPI));
         EXTENDED_CLASSIFIERS = Collections.unmodifiableMap(map);

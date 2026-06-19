@@ -22,7 +22,7 @@ import ai.kompile.cli.main.build.config.*;
 import ai.kompile.cli.main.config.AppConfigWizard;
 import ai.kompile.cli.main.project.ProjectAutoDetection;
 import ai.kompile.cli.main.project.ProjectCommand;
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import ai.kompile.project.KompileCodingProject;
 import ai.kompile.project.KompileProjectCrawlProfile;
 import ai.kompile.project.KompileProjectInitRequest;

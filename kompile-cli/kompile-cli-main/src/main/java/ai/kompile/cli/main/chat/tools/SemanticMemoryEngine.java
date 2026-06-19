@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.utils.StringUtils;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -234,7 +235,7 @@ public class SemanticMemoryEngine {
         String id = "turn:" + sessionId + ":" + turnNumber;
         String text = role + ": " + content;
         MemoryEntry entry = new MemoryEntry(id, "session_turn", text,
-                truncate(text, MAX_MEMORY_CONTENT_LENGTH), null, System.currentTimeMillis());
+                StringUtils.truncate(text, MAX_MEMORY_CONTENT_LENGTH), null, System.currentTimeMillis());
         addEntry(entry);
     }
 
@@ -348,7 +349,7 @@ public class SemanticMemoryEngine {
             tfidfVectors.remove(id);
 
             MemoryEntry entry = new MemoryEntry(id, type, name,
-                    truncate(content, MAX_MEMORY_CONTENT_LENGTH), file, lastModified);
+                    StringUtils.truncate(content, MAX_MEMORY_CONTENT_LENGTH), file, lastModified);
             addEntry(entry);
 
         } catch (IOException e) {
@@ -456,10 +457,6 @@ public class SemanticMemoryEngine {
         return dot / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
-    private static String truncate(String s, int max) {
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
-    }
-
     // ── Data Types ────────────────────────────────────────────────────────────
 
     /** A single indexed memory item. */
@@ -495,7 +492,7 @@ public class SemanticMemoryEngine {
         @Override
         public String toString() {
             return String.format("[%.2f] %s: %s", similarity, entry.name,
-                    truncate(entry.content, 100));
+                    StringUtils.truncate(entry.content, 100));
         }
     }
 

@@ -23,6 +23,7 @@ import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
 import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import ai.kompile.cli.common.chat.sources.ChatTurn;
 import ai.kompile.cli.common.chat.sources.SourceInfo;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -71,7 +72,7 @@ public class ConversationImportTool implements CliTool {
 
     @Override
     public JsonNode parameterSchema() {
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");

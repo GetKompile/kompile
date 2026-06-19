@@ -237,6 +237,11 @@
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
+      <artifactId>kompile-agent-gateway-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-kclaw</artifactId>
       <scope>test</scope>
     </dependency>

@@ -17,10 +17,12 @@
 package ai.kompile.app.services;
 
 import ai.kompile.app.config.GpuDevice;
+import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -96,6 +98,10 @@ public class GpuResourceManager {
     /** Default priorities per service type. Higher = more important. */
     private final Map<String, Integer> servicePriorities = new ConcurrentHashMap<>();
 
+    /** Source of {@code gpuBudgetFractions} for auto-calibrating budgets to the actual device VRAM. */
+    @Autowired(required = false)
+    private ResourceSchedulerConfigService schedulerConfigService;
+
     @PostConstruct
     public void init() {
         discoverLocalGpus();
@@ -113,6 +119,10 @@ public class GpuResourceManager {
         defaultBudgets.put("ingest", 2L * 1024 * 1024 * 1024);         // 2 GB
         defaultBudgets.put("vectorPopulation", 1L * 1024 * 1024 * 1024);// 1 GB
         defaultBudgets.put("modelInit", 2L * 1024 * 1024 * 1024);      // 2 GB
+
+        // Calibrate the hardcoded defaults to the actual device VRAM so small GPUs aren't
+        // over-committed (false OOM) and large GPUs aren't under-utilized (slow).
+        calibrateBudgetsToDeviceVram();
 
         log.info("GpuResourceManager initialized with {} GPU device(s)", devices.size());
         for (GpuDevice device : devices) {
@@ -454,6 +464,57 @@ public class GpuResourceManager {
     }
 
     // ==================== Budget Configuration ====================
+
+    /**
+     * Auto-calibrate per-service GPU memory budgets to a fraction of the largest device's total VRAM.
+     *
+     * <p>{@code budget(service) = floor(maxDeviceTotalVram * gpuBudgetFractions[service])}. Fractions
+     * come from {@code ResourceSchedulerConfig.gpuBudgetFractions} (overridable via the resource-scheduler
+     * config JSON) with safe built-in defaults. A no-op on CPU-only hosts (no devices), preserving the
+     * hardcoded byte defaults. Manual {@link #setMemoryBudget} calls made later still win.</p>
+     */
+    void calibrateBudgetsToDeviceVram() {
+        if (devices.isEmpty()) {
+            return;
+        }
+        long totalVram = devices.stream().mapToLong(GpuDevice::totalMemoryBytes).max().orElse(0L);
+        if (totalVram <= 0) {
+            return;
+        }
+        Map<String, Double> fractions = loadBudgetFractions();
+        for (Map.Entry<String, Double> entry : fractions.entrySet()) {
+            double frac = entry.getValue() != null ? entry.getValue() : 0.0;
+            if (frac <= 0) {
+                continue;
+            }
+            long calibrated = (long) (totalVram * frac);
+            long prev = defaultBudgets.getOrDefault(entry.getKey(), 0L);
+            defaultBudgets.put(entry.getKey(), calibrated);
+            log.info("GPU budget calibrated: '{}' = {}MB ({}% of {}MB total VRAM, was {}MB)",
+                    entry.getKey(), calibrated / (1024 * 1024), Math.round(frac * 100),
+                    totalVram / (1024 * 1024), prev / (1024 * 1024));
+        }
+    }
+
+    private Map<String, Double> loadBudgetFractions() {
+        if (schedulerConfigService != null) {
+            try {
+                Map<String, Double> fractions = schedulerConfigService.getConfiguration().getGpuBudgetFractions();
+                if (fractions != null && !fractions.isEmpty()) {
+                    return fractions;
+                }
+            } catch (Exception e) {
+                log.debug("Could not load GPU budget fractions from config: {}", e.getMessage());
+            }
+        }
+        Map<String, Double> defaults = new LinkedHashMap<>();
+        defaults.put("embedding", 0.20);
+        defaults.put("vlm", 0.70);
+        defaults.put("ingest", 0.10);
+        defaults.put("vectorPopulation", 0.05);
+        defaults.put("modelInit", 0.08);
+        return defaults;
+    }
 
     /**
      * Get the memory budget for a service type.

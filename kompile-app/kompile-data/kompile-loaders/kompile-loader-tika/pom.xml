@@ -32,11 +32,25 @@
     <dependencies>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-tika-document-reader</artifactId>
+        </dependency>
+        <!-- Structured-format parsing for the crawl pipeline: JSON + YAML via Jackson
+             (XML is handled by the JDK's built-in DOM parser, no dependency needed). -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
         </dependency>
         <dependency> <groupId>org.springframework</groupId>
             <artifactId>spring-core</artifactId>

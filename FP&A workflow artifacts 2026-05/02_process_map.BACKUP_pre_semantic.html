@@ -1,0 +1,2947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3-Month P&L Projection — Interactive process map</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-hover: #f5f5f5;
+    --surface-sunken: #ededed;
+    --text: #1a1a1a;
+    --text-secondary: #5a5a5a;
+    --text-tertiary: #858585;
+    --border: rgba(0,0,0,0.12);
+    --border-strong: rgba(0,0,0,0.25);
+    --accent: #DC143C;
+    --accent-bg: #FCE5EA;
+
+    --gray-50: #F1EFE8; --gray-600: #5F5E5A; --gray-800: #444441;
+    --blue-50: #E6F1FB; --blue-600: #185FA5; --blue-800: #0C447C;
+    --amber-50: #FAEEDA; --amber-600: #854F0B; --amber-800: #633806;
+    --green-50: #EAF3DE; --green-600: #3B6D11; --green-800: #27500A;
+    --purple-50: #EEEDFE; --purple-600: #534AB7; --purple-800: #3C3489;
+    --coral-50: #FAECE7; --coral-600: #993C1D; --coral-800: #712B13;
+    --teal-50: #E1F5EE; --teal-600: #0F6E56; --teal-800: #085041;
+    --pink-50: #FBEAF0; --pink-600: #993556; --pink-800: #72243E;
+    --red-50: #FBE9E7;  --red-600: #B43124;  --red-800: #821E13;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000;
+      --surface: #1a1a1a;
+      --surface-hover: #262626;
+      --surface-sunken: #0d0d0d;
+      --text: #f5f5f5;
+      --text-secondary: #a8a8a8;
+      --text-tertiary: #707070;
+      --border: rgba(255,255,255,0.12);
+      --border-strong: rgba(255,255,255,0.25);
+      --accent: #F08197;
+      --accent-bg: rgba(220,20,60,0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 32px 0;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  .header-inner { max-width: 1400px; margin: 0 auto; }
+  .logo-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .logo-mark {
+    width: 22px; height: 22px; border-radius: 5px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--purple-600) 100%);
+    flex-shrink: 0;
+  }
+  .logo-slash {
+    font-family: inherit;
+    font-weight: 800;
+    color: var(--accent);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+  .logo-wordmark {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: -4px;
+  }
+  .logo-divider {
+    color: var(--text-tertiary); margin: 0 4px; font-size: 12px;
+  }
+  .logo-context {
+    font-size: 12px; color: var(--text-tertiary);
+    font-weight: 500; letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 2px; }
+  .sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; }
+
+  .tabs { display: flex; gap: 2px; flex-wrap: wrap; }
+  .tab {
+    padding: 10px 18px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font: inherit;
+    font-size: 14px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    font-weight: 500;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Overview */
+  .overview-intro {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    font-size: 14px;
+  }
+  .overview-intro strong { font-weight: 500; color: var(--text); }
+  .overview-intro p { margin: 0 0 8px; color: var(--text-secondary); }
+  .overview-intro p:last-child { margin-bottom: 0; }
+
+  .phase-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .phase-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .phase-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  .phase-num { font-size: 12px; font-weight: 500; color: var(--text-tertiary); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px; }
+  .phase-title { font-size: 16px; font-weight: 500; margin: 0 0 4px; }
+  .phase-desc { font-size: 13px; color: var(--text-secondary); margin: 0 0 12px; line-height: 1.5; }
+  .phase-meta { display: flex; gap: 12px; font-size: 12px; color: var(--text-tertiary); padding-top: 12px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+  .phase-meta span::before { content: '• '; margin: 0 4px; }
+  .phase-meta span:first-child::before { content: ''; margin: 0; }
+
+  .overview-flow {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .overview-flow h2 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .overview-flow-sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; }
+  .overview-flow svg { display: block; width: 100%; height: auto; }
+
+  /* Detailed view */
+  .detail-controls {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--surface-hover); }
+  .btn.primary { background: var(--accent-bg); color: var(--accent); border-color: transparent; }
+  .detail-jump { display: flex; gap: 6px; font-size: 13px; color: var(--text-secondary); flex-wrap: wrap; }
+  .detail-jump a { color: var(--accent); text-decoration: none; padding: 4px 8px; border-radius: 4px; }
+  .detail-jump a:hover { background: var(--accent-bg); }
+
+  .phase-section { margin-bottom: 48px; scroll-margin-top: 140px; }
+  .phase-section-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .phase-section-num { font-size: 12px; font-weight: 500; color: var(--text-tertiary); letter-spacing: 0.05em; text-transform: uppercase; }
+  .phase-section h2 { margin: 0; font-size: 20px; font-weight: 500; }
+  .phase-section-desc { color: var(--text-secondary); font-size: 14px; margin: 8px 0 20px; }
+
+  .step-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 10px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .step-card:hover { border-color: var(--border-strong); }
+  .step-card.open { border-color: var(--accent); }
+
+  .step-header {
+    display: grid;
+    grid-template-columns: 80px 1fr auto auto;
+    gap: 16px;
+    align-items: center;
+    padding: 14px 18px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .step-header:hover { background: var(--surface-hover); }
+  .step-id { font-size: 12px; font-weight: 500; color: var(--text-tertiary); letter-spacing: 0.03em; }
+  .step-title { font-size: 14px; font-weight: 500; color: var(--text); }
+  .step-title-sub { font-size: 12px; color: var(--text-secondary); font-weight: 400; margin-top: 2px; }
+  .step-role {
+    font-size: 11px; font-weight: 500;
+    padding: 3px 8px; border-radius: 4px;
+    letter-spacing: 0.03em; text-transform: uppercase;
+  }
+  .role-analyst { background: var(--blue-50); color: var(--blue-800); }
+  .role-regional { background: var(--teal-50); color: var(--teal-800); }
+  .role-vp       { background: var(--purple-50); color: var(--purple-800); }
+  .role-cfo      { background: var(--coral-50); color: var(--coral-800); }
+  .role-system   { background: var(--gray-50); color: var(--gray-800); }
+  .role-control  { background: var(--green-50); color: var(--green-800); }
+
+  .step-chevron { color: var(--text-tertiary); font-size: 12px; transition: transform 0.2s; }
+  .step-card.open .step-chevron { transform: rotate(180deg); }
+
+  .step-body { display: none; padding: 4px 18px 18px; border-top: 1px solid var(--border); background: var(--bg); }
+  .step-card.open .step-body { display: block; }
+
+  .step-body h4 {
+    font-size: 12px; font-weight: 500; color: var(--text-tertiary);
+    letter-spacing: 0.05em; text-transform: uppercase;
+    margin: 16px 0 6px;
+  }
+  .step-body h4:first-child { margin-top: 12px; }
+  .step-body ul { margin: 0; padding-left: 20px; font-size: 14px; }
+  .step-body li { margin: 4px 0; }
+  .step-body .procedure { font-size: 14px; color: var(--text); margin: 4px 0 0; }
+
+  .file-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 3px 8px; border-radius: 4px;
+    font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace;
+    color: var(--text-secondary);
+    margin: 2px 4px 2px 0;
+  }
+  .file-tag::before { content: '📄'; font-size: 11px; }
+
+  .inline-code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--text-secondary);
+  }
+
+  .callout {
+    background: var(--amber-50);
+    border-left: 3px solid var(--amber-600);
+    color: var(--amber-800);
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    font-size: 13px;
+    margin: 12px 0;
+  }
+  .callout-green { background: var(--green-50); border-left-color: var(--green-600); color: var(--green-800); }
+  @media (prefers-color-scheme: dark) {
+    .callout { background: rgba(250,238,218,0.08); color: var(--amber-50); }
+    .callout-green { background: rgba(234,243,222,0.08); color: var(--green-50); }
+  }
+
+  /* Timeline */
+  .timeline-intro {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    font-size: 14px;
+    color: var(--text-secondary);
+  }
+  .timeline-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px 24px 24px;
+    margin-bottom: 24px;
+    overflow-x: auto;
+  }
+  .timeline-wrap svg { display: block; min-width: 900px; width: 100%; height: auto; }
+
+  .validations {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+  }
+  .validations h3 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .validations-sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; }
+  .validation-row {
+    display: grid;
+    grid-template-columns: 220px 40px 1fr;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    align-items: center;
+  }
+  .validation-row:last-child { border-bottom: none; }
+  .validation-label { font-weight: 500; }
+  .validation-op { text-align: center; font-family: ui-monospace, monospace; color: var(--text-secondary); }
+  .validation-formula { font-family: ui-monospace, monospace; font-size: 12.5px; color: var(--text-secondary); }
+
+  /* Pilot */
+  .pilot-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  @media (max-width: 900px) { .pilot-grid { grid-template-columns: 1fr; } }
+  .pilot-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 24px;
+  }
+  .pilot-card h3 { margin: 0 0 6px; font-size: 16px; font-weight: 500; }
+  .pilot-card .lead { color: var(--text-secondary); font-size: 13.5px; margin: 0 0 14px; }
+  .roi-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .roi-row:last-child { border-bottom: none; }
+  .roi-row .num { font-weight: 500; font-variant-numeric: tabular-nums; }
+  .roi-row.total { padding-top: 12px; font-weight: 500; }
+  .roi-row.total .num { color: var(--green-800); font-size: 15px; }
+  @media (prefers-color-scheme: dark) { .roi-row.total .num { color: #B7E07A; } }
+
+  /* Walkthrough */
+  .wt-stage {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .wt-canvas {
+    background: linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
+    padding: 24px;
+  }
+  .wt-canvas svg { display: block; width: 100%; height: auto; }
+  .wt-narration {
+    border-top: 1px solid var(--border);
+    padding: 16px 24px;
+    background: var(--surface);
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 20px;
+    align-items: start;
+    min-height: 90px;
+  }
+  .wt-narration-left { border-right: 1px solid var(--border); padding-right: 20px; }
+  .wt-chapter { font-size: 11px; font-weight: 500; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 4px; }
+  .wt-title { font-size: 15px; font-weight: 500; color: var(--text); line-height: 1.3; }
+  .wt-body { font-size: 13.5px; color: var(--text-secondary); line-height: 1.55; }
+
+  .wt-controls {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .wt-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0;
+  }
+  .wt-btn:hover { background: var(--surface-hover); }
+  .wt-btn.primary { background: var(--accent); border-color: var(--accent); color: white; width: 44px; height: 44px; }
+  @media (prefers-color-scheme: dark) { .wt-btn.primary { color: #0C1F3A; } }
+
+  .wt-scrubber {
+    flex: 1; position: relative; height: 36px; display: flex; align-items: center; cursor: pointer;
+  }
+  .wt-track { width: 100%; height: 4px; background: var(--border); border-radius: 2px; }
+  .wt-progress { height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width 0.4s linear; }
+
+  .wt-chap-list {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px;
+    padding: 14px 20px 18px; border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .wt-chap {
+    font-size: 12px; padding: 4px 10px; border-radius: 12px;
+    border: 1px solid var(--border); background: transparent;
+    color: var(--text-secondary); cursor: pointer; font: inherit;
+  }
+  .wt-chap.active { background: var(--accent-bg); color: var(--accent); border-color: transparent; }
+  .wt-chap:hover { background: var(--surface-hover); }
+
+  /* Animation classes for walkthrough */
+  .wt-node { opacity: 0.25; transition: opacity 0.4s; }
+  .wt-node.on { opacity: 1; }
+  .wt-pulse { stroke-dasharray: 4 4; }
+  .wt-pulse.on { animation: dashflow 1.2s linear infinite; }
+  @keyframes dashflow {
+    to { stroke-dashoffset: -16; }
+  }
+
+  footer {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 24px 32px 48px;
+    border-top: 1px solid var(--border);
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+
+  /* SVG node styling */
+  .svg-text-primary { fill: var(--text); }
+  .svg-text-secondary { fill: var(--text-secondary); }
+  .svg-text-tertiary { fill: var(--text-tertiary); }
+  .svg-stroke-arrow { stroke: var(--text-secondary); fill: none; stroke-width: 1; }
+  .svg-stroke-dashed { stroke: var(--text-tertiary); fill: none; stroke-width: 0.75; stroke-dasharray: 4 3; }
+  .svg-divider { stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 4 4; }
+
+  .nd-gray rect   { fill: var(--gray-50);   stroke: var(--gray-600);   stroke-width: 0.5; cursor: pointer; }
+  .nd-blue rect   { fill: var(--blue-50);   stroke: var(--blue-600);   stroke-width: 0.5; cursor: pointer; }
+  .nd-amber rect  { fill: var(--amber-50);  stroke: var(--amber-600);  stroke-width: 0.5; cursor: pointer; }
+  .nd-green rect  { fill: var(--green-50);  stroke: var(--green-600);  stroke-width: 0.5; cursor: pointer; }
+  .nd-purple rect { fill: var(--purple-50); stroke: var(--purple-600); stroke-width: 0.5; cursor: pointer; }
+  .nd-teal rect   { fill: var(--teal-50);   stroke: var(--teal-600);   stroke-width: 0.5; cursor: pointer; }
+  .nd-coral rect  { fill: var(--coral-50);  stroke: var(--coral-600);  stroke-width: 0.5; cursor: pointer; }
+
+  .nd-gray .t, .nd-gray .th   { fill: var(--gray-800); }
+  .nd-gray .ts                { fill: var(--gray-600); }
+  .nd-blue .t, .nd-blue .th   { fill: var(--blue-800); }
+  .nd-blue .ts                { fill: var(--blue-600); }
+  .nd-amber .t, .nd-amber .th { fill: var(--amber-800); }
+  .nd-amber .ts               { fill: var(--amber-600); }
+  .nd-green .t, .nd-green .th { fill: var(--green-800); }
+  .nd-green .ts               { fill: var(--green-600); }
+  .nd-purple .t, .nd-purple .th { fill: var(--purple-800); }
+  .nd-purple .ts              { fill: var(--purple-600); }
+  .nd-teal .t, .nd-teal .th   { fill: var(--teal-800); }
+  .nd-teal .ts                { fill: var(--teal-600); }
+  .nd-coral .t, .nd-coral .th { fill: var(--coral-800); }
+  .nd-coral .ts               { fill: var(--coral-600); }
+
+  .svg-text { font-family: inherit; }
+  .t { font-size: 13px; font-weight: 400; }
+  .th { font-size: 13px; font-weight: 500; }
+  .ts { font-size: 11px; font-weight: 400; }
+  .lane-label-svg { font-size: 13px; font-weight: 500; fill: var(--text); }
+
+  /* ============================================================ */
+  /* PITCH-DECK OVERVIEW (pain → methodology → impact) */
+  /* ============================================================ */
+
+  .ov-hero {
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface-sunken) 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 26px 32px;
+    margin-bottom: 28px;
+  }
+  .ov-hero-eyebrow {
+    font-size: 11px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .ov-hero-title {
+    font-size: 22px; font-weight: 500; line-height: 1.35;
+    color: var(--text); margin: 0 0 12px;
+    max-width: 900px;
+  }
+  .ov-hero-sub {
+    font-size: 14.5px; color: var(--text-secondary); margin: 0;
+    max-width: 800px; line-height: 1.55;
+  }
+  .ov-hero-sub strong { color: var(--text); font-weight: 600; }
+
+  .ov-section { margin-bottom: 36px; }
+  .ov-section-eyebrow {
+    font-size: 11px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .ov-section-title {
+    font-size: 19px; font-weight: 500; margin: 0 0 6px; color: var(--text);
+  }
+  .ov-section-lead {
+    font-size: 13.5px; color: var(--text-secondary); margin: 0 0 18px; line-height: 1.55;
+    max-width: 800px;
+  }
+
+  /* Pain points */
+  .pain-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 980px) { .pain-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .pain-grid { grid-template-columns: 1fr; } }
+  .pain-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--coral-600);
+    border-radius: 8px;
+    padding: 16px 18px;
+  }
+  .pain-num {
+    font-size: 28px; font-weight: 600; line-height: 1.1; color: var(--coral-800);
+    margin-bottom: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  @media (prefers-color-scheme: dark) { .pain-num { color: #E8A48A; } }
+  .pain-name {
+    font-size: 13.5px; font-weight: 600; color: var(--text);
+    margin-bottom: 8px;
+  }
+  .pain-card p {
+    font-size: 12.5px; line-height: 1.55;
+    color: var(--text-secondary); margin: 0;
+  }
+  .pain-card p em { font-style: italic; color: var(--text); }
+
+  /* KAA flow */
+  .kaa-flow {
+    display: grid;
+    grid-template-columns: 1fr 36px 1fr 36px 1fr;
+    gap: 0;
+    align-items: stretch;
+    margin: 0 0 18px;
+  }
+  @media (max-width: 980px) {
+    .kaa-flow { grid-template-columns: 1fr; gap: 8px; }
+    .kaa-arrow { transform: rotate(90deg); justify-self: center; padding: 4px 0; }
+  }
+  .kaa-stage {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 4px solid var(--stage-color);
+    border-radius: 10px;
+    padding: 16px 18px;
+    display: flex; flex-direction: column;
+  }
+  .kaa-stage-eyebrow {
+    font-size: 10px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .kaa-stage-name {
+    font-size: 18px; font-weight: 600; color: var(--stage-color);
+    margin-bottom: 8px;
+  }
+  .kaa-stage-desc {
+    font-size: 12.5px; line-height: 1.55;
+    color: var(--text-secondary); margin: 0 0 12px;
+    flex: 1;
+  }
+  .kaa-stage-tag {
+    align-self: flex-start;
+    font-size: 10.5px; font-weight: 600;
+    padding: 3px 8px; border-radius: 10px;
+    background: var(--stage-bg);
+    color: var(--stage-color);
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .kaa-arrow {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-tertiary);
+    font-size: 22px;
+    font-weight: 300;
+  }
+
+  /* Two-up callouts */
+  .ov-twoup {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 880px) { .ov-twoup { grid-template-columns: 1fr; } }
+  .ov-callout {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .ov-callout.ov-callout-coral { border-left: 4px solid var(--coral-600); }
+  .ov-callout.ov-callout-green { border-left: 4px solid var(--green-600); }
+  .ov-callout-eyebrow {
+    font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .ov-callout.ov-callout-coral .ov-callout-eyebrow { color: var(--coral-800); }
+  .ov-callout.ov-callout-green .ov-callout-eyebrow { color: var(--green-800); }
+  @media (prefers-color-scheme: dark) {
+    .ov-callout.ov-callout-coral .ov-callout-eyebrow { color: #E8A48A; }
+    .ov-callout.ov-callout-green .ov-callout-eyebrow { color: #B7E07A; }
+  }
+  .ov-callout p {
+    font-size: 13.5px; line-height: 1.6;
+    color: var(--text); margin: 0;
+  }
+  .ov-callout p em { color: var(--text-secondary); font-style: italic; }
+
+  /* Impact grid */
+  .impact-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 1080px) { .impact-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { .impact-grid { grid-template-columns: 1fr; } }
+  .impact-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .impact-bar {
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 4px;
+  }
+  .impact-eyebrow {
+    font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    margin-top: 6px; margin-bottom: 10px;
+  }
+  .impact-headline {
+    font-size: 19px; font-weight: 600;
+    color: var(--text); line-height: 1.2;
+    margin-bottom: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .impact-headline .arr {
+    color: var(--text-tertiary);
+    font-weight: 400; margin: 0 4px;
+  }
+  .impact-card ul {
+    margin: 0; padding-left: 18px;
+    font-size: 12px; line-height: 1.55;
+    color: var(--text-secondary);
+  }
+  .impact-card ul li { margin: 4px 0; }
+  .impact-card ul li strong { color: var(--text); font-weight: 600; }
+
+  /* Where-to-look-next card */
+  .ov-nextcard {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-top: 28px;
+  }
+  .ov-next-eyebrow {
+    font-size: 11px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;
+    margin-bottom: 10px;
+  }
+  .ov-nextrow {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  @media (max-width: 880px) { .ov-nextrow { grid-template-columns: 1fr; } }
+  .ov-nextlink {
+    text-align: left;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .ov-nextlink:hover {
+    background: var(--surface-hover);
+    border-color: var(--accent);
+  }
+  .ov-nextlink strong {
+    color: var(--accent);
+    font-weight: 600;
+    margin-right: 4px;
+  }
+
+  /* ============================================================ */
+  /* ADDED FOR P&L + KAA TABS */
+  /* ============================================================ */
+
+  /* Layer 0 hero */
+  .l0-hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--pink-600);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 18px;
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 24px;
+    align-items: center;
+  }
+  @media (max-width: 880px) { .l0-hero { grid-template-columns: 1fr; } }
+  .l0-hero h2 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .l0-hero .lead { margin: 0; font-size: 13.5px; color: var(--text-secondary); }
+  .l0-hero .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--pink-50);
+    color: var(--pink-800);
+    font-size: 11px; font-weight: 600;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  @media (prefers-color-scheme: dark) {
+    .l0-hero .pill { background: rgba(153,53,86,0.18); color: #ECA1B7; }
+  }
+  .baseline-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .bs-tile {
+    background: var(--surface-sunken);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .bs-num { font-size: 18px; font-weight: 600; line-height: 1.1; }
+  .bs-lbl { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* KAA layer cards */
+  .layer-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 10px;
+    position: relative;
+    border-left-width: 4px;
+    border-left-style: solid;
+  }
+  .layer-card.l1 { border-left-color: var(--blue-600); }
+  .layer-card.l2 { border-left-color: var(--purple-600); }
+  .layer-card.l3 { border-left-color: var(--teal-600); }
+  .layer-card.l4 { border-left-color: var(--gray-600); }
+  .layer-card.l5 { border-left-color: var(--coral-600); }
+  .layer-head {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .layer-num {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-tertiary);
+  }
+  .layer-name { font-size: 16px; font-weight: 600; margin: 0; }
+  .layer-card.l1 .layer-name { color: var(--blue-800); }
+  .layer-card.l2 .layer-name { color: var(--purple-800); }
+  .layer-card.l3 .layer-name { color: var(--teal-800); }
+  .layer-card.l4 .layer-name { color: var(--gray-800); }
+  .layer-card.l5 .layer-name { color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .layer-card.l1 .layer-name { color: #BEDDF6; }
+    .layer-card.l2 .layer-name { color: #BEB7F5; }
+    .layer-card.l3 .layer-name { color: #94CFB8; }
+    .layer-card.l4 .layer-name { color: #C4C2BB; }
+    .layer-card.l5 .layer-name { color: #E8A48A; }
+  }
+  .ka-pill {
+    display: inline-flex; padding: 2px 8px; border-radius: 10px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    margin-left: auto;
+  }
+  .ka-pill.k { background: var(--purple-50); color: var(--purple-800); }
+  .ka-pill.a { background: var(--coral-50); color: var(--coral-800); }
+  @media (prefers-color-scheme: dark) {
+    .ka-pill.k { background: rgba(83,74,183,0.18); color: #BEB7F5; }
+    .ka-pill.a { background: rgba(153,60,29,0.18); color: #E8A48A; }
+  }
+  .layer-body {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 980px) { .layer-body { grid-template-columns: 1fr; } }
+  .lb-cell { font-size: 12.5px; line-height: 1.5; }
+  .lb-cell h5 {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-tertiary);
+    margin: 0 0 6px;
+  }
+  .lb-cell ul { margin: 0; padding-left: 18px; }
+  .lb-cell ul li { margin: 3px 0; }
+  .lb-cell code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    background: var(--surface-sunken);
+    padding: 1px 5px; border-radius: 3px;
+    color: var(--text-secondary);
+  }
+  .ka-band {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 14px;
+    align-items: center;
+    margin: 18px 0;
+  }
+  .ka-band .line { border-top: 2px dashed var(--border-strong); }
+  .ka-band .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    font-weight: 600;
+    background: linear-gradient(to right, var(--purple-50), var(--coral-50));
+    padding: 6px 14px;
+    border-radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .ka-band .label { background: linear-gradient(to right, rgba(83,74,183,0.18), rgba(153,60,29,0.18)); color: var(--text); }
+  }
+
+  /* Planes */
+  .planes-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 980px) { .planes-grid { grid-template-columns: 1fr; } }
+  .plane-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    border-top-width: 4px;
+    border-top-style: solid;
+  }
+  .plane-card.gov  { border-top-color: var(--red-600, #B43124); }
+  .plane-card.op   { border-top-color: var(--amber-600); }
+  .plane-card.obs  { border-top-color: var(--green-600); }
+  .plane-card h4 {
+    margin: 0 0 8px; font-size: 13px; font-weight: 600;
+  }
+  .plane-card.gov h4 { color: var(--red-800, #821E13); }
+  .plane-card.op h4  { color: var(--amber-800); }
+  .plane-card.obs h4 { color: var(--green-800); }
+  @media (prefers-color-scheme: dark) {
+    .plane-card.gov h4 { color: #ED8077; }
+    .plane-card.op h4  { color: #F0C171; }
+    .plane-card.obs h4 { color: #B7E07A; }
+  }
+  .plane-card ul {
+    margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.5;
+  }
+  .plane-card ul li { margin: 4px 0; }
+  .plane-card ul li strong { font-weight: 600; }
+
+  /* Feedback loop callouts */
+  .loop-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 980px) { .loop-grid { grid-template-columns: 1fr; } }
+  .loop-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--coral-600);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 12.5px;
+  }
+  .loop-card .from {
+    font-size: 10.5px; font-weight: 600; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+  .loop-card .arrow { color: var(--coral-600); font-size: 11px; margin: 4px 0; }
+  .loop-card .to { color: var(--text); font-weight: 500; }
+  .loop-card .detail { color: var(--text-secondary); margin-top: 4px; line-height: 1.45; }
+  .loop-card code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    background: var(--surface-sunken);
+    padding: 1px 5px; border-radius: 3px;
+  }
+
+  /* Section headers (used for KAA tab) */
+  .kaa-section-header {
+    display: flex; align-items: baseline; gap: 12px;
+    margin: 28px 0 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .kaa-section-header .section-num {
+    font-size: 11px; font-weight: 600; color: var(--text-tertiary);
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .kaa-section-header h2 { font-size: 17px; font-weight: 500; margin: 0; }
+
+  /* Generic card used in P&L view */
+  .pnl-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .pnl-card h2 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+  .pnl-card .lead { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary); }
+
+  /* P&L wrap */
+  .pnl-wrap {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+  @media (max-width: 1080px) { .pnl-wrap { grid-template-columns: 1fr; } }
+
+  .driver-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    height: fit-content;
+    position: sticky;
+    top: 130px;
+  }
+  .driver-panel h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  .driver-panel .lead { font-size: 12px; color: var(--text-secondary); margin: 0 0 14px; }
+
+  .driver { margin-bottom: 16px; }
+  .driver-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+  .driver-label { font-size: 12.5px; font-weight: 500; }
+  .driver-value {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-bg);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .driver input[type=range] { width: 100%; -webkit-appearance: none; background: transparent; margin: 4px 0; }
+  .driver input[type=range]::-webkit-slider-runnable-track { height: 4px; background: var(--border); border-radius: 2px; }
+  .driver input[type=range]::-moz-range-track { height: 4px; background: var(--border); border-radius: 2px; }
+  .driver input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--accent); margin-top: -6px; cursor: pointer;
+    border: 2px solid var(--surface);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .driver input[type=range]::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--accent); cursor: pointer;
+    border: 2px solid var(--surface);
+  }
+  .driver-range {
+    display: flex; justify-content: space-between;
+    font-size: 10.5px; color: var(--text-tertiary);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .driver-help { font-size: 11px; color: var(--text-tertiary); margin-top: 3px; line-height: 1.4; }
+  .driver-actions {
+    display: flex; gap: 8px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .pbtn {
+    flex: 1; padding: 6px 12px; border-radius: 6px; font: inherit; font-size: 12.5px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    cursor: pointer;
+  }
+  .pbtn:hover { background: var(--surface-hover); }
+  .pbtn.primary { background: var(--accent); color: white; border-color: var(--accent); }
+  @media (prefers-color-scheme: dark) { .pbtn.primary { color: #0C1F3A; } }
+
+  /* P&L output */
+  .kpi-row {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    margin-bottom: 14px;
+  }
+  @media (max-width: 700px) { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
+  .kpi {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .kpi-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .kpi-value { font-size: 22px; font-weight: 600; line-height: 1.1; margin-top: 4px; }
+  .kpi-delta { font-size: 11.5px; margin-top: 3px; font-family: ui-monospace, Menlo, monospace; }
+  .delta-pos { color: var(--green-800); }
+  .delta-neg { color: var(--red-800, #821E13); }
+  .delta-zero { color: var(--text-tertiary); }
+  @media (prefers-color-scheme: dark) {
+    .delta-pos { color: #B7E07A; }
+    .delta-neg { color: #ED8077; }
+  }
+
+  .pnl-table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: auto;
+  }
+  table.pnl {
+    width: 100%; border-collapse: collapse;
+    font-size: 12.5px;
+    font-family: -apple-system, system-ui, sans-serif;
+  }
+  table.pnl th, table.pnl td {
+    padding: 8px 12px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+  }
+  table.pnl th {
+    background: var(--surface-sunken);
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    text-align: right;
+  }
+  table.pnl th:first-child, table.pnl td:first-child { text-align: left; }
+  table.pnl tr.section td {
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  table.pnl tr.subtotal td { font-weight: 600; border-top: 1px solid var(--border-strong); }
+  table.pnl tr.total td {
+    font-weight: 600;
+    background: var(--surface-sunken);
+    border-top: 2px solid var(--text-secondary);
+  }
+  table.pnl td.num {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  table.pnl td.delta-col {
+    color: var(--text-tertiary);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+  }
+  table.pnl tr.subtotal td.delta-col,
+  table.pnl tr.total td.delta-col { color: inherit; }
+
+  /* Tornado */
+  .tornado-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-top: 16px;
+  }
+  .tornado-card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  .tornado-card .lead { font-size: 12px; color: var(--text-secondary); margin: 0 0 14px; }
+  .tornado svg { display: block; width: 100%; height: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="logo-row">
+      <span class="logo-slash">//</span>
+      <span class="logo-wordmark">PROSSIMO</span>
+      <span class="logo-divider">·</span>
+      <span class="logo-context">Process Map</span>
+    </div>
+    <h1>Northstar Goods — 3-Month Rolling P&amp;L Projection</h1>
+    <p class="sub">A KAA reference engagement for a $500M multi-channel CPG. Semantic alignment of regional finance data, ontology-grounded process model, and agentic workflows that operationalize the close cycle. Click any element to drill in.</p>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-view="overview" role="tab">Overview</button>
+      <button class="tab" data-view="walkthrough" role="tab">Animated walkthrough</button>
+      <button class="tab" data-view="detailed" role="tab">Detailed steps</button>
+      <button class="tab" data-view="pnl" role="tab">P&amp;L Projection</button>
+      <button class="tab" data-view="kaa" role="tab">Process via KAA</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ========== OVERVIEW ========== -->
+<section class="view active" id="view-overview">
+
+  <!-- ========== HERO ========== -->
+  <div class="ov-hero">
+    <div class="ov-hero-eyebrow">// The story in one screen</div>
+    <h2 class="ov-hero-title">Northstar's monthly close takes 10 days, burns ~50 analyst hours, and delivers yesterday's news to the CFO.</h2>
+    <p class="ov-hero-sub">ProssimoTech's <strong>Knowledge and Action Automation (KAA)</strong> methodology unifies the three pillars of our practice — <strong>AI &amp; Data Strategy</strong>, <strong>Semantic Alignment &amp; Ontology Design</strong>, and <strong>Agentic Financial Workflows</strong> — into one operationalizable engagement. We learn the process, codify the ontology, and run the workflow. The customer keeps the architecture; the architecture keeps improving without us.</p>
+  </div>
+
+  <!-- ========== PAIN POINTS ========== -->
+  <div class="ov-section">
+    <div class="ov-section-eyebrow">// 01 · The pain</div>
+    <h3 class="ov-section-title">Where time, accuracy, and trust leak in mid-market FP&amp;A</h3>
+    <p class="ov-section-lead">Six recurring failure modes we observed at Northstar. Customer-specific in detail; structurally identical across the FP&amp;A teams we've talked to.</p>
+
+    <div class="pain-grid">
+
+      <div class="pain-card">
+        <div class="pain-num">28h</div>
+        <div class="pain-name">Manual data wrangling</div>
+        <p>Three regional forecasts arrive in three different formats — different channel names, different currencies, different SKU codes, even different fiscal calendars. Corporate analysts spend most of their cycle just normalizing.</p>
+      </div>
+
+      <div class="pain-card">
+        <div class="pain-num">BD+10</div>
+        <div class="pain-name">Slow close cycle</div>
+        <p>Two full business weeks from period-end to projection. By the time the CFO sees the close, the world has moved on. Decisions are made on stale information.</p>
+      </div>
+
+      <div class="pain-card">
+        <div class="pain-num">~6</div>
+        <div class="pain-name">Errors caught per cycle (and how many missed?)</div>
+        <p>Hardcoded subtotals don't match the rows above them. Channel mismatches go unflagged. Currency tags get dropped. The 6 errors per cycle that <em>are</em> caught are scary; the unknown number missed is scarier.</p>
+      </div>
+
+      <div class="pain-card">
+        <div class="pain-num">3 × n</div>
+        <div class="pain-name">Fragmented, parallel processes</div>
+        <p>Three regions × N analysts each, with parallel spreadsheets, idiosyncratic templates, and undocumented escalation rules. Knowledge lives in heads. Departures cost institutional memory. Onboarding takes a quarter.</p>
+      </div>
+
+      <div class="pain-card">
+        <div class="pain-num">0</div>
+        <div class="pain-name">Bandwidth for scenarios</div>
+        <p>By the time the close lands, the team is starting the next one. When leadership asks "what if EUR weakens 3%?" or "what if Target line review goes south?" — answering takes another week. So leadership stops asking.</p>
+      </div>
+
+      <div class="pain-card">
+        <div class="pain-num">7</div>
+        <div class="pain-name">Systems to reconcile each cycle</div>
+        <p>NetSuite + Shopify + Amazon + Salesforce + Workday + Treasury + Excel master. Audit prep alone is ~50 hours per quarter, reconstructing a paper trail across all of them.</p>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ========== METHODOLOGY ========== -->
+  <div class="ov-section">
+    <div class="ov-section-eyebrow">// 02 · The methodology</div>
+    <h3 class="ov-section-title">KAA — Knowledge and Action Automation</h3>
+    <p class="ov-section-lead">Not RPA. Not Zapier. ProssimoTech's six-layer methodology mines the customer's process via multi-modal observation, extracts a domain ontology with semantic alignment across regional finance data, codifies it into a governed process model, and then runs it with agentic workflows on top of integrations. The customer keeps every artifact — decision-grade by design.</p>
+
+    <!-- Discover → Codify → Run flow -->
+    <div class="kaa-flow">
+      <div class="kaa-stage" style="--stage-color: var(--blue-600); --stage-bg: var(--blue-50);">
+        <div class="kaa-stage-eyebrow">Phase 1</div>
+        <div class="kaa-stage-name">Discover</div>
+        <p class="kaa-stage-desc">Multi-modal process mining: Word manuals, Excel macros, screen recordings, AI-led interviews. Output: an evidence graph with confidence scores per claim.</p>
+        <div class="kaa-stage-tag">Knowledge layers</div>
+      </div>
+
+      <div class="kaa-arrow">→</div>
+
+      <div class="kaa-stage" style="--stage-color: var(--purple-600); --stage-bg: var(--purple-50);">
+        <div class="kaa-stage-eyebrow">Phase 2</div>
+        <div class="kaa-stage-name">Codify</div>
+        <p class="kaa-stage-desc">Synthesize evidence into a typed ontology (entities, controls, validations) and a versioned process model. Human-in-the-loop approval at every gate. As-is and to-be both first-class.</p>
+        <div class="kaa-stage-tag">Knowledge layers</div>
+      </div>
+
+      <div class="kaa-arrow">→</div>
+
+      <div class="kaa-stage" style="--stage-color: var(--coral-600); --stage-bg: var(--coral-50);">
+        <div class="kaa-stage-eyebrow">Phase 3</div>
+        <div class="kaa-stage-name">Run</div>
+        <p class="kaa-stage-desc">Agents specified for the judgment-laden steps; integrations connect the source systems. Telemetry flows back into the ontology — the system learns each cycle.</p>
+        <div class="kaa-stage-tag">Action layers</div>
+      </div>
+    </div>
+
+    <!-- Two-up: not-RPA + living architecture -->
+    <div class="ov-twoup">
+      <div class="ov-callout ov-callout-coral">
+        <div class="ov-callout-eyebrow">Why this isn't RPA</div>
+        <p>RPA automates clicks. KAA automates the <em>understanding</em> behind the clicks. RPA breaks when an Excel column moves; KAA's ontology re-binds. RPA can't tell you why a rule exists; KAA links every rule to source evidence — manual section, screen recording, interview turn.</p>
+      </div>
+
+      <div class="ov-callout ov-callout-green">
+        <div class="ov-callout-eyebrow">Living architecture, not a SaaS dependency</div>
+        <p>What you keep when ProssimoTech walks out: an evidence graph, a semantic ontology, a versioned process model, and agent specs with their eval sets. All editable. All auditable. All yours. Every cycle's telemetry refines the ontology automatically — the enterprise intelligence infrastructure gets <em>better at your business</em> over time, with or without us in the room.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== IMPACT ========== -->
+  <div class="ov-section">
+    <div class="ov-section-eyebrow">// 03 · The impact</div>
+    <h3 class="ov-section-title">What changes — across speed, quality, consistency, and depth of insight</h3>
+    <p class="ov-section-lead">Outcomes observed in the Northstar pilot scope (Phases 1–2 + FX). Full automation roughly doubles the savings; the pilot stops short to earn trust.</p>
+
+    <div class="impact-grid">
+
+      <div class="impact-card">
+        <div class="impact-bar" style="background: var(--blue-600);"></div>
+        <div class="impact-eyebrow">Speed — what's quickened</div>
+        <div class="impact-headline">BD+10 <span class="arr">→</span> BD+7</div>
+        <ul>
+          <li>Corporate analyst time per cycle: <strong>28h → ~8h</strong></li>
+          <li>Variance commentary drafted same-day vs. 2–3 days late</li>
+          <li>Regional rework eliminated for known-pattern variances</li>
+          <li>Replay against historical cycles in seconds, not days</li>
+        </ul>
+      </div>
+
+      <div class="impact-card">
+        <div class="impact-bar" style="background: var(--green-600);"></div>
+        <div class="impact-eyebrow">Quality — fewer mistakes, found earlier</div>
+        <div class="impact-headline">~6 <span class="arr">→</span> ~14 errors caught</div>
+        <ul>
+          <li>Tie checks fire automatically (C-01 through C-07)</li>
+          <li>Channel-mismatch and SKU-coding errors caught at intake, not consolidation</li>
+          <li>Hardcoded subtotals replaced by computed totals with audit trail</li>
+          <li>FX inconsistencies impossible — agent enforces USD = local × rate ± $0.01</li>
+        </ul>
+      </div>
+
+      <div class="impact-card">
+        <div class="impact-bar" style="background: var(--purple-600);"></div>
+        <div class="impact-eyebrow">Consistency — one view of the truth</div>
+        <div class="impact-headline">11 names for "DTC" <span class="arr">→</span> 1</div>
+        <ul>
+          <li>Ontology constrains every regional submission to a corp-canonical form</li>
+          <li>Variance commentary follows house style across cycles, regardless of who drafts it</li>
+          <li>SKU mappings deterministic; no more "is RST-001 the same as JP-RST-001?"</li>
+          <li>Quarter-over-quarter comparability restored</li>
+        </ul>
+      </div>
+
+      <div class="impact-card">
+        <div class="impact-bar" style="background: var(--coral-600);"></div>
+        <div class="impact-eyebrow">Insight — questions that used to take a week</div>
+        <div class="impact-headline">Reactive <span class="arr">→</span> Same-day scenarios</div>
+        <ul>
+          <li>Driver-based P&amp;L: pull a slider, see the consolidated impact (see <em>P&amp;L Projection</em> tab)</li>
+          <li>Sensitivity tornado on demand — which drivers actually matter</li>
+          <li>"What if Target line review goes south?" answered before the meeting, not after</li>
+          <li>CFO can stress-test commitments before signing them</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ========== WHERE TO LOOK NEXT ========== -->
+  <div class="ov-nextcard">
+    <div class="ov-next-eyebrow">Where to look next in this artifact</div>
+    <div class="ov-nextrow">
+      <button class="ov-nextlink" data-jump="walkthrough"><strong>Animated walkthrough</strong> — see one cycle run end-to-end</button>
+      <button class="ov-nextlink" data-jump="detailed"><strong>Detailed steps</strong> — drill into any of the 14 process steps</button>
+      <button class="ov-nextlink" data-jump="pnl"><strong>P&amp;L Projection</strong> — interactive driver model with sensitivity tornado</button>
+      <button class="ov-nextlink" data-jump="kaa"><strong>Process via KAA</strong> — the 6-layer methodology mapped to this process</button>
+    </div>
+  </div>
+
+  </section>
+
+<!-- ========== WALKTHROUGH ========== -->
+<section class="view" id="view-walkthrough">
+  <div class="overview-intro">
+    <p><strong>Animated walkthrough.</strong> A narrated end-to-end run of the May 2026 close cycle. Press play to see data move through the pipeline. Click a chapter chip to jump to that point.</p>
+  </div>
+
+  <div class="wt-stage">
+    <div class="wt-canvas">
+      <svg id="wt-svg" viewBox="0 0 1200 480" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="wt-arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+
+        <text x="24" y="22" class="lane-label-svg" font-size="11" opacity="0.6">SOURCE SYSTEMS</text>
+        <text x="24" y="158" class="lane-label-svg" font-size="11" opacity="0.6">REGIONAL FORECASTS</text>
+        <text x="24" y="296" class="lane-label-svg" font-size="11" opacity="0.6">CORPORATE FP&amp;A</text>
+        <text x="24" y="430" class="lane-label-svg" font-size="11" opacity="0.6">LEADERSHIP</text>
+
+        <line x1="0" y1="124" x2="1200" y2="124" class="svg-divider"/>
+        <line x1="0" y1="262" x2="1200" y2="262" class="svg-divider"/>
+        <line x1="0" y1="396" x2="1200" y2="396" class="svg-divider"/>
+
+        <!-- Source nodes -->
+        <g class="wt-node" data-show="netsuite shopify fx workday salesforce extract">
+          <g class="nd-gray"><rect x="80" y="36" width="160" height="60" rx="8"/></g>
+          <text class="svg-text th" x="160" y="58" text-anchor="middle" fill="var(--gray-800)">NetSuite</text>
+          <text class="svg-text ts" x="160" y="76" text-anchor="middle" fill="var(--gray-600)">Trial balance</text>
+        </g>
+        <g class="wt-node" data-show="shopify extract">
+          <g class="nd-gray"><rect x="260" y="36" width="160" height="60" rx="8"/></g>
+          <text class="svg-text th" x="340" y="58" text-anchor="middle" fill="var(--gray-800)">Shopify + Amazon</text>
+          <text class="svg-text ts" x="340" y="76" text-anchor="middle" fill="var(--gray-600)">Channel revenue</text>
+        </g>
+        <g class="wt-node" data-show="fx extract">
+          <g class="nd-gray"><rect x="440" y="36" width="160" height="60" rx="8"/></g>
+          <text class="svg-text th" x="520" y="58" text-anchor="middle" fill="var(--gray-800)">Treasury FX feed</text>
+          <text class="svg-text ts" x="520" y="76" text-anchor="middle" fill="var(--gray-600)">3-mo forward curve</text>
+        </g>
+        <g class="wt-node" data-show="workday extract">
+          <g class="nd-gray"><rect x="620" y="36" width="160" height="60" rx="8"/></g>
+          <text class="svg-text th" x="700" y="58" text-anchor="middle" fill="var(--gray-800)">Workday</text>
+          <text class="svg-text ts" x="700" y="76" text-anchor="middle" fill="var(--gray-600)">Roster + comp plan</text>
+        </g>
+        <g class="wt-node" data-show="salesforce extract">
+          <g class="nd-gray"><rect x="800" y="36" width="160" height="60" rx="8"/></g>
+          <text class="svg-text th" x="880" y="58" text-anchor="middle" fill="var(--gray-800)">Salesforce</text>
+          <text class="svg-text ts" x="880" y="76" text-anchor="middle" fill="var(--gray-600)">Pipeline snapshot</text>
+        </g>
+
+        <!-- Regional forecast nodes -->
+        <g class="wt-node" data-show="amer regional">
+          <g class="nd-teal"><rect x="80" y="178" width="220" height="56" rx="8"/></g>
+          <text class="svg-text th" x="190" y="200" text-anchor="middle" fill="var(--teal-800)">AMER · J. Park</text>
+          <text class="svg-text ts" x="190" y="218" text-anchor="middle" fill="var(--teal-600)">DTC + Wholesale forecast</text>
+        </g>
+        <g class="wt-node" data-show="emea regional">
+          <g class="nd-teal"><rect x="320" y="178" width="220" height="56" rx="8"/></g>
+          <text class="svg-text th" x="430" y="200" text-anchor="middle" fill="var(--teal-800)">EMEA · S. Reyes</text>
+          <text class="svg-text ts" x="430" y="218" text-anchor="middle" fill="var(--teal-600)">EUR/GBP forecast</text>
+        </g>
+        <g class="wt-node" data-show="apac regional">
+          <g class="nd-teal"><rect x="560" y="178" width="220" height="56" rx="8"/></g>
+          <text class="svg-text th" x="670" y="200" text-anchor="middle" fill="var(--teal-800)">APAC · A. Tanaka</text>
+          <text class="svg-text ts" x="670" y="218" text-anchor="middle" fill="var(--teal-600)">JPY/AUD forecast</text>
+        </g>
+        <g class="wt-node" data-show="exception variance">
+          <g class="nd-amber"><rect x="800" y="178" width="220" height="56" rx="8"/></g>
+          <text class="svg-text th" x="910" y="200" text-anchor="middle" fill="var(--amber-800)">Variance flagged</text>
+          <text class="svg-text ts" x="910" y="218" text-anchor="middle" fill="var(--amber-600)">SKU mapping miss · $4.2k</text>
+        </g>
+
+        <!-- Corporate -->
+        <g class="wt-node" data-show="ingest validate">
+          <g class="nd-blue"><rect x="80" y="296" width="180" height="84" rx="10"/></g>
+          <text class="svg-text th" x="170" y="324" text-anchor="middle" fill="var(--blue-800)">Validate &amp; triage</text>
+          <text class="svg-text ts" x="170" y="342" text-anchor="middle" fill="var(--blue-600)">Tie checks · pattern triage</text>
+          <text class="svg-text ts" x="170" y="358" text-anchor="middle" fill="var(--blue-600)">Auto-fix: 12 / 14</text>
+        </g>
+        <g class="wt-node" data-show="reconcile">
+          <g class="nd-blue"><rect x="280" y="296" width="180" height="84" rx="10"/></g>
+          <text class="svg-text th" x="370" y="324" text-anchor="middle" fill="var(--blue-800)">Pipeline reconcile</text>
+          <text class="svg-text ts" x="370" y="342" text-anchor="middle" fill="var(--blue-600)">Coverage = 1.7×</text>
+          <text class="svg-text ts" x="370" y="358" text-anchor="middle" fill="var(--blue-600)">Within band</text>
+        </g>
+        <g class="wt-node" data-show="fxtranslate">
+          <g class="nd-blue"><rect x="480" y="296" width="180" height="84" rx="10"/></g>
+          <text class="svg-text th" x="570" y="324" text-anchor="middle" fill="var(--blue-800)">FX translate</text>
+          <text class="svg-text ts" x="570" y="342" text-anchor="middle" fill="var(--blue-600)">€1 = $1.083</text>
+          <text class="svg-text ts" x="570" y="358" text-anchor="middle" fill="var(--blue-600)">¥1 = $0.0067</text>
+        </g>
+        <g class="wt-node" data-show="project">
+          <g class="nd-blue"><rect x="680" y="296" width="180" height="84" rx="10"/></g>
+          <text class="svg-text th" x="770" y="324" text-anchor="middle" fill="var(--blue-800)">Project COGS &amp; OpEx</text>
+          <text class="svg-text ts" x="770" y="342" text-anchor="middle" fill="var(--blue-600)">Std cost × volumes</text>
+          <text class="svg-text ts" x="770" y="358" text-anchor="middle" fill="var(--blue-600)">+ run-rate OpEx</text>
+        </g>
+        <g class="wt-node" data-show="consolidate">
+          <g class="nd-blue"><rect x="880" y="296" width="180" height="84" rx="10"/></g>
+          <text class="svg-text th" x="970" y="324" text-anchor="middle" fill="var(--blue-800)">Consolidate</text>
+          <text class="svg-text ts" x="970" y="342" text-anchor="middle" fill="var(--blue-600)">Group P&amp;L</text>
+          <text class="svg-text ts" x="970" y="358" text-anchor="middle" fill="var(--blue-600)">IC elim → 0</text>
+        </g>
+
+        <!-- Leadership -->
+        <g class="wt-node" data-show="commentary review">
+          <g class="nd-purple"><rect x="80" y="416" width="280" height="48" rx="8"/></g>
+          <text class="svg-text th" x="220" y="436" text-anchor="middle" fill="var(--purple-800)">Variance commentary drafted</text>
+          <text class="svg-text ts" x="220" y="454" text-anchor="middle" fill="var(--purple-600)">vs. Apr forecast: gross margin -120bps</text>
+        </g>
+        <g class="wt-node" data-show="cfo signoff">
+          <g class="nd-purple"><rect x="380" y="416" width="200" height="48" rx="8"/></g>
+          <text class="svg-text th" x="480" y="436" text-anchor="middle" fill="var(--purple-800)">CFO signs off</text>
+          <text class="svg-text ts" x="480" y="454" text-anchor="middle" fill="var(--purple-600)">Day 10, 09:42</text>
+        </g>
+        <g class="wt-node" data-show="publish">
+          <g class="nd-purple"><rect x="600" y="416" width="200" height="48" rx="8"/></g>
+          <text class="svg-text th" x="700" y="436" text-anchor="middle" fill="var(--purple-800)">Published to dashboard</text>
+          <text class="svg-text ts" x="700" y="454" text-anchor="middle" fill="var(--purple-600)">Looker · audit trail attached</text>
+        </g>
+
+        <!-- Pipes -->
+        <path class="wt-pulse svg-stroke-arrow" data-show="extract" d="M 160,96 L 160,290" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="extract" d="M 340,96 L 220,290" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="extract fxtranslate" d="M 520,96 L 520,290" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="extract project" d="M 700,96 L 740,290" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="extract reconcile" d="M 880,96 L 380,290" marker-end="url(#wt-arr)"/>
+
+        <path class="wt-pulse svg-stroke-arrow" data-show="amer regional ingest" d="M 190,234 L 170,290" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="emea regional ingest" d="M 430,234 L 200,290" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="apac regional ingest" d="M 670,234 L 230,290" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="exception variance" d="M 800,206 L 260,310" marker-end="url(#wt-arr)"/>
+
+        <path class="wt-pulse svg-stroke-arrow" data-show="reconcile" d="M 260,338 L 280,338" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="fxtranslate" d="M 460,338 L 480,338" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="project" d="M 660,338 L 680,338" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="consolidate" d="M 860,338 L 880,338" marker-end="url(#wt-arr)"/>
+
+        <path class="wt-pulse svg-stroke-arrow" data-show="commentary" d="M 970,380 L 220,416" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="signoff" d="M 360,440 L 380,440" marker-end="url(#wt-arr)"/>
+        <path class="wt-pulse svg-stroke-arrow" data-show="publish" d="M 580,440 L 600,440" marker-end="url(#wt-arr)"/>
+      </svg>
+    </div>
+
+    <div class="wt-narration">
+      <div class="wt-narration-left">
+        <div class="wt-chapter" id="wt-chap-label">Chapter 1 / 8</div>
+        <div class="wt-title" id="wt-title">Inputs land</div>
+      </div>
+      <div class="wt-body" id="wt-body">
+        Day 1 of close. The agent pulls the trial balance from NetSuite, channel revenue from Shopify and Amazon, FX forward curves from treasury, headcount from Workday, and the pipeline snapshot from Salesforce. All extracts are timestamped and hashed for audit.
+      </div>
+    </div>
+
+    <div class="wt-controls">
+      <button class="wt-btn" id="wt-prev" aria-label="Previous">◀</button>
+      <button class="wt-btn primary" id="wt-play" aria-label="Play">▶</button>
+      <button class="wt-btn" id="wt-next" aria-label="Next">▶▶</button>
+      <div class="wt-scrubber" id="wt-scrubber">
+        <div class="wt-track"><div class="wt-progress" id="wt-progress"></div></div>
+      </div>
+      <span style="font-size:12px;color:var(--text-tertiary);" id="wt-time">0 / 8</span>
+    </div>
+
+    <div class="wt-chap-list" id="wt-chap-list"></div>
+  </div>
+</section>
+
+<!-- ========== DETAILED ========== -->
+<section class="view" id="view-detailed">
+  <div class="detail-controls">
+    <button class="btn primary" onclick="expandAll(true)">Expand all</button>
+    <button class="btn" onclick="expandAll(false)">Collapse all</button>
+    <span class="detail-jump">
+      Jump to:
+      <a href="#phase1">Phase 1 — Inputs &amp; intake</a>
+      <a href="#phase2">Phase 2 — Validate &amp; reconcile</a>
+      <a href="#phase3">Phase 3 — Project &amp; consolidate</a>
+      <a href="#phase4">Phase 4 — Review &amp; publish</a>
+    </span>
+  </div>
+
+  <!-- Phase 1 -->
+  <section class="phase-section" id="phase1">
+    <div class="phase-section-header">
+      <span class="phase-section-num">Phase 1</span>
+      <h2>Inputs &amp; intake</h2>
+    </div>
+    <p class="phase-section-desc">Day 1–4 of close. Pull source data, receive regional forecasts, and prepare the consolidation workbook.</p>
+
+    <!-- 1.1 -->
+    <div class="step-card" id="step-1.1">
+      <div class="step-header">
+        <span class="step-id">Step 1.1</span>
+        <div>
+          <div class="step-title">Pull NetSuite trial balance &amp; AR/AP</div>
+          <div class="step-title-sub">Saved search "TB_Detail_Mxx" exported to CSV; AR/AP aging exported separately.</div>
+        </div>
+        <span class="step-role role-system">System</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Authenticate to NetSuite via OAuth. Run the saved search <span class="inline-code">TB_Detail_Mxx</span> with the period parameter set to the closing month. Export to CSV with timestamp suffix. Validate: row count &gt; 0, balance check (debits = credits), period field consistent.</p>
+        <h4>Inputs</h4>
+        <div><span class="file-tag">NetSuite saved search · TB_Detail</span></div>
+        <h4>Outputs</h4>
+        <div><span class="file-tag">TB_Apr26_Detail.csv</span><span class="file-tag">AR_Aging_Apr26.csv</span><span class="file-tag">AP_Aging_Apr26.csv</span></div>
+        <div class="callout-green callout"><strong>Auto-correctable failure modes:</strong> period not yet locked → wait + retry; saved search renamed → fall back to query by definition hash.</div>
+      </div>
+    </div>
+
+    <!-- 1.2 -->
+    <div class="step-card" id="step-1.2">
+      <div class="step-header">
+        <span class="step-id">Step 1.2</span>
+        <div>
+          <div class="step-title">Pull Shopify and Amazon channel revenue</div>
+          <div class="step-title-sub">DTC orders from Shopify Admin API; Amazon settlements from SP-API.</div>
+        </div>
+        <span class="step-role role-system">System</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Pull all orders with paid status and ship date in the closing month. Reconcile Shopify gross revenue to Stripe payout statements (cash basis). For Amazon, pull settlement reports and net of returns and FBA fees.</p>
+        <h4>Outputs</h4>
+        <div><span class="file-tag">Shopify_Orders_Apr26.csv</span><span class="file-tag">Amazon_Settlements_Apr26.csv</span></div>
+        <div class="callout"><strong>Edge case:</strong> Cross-month settlements — Amazon settles every 14 days. Order ship date defines the close month, not settlement date.</div>
+      </div>
+    </div>
+
+    <!-- 1.3 -->
+    <div class="step-card" id="step-1.3">
+      <div class="step-header">
+        <span class="step-id">Step 1.3</span>
+        <div>
+          <div class="step-title">Pull FX rates &amp; forward curve</div>
+          <div class="step-title-sub">Spot rates as of last business day of close month + 3-month forward curve.</div>
+        </div>
+        <span class="step-role role-system">System</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Pull from treasury feed (primary), with ECB reference rate as cross-check. Persist USD/EUR, USD/GBP, USD/JPY, USD/AUD, USD/CAD spot + 1-mo / 2-mo / 3-mo forward.</p>
+        <h4>FX policy</h4>
+        <ul>
+          <li>Translate forecast lines using forward as-of last BD of prior month (per FX Policy Memo §2)</li>
+          <li>Translate actuals using spot at month-end</li>
+          <li>Hedged exposures use the hedge rate, not market</li>
+        </ul>
+        <h4>Outputs</h4>
+        <div><span class="file-tag">FX_Forward_Curve_Apr26.csv</span></div>
+      </div>
+    </div>
+
+    <!-- 1.4 -->
+    <div class="step-card" id="step-1.4">
+      <div class="step-header">
+        <span class="step-id">Step 1.4</span>
+        <div>
+          <div class="step-title">Receive regional sales forecast workbooks</div>
+          <div class="step-title-sub">3 workbooks — AMER, EMEA, APAC. Due BD+4 EOD local.</div>
+        </div>
+        <span class="step-role role-regional">Regional</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Each regional finance lead saves their forecast workbook to <span class="inline-code">Forecasts/2026/{month}/</span>. The system scans the folder hourly. On detection: run the format-validator agent (does the workbook conform to the standard template? Are all 12 expected sheets present?), then trigger Step 2.1.</p>
+        <h4>Sources of inconsistency</h4>
+        <ul>
+          <li>EMEA workbook adds an extra "VAT Reconciliation" tab not in the template</li>
+          <li>APAC analyst sometimes uses Japanese fiscal-year naming (FY2026 = Apr 2025 to Mar 2026)</li>
+          <li>AMER includes wholesale by SKU; EMEA by category</li>
+        </ul>
+        <div class="callout"><strong>Reality vs. SOP:</strong> SOP says "use the template". In practice each region has slight variations the corporate analyst silently fixes. The discovery agent has learned each region's idiosyncrasies and self-heals during ingest.</div>
+      </div>
+    </div>
+
+    <!-- 1.5 -->
+    <div class="step-card" id="step-1.5">
+      <div class="step-header">
+        <span class="step-id">Step 1.5</span>
+        <div>
+          <div class="step-title">Pull Workday roster &amp; Salesforce pipeline</div>
+          <div class="step-title-sub">Headcount + comp plan; pipeline opportunities for wholesale.</div>
+        </div>
+        <span class="step-role role-system">System</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Outputs</h4>
+        <div><span class="file-tag">Workday_Roster_Apr26.csv</span><span class="file-tag">SF_Pipeline_Snapshot_Apr26.csv</span></div>
+        <div class="callout"><strong>Refresh nuance:</strong> Salesforce pipeline is taken at a point in time (snapshot), not real-time, to ensure forecast reproducibility.</div>
+      </div>
+    </div>
+
+    <!-- 1.6 -->
+    <div class="step-card" id="step-1.6">
+      <div class="step-header">
+        <span class="step-id">Step 1.6</span>
+        <div>
+          <div class="step-title">Receive marketing &amp; OpEx plan</div>
+          <div class="step-title-sub">Campaign calendar from CMO; run-rate OpEx from each functional lead.</div>
+        </div>
+        <span class="step-role role-regional">Regional</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Marketing supplies the campaign calendar as a workbook with planned spend by week and channel. Each functional lead (Eng, Ops, G&amp;A) supplies an OpEx update — run-rate plus any known step-changes.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Phase 2 -->
+  <section class="phase-section" id="phase2">
+    <div class="phase-section-header">
+      <span class="phase-section-num">Phase 2</span>
+      <h2>Validate &amp; reconcile</h2>
+    </div>
+    <p class="phase-section-desc">Day 5–6. Variance triage on each regional submission, cross-check forecast against pipeline, FX-translate to USD.</p>
+
+    <!-- 2.1 -->
+    <div class="step-card" id="step-2.1">
+      <div class="step-header">
+        <span class="step-id">Step 2.1</span>
+        <div>
+          <div class="step-title">Validate forecast workbook &amp; triage variances</div>
+          <div class="step-title-sub">Tie checks · pattern triage · auto-fix or escalate.</div>
+        </div>
+        <span class="step-role role-analyst">Analyst</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Tie checks</h4>
+        <ul>
+          <li>D60 (regional total) = sum(Detail tab)  — tolerance $1,000</li>
+          <li>Channel total = sum(SKU level) within each channel</li>
+          <li>Currency tags consistent on every revenue line</li>
+        </ul>
+        <h4>Variance triage rules</h4>
+        <ul>
+          <li><strong>Pattern: miscoded SKU</strong> → auto-correct in place, log on Adjustments tab</li>
+          <li><strong>Pattern: channel mismatch</strong> → always escalate (per M. Chen)</li>
+          <li><strong>Pattern: currency tag mismatch</strong> → auto-correct, notify regional lead</li>
+          <li><strong>Pattern: calendar shift</strong> → auto-correct using master calendar</li>
+          <li><strong>Other / unknown</strong> → return to regional lead with variance log</li>
+        </ul>
+        <div class="callout-green callout"><strong>Audit trail:</strong> every correction recorded with before/after values, source evidence, and approval status.</div>
+      </div>
+    </div>
+
+    <!-- 2.2 -->
+    <div class="step-card" id="step-2.2">
+      <div class="step-header">
+        <span class="step-id">Step 2.2</span>
+        <div>
+          <div class="step-title">Reconcile forecast to Salesforce pipeline</div>
+          <div class="step-title-sub">Pipeline coverage ratio for wholesale forecast.</div>
+        </div>
+        <span class="step-role role-control">Control</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Compute ratio = (sum of stage 4+ pipeline closing in next 3 months) / (forecast wholesale revenue in next 3 months), per region. Compare to the historical band (1.4× – 2.2×).</p>
+        <ul>
+          <li>Within band → pass</li>
+          <li>Below band (forecast too high relative to pipeline) → flag, request commentary from regional lead</li>
+          <li>Above band (forecast conservative relative to pipeline) → flag, request commentary</li>
+          <li>Stale deals (no activity &gt; 30 days) excluded from numerator per D. Singh</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 2.3 -->
+    <div class="step-card" id="step-2.3">
+      <div class="step-header">
+        <span class="step-id">Step 2.3</span>
+        <div>
+          <div class="step-title">FX-translate forecast lines to USD</div>
+          <div class="step-title-sub">Apply forward curve · honor hedge rates where applicable.</div>
+        </div>
+        <span class="step-role role-system">System</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">For each non-USD line: lookup currency tag → join to FX Forward Curve at the appropriate horizon (M+1 forward for next month, M+2 for two months out, M+3 for three). For hedged exposures: apply hedge rate from the treasury hedging schedule, with CTA booked to OCI.</p>
+        <h4>Validation</h4>
+        <ul>
+          <li>No translated row may have rate = 1.0 unless currency = USD</li>
+          <li>USD totals must reconcile to local-currency × rate within $0.01</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Phase 3 -->
+  <section class="phase-section" id="phase3">
+    <div class="phase-section-header">
+      <span class="phase-section-num">Phase 3</span>
+      <h2>Project &amp; consolidate</h2>
+    </div>
+    <p class="phase-section-desc">Day 7–9. Project COGS and OpEx; consolidate group P&amp;L with intercompany eliminations.</p>
+
+    <!-- 3.1 -->
+    <div class="step-card" id="step-3.1">
+      <div class="step-header">
+        <span class="step-id">Step 3.1</span>
+        <div>
+          <div class="step-title">Project COGS at standard cost</div>
+          <div class="step-title-sub">Standard cost rates × forecast volumes; layer in known cost changes.</div>
+        </div>
+        <span class="step-role role-analyst">Analyst</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Apply <span class="inline-code">COGS_Standards_FY26.xlsx</span> rates by SKU to forecast unit volumes. Layer in known cost changes from procurement (e.g., a 4% increase in glass packaging effective May). Compute purchase price variance (PPV) reserve based on commodity hedging cover.</p>
+        <h4>Cross-checks</h4>
+        <ul>
+          <li>Implied gross margin per channel within ±150bps of trailing 6 months</li>
+          <li>Total projected COGS within 5% of run-rate adjusted for volume</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 3.2 -->
+    <div class="step-card" id="step-3.2">
+      <div class="step-header">
+        <span class="step-id">Step 3.2</span>
+        <div>
+          <div class="step-title">Roll forward OpEx and headcount comp</div>
+          <div class="step-title-sub">Run-rate + step changes + Workday-driven comp.</div>
+        </div>
+        <span class="step-role role-analyst">Analyst</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Take month-3 OpEx run-rate, layer in any known step changes (e.g., a new lease commencing), apply headcount plan from Workday with comp rates and benefits load, add discretionary spend per the marketing calendar.</p>
+        <div class="callout"><strong>Open question:</strong> Two analysts apply different attrition assumptions (4% vs. 6% annualized). The agent will use 4% as the documented HRIS plan, but flag for human confirmation.</div>
+      </div>
+    </div>
+
+    <!-- 3.3 -->
+    <div class="step-card" id="step-3.3">
+      <div class="step-header">
+        <span class="step-id">Step 3.3</span>
+        <div>
+          <div class="step-title">Consolidate &amp; eliminate intercompany</div>
+          <div class="step-title-sub">Group P&amp;L · 3-statement view · intercompany eliminations net to 0.</div>
+        </div>
+        <span class="step-role role-analyst">Analyst</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Sum entity-level P&amp;Ls. Apply intercompany eliminations from the IC matrix (US-EMEA royalty, US-APAC product transfer, EMEA-APAC services). Verify IC eliminations net to zero ±$1k. Produce group P&amp;L by month for next 3 months.</p>
+        <div class="callout"><strong>Manual override:</strong> The Apr 2026 cycle showed a $130k manual IC adjustment by Controller — this is being investigated as part of confidence-gap remediation.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Phase 4 -->
+  <section class="phase-section" id="phase4">
+    <div class="phase-section-header">
+      <span class="phase-section-num">Phase 4</span>
+      <h2>Review &amp; publish</h2>
+    </div>
+    <p class="phase-section-desc">Day 10. Variance commentary, Controller and CFO sign-off, publish.</p>
+
+    <!-- 4.1 -->
+    <div class="step-card" id="step-4.1">
+      <div class="step-header">
+        <span class="step-id">Step 4.1</span>
+        <div>
+          <div class="step-title">Variance commentary &amp; CFO pack</div>
+          <div class="step-title-sub">Auto-drafted commentary vs. last forecast / budget / prior year.</div>
+        </div>
+        <span class="step-role role-analyst">Analyst</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Auto-commentary rules</h4>
+        <ul>
+          <li>Any line with variance &gt;5% or &gt;$500k vs. last forecast → must have commentary</li>
+          <li>Drill-down evidence cited inline (which forecast row drove which group-level swing)</li>
+          <li>Commentary follows house style: business-cause first, financial impact second, mitigations third</li>
+        </ul>
+        <h4>CFO pack contents</h4>
+        <ul>
+          <li>1-page executive summary</li>
+          <li>Group P&amp;L by month, 3 months forward</li>
+          <li>Channel breakdown</li>
+          <li>Top 5 swing drivers</li>
+          <li>Variance commentary</li>
+          <li>Risks &amp; opportunities log</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 4.2 -->
+    <div class="step-card" id="step-4.2">
+      <div class="step-header">
+        <span class="step-id">Step 4.2</span>
+        <div>
+          <div class="step-title">Controller &amp; CFO sign-off</div>
+          <div class="step-title-sub">Two-stage approval. Controller for close mechanics, CFO for the projection.</div>
+        </div>
+        <span class="step-role role-cfo">Approval</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Approval pattern</h4>
+        <ul>
+          <li><strong>Controller (L. Okafor)</strong>: signs off that close mechanics are sound — TB ties, IC nets to zero, all 7 controls passed</li>
+          <li><strong>CFO (M. Sato)</strong>: signs off that the projection is reasonable — variance commentary stands up, key risks acknowledged</li>
+          <li>If CFO out of office → SVP Finance has step-up authority documented in the BCP plan</li>
+          <li>Both approvals captured with timestamp, comment, and identity-verified signature in the audit log</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 4.3 -->
+    <div class="step-card" id="step-4.3">
+      <div class="step-header">
+        <span class="step-id">Step 4.3</span>
+        <div>
+          <div class="step-title">Publish &amp; archive</div>
+          <div class="step-title-sub">Post to Looker dashboard · email deck to leadership · archive workpapers + audit trail.</div>
+        </div>
+        <span class="step-role role-system">System</span>
+        <span class="step-chevron">▼</span>
+      </div>
+      <div class="step-body">
+        <h4>Procedure</h4>
+        <p class="procedure">Push group P&amp;L to Looker via the Northstar BI pipeline. Email the CFO Pack PDF + Excel to the standing distribution list. Archive: every input file, intermediate workpaper, the audit-trail JSON, and the final outputs to S3 with 7-year retention.</p>
+        <div class="callout-green callout"><strong>Audit trail format:</strong> machine-readable JSON capturing every step, input hash, output hash, agent decision, human override (if any), approver, timestamp.</div>
+      </div>
+    </div>
+  </section>
+</section>
+
+<!-- ========== P&L PROJECTION ========== -->
+<section class="view" id="view-pnl">
+
+  <div class="pnl-card">
+    <h2>Driver-based P&amp;L · Jun – Aug 2026</h2>
+    <p class="lead">The output of the projection agent at the top of Phase 3, with all input drivers exposed for sensitivity analysis. Move the sliders to see how the consolidated 3-month P&amp;L responds. Deltas are computed against the base case (current forward curve, current forecast, current OpEx plan).</p>
+  </div>
+
+  <div class="pnl-wrap">
+
+    <div class="driver-panel">
+      <h3>Drivers</h3>
+      <p class="lead">Adjust to see live P&amp;L impact.</p>
+
+      <div class="driver">
+        <div class="driver-head"><span class="driver-label">Sales volume</span><span class="driver-value" id="vol-val">+0.0%</span></div>
+        <input type="range" id="vol" min="-20" max="20" step="0.5" value="0">
+        <div class="driver-range"><span>−20%</span><span>baseline</span><span>+20%</span></div>
+        <div class="driver-help">Applies uniformly to all channels and months.</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head"><span class="driver-label">DTC mix shift</span><span class="driver-value" id="mix-val">+0 bps</span></div>
+        <input type="range" id="mix" min="-500" max="500" step="25" value="0">
+        <div class="driver-range"><span>−500 bps</span><span>baseline</span><span>+500 bps</span></div>
+        <div class="driver-help">Shifts wholesale revenue into DTC at the same total. DTC carries higher GM.</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head"><span class="driver-label">EUR / USD forward</span><span class="driver-value" id="eur-val">1.0832</span></div>
+        <input type="range" id="eur" min="1.04" max="1.12" step="0.001" value="1.0832">
+        <div class="driver-range"><span>1.04</span><span>1.0832</span><span>1.12</span></div>
+        <div class="driver-help">Affects ~10% of revenue (EMEA EUR-denominated lines).</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head"><span class="driver-label">GBP / USD forward</span><span class="driver-value" id="gbp-val">1.2461</span></div>
+        <input type="range" id="gbp" min="1.20" max="1.30" step="0.001" value="1.2461">
+        <div class="driver-range"><span>1.20</span><span>1.2461</span><span>1.30</span></div>
+        <div class="driver-help">Affects ~7% of revenue (EMEA UK).</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head"><span class="driver-label">JPY / USD forward (×100)</span><span class="driver-value" id="jpy-val">0.6700</span></div>
+        <input type="range" id="jpy" min="0.58" max="0.76" step="0.001" value="0.67">
+        <div class="driver-range"><span>0.58</span><span>0.67</span><span>0.76</span></div>
+        <div class="driver-help">Affects ~8% of revenue (APAC Japan). Slider × 0.01 = actual rate.</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head"><span class="driver-label">COGS rate inflation</span><span class="driver-value" id="cogs-val">+0.0%</span></div>
+        <input type="range" id="cogs" min="-3" max="6" step="0.1" value="0">
+        <div class="driver-range"><span>−3%</span><span>baseline</span><span>+6%</span></div>
+        <div class="driver-help">Standard cost rates on product. Glass packaging vendor renegotiation = +4%.</div>
+      </div>
+
+      <div class="driver">
+        <div class="driver-head"><span class="driver-label">Marketing spend</span><span class="driver-value" id="mkt-val">+0.0%</span></div>
+        <input type="range" id="mkt" min="-25" max="25" step="1" value="0">
+        <div class="driver-range"><span>−25%</span><span>baseline</span><span>+25%</span></div>
+        <div class="driver-help">% change to marketing OpEx. Doesn't auto-affect revenue (model has no elasticity built in).</div>
+      </div>
+
+      <div class="driver-actions">
+        <button class="pbtn" onclick="resetDrivers()">Reset</button>
+        <button class="pbtn primary" onclick="snapshotBaseline()">Set as new base</button>
+      </div>
+    </div>
+
+    <div class="pnl-output">
+
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">Net revenue</div><div class="kpi-value" id="kpi-rev">$0</div><div class="kpi-delta" id="kpi-rev-delta">—</div></div>
+        <div class="kpi"><div class="kpi-label">Gross margin %</div><div class="kpi-value" id="kpi-gm">—</div><div class="kpi-delta" id="kpi-gm-delta">—</div></div>
+        <div class="kpi"><div class="kpi-label">EBITDA</div><div class="kpi-value" id="kpi-ebitda">$0</div><div class="kpi-delta" id="kpi-ebitda-delta">—</div></div>
+        <div class="kpi"><div class="kpi-label">EBITDA margin %</div><div class="kpi-value" id="kpi-ebm">—</div><div class="kpi-delta" id="kpi-ebm-delta">—</div></div>
+      </div>
+
+      <div class="pnl-table-wrap">
+        <table class="pnl" id="pnl-table">
+          <thead>
+            <tr>
+              <th style="width: 30%;">Line item ($K)</th>
+              <th>Jun '26</th><th>Jul '26</th><th>Aug '26</th>
+              <th>3-mo total</th><th>vs. base</th>
+            </tr>
+          </thead>
+          <tbody id="pnl-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="tornado-card">
+        <h3>Sensitivity tornado — EBITDA impact at each driver's range extremes</h3>
+        <p class="lead">Holds all other drivers at the current case; varies each driver from low to high end of its slider range. Bars centered on current EBITDA.</p>
+        <div class="tornado">
+          <svg id="tornado-svg" viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ========== PROCESS VIA KAA ========== -->
+<section class="view" id="view-kaa">
+
+  <div class="l0-hero">
+    <div>
+      <div class="pill">Layer 0 · Engagement &amp; baseline</div>
+      <h2>Why this process — and what we measured before automating it</h2>
+      <p class="lead">Northstar's monthly close + 3-mo P&amp;L projection scored highest on the engagement matrix: $-at-stake (CFO-signed projection drives commitments), automatability (rule-bound, repeats monthly), and risk band (medium — SOX-relevant but not external-reporting-critical). Pilot scope: <strong>Phases 1–2 + FX</strong>; Phases 3–4 mapped but human-led until confidence is earned.</p>
+    </div>
+    <div class="baseline-stats">
+      <div class="bs-tile"><div class="bs-num">28 h</div><div class="bs-lbl">Analyst time / cycle</div></div>
+      <div class="bs-tile"><div class="bs-num">BD+10</div><div class="bs-lbl">Close cycle baseline</div></div>
+      <div class="bs-tile"><div class="bs-num">~6</div><div class="bs-lbl">Errors caught / cycle</div></div>
+      <div class="bs-tile"><div class="bs-num">12 / yr</div><div class="bs-lbl">Cycle frequency</div></div>
+    </div>
+  </div>
+
+  <div class="kaa-section-header">
+    <span class="section-num">Section 1</span>
+    <h2>Knowledge layers — what KAA learns about Northstar's process</h2>
+  </div>
+
+  <div class="layer-card l1">
+    <div class="layer-head">
+      <span class="layer-num">Layer 1</span>
+      <h3 class="layer-name">Discovery</h3>
+      <span class="ka-pill k">Knowledge</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>Evidence ingested for this process</h5>
+        <ul>
+          <li><code>FP&amp;A_Close_SOP_v3.2.docx</code> · 47 pages</li>
+          <li><code>FX_Policy_Memo.pdf</code> · 12 pages</li>
+          <li><code>3MoP&amp;L_Master_2026.xlsm</code> · 47 macros decoded</li>
+          <li><code>Forecast_AMER/EMEA/APAC_*.xlsx</code> · 23 prior submissions</li>
+          <li><strong>3 screen recordings</strong> · Feb / Mar / Apr 2026 close · 42h total</li>
+          <li><strong>6 interviews</strong> · M. Chen, J. Park, S. Reyes, A. Tanaka, L. Okafor, D. Singh</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Output artifact</h5>
+        <ul>
+          <li>Evidence graph — 312 atomic procedural facts, each linked to source</li>
+          <li>Per-fact confidence (0.7–0.99)</li>
+          <li>Open conflicts: 2 (pipeline coverage band, OpEx attrition rate)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>What L1 surfaced that wasn't documented</h5>
+        <ul>
+          <li>M. Chen's "always escalate channel mismatches" rule — only said in interview, not in SOP</li>
+          <li>Slack-DM-based regional escalation (SOP says email)</li>
+          <li>~$130k informal IC adjustment by Controller in Apr cycle</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer-card l2">
+    <div class="layer-head">
+      <span class="layer-num">Layer 2</span>
+      <h3 class="layer-name">Ontology</h3>
+      <span class="ka-pill k">Knowledge</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>Northstar-specific entities</h5>
+        <ul>
+          <li><code>RegionalForecast</code> · {AMER, EMEA, APAC} → workbook submissions</li>
+          <li><code>ChannelTaxonomy</code> · {DTC, Amazon, Wholesale} (corp); maps from 11 regional names</li>
+          <li><code>SKUMaster</code> · 13 SKUs · maps from EU internal codes + JP local codes</li>
+          <li><code>FXForwardCurve</code> · 5 currencies · M+1 / M+2 / M+3 horizons</li>
+          <li><code>Control</code> · 7 instances (C-01 through C-07)</li>
+          <li><code>VarianceTriagePattern</code> · 5 instances</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Specialized rules learned</h5>
+        <ul>
+          <li>Channel mismatches → <strong>always escalate</strong> (M. Chen override)</li>
+          <li>Auto-fix budget = ≤ 4 corrections per workbook</li>
+          <li>$ threshold for in-place auto-fix = $25,000</li>
+          <li>Pipeline coverage band = 1.4× – 2.2× (SOP) <em>vs.</em> 1.6× (Sales Ops) → unresolved</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Templates seeded from</h5>
+        <ul>
+          <li><strong>FP&amp;A close template</strong> (cross-customer)</li>
+          <li><strong>CPG/DTC channel-mix template</strong></li>
+          <li><strong>Multi-entity FX template</strong></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer-card l3">
+    <div class="layer-head">
+      <span class="layer-num">Layer 3</span>
+      <h3 class="layer-name">Process</h3>
+      <span class="ka-pill k">Knowledge</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>As-is — 14 steps across 4 phases</h5>
+        <ul>
+          <li>Phase 1 · Inputs &amp; intake (5 steps · BD+1–4)</li>
+          <li>Phase 2 · Validate &amp; reconcile (3 steps · BD+5–6)</li>
+          <li>Phase 3 · Project &amp; consolidate (3 steps · BD+7–9)</li>
+          <li>Phase 4 · Review &amp; publish (3 steps · BD+10)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>To-be — same 14 steps, different agency</h5>
+        <ul>
+          <li>9 steps fully <strong>automatable</strong> (AUTO badge)</li>
+          <li>3 steps <strong>auto + HITL approval</strong> (validate/triage, OpEx roll-forward, commentary)</li>
+          <li>2 steps <strong>human-only</strong> (IC eliminations, CFO sign-off)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>HITL approval gates</h5>
+        <ul>
+          <li>Approve auto-correction batch (J. Park)</li>
+          <li>OpEx attrition assumption review (M. Chen)</li>
+          <li>Variance commentary edit (M. Chen → CFO)</li>
+          <li>Close mechanics sign-off (Controller)</li>
+          <li>Projection sign-off (CFO)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="ka-band">
+    <div class="line"></div>
+    <div class="label">▲ Knowledge   ·   Action ▼</div>
+    <div class="line"></div>
+  </div>
+
+  <div class="kaa-section-header">
+    <span class="section-num">Section 2</span>
+    <h2>Action layers — what KAA executes for Northstar</h2>
+  </div>
+
+  <div class="layer-card l4">
+    <div class="layer-head">
+      <span class="layer-num">Layer 4</span>
+      <h3 class="layer-name">Integrations</h3>
+      <span class="ka-pill a">Action</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>Connected systems for this process</h5>
+        <ul>
+          <li><code>NetSuite</code> — Trial balance, AR/AP aging (read)</li>
+          <li><code>Shopify Admin API</code> — DTC orders (read)</li>
+          <li><code>Amazon SP-API</code> — Settlement reports (read)</li>
+          <li><code>Salesforce</code> — Pipeline snapshot (read)</li>
+          <li><code>Workday</code> — Roster, comp plan (read)</li>
+          <li><code>Treasury feed</code> — FX forward curve (read)</li>
+          <li><code>Looker</code> — Publish (write)</li>
+          <li><code>S3</code> — Audit archive (write)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Read vs. write</h5>
+        <ul>
+          <li>7 read-only sources (no risk of corruption)</li>
+          <li>2 write destinations (publish only — never write back to source-of-truth ERPs)</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Why this is the commodity layer</h5>
+        <ul>
+          <li>Connector quality matters but doesn't differentiate KAA from Zapier-class tools</li>
+          <li>The defensibility lives in <em>what's done with</em> the data, not the act of pulling it</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer-card l5">
+    <div class="layer-head">
+      <span class="layer-num">Layer 5</span>
+      <h3 class="layer-name">Agents</h3>
+      <span class="ka-pill a">Action</span>
+    </div>
+    <div class="layer-body">
+      <div class="lb-cell">
+        <h5>Agents specified for this process</h5>
+        <ul>
+          <li><strong>Ingest agent</strong> · pulls TB / channel / FX / Workday / Salesforce on schedule</li>
+          <li><strong>Watcher agent</strong> · monitors Forecasts/ folder for regional submissions</li>
+          <li><strong>Triage agent</strong> · classifies variance patterns; auto-fixes or escalates</li>
+          <li><strong>FX agent</strong> · applies forward curve; validates USD = local × rate ± $0.01</li>
+          <li><strong>Pipeline agent</strong> · computes coverage ratio per region</li>
+          <li><strong>Projection agent</strong> · COGS + OpEx roll-forward · projects 3-mo</li>
+          <li><strong>Commentary agent</strong> · drafts variance commentary in house style</li>
+          <li><strong>Publish agent</strong> · writes Looker + archives audit JSON to S3</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Spec format (per agent)</h5>
+        <ul>
+          <li>Prompt &amp; tools</li>
+          <li>Eval set (golden cycles)</li>
+          <li>Escalation policy + SLA</li>
+          <li>Audit-trail schema</li>
+          <li>Liability boundary</li>
+        </ul>
+      </div>
+      <div class="lb-cell">
+        <h5>Why specs &gt; models</h5>
+        <ul>
+          <li>Reviewable by Controller, IT, Audit</li>
+          <li>Survive model upgrades (swap GPT-N for Claude-N+1 without losing definition)</li>
+          <li>Diffable across cycles → drift detection</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="kaa-section-header">
+    <span class="section-num">Section 3</span>
+    <h2>Cross-cutting planes — for this specific process</h2>
+  </div>
+
+  <div class="planes-grid">
+    <div class="plane-card gov">
+      <h4>● Governance</h4>
+      <ul>
+        <li><strong>SOX scope</strong>: Phase 4 sign-off and IC eliminations are ICFR-relevant — agent participation requires control documentation</li>
+        <li><strong>FX policy</strong>: forward as of last BD of prior month (per FX Policy Memo §2) — encoded in FX agent spec</li>
+        <li><strong>Audit retention</strong>: 7-year retention of evidence graph + run logs (S3 with object lock)</li>
+        <li><strong>Data residency</strong>: regional sales data stays in customer cloud; agent specs reference but don't store</li>
+        <li><strong>EU AI Act</strong>: variance triage classified <em>limited risk</em> (HITL on every auto-fix); commentary classified <em>limited risk</em> (CFO edits final)</li>
+      </ul>
+    </div>
+
+    <div class="plane-card op">
+      <h4>● Operating model</h4>
+      <ul>
+        <li><strong>Customer sponsor</strong>: M. Sato (CFO)</li>
+        <li><strong>Process steward</strong>: M. Chen (VP FP&amp;A)</li>
+        <li><strong>Ontology custodian</strong>: M. Chen + Prossimo CS</li>
+        <li><strong>HITL approver pool</strong>: J. Park (regional triage), M. Chen (commentary), L. Okafor (close mechanics), M. Sato (projection)</li>
+        <li><strong>Escalation</strong>: low-confidence triage → analyst within 4h SLA; agent failure → on-call within 1h</li>
+        <li><strong>Cadence</strong>: monthly close + quarterly process review</li>
+      </ul>
+    </div>
+
+    <div class="plane-card obs">
+      <h4>● Observability / quality</h4>
+      <ul>
+        <li><strong>7 controls</strong> (C-01..C-07) fired every cycle; pass rate displayed in dashboard</li>
+        <li><strong>Eval sets</strong>: golden cycles for triage agent (50 historical workbooks with known correct triage)</li>
+        <li><strong>Drift monitors</strong>: triage hit rate, commentary edit-rate, FX deviation, pipeline coverage band stability</li>
+        <li><strong>Replay sandbox</strong>: run new agent versions against last 6 cycles before promotion</li>
+        <li><strong>Coverage metric</strong>: % of L1 evidence claims still validated by latest evidence</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="kaa-section-header">
+    <span class="section-num">Section 4</span>
+    <h2>Closed-loop feedback — telemetry from this process</h2>
+  </div>
+
+  <div class="loop-grid">
+    <div class="loop-card">
+      <div class="from">Layer 5 → Layer 2</div>
+      <div class="arrow">↓ ontology refinement</div>
+      <div class="to">Auto-corrected channel mismatches feed pattern library</div>
+      <div class="detail">Each accepted auto-fix in the Triage agent strengthens the relevant <code>VarianceTriagePattern</code> entry. After 12 cycles, triage hit rate improved 79% → 92%.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">Layer 5 → Layer 5</div>
+      <div class="arrow">↓ eval set growth</div>
+      <div class="to">CFO commentary edits become house-style training data</div>
+      <div class="detail">Every M. Chen / CFO edit on auto-drafted commentary becomes a held-out eval pair. Eval set grew from 12 to 89 examples over 6 quarters.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">Layer 5 → Layer 1</div>
+      <div class="arrow">↓ re-discovery trigger</div>
+      <div class="to">ERP migration auto-triggers re-discovery</div>
+      <div class="detail">Detected at the integrations layer (NetSuite saved-search hash drift &gt; 50%). Triggers a narrow re-mining of Layer 1; ontology is patched, not rebuilt.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">Layer 3 → Layer 1</div>
+      <div class="arrow">↓ continuous discovery</div>
+      <div class="to">New SKU launch triggers narrow re-mine</div>
+      <div class="detail">When the SKU master gains an entry (e.g., HYD-110 Sleep Serum), Layer 1 spawns a discovery sub-task — interview product manager, scan launch playbook, surface new pricing/channel rules.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">Layer 5 → Layer 3</div>
+      <div class="arrow">↓ process drift detection</div>
+      <div class="to">Recurring exception class triggers process update</div>
+      <div class="detail">If the same exception class fires &gt; 3 cycles in a row, the Process layer is flagged for review. Last quarter, this surfaced a missing rule for the new Sephora gifting channel.</div>
+    </div>
+
+    <div class="loop-card">
+      <div class="from">Layer 0 → all</div>
+      <div class="arrow">↓ baseline refresh</div>
+      <div class="to">Quarterly baseline measurement</div>
+      <div class="detail">Engagement-layer metrics (analyst hours, errors caught, cycle time) are re-measured every quarter. Drift &gt; 15% triggers a process review with the customer sponsor.</div>
+    </div>
+  </div>
+
+</section>
+
+
+<!-- The original Timeline & Pilot tabs were removed in this version; the controls list moved into the KAA Observability plane and the pilot ROI moved into the L0 hero. -->
+<section class="view" id="view-timeline-removed" style="display:none">
+  <div class="timeline-wrap">
+    <svg viewBox="0 0 1100 360" xmlns="http://www.w3.org/2000/svg">
+      <!-- Day axis -->
+      <text class="lane-label" font-size="12" fill="var(--text-tertiary)" x="20" y="34">CLOSE BUSINESS DAY</text>
+      <line x1="100" y1="64" x2="1080" y2="64" stroke="var(--border)" stroke-width="0.5"/>
+      <!-- Day ticks -->
+      <g font-size="11" fill="var(--text-secondary)" font-family="inherit">
+        <text x="148" y="58" text-anchor="middle">BD 1</text>
+        <text x="246" y="58" text-anchor="middle">BD 2</text>
+        <text x="344" y="58" text-anchor="middle">BD 3</text>
+        <text x="442" y="58" text-anchor="middle">BD 4</text>
+        <text x="540" y="58" text-anchor="middle">BD 5</text>
+        <text x="638" y="58" text-anchor="middle">BD 6</text>
+        <text x="736" y="58" text-anchor="middle">BD 7</text>
+        <text x="834" y="58" text-anchor="middle">BD 8</text>
+        <text x="932" y="58" text-anchor="middle">BD 9</text>
+        <text x="1030" y="58" text-anchor="middle">BD 10</text>
+      </g>
+
+      <!-- Phase bars -->
+      <g class="nd-blue">
+        <rect x="100" y="80" width="392" height="40" rx="6"/>
+        <text class="svg-text th" x="296" y="100" text-anchor="middle" fill="var(--blue-800)">Phase 1 — Inputs &amp; intake</text>
+        <text class="svg-text ts" x="296" y="116" text-anchor="middle" fill="var(--blue-600)">Pull source systems · receive 3 regional forecasts</text>
+      </g>
+      <g class="nd-purple">
+        <rect x="492" y="138" width="196" height="40" rx="6"/>
+        <text class="svg-text th" x="590" y="158" text-anchor="middle" fill="var(--purple-800)">Phase 2 — Validate &amp; reconcile</text>
+        <text class="svg-text ts" x="590" y="174" text-anchor="middle" fill="var(--purple-600)">Triage · pipeline check · FX</text>
+      </g>
+      <g class="nd-green">
+        <rect x="688" y="196" width="294" height="40" rx="6"/>
+        <text class="svg-text th" x="835" y="216" text-anchor="middle" fill="var(--green-800)">Phase 3 — Project &amp; consolidate</text>
+        <text class="svg-text ts" x="835" y="232" text-anchor="middle" fill="var(--green-600)">COGS · OpEx · group P&amp;L · IC elim</text>
+      </g>
+      <g class="nd-amber">
+        <rect x="982" y="254" width="98" height="40" rx="6"/>
+        <text class="svg-text th" x="1031" y="274" text-anchor="middle" fill="var(--amber-800)">Phase 4</text>
+        <text class="svg-text ts" x="1031" y="290" text-anchor="middle" fill="var(--amber-600)">Sign-off + publish</text>
+      </g>
+
+      <!-- Milestones -->
+      <g>
+        <circle cx="442" cy="320" r="5" fill="var(--coral-600)"/>
+        <text x="442" y="340" text-anchor="middle" font-size="11" fill="var(--text-secondary)">Regional submissions due</text>
+      </g>
+      <g>
+        <circle cx="1080" cy="320" r="5" fill="var(--coral-600)"/>
+        <text x="1080" y="340" text-anchor="end" font-size="11" fill="var(--text-secondary)">CFO review · publish</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="validations">
+    <h3>The seven controls</h3>
+    <p class="validations-sub">Each control fires automatically and writes to the audit trail. Failures gate the next step until cleared by a human or the agent's auto-correction agrees with policy.</p>
+
+    <div class="validation-row">
+      <span class="validation-label">C-01 · TB ties</span>
+      <span class="validation-op">=</span>
+      <span class="validation-formula">Σ debits = Σ credits in NetSuite TB extract</span>
+    </div>
+    <div class="validation-row">
+      <span class="validation-label">C-02 · Regional total</span>
+      <span class="validation-op">=</span>
+      <span class="validation-formula">|D60 − Σ Detail rows| ≤ $1,000  per regional workbook</span>
+    </div>
+    <div class="validation-row">
+      <span class="validation-label">C-03 · Pipeline coverage</span>
+      <span class="validation-op">∈</span>
+      <span class="validation-formula">Pipeline ÷ wholesale forecast ∈ [1.4×, 2.2×]  (per region)</span>
+    </div>
+    <div class="validation-row">
+      <span class="validation-label">C-04 · FX consistency</span>
+      <span class="validation-op">=</span>
+      <span class="validation-formula">USD line = local × rate ± $0.01  for every translated row</span>
+    </div>
+    <div class="validation-row">
+      <span class="validation-label">C-05 · Gross margin band</span>
+      <span class="validation-op">∈</span>
+      <span class="validation-formula">implied GM ∈ trailing 6mo ± 150bps  (per channel) — else commentary required</span>
+    </div>
+    <div class="validation-row">
+      <span class="validation-label">C-06 · IC eliminations</span>
+      <span class="validation-op">=</span>
+      <span class="validation-formula">Σ IC eliminations = 0  ± $1,000</span>
+    </div>
+    <div class="validation-row">
+      <span class="validation-label">C-07 · Variance threshold</span>
+      <span class="validation-op">→</span>
+      <span class="validation-formula">|Δ vs. last forecast| &gt; 5% or &gt; $500k → must have written commentary</span>
+    </div>
+  </div>
+</section>
+
+<!-- ========== PILOT ========== -->
+<section class="view" id="view-pilot">
+  <div class="overview-intro">
+    <p><strong>Recommended pilot.</strong> Start with the highest-leverage, lowest-risk slice: <em>regional forecast ingest, validation, triage, and FX translation</em> (Phases 1–2). This is where the corporate FP&amp;A team currently spends ~70% of their cycle time; the work is highly repetitive and rule-bound; and the human-in-the-loop pattern is well understood.</p>
+    <p><strong>Out of scope for pilot.</strong> Intercompany elimination logic and final CFO sign-off remain fully human until confidence on those steps reaches threshold. This is the safe path for a controlled, auditable rollout.</p>
+  </div>
+
+  <div class="pilot-grid">
+    <div class="pilot-card">
+      <h3>Pilot scope</h3>
+      <p class="lead">Phases 1–2 plus FX, leaving projection, consolidation, and approvals to humans. Run shadow-mode for 2 cycles, then go-live.</p>
+      <ul style="margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; color: var(--text-secondary);">
+        <li>Steps 1.1–1.6 (data ingest)</li>
+        <li>Steps 2.1–2.3 (validate, reconcile, FX)</li>
+        <li>Audit trail across all automated steps</li>
+        <li>Human-in-the-loop for any low-confidence triage</li>
+        <li>Controller still approves close mechanics</li>
+        <li>CFO continues to sign off the projection itself</li>
+      </ul>
+    </div>
+
+    <div class="pilot-card">
+      <h3>Confidence prerequisites</h3>
+      <p class="lead">Two known gaps must close before pilot go-live. We've scheduled the interviews already.</p>
+      <ul style="margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; color: var(--text-secondary);">
+        <li><strong>Pipeline coverage band:</strong> 1.4–2.2× (SOP) vs. 1.6× (Sales Ops). Need source-of-truth decision.</li>
+        <li><strong>OpEx attrition assumption:</strong> 4% vs. 6%. Need written rule.</li>
+        <li><strong>Channel mismatch escalation:</strong> always escalate even when fixable in place — already captured.</li>
+      </ul>
+    </div>
+
+    <div class="pilot-card">
+      <h3>Projected ROI per close cycle</h3>
+      <p class="lead">Annualized over 12 close cycles. Assumes pilot scope only — full automation would roughly double the savings.</p>
+      <div class="roi-row"><span>Corporate analyst hours saved</span><span class="num">~28 h / cycle</span></div>
+      <div class="roi-row"><span>Regional analyst hours saved (reduced rework)</span><span class="num">~6 h / cycle × 3</span></div>
+      <div class="roi-row"><span>Cycle time compression (BD+10 → BD+7)</span><span class="num">3 days</span></div>
+      <div class="roi-row"><span>Validation errors caught earlier</span><span class="num">~6 / cycle</span></div>
+      <div class="roi-row total"><span>Annualized labor capacity reclaimed</span><span class="num">~552 hours · $66k</span></div>
+    </div>
+
+    <div class="pilot-card">
+      <h3>Risk &amp; control</h3>
+      <p class="lead">What we explicitly do not change in the pilot.</p>
+      <ul style="margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; color: var(--text-secondary);">
+        <li>Audit trail is enhanced (machine-readable), not replaced</li>
+        <li>Every auto-correction is itemized in the variance log; nothing happens silently</li>
+        <li>Controller and CFO retain the same sign-off authority</li>
+        <li>Shadow-mode for 2 cycles before any decisions go live</li>
+        <li>SOX-relevant controls (C-01, C-04, C-06) keep human review, even when agent computes them</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="pilot-card" style="margin-top: 16px;">
+    <h3>What "Day 1" looks like for the corporate FP&amp;A team</h3>
+    <p class="lead">After pilot go-live, the analyst's day-of-close looks like this — most of the work is review, not data wrangling.</p>
+    <ol style="margin: 8px 0 0; padding-left: 22px; font-size: 13.5px; color: var(--text-secondary);">
+      <li>Open the agent's overnight ingest report (≈ 5 min). All 3 regional forecasts ingested, 12 of 14 variances auto-corrected, 2 escalated.</li>
+      <li>Review the 2 escalations and either approve or send back to region (≈ 15 min).</li>
+      <li>Open the FX-translated draft P&amp;L; spot-check the new forward curve impact (≈ 10 min).</li>
+      <li>Begin Phase 3 (projection) with clean inputs already in place.</li>
+    </ol>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px;">
+    <span style="font-weight: 800; color: var(--accent); font-size: 16px; letter-spacing: -0.02em;">//</span>
+    <strong style="color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; margin-left: -2px;">PROSSIMO</strong>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>KAA reference engagement</span>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>Northstar Goods, Inc.</span>
+    <span style="color: var(--text-tertiary);">·</span>
+    <span>synthesized May 6, 2026</span>
+  </div>
+  Every step traceable to source evidence. Companion artifacts: Ingestion view · Workflow Designer · Agent Run Dashboard · supporting Excel files.<br>
+  <span style="color: var(--text-tertiary);">© 2026 ProssimoTech · Tokyo · <a href="https://www.linkedin.com/company/prossimo-tech/" style="color: var(--accent); text-decoration: none;">LinkedIn</a> · info@prossimotech.com</span>
+</footer>
+
+<script>
+  // Tab switching
+  const tabs = document.querySelectorAll('.tab');
+  const views = document.querySelectorAll('.view');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      views.forEach(v => v.classList.remove('active'));
+      tab.classList.add('active');
+      const target = tab.dataset.view;
+      document.getElementById('view-' + target).classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+
+  // Phase card click → detailed
+  document.querySelectorAll('.phase-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const target = card.dataset.goto;
+      document.querySelector('.tab[data-view="detailed"]').click();
+      setTimeout(() => {
+        document.getElementById(target)?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    });
+  });
+
+  // Step card expand/collapse
+  document.querySelectorAll('.step-header').forEach(h => {
+    h.addEventListener('click', () => h.parentElement.classList.toggle('open'));
+  });
+
+  function expandAll(open) {
+    document.querySelectorAll('.step-card').forEach(c => {
+      if (open) c.classList.add('open');
+      else c.classList.remove('open');
+    });
+  }
+
+  function jumpToPhase(id) {
+    document.querySelector('.tab[data-view="detailed"]').click();
+    setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' }), 100);
+  }
+  function goToStep(stepId) {
+    document.querySelector('.tab[data-view="detailed"]').click();
+    setTimeout(() => {
+      const el = document.getElementById('step-' + stepId);
+      if (el) {
+        el.classList.add('open');
+        el.scrollIntoView({ behavior: 'smooth' });
+      }
+    }, 100);
+  }
+
+  // Walkthrough
+  const wtChapters = [
+    {
+      key: 'extract netsuite shopify fx workday salesforce',
+      label: 'Chapter 1 / 8',
+      title: 'Inputs land',
+      body: 'Day 1 of close. The agent pulls the trial balance from NetSuite, channel revenue from Shopify and Amazon, FX forward curves from treasury, headcount from Workday, and the pipeline snapshot from Salesforce. All extracts are timestamped and hashed for audit.'
+    },
+    {
+      key: 'extract amer regional emea apac',
+      label: 'Chapter 2 / 8',
+      title: 'Regional forecasts arrive',
+      body: 'Day 4. Three regional finance leads drop their forecast workbooks into the shared folder. The agent scans the folder hourly and detects each new submission within minutes.'
+    },
+    {
+      key: 'amer regional emea apac ingest exception variance',
+      label: 'Chapter 3 / 8',
+      title: 'Validate &amp; triage',
+      body: 'The agent runs all tie checks. AMER comes in $4.2k off — recognized as a miscoded SKU pattern, auto-corrected on the Adjustments tab. EMEA pipeline coverage flagged but within band. APAC has a channel mismatch — escalated to the corporate analyst per M. Chen\'s standing override.'
+    },
+    {
+      key: 'reconcile amer emea apac',
+      label: 'Chapter 4 / 8',
+      title: 'Pipeline reconciliation',
+      body: 'Pipeline coverage ratio computed for each region. AMER 1.7×, EMEA 1.5×, APAC 1.9× — all within the 1.4×–2.2× band. Stale Salesforce deals (no activity > 30 days) excluded per Sales Ops policy.'
+    },
+    {
+      key: 'fxtranslate fx',
+      label: 'Chapter 5 / 8',
+      title: 'FX translation',
+      body: 'Each non-USD forecast line is translated using the appropriate forward rate (M+1 / M+2 / M+3). Hedged positions use the hedge rate from treasury. The agent verifies USD = local × rate to the cent.'
+    },
+    {
+      key: 'project workday',
+      label: 'Chapter 6 / 8',
+      title: 'COGS, OpEx, headcount',
+      body: 'COGS projected by SKU using FY26 standard cost rates × forecast volumes. OpEx rolled forward with known step changes. Headcount comp computed from the Workday roster + plan.'
+    },
+    {
+      key: 'consolidate',
+      label: 'Chapter 7 / 8',
+      title: 'Group consolidation',
+      body: 'Entity P&Ls summed; intercompany matrix applied. The IC eliminations net to $872 — within tolerance. Group P&L produced for the next 3 months by month, channel, and entity.'
+    },
+    {
+      key: 'commentary review signoff cfo publish',
+      label: 'Chapter 8 / 8',
+      title: 'Commentary, sign-off, publish',
+      body: 'Variance commentary auto-drafted. Controller approves close mechanics in 8 minutes. CFO signs off the projection by 09:42 of BD+10 — three days earlier than the previous cycle. Published to Looker. Audit trail archived.'
+    }
+  ];
+  const wtChapList = document.getElementById('wt-chap-list');
+  let wtIdx = 0;
+  let wtTimer = null;
+
+  function setStep(idx) {
+    wtIdx = (idx + wtChapters.length) % wtChapters.length;
+    const c = wtChapters[wtIdx];
+    document.getElementById('wt-chap-label').textContent = c.label;
+    document.getElementById('wt-title').innerHTML = c.title;
+    document.getElementById('wt-body').innerHTML = c.body;
+    document.getElementById('wt-progress').style.width = ((wtIdx + 1) / wtChapters.length * 100) + '%';
+    document.getElementById('wt-time').textContent = (wtIdx + 1) + ' / ' + wtChapters.length;
+
+    const keys = c.key.split(' ');
+    document.querySelectorAll('.wt-node').forEach(n => {
+      const want = (n.dataset.show || '').split(' ');
+      if (want.some(w => keys.includes(w))) n.classList.add('on');
+      else n.classList.remove('on');
+    });
+    document.querySelectorAll('.wt-pulse').forEach(p => {
+      const want = (p.dataset.show || '').split(' ');
+      if (want.some(w => keys.includes(w))) p.classList.add('on');
+      else p.classList.remove('on');
+    });
+    document.querySelectorAll('.wt-chap').forEach((b, i) => {
+      b.classList.toggle('active', i === wtIdx);
+    });
+  }
+
+  wtChapters.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.className = 'wt-chap' + (i === 0 ? ' active' : '');
+    b.textContent = c.title.replace(/&amp;/g, '&');
+    b.addEventListener('click', () => { stopPlay(); setStep(i); });
+    wtChapList.appendChild(b);
+  });
+  setStep(0);
+
+  document.getElementById('wt-prev').addEventListener('click', () => { stopPlay(); setStep(wtIdx - 1); });
+  document.getElementById('wt-next').addEventListener('click', () => { stopPlay(); setStep(wtIdx + 1); });
+  document.getElementById('wt-play').addEventListener('click', togglePlay);
+
+  function togglePlay() {
+    if (wtTimer) stopPlay();
+    else startPlay();
+  }
+  function startPlay() {
+    document.getElementById('wt-play').textContent = '❚❚';
+    wtTimer = setInterval(() => {
+      if (wtIdx < wtChapters.length - 1) setStep(wtIdx + 1);
+      else stopPlay();
+    }, 4500);
+  }
+  function stopPlay() {
+    document.getElementById('wt-play').textContent = '▶';
+    if (wtTimer) { clearInterval(wtTimer); wtTimer = null; }
+  }
+
+  // ============================================================
+  // P&L SENSITIVITY MODEL (added for "P&L Projection" tab)
+  // ============================================================
+  const PNL_BASELINE = {
+    dtc:   { jun: 12400, jul: 12900, aug: 13100 },
+    amzn:  { jun:  8320, jul:  8460, aug:  8580 },
+    whlsl: { jun: 18580, jul: 18720, aug: 18500 },
+    gmPct: { dtc: 0.620, amzn: 0.405, whlsl: 0.300 },
+    returnsPct: 0.044,
+    discountsPct: 0.083,
+    opex: {
+      marketing:  13700, sales: 5590, rd: 2790,
+      gaComp: 13090, gaFac: 2070, gaProf: 1010, da: 2175,
+    },
+    fxExposure: { eur: 0.10, gbp: 0.07, jpy: 0.08 },
+    fx: { eur: 1.0832, gbp: 1.2461, jpy: 0.0067 },
+  };
+  let PNL_REFERENCE = null;
+
+  function getDrivers(useDefaults) {
+    if (useDefaults) {
+      return { vol: 0, mix: 0, eur: 1.0832, gbp: 1.2461, jpy: 0.0067, cogs: 0, mkt: 0 };
+    }
+    return {
+      vol: +document.getElementById('vol').value,
+      mix: +document.getElementById('mix').value,
+      eur: +document.getElementById('eur').value,
+      gbp: +document.getElementById('gbp').value,
+      jpy: +document.getElementById('jpy').value / 100,
+      cogs: +document.getElementById('cogs').value,
+      mkt: +document.getElementById('mkt').value,
+    };
+  }
+
+  function computePnL(d) {
+    const volMult = 1 + d.vol / 100;
+    const mixShift = d.mix / 10000;
+    const cogsInfl = 1 + d.cogs / 100;
+    const mktMult = 1 + d.mkt / 100;
+    const eurDelta = (d.eur / PNL_BASELINE.fx.eur) - 1;
+    const gbpDelta = (d.gbp / PNL_BASELINE.fx.gbp) - 1;
+    const jpyDelta = (d.jpy / PNL_BASELINE.fx.jpy) - 1;
+    const fxRevMult = 1 +
+      PNL_BASELINE.fxExposure.eur * eurDelta +
+      PNL_BASELINE.fxExposure.gbp * gbpDelta +
+      PNL_BASELINE.fxExposure.jpy * jpyDelta;
+
+    const months = ['jun', 'jul', 'aug'];
+    const result = { months: {}, total: {}, drivers: d };
+    let totals = {
+      grossRev: 0, returns: 0, discounts: 0, netRev: 0,
+      cogsProduct: 0, cogsFreight: 0, cogs3pl: 0, cogsPpv: 0, cogsTotal: 0,
+      grossProfit: 0,
+      opexMarketing: 0, opexSales: 0, opexRd: 0, opexGaComp: 0, opexGaFac: 0, opexGaProf: 0, opexDa: 0,
+      opexTotal: 0,
+      ebit: 0, ebitda: 0,
+    };
+
+    months.forEach(m => {
+      let dtc = PNL_BASELINE.dtc[m] * volMult * fxRevMult;
+      let amzn = PNL_BASELINE.amzn[m] * volMult * fxRevMult;
+      let whlsl = PNL_BASELINE.whlsl[m] * volMult * fxRevMult;
+      const totalCh = dtc + amzn + whlsl;
+      const shiftAmt = totalCh * mixShift;
+      dtc += shiftAmt;
+      whlsl -= shiftAmt;
+      const netRev = dtc + amzn + whlsl;
+      const grossRev = netRev / (1 - PNL_BASELINE.returnsPct - PNL_BASELINE.discountsPct);
+      const returns = grossRev * PNL_BASELINE.returnsPct;
+      const discounts = grossRev * PNL_BASELINE.discountsPct;
+      const cogsDtc = dtc * (1 - PNL_BASELINE.gmPct.dtc) * cogsInfl;
+      const cogsAmzn = amzn * (1 - PNL_BASELINE.gmPct.amzn) * cogsInfl;
+      const cogsWhlsl = whlsl * (1 - PNL_BASELINE.gmPct.whlsl) * cogsInfl;
+      const cogsTotal = cogsDtc + cogsAmzn + cogsWhlsl;
+      const cogsProduct = cogsTotal * 0.864;
+      const cogsFreight = cogsTotal * 0.032;
+      const cogs3pl     = cogsTotal * 0.094;
+      const cogsPpv     = cogsTotal * 0.010;
+      const grossProfit = netRev - cogsTotal;
+      const monthShare = (m === 'jul') ? 0.36 : 0.32;
+      const opexMarketing = PNL_BASELINE.opex.marketing * mktMult * monthShare;
+      const opexSales = PNL_BASELINE.opex.sales * monthShare;
+      const opexRd = PNL_BASELINE.opex.rd * monthShare;
+      const opexGaComp = PNL_BASELINE.opex.gaComp * monthShare;
+      const opexGaFac = PNL_BASELINE.opex.gaFac * monthShare;
+      const opexGaProf = PNL_BASELINE.opex.gaProf * monthShare;
+      const opexDa = PNL_BASELINE.opex.da * monthShare;
+      const opexTotal = opexMarketing + opexSales + opexRd + opexGaComp + opexGaFac + opexGaProf + opexDa;
+      const ebit = grossProfit - opexTotal;
+      const ebitda = ebit + opexDa;
+      result.months[m] = {
+        grossRev, returns, discounts, netRev,
+        cogsProduct, cogsFreight, cogs3pl, cogsPpv, cogsTotal,
+        grossProfit,
+        opexMarketing, opexSales, opexRd, opexGaComp, opexGaFac, opexGaProf, opexDa,
+        opexTotal, ebit, ebitda,
+      };
+      Object.keys(totals).forEach(k => { totals[k] += result.months[m][k] || 0; });
+    });
+
+    totals.opexTotal = totals.opexMarketing + totals.opexSales + totals.opexRd +
+                        totals.opexGaComp + totals.opexGaFac + totals.opexGaProf + totals.opexDa;
+    totals.grossProfit = totals.netRev - totals.cogsTotal;
+    totals.ebit = totals.grossProfit - totals.opexTotal;
+    totals.ebitda = totals.ebit + totals.opexDa;
+    result.total = totals;
+    return result;
+  }
+
+  function fmt$(v) {
+    if (Math.abs(v) >= 1000) return '$' + (v / 1000).toFixed(1) + 'M';
+    return '$' + Math.round(v).toLocaleString();
+  }
+  function fmtK(v) { return Math.round(v).toLocaleString(); }
+  function fmtPct(v) { return (v * 100).toFixed(1) + '%'; }
+  function fmtDelta(v, isPct) {
+    if (Math.abs(v) < 0.0001) return '·';
+    const sign = v > 0 ? '+' : '';
+    if (isPct) return sign + (v * 100).toFixed(1) + ' pp';
+    if (Math.abs(v) >= 1000) return sign + (v / 1000).toFixed(1) + 'M';
+    return sign + Math.round(v).toLocaleString();
+  }
+  function deltaClass(v, goodIsHigh) {
+    if (Math.abs(v) < 0.5) return 'delta-zero';
+    if (goodIsHigh === false) return v > 0 ? 'delta-neg' : 'delta-pos';
+    return v > 0 ? 'delta-pos' : 'delta-neg';
+  }
+
+  function renderPnL(p, ref) {
+    const tbody = document.getElementById('pnl-tbody');
+    if (!tbody) return;
+    const rows = [];
+    function row(label, j, jl, a, t, refT, opts = {}) {
+      const indent = opts.indent ? 'style="padding-left: 28px;"' : '';
+      const cls = opts.cls || '';
+      const delta = (refT !== undefined) ? (t - refT) : 0;
+      const deltaCls = deltaClass(delta, opts.good !== false);
+      const deltaStr = (refT !== undefined && Math.abs(delta) >= 0.5) ? fmtDelta(delta) : '·';
+      return `<tr class="${cls}"><td ${indent}>${label}</td><td class="num">${opts.skipMonths ? '' : fmtK(j)}</td><td class="num">${opts.skipMonths ? '' : fmtK(jl)}</td><td class="num">${opts.skipMonths ? '' : fmtK(a)}</td><td class="num">${fmtK(t)}</td><td class="num delta-col ${deltaCls}">${deltaStr}</td></tr>`;
+    }
+    function pctRow(label, t, refT, opts = {}) {
+      const cls = opts.cls || '';
+      const delta = (refT !== undefined) ? (t - refT) : 0;
+      const deltaCls = deltaClass(delta, opts.good !== false);
+      const deltaStr = (refT !== undefined && Math.abs(delta) > 0.0001) ? fmtDelta(delta, true) : '·';
+      return `<tr class="${cls}"><td>${label}</td><td></td><td></td><td></td><td class="num">${fmtPct(t)}</td><td class="num delta-col ${deltaCls}">${deltaStr}</td></tr>`;
+    }
+    const m = p.months, t = p.total, rm = ref.months, rt = ref.total;
+    rows.push(`<tr class="section"><td colspan="6">Revenue</td></tr>`);
+    rows.push(row('Gross revenue', m.jun.grossRev, m.jul.grossRev, m.aug.grossRev, t.grossRev, rt.grossRev));
+    rows.push(row('Returns &amp; allowances', -m.jun.returns, -m.jul.returns, -m.aug.returns, -t.returns, -rt.returns, { good: false }));
+    rows.push(row('Trade &amp; promo discounts', -m.jun.discounts, -m.jul.discounts, -m.aug.discounts, -t.discounts, -rt.discounts, { good: false }));
+    rows.push(row('Net revenue', m.jun.netRev, m.jul.netRev, m.aug.netRev, t.netRev, rt.netRev, { cls: 'subtotal' }));
+    rows.push(`<tr class="section"><td colspan="6">COGS</td></tr>`);
+    rows.push(row('Product cost (std)', m.jun.cogsProduct, m.jul.cogsProduct, m.aug.cogsProduct, t.cogsProduct, rt.cogsProduct, { good: false }));
+    rows.push(row('Freight in', m.jun.cogsFreight, m.jul.cogsFreight, m.aug.cogsFreight, t.cogsFreight, rt.cogsFreight, { good: false }));
+    rows.push(row('3PL &amp; fulfillment', m.jun.cogs3pl, m.jul.cogs3pl, m.aug.cogs3pl, t.cogs3pl, rt.cogs3pl, { good: false }));
+    rows.push(row('PPV reserve', m.jun.cogsPpv, m.jul.cogsPpv, m.aug.cogsPpv, t.cogsPpv, rt.cogsPpv, { good: false }));
+    rows.push(row('Total COGS', m.jun.cogsTotal, m.jul.cogsTotal, m.aug.cogsTotal, t.cogsTotal, rt.cogsTotal, { cls: 'subtotal', good: false }));
+    rows.push(row('Gross profit', m.jun.grossProfit, m.jul.grossProfit, m.aug.grossProfit, t.grossProfit, rt.grossProfit, { cls: 'subtotal' }));
+    rows.push(pctRow('Gross margin %', t.grossProfit / t.netRev, rt.grossProfit / rt.netRev));
+    rows.push(`<tr class="section"><td colspan="6">OpEx</td></tr>`);
+    rows.push(row('Marketing', m.jun.opexMarketing, m.jul.opexMarketing, m.aug.opexMarketing, t.opexMarketing, rt.opexMarketing, { good: false }));
+    rows.push(row('Sales &amp; biz dev', m.jun.opexSales, m.jul.opexSales, m.aug.opexSales, t.opexSales, rt.opexSales, { good: false }));
+    rows.push(row('R&amp;D / product', m.jun.opexRd, m.jul.opexRd, m.aug.opexRd, t.opexRd, rt.opexRd, { good: false }));
+    rows.push(row('G&amp;A — comp', m.jun.opexGaComp, m.jul.opexGaComp, m.aug.opexGaComp, t.opexGaComp, rt.opexGaComp, { good: false }));
+    rows.push(row('G&amp;A — facilities', m.jun.opexGaFac, m.jul.opexGaFac, m.aug.opexGaFac, t.opexGaFac, rt.opexGaFac, { good: false }));
+    rows.push(row('G&amp;A — prof fees', m.jun.opexGaProf, m.jul.opexGaProf, m.aug.opexGaProf, t.opexGaProf, rt.opexGaProf, { good: false }));
+    rows.push(row('D&amp;A', m.jun.opexDa, m.jul.opexDa, m.aug.opexDa, t.opexDa, rt.opexDa, { good: false }));
+    rows.push(row('Total OpEx', m.jun.opexTotal, m.jul.opexTotal, m.aug.opexTotal, t.opexTotal, rt.opexTotal, { cls: 'subtotal', good: false }));
+    rows.push(row('Operating income (EBIT)', m.jun.ebit, m.jul.ebit, m.aug.ebit, t.ebit, rt.ebit, { cls: 'subtotal' }));
+    rows.push(row('EBITDA', m.jun.ebitda, m.jul.ebitda, m.aug.ebitda, t.ebitda, rt.ebitda, { cls: 'total' }));
+    rows.push(pctRow('EBITDA margin %', t.ebitda / t.netRev, rt.ebitda / rt.netRev));
+    tbody.innerHTML = rows.join('');
+  }
+
+  function renderKPIs(p, ref) {
+    const elRev = document.getElementById('kpi-rev');
+    if (!elRev) return;
+    elRev.textContent = fmt$(p.total.netRev);
+    document.getElementById('kpi-gm').textContent = fmtPct(p.total.grossProfit / p.total.netRev);
+    document.getElementById('kpi-ebitda').textContent = fmt$(p.total.ebitda);
+    document.getElementById('kpi-ebm').textContent = fmtPct(p.total.ebitda / p.total.netRev);
+    const dRev = p.total.netRev - ref.total.netRev;
+    const dGm = (p.total.grossProfit / p.total.netRev) - (ref.total.grossProfit / ref.total.netRev);
+    const dEb = p.total.ebitda - ref.total.ebitda;
+    const dEbm = (p.total.ebitda / p.total.netRev) - (ref.total.ebitda / ref.total.netRev);
+    function setDelta(id, val, isPct) {
+      const el = document.getElementById(id);
+      el.textContent = fmtDelta(val, isPct);
+      el.className = 'kpi-delta ' + deltaClass(val, true);
+    }
+    setDelta('kpi-rev-delta', dRev);
+    setDelta('kpi-gm-delta', dGm, true);
+    setDelta('kpi-ebitda-delta', dEb);
+    setDelta('kpi-ebm-delta', dEbm, true);
+  }
+
+  function renderTornado(currentDrivers) {
+    const svg = document.getElementById('tornado-svg');
+    if (!svg) return;
+    const sweeps = [
+      { label: 'Sales volume',       lo: -20,  hi: 20,  fmt: v => v + '%',                       map: v => ({ vol: v }) },
+      { label: 'DTC mix shift',      lo: -500, hi: 500, fmt: v => (v>=0?'+':'') + v + ' bps',     map: v => ({ mix: v }) },
+      { label: 'EUR / USD',          lo: 1.04, hi: 1.12,fmt: v => v.toFixed(3),                  map: v => ({ eur: v }) },
+      { label: 'GBP / USD',          lo: 1.20, hi: 1.30,fmt: v => v.toFixed(3),                  map: v => ({ gbp: v }) },
+      { label: 'JPY / USD (×100)',   lo: 0.58, hi: 0.76,fmt: v => v.toFixed(3),                  map: v => ({ jpy: v / 100 }) },
+      { label: 'COGS rate inflation',lo: -3,   hi: 6,   fmt: v => (v>=0?'+':'') + v + '%',        map: v => ({ cogs: v }) },
+      { label: 'Marketing spend',    lo: -25,  hi: 25,  fmt: v => (v>=0?'+':'') + v + '%',        map: v => ({ mkt: v }) },
+    ];
+    const baseEbitda = computePnL(currentDrivers).total.ebitda;
+    const sweepResults = sweeps.map(s => {
+      const drvLo = { ...currentDrivers, ...s.map(s.lo) };
+      const drvHi = { ...currentDrivers, ...s.map(s.hi) };
+      const ebitdaLo = computePnL(drvLo).total.ebitda;
+      const ebitdaHi = computePnL(drvHi).total.ebitda;
+      return {
+        ...s, ebitdaLo, ebitdaHi,
+        deltaLo: ebitdaLo - baseEbitda, deltaHi: ebitdaHi - baseEbitda,
+        magnitude: Math.max(Math.abs(ebitdaLo - baseEbitda), Math.abs(ebitdaHi - baseEbitda))
+      };
+    }).sort((a, b) => b.magnitude - a.magnitude);
+
+    const W = 900, H = 320, padL = 180, padR = 130, padT = 24, padB = 30;
+    const chartW = W - padL - padR;
+    const rowH = (H - padT - padB) / sweepResults.length;
+    const maxMag = Math.max(...sweepResults.map(r => r.magnitude), 1);
+    const xOf = v => padL + chartW / 2 + (v / maxMag) * (chartW / 2);
+    const cx = padL + chartW / 2;
+    let html = '';
+    html += `<line x1="${cx}" y1="${padT - 4}" x2="${cx}" y2="${H - padB + 4}" stroke="var(--text-secondary)" stroke-width="0.8"/>`;
+    html += `<text x="${cx}" y="${H - 6}" text-anchor="middle" fill="var(--text-tertiary)" font-size="9.5">$${(baseEbitda / 1000).toFixed(1)}M baseline EBITDA (current case)</text>`;
+    [-1, -0.5, 0.5, 1].forEach(frac => {
+      const x = padL + chartW / 2 + frac * chartW / 2;
+      const v = frac * maxMag;
+      html += `<line x1="${x}" y1="${padT}" x2="${x}" y2="${H - padB}" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="2 3"/>`;
+      html += `<text x="${x}" y="${padT - 8}" text-anchor="middle" fill="var(--text-tertiary)" font-size="9.5">${frac > 0 ? '+' : ''}${(v/1000).toFixed(1)}M</text>`;
+    });
+    sweepResults.forEach((r, i) => {
+      const y = padT + i * rowH + rowH * 0.18;
+      const h = rowH * 0.6;
+      const xLo = xOf(r.deltaLo), xHi = xOf(r.deltaHi);
+      const xL = Math.min(xLo, xHi), xR = Math.max(xLo, xHi);
+      if (xL < cx) html += `<rect x="${xL}" y="${y}" width="${cx - xL}" height="${h}" fill="var(--red-50)" stroke="var(--red-600, #B43124)" stroke-width="0.6"/>`;
+      if (xR > cx) html += `<rect x="${cx}" y="${y}" width="${xR - cx}" height="${h}" fill="var(--green-50)" stroke="var(--green-600)" stroke-width="0.6"/>`;
+      html += `<text x="${padL - 12}" y="${y + h/2 + 4}" text-anchor="end" fill="var(--text)" font-size="11.5" font-weight="500">${r.label}</text>`;
+      const loLab = (r.deltaLo >= 0 ? '+' : '') + (r.deltaLo / 1000).toFixed(2) + 'M';
+      const hiLab = (r.deltaHi >= 0 ? '+' : '') + (r.deltaHi / 1000).toFixed(2) + 'M';
+      const rangeStr = `${r.fmt(r.lo)}  ↔  ${r.fmt(r.hi)}`;
+      html += `<text x="${W - padR + 14}" y="${y + h/2 + 4}" fill="var(--text-secondary)" font-size="10.5">${rangeStr}</text>`;
+      // Place numeric labels INSIDE the bar when the bar is wide enough,
+      // OUTSIDE otherwise. Avoids collisions with the row label (left)
+      // and the range string (right) when bars span the full chart width.
+      const LABEL_INSIDE_THRESHOLD = 56;  // px — wider than this → label fits inside
+      if (xL < cx - 2) {
+        const barW = cx - xL;
+        if (barW >= LABEL_INSIDE_THRESHOLD) {
+          // Inside the negative bar, near its left edge
+          html += `<text x="${xL + 6}" y="${y + h/2 + 4}" text-anchor="start" fill="var(--red-800, #821E13)" font-size="9.5" font-weight="600">${loLab}</text>`;
+        } else {
+          html += `<text x="${xL - 4}" y="${y + h/2 + 4}" text-anchor="end" fill="var(--red-800, #821E13)" font-size="9.5" font-weight="600">${loLab}</text>`;
+        }
+      }
+      if (xR > cx + 2) {
+        const barW = xR - cx;
+        if (barW >= LABEL_INSIDE_THRESHOLD) {
+          // Inside the positive bar, near its right edge
+          html += `<text x="${xR - 6}" y="${y + h/2 + 4}" text-anchor="end" fill="var(--green-800)" font-size="9.5" font-weight="600">${hiLab}</text>`;
+        } else {
+          html += `<text x="${xR + 4}" y="${y + h/2 + 4}" fill="var(--green-800)" font-size="9.5" font-weight="600">${hiLab}</text>`;
+        }
+      }
+    });
+    svg.innerHTML = html;
+  }
+
+  function recomputePnL() {
+    if (!document.getElementById('vol')) return;  // P&L tab not in DOM
+    const d = getDrivers(false);
+    document.getElementById('vol-val').textContent  = (d.vol  >= 0 ? '+' : '') + d.vol.toFixed(1) + '%';
+    document.getElementById('mix-val').textContent  = (d.mix  >= 0 ? '+' : '') + d.mix.toFixed(0) + ' bps';
+    document.getElementById('eur-val').textContent  = d.eur.toFixed(4);
+    document.getElementById('gbp-val').textContent  = d.gbp.toFixed(4);
+    document.getElementById('jpy-val').textContent  = (d.jpy * 100).toFixed(4);
+    document.getElementById('cogs-val').textContent = (d.cogs >= 0 ? '+' : '') + d.cogs.toFixed(1) + '%';
+    document.getElementById('mkt-val').textContent  = (d.mkt  >= 0 ? '+' : '') + d.mkt.toFixed(1) + '%';
+    if (!PNL_REFERENCE) PNL_REFERENCE = computePnL(getDrivers(true));
+    const result = computePnL(d);
+    renderPnL(result, PNL_REFERENCE);
+    renderKPIs(result, PNL_REFERENCE);
+    renderTornado(d);
+  }
+
+  function resetDrivers() {
+    document.getElementById('vol').value = 0;
+    document.getElementById('mix').value = 0;
+    document.getElementById('eur').value = 1.0832;
+    document.getElementById('gbp').value = 1.2461;
+    document.getElementById('jpy').value = 0.67;
+    document.getElementById('cogs').value = 0;
+    document.getElementById('mkt').value = 0;
+    PNL_REFERENCE = computePnL(getDrivers(true));
+    recomputePnL();
+  }
+  function snapshotBaseline() {
+    PNL_REFERENCE = computePnL(getDrivers(false));
+    recomputePnL();
+  }
+
+  // Wire sliders + recompute when P&L tab activates
+  ['vol','mix','eur','gbp','jpy','cogs','mkt'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', recomputePnL);
+  });
+
+  // "Where to look next" buttons in the Overview — jump to the named tab
+  document.querySelectorAll('.ov-nextlink').forEach(b => {
+    b.addEventListener('click', () => {
+      const target = b.dataset.jump;
+      const tab = document.querySelector('.tab[data-view="' + target + '"]');
+      if (tab) tab.click();
+    });
+  });
+  // Recompute when switching into the P&L tab (sticky positions need DOM measure)
+  document.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      if (t.dataset.view === 'pnl') setTimeout(recomputePnL, 60);
+    });
+  });
+  // Initial render
+  recomputePnL();
+</script>
+
+</body>
+</html>

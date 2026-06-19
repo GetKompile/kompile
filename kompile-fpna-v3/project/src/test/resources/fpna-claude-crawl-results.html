@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html><head><meta charset='UTF-8'>
+<title>FP&amp;A Claude Crawl Results</title>
+<style>
+body{font-family:'Segoe UI',sans-serif;margin:20px;background:#f5f5f5}
+h1{color:#1a237e}h2{color:#283593;border-bottom:2px solid #5c6bc0;padding-bottom:4px}
+h3{color:#3949ab}.section{background:#fff;border-radius:8px;padding:16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.entity{margin:4px 0;padding:6px 10px;border-left:3px solid #5c6bc0;background:#e8eaf6;border-radius:0 4px 4px 0}
+.rel{margin:4px 0;padding:6px 10px;border-left:3px solid #66bb6a;background:#e8f5e9;border-radius:0 4px 4px 0}
+.stats{display:flex;gap:12px;flex-wrap:wrap}.stat{background:#e3f2fd;padding:8px 14px;border-radius:6px;font-weight:bold}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.8em;font-weight:bold;color:#fff;margin-right:6px}
+.PERSON{background:#1565c0}.EMAIL_MESSAGE{background:#6a1b9a}.SPREADSHEET{background:#2e7d32}
+.CLOSE_STEP{background:#e65100}.CONTROL_ASSERTION{background:#c62828}.VARIANCE_TRIAGE{background:#ad1457}
+.REGIONAL_FORECAST{background:#00838f}.CHANNEL_TAXONOMY{background:#558b2f}.APPROVAL_ROLE{background:#ff6f00}
+.other{background:#546e7a}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:6px 10px;border:1px solid #e0e0e0}th{background:#e8eaf6}
+</style></head><body>
+<h1>FP&amp;A CPG Channel — Claude Crawl Results</h1>
+<p>LLM: <b>cli-agent/claude</b> | Schema: <b>fpna-cpg-channel-v1</b> | Docs: <b>8</b></p>
+<div class='stats'>
+<div class='stat'>Pre-resolution entities: 231</div>
+<div class='stat'>Pre-resolution relationships: 213</div>
+<div class='stat'>Post-resolution entities: 48</div>
+<div class='stat'>Post-resolution relationships: 202</div>
+</div>
+<h2>Per-Document Extraction</h2>
+<div class='section'><h3>06a_email_AMER.html</h3>
+<h4>Entities (17)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Sarah Chen</b> — Senior Manager, Sales Ops, Americas at Northstar Goods Inc.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Mei Chen</b> — Recipient responsible for corporate forecast consolidation</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> — Recipient of AMER forecast email</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Ali</b> — Target buyer responsible for Q3 target line review</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>AMER forecast Q3 (FINAL v2) email</b> — Email from Sarah Chen transmitting AMER Q3 forecast v2 with notes, caveats, and data quality warnings</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>AMER_Forecast_Q3_v3_FINAL_v2.xlsx</b> — AMER Q3 2026 forecast spreadsheet, final version 2 (filename still says v3 due to renaming confusion)</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>AMER Q3 2026 Forecast</b> — Americas regional revenue forecast for Q3 2026 (July–August)</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>AMER Q3 Forecast v1</b> — Earlier version of AMER Q3 forecast sent via Slack, superseded by v2</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>AMER Q3 Forecast v3</b> — Version of AMER Q3 forecast with copy-paste glitch on wholesale tab (August duplicated into July), superseded by v2</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>HYD-110</b> — New sleep serum product launching July 1, 2026 with conservative phasing</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Target line flat hold</b> — Target line review pending Ali's feedback; forecast assumes flat hold for Q3, potential downside of -$400k to -$700k</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Costco bundle test LOST</b> — Costco bundle opportunity flagged as LOST due to margin requirements exceeding what Northstar can offer</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Channel naming inconsistency</b> — Inconsistent channel labels in forecast: 'DTC', 'Direct-to-Consumer', and 'ecom' used interchangeably from Salesforce export</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Stale subtotals</b> — Subtotals not recalculated after rows were added; do not use for consolidation</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Grand total row incorrect</b> — Grand total row is incorrect and should not be used</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Wholesale tab Aug–Jul duplication</b> — Copy-paste glitch in v3 where August numbers were duplicated into July on wholesale tab; fixed in v2</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>DTC / Wholesale</b> — AMER sales channel taxonomy used in forecast (applied inconsistently)</div>
+<h4>Relationships (17)</h4>
+<div class='rel'><b>e5</b> —[SENT_BY]→ <b>e1</b> <i>Email sent by Sarah Chen on Sunday evening</i></div>
+<div class='rel'><b>e5</b> —[SENT_TO]→ <b>e2</b> <i>Email sent to Mei Chen for forecast consolidation</i></div>
+<div class='rel'><b>e5</b> —[SENT_TO]→ <b>e3</b> <i>Email sent to J. Park</i></div>
+<div class='rel'><b>e5</b> —[HAS_ATTACHMENT]→ <b>e6</b> <i>Email has AMER forecast spreadsheet attached</i></div>
+<div class='rel'><b>e6</b> —[SOURCE_OF]→ <b>e7</b> <i>Spreadsheet is the data source for the AMER Q3 regional forecast</i></div>
+<div class='rel'><b>e7</b> —[VERSION_OF]→ <b>e8</b> <i>V2 forecast is the corrected replacement for v1 sent earlier via Slack</i></div>
+<div class='rel'><b>e7</b> —[VERSION_OF]→ <b>e9</b> <i>V2 forecast replaces v3 which had wholesale tab copy-paste glitch</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e10</b> <i>Forecast includes HYD-110 new product launch projections for July and August</i></div>
+<div class='rel'><b>e11</b> —[APPLIES_ADJUSTMENT]→ <b>e7</b> <i>Target line review may adjust Q3 forecast downward by $400k–$700k</i></div>
+<div class='rel'><b>e12</b> —[APPLIES_ADJUSTMENT]→ <b>e7</b> <i>Costco bundle loss removes potential revenue from forecast</i></div>
+<div class='rel'><b>e7</b> —[REFERENCES_TAXONOMY]→ <b>e17</b> <i>Forecast references DTC/Wholesale channel taxonomy but labels are applied inconsistently</i></div>
+<div class='rel'><b>e6</b> —[CONTAINS]→ <b>e13</b> <i>Spreadsheet contains inconsistent channel naming from Salesforce export</i></div>
+<div class='rel'><b>e6</b> —[CONTAINS]→ <b>e14</b> <i>Spreadsheet contains stale subtotals that should not be used</i></div>
+<div class='rel'><b>e6</b> —[CONTAINS]→ <b>e15</b> <i>Spreadsheet contains incorrect grand total row</i></div>
+<div class='rel'><b>e16</b> —[TRIGGERS]→ <b>e9</b> <i>Wholesale tab duplication bug was the reason v3 was superseded by v2</i></div>
+<div class='rel'><b>e7</b> —[SUBMITTED_BY]→ <b>e1</b> <i>AMER Q3 forecast submitted by Sarah Chen</i></div>
+<div class='rel'><b>e11</b> —[APPROVED_BY]→ <b>e4</b> <i>Target line adjustment pending approval/review by Ali (Target buyer)</i></div>
+</div>
+<div class='section'><h3>06b_email_EMEA.html</h3>
+<h4>Entities (20)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>François Vasseur</b> — Sales Director, EMEA at Northstar Europe Ltd., based in London</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Mei Chen</b> — Recipient responsible for corporate forecast consolidation</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Kira O'Donnell</b> — UK country lead, currently chasing Boots purchase order</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Lukas Schmidt</b> — Country lead for Germany and EU North</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Paolo Greco</b> — Country lead for Southern Europe</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>EMEA Q3 2026 forecast email</b> — Email from François Vasseur transmitting EMEA Q3 forecast with detailed currency, VAT, channel mapping, and SKU notes</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>EMEA forecast Jun-Aug 2026.xlsx</b> — EMEA Q3 2026 forecast spreadsheet with country-level detail, FX reference tab, and Notes tab</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>EMEA Q3 2026 Forecast</b> — EMEA regional revenue forecast for June–August 2026, amounts in local currency thousands, gross of VAT</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>GBP</b> — British Pound Sterling used for UK forecast amounts</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>EUR</b> — Euro used for Eurozone forecast amounts (DE, FR, IT, ES)</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>DTC / Marketplace / Retail / Distributor</b> — EMEA regional channel taxonomy with four categories</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>DTC / Amazon / Wholesale</b> — Corporate channel taxonomy; requires mapping from EMEA taxonomy</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>EMEA_SKU_master_v8.xlsx</b> — EMEA internal product code to corporate SKU master mapping file on shared drive</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>Corporate SKU Master</b> — Corporate-level product SKU master list used for consolidated reporting</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>EMEA internal product codes</b> — EMEA internal product codes using NS-{country}-{abbreviation} format</div>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>3-month FX forward curve</b> — Corporate treasury 3-month FX forward curve used for USD translation; rate locked centrally by treasury</div>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>FX rates (for ref) tab</b> — Tab in EMEA workbook showing spot FX rates used for EMEA internal sanity-check only; not for consolidation</div>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>Notes tab</b> — Tab in EMEA workbook describing VAT conventions and other reporting notes</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>VAT gross-to-net adjustment</b> — VAT must be netted out for corporate consolidation using country-specific rates: UK 20%, DE 19%, FR 20%, IT 22%, ES 21%</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Boots PO risk</b> — Boots UK Retail placement (Restful + Hydrate lines) verbally confirmed but written PO not yet received; GBP 280k at risk if slips to Q4</div>
+<h4>Relationships (17)</h4>
+<div class='rel'><b>e6</b> —[SENT_BY]→ <b>e1</b> <i>Email sent by François Vasseur from London office</i></div>
+<div class='rel'><b>e6</b> —[SENT_TO]→ <b>e2</b> <i>Email sent to Mei Chen for corporate consolidation</i></div>
+<div class='rel'><b>e6</b> —[HAS_ATTACHMENT]→ <b>e7</b> <i>Email has EMEA forecast spreadsheet attached</i></div>
+<div class='rel'><b>e7</b> —[SOURCE_OF]→ <b>e8</b> <i>Spreadsheet is the data source for the EMEA Q3 regional forecast</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e17</b> <i>Spreadsheet contains the FX rates reference tab (spot rates for internal use only)</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e18</b> <i>Spreadsheet contains the Notes tab with VAT conventions</i></div>
+<div class='rel'><b>e8</b> —[CONTAINS]→ <b>e9</b> <i>EMEA forecast contains GBP-denominated UK amounts in thousands</i></div>
+<div class='rel'><b>e8</b> —[CONTAINS]→ <b>e10</b> <i>EMEA forecast contains EUR-denominated Eurozone amounts (DE/FR/IT/ES) in thousands</i></div>
+<div class='rel'><b>e8</b> —[REFERENCES_TAXONOMY]→ <b>e11</b> <i>EMEA forecast uses DTC/Marketplace/Retail/Distributor channel taxonomy</i></div>
+<div class='rel'><b>e11</b> —[FEEDS_INTO]→ <b>e12</b> <i>EMEA channel taxonomy must be mapped to corporate taxonomy: Marketplace→Amazon, Retail+Distributor→Wholesale</i></div>
+<div class='rel'><b>e15</b> —[DERIVES_FROM]→ <b>e13</b> <i>EMEA internal product codes are mapped to corporate SKUs via EMEA SKU master file</i></div>
+<div class='rel'><b>e13</b> —[SOURCE_OF]→ <b>e14</b> <i>EMEA SKU master file provides mapping from internal codes to corporate SKU master</i></div>
+<div class='rel'><b>e16</b> —[FEEDS_INTO]→ <b>e8</b> <i>3-month FX forward curve used by treasury to translate EMEA local currency forecast to USD</i></div>
+<div class='rel'><b>e19</b> —[APPLIES_ADJUSTMENT]→ <b>e8</b> <i>VAT must be netted out from gross forecast amounts using country-specific VAT rates</i></div>
+<div class='rel'><b>e20</b> —[APPLIES_ADJUSTMENT]→ <b>e8</b> <i>Boots PO risk may reduce Q3 forecast by GBP 280k if written order slips to Q4</i></div>
+<div class='rel'><b>e20</b> —[ESCALATED_TO]→ <b>e3</b> <i>Boots PO is being chased by Kira O'Donnell this morning</i></div>
+<div class='rel'><b>e8</b> —[SUBMITTED_BY]→ <b>e1</b> <i>EMEA forecast submitted by François Vasseur with all country leads locked in by May 2 17:00 local</i></div>
+</div>
+<div class='section'><h3>06c_email_APAC.html</h3>
+<h4>Entities (22)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Ayako Tanaka</b> — Senior Sales Analyst, APAC at Northstar Japan KK, based in Tokyo</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Mei Chen</b> — Recipient responsible for corporate forecast consolidation</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Mark Whitfield</b> — Preparer of the Australia forecast tab</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Rachel Lim</b> — Preparer of the Singapore forecast tab; small but growing channel</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>APAC forecast (FY27 Q1) email</b> — Email from Ayako Tanaka transmitting APAC forecast with fiscal calendar mismatch, currency, magnitude, and data quality warnings</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>APAC fcst FY27Q1.xlsx</b> — APAC forecast spreadsheet with JP, AU, SG country tabs and a broken Summary tab</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>APAC Q3 2026 Forecast</b> — APAC regional forecast; labeled FY27 Q1 per Japan fiscal calendar, partially covers corporate Q3 (June–August 2026)</div>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>JP tab</b> — Japan forecast tab; amounts in JPY thousands (千円); only June column valid for corporate Q3, July and August to follow</div>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>AU tab</b> — Australia forecast tab; amounts in AUD millions; covers Jun/Jul/Aug correctly</div>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>SG tab</b> — Singapore forecast tab; amounts in SGD actual values (not scaled); covers Jun/Jul/Aug correctly</div>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>Summary tab</b> — USD-converted summary tab; DO NOT USE — stale FX rates from February 2026 and broken formulas pulling from SG tab</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>JPY</b> — Japanese Yen used for Japan forecast tab, in thousands (千円)</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>AUD</b> — Australian Dollar used for Australia forecast tab, in millions</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>SGD</b> — Singapore Dollar used for Singapore forecast tab, in actual values</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Fiscal calendar mismatch</b> — Japan FY27 Q1 (Apr–Jun) does not align with corporate Q3 (Jun–Aug); only June data from JP tab is usable, July–August will follow</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Inconsistent magnitude units</b> — Each country tab uses different magnitude conventions: JP in thousands, AU in millions, SG in actual values</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Summary tab stale FX rates</b> — Summary tab uses February 2026 FX rates which are outdated by three months</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Summary tab broken formulas</b> — Broken formulas in summary tab where SG tab pull failed</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Missing JP July–August data</b> — Japan July and August forecast data not yet available due to fiscal calendar system limitation; follow-up promised by Tuesday morning JST</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>EC / Retail / B2B</b> — Japan local channel taxonomy: EC (online/e-commerce), Retail (stores), B2B (wholesale)</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>JP SKU codes</b> — Japan internal product codes using JP-{product}-{number} format (e.g., JP-RST-001); mapping unchanged from last quarter</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>AU SKU codes</b> — Australia internal product codes using AU-{number} format; maps 1:1 to corporate SKU despite slightly different AU formulation</div>
+<h4>Relationships (22)</h4>
+<div class='rel'><b>e5</b> —[SENT_BY]→ <b>e1</b> <i>Email sent by Ayako Tanaka from Tokyo</i></div>
+<div class='rel'><b>e5</b> —[SENT_TO]→ <b>e2</b> <i>Email sent to Mei Chen for corporate consolidation</i></div>
+<div class='rel'><b>e5</b> —[HAS_ATTACHMENT]→ <b>e6</b> <i>Email has APAC forecast spreadsheet attached</i></div>
+<div class='rel'><b>e6</b> —[SOURCE_OF]→ <b>e7</b> <i>Spreadsheet is the data source for the APAC Q3 regional forecast</i></div>
+<div class='rel'><b>e6</b> —[CONTAINS]→ <b>e8</b> <i>Spreadsheet contains the Japan forecast tab</i></div>
+<div class='rel'><b>e6</b> —[CONTAINS]→ <b>e9</b> <i>Spreadsheet contains the Australia forecast tab</i></div>
+<div class='rel'><b>e6</b> —[CONTAINS]→ <b>e10</b> <i>Spreadsheet contains the Singapore forecast tab</i></div>
+<div class='rel'><b>e6</b> —[CONTAINS]→ <b>e11</b> <i>Spreadsheet contains the broken Summary tab (do not use)</i></div>
+<div class='rel'><b>e8</b> —[CONTAINS]→ <b>e12</b> <i>Japan tab contains amounts denominated in JPY thousands</i></div>
+<div class='rel'><b>e9</b> —[CONTAINS]→ <b>e13</b> <i>Australia tab contains amounts denominated in AUD millions</i></div>
+<div class='rel'><b>e10</b> —[CONTAINS]→ <b>e14</b> <i>Singapore tab contains amounts denominated in SGD actual values</i></div>
+<div class='rel'><b>e8</b> —[REFERENCES_TAXONOMY]→ <b>e20</b> <i>Japan tab uses EC/Retail/B2B local channel taxonomy requiring mapping to corporate</i></div>
+<div class='rel'><b>e8</b> —[CONTAINS]→ <b>e21</b> <i>Japan tab uses JP-series internal SKU codes</i></div>
+<div class='rel'><b>e9</b> —[CONTAINS]→ <b>e22</b> <i>Australia tab uses AU-series internal SKU codes</i></div>
+<div class='rel'><b>e9</b> —[SUBMITTED_BY]→ <b>e3</b> <i>Australia forecast tab prepared and submitted by Mark Whitfield</i></div>
+<div class='rel'><b>e10</b> —[SUBMITTED_BY]→ <b>e4</b> <i>Singapore forecast tab prepared and submitted by Rachel Lim</i></div>
+<div class='rel'><b>e7</b> —[SUBMITTED_BY]→ <b>e1</b> <i>APAC forecast submitted by Ayako Tanaka</i></div>
+<div class='rel'><b>e15</b> —[TRIGGERS]→ <b>e8</b> <i>Fiscal calendar mismatch means only June column from JP tab is usable for corporate Q3</i></div>
+<div class='rel'><b>e16</b> —[TRIGGERS]→ <b>e7</b> <i>Inconsistent magnitude units across country tabs require careful normalization during consolidation</i></div>
+<div class='rel'><b>e17</b> —[TRIGGERS]→ <b>e11</b> <i>Stale February FX rates render the Summary tab unusable for consolidation</i></div>
+<div class='rel'><b>e18</b> —[TRIGGERS]→ <b>e11</b> <i>Broken SG tab formulas render the Summary tab unusable</i></div>
+<div class='rel'><b>e19</b> —[TRIGGERS]→ <b>e8</b> <i>Missing July–August data requires follow-up submission for Japan tab</i></div>
+</div>
+<div class='section'><h3>02_process_map.html</h3>
+<h4>Entities (48)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Chen</b> — VP FP&amp;A and process steward for Northstar monthly close</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> — AMER regional finance lead</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>S. Reyes</b> — EMEA regional finance analyst</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>A. Tanaka</b> — APAC regional finance lead</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>L. Okafor</b> — Controller responsible for close mechanics sign-off</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>D. Singh</b> — Finance team member involved in close cycle</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Sato</b> — CFO and customer sponsor, signs off on projections</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>AMER Forecast</b> — Americas regional DTC and Wholesale forecast workbook</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>EMEA Forecast</b> — EMEA regional forecast in EUR/GBP currencies</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>APAC Forecast</b> — APAC regional forecast in JPY/AUD currencies</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>TB_Apr26_Detail.csv</b> — NetSuite trial balance detail export for April 2026</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>AR_Aging_Apr26.csv</b> — Accounts receivable aging report from NetSuite</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>AP_Aging_Apr26.csv</b> — Accounts payable aging report from NetSuite</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>Shopify_Orders_Apr26.csv</b> — DTC orders from Shopify Admin API for April 2026</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>Amazon_Settlements_Apr26.csv</b> — Amazon settlement reports net of returns and FBA fees</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>FX_Forward_Curve_Apr26.csv</b> — Spot rates and 3-month forward curve for 5 currency pairs</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>Workday_Roster_Apr26.csv</b> — Headcount roster and compensation plan from Workday</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>SF_Pipeline_Snapshot_Apr26.csv</b> — Salesforce pipeline opportunities snapshot for wholesale</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>3MoP&amp;L_Master_2026.xlsm</b> — Master consolidation workbook with 47 macros for rolling P&amp;L projection</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>Channel Taxonomy</b> — 3 canonical channels mapped from 11 regional spellings</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>SKU Master</b> — 13 corporate SKUs with regional code mappings for EU and JP</div>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>FX Forward Curve</b> — 3-month forward rate curve for 5 currency pairs, refreshed each cycle</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>USD</b> — US Dollar — reporting currency for consolidation</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>EUR</b> — Euro — EMEA EUR-denominated revenue lines</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>GBP</b> — British Pound — EMEA UK revenue</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>JPY</b> — Japanese Yen — APAC Japan revenue</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>AUD</b> — Australian Dollar — APAC Australia revenue</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>CAD</b> — Canadian Dollar</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>SKU Miscoding</b> — Pattern: miscoded SKU — auto-correct in place, log on Adjustments tab</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Channel Mismatch</b> — Pattern: channel mismatch — always escalate per M. Chen standing override</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Currency Tag Mismatch</b> — Pattern: currency tag mismatch — auto-correct and notify regional lead</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Calendar Shift</b> — Pattern: calendar shift — auto-correct using master calendar</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-01 FX Consistency</b> — Tie check: USD = local amount × rate ± $0.01 tolerance</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-02 Regional Total Tie</b> — Tie check: D60 regional total = sum of Detail tab, tolerance $1,000</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-03 Pipeline Coverage</b> — Pipeline coverage ratio must fall within 1.4×–2.2× historical band</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.1 Pull NetSuite TB &amp; AR/AP</b> — Export trial balance and AR/AP aging from NetSuite via saved search</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.2 Pull Shopify &amp; Amazon Revenue</b> — Pull DTC orders from Shopify and settlement reports from Amazon SP-API</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.3 Pull FX Rates &amp; Forward Curve</b> — Pull spot rates and 3-month forward curve from treasury feed with ECB cross-check</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.4 Receive Regional Forecasts</b> — Receive 3 regional forecast workbooks due BD+4 EOD local; format-validator scans hourly</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.5 Pull Workday &amp; Salesforce</b> — Pull headcount roster from Workday and pipeline snapshot from Salesforce</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.6 Receive Marketing &amp; OpEx Plan</b> — Receive campaign calendar from CMO and run-rate OpEx from functional leads</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 2.1 Validate &amp; Triage Variances</b> — Tie checks, pattern triage, auto-fix (12/14) or escalate on each regional submission</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 2.2 Reconcile Forecast to Pipeline</b> — Compute pipeline coverage ratio for wholesale forecast per region vs historical band</div>
+<div class='entity'><span class='badge PIPELINE_COVERAGE'>PIPELINE_COVERAGE</span><b>Pipeline Coverage</b> — Wholesale pipeline coverage = Stage 4+ pipeline / forecast wholesale revenue, current 1.7×</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>SKU Mapping Miss $4.2k</b> — SKU mapping miss flagged during May 2026 close variance triage valued at $4.2k</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>CFO Sign-off</b> — CFO projection sign-off — final approval on consolidated P&amp;L at Day 10</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Process Steward</b> — VP FP&amp;A process steward — approves commentary and escalated variance decisions</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Controller Sign-off</b> — Controller close mechanics sign-off</div>
+<h4>Relationships (37)</h4>
+<div class='rel'><b>e8</b> —[SUBMITTED_BY]→ <b>e2</b> <i>AMER forecast workbook submitted by J. Park</i></div>
+<div class='rel'><b>e9</b> —[SUBMITTED_BY]→ <b>e3</b> <i>EMEA forecast workbook submitted by S. Reyes</i></div>
+<div class='rel'><b>e10</b> —[SUBMITTED_BY]→ <b>e4</b> <i>APAC forecast workbook submitted by A. Tanaka</i></div>
+<div class='rel'><b>e36</b> —[SOURCE_OF]→ <b>e11</b> <i>Step 1.1 produces trial balance CSV from NetSuite</i></div>
+<div class='rel'><b>e36</b> —[SOURCE_OF]→ <b>e12</b> <i>Step 1.1 produces AR aging CSV</i></div>
+<div class='rel'><b>e36</b> —[SOURCE_OF]→ <b>e13</b> <i>Step 1.1 produces AP aging CSV</i></div>
+<div class='rel'><b>e37</b> —[SOURCE_OF]→ <b>e14</b> <i>Step 1.2 produces Shopify orders CSV</i></div>
+<div class='rel'><b>e37</b> —[SOURCE_OF]→ <b>e15</b> <i>Step 1.2 produces Amazon settlements CSV</i></div>
+<div class='rel'><b>e38</b> —[SOURCE_OF]→ <b>e16</b> <i>Step 1.3 produces FX forward curve CSV</i></div>
+<div class='rel'><b>e40</b> —[SOURCE_OF]→ <b>e17</b> <i>Step 1.5 produces Workday roster CSV</i></div>
+<div class='rel'><b>e40</b> —[SOURCE_OF]→ <b>e18</b> <i>Step 1.5 produces Salesforce pipeline snapshot CSV</i></div>
+<div class='rel'><b>e36</b> —[FEEDS_INTO]→ <b>e42</b> <i>NetSuite trial balance feeds into validation and triage</i></div>
+<div class='rel'><b>e37</b> —[FEEDS_INTO]→ <b>e42</b> <i>Channel revenue data feeds into validation and triage</i></div>
+<div class='rel'><b>e38</b> —[FEEDS_INTO]→ <b>e42</b> <i>FX rates feed into validation and FX translation</i></div>
+<div class='rel'><b>e39</b> —[FEEDS_INTO]→ <b>e42</b> <i>Regional forecast workbooks feed into Step 2.1 validation</i></div>
+<div class='rel'><b>e42</b> —[FEEDS_INTO]→ <b>e43</b> <i>Validated forecasts feed into pipeline reconciliation</i></div>
+<div class='rel'><b>e33</b> —[VALIDATES]→ <b>e42</b> <i>C-01 FX consistency check fires during Step 2.1 triage</i></div>
+<div class='rel'><b>e34</b> —[VALIDATES]→ <b>e42</b> <i>C-02 regional total tie check validates Step 2.1</i></div>
+<div class='rel'><b>e35</b> —[VALIDATES]→ <b>e43</b> <i>C-03 pipeline coverage control validates Step 2.2 reconciliation</i></div>
+<div class='rel'><b>e8</b> —[REFERENCES_TAXONOMY]→ <b>e20</b> <i>AMER forecast references channel taxonomy (DTC, Wholesale by SKU)</i></div>
+<div class='rel'><b>e9</b> —[REFERENCES_TAXONOMY]→ <b>e20</b> <i>EMEA forecast references channel taxonomy (by category)</i></div>
+<div class='rel'><b>e10</b> —[REFERENCES_TAXONOMY]→ <b>e20</b> <i>APAC forecast references channel taxonomy</i></div>
+<div class='rel'><b>e22</b> —[DERIVES_FROM]→ <b>e16</b> <i>FX forward curve entity derived from treasury feed CSV</i></div>
+<div class='rel'><b>e44</b> —[DERIVES_FROM]→ <b>e18</b> <i>Pipeline coverage metric derived from Salesforce pipeline snapshot</i></div>
+<div class='rel'><b>e9</b> —[REFERENCES_TAXONOMY]→ <b>e24</b> <i>EMEA forecast denominates lines in EUR</i></div>
+<div class='rel'><b>e9</b> —[REFERENCES_TAXONOMY]→ <b>e25</b> <i>EMEA forecast denominates UK lines in GBP</i></div>
+<div class='rel'><b>e10</b> —[REFERENCES_TAXONOMY]→ <b>e26</b> <i>APAC forecast denominates Japan lines in JPY</i></div>
+<div class='rel'><b>e30</b> —[ESCALATED_TO]→ <b>e1</b> <i>Channel mismatches always escalate to M. Chen per standing override</i></div>
+<div class='rel'><b>e45</b> —[TRIGGERS]→ <b>e29</b> <i>SKU mapping miss $4.2k triggers SKU miscoding variance triage pattern</i></div>
+<div class='rel'><b>e42</b> —[APPROVED_BY]→ <b>e47</b> <i>Variance triage decisions in Step 2.1 approved by process steward M. Chen</i></div>
+<div class='rel'><b>e42</b> —[APPROVED_BY]→ <b>e46</b> <i>Final P&amp;L projection approved by CFO M. Sato on Day 10</i></div>
+<div class='rel'><b>e19</b> —[CONTAINS]→ <b>e20</b> <i>Master workbook contains channel taxonomy via VLOOKUP macros</i></div>
+<div class='rel'><b>e19</b> —[CONTAINS]→ <b>e21</b> <i>Master workbook contains SKU master references</i></div>
+<div class='rel'><b>e8</b> —[REFERENCES_TAXONOMY]→ <b>e21</b> <i>AMER forecast references SKU master product codes</i></div>
+<div class='rel'><b>e22</b> —[CONTAINS]→ <b>e24</b> <i>FX forward curve contains USD/EUR rate pair</i></div>
+<div class='rel'><b>e22</b> —[CONTAINS]→ <b>e25</b> <i>FX forward curve contains USD/GBP rate pair</i></div>
+<div class='rel'><b>e22</b> —[CONTAINS]→ <b>e26</b> <i>FX forward curve contains USD/JPY rate pair</i></div>
+</div>
+<div class='section'><h3>08_KAA_methodology.html</h3>
+<h4>Entities (18)</h4>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Three-Way Match</b> — PO, goods receipt, and invoice three-way matching — upstream dependency to monthly close</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Revenue Close</b> — Revenue cutoff and deferred revenue processing</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>AP Close</b> — Accounts payable close — accruals and cutoff</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Monthly Close + 3-Mo P&amp;L</b> — Core monthly close and 3-month P&amp;L projection — the demo process node</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Inventory Close</b> — Inventory close — cycle counts and weighted average cost</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>FX Revaluation</b> — Foreign exchange revaluation via Treasury and OCI</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Variance Commentary</b> — Auto-drafted variance commentary with CFO edit — downstream of monthly close</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Board Pack</b> — Quarterly board pack assembled from close outputs</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Tax Provision</b> — Quarterly tax provision true-up</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>External Reporting</b> — 10-Q and IR external reporting — final downstream consumer</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Payroll Cycle</b> — Payroll cycle from Workday and bank file — upstream dependency</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>SOX In-Scope Tagging</b> — SOX / J-SOX in-scope tagging per step with ICFR control mapping</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>EU AI Act Classification</b> — EU AI Act risk classification for agent-assisted steps</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Process Steward</b> — Process steward — owns Layer 3 process model, gates every state transition</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Ontology Custodian</b> — Ontology custodian — manages Layer 2 shared vocabulary and schema versioning</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Customer Sponsor</b> — Customer executive sponsor — owns Layer 0 engagement and baseline</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>VP Finance Backup</b> — VP Finance backup reviewer for agent liability boundaries</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Discovery Owner</b> — Discovery owner — manages Layer 1 evidence collection with consent workflows</div>
+<h4>Relationships (19)</h4>
+<div class='rel'><b>e1</b> —[FEEDS_INTO]→ <b>e4</b> <i>Three-way match output feeds into monthly close as upstream dependency</i></div>
+<div class='rel'><b>e2</b> —[FEEDS_INTO]→ <b>e4</b> <i>Revenue close feeds into monthly close consolidation</i></div>
+<div class='rel'><b>e3</b> —[FEEDS_INTO]→ <b>e4</b> <i>AP close feeds into monthly close consolidation</i></div>
+<div class='rel'><b>e5</b> —[FEEDS_INTO]→ <b>e4</b> <i>Inventory close feeds into monthly close</i></div>
+<div class='rel'><b>e6</b> —[FEEDS_INTO]→ <b>e4</b> <i>FX revaluation feeds into monthly close</i></div>
+<div class='rel'><b>e11</b> —[FEEDS_INTO]→ <b>e4</b> <i>Payroll cycle feeds into monthly close as upstream dependency</i></div>
+<div class='rel'><b>e4</b> —[FEEDS_INTO]→ <b>e7</b> <i>Monthly close output feeds into variance commentary drafting</i></div>
+<div class='rel'><b>e4</b> —[FEEDS_INTO]→ <b>e8</b> <i>Monthly close feeds into quarterly board pack</i></div>
+<div class='rel'><b>e4</b> —[FEEDS_INTO]→ <b>e9</b> <i>Monthly close feeds into quarterly tax provision</i></div>
+<div class='rel'><b>e7</b> —[FEEDS_INTO]→ <b>e8</b> <i>Variance commentary feeds into board pack</i></div>
+<div class='rel'><b>e8</b> —[FEEDS_INTO]→ <b>e10</b> <i>Board pack feeds into external reporting (10-Q, IR)</i></div>
+<div class='rel'><b>e9</b> —[FEEDS_INTO]→ <b>e10</b> <i>Tax provision feeds into external reporting</i></div>
+<div class='rel'><b>e12</b> —[VALIDATES]→ <b>e4</b> <i>SOX/J-SOX controls validate monthly close steps</i></div>
+<div class='rel'><b>e12</b> —[VALIDATES]→ <b>e3</b> <i>SOX controls validate AP close procedures</i></div>
+<div class='rel'><b>e12</b> —[VALIDATES]→ <b>e2</b> <i>SOX controls validate revenue close cutoff</i></div>
+<div class='rel'><b>e13</b> —[VALIDATES]→ <b>e7</b> <i>EU AI Act classification validates agent-drafted variance commentary</i></div>
+<div class='rel'><b>e14</b> —[APPROVED_BY]→ <b>e4</b> <i>Monthly close process state transitions gated by process steward</i></div>
+<div class='rel'><b>e16</b> —[APPROVED_BY]→ <b>e14</b> <i>Process steward role authorized by customer sponsor at engagement level</i></div>
+<div class='rel'><b>e1</b> —[FEEDS_INTO]→ <b>e3</b> <i>Three-way match results feed AP close for accrual cutoff</i></div>
+</div>
+<div class='section'><h3>09_process_map_KAA.html</h3>
+<h4>Entities (42)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Chen</b> — VP FP&amp;A, process steward, ontology custodian, commentary approver</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> — AMER regional finance lead, HITL approver for auto-correction batch</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>S. Reyes</b> — EMEA regional finance analyst observed in screen recordings</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>A. Tanaka</b> — APAC regional finance lead interviewed during discovery</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>L. Okafor</b> — Controller, HITL approver for close mechanics sign-off</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>D. Singh</b> — Finance team member interviewed during discovery</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Sato</b> — CFO and customer sponsor, signs off on projection</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>FP&amp;A_Close_SOP_v3.2.docx</b> — 47-page FP&amp;A close standard operating procedure document</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>FX_Policy_Memo.pdf</b> — 12-page FX policy memo defining forward rate translation rules</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>3MoP&amp;L_Master_2026.xlsm</b> — Master macro-enabled workbook with 47 decoded macros</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>AMER Forecast</b> — Americas regional forecast workbook — part of 23 prior submissions analyzed</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>EMEA Forecast</b> — EMEA regional forecast workbook with EUR/GBP denominated lines</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>APAC Forecast</b> — APAC regional forecast workbook with JPY/AUD denominated lines</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>Channel Taxonomy</b> — 3 canonical channels (DTC, Amazon, Wholesale) mapped from 11 regional names</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>SKU Master</b> — 13 corporate SKUs with EU/JP regional code mappings</div>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>FX Forward Curve</b> — 5-currency forward curve with M+1/M+2/M+3 horizons, refreshed each cycle</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>SKU Miscoding</b> — Pattern: miscoded SKU — auto-correct in place and log</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Channel Mismatch</b> — Pattern: channel mismatch — always escalate per M. Chen override</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Currency Tag Mismatch</b> — Pattern: currency tag mismatch — auto-correct and notify regional lead</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Calendar Shift</b> — Pattern: calendar shift — auto-correct using master calendar</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Other / Unknown</b> — Pattern: unknown variance — return to regional lead with variance log</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-01 FX Consistency</b> — USD = local × rate ± $0.01; fires every cycle</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-02 Regional Total Tie</b> — Regional total = sum of detail tab tie check</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-03 Pipeline Coverage</b> — Pipeline coverage ratio within 1.4×–2.2× band</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-04 SKU Mapping</b> — Every revenue/COGS line resolves to valid SKU</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-05 GM Band</b> — Implied gross margin per channel within trailing-6mo ± 150bps</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-06 Margin Discipline</b> — SKU-level GM within gm_target ± 200bps</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-07</b> — Seventh control in the library, fires every cycle</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Phase 1 Inputs &amp; Intake</b> — 5 steps, BD+1–4: pull source data and receive regional forecasts</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Phase 2 Validate &amp; Reconcile</b> — 3 steps, BD+5–6: variance triage, pipeline reconciliation, FX translation</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Phase 3 Project &amp; Consolidate</b> — 3 steps, BD+7–9: COGS/OpEx projection, Group P&amp;L consolidation, IC eliminations</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Phase 4 Review &amp; Publish</b> — 3 steps, BD+10: variance commentary, CFO sign-off, publish to Looker dashboard</div>
+<div class='entity'><span class='badge PIPELINE_COVERAGE'>PIPELINE_COVERAGE</span><b>Pipeline Coverage</b> — Wholesale pipeline coverage ratio per region — band 1.4×–2.2× (SOP) vs 1.6× (Sales Ops)</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>IC Adjustment ~$130k</b> — ~$130k informal intercompany adjustment by Controller in April cycle discovered during L1</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Sales Volume Driver</b> — Sensitivity driver: sales volume ±20% applied uniformly to all channels and months</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>DTC Mix Shift Driver</b> — Sensitivity driver: DTC mix shift ±500bps, shifts wholesale into DTC at same total</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>COGS Rate Inflation Driver</b> — Sensitivity driver: COGS rate inflation -3% to +6%, glass packaging vendor = +4%</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Marketing Spend Driver</b> — Sensitivity driver: marketing spend ±25%, no auto-elasticity on revenue</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>CFO Projection Sign-off</b> — CFO signs off on final projection — HITL gate at Phase 4</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Process Steward</b> — M. Chen as process steward gates commentary and triage decisions</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Controller Close Mechanics</b> — L. Okafor approves close mechanics — IC eliminations are ICFR-relevant</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Regional Triage Approver</b> — J. Park approves auto-correction batches for regional triage</div>
+<h4>Relationships (32)</h4>
+<div class='rel'><b>e11</b> —[SUBMITTED_BY]→ <b>e2</b> <i>AMER forecast submitted by J. Park</i></div>
+<div class='rel'><b>e12</b> —[SUBMITTED_BY]→ <b>e3</b> <i>EMEA forecast submitted by S. Reyes</i></div>
+<div class='rel'><b>e13</b> —[SUBMITTED_BY]→ <b>e4</b> <i>APAC forecast submitted by A. Tanaka</i></div>
+<div class='rel'><b>e29</b> —[FEEDS_INTO]→ <b>e30</b> <i>Phase 1 intake feeds into Phase 2 validation</i></div>
+<div class='rel'><b>e30</b> —[FEEDS_INTO]→ <b>e31</b> <i>Phase 2 validated data feeds into Phase 3 projection</i></div>
+<div class='rel'><b>e31</b> —[FEEDS_INTO]→ <b>e32</b> <i>Phase 3 consolidated P&amp;L feeds into Phase 4 review</i></div>
+<div class='rel'><b>e22</b> —[VALIDATES]→ <b>e30</b> <i>C-01 FX consistency validates Phase 2 reconciliation</i></div>
+<div class='rel'><b>e23</b> —[VALIDATES]→ <b>e30</b> <i>C-02 regional total tie validates Phase 2</i></div>
+<div class='rel'><b>e24</b> —[VALIDATES]→ <b>e30</b> <i>C-03 pipeline coverage validates Phase 2 reconciliation</i></div>
+<div class='rel'><b>e25</b> —[VALIDATES]→ <b>e30</b> <i>C-04 SKU mapping validates Phase 2 triage</i></div>
+<div class='rel'><b>e26</b> —[VALIDATES]→ <b>e31</b> <i>C-05 GM band validates Phase 3 projections</i></div>
+<div class='rel'><b>e27</b> —[VALIDATES]→ <b>e31</b> <i>C-06 margin discipline validates Phase 3 projections</i></div>
+<div class='rel'><b>e11</b> —[REFERENCES_TAXONOMY]→ <b>e14</b> <i>AMER forecast references channel taxonomy</i></div>
+<div class='rel'><b>e12</b> —[REFERENCES_TAXONOMY]→ <b>e14</b> <i>EMEA forecast references channel taxonomy</i></div>
+<div class='rel'><b>e13</b> —[REFERENCES_TAXONOMY]→ <b>e14</b> <i>APAC forecast references channel taxonomy</i></div>
+<div class='rel'><b>e11</b> —[REFERENCES_TAXONOMY]→ <b>e15</b> <i>AMER forecast references SKU master</i></div>
+<div class='rel'><b>e18</b> —[ESCALATED_TO]→ <b>e1</b> <i>Channel mismatches always escalate to M. Chen</i></div>
+<div class='rel'><b>e21</b> —[ESCALATED_TO]→ <b>e2</b> <i>Unknown variances escalated back to regional lead</i></div>
+<div class='rel'><b>e35</b> —[APPLIES_ADJUSTMENT]→ <b>e31</b> <i>Sales volume driver adjusts Phase 3 projection</i></div>
+<div class='rel'><b>e36</b> —[APPLIES_ADJUSTMENT]→ <b>e31</b> <i>DTC mix shift driver adjusts channel mix in projection</i></div>
+<div class='rel'><b>e37</b> —[APPLIES_ADJUSTMENT]→ <b>e31</b> <i>COGS rate inflation adjusts standard cost projection</i></div>
+<div class='rel'><b>e38</b> —[APPLIES_ADJUSTMENT]→ <b>e31</b> <i>Marketing spend driver adjusts OpEx projection</i></div>
+<div class='rel'><b>e34</b> —[SUBMITTED_BY]→ <b>e5</b> <i>~$130k IC adjustment discovered to have been made by Controller</i></div>
+<div class='rel'><b>e32</b> —[APPROVED_BY]→ <b>e39</b> <i>Phase 4 projection signed off by CFO M. Sato</i></div>
+<div class='rel'><b>e30</b> —[APPROVED_BY]→ <b>e40</b> <i>Variance triage approved by process steward M. Chen</i></div>
+<div class='rel'><b>e32</b> —[APPROVED_BY]→ <b>e41</b> <i>Close mechanics signed off by Controller L. Okafor</i></div>
+<div class='rel'><b>e30</b> —[APPROVED_BY]→ <b>e42</b> <i>Auto-correction batch approved by J. Park</i></div>
+<div class='rel'><b>e8</b> —[SOURCE_OF]→ <b>e29</b> <i>SOP document is evidence source for Phase 1 procedures</i></div>
+<div class='rel'><b>e9</b> —[SOURCE_OF]→ <b>e16</b> <i>FX Policy Memo is the authority for FX forward curve translation rules</i></div>
+<div class='rel'><b>e10</b> —[SOURCE_OF]→ <b>e29</b> <i>Master workbook macros source consolidation logic for intake</i></div>
+<div class='rel'><b>e33</b> —[DERIVES_FROM]→ <b>e24</b> <i>Pipeline coverage metric derived from C-03 pipeline coverage control definition</i></div>
+<div class='rel'><b>e16</b> —[SOURCE_OF]→ <b>e22</b> <i>FX forward curve feeds C-01 FX consistency control</i></div>
+</div>
+<div class='section'><h3>10_semantic_layer_DRAFT.html</h3>
+<h4>Entities (35)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Chen</b> — VP FP&amp;A, cited in interview turns 8 and 11 for channel mismatch and GM band rules</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> — Regional finance lead, cited in interview turns 14 and 23 for SKU resolution and triage workflow</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>S. Reyes</b> — Regional analyst observed in screen recordings correcting DTC aliases</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>Channel Taxonomy</b> — 3 canonical channels (DTC, Amazon, Wholesale) with 11 accepted aliases, GM bands, and auto-fix policy</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>SKU Master</b> — ~1,240 active SKUs with lifecycle status, base price, standard cost, channel eligibility, and GM target</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>Currency Registry</b> — 6 currencies (USD, EUR, GBP, JPY, CAD, AUD) with ISO codes, aliases, decimal precision, and FX source priority</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>USD</b> — US Dollar — reporting currency, priority 1</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>EUR</b> — Euro — local currency for EMEA continental operations</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>GBP</b> — British Pound — local currency for EMEA UK operations</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>JPY</b> — Japanese Yen — 0 decimal precision, magnitude convention issues</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>CAD</b> — Canadian Dollar</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>AUD</b> — Australian Dollar</div>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>FX Forward Curve</b> — 5-currency forward rate curve refreshed each cycle with spot + 1/2/3-month forwards</div>
+<div class='entity'><span class='badge CHART_OF_ACCOUNTS'>CHART_OF_ACCOUNTS</span><b>Chart of Accounts</b> — 47 P&amp;L line items with GL mappings for Northstar's reporting structure</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>SKU Miscoding</b> — Pattern: miscoded SKU — auto-correct, subject to auto-fix budget of 4 per workbook</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Channel Mismatch</b> — Pattern: channel mismatch — always escalate to M. Chen, never auto-fix</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Currency Tag Mismatch</b> — Pattern: currency tag mismatch — auto-correct with audit log, budget 6 per workbook for symbol-only</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Calendar Shift</b> — Pattern: calendar shift — auto-correct using master calendar</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Other / Unknown</b> — Pattern: unknown — return to regional lead with variance log, no auto-fix</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-01 FX Consistency</b> — FX rates must derive from FXForwardCurve; raw inline rates rejected</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-02 Regional Total Tie</b> — Regional total must equal sum of detail tab</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-03 Pipeline Coverage Ratio</b> — Pipeline coverage ratio mapped to PipelineCoverageRatio metric</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-04 SKU Mapping</b> — Every revenue/COGS line must resolve to valid SKU; unknown SKUs always escalate</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-05 GM Band</b> — Implied GM per channel within trailing-6mo ± 150bps</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-06 Margin Discipline</b> — SKU-level GM within gm_target ± 200bps; cross-channel price spread &gt; 12% triggers review</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-07</b> — Seventh control in Northstar's control library</div>
+<div class='entity'><span class='badge CASH_CONVERSION_CYCLE'>CASH_CONVERSION_CYCLE</span><b>Cash Conversion Cycle</b> — DSO + DIO − DPO working capital metric</div>
+<div class='entity'><span class='badge ROIC_DECOMPOSITION'>ROIC_DECOMPOSITION</span><b>ROIC Decomposition</b> — DuPont decomposition: margin × turnover × leverage</div>
+<div class='entity'><span class='badge FREE_CASH_FLOW_MARGIN'>FREE_CASH_FLOW_MARGIN</span><b>Free Cash Flow Margin</b> — FCF ÷ revenue — cash productivity metric</div>
+<div class='entity'><span class='badge PIPELINE_COVERAGE'>PIPELINE_COVERAGE</span><b>Pipeline Coverage Ratio</b> — Pipeline ÷ forecast wholesale revenue, band 1.4×–2.2×</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Approval Roles</b> — 4 human approval roles and 8 named agents in the process</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>3MoP&amp;L_Master_2026.xlsm</b> — Master workbook with Run_Consolidate macro containing VLOOKUP against canonical channel list</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>FP&amp;A_Close_SOP_v3.2.docx</b> — 47-page SOP defining channel taxonomy (§3.2), SKU discipline (§4.1), and currency policy (§5.1)</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>SKU_master_2026Q1.xlsx</b> — ERP master extract: 1,240 rows — 1,118 Active, 64 Phasing-out, 41 Discontinued, 17 NPI</div>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>Regional Forecast Detail Table</b> — Revenue detail tab within regional forecast workbooks containing SKU/channel/currency line items</div>
+<h4>Relationships (31)</h4>
+<div class='rel'><b>e4</b> —[CONTAINS]→ <b>e15</b> <i>Channel taxonomy contains SKU miscoding auto-fix rules via alias mapping</i></div>
+<div class='rel'><b>e4</b> —[CONTAINS]→ <b>e16</b> <i>Channel taxonomy governs channel mismatch escalation rules</i></div>
+<div class='rel'><b>e5</b> —[REFERENCES_TAXONOMY]→ <b>e4</b> <i>SKU master channel_eligible field references channel taxonomy canonical names</i></div>
+<div class='rel'><b>e5</b> —[REFERENCES_TAXONOMY]→ <b>e6</b> <i>SKU master base_price_usd references currency registry for USD denomination</i></div>
+<div class='rel'><b>e13</b> —[DERIVES_FROM]→ <b>e6</b> <i>FX forward curve rates derive from currencies defined in currency registry</i></div>
+<div class='rel'><b>e20</b> —[VALIDATES]→ <b>e13</b> <i>C-01 validates that all FX rates derive from FX forward curve, not inline rates</i></div>
+<div class='rel'><b>e23</b> —[VALIDATES]→ <b>e5</b> <i>C-04 validates every line resolves to a valid SKU in the SKU master</i></div>
+<div class='rel'><b>e24</b> —[VALIDATES]→ <b>e4</b> <i>C-05 validates channel-level GM falls within band defined by channel taxonomy</i></div>
+<div class='rel'><b>e25</b> —[VALIDATES]→ <b>e5</b> <i>C-06 validates SKU-level GM within gm_target band in SKU master</i></div>
+<div class='rel'><b>e22</b> —[VALIDATES]→ <b>e30</b> <i>C-03 maps directly to pipeline coverage ratio metric</i></div>
+<div class='rel'><b>e16</b> —[ESCALATED_TO]→ <b>e1</b> <i>Channel mismatches always escalate to M. Chen per interview turn 11 override</i></div>
+<div class='rel'><b>e23</b> —[ESCALATED_TO]→ <b>e2</b> <i>Unknown SKU IDs escalate to J. Park per interview turn 14</i></div>
+<div class='rel'><b>e33</b> —[SOURCE_OF]→ <b>e4</b> <i>SOP §3.2 is the provenance source for channel taxonomy definition</i></div>
+<div class='rel'><b>e33</b> —[SOURCE_OF]→ <b>e5</b> <i>SOP §4.1 is the provenance source for SKU master discipline</i></div>
+<div class='rel'><b>e33</b> —[SOURCE_OF]→ <b>e6</b> <i>SOP §5.1 is the provenance source for multi-currency policy</i></div>
+<div class='rel'><b>e32</b> —[SOURCE_OF]→ <b>e4</b> <i>Run_Consolidate macro in master workbook is provenance for channel VLOOKUP logic</i></div>
+<div class='rel'><b>e34</b> —[SOURCE_OF]→ <b>e5</b> <i>ERP master extract is the data source for SKU master entity population</i></div>
+<div class='rel'><b>e29</b> —[DERIVES_FROM]→ <b>e5</b> <i>Free cash flow margin metric uses SKU master for revenue line identification</i></div>
+<div class='rel'><b>e30</b> —[DERIVES_FROM]→ <b>e22</b> <i>Pipeline coverage ratio is the metric backing C-03 control</i></div>
+<div class='rel'><b>e35</b> —[REFERENCES_TAXONOMY]→ <b>e4</b> <i>Regional forecast detail table lines must map to channel taxonomy</i></div>
+<div class='rel'><b>e35</b> —[REFERENCES_TAXONOMY]→ <b>e5</b> <i>Regional forecast detail table lines must resolve to SKU master</i></div>
+<div class='rel'><b>e35</b> —[REFERENCES_TAXONOMY]→ <b>e6</b> <i>Regional forecast detail table monetary fields must declare currency from registry</i></div>
+<div class='rel'><b>e4</b> —[PART_OF]→ <b>e24</b> <i>Channel taxonomy GM bands are part of C-05 GM band control logic</i></div>
+<div class='rel'><b>e5</b> —[PART_OF]→ <b>e25</b> <i>SKU master gm_target is part of C-06 margin discipline control logic</i></div>
+<div class='rel'><b>e27</b> —[DERIVES_FROM]→ <b>e14</b> <i>Cash conversion cycle components (DSO, DIO, DPO) derive from chart of accounts</i></div>
+<div class='rel'><b>e28</b> —[DERIVES_FROM]→ <b>e14</b> <i>ROIC decomposition margin component derives from chart of accounts P&amp;L lines</i></div>
+<div class='rel'><b>e7</b> —[PART_OF]→ <b>e13</b> <i>USD is the reporting currency against which FX forward curve is denominated</i></div>
+<div class='rel'><b>e8</b> —[PART_OF]→ <b>e13</b> <i>EUR is one of 5 currencies in the FX forward curve</i></div>
+<div class='rel'><b>e9</b> —[PART_OF]→ <b>e13</b> <i>GBP is one of 5 currencies in the FX forward curve</i></div>
+<div class='rel'><b>e10</b> —[PART_OF]→ <b>e13</b> <i>JPY is one of 5 currencies in the FX forward curve</i></div>
+<div class='rel'><b>e12</b> —[PART_OF]→ <b>e13</b> <i>AUD is one of 5 currencies in the FX forward curve</i></div>
+</div>
+<div class='section'><h3>06_inbox.html</h3>
+<h4>Entities (29)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Mei Chen</b> — FP&amp;A analyst at NorthStar responsible for forecast consolidation across regions</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Ayako Tanaka</b> — APAC regional forecast submitter</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> — Forecast contributor mentioned in Slack #fpa-close-cycle channel, recurring late submitter</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>François Vasseur</b> — EMEA regional forecast submitter and Boots account contact</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Sarah Chen</b> — AMER Sales Ops forecast submitter</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Sato</b> — Participant in CFO standing forecast consolidation review</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>L. Okafor</b> — Participant in CFO standing forecast consolidation review</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>APAC forecast (FY27 Q1) — some notes, please read first</b> — Email from Ayako Tanaka with APAC FY27 Q1 forecast; notes Japan fiscal year alignment (Apr start)</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>EMEA Q3 2026 forecast — for consolidation</b> — Email from François Vasseur with EMEA Q3 2026 forecast; notes local currency, gross of VAT, thousands; Boots Q3 PO not yet confirmed</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>AMER forecast Q3 (FINAL v2) — sorry it's late, attached</b> — Email from Sarah Chen with AMER Q3 forecast; instructs to ignore v1 and v3, use v2 only; submitted Sunday night late</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>Slack #fpa-close-cycle — 3 mentions</b> — Slack notification: J. Park says forecast going up tonight, late again; 2 more in thread</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>FYI — Boots Q3 placement update (verbal)</b> — Email from François Vasseur: Boots Q3 placement verbally confirmed, written PO slipping to next week, will update forecast Monday</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>Completed: Q2 audit engagement letter</b> — DocuSign notification that Q2 audit engagement letter has been completed by all 3 signers</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>APAC fcst FY27Q1.xlsx</b> — APAC FY27 Q1 forecast spreadsheet with country tabs, covering Apr-Jun aligned to Japan fiscal year</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>EMEA forecast Jun-Aug 2026.xlsx</b> — EMEA Q3 2026 forecast spreadsheet; amounts in local currency, gross of VAT, in thousands</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>AMER_Forecast_Q3_v3_FINAL_v2.xlsx</b> — AMER Q3 forecast spreadsheet final version 2; supersedes v1 and v3 previously shared via Slack</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>APAC FY27 Q1 Forecast</b> — APAC regional financial forecast for FY27 Q1 (Apr-Jun), Japan fiscal year aligned</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>EMEA Q3 2026 Forecast</b> — EMEA regional financial forecast for Q3 2026 (Jun-Aug), local currency, gross of VAT, Boots PO pending</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>AMER Q3 Forecast</b> — AMER regional financial forecast for Q3, submitted late Sunday night with version confusion</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Forecast Consolidation Review</b> — CFO standing review to consolidate regional forecasts, scheduled Tue May 6 2026 at 2 PM ET, 60 min</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>FX Rate Lock — May Close Cycle</b> — Treasury locks FX rates at 16:00 ET Fri May 1; all forecasts must use these locked rates</div>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>May 2026 FX Forward Rates</b> — FX forward rates locked by Treasury on May 1 for the May close cycle; mandatory for all regional forecast consolidation</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>AMER Forecast Version Confusion</b> — Multiple conflicting AMER forecast versions circulated: v1 and v3 via Slack, FINAL v2 via email; filename misleadingly contains v3</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Boots Q3 PO Unconfirmed</b> — Boots Q3 purchase order verbally confirmed only; written PO expected next week; EMEA forecast may not fully reflect this line</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Late Forecast Submissions</b> — Recurring late forecast submissions: AMER submitted Sunday night, J. Park forecast late again per Slack</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>Wholesale (Boots)</b> — Wholesale sales channel — Boots as retail partner with Q3 placement</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Q2 Audit Engagement Letter</b> — Q2 external audit engagement letter signed by all 3 parties via DocuSign</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>JPY</b> — Japanese Yen — relevant to APAC forecast with Japan fiscal year starting April</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>CFO Office</b> — CFO Office responsible for approving consolidated regional forecasts via standing review</div>
+<h4>Relationships (38)</h4>
+<div class='rel'><b>e8</b> —[SENT_BY]→ <b>e2</b> <i>APAC forecast email sent by Ayako Tanaka</i></div>
+<div class='rel'><b>e8</b> —[SENT_TO]→ <b>e1</b> <i>APAC forecast email sent to Mei Chen for consolidation</i></div>
+<div class='rel'><b>e9</b> —[SENT_BY]→ <b>e4</b> <i>EMEA forecast email sent by François Vasseur</i></div>
+<div class='rel'><b>e9</b> —[SENT_TO]→ <b>e1</b> <i>EMEA forecast email sent to Mei Chen for consolidation</i></div>
+<div class='rel'><b>e10</b> —[SENT_BY]→ <b>e5</b> <i>AMER forecast email sent by Sarah Chen (late, Sunday night)</i></div>
+<div class='rel'><b>e10</b> —[SENT_TO]→ <b>e1</b> <i>AMER forecast email sent to Mei Chen for consolidation</i></div>
+<div class='rel'><b>e11</b> —[SENT_BY]→ <b>e3</b> <i>Slack message in #fpa-close-cycle from J. Park about late forecast submission</i></div>
+<div class='rel'><b>e12</b> —[SENT_BY]→ <b>e4</b> <i>Boots Q3 verbal update email sent by François Vasseur</i></div>
+<div class='rel'><b>e12</b> —[SENT_TO]→ <b>e1</b> <i>Boots Q3 verbal update sent to Mei Chen as FYI</i></div>
+<div class='rel'><b>e8</b> —[HAS_ATTACHMENT]→ <b>e14</b> <i>APAC forecast email has APAC fcst FY27Q1.xlsx attached</i></div>
+<div class='rel'><b>e9</b> —[HAS_ATTACHMENT]→ <b>e15</b> <i>EMEA forecast email has EMEA forecast Jun-Aug 2026.xlsx attached</i></div>
+<div class='rel'><b>e10</b> —[HAS_ATTACHMENT]→ <b>e16</b> <i>AMER forecast email has AMER_Forecast_Q3_v3_FINAL_v2.xlsx attached</i></div>
+<div class='rel'><b>e14</b> —[SOURCE_OF]→ <b>e17</b> <i>APAC spreadsheet is the data source for APAC FY27 Q1 regional forecast</i></div>
+<div class='rel'><b>e15</b> —[SOURCE_OF]→ <b>e18</b> <i>EMEA spreadsheet is the data source for EMEA Q3 2026 regional forecast</i></div>
+<div class='rel'><b>e16</b> —[SOURCE_OF]→ <b>e19</b> <i>AMER spreadsheet is the data source for AMER Q3 regional forecast</i></div>
+<div class='rel'><b>e17</b> —[SUBMITTED_BY]→ <b>e2</b> <i>APAC FY27 Q1 forecast submitted by Ayako Tanaka</i></div>
+<div class='rel'><b>e18</b> —[SUBMITTED_BY]→ <b>e4</b> <i>EMEA Q3 2026 forecast submitted by François Vasseur</i></div>
+<div class='rel'><b>e19</b> —[SUBMITTED_BY]→ <b>e5</b> <i>AMER Q3 forecast submitted by Sarah Chen</i></div>
+<div class='rel'><b>e17</b> —[FEEDS_INTO]→ <b>e20</b> <i>APAC regional forecast feeds into forecast consolidation review</i></div>
+<div class='rel'><b>e18</b> —[FEEDS_INTO]→ <b>e20</b> <i>EMEA regional forecast feeds into forecast consolidation review</i></div>
+<div class='rel'><b>e19</b> —[FEEDS_INTO]→ <b>e20</b> <i>AMER regional forecast feeds into forecast consolidation review</i></div>
+<div class='rel'><b>e21</b> —[FEEDS_INTO]→ <b>e20</b> <i>FX rate lock must be completed before forecast consolidation can proceed</i></div>
+<div class='rel'><b>e22</b> —[SOURCE_OF]→ <b>e21</b> <i>FX forward rate curve is the data source for the FX rate lock close step</i></div>
+<div class='rel'><b>e22</b> —[APPLIES_ADJUSTMENT]→ <b>e18</b> <i>Locked FX rates applied to convert EMEA local-currency forecast for consolidation</i></div>
+<div class='rel'><b>e22</b> —[APPLIES_ADJUSTMENT]→ <b>e17</b> <i>Locked FX rates applied to convert APAC forecast (incl. JPY) for consolidation</i></div>
+<div class='rel'><b>e20</b> —[APPROVED_BY]→ <b>e29</b> <i>Forecast consolidation review approved by CFO Office via standing review meeting</i></div>
+<div class='rel'><b>e6</b> —[PART_OF]→ <b>e20</b> <i>M. Sato participates in the forecast consolidation review</i></div>
+<div class='rel'><b>e7</b> —[PART_OF]→ <b>e20</b> <i>L. Okafor participates in the forecast consolidation review</i></div>
+<div class='rel'><b>e1</b> —[PART_OF]→ <b>e20</b> <i>Mei Chen participates in and prepares the forecast consolidation review</i></div>
+<div class='rel'><b>e18</b> —[REFERENCES_TAXONOMY]→ <b>e26</b> <i>EMEA Q3 forecast includes Wholesale channel via Boots Q3 placement</i></div>
+<div class='rel'><b>e17</b> —[REFERENCES_TAXONOMY]→ <b>e28</b> <i>APAC forecast references JPY with Japan fiscal year alignment (Apr-Jun)</i></div>
+<div class='rel'><b>e23</b> —[TRIGGERS]→ <b>e19</b> <i>Version confusion flag triggers need to verify correct AMER Q3 forecast version before consolidation</i></div>
+<div class='rel'><b>e23</b> —[TRIGGERS]→ <b>e16</b> <i>Version confusion flag applies to AMER spreadsheet with misleading v3 in filename but FINAL v2 content</i></div>
+<div class='rel'><b>e24</b> —[TRIGGERS]→ <b>e18</b> <i>Unconfirmed Boots PO flags uncertainty in EMEA Q3 forecast revenue line</i></div>
+<div class='rel'><b>e24</b> —[TRIGGERS]→ <b>e26</b> <i>Pending Boots PO creates uncertainty in Wholesale channel forecast</i></div>
+<div class='rel'><b>e25</b> —[TRIGGERS]→ <b>e20</b> <i>Late forecast submissions compress timeline for consolidation review</i></div>
+<div class='rel'><b>e13</b> —[SOURCE_OF]→ <b>e27</b> <i>DocuSign completion notification confirms Q2 audit engagement letter is fully executed</i></div>
+<div class='rel'><b>e12</b> —[SOURCE_OF]→ <b>e24</b> <i>Boots Q3 verbal update email is the source of the unconfirmed PO data quality flag</i></div>
+</div>
+<h2>Resolved Entities (Post Entity Resolution)</h2>
+<div class='section'>
+<table><tr><th>Type</th><th>Count</th></tr>
+<tr><td>APPROVAL_ROLE</td><td>8</td></tr>
+<tr><td>PERSON</td><td>6</td></tr>
+<tr><td>EMAIL_MESSAGE</td><td>6</td></tr>
+<tr><td>CLOSE_STEP</td><td>5</td></tr>
+<tr><td>SPREADSHEET</td><td>4</td></tr>
+<tr><td>DATA_QUALITY_FLAG</td><td>4</td></tr>
+<tr><td>REGIONAL_FORECAST</td><td>3</td></tr>
+<tr><td>FORECAST_ADJUSTMENT</td><td>3</td></tr>
+<tr><td>PIPELINE_COVERAGE</td><td>2</td></tr>
+<tr><td>CONTROL_ASSERTION</td><td>2</td></tr>
+<tr><td>CURRENCY_REGISTRY</td><td>2</td></tr>
+<tr><td>TABLE</td><td>1</td></tr>
+<tr><td>CHANNEL_TAXONOMY</td><td>1</td></tr>
+<tr><td>FX_FORWARD_CURVE</td><td>1</td></tr>
+</table>
+<h4>APPROVAL_ROLE (8)</h4>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>CFO Office</b> — CFO Office responsible for approving consolidated regional forecasts via standing review</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Approval Roles</b> — 4 human approval roles and 8 named agents in the process</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>CFO Projection Sign-off</b> — CFO signs off on final projection — HITL gate at Phase 4</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Controller Close Mechanics</b> — L. Okafor approves close mechanics — IC eliminations are ICFR-relevant</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Regional Triage Approver</b> — J. Park approves auto-correction batches for regional triage</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>CFO Sign-off</b> — CFO projection sign-off — final approval on consolidated P&amp;L at Day 10</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Process Steward</b> — VP FP&amp;A process steward — approves commentary and escalated variance decisions</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Controller Sign-off</b> — Controller close mechanics sign-off</div>
+<h4>PERSON (6)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Mei Chen</b> — FP&amp;A analyst at NorthStar responsible for forecast consolidation across regions</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Ayako Tanaka</b> — APAC regional forecast submitter</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> — Forecast contributor mentioned in Slack #fpa-close-cycle channel, recurring late submitter</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>François Vasseur</b> — EMEA regional forecast submitter and Boots account contact</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>Sarah Chen</b> — AMER Sales Ops forecast submitter</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>L. Okafor</b> — Participant in CFO standing forecast consolidation review</div>
+<h4>PIPELINE_COVERAGE (2)</h4>
+<div class='entity'><span class='badge PIPELINE_COVERAGE'>PIPELINE_COVERAGE</span><b>Pipeline Coverage Ratio</b> — Pipeline ÷ forecast wholesale revenue, band 1.4×–2.2×</div>
+<div class='entity'><span class='badge PIPELINE_COVERAGE'>PIPELINE_COVERAGE</span><b>Pipeline Coverage</b> — Wholesale pipeline coverage = Stage 4+ pipeline / forecast wholesale revenue, current 1.7×</div>
+<h4>REGIONAL_FORECAST (3)</h4>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>APAC FY27 Q1 Forecast</b> — APAC regional financial forecast for FY27 Q1 (Apr-Jun), Japan fiscal year aligned</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>EMEA Q3 2026 Forecast</b> — EMEA regional financial forecast for Q3 2026 (Jun-Aug), local currency, gross of VAT, Boots PO pending</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>AMER Q3 Forecast</b> — AMER regional financial forecast for Q3, submitted late Sunday night with version confusion</div>
+<h4>FORECAST_ADJUSTMENT (3)</h4>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>DTC Mix Shift Driver</b> — Sensitivity driver: DTC mix shift ±500bps, shifts wholesale into DTC at same total</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>COGS Rate Inflation Driver</b> — Sensitivity driver: COGS rate inflation -3% to +6%, glass packaging vendor = +4%</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Marketing Spend Driver</b> — Sensitivity driver: marketing spend ±25%, no auto-elasticity on revenue</div>
+<h4>SPREADSHEET (4)</h4>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>APAC fcst FY27Q1.xlsx</b> — APAC FY27 Q1 forecast spreadsheet with country tabs, covering Apr-Jun aligned to Japan fiscal year</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>EMEA forecast Jun-Aug 2026.xlsx</b> — EMEA Q3 2026 forecast spreadsheet; amounts in local currency, gross of VAT, in thousands</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>AMER_Forecast_Q3_v3_FINAL_v2.xlsx</b> — AMER Q3 forecast spreadsheet final version 2; supersedes v1 and v3 previously shared via Slack</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>SKU_master_2026Q1.xlsx</b> — ERP master extract: 1,240 rows — 1,118 Active, 64 Phasing-out, 41 Discontinued, 17 NPI</div>
+<h4>DATA_QUALITY_FLAG (4)</h4>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>AMER Forecast Version Confusion</b> — Multiple conflicting AMER forecast versions circulated: v1 and v3 via Slack, FINAL v2 via email; filename misleadingly contains v3</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Boots Q3 PO Unconfirmed</b> — Boots Q3 purchase order verbally confirmed only; written PO expected next week; EMEA forecast may not fully reflect this line</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Late Forecast Submissions</b> — Recurring late forecast submissions: AMER submitted Sunday night, J. Park forecast late again per Slack</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>SKU Mapping Miss $4.2k</b> — SKU mapping miss flagged during May 2026 close variance triage valued at $4.2k</div>
+<h4>TABLE (1)</h4>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>Regional Forecast Detail Table</b> — Revenue detail tab within regional forecast workbooks containing SKU/channel/currency line items</div>
+<h4>CLOSE_STEP (5)</h4>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Forecast Consolidation Review</b> — CFO standing review to consolidate regional forecasts, scheduled Tue May 6 2026 at 2 PM ET, 60 min</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>FX Rate Lock — May Close Cycle</b> — Treasury locks FX rates at 16:00 ET Fri May 1; all forecasts must use these locked rates</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Phase 4 Review &amp; Publish</b> — 3 steps, BD+10: variance commentary, CFO sign-off, publish to Looker dashboard</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.5 Pull Workday &amp; Salesforce</b> — Pull headcount roster from Workday and pipeline snapshot from Salesforce</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 2.2 Reconcile Forecast to Pipeline</b> — Compute pipeline coverage ratio for wholesale forecast per region vs historical band</div>
+<h4>CONTROL_ASSERTION (2)</h4>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>C-01 FX Consistency</b> — FX rates must derive from FXForwardCurve; raw inline rates rejected</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Q2 Audit Engagement Letter</b> — Q2 external audit engagement letter signed by all 3 parties via DocuSign</div>
+<h4>CURRENCY_REGISTRY (2)</h4>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>Currency Registry</b> — 6 currencies (USD, EUR, GBP, JPY, CAD, AUD) with ISO codes, aliases, decimal precision, and FX source priority</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>JPY</b> — Japanese Yen — relevant to APAC forecast with Japan fiscal year starting April</div>
+<h4>CHANNEL_TAXONOMY (1)</h4>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>Wholesale (Boots)</b> — Wholesale sales channel — Boots as retail partner with Q3 placement</div>
+<h4>EMAIL_MESSAGE (6)</h4>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>APAC forecast (FY27 Q1) — some notes, please read first</b> — Email from Ayako Tanaka with APAC FY27 Q1 forecast; notes Japan fiscal year alignment (Apr start)</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>AMER forecast Q3 (FINAL v2) — sorry it's late, attached</b> — Email from Sarah Chen with AMER Q3 forecast; instructs to ignore v1 and v3, use v2 only; submitted Sunday night late</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>Slack #fpa-close-cycle — 3 mentions</b> — Slack notification: J. Park says forecast going up tonight, late again; 2 more in thread</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>FYI — Boots Q3 placement update (verbal)</b> — Email from François Vasseur: Boots Q3 placement verbally confirmed, written PO slipping to next week, will update forecast Monday</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>Completed: Q2 audit engagement letter</b> — DocuSign notification that Q2 audit engagement letter has been completed by all 3 signers</div>
+<div class='entity'><span class='badge EMAIL_MESSAGE'>EMAIL_MESSAGE</span><b>EMEA Q3 2026 forecast — for consolidation</b> — Email from François Vasseur with EMEA Q3 2026 forecast; notes local currency, gross of VAT, thousands; Boots Q3 PO not yet confirmed</div>
+<h4>FX_FORWARD_CURVE (1)</h4>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>May 2026 FX Forward Rates</b> — FX forward rates locked by Treasury on May 1 for the May close cycle; mandatory for all regional forecast consolidation</div>
+</div>
+<h2>Resolved Relationships (202)</h2>
+<div class='section'>
+<table><tr><th>Type</th><th>Count</th><th>Schema?</th></tr>
+<tr><td>FEEDS_INTO</td><td>27</td><td>Y</td></tr>
+<tr><td>SOURCE_OF</td><td>26</td><td>Y</td></tr>
+<tr><td>CONTAINS</td><td>23</td><td>Y</td></tr>
+<tr><td>REFERENCES_TAXONOMY</td><td>20</td><td>Y</td></tr>
+<tr><td>VALIDATES</td><td>17</td><td>Y</td></tr>
+<tr><td>TRIGGERS</td><td>12</td><td>Y</td></tr>
+<tr><td>SUBMITTED_BY</td><td>12</td><td>Y</td></tr>
+<tr><td>APPLIES_ADJUSTMENT</td><td>10</td><td>Y</td></tr>
+<tr><td>APPROVED_BY</td><td>10</td><td>Y</td></tr>
+<tr><td>PART_OF</td><td>9</td><td>Y</td></tr>
+<tr><td>DERIVES_FROM</td><td>9</td><td>Y</td></tr>
+<tr><td>SENT_BY</td><td>7</td><td>Y</td></tr>
+<tr><td>SENT_TO</td><td>7</td><td>Y</td></tr>
+<tr><td>ESCALATED_TO</td><td>6</td><td>Y</td></tr>
+<tr><td>HAS_ATTACHMENT</td><td>5</td><td>Y</td></tr>
+<tr><td>VERSION_OF</td><td>2</td><td>Y</td></tr>
+</table>
+<div class='rel'><b>e5</b> —[SENT_BY]→ <b>e1</b> <i>Email sent by Sarah Chen on Sunday evening</i></div>
+<div class='rel'><b>e5</b> —[SENT_TO]→ <b>e2</b> <i>Email sent to Mei Chen for forecast consolidation</i></div>
+<div class='rel'><b>e5</b> —[SENT_TO]→ <b>e3</b> <i>Email sent to J. Park</i></div>
+<div class='rel'><b>e5</b> —[HAS_ATTACHMENT]→ <b>e7</b> <i>Email has AMER forecast spreadsheet attached</i></div>
+<div class='rel'><b>e7</b> —[SOURCE_OF]→ <b>e7</b> <i>Spreadsheet is the data source for the AMER Q3 regional forecast</i></div>
+<div class='rel'><b>e7</b> —[VERSION_OF]→ <b>e8</b> <i>V2 forecast is the corrected replacement for v1 sent earlier via Slack</i></div>
+<div class='rel'><b>e7</b> —[VERSION_OF]→ <b>e9</b> <i>V2 forecast replaces v3 which had wholesale tab copy-paste glitch</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e10</b> <i>Forecast includes HYD-110 new product launch projections for July and August</i></div>
+<div class='rel'><b>e11</b> —[APPLIES_ADJUSTMENT]→ <b>e7</b> <i>Target line review may adjust Q3 forecast downward by $400k–$700k</i></div>
+<div class='rel'><b>e12</b> —[APPLIES_ADJUSTMENT]→ <b>e7</b> <i>Costco bundle loss removes potential revenue from forecast</i></div>
+<div class='rel'><b>e7</b> —[REFERENCES_TAXONOMY]→ <b>e17</b> <i>Forecast references DTC/Wholesale channel taxonomy but labels are applied inconsistently</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e13</b> <i>Spreadsheet contains inconsistent channel naming from Salesforce export</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e14</b> <i>Spreadsheet contains stale subtotals that should not be used</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e15</b> <i>Spreadsheet contains incorrect grand total row</i></div>
+<div class='rel'><b>e16</b> —[TRIGGERS]→ <b>e9</b> <i>Wholesale tab duplication bug was the reason v3 was superseded by v2</i></div>
+<div class='rel'><b>e7</b> —[SUBMITTED_BY]→ <b>e1</b> <i>AMER Q3 forecast submitted by Sarah Chen</i></div>
+<div class='rel'><b>e11</b> —[APPROVED_BY]→ <b>e4</b> <i>Target line adjustment pending approval/review by Ali (Target buyer)</i></div>
+<div class='rel'><b>e7</b> —[SENT_BY]→ <b>e1</b> <i>Email sent by François Vasseur from London office</i></div>
+<div class='rel'><b>e7</b> —[SENT_TO]→ <b>e2</b> <i>Email sent to Mei Chen for corporate consolidation</i></div>
+<div class='rel'><b>e7</b> —[HAS_ATTACHMENT]→ <b>e7</b> <i>Email has EMEA forecast spreadsheet attached</i></div>
+<div class='rel'><b>e7</b> —[SOURCE_OF]→ <b>e8</b> <i>Spreadsheet is the data source for the EMEA Q3 regional forecast</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e17</b> <i>Spreadsheet contains the FX rates reference tab (spot rates for internal use only)</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e18</b> <i>Spreadsheet contains the Notes tab with VAT conventions</i></div>
+<div class='rel'><b>e8</b> —[CONTAINS]→ <b>e9</b> <i>EMEA forecast contains GBP-denominated UK amounts in thousands</i></div>
+<div class='rel'><b>e8</b> —[CONTAINS]→ <b>e10</b> <i>EMEA forecast contains EUR-denominated Eurozone amounts (DE/FR/IT/ES) in thousands</i></div>
+<div class='rel'><b>e8</b> —[REFERENCES_TAXONOMY]→ <b>e11</b> <i>EMEA forecast uses DTC/Marketplace/Retail/Distributor channel taxonomy</i></div>
+<div class='rel'><b>e11</b> —[FEEDS_INTO]→ <b>e12</b> <i>EMEA channel taxonomy must be mapped to corporate taxonomy: Marketplace→Amazon, Retail+Distributor→Wholesale</i></div>
+<div class='rel'><b>e15</b> —[DERIVES_FROM]→ <b>e13</b> <i>EMEA internal product codes are mapped to corporate SKUs via EMEA SKU master file</i></div>
+<div class='rel'><b>e13</b> —[SOURCE_OF]→ <b>e14</b> <i>EMEA SKU master file provides mapping from internal codes to corporate SKU master</i></div>
+<div class='rel'><b>e16</b> —[FEEDS_INTO]→ <b>e8</b> <i>3-month FX forward curve used by treasury to translate EMEA local currency forecast to USD</i></div>
+<div class='rel'><b>e19</b> —[APPLIES_ADJUSTMENT]→ <b>e8</b> <i>VAT must be netted out from gross forecast amounts using country-specific VAT rates</i></div>
+<div class='rel'><b>e20</b> —[APPLIES_ADJUSTMENT]→ <b>e8</b> <i>Boots PO risk may reduce Q3 forecast by GBP 280k if written order slips to Q4</i></div>
+<div class='rel'><b>e20</b> —[ESCALATED_TO]→ <b>e3</b> <i>Boots PO is being chased by Kira O'Donnell this morning</i></div>
+<div class='rel'><b>e8</b> —[SUBMITTED_BY]→ <b>e1</b> <i>EMEA forecast submitted by François Vasseur with all country leads locked in by May 2 17:00 local</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e8</b> <i>Spreadsheet contains the Japan forecast tab</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e9</b> <i>Spreadsheet contains the Australia forecast tab</i></div>
+<div class='rel'><b>e7</b> —[CONTAINS]→ <b>e11</b> <i>Spreadsheet contains the broken Summary tab (do not use)</i></div>
+<div class='rel'><b>e8</b> —[CONTAINS]→ <b>e12</b> <i>Japan tab contains amounts denominated in JPY thousands</i></div>
+<div class='rel'><b>e9</b> —[CONTAINS]→ <b>e13</b> <i>Australia tab contains amounts denominated in AUD millions</i></div>
+<div class='rel'><b>e10</b> —[CONTAINS]→ <b>e14</b> <i>Singapore tab contains amounts denominated in SGD actual values</i></div>
+<div class='rel'><b>e8</b> —[REFERENCES_TAXONOMY]→ <b>e20</b> <i>Japan tab uses EC/Retail/B2B local channel taxonomy requiring mapping to corporate</i></div>
+<div class='rel'><b>e8</b> —[CONTAINS]→ <b>e21</b> <i>Japan tab uses JP-series internal SKU codes</i></div>
+<div class='rel'><b>e9</b> —[CONTAINS]→ <b>e22</b> <i>Australia tab uses AU-series internal SKU codes</i></div>
+<div class='rel'><b>e9</b> —[SUBMITTED_BY]→ <b>e3</b> <i>Australia forecast tab prepared and submitted by Mark Whitfield</i></div>
+<div class='rel'><b>e10</b> —[SUBMITTED_BY]→ <b>e4</b> <i>Singapore forecast tab prepared and submitted by Rachel Lim</i></div>
+<div class='rel'><b>e15</b> —[TRIGGERS]→ <b>e8</b> <i>Fiscal calendar mismatch means only June column from JP tab is usable for corporate Q3</i></div>
+<div class='rel'><b>e16</b> —[TRIGGERS]→ <b>e7</b> <i>Inconsistent magnitude units across country tabs require careful normalization during consolidation</i></div>
+<div class='rel'><b>e17</b> —[TRIGGERS]→ <b>e11</b> <i>Stale February FX rates render the Summary tab unusable for consolidation</i></div>
+<div class='rel'><b>e18</b> —[TRIGGERS]→ <b>e11</b> <i>Broken SG tab formulas render the Summary tab unusable</i></div>
+<div class='rel'><b>e19</b> —[TRIGGERS]→ <b>e8</b> <i>Missing July–August data requires follow-up submission for Japan tab</i></div>
+<div class='rel'><b>e8</b> —[SUBMITTED_BY]→ <b>e2</b> <i>AMER forecast workbook submitted by J. Park</i></div>
+<div class='rel'><b>e36</b> —[SOURCE_OF]→ <b>e11</b> <i>Step 1.1 produces trial balance CSV from NetSuite</i></div>
+<div class='rel'><b>e36</b> —[SOURCE_OF]→ <b>e12</b> <i>Step 1.1 produces AR aging CSV</i></div>
+<div class='rel'><b>e36</b> —[SOURCE_OF]→ <b>e13</b> <i>Step 1.1 produces AP aging CSV</i></div>
+<div class='rel'><b>e37</b> —[SOURCE_OF]→ <b>e14</b> <i>Step 1.2 produces Shopify orders CSV</i></div>
+<div class='rel'><b>e37</b> —[SOURCE_OF]→ <b>e15</b> <i>Step 1.2 produces Amazon settlements CSV</i></div>
+<div class='rel'><b>e38</b> —[SOURCE_OF]→ <b>e16</b> <i>Step 1.3 produces FX forward curve CSV</i></div>
+<div class='rel'><b>e47</b> —[SOURCE_OF]→ <b>e17</b> <i>Step 1.5 produces Workday roster CSV</i></div>
+<div class='rel'><b>e47</b> —[SOURCE_OF]→ <b>e18</b> <i>Step 1.5 produces Salesforce pipeline snapshot CSV</i></div>
+<div class='rel'><b>e36</b> —[FEEDS_INTO]→ <b>e42</b> <i>NetSuite trial balance feeds into validation and triage</i></div>
+<div class='rel'><b>e37</b> —[FEEDS_INTO]→ <b>e42</b> <i>Channel revenue data feeds into validation and triage</i></div>
+<div class='rel'><b>e38</b> —[FEEDS_INTO]→ <b>e42</b> <i>FX rates feed into validation and FX translation</i></div>
+<div class='rel'><b>e39</b> —[FEEDS_INTO]→ <b>e42</b> <i>Regional forecast workbooks feed into Step 2.1 validation</i></div>
+<div class='rel'><b>e42</b> —[FEEDS_INTO]→ <b>e43</b> <i>Validated forecasts feed into pipeline reconciliation</i></div>
+<div class='rel'><b>e8</b> —[VALIDATES]→ <b>e42</b> <i>C-01 FX consistency check fires during Step 2.1 triage</i></div>
+<div class='rel'><b>e34</b> —[VALIDATES]→ <b>e42</b> <i>C-02 regional total tie check validates Step 2.1</i></div>
+<div class='rel'><b>e35</b> —[VALIDATES]→ <b>e43</b> <i>C-03 pipeline coverage control validates Step 2.2 reconciliation</i></div>
+<div class='rel'><b>e9</b> —[REFERENCES_TAXONOMY]→ <b>e20</b> <i>EMEA forecast references channel taxonomy (by category)</i></div>
+<div class='rel'><b>e10</b> —[REFERENCES_TAXONOMY]→ <b>e20</b> <i>APAC forecast references channel taxonomy</i></div>
+<div class='rel'><b>e22</b> —[DERIVES_FROM]→ <b>e16</b> <i>FX forward curve entity derived from treasury feed CSV</i></div>
+<div class='rel'><b>e44</b> —[DERIVES_FROM]→ <b>e18</b> <i>Pipeline coverage metric derived from Salesforce pipeline snapshot</i></div>
+<div class='rel'><b>e9</b> —[REFERENCES_TAXONOMY]→ <b>e24</b> <i>EMEA forecast denominates lines in EUR</i></div>
+<div class='rel'><b>e9</b> —[REFERENCES_TAXONOMY]→ <b>e25</b> <i>EMEA forecast denominates UK lines in GBP</i></div>
+<div class='rel'><b>e10</b> —[REFERENCES_TAXONOMY]→ <b>e26</b> <i>APAC forecast denominates Japan lines in JPY</i></div>
+<div class='rel'><b>e30</b> —[ESCALATED_TO]→ <b>e1</b> <i>Channel mismatches always escalate to M. Chen per standing override</i></div>
+<div class='rel'><b>e45</b> —[TRIGGERS]→ <b>e29</b> <i>SKU mapping miss $4.2k triggers SKU miscoding variance triage pattern</i></div>
+<div class='rel'><b>e42</b> —[APPROVED_BY]→ <b>e47</b> <i>Variance triage decisions in Step 2.1 approved by process steward M. Chen</i></div>
+<div class='rel'><b>e42</b> —[APPROVED_BY]→ <b>e46</b> <i>Final P&amp;L projection approved by CFO M. Sato on Day 10</i></div>
+<div class='rel'><b>e19</b> —[CONTAINS]→ <b>e20</b> <i>Master workbook contains channel taxonomy via VLOOKUP macros</i></div>
+<div class='rel'><b>e19</b> —[CONTAINS]→ <b>e21</b> <i>Master workbook contains SKU master references</i></div>
+<div class='rel'><b>e8</b> —[REFERENCES_TAXONOMY]→ <b>e21</b> <i>AMER forecast references SKU master product codes</i></div>
+<div class='rel'><b>e22</b> —[CONTAINS]→ <b>e24</b> <i>FX forward curve contains USD/EUR rate pair</i></div>
+<div class='rel'><b>e22</b> —[CONTAINS]→ <b>e25</b> <i>FX forward curve contains USD/GBP rate pair</i></div>
+<div class='rel'><b>e22</b> —[CONTAINS]→ <b>e26</b> <i>FX forward curve contains USD/JPY rate pair</i></div>
+<div class='rel'><b>e1</b> —[FEEDS_INTO]→ <b>e4</b> <i>Three-way match output feeds into monthly close as upstream dependency</i></div>
+<div class='rel'><b>e2</b> —[FEEDS_INTO]→ <b>e4</b> <i>Revenue close feeds into monthly close consolidation</i></div>
+<div class='rel'><b>e3</b> —[FEEDS_INTO]→ <b>e4</b> <i>AP close feeds into monthly close consolidation</i></div>
+<div class='rel'><b>e5</b> —[FEEDS_INTO]→ <b>e4</b> <i>Inventory close feeds into monthly close</i></div>
+<div class='rel'><b>e7</b> —[FEEDS_INTO]→ <b>e4</b> <i>FX revaluation feeds into monthly close</i></div>
+<div class='rel'><b>e11</b> —[FEEDS_INTO]→ <b>e4</b> <i>Payroll cycle feeds into monthly close as upstream dependency</i></div>
+<div class='rel'><b>e4</b> —[FEEDS_INTO]→ <b>e7</b> <i>Monthly close output feeds into variance commentary drafting</i></div>
+<div class='rel'><b>e4</b> —[FEEDS_INTO]→ <b>e8</b> <i>Monthly close feeds into quarterly board pack</i></div>
+<div class='rel'><b>e4</b> —[FEEDS_INTO]→ <b>e9</b> <i>Monthly close feeds into quarterly tax provision</i></div>
+<div class='rel'><b>e7</b> —[FEEDS_INTO]→ <b>e8</b> <i>Variance commentary feeds into board pack</i></div>
+<div class='rel'><b>e8</b> —[FEEDS_INTO]→ <b>e10</b> <i>Board pack feeds into external reporting (10-Q, IR)</i></div>
+<div class='rel'><b>e9</b> —[FEEDS_INTO]→ <b>e10</b> <i>Tax provision feeds into external reporting</i></div>
+<div class='rel'><b>e12</b> —[VALIDATES]→ <b>e4</b> <i>SOX/J-SOX controls validate monthly close steps</i></div>
+<div class='rel'><b>e12</b> —[VALIDATES]→ <b>e3</b> <i>SOX controls validate AP close procedures</i></div>
+<div class='rel'><b>e12</b> —[VALIDATES]→ <b>e2</b> <i>SOX controls validate revenue close cutoff</i></div>
+<div class='rel'><b>e13</b> —[VALIDATES]→ <b>e7</b> <i>EU AI Act classification validates agent-drafted variance commentary</i></div>
+<div class='rel'><b>e14</b> —[APPROVED_BY]→ <b>e4</b> <i>Monthly close process state transitions gated by process steward</i></div>
+<div class='rel'><b>e16</b> —[APPROVED_BY]→ <b>e14</b> <i>Process steward role authorized by customer sponsor at engagement level</i></div>
+<div class='rel'><b>e1</b> —[FEEDS_INTO]→ <b>e3</b> <i>Three-way match results feed AP close for accrual cutoff</i></div>
+<div class='rel'><b>e11</b> —[SUBMITTED_BY]→ <b>e2</b> <i>AMER forecast submitted by J. Park</i></div>
+<div class='rel'><b>e12</b> —[SUBMITTED_BY]→ <b>e3</b> <i>EMEA forecast submitted by S. Reyes</i></div>
+<div class='rel'><b>e13</b> —[SUBMITTED_BY]→ <b>e4</b> <i>APAC forecast submitted by A. Tanaka</i></div>
+<div class='rel'><b>e29</b> —[FEEDS_INTO]→ <b>e30</b> <i>Phase 1 intake feeds into Phase 2 validation</i></div>
+<div class='rel'><b>e30</b> —[FEEDS_INTO]→ <b>e31</b> <i>Phase 2 validated data feeds into Phase 3 projection</i></div>
+<div class='rel'><b>e31</b> —[FEEDS_INTO]→ <b>e19</b> <i>Phase 3 consolidated P&amp;L feeds into Phase 4 review</i></div>
+<div class='rel'><b>e22</b> —[VALIDATES]→ <b>e30</b> <i>C-01 FX consistency validates Phase 2 reconciliation</i></div>
+<div class='rel'><b>e23</b> —[VALIDATES]→ <b>e30</b> <i>C-02 regional total tie validates Phase 2</i></div>
+<div class='rel'><b>e24</b> —[VALIDATES]→ <b>e30</b> <i>C-03 pipeline coverage validates Phase 2 reconciliation</i></div>
+<div class='rel'><b>e25</b> —[VALIDATES]→ <b>e30</b> <i>C-04 SKU mapping validates Phase 2 triage</i></div>
+<div class='rel'><b>e26</b> —[VALIDATES]→ <b>e31</b> <i>C-05 GM band validates Phase 3 projections</i></div>
+<div class='rel'><b>e27</b> —[VALIDATES]→ <b>e31</b> <i>C-06 margin discipline validates Phase 3 projections</i></div>
+<div class='rel'><b>e11</b> —[REFERENCES_TAXONOMY]→ <b>e14</b> <i>AMER forecast references channel taxonomy</i></div>
+<div class='rel'><b>e12</b> —[REFERENCES_TAXONOMY]→ <b>e14</b> <i>EMEA forecast references channel taxonomy</i></div>
+<div class='rel'><b>e13</b> —[REFERENCES_TAXONOMY]→ <b>e14</b> <i>APAC forecast references channel taxonomy</i></div>
+<div class='rel'><b>e11</b> —[REFERENCES_TAXONOMY]→ <b>e15</b> <i>AMER forecast references SKU master</i></div>
+<div class='rel'><b>e18</b> —[ESCALATED_TO]→ <b>e1</b> <i>Channel mismatches always escalate to M. Chen</i></div>
+<div class='rel'><b>e21</b> —[ESCALATED_TO]→ <b>e2</b> <i>Unknown variances escalated back to regional lead</i></div>
+<div class='rel'><b>e35</b> —[APPLIES_ADJUSTMENT]→ <b>e31</b> <i>Sales volume driver adjusts Phase 3 projection</i></div>
+<div class='rel'><b>e36</b> —[APPLIES_ADJUSTMENT]→ <b>e31</b> <i>DTC mix shift driver adjusts channel mix in projection</i></div>
+<div class='rel'><b>e37</b> —[APPLIES_ADJUSTMENT]→ <b>e31</b> <i>COGS rate inflation adjusts standard cost projection</i></div>
+<div class='rel'><b>e38</b> —[APPLIES_ADJUSTMENT]→ <b>e31</b> <i>Marketing spend driver adjusts OpEx projection</i></div>
+<div class='rel'><b>e34</b> —[SUBMITTED_BY]→ <b>e5</b> <i>~$130k IC adjustment discovered to have been made by Controller</i></div>
+<div class='rel'><b>e19</b> —[APPROVED_BY]→ <b>e39</b> <i>Phase 4 projection signed off by CFO M. Sato</i></div>
+<div class='rel'><b>e30</b> —[APPROVED_BY]→ <b>e47</b> <i>Variance triage approved by process steward M. Chen</i></div>
+<div class='rel'><b>e19</b> —[APPROVED_BY]→ <b>e41</b> <i>Close mechanics signed off by Controller L. Okafor</i></div>
+<div class='rel'><b>e30</b> —[APPROVED_BY]→ <b>e42</b> <i>Auto-correction batch approved by J. Park</i></div>
+<div class='rel'><b>e8</b> —[SOURCE_OF]→ <b>e29</b> <i>SOP document is evidence source for Phase 1 procedures</i></div>
+<div class='rel'><b>e9</b> —[SOURCE_OF]→ <b>e16</b> <i>FX Policy Memo is the authority for FX forward curve translation rules</i></div>
+<div class='rel'><b>e10</b> —[SOURCE_OF]→ <b>e29</b> <i>Master workbook macros source consolidation logic for intake</i></div>
+<div class='rel'><b>e8</b> —[DERIVES_FROM]→ <b>e24</b> <i>Pipeline coverage metric derived from C-03 pipeline coverage control definition</i></div>
+<div class='rel'><b>e16</b> —[SOURCE_OF]→ <b>e22</b> <i>FX forward curve feeds C-01 FX consistency control</i></div>
+<div class='rel'><b>e4</b> —[CONTAINS]→ <b>e15</b> <i>Channel taxonomy contains SKU miscoding auto-fix rules via alias mapping</i></div>
+<div class='rel'><b>e4</b> —[CONTAINS]→ <b>e16</b> <i>Channel taxonomy governs channel mismatch escalation rules</i></div>
+<div class='rel'><b>e5</b> —[REFERENCES_TAXONOMY]→ <b>e4</b> <i>SKU master channel_eligible field references channel taxonomy canonical names</i></div>
+<div class='rel'><b>e5</b> —[REFERENCES_TAXONOMY]→ <b>e7</b> <i>SKU master base_price_usd references currency registry for USD denomination</i></div>
+<div class='rel'><b>e13</b> —[DERIVES_FROM]→ <b>e7</b> <i>FX forward curve rates derive from currencies defined in currency registry</i></div>
+<div class='rel'><b>e20</b> —[VALIDATES]→ <b>e13</b> <i>C-01 validates that all FX rates derive from FX forward curve, not inline rates</i></div>
+<div class='rel'><b>e23</b> —[VALIDATES]→ <b>e5</b> <i>C-04 validates every line resolves to a valid SKU in the SKU master</i></div>
+<div class='rel'><b>e24</b> —[VALIDATES]→ <b>e4</b> <i>C-05 validates channel-level GM falls within band defined by channel taxonomy</i></div>
+<div class='rel'><b>e25</b> —[VALIDATES]→ <b>e5</b> <i>C-06 validates SKU-level GM within gm_target band in SKU master</i></div>
+<div class='rel'><b>e16</b> —[ESCALATED_TO]→ <b>e1</b> <i>Channel mismatches always escalate to M. Chen per interview turn 11 override</i></div>
+<div class='rel'><b>e23</b> —[ESCALATED_TO]→ <b>e2</b> <i>Unknown SKU IDs escalate to J. Park per interview turn 14</i></div>
+<div class='rel'><b>e8</b> —[SOURCE_OF]→ <b>e4</b> <i>SOP §3.2 is the provenance source for channel taxonomy definition</i></div>
+<div class='rel'><b>e8</b> —[SOURCE_OF]→ <b>e5</b> <i>SOP §4.1 is the provenance source for SKU master discipline</i></div>
+<div class='rel'><b>e8</b> —[SOURCE_OF]→ <b>e7</b> <i>SOP §5.1 is the provenance source for multi-currency policy</i></div>
+<div class='rel'><b>e19</b> —[SOURCE_OF]→ <b>e4</b> <i>Run_Consolidate macro in master workbook is provenance for channel VLOOKUP logic</i></div>
+<div class='rel'><b>e34</b> —[SOURCE_OF]→ <b>e5</b> <i>ERP master extract is the data source for SKU master entity population</i></div>
+<div class='rel'><b>e29</b> —[DERIVES_FROM]→ <b>e5</b> <i>Free cash flow margin metric uses SKU master for revenue line identification</i></div>
+<div class='rel'><b>e30</b> —[DERIVES_FROM]→ <b>e22</b> <i>Pipeline coverage ratio is the metric backing C-03 control</i></div>
+<div class='rel'><b>e35</b> —[REFERENCES_TAXONOMY]→ <b>e4</b> <i>Regional forecast detail table lines must map to channel taxonomy</i></div>
+<div class='rel'><b>e35</b> —[REFERENCES_TAXONOMY]→ <b>e5</b> <i>Regional forecast detail table lines must resolve to SKU master</i></div>
+<div class='rel'><b>e35</b> —[REFERENCES_TAXONOMY]→ <b>e7</b> <i>Regional forecast detail table monetary fields must declare currency from registry</i></div>
+<div class='rel'><b>e4</b> —[PART_OF]→ <b>e24</b> <i>Channel taxonomy GM bands are part of C-05 GM band control logic</i></div>
+<div class='rel'><b>e5</b> —[PART_OF]→ <b>e25</b> <i>SKU master gm_target is part of C-06 margin discipline control logic</i></div>
+<div class='rel'><b>e27</b> —[DERIVES_FROM]→ <b>e14</b> <i>Cash conversion cycle components (DSO, DIO, DPO) derive from chart of accounts</i></div>
+<div class='rel'><b>e28</b> —[DERIVES_FROM]→ <b>e14</b> <i>ROIC decomposition margin component derives from chart of accounts P&amp;L lines</i></div>
+<div class='rel'><b>e7</b> —[PART_OF]→ <b>e13</b> <i>USD is the reporting currency against which FX forward curve is denominated</i></div>
+<div class='rel'><b>e8</b> —[PART_OF]→ <b>e13</b> <i>EUR is one of 5 currencies in the FX forward curve</i></div>
+<div class='rel'><b>e9</b> —[PART_OF]→ <b>e13</b> <i>GBP is one of 5 currencies in the FX forward curve</i></div>
+<div class='rel'><b>e10</b> —[PART_OF]→ <b>e13</b> <i>JPY is one of 5 currencies in the FX forward curve</i></div>
+<div class='rel'><b>e12</b> —[PART_OF]→ <b>e13</b> <i>AUD is one of 5 currencies in the FX forward curve</i></div>
+<div class='rel'><b>e8</b> —[SENT_BY]→ <b>e2</b> <i>APAC forecast email sent by Ayako Tanaka</i></div>
+<div class='rel'><b>e8</b> —[SENT_TO]→ <b>e1</b> <i>APAC forecast email sent to Mei Chen for consolidation</i></div>
+<div class='rel'><b>e9</b> —[SENT_BY]→ <b>e4</b> <i>EMEA forecast email sent by François Vasseur</i></div>
+<div class='rel'><b>e9</b> —[SENT_TO]→ <b>e1</b> <i>EMEA forecast email sent to Mei Chen for consolidation</i></div>
+<div class='rel'><b>e10</b> —[SENT_BY]→ <b>e5</b> <i>AMER forecast email sent by Sarah Chen (late, Sunday night)</i></div>
+<div class='rel'><b>e10</b> —[SENT_TO]→ <b>e1</b> <i>AMER forecast email sent to Mei Chen for consolidation</i></div>
+<div class='rel'><b>e11</b> —[SENT_BY]→ <b>e3</b> <i>Slack message in #fpa-close-cycle from J. Park about late forecast submission</i></div>
+<div class='rel'><b>e12</b> —[SENT_BY]→ <b>e4</b> <i>Boots Q3 verbal update email sent by François Vasseur</i></div>
+<div class='rel'><b>e12</b> —[SENT_TO]→ <b>e1</b> <i>Boots Q3 verbal update sent to Mei Chen as FYI</i></div>
+<div class='rel'><b>e8</b> —[HAS_ATTACHMENT]→ <b>e14</b> <i>APAC forecast email has APAC fcst FY27Q1.xlsx attached</i></div>
+<div class='rel'><b>e9</b> —[HAS_ATTACHMENT]→ <b>e15</b> <i>EMEA forecast email has EMEA forecast Jun-Aug 2026.xlsx attached</i></div>
+<div class='rel'><b>e10</b> —[HAS_ATTACHMENT]→ <b>e16</b> <i>AMER forecast email has AMER_Forecast_Q3_v3_FINAL_v2.xlsx attached</i></div>
+<div class='rel'><b>e14</b> —[SOURCE_OF]→ <b>e17</b> <i>APAC spreadsheet is the data source for APAC FY27 Q1 regional forecast</i></div>
+<div class='rel'><b>e15</b> —[SOURCE_OF]→ <b>e18</b> <i>EMEA spreadsheet is the data source for EMEA Q3 2026 regional forecast</i></div>
+<div class='rel'><b>e16</b> —[SOURCE_OF]→ <b>e19</b> <i>AMER spreadsheet is the data source for AMER Q3 regional forecast</i></div>
+<div class='rel'><b>e17</b> —[SUBMITTED_BY]→ <b>e2</b> <i>APAC FY27 Q1 forecast submitted by Ayako Tanaka</i></div>
+<div class='rel'><b>e18</b> —[SUBMITTED_BY]→ <b>e4</b> <i>EMEA Q3 2026 forecast submitted by François Vasseur</i></div>
+<div class='rel'><b>e19</b> —[SUBMITTED_BY]→ <b>e5</b> <i>AMER Q3 forecast submitted by Sarah Chen</i></div>
+<div class='rel'><b>e17</b> —[FEEDS_INTO]→ <b>e20</b> <i>APAC regional forecast feeds into forecast consolidation review</i></div>
+<div class='rel'><b>e18</b> —[FEEDS_INTO]→ <b>e20</b> <i>EMEA regional forecast feeds into forecast consolidation review</i></div>
+<div class='rel'><b>e19</b> —[FEEDS_INTO]→ <b>e20</b> <i>AMER regional forecast feeds into forecast consolidation review</i></div>
+<div class='rel'><b>e21</b> —[FEEDS_INTO]→ <b>e20</b> <i>FX rate lock must be completed before forecast consolidation can proceed</i></div>
+<div class='rel'><b>e22</b> —[SOURCE_OF]→ <b>e21</b> <i>FX forward rate curve is the data source for the FX rate lock close step</i></div>
+<div class='rel'><b>e22</b> —[APPLIES_ADJUSTMENT]→ <b>e18</b> <i>Locked FX rates applied to convert EMEA local-currency forecast for consolidation</i></div>
+<div class='rel'><b>e22</b> —[APPLIES_ADJUSTMENT]→ <b>e17</b> <i>Locked FX rates applied to convert APAC forecast (incl. JPY) for consolidation</i></div>
+<div class='rel'><b>e20</b> —[APPROVED_BY]→ <b>e29</b> <i>Forecast consolidation review approved by CFO Office via standing review meeting</i></div>
+<div class='rel'><b>e7</b> —[PART_OF]→ <b>e20</b> <i>M. Sato participates in the forecast consolidation review</i></div>
+<div class='rel'><b>e1</b> —[PART_OF]→ <b>e20</b> <i>Mei Chen participates in and prepares the forecast consolidation review</i></div>
+<div class='rel'><b>e18</b> —[REFERENCES_TAXONOMY]→ <b>e26</b> <i>EMEA Q3 forecast includes Wholesale channel via Boots Q3 placement</i></div>
+<div class='rel'><b>e17</b> —[REFERENCES_TAXONOMY]→ <b>e28</b> <i>APAC forecast references JPY with Japan fiscal year alignment (Apr-Jun)</i></div>
+<div class='rel'><b>e23</b> —[TRIGGERS]→ <b>e19</b> <i>Version confusion flag triggers need to verify correct AMER Q3 forecast version before consolidation</i></div>
+<div class='rel'><b>e23</b> —[TRIGGERS]→ <b>e16</b> <i>Version confusion flag applies to AMER spreadsheet with misleading v3 in filename but FINAL v2 content</i></div>
+<div class='rel'><b>e24</b> —[TRIGGERS]→ <b>e18</b> <i>Unconfirmed Boots PO flags uncertainty in EMEA Q3 forecast revenue line</i></div>
+<div class='rel'><b>e24</b> —[TRIGGERS]→ <b>e26</b> <i>Pending Boots PO creates uncertainty in Wholesale channel forecast</i></div>
+<div class='rel'><b>e25</b> —[TRIGGERS]→ <b>e20</b> <i>Late forecast submissions compress timeline for consolidation review</i></div>
+<div class='rel'><b>e13</b> —[SOURCE_OF]→ <b>e27</b> <i>DocuSign completion notification confirms Q2 audit engagement letter is fully executed</i></div>
+<div class='rel'><b>e12</b> —[SOURCE_OF]→ <b>e24</b> <i>Boots Q3 verbal update email is the source of the unconfirmed PO data quality flag</i></div>
+</div>
+</body></html>

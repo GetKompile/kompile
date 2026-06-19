@@ -27,6 +27,7 @@ import ai.kompile.process.execution.WorkflowRun;
 import ai.kompile.process.service.ProcessEngineService;
 import ai.kompile.process.service.ProcessGraphCallback;
 import ai.kompile.process.workflow.ProcessDefinition;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,7 +71,7 @@ public class ProcessGraphWritebackService implements ProcessGraphCallback {
 
     /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
     protected ProcessGraphWritebackService() {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
 

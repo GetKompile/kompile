@@ -110,6 +110,39 @@ public class DynamicBatchSizer {
     }
 
     /**
+     * Remaining- and parallelism-aware batch size: the adaptive {@link #currentBatchSize()} clamped so
+     * that roughly {@code parallelism} batches stay in flight. Keeps every worker fed and spreads the
+     * final wave across workers instead of leaving one fat straggler. Equals {@code currentBatchSize()}
+     * while work is plentiful and shrinks only in the last wave — i.e. it sizes "based on what's left".
+     *
+     * @param remaining   items not yet batched
+     * @param parallelism number of concurrent workers
+     */
+    public int currentBatchSize(int remaining, int parallelism) {
+        return remainingAwareSize(currentSize.get(), remaining, parallelism, minBatchSize);
+    }
+
+    /**
+     * Clamp {@code desiredSize} by remaining work so that ~{@code parallelism} batches remain. Returns
+     * {@code desiredSize} when work is plentiful (remaining ≥ parallelism·desiredSize) and a smaller,
+     * evenly-spread size in the final wave.
+     *
+     * @param desiredSize the adaptive size the sizer currently wants
+     * @param remaining   items not yet batched ("what's left")
+     * @param parallelism number of concurrent workers
+     * @param minSize     floor (clamped to ≥ 1)
+     */
+    public static int remainingAwareSize(int desiredSize, int remaining, int parallelism, int minSize) {
+        int floor = Math.max(1, minSize);
+        if (remaining <= 0) {
+            return floor;
+        }
+        int spread = (int) Math.ceil((double) remaining / Math.max(1, parallelism));
+        int size = Math.min(Math.max(1, desiredSize), Math.max(1, spread));
+        return Math.max(floor, size);
+    }
+
+    /**
      * Record the result of processing a batch, adjusting the batch size accordingly.
      *
      * @param batchSize      the actual batch size processed

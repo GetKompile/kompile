@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.agent;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.AgentType;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -52,7 +53,7 @@ public class AgentRegistryService {
     private static final String AGENT_PERMISSIONS_FILE = "agent-permissions.json";
 
     private final Map<String, AgentProvider> agents = new ConcurrentHashMap<>();
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Autowired(required = false)
     private ApiAgentChatExecutor apiAgentChatExecutor;

@@ -20,12 +20,16 @@ import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.app.ingest.domain.IngestEvent.IngestPhase;
 import ai.kompile.app.ingest.domain.JobLogEntry.LogLevel;
+import ai.kompile.app.ingest.domain.IndexingJobHistory;
 import ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason;
 import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.ingest.service.JobLogService;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.services.GraphSchemaPresetService;
+import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
 import ai.kompile.core.crawl.graph.*;
+import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
+import ai.kompile.crawl.graph.CrawlPipelineStepRegistry;
 import ai.kompile.knowledgegraph.service.FactSheetGraphService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -111,7 +115,10 @@ public class UnifiedCrawlController {
     private ObjectMapper objectMapper;
 
     @Autowired(required = false)
-    private ai.kompile.app.services.scheduler.ResourceAwareJobScheduler resourceScheduler;
+    private ResourceAwareJobScheduler resourceScheduler;
+
+    @Autowired(required = false)
+    private CrawlStepArchiveService crawlStepArchiveService;
 
     /** Resolved uploads directory for file-based crawl jobs */
     private Path uploadsPath;
@@ -136,6 +143,9 @@ public class UnifiedCrawlController {
 
     /** Track which crawl jobs have been published to job history */
     private final Set<String> publishedJobIds = ConcurrentHashMap.newKeySet();
+
+    /** Map scheduler IDs (e.g., "crawl-55ef8175") to internal job UUIDs for consistent lookup */
+    private final Map<String, String> schedulerIdToJobId = new ConcurrentHashMap<>();
 
     /** Track crawl stage events already mirrored into the shared job log stream */
     private final Map<String, Set<String>> publishedCrawlLogEventKeys = new ConcurrentHashMap<>();
@@ -193,13 +203,19 @@ public class UnifiedCrawlController {
                                     .executor(ctx -> {
                                         // Start crawl INSIDE the executor so the scheduler gates it
                                         UnifiedCrawlJob crawlJob = unifiedCrawlService.startJob(request);
+                                        String internalJobId = crawlJob.getJobId();
 
-                                        // Publish to job history
+                                        // Store mapping so both IDs resolve to the same job
+                                        schedulerIdToJobId.put(ctx.jobId(), internalJobId);
+
+                                        // Publish to job history using the INTERNAL job ID
+                                        // so syncCrawlJobsToHistory() can find it consistently
+                                        String historyTaskId = "crawl-" + internalJobId;
                                         if (jobHistoryService != null) {
                                             try {
-                                                jobHistoryService.createJob(ctx.jobId(), "[CRAWL] " + jobName);
-                                                jobHistoryService.markJobRunning(ctx.jobId());
-                                                publishedJobIds.add(crawlJob.getJobId());
+                                                jobHistoryService.createJob(historyTaskId, "[CRAWL] " + jobName);
+                                                jobHistoryService.markJobRunning(historyTaskId);
+                                                publishedJobIds.add(internalJobId);
                                             } catch (Exception e) {
                                                 log.warn("Failed to publish crawl job to history: {}", e.getMessage());
                                             }
@@ -249,6 +265,7 @@ public class UnifiedCrawlController {
 
                     Map<String, Object> response = new LinkedHashMap<>();
                     response.put("jobId", schedulerJobId);
+                    response.put("schedulerJobId", schedulerJobId);
                     response.put("status", "QUEUED");
                     response.put("factSheetId", request.getFactSheetId());
                     response.put("sourceCount", request.getSources().size());
@@ -268,11 +285,12 @@ public class UnifiedCrawlController {
             // Direct start (no scheduler)
             UnifiedCrawlJob job = unifiedCrawlService.startJob(request);
 
-            // Publish to job history
+            // Publish to job history using consistent "crawl-{UUID}" format
             if (jobHistoryService != null) {
                 try {
-                    jobHistoryService.createJob("crawl-" + job.getJobId(), "[CRAWL] " + jobName);
-                    jobHistoryService.markJobRunning("crawl-" + job.getJobId());
+                    String historyTaskId = "crawl-" + job.getJobId();
+                    jobHistoryService.createJob(historyTaskId, "[CRAWL] " + jobName);
+                    jobHistoryService.markJobRunning(historyTaskId);
                     publishedJobIds.add(job.getJobId());
                     log.debug("Published crawl job {} to job history", job.getJobId());
                 } catch (Exception e) {
@@ -424,10 +442,100 @@ public class UnifiedCrawlController {
     }
 
     @GetMapping("/jobs")
-    public ResponseEntity<List<Map<String, Object>>> listJobs() {
-        List<Map<String, Object>> jobs = unifiedCrawlService.getAllJobs().stream()
+    public ResponseEntity<List<Map<String, Object>>> listJobs(
+            @RequestParam(defaultValue = "true") boolean includeHistory) {
+        // Live in-memory jobs
+        List<Map<String, Object>> jobs = new ArrayList<>(unifiedCrawlService.getAllJobs().stream()
                 .map(this::jobSummary)
-                .collect(Collectors.toList());
+                .collect(Collectors.toList()));
+
+        // Merge historical crawl jobs that are no longer in memory
+        if (includeHistory && jobHistoryService != null) {
+            // Build the dedup set from both the internal jobId AND any scheduler ID already in the
+            // live list (e.g. jobs submitted via the scheduler whose in-memory record is still live).
+            Set<String> liveJobIds = jobs.stream()
+                    .map(m -> (String) m.get("jobId"))
+                    .collect(Collectors.toSet());
+            // Only treat a scheduler mapping as "live" when its job is actually present in the live
+            // list above. Completed jobs whose in-memory record was released keep a stale entry in
+            // schedulerIdToJobId; adding those unconditionally polluted the dedup set and caused the
+            // terminated job's history record to be skipped, so it vanished from the list entirely.
+            Set<String> liveSnapshot = new HashSet<>(liveJobIds);
+            schedulerIdToJobId.forEach((schedId, internalId) -> {
+                if (liveSnapshot.contains(schedId) || liveSnapshot.contains(internalId)) {
+                    liveJobIds.add(schedId);
+                    liveJobIds.add(internalId);
+                }
+            });
+            try {
+                for (IndexingJobHistory history : jobHistoryService.getCrawlJobs()) {
+                    String internalJobId = history.getTaskId().replaceFirst("^crawl-", "");
+                    // Try to reconstruct summary from additionalDetails first (richer snapshot)
+                    if (history.getAdditionalDetails() != null && !history.getAdditionalDetails().isBlank()) {
+                        try {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> snapshot = objectMapper.readValue(
+                                    history.getAdditionalDetails(), Map.class);
+                            // The snapshot's "jobId" is the internal UUID; but if this was a
+                            // scheduler-submitted job the external-facing ID is "schedulerJobId".
+                            // Use schedulerJobId as the canonical jobId so the UI sees the same
+                            // ID it got from the original /start response.
+                            String externalJobId = snapshot.containsKey("schedulerJobId")
+                                    ? (String) snapshot.get("schedulerJobId")
+                                    : internalJobId;
+                            // Skip if already in the live list (either by internal or external ID)
+                            if (liveJobIds.contains(externalJobId) || liveJobIds.contains(internalJobId)) continue;
+                            snapshot.put("jobId", externalJobId);
+                            snapshot.put("status", history.getStatus().name());
+                            snapshot.put("fromHistory", true);
+                            jobs.add(snapshot);
+                            liveJobIds.add(externalJobId);
+                            liveJobIds.add(internalJobId);
+                            continue;
+                        } catch (Exception e) {
+                            log.debug("Failed to parse additionalDetails for {}", history.getTaskId());
+                        }
+                    }
+                    // No additionalDetails snapshot: check dedup before falling back
+                    if (liveJobIds.contains(internalJobId)) continue;
+                    // Surface the same external ID the caller received from /start (the short
+                    // schedulerJobId) when this job was scheduler-submitted, so the id form stays
+                    // consistent with the snapshot path and the original /start response.
+                    String externalJobId = schedulerIdToJobId.entrySet().stream()
+                            .filter(e -> internalJobId.equals(e.getValue()))
+                            .map(Map.Entry::getKey)
+                            .findFirst()
+                            .orElse(internalJobId);
+                    if (liveJobIds.contains(externalJobId)) continue;
+                    // Fallback: basic summary from history fields
+                    Map<String, Object> basic = new LinkedHashMap<>();
+                    basic.put("jobId", externalJobId);
+                    basic.put("name", history.getFileName() != null
+                            ? history.getFileName().replaceFirst("^\\[CRAWL\\] ", "") : internalJobId);
+                    basic.put("status", history.getStatus().name());
+                    basic.put("sourceCount", 0);
+                    basic.put("documentsDiscovered", 0);
+                    basic.put("documentsLoaded", history.getDocumentsLoaded() != null ? history.getDocumentsLoaded() : 0);
+                    basic.put("chunksProcessed", 0);
+                    basic.put("chunksCreated", history.getChunksCreated() != null ? history.getChunksCreated() : 0);
+                    basic.put("chunksEmbedded", history.getChunksEmbedded() != null ? history.getChunksEmbedded() : 0);
+                    basic.put("documentsIndexed", history.getDocumentsIndexed() != null ? history.getDocumentsIndexed() : 0);
+                    basic.put("entitiesExtracted", 0);
+                    basic.put("relationshipsExtracted", 0);
+                    basic.put("errorCount", 0);
+                    basic.put("elapsedMs", history.getTotalDurationMs() != null ? history.getTotalDurationMs() : 0);
+                    basic.put("progressPercent", history.getProgressPercent() != null ? history.getProgressPercent() : 100);
+                    basic.put("createdAt", history.getStartTime());
+                    basic.put("startedAt", history.getStartTime());
+                    basic.put("completedAt", history.getEndTime());
+                    if (history.getErrorMessage() != null) basic.put("errorMessage", history.getErrorMessage());
+                    basic.put("fromHistory", true);
+                    jobs.add(basic);
+                }
+            } catch (Exception e) {
+                log.debug("Failed to load crawl job history: {}", e.getMessage());
+            }
+        }
         return ResponseEntity.ok(jobs);
     }
 
@@ -441,7 +549,9 @@ public class UnifiedCrawlController {
 
     @GetMapping("/jobs/{jobId}")
     public ResponseEntity<?> getJob(@PathVariable String jobId) {
-        return unifiedCrawlService.getJob(jobId)
+        // Resolve scheduler IDs (e.g., "crawl-55ef8175") to internal UUIDs
+        String resolvedId = schedulerIdToJobId.getOrDefault(jobId, jobId);
+        return unifiedCrawlService.getJob(resolvedId)
                 .map(job -> {
                     refreshMemorySnapshot(job);
                     UnifiedCrawlJob.ProgressSnapshot snapshot = job.toProgressSnapshot();
@@ -623,30 +733,223 @@ public class UnifiedCrawlController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    /**
+     * Get a historical crawl job's full detail from persisted additionalDetails JSON.
+     * Returns the same shape as getJob() so the frontend can render historical jobs
+     * identically to live ones. Falls back to basic IndexingJobHistory fields if no
+     * additionalDetails snapshot is available.
+     */
+    @GetMapping("/jobs/{jobId}/history")
+    public ResponseEntity<?> getJobFromHistory(@PathVariable String jobId) {
+        if (jobHistoryService == null) {
+            return ResponseEntity.status(503).body(Map.of("error", "Job history service not available"));
+        }
+        // Resolve scheduler IDs to internal UUIDs via the in-memory map (populated while app is live).
+        String resolvedId = schedulerIdToJobId.getOrDefault(jobId, jobId);
+        String historyTaskId = "crawl-" + resolvedId;
+
+        // After a restart the in-memory schedulerIdToJobId map is empty.  If the direct lookup
+        // ("crawl-crawl-af676985") misses, fall back to scanning crawl job history for a record
+        // whose additionalDetails snapshot contains a matching "schedulerJobId" field.
+        java.util.function.Supplier<java.util.Optional<IndexingJobHistory>> historyLookup = () -> {
+            java.util.Optional<IndexingJobHistory> direct = jobHistoryService.getJob(historyTaskId);
+            if (direct.isPresent()) {
+                return direct;
+            }
+            // Only attempt the scan when the input looks like an external scheduler ID
+            // (i.e., it was not already resolved to a UUID by the in-memory map).
+            if (resolvedId.equals(jobId)) {
+                // jobId was not resolved — scan history for a snapshot whose schedulerJobId matches
+                try {
+                    for (IndexingJobHistory h : jobHistoryService.getCrawlJobs()) {
+                        if (h.getAdditionalDetails() == null || h.getAdditionalDetails().isBlank()) continue;
+                        try {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> snap = objectMapper.readValue(h.getAdditionalDetails(), Map.class);
+                            if (jobId.equals(snap.get("schedulerJobId"))) {
+                                return java.util.Optional.of(h);
+                            }
+                        } catch (Exception ignored) { /* skip malformed entries */ }
+                    }
+                } catch (Exception ignored) { /* scan failure is non-fatal */ }
+            }
+            return java.util.Optional.empty();
+        };
+
+        return historyLookup.get()
+                .map(history -> {
+                    if (history.getAdditionalDetails() != null && !history.getAdditionalDetails().isBlank()) {
+                        try {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> snapshot = objectMapper.readValue(
+                                    history.getAdditionalDetails(), Map.class);
+                            // Overlay the current history status in case it was updated after snapshot
+                            snapshot.put("status", history.getStatus().name());
+                            snapshot.put("fromHistory", true);
+                            // Expose resume lineage so the frontend can merge parent transcripts
+                            if (history.getResumedFromTaskId() != null) {
+                                snapshot.put("resumedFromTaskId", history.getResumedFromTaskId());
+                            }
+                            return ResponseEntity.ok(snapshot);
+                        } catch (Exception e) {
+                            log.warn("Failed to parse additionalDetails for {}: {}", historyTaskId, e.getMessage());
+                        }
+                    }
+                    // Fallback: return basic fields from the history record
+                    Map<String, Object> basic = new LinkedHashMap<>();
+                    basic.put("jobId", jobId);
+                    basic.put("name", history.getFileName() != null
+                            ? history.getFileName().replaceFirst("^\\[CRAWL\\] ", "") : jobId);
+                    basic.put("status", history.getStatus().name());
+                    basic.put("createdAt", history.getStartTime());
+                    basic.put("startedAt", history.getStartTime());
+                    basic.put("completedAt", history.getEndTime());
+                    basic.put("elapsedMs", history.getTotalDurationMs() != null ? history.getTotalDurationMs() : 0);
+                    basic.put("documentsLoaded", history.getDocumentsLoaded() != null ? history.getDocumentsLoaded() : 0);
+                    basic.put("chunksCreated", history.getChunksCreated() != null ? history.getChunksCreated() : 0);
+                    basic.put("chunksEmbedded", history.getChunksEmbedded() != null ? history.getChunksEmbedded() : 0);
+                    basic.put("documentsIndexed", history.getDocumentsIndexed() != null ? history.getDocumentsIndexed() : 0);
+                    basic.put("progressPercent", history.getProgressPercent() != null ? history.getProgressPercent() : 100);
+                    if (history.getErrorMessage() != null) basic.put("errorMessage", history.getErrorMessage());
+                    basic.put("fromHistory", true);
+                    basic.put("sources", List.of());
+                    // Expose resume lineage so the frontend can merge parent transcripts
+                    if (history.getResumedFromTaskId() != null) {
+                        basic.put("resumedFromTaskId", history.getResumedFromTaskId());
+                    }
+                    return ResponseEntity.ok(basic);
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
     @PostMapping("/jobs/{jobId}/cancel")
     public ResponseEntity<?> cancelJob(@PathVariable String jobId) {
-        IngestPhase cancelPhase = unifiedCrawlService.getJob(jobId)
+        // Resolve scheduler IDs to internal UUIDs
+        String resolvedId = schedulerIdToJobId.getOrDefault(jobId, jobId);
+        IngestPhase cancelPhase = unifiedCrawlService.getJob(resolvedId)
                 .map(UnifiedCrawlJob::toProgressSnapshot)
                 .map(this::mapCrawlPhaseToIngestPhase)
                 .orElse(IngestPhase.INDEXING);
 
-        if (!unifiedCrawlService.cancelJob(jobId)) {
+        if (!unifiedCrawlService.cancelJob(resolvedId)) {
             return ResponseEntity.badRequest().body(Map.of("error", "Job not found or already finished"));
         }
 
         if (jobHistoryService != null) {
             try {
-                String historyTaskId = "crawl-" + jobId;
+                String historyTaskId = "crawl-" + resolvedId;
                 jobHistoryService.markJobCancelled(historyTaskId, cancelPhase, "User cancelled");
-                publishedJobIds.remove(jobId);
-                publishedCrawlLogEventKeys.remove("crawl-" + jobId);
-                crawlLogSequences.remove("crawl-" + jobId);
+                publishedJobIds.remove(resolvedId);
+                publishedCrawlLogEventKeys.remove("crawl-" + resolvedId);
+                crawlLogSequences.remove("crawl-" + resolvedId);
             } catch (Exception e) {
-                log.warn("Failed to mark crawl job {} as cancelled in history", jobId, e);
+                log.warn("Failed to mark crawl job {} as cancelled in history", resolvedId, e);
             }
         }
 
-        return ResponseEntity.ok(Map.of("message", "Job cancelled", "jobId", jobId));
+        return ResponseEntity.ok(Map.of("message", "Job cancelled", "jobId", resolvedId));
+    }
+
+    @PostMapping("/jobs/{jobId}/retry")
+    public ResponseEntity<?> retryJob(@PathVariable String jobId,
+                                       @RequestBody(required = false) Map<String, Object> body) {
+        // Resolve scheduler IDs to internal UUIDs
+        String resolvedId = schedulerIdToJobId.getOrDefault(jobId, jobId);
+        String retryPhase = body != null && body.get("retryPhase") instanceof String
+                ? (String) body.get("retryPhase") : null;
+        @SuppressWarnings("unchecked")
+        List<String> documentKeys = body != null && body.get("documentKeys") instanceof List
+                ? (List<String>) body.get("documentKeys") : null;
+
+        return unifiedCrawlService.retryJob(resolvedId, retryPhase, documentKeys)
+                .map(retryJob -> {
+                    // Register new retry job in history
+                    if (jobHistoryService != null) {
+                        try {
+                            String historyTaskId = "crawl-" + retryJob.getJobId();
+                            jobHistoryService.createJob(historyTaskId,
+                                    retryJob.getRequest().getName() != null
+                                            ? retryJob.getRequest().getName() : "Retry of " + jobId);
+                        } catch (Exception e) {
+                            log.warn("Failed to create history for retry job {}", retryJob.getJobId(), e);
+                        }
+                    }
+                    return ResponseEntity.ok(Map.of(
+                            "message", "Retry job started",
+                            "originalJobId", jobId,
+                            "retryJobId", retryJob.getJobId(),
+                            "retryPhase", retryPhase != null ? retryPhase : "ALL_FAILED",
+                            "documentsToRetry", retryJob.getRequest().getRetryDocumentKeys().size()
+                    ));
+                })
+                .orElse(ResponseEntity.badRequest().body(Map.of(
+                        "error", "Job not found or has no failed documents to retry")));
+    }
+
+    /** Catalog of pipeline steps (id, name, type, dependencies, flags) for the step-selection UI. */
+    @GetMapping("/steps")
+    public ResponseEntity<List<Map<String, Object>>> listPipelineSteps() {
+        List<Map<String, Object>> steps = new ArrayList<>();
+        for (CrawlPipelineStepRegistry.StepDescriptor d : CrawlPipelineStepRegistry.all()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", d.id());
+            m.put("displayName", d.displayName());
+            m.put("stepType", d.stepType());
+            m.put("dependsOn", new ArrayList<>(d.hardDependsOn()));
+            m.put("chunkConsumerOnly", d.chunkConsumerOnly());
+            m.put("chunkProducer", d.chunkProducer());
+            m.put("foundational", d.foundational());
+            m.put("archivable", d.archivable());
+            steps.add(m);
+        }
+        return ResponseEntity.ok(steps);
+    }
+
+    /** List crawl jobs that have archived steps on disk and can be resumed (including after a restart). */
+    @GetMapping("/jobs/resumable")
+    public ResponseEntity<List<Map<String, Object>>> listResumableJobs() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (CrawlStepArchiveService.ResumableCrawlJob j : unifiedCrawlService.listResumableCrawlJobs()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("jobId", j.jobId());
+            m.put("name", j.name());
+            m.put("factSheetId", j.factSheetId());
+            m.put("archivedSteps", j.archivedSteps());
+            m.put("archivedAt", j.archivedAt());
+            out.add(m);
+        }
+        return ResponseEntity.ok(out);
+    }
+
+    /** Archive a step's pending inputs to disk so it can be run later (currently VECTOR_INDEXING). */
+    @PostMapping("/jobs/{jobId}/steps/{stepId}/archive")
+    public ResponseEntity<?> archiveStep(@PathVariable String jobId, @PathVariable String stepId) {
+        String resolvedId = schedulerIdToJobId.getOrDefault(jobId, jobId);
+        String dir = unifiedCrawlService.archiveStep(resolvedId, stepId);
+        if (dir == null) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Nothing to archive for step " + stepId + " on job " + jobId));
+        }
+        return ResponseEntity.ok(Map.of("jobId", resolvedId, "stepId", stepId, "archiveDir", dir,
+                "message", "Step archived"));
+    }
+
+    /** Run a previously archived (or deferred) step now. */
+    @PostMapping("/jobs/{jobId}/steps/{stepId}/run")
+    public ResponseEntity<?> runArchivedStep(@PathVariable String jobId, @PathVariable String stepId) {
+        String resolvedId = schedulerIdToJobId.getOrDefault(jobId, jobId);
+        try {
+            int processed = unifiedCrawlService.resumeArchivedStep(resolvedId, stepId);
+            if (processed < 0) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", "Step " + stepId + " is not archived/resumable for job " + jobId));
+            }
+            return ResponseEntity.ok(Map.of("jobId", resolvedId, "stepId", stepId,
+                    "itemsProcessed", processed, "message", "Step resumed"));
+        } catch (Exception e) {
+            log.error("Failed to resume step {} for job {}", stepId, resolvedId, e);
+            return ResponseEntity.internalServerError().body(Map.of("error", String.valueOf(e.getMessage())));
+        }
     }
 
     @PostMapping("/jobs/cleanup")
@@ -661,6 +964,16 @@ public class UnifiedCrawlController {
                         || status == UnifiedCrawlJob.Status.CANCELLED) {
                     String historyTaskId = "crawl-" + job.getJobId();
                     try {
+                        // Persist final snapshot before marking terminal state
+                        UnifiedCrawlJob.ProgressSnapshot snap = job.toProgressSnapshot();
+                        try {
+                            Map<String, Object> fullSnapshot = buildJobDetailMap(job, snap);
+                            String snapshotJson = objectMapper.writeValueAsString(fullSnapshot);
+                            jobHistoryService.updateAdditionalDetails(historyTaskId, snapshotJson);
+                        } catch (Exception jsonEx) {
+                            log.debug("Failed to serialize final snapshot for {}: {}", job.getJobId(), jsonEx.getMessage());
+                        }
+
                         if (status == UnifiedCrawlJob.Status.COMPLETED) {
                             jobHistoryService.markJobCompleted(historyTaskId);
                         } else if (status == UnifiedCrawlJob.Status.FAILED) {
@@ -690,9 +1003,9 @@ public class UnifiedCrawlController {
     }
 
     /**
-     * Get live graph statistics from the JPA database.
-     * This provides real-time node/edge counts even while a crawl job is still running,
-     * since entities are persisted to JPA as each batch completes.
+     * Get live graph statistics from the vector store (single source of truth for the graph).
+     * Node and edge counts are read directly from the matrix/vector store where all graph
+     * writes land — no JPA queries for graph operations.
      */
     @GetMapping("/graph-stats")
     public ResponseEntity<?> getLiveGraphStats(@RequestParam(required = false, name = "factSheetId") Long factSheetId) {
@@ -775,6 +1088,25 @@ public class UnifiedCrawlController {
                         false,
                         true);
 
+                // Persist full snapshot as JSON so historical jobs retain rich detail
+                try {
+                    Map<String, Object> fullSnapshot = buildJobDetailMap(job, snap);
+                    String snapshotJson = objectMapper.writeValueAsString(fullSnapshot);
+                    jobHistoryService.updateAdditionalDetails(historyTaskId, snapshotJson);
+                } catch (Exception jsonEx) {
+                    log.debug("Failed to serialize crawl snapshot for {}: {}", jobId, jsonEx.getMessage());
+                }
+
+                // Keep the on-disk archive manifest's snapshot fresh so a job with archived steps stays
+                // durably resumable (including after a crash/restart).
+                if (crawlStepArchiveService != null && hasArchivedStep(job)) {
+                    try {
+                        crawlStepArchiveService.refreshManifest(job);
+                    } catch (Exception ex) {
+                        log.debug("Failed to refresh archive manifest for {}: {}", jobId, ex.getMessage());
+                    }
+                }
+
                 // Check terminal states
                 if (snap.getStatus() == UnifiedCrawlJob.Status.COMPLETED) {
                     jobHistoryService.markJobCompleted(historyTaskId);
@@ -802,6 +1134,19 @@ public class UnifiedCrawlController {
         }
     }
 
+    /** True if any of the job's pipeline steps is currently ARCHIVED (awaiting a later run). */
+    private boolean hasArchivedStep(UnifiedCrawlJob job) {
+        if (job.getPipelineSteps() == null) {
+            return false;
+        }
+        for (UnifiedCrawlJob.PipelineStepProgress s : job.getPipelineSteps()) {
+            if (s.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.ARCHIVED) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Mirror unified crawl stage events into the existing job log infrastructure.
      * The frontend can then use the same live log viewer as subprocess/ingest jobs.
@@ -815,6 +1160,15 @@ public class UnifiedCrawlController {
         for (UnifiedCrawlJob job : unifiedCrawlService.getAllJobs()) {
             try {
                 UnifiedCrawlJob.ProgressSnapshot snapshot = job.toProgressSnapshot();
+
+                // Push structured progress to the standard crawl progress topic
+                // so the Crawlers UI and any WebSocket subscriber gets real-time updates
+                if (messagingTemplate != null) {
+                    Map<String, Object> progressUpdate = jobSummary(job);
+                    messagingTemplate.convertAndSend("/topic/crawl/progress", progressUpdate);
+                    messagingTemplate.convertAndSend("/topic/unified-crawl/progress", progressUpdate);
+                }
+
                 if (snapshot.getRecentEvents() == null || snapshot.getRecentEvents().isEmpty()) {
                     continue;
                 }
@@ -940,7 +1294,21 @@ public class UnifiedCrawlController {
         refreshMemorySnapshot(job);
 
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("jobId", job.getJobId());
+        // Include scheduler ID if this job was submitted through the scheduler
+        String schedulerId = schedulerIdToJobId.entrySet().stream()
+                .filter(e -> e.getValue().equals(job.getJobId()))
+                .map(Map.Entry::getKey)
+                .findFirst().orElse(null);
+        // Use schedulerJobId as the canonical jobId so the UI sees the same ID it received from
+        // /start (which returns schedulerJobId, not the internal UUID).  Store the internal UUID
+        // as internalJobId so callers can still resolve both forms.
+        if (schedulerId != null) {
+            m.put("jobId", schedulerId);
+            m.put("schedulerJobId", schedulerId);
+            m.put("internalJobId", job.getJobId());
+        } else {
+            m.put("jobId", job.getJobId());
+        }
         m.put("name", job.getRequest() != null ? job.getRequest().getName() : null);
         m.put("factSheetId", job.getRequest() != null ? job.getRequest().getFactSheetId() : null);
         m.put("status", job.getStatus().get().name());
@@ -1035,7 +1403,12 @@ public class UnifiedCrawlController {
                         ? factSheetGraphService.getGraphStatistics(factSheetId)
                         : knowledgeGraphService.getGraphStatistics();
                 graphNodeCount = statCount(stats, "totalNodes", "nodesByType");
-                graphEdgeCount = statCount(stats, "totalEdges", "edgesByType");
+                // Try "relationshipTypeCounts" (vector-store-backed key from FactSheetGraphServiceImpl)
+                // then legacy "edgesByType" — both are now sourced from the vector store.
+                graphEdgeCount = statCount(stats, "totalEdges", "relationshipTypeCounts");
+                if (graphEdgeCount == 0) {
+                    graphEdgeCount = statCount(stats, "totalEdges", "edgesByType");
+                }
             } catch (Exception e) {
                 log.debug("Failed to fetch live graph stats for job summary {}: {}", job.getJobId(), e.getMessage());
             }
@@ -1133,6 +1506,171 @@ public class UnifiedCrawlController {
             }).collect(Collectors.toList()));
         }
 
+        return m;
+    }
+
+    /**
+     * Build the full job detail map for persistence into additionalDetails.
+     * Produces the same JSON shape as the getJob() endpoint so the frontend
+     * can render historical jobs identically to live ones.
+     */
+    private Map<String, Object> buildJobDetailMap(UnifiedCrawlJob job, UnifiedCrawlJob.ProgressSnapshot snap) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("jobId", snap.getJobId());
+        m.put("name", snap.getName());
+        m.put("factSheetId", job.getRequest() != null ? job.getRequest().getFactSheetId() : null);
+        // Persist the external-facing scheduler ID so the LIST endpoint can find this record after restart.
+        // Without this, the history record's taskId is "crawl-{UUID}" (internal), but the caller knows the
+        // job as "crawl-{8hexchars}" (schedulerJobId). Storing schedulerJobId here lets the list reconstruct
+        // the correct external jobId and add it to the live-dedup set.
+        String schedulerId = schedulerIdToJobId.entrySet().stream()
+                .filter(e -> e.getValue().equals(snap.getJobId()))
+                .map(Map.Entry::getKey)
+                .findFirst().orElse(null);
+        if (schedulerId != null) {
+            m.put("schedulerJobId", schedulerId);
+        }
+        m.put("status", snap.getStatus().name());
+        m.put("createdAt", snap.getCreatedAt());
+        m.put("startedAt", snap.getStartedAt());
+        m.put("completedAt", snap.getCompletedAt());
+        m.put("documentsDiscovered", snap.getDocumentsDiscovered());
+        m.put("documentsLoaded", snap.getDocumentsLoaded());
+        m.put("chunksProcessed", snap.getChunksProcessed());
+        m.put("chunksCreated", snap.getChunksCreated());
+        m.put("graphChunksProcessed", snap.getGraphChunksProcessed());
+        m.put("graphChunksTotal", snap.getGraphChunksTotal());
+        m.put("chunksQueuedForEmbedding", snap.getChunksQueuedForEmbedding());
+        m.put("chunksEmbedded", snap.getChunksEmbedded());
+        m.put("documentsIndexed", snap.getDocumentsIndexed());
+        m.put("entitiesExtracted", snap.getEntitiesExtracted());
+        m.put("relationshipsExtracted", snap.getRelationshipsExtracted());
+        m.put("errorCount", snap.getErrorCount());
+        m.put("elapsedMs", snap.getElapsedMs());
+        m.put("currentPhase", snap.getCurrentPhase());
+        m.put("progressPercent", snap.getProgressPercent());
+        m.put("queuePosition", snap.getQueuePosition());
+        m.put("activeJobs", snap.getActiveJobs());
+        m.put("queuedJobs", snap.getQueuedJobs());
+        m.put("maxConcurrentJobs", snap.getMaxConcurrentJobs());
+        m.put("queueCapacity", snap.getQueueCapacity());
+        m.put("queuedAt", snap.getQueuedAt());
+        m.put("memoryUsagePercent", snap.getMemoryUsagePercent());
+        m.put("peakMemoryUsagePercent", snap.getPeakMemoryUsagePercent());
+        m.put("heapUsedBytes", snap.getHeapUsedBytes());
+        m.put("heapMaxBytes", snap.getHeapMaxBytes());
+        m.put("nativeMemoryUsagePercent", snap.getNativeMemoryUsagePercent());
+        m.put("peakNativeMemoryUsagePercent", snap.getPeakNativeMemoryUsagePercent());
+        m.put("nativePhysicalBytes", snap.getNativePhysicalBytes());
+        m.put("peakNativePhysicalBytes", snap.getPeakNativePhysicalBytes());
+        m.put("nativeTotalBytes", snap.getNativeTotalBytes());
+        m.put("nativeMaxPhysicalBytes", snap.getNativeMaxPhysicalBytes());
+        m.put("directBufferBytes", snap.getDirectBufferBytes());
+        m.put("vectorBatchesTotal", snap.getVectorBatchesTotal());
+        m.put("vectorBatchesCompleted", snap.getVectorBatchesCompleted());
+        m.put("currentBatchSize", snap.getCurrentBatchSize());
+        m.put("embeddingBatchSize", snap.getEmbeddingBatchSize());
+        m.put("embeddingModelOptimalBatchSize", snap.getEmbeddingModelOptimalBatchSize());
+        m.put("embeddingModelMaxBatchSize", snap.getEmbeddingModelMaxBatchSize());
+        m.put("embeddingSingleDspPlan", snap.isEmbeddingSingleDspPlan());
+        m.put("embeddingDspPlanBatchSize", snap.getEmbeddingDspPlanBatchSize());
+        m.put("currentBatchStep", snap.getCurrentBatchStep());
+        if (snap.getCurrentFile() != null) m.put("currentFile", snap.getCurrentFile());
+        if (snap.getErrors() != null && !snap.getErrors().isEmpty()) m.put("errors", snap.getErrors());
+        if (snap.getErrorMessage() != null) m.put("errorMessage", snap.getErrorMessage());
+        if (snap.getRecentEvents() != null && !snap.getRecentEvents().isEmpty()) {
+            m.put("recentEvents", snap.getRecentEvents());
+        }
+        if (snap.getPipelineSteps() != null && !snap.getPipelineSteps().isEmpty()) {
+            m.put("pipelineSteps", snap.getPipelineSteps().stream()
+                    .map(this::pipelineStepMap).collect(Collectors.toList()));
+        }
+        if (snap.getDocumentProgress() != null && !snap.getDocumentProgress().isEmpty()) {
+            m.put("documentProgress", snap.getDocumentProgress().stream()
+                    .map(this::documentProgressMap).collect(Collectors.toList()));
+        }
+        m.put("sources", snap.getSourceProgress() != null
+                ? snap.getSourceProgress().stream().map(this::sourceProgressMap).collect(Collectors.toList())
+                : List.of());
+        if (snap.getRecentlyDiscoveredItems() != null && !snap.getRecentlyDiscoveredItems().isEmpty()) {
+            m.put("recentlyDiscoveredItems", snap.getRecentlyDiscoveredItems().stream().map(di -> {
+                Map<String, Object> dim = new LinkedHashMap<>();
+                dim.put("name", di.getName());
+                dim.put("sourceType", di.getSourceType());
+                dim.put("sourceLabel", di.getSourceLabel());
+                dim.put("discoveredAt", di.getDiscoveredAt());
+                return dim;
+            }).collect(Collectors.toList()));
+        }
+        if (snap.getEntityTypeCounts() != null && !snap.getEntityTypeCounts().isEmpty()) {
+            m.put("entityTypeCounts", snap.getEntityTypeCounts());
+        }
+        if (snap.getRelationshipTypeCounts() != null && !snap.getRelationshipTypeCounts().isEmpty()) {
+            m.put("relationshipTypeCounts", snap.getRelationshipTypeCounts());
+        }
+        // Work-stealing stats
+        m.put("workStealCount", snap.getWorkStealCount());
+        m.put("workStealFailures", snap.getWorkStealFailures());
+        m.put("localDispatchCount", snap.getLocalDispatchCount());
+        m.put("workImbalanceRatioX100", snap.getWorkImbalanceRatioX100());
+        // Dynamic batch sizing
+        m.put("adaptiveBatchSize", snap.getAdaptiveBatchSize());
+        m.put("batchSizeAdjustments", snap.getBatchSizeAdjustments());
+        if (snap.getLastBatchAdjustDirection() != null) m.put("lastBatchAdjustDirection", snap.getLastBatchAdjustDirection());
+        if (snap.getLastBatchAdjustReason() != null) m.put("lastBatchAdjustReason", snap.getLastBatchAdjustReason());
+        m.put("batchEmaLatencyMsX100", snap.getBatchEmaLatencyMsX100());
+        m.put("peakThroughputX100", snap.getPeakThroughputX100());
+        // Token budget
+        m.put("totalInputTokens", snap.getTotalInputTokens());
+        m.put("totalOutputTokens", snap.getTotalOutputTokens());
+        m.put("estimatedCostCentsX100", snap.getEstimatedCostCentsX100());
+        if (snap.getBackendStats() != null && !snap.getBackendStats().isEmpty()) {
+            m.put("backendStats", snap.getBackendStats());
+        }
+        // Workload rerouting
+        m.put("reroutedItems", snap.getReroutedItems());
+        m.put("droppedItems", snap.getDroppedItems());
+        if (snap.getRecentRerouteEvents() != null && !snap.getRecentRerouteEvents().isEmpty()) {
+            m.put("recentRerouteEvents", snap.getRecentRerouteEvents());
+        }
+        // Retry / fallback
+        m.put("retriedBatches", snap.getRetriedBatches());
+        m.put("retriedItems", snap.getRetriedItems());
+        m.put("deadLetterCount", snap.getDeadLetterCount());
+        m.put("backendsCoolingDown", snap.getBackendsCoolingDown());
+        if (snap.getRecentRetryEvents() != null && !snap.getRecentRetryEvents().isEmpty()) {
+            m.put("recentRetryEvents", snap.getRecentRetryEvents());
+        }
+        // LLM call observability
+        m.put("llmCallsTotal", snap.getLlmCallsTotal());
+        m.put("llmCallsSucceeded", snap.getLlmCallsSucceeded());
+        m.put("llmCallsFailed", snap.getLlmCallsFailed());
+        m.put("llmCallsTimedOut", snap.getLlmCallsTimedOut());
+        m.put("llmCallsRateLimited", snap.getLlmCallsRateLimited());
+        m.put("llmCallsCircuitBroken", snap.getLlmCallsCircuitBroken());
+        m.put("llmCallEmaLatencyMsX100", snap.getLlmCallEmaLatencyMsX100());
+        m.put("llmCallPeakLatencyMs", snap.getLlmCallPeakLatencyMs());
+        if (snap.getRecentLlmCalls() != null && !snap.getRecentLlmCalls().isEmpty()) {
+            m.put("recentLlmCalls", snap.getRecentLlmCalls());
+        }
+        // Job type flags from request
+        if (job.getRequest() != null) {
+            m.put("graphExtractionEnabled",
+                    job.getRequest().getGraphExtraction() != null && job.getRequest().getGraphExtraction().isEnabled());
+            m.put("vectorIndexEnabled",
+                    job.getRequest().getVectorIndex() != null && job.getRequest().getVectorIndex().isEnabled());
+            if (job.getRequest().getGraphExtraction() != null) {
+                if (job.getRequest().getGraphExtraction().getLlmProvider() != null) {
+                    m.put("llmProvider", job.getRequest().getGraphExtraction().getLlmProvider());
+                }
+                if (job.getRequest().getGraphExtraction().getModelName() != null) {
+                    m.put("llmModel", job.getRequest().getGraphExtraction().getModelName());
+                }
+            }
+            m.put("requestConfig", buildRequestConfigMap(job.getRequest()));
+        }
+        // Mark as historical snapshot
+        m.put("fromHistory", true);
         return m;
     }
 
@@ -1309,19 +1847,32 @@ public class UnifiedCrawlController {
             return graphSummary;
         }
 
+        // Both FactSheetGraphServiceImpl and MatrixKnowledgeGraphService (via getGraphStatistics)
+        // are now vector-store-only — the SINGLE SOURCE OF TRUTH for all graph counts.
         Map<String, Object> liveStats = factSheetId != null && factSheetGraphService != null
                 ? factSheetGraphService.getGraphStatistics(factSheetId)
                 : knowledgeGraphService.getGraphStatistics();
         graphSummary.put("factSheetId", factSheetId);
         Map<String, Long> nodesByType = numericMap(liveStats.get("nodesByType"));
         graphSummary.put("entityCount", liveStats.getOrDefault("entityCount", nodesByType.getOrDefault("ENTITY", 0L)));
-        graphSummary.put("relationshipCount", liveStats.getOrDefault("totalEdges", statCount(liveStats, "totalEdges", "edgesByType")));
+        // relationshipCount: prefer "totalEdges" (set by both stat providers from the vector store).
+        // statCount checks "totalEdges" first, then falls back to summing "relationshipTypeCounts"
+        // (the key FactSheetGraphServiceImpl now sets) or the old "edgesByType" key.
+        long relationshipCount = statCount(liveStats, "totalEdges", "relationshipTypeCounts");
+        if (relationshipCount == 0) {
+            relationshipCount = statCount(liveStats, "totalEdges", "edgesByType");
+        }
+        graphSummary.put("relationshipCount", relationshipCount);
         graphSummary.put("totalNodeCount", liveStats.getOrDefault("totalNodes", statCount(liveStats, "totalNodes", "nodesByType")));
         graphSummary.put("documentCount", liveStats.getOrDefault("documentCount", nodesByType.getOrDefault("DOCUMENT", 0L)));
         graphSummary.put("snippetCount", liveStats.getOrDefault("snippetCount", nodesByType.getOrDefault("SNIPPET", 0L)));
         graphSummary.put("tableCount", liveStats.getOrDefault("tableCount", nodesByType.getOrDefault("TABLE", 0L)));
         graphSummary.put("live", live);
 
+        // Collect edge-type breakdown from any of the three possible key formats the
+        // stat providers use: "edges_<type>" (MatrixKnowledgeGraphService global stats),
+        // "relationshipTypeCounts" (FactSheetGraphServiceImpl, from vector store), or
+        // legacy "edgesByType".  All are now vector-store-sourced.
         Map<String, Object> edgeTypeCounts = liveStats.entrySet().stream()
                 .filter(entry -> entry.getKey() != null && entry.getKey().startsWith("edges_"))
                 .filter(entry -> entry.getValue() instanceof Number)
@@ -1331,10 +1882,14 @@ public class UnifiedCrawlController {
                         (a, b) -> a,
                         LinkedHashMap::new));
         if (edgeTypeCounts.isEmpty()) {
+            edgeTypeCounts.putAll(numericMap(liveStats.get("relationshipTypeCounts")));
+        }
+        if (edgeTypeCounts.isEmpty()) {
             edgeTypeCounts.putAll(numericMap(liveStats.get("edgesByType")));
         }
         if (!edgeTypeCounts.isEmpty()) {
             graphSummary.put("edgeTypeCounts", edgeTypeCounts);
+            graphSummary.put("relationshipTypeCounts", edgeTypeCounts);
         }
 
         if (factSheetId != null) {

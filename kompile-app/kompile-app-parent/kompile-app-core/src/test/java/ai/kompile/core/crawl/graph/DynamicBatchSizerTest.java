@@ -181,4 +181,41 @@ class DynamicBatchSizerTest {
         assertEquals(1, job.getBatchSizeAdjustments().get());
         assertEquals("UP", job.getLastBatchAdjustDirection().get());
     }
+
+    @Test
+    void testRemainingAwareSize_plentifulKeepsDesired() {
+        // remaining (1000) >> parallelism*desired (16*10) → use full desired size
+        assertEquals(10, DynamicBatchSizer.remainingAwareSize(10, 1000, 16, 1));
+    }
+
+    @Test
+    void testRemainingAwareSize_finalWaveSpreadsAcrossWorkers() {
+        // less than one full wave left → shrink so ~parallelism batches remain (ceil(100/16)=7)
+        assertEquals(7, DynamicBatchSizer.remainingAwareSize(10, 100, 16, 1));
+        // tail: 5 items, 16 workers → 1 per worker
+        assertEquals(1, DynamicBatchSizer.remainingAwareSize(10, 5, 16, 1));
+    }
+
+    @Test
+    void testRemainingAwareSize_respectsFloorAndEmpty() {
+        assertEquals(4, DynamicBatchSizer.remainingAwareSize(10, 0, 16, 4)); // nothing left → floor
+        assertEquals(4, DynamicBatchSizer.remainingAwareSize(2, 100, 16, 4)); // desired below floor
+    }
+
+    @Test
+    void testRemainingAwareSize_parallelismOneJustCapsByRemaining() {
+        // parallelism 1 (sequential) → only cap by remaining, never below desired when plentiful
+        assertEquals(10, DynamicBatchSizer.remainingAwareSize(10, 1000, 1, 1));
+        assertEquals(5, DynamicBatchSizer.remainingAwareSize(10, 5, 1, 1));
+    }
+
+    @Test
+    void testCurrentBatchSizeRemainingAware_usesAimdAndFloor() {
+        DynamicBatchSizer sizer = DynamicBatchSizer.builder()
+                .initialBatchSize(10).minBatchSize(2).maxBatchSize(64).build();
+        // plentiful → desired (10)
+        assertEquals(10, sizer.currentBatchSize(1000, 8));
+        // tail with 6 left across 8 workers → ceil(6/8)=1, clamped up to floor 2
+        assertEquals(2, sizer.currentBatchSize(6, 8));
+    }
 }

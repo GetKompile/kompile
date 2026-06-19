@@ -15,6 +15,10 @@
     <description>ReAct (Reason-Act-Observe) Agent Framework for multi-step reasoning with tool execution</description>
 
     <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
         <!-- Core interfaces -->
         <dependency>
             <groupId>ai.kompile</groupId>

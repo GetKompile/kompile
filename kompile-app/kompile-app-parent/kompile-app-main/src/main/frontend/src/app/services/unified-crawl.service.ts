@@ -174,6 +174,27 @@ export interface UnifiedCrawlRequest {
   vectorIndex?: VectorIndexConfig;
   processingRoute?: ProcessingRouteConfig;
   preprocessing?: PreprocessingConfig;
+  enabledSteps?: string[];
+  archivedSteps?: string[];
+}
+
+export interface PipelineStepCatalogEntry {
+  id: string;
+  displayName: string;
+  stepType: string;
+  dependsOn: string[];
+  chunkConsumerOnly: boolean;
+  chunkProducer: boolean;
+  foundational: boolean;
+  archivable: boolean;
+}
+
+export interface ResumableJobEntry {
+  jobId: string;
+  name: string;
+  factSheetId: number | null;
+  archivedSteps: string[];
+  archivedAt: string;
 }
 
 export interface StartJobResponse {
@@ -288,8 +309,28 @@ export interface RetryEvent {
   sentToDeadLetter: boolean;
 }
 
+export interface LlmCallRecord {
+  timestamp: string;
+  backendId: string;
+  taskType: string;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  success: boolean;
+  timedOut: boolean;
+  rateLimited: boolean;
+  circuitBroken: boolean;
+  errorCategory?: string;
+  errorMessage?: string;
+  promptChars: number;
+  responseChars: number;
+}
+
 export interface JobSummary {
   jobId: string;
+  /** Internal UUID used as the basis for the persisted-log taskId (crawl-<internalJobId>).
+   *  Present on active/history responses where a schedulerJobId differs from the UUID. */
+  internalJobId?: string;
   name: string;
   factSheetId?: number | null;
   status: string;
@@ -386,6 +427,17 @@ export interface JobSummary {
   deadLetterCount?: number;
   backendsCoolingDown?: number;
   recentRetryEvents?: RetryEvent[];
+  // LLM call observability
+  llmCallsTotal?: number;
+  llmCallsSucceeded?: number;
+  llmCallsFailed?: number;
+  llmCallsTimedOut?: number;
+  llmCallsRateLimited?: number;
+  llmCallsCircuitBroken?: number;
+  llmCallEmaLatencyMsX100?: number;
+  llmCallPeakLatencyMs?: number;
+  recentLlmCalls?: LlmCallRecord[];
+  fromHistory?: boolean;
 }
 
 export interface GraphSummary {
@@ -499,6 +551,19 @@ export interface JobDetail {
   deadLetterCount?: number;
   backendsCoolingDown?: number;
   recentRetryEvents?: RetryEvent[];
+  // LLM call observability
+  llmCallsTotal?: number;
+  llmCallsSucceeded?: number;
+  llmCallsFailed?: number;
+  llmCallsTimedOut?: number;
+  llmCallsRateLimited?: number;
+  llmCallsCircuitBroken?: number;
+  llmCallEmaLatencyMsX100?: number;
+  llmCallPeakLatencyMs?: number;
+  recentLlmCalls?: LlmCallRecord[];
+  fromHistory?: boolean;
+  /** Task ID of the job this run was resumed from (e.g. "crawl-<uuid>"). Present only when the job was resumed. */
+  resumedFromTaskId?: string;
 }
 
 export interface RequestConfigSource {
@@ -660,8 +725,9 @@ export class UnifiedCrawlService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  listJobs(): Observable<JobSummary[]> {
-    return this.http.get<JobSummary[]>(`${this.backendUrl}/unified-crawl/jobs`)
+  listJobs(includeHistory = true): Observable<JobSummary[]> {
+    return this.http.get<JobSummary[]>(`${this.backendUrl}/unified-crawl/jobs`,
+      { params: { includeHistory: includeHistory.toString() } })
       .pipe(catchError(this.handleError));
   }
 
@@ -675,8 +741,21 @@ export class UnifiedCrawlService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
+  getJobFromHistory(jobId: string): Observable<JobDetail> {
+    return this.http.get<JobDetail>(`${this.backendUrl}/unified-crawl/jobs/${jobId}/history`)
+      .pipe(catchError(this.handleError));
+  }
+
   cancelJob(jobId: string): Observable<any> {
     return this.http.post(`${this.backendUrl}/unified-crawl/jobs/${jobId}/cancel`, {})
+      .pipe(catchError(this.handleError));
+  }
+
+  retryJob(jobId: string, retryPhase?: string, documentKeys?: string[]): Observable<any> {
+    const body: any = {};
+    if (retryPhase) body.retryPhase = retryPhase;
+    if (documentKeys && documentKeys.length > 0) body.documentKeys = documentKeys;
+    return this.http.post(`${this.backendUrl}/unified-crawl/jobs/${jobId}/retry`, body)
       .pipe(catchError(this.handleError));
   }
 
@@ -749,6 +828,36 @@ export class UnifiedCrawlService extends BaseService {
           subscriber.complete();
         });
       }));
+  }
+
+  getStepCatalog(): Observable<PipelineStepCatalogEntry[]> {
+    return this.http.get<PipelineStepCatalogEntry[]>(`${this.backendUrl}/unified-crawl/steps`)
+      .pipe(catchError(() => {
+        return new Observable<PipelineStepCatalogEntry[]>(subscriber => {
+          subscriber.next([]);
+          subscriber.complete();
+        });
+      }));
+  }
+
+  listResumableJobs(): Observable<ResumableJobEntry[]> {
+    return this.http.get<ResumableJobEntry[]>(`${this.backendUrl}/unified-crawl/jobs/resumable`)
+      .pipe(catchError(() => {
+        return new Observable<ResumableJobEntry[]>(subscriber => {
+          subscriber.next([]);
+          subscriber.complete();
+        });
+      }));
+  }
+
+  runStep(jobId: string, stepId: string): Observable<any> {
+    return this.http.post<any>(`${this.backendUrl}/unified-crawl/jobs/${jobId}/steps/${stepId}/run`, {})
+      .pipe(catchError(this.handleError));
+  }
+
+  archiveStep(jobId: string, stepId: string): Observable<any> {
+    return this.http.post<any>(`${this.backendUrl}/unified-crawl/jobs/${jobId}/steps/${stepId}/archive`, {})
+      .pipe(catchError(this.handleError));
   }
 
   getSubprocessStatistics(): Observable<SubprocessStatistics> {

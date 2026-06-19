@@ -16,9 +16,11 @@
 
 package ai.kompile.cli.main.chat.harness;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.Data;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -30,6 +32,7 @@ import java.util.List;
  * Configuration for the Agent Performance Harness.
  * Persisted to ~/.kompile/harness-config.json.
  */
+@Data
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class HarnessConfig {
 
@@ -73,75 +76,11 @@ public class HarnessConfig {
     @JsonProperty private boolean thinkingAnalysisEnabled = true;
     @JsonProperty private List<String> toolRequiredTaskTypes = List.of("code-review", "exploration", "indexing");
 
-    public HarnessConfig() {}
-
-    // Getters
-    public boolean isEnabled() { return enabled; }
-    public boolean isJudgeEnabled() { return judgeEnabled; }
-    public String getJudgeModel() { return judgeModel; }
-    public String getJudgeProvider() { return judgeProvider; }
-    public float getSwapThresholdScore() { return swapThresholdScore; }
-    public int getRollingWindowSize() { return rollingWindowSize; }
-    public boolean isAutoSwapEnabled() { return autoSwapEnabled; }
-    public List<String> getSwapCandidateModels() { return swapCandidateModels; }
-    public boolean isRateLimitFallbackEnabled() { return rateLimitFallbackEnabled; }
-    public int getQualityCooldownMs() { return qualityCooldownMs; }
-    public int getRateLimitCooldownMs() { return rateLimitCooldownMs; }
-    public boolean isVerboseLogging() { return verboseLogging; }
-    public boolean isPersistCrossSession() { return persistCrossSession; }
-    public int getMaxRecordAge() { return maxRecordAge; }
-    public int getMaxRecords() { return maxRecords; }
-
-    // Setters for runtime modification
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
-    public void setJudgeEnabled(boolean judgeEnabled) { this.judgeEnabled = judgeEnabled; }
-    public void setJudgeModel(String judgeModel) { this.judgeModel = judgeModel; }
-    public void setJudgeProvider(String judgeProvider) { this.judgeProvider = judgeProvider; }
-    public String getJudgeApiKey() { return judgeApiKey; }
-    public void setJudgeApiKey(String judgeApiKey) { this.judgeApiKey = judgeApiKey; }
-    public String getJudgeBaseUrl() { return judgeBaseUrl; }
-    public void setJudgeBaseUrl(String judgeBaseUrl) { this.judgeBaseUrl = judgeBaseUrl; }
-    public void setSwapThresholdScore(float swapThresholdScore) { this.swapThresholdScore = swapThresholdScore; }
-    public void setRollingWindowSize(int rollingWindowSize) { this.rollingWindowSize = rollingWindowSize; }
-    public void setAutoSwapEnabled(boolean autoSwapEnabled) { this.autoSwapEnabled = autoSwapEnabled; }
-    public void setSwapCandidateModels(List<String> swapCandidateModels) { this.swapCandidateModels = swapCandidateModels; }
-    public void setRateLimitFallbackEnabled(boolean rateLimitFallbackEnabled) { this.rateLimitFallbackEnabled = rateLimitFallbackEnabled; }
-    public void setVerboseLogging(boolean verboseLogging) { this.verboseLogging = verboseLogging; }
-
-    // Composite score weight getters/setters
-    public float getEscapeWeight() { return escapeWeight; }
-    public float getJudgeWeight() { return judgeWeight; }
-    public float getEfficiencyWeight() { return efficiencyWeight; }
-    public float getThinkingWeight() { return thinkingWeight; }
-    public void setEscapeWeight(float v) { this.escapeWeight = v; }
-    public void setJudgeWeight(float v) { this.judgeWeight = v; }
-    public void setEfficiencyWeight(float v) { this.efficiencyWeight = v; }
-    public void setThinkingWeight(float v) { this.thinkingWeight = v; }
-
-    // Judge backend mode
-    public String getJudgeMode() { return judgeMode; }
-    public void setJudgeMode(String v) { this.judgeMode = v; }
-    public String getJudgeLocalModel() { return judgeLocalModel; }
-    public void setJudgeLocalModel(String v) { this.judgeLocalModel = v; }
-    public String getJudgeLocalQuant() { return judgeLocalQuant; }
-    public void setJudgeLocalQuant(String v) { this.judgeLocalQuant = v; }
-    public String getJudgeServerType() { return judgeServerType; }
-    public void setJudgeServerType(String v) { this.judgeServerType = v; }
-    public int getJudgeServerPort() { return judgeServerPort; }
-    public void setJudgeServerPort(int v) { this.judgeServerPort = v; }
-
-    // Layer toggles
-    public boolean isEscapeDetectionEnabled() { return escapeDetectionEnabled; }
-    public boolean isThinkingAnalysisEnabled() { return thinkingAnalysisEnabled; }
-    public List<String> getToolRequiredTaskTypes() { return toolRequiredTaskTypes; }
-    public void setEscapeDetectionEnabled(boolean v) { this.escapeDetectionEnabled = v; }
-    public void setThinkingAnalysisEnabled(boolean v) { this.thinkingAnalysisEnabled = v; }
-
     /**
      * Load config from disk, or return defaults if file doesn't exist.
      */
     public static HarnessConfig load() {
-        return load(new ObjectMapper());
+        return load(JsonUtils.standardMapper());
     }
 
     public static HarnessConfig load(ObjectMapper mapper) {
@@ -159,7 +98,7 @@ public class HarnessConfig {
      * Save config to disk.
      */
     public void save() {
-        save(new ObjectMapper());
+        save(JsonUtils.standardMapper());
     }
 
     public void save(ObjectMapper mapper) {

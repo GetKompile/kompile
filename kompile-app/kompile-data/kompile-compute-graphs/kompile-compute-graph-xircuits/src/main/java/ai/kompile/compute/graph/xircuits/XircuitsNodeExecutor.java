@@ -6,6 +6,7 @@ import ai.kompile.compute.graph.model.*;
 import ai.kompile.compute.graph.xircuits.model.XircuitsNode;
 import ai.kompile.compute.graph.xircuits.model.XircuitsWorkflow;
 import com.fasterxml.jackson.core.type.TypeReference;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -58,7 +59,7 @@ public class XircuitsNodeExecutor implements NodeExecutor {
     }
 
     public XircuitsNodeExecutor(String defaultExecutable, String defaultPythonExecutable) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.defaultExecutable = defaultExecutable;
         this.defaultPythonExecutable = defaultPythonExecutable;
     }

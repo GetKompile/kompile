@@ -17,7 +17,7 @@
 <div class="tools-hub">
   <div class="hub-header">
     <h2>Tools</h2>
-    <p class="subtitle">MCP servers, orchestration, document chunking, knowledge graphs, pipelines, prompts, business processes, workflows, compute graphs, crawlers, and code projects</p>
+    <p class="subtitle">MCP servers, orchestration, document chunking, knowledge graphs, pipelines, system prompts, business processes, workflows, compute graphs, crawlers, and code projects</p>
   </div>
 
   <div class="sub-tabs">
@@ -51,13 +51,6 @@
     </button>
     <button
       class="sub-tab"
-      [class.active]="activeSubTab === 'knowledgeGraph'"
-      (click)="selectSubTab('knowledgeGraph')">
-      <mat-icon class="tab-icon">share</mat-icon>
-      <span class="tab-label">Knowledge Graph</span>
-    </button>
-    <button
-      class="sub-tab"
       [class.active]="activeSubTab === 'backup'"
       (click)="selectSubTab('backup')">
       <mat-icon class="tab-icon">backup</mat-icon>
@@ -75,7 +68,7 @@
       [class.active]="activeSubTab === 'prompts'"
       (click)="selectSubTab('prompts')">
       <mat-icon class="tab-icon">description</mat-icon>
-      <span class="tab-label">Prompts</span>
+      <span class="tab-label">System Prompts</span>
     </button>
     <button
       class="sub-tab"
@@ -126,9 +119,6 @@
     </div>
     <div *ngIf="activeSubTab === 'chunkManager'" class="chunk-manager-container">
       <app-chunk-manager></app-chunk-manager>
-    </div>
-    <div *ngIf="activeSubTab === 'knowledgeGraph'" class="graph-container">
-      <app-knowledge-graph-hub></app-knowledge-graph-hub>
     </div>
     <div *ngIf="activeSubTab === 'backup'">
       <app-backup-manager></app-backup-manager>

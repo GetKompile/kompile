@@ -25,6 +25,7 @@ import ai.kompile.cli.main.chat.PassthroughCommand;
 import ai.kompile.cli.main.chat.ResumeAllCommand;
 import ai.kompile.cli.main.chat.ResumeCommand;
 import ai.kompile.cli.main.chat.SessionCommand;
+import ai.kompile.cli.main.chat.exec.ExecCommand;
 import ai.kompile.cli.main.chat.harness.HarnessCommand;
 import ai.kompile.cli.main.chat.harness.eval.EvalCommand;
 import ai.kompile.cli.main.chat.skill.SkillsCommand;
@@ -79,6 +80,7 @@ import java.util.concurrent.Callable;
                 PipelineMain.class,
                 // Chat and agent commands
                 ChatCommand.class,
+                ExecCommand.class,
                 LiteChatCommand.class,
                 SessionCommand.class,
                 PassthroughCommand.class,
@@ -157,9 +159,17 @@ public class MainCommand implements Callable<Integer> {
             // Shade plugin classloader can lose picocli inner classes during shutdown
             exitCode = 0;
         }
-        if (exitCode != 0) {
-            System.exit(exitCode);
-        }
+        // Always terminate the JVM explicitly — do NOT fall through to a bare return
+        // on exit code 0. Long-running commands (mcp-stdio, chat) start non-daemon
+        // background threads (file watcher, ambient gardener, semantic memory, async
+        // tool executor). When such a command finishes cleanly and main() merely
+        // returns, those threads keep the process — and its ~200 MB heap — alive
+        // forever. A day of agent sessions then leaves dozens of orphaned JVMs that
+        // drive the box into swap, so even a trivial local tool call (e.g. grep)
+        // stalls long enough for the MCP client to time out and "disconnect".
+        // System.exit() still runs the registered shutdown hooks (which persist
+        // session/coordination state) before reaping the process.
+        System.exit(exitCode);
     }
 
     /**

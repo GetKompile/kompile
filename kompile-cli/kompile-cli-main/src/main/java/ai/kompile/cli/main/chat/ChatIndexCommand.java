@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 
@@ -49,7 +50,7 @@ public class ChatIndexCommand implements Callable<Integer> {
             defaultValue = "false")
     private boolean jsonOutput;
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private static final String RESET = "\033[0m";
     private static final String BOLD = "\033[1m";

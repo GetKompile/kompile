@@ -18,8 +18,7 @@ package ai.kompile.enrichment.impl.organize;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -35,15 +34,12 @@ import java.util.*;
 public class EntityTypeAnalysisService {
     private static final Logger log = LoggerFactory.getLogger(EntityTypeAnalysisService.class);
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final ObjectMapper objectMapper;
 
-    public EntityTypeAnalysisService(GraphNodeRepository nodeRepository,
-                                     GraphEdgeRepository edgeRepository,
+    public EntityTypeAnalysisService(KnowledgeGraphService knowledgeGraphService,
                                      ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.objectMapper = objectMapper;
     }
 
@@ -51,7 +47,7 @@ public class EntityTypeAnalysisService {
      * Count entity type distribution from all ENTITY nodes' metadataJson.
      */
     public Map<String, Long> getEntityTypeCounts(Long factSheetId) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         Map<String, Long> counts = new LinkedHashMap<>();
         for (GraphNode entity : entities) {
             String type = extractEntityType(entity);
@@ -68,7 +64,7 @@ public class EntityTypeAnalysisService {
      * Compute entity type co-occurrence: which types appear connected by edges.
      */
     public Map<String, Set<String>> getTypeCoOccurrence(Long factSheetId) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         Map<String, String> nodeIdToType = new HashMap<>();
         for (GraphNode entity : entities) {
             String type = extractEntityType(entity);
@@ -79,7 +75,8 @@ public class EntityTypeAnalysisService {
 
         Map<String, Set<String>> coOccurrence = new LinkedHashMap<>();
         for (GraphNode entity : entities) {
-            List<GraphEdge> edges = edgeRepository.findBySourceNodeIdOrTargetNodeId(entity.getId());
+            // Use vector store (SSOT): look up edges by string nodeId
+            List<GraphEdge> edges = knowledgeGraphService.getEdgesForNode(entity.getNodeId());
             String sourceType = nodeIdToType.get(entity.getNodeId());
             if (sourceType == null) continue;
 

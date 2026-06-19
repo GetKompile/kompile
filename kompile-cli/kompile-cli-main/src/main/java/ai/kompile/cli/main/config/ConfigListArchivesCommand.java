@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.config;
 
+import ai.kompile.cli.common.config.ArchiveInfo;
 import ai.kompile.cli.common.config.ConfigArchiveManifest;
 import ai.kompile.cli.common.config.ConfigArchiveService;
 import picocli.CommandLine.Command;
@@ -38,7 +39,7 @@ public class ConfigListArchivesCommand implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        List<ConfigArchiveService.ArchiveInfo> archives = ConfigArchiveService.listArchives();
+        List<ArchiveInfo> archives = ConfigArchiveService.listArchives();
 
         if (archives.isEmpty()) {
             System.out.println("No configuration archives found.");
@@ -49,7 +50,7 @@ public class ConfigListArchivesCommand implements Callable<Integer> {
         System.out.println("Saved configuration archives:");
         System.out.println();
 
-        for (ConfigArchiveService.ArchiveInfo info : archives) {
+        for (ArchiveInfo info : archives) {
             System.out.printf("  %-50s  %8s  %s%n",
                     info.getFileName(),
                     formatSize(info.getSizeBytes()),

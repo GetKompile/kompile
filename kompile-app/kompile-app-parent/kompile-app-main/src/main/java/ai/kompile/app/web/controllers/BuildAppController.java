@@ -71,7 +71,7 @@ public class BuildAppController {
         // LLM
         modules.add(module("llm-openai",          "kompile-app-openai-llm",               "LLM",         "OpenAI LLM provider"));
         modules.add(module("llm-anthropic",       "kompile-app-anthropic-llm",            "LLM",         "Anthropic LLM provider"));
-        modules.add(module("llm-gemini",          "kompile-app-gemini-llm",               "LLM",         "Google Gemini LLM provider"));
+        modules.add(module("llm-agy",             "kompile-app-agy-llm",                  "LLM",         "Antigravity LLM provider"));
 
         // EMBEDDING
         modules.add(module("embedding-openai",              "kompile-embedding-openai",               "EMBEDDING",   "OpenAI embeddings"));
@@ -170,7 +170,7 @@ public class BuildAppController {
                 "full",
                 "All modules enabled",
                 "app-main", "app-core", "loaders-orchestrator", "app-anserini", "chat-history", "pipelines-llm",
-                "llm-openai", "llm-anthropic", "llm-gemini",
+                "llm-openai", "llm-anthropic", "llm-agy",
                 "embedding-openai", "embedding-anserini", "embedding-sentence-transformer",
                 "vectorstore-anserini", "vectorstore-chroma", "vectorstore-pgvector",
                 "loader-pdf-extended", "loader-microsoft", "loader-mail", "loader-tika",

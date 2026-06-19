@@ -25,6 +25,7 @@ import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.TokenUsage;
 import ai.kompile.react.model.ToolCall;
 import ai.kompile.react.model.ToolDefinition;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -97,7 +98,7 @@ public class EvalBasedReasoner implements Reasoner {
         this.evaluationService = evaluationService;
         this.evalTracker = evalTracker;
         this.systemPrompt = systemPrompt != null ? systemPrompt : EVAL_SYSTEM_PROMPT;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.selfEvaluate = selfEvaluate != null ? selfEvaluate : true;
         this.qualityThreshold = qualityThreshold != null ? qualityThreshold : 0.7;
     }

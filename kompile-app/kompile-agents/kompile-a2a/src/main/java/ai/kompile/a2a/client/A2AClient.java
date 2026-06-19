@@ -17,9 +17,8 @@
 package ai.kompile.a2a.client;
 
 import ai.kompile.a2a.model.*;
-import com.fasterxml.jackson.databind.DeserializationFeature;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,9 +64,7 @@ public class A2AClient implements AutoCloseable {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
-        this.objectMapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

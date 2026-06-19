@@ -18,6 +18,8 @@ package ai.kompile.cli.main.coordination;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 
@@ -25,6 +27,8 @@ import java.time.Instant;
  * Represents an advisory edit lock on a file. Serialized as JSON to
  * {@code <workDir>/.kompile/coordination/edits/<sessionId>-<fileHash>.lock.json}.
  */
+@Data
+@NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class EditLockEntry {
 
@@ -55,8 +59,6 @@ public class EditLockEntry {
     @JsonProperty("ttlSeconds")
     private int ttlSeconds;
 
-    public EditLockEntry() {}
-
     public EditLockEntry(String lockId, String sessionId, String agentName,
                          String filePath, String absolutePath, String editType,
                          Instant acquiredAt, int ttlSeconds) {
@@ -69,20 +71,6 @@ public class EditLockEntry {
         this.acquiredAt = acquiredAt;
         this.lastHeartbeat = acquiredAt;
         this.ttlSeconds = ttlSeconds;
-    }
-
-    public String getLockId() { return lockId; }
-    public String getSessionId() { return sessionId; }
-    public String getAgentName() { return agentName; }
-    public String getFilePath() { return filePath; }
-    public String getAbsolutePath() { return absolutePath; }
-    public String getEditType() { return editType; }
-    public Instant getAcquiredAt() { return acquiredAt; }
-    public Instant getLastHeartbeat() { return lastHeartbeat; }
-    public int getTtlSeconds() { return ttlSeconds; }
-
-    public void setLastHeartbeat(Instant lastHeartbeat) {
-        this.lastHeartbeat = lastHeartbeat;
     }
 
     /**

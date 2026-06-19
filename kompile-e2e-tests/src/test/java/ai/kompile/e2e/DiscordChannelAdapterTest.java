@@ -6,6 +6,7 @@ import ai.kompile.gateway.core.gateway.channel.ChannelAdapter.AdapterConfig;
 import ai.kompile.gateway.core.model.AgentRequest;
 import ai.kompile.gateway.core.model.AgentResponse;
 import ai.kompile.gateway.core.gateway.channel.DiscordApiClient;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
@@ -35,6 +36,9 @@ class DiscordChannelAdapterTest {
     @Mock
     private KClawAgentService agentService;
 
+    // Upcast to AgentExecutor to disambiguate execute() overloads in when()/verify() calls
+    private AgentExecutor agentExecutor;
+
     @Mock
     private DiscordApiClient discordApiClient;
 
@@ -42,6 +46,7 @@ class DiscordChannelAdapterTest {
 
     @BeforeEach
     void setUp() {
+        agentExecutor = agentService;
         adapter = new DiscordChannelAdapter(agentService);
         adapter.setApiClient(discordApiClient);
         adapter.setBotToken("discord-bot-token");
@@ -97,7 +102,7 @@ class DiscordChannelAdapterTest {
                 .response("Hello from agent!")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -110,7 +115,7 @@ class DiscordChannelAdapterTest {
 
         verify(discordApiClient).sendTyping("discord-ch-1");
         ArgumentCaptor<AgentRequest> reqCaptor = ArgumentCaptor.forClass(AgentRequest.class);
-        verify(agentService).execute(reqCaptor.capture());
+        verify(agentExecutor).execute(reqCaptor.capture());
         assertEquals("test-agent", reqCaptor.getValue().getAgentId());
         assertEquals("Help me!", reqCaptor.getValue().getMessage());
         verify(discordApiClient).sendMessage(eq("discord-ch-1"), eq("Hello from agent!"));
@@ -133,7 +138,7 @@ class DiscordChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     // ── Channel/Guild Whitelisting ──
@@ -158,7 +163,7 @@ class DiscordChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -180,7 +185,7 @@ class DiscordChannelAdapterTest {
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -191,7 +196,7 @@ class DiscordChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService).execute(any());
+        verify(agentExecutor).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -213,7 +218,7 @@ class DiscordChannelAdapterTest {
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -224,7 +229,7 @@ class DiscordChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService).execute(any());
+        verify(agentExecutor).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -243,7 +248,7 @@ class DiscordChannelAdapterTest {
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -254,7 +259,7 @@ class DiscordChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService).execute(any());
+        verify(agentExecutor).execute(any(AgentRequest.class));
     }
 
     // ── Empty/Null Content ──
@@ -274,7 +279,7 @@ class DiscordChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     @Test
@@ -292,7 +297,7 @@ class DiscordChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService, never()).execute(any());
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     // ── Error Handling ──
@@ -313,7 +318,7 @@ class DiscordChannelAdapterTest {
                 .success(false)
                 .error("API unavailable")
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(errorResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(errorResponse);
 
         adapter.start();
 
@@ -345,7 +350,7 @@ class DiscordChannelAdapterTest {
                 .response("OK")
                 .success(true)
                 .build();
-        when(agentService.execute(any(AgentRequest.class))).thenReturn(agentResponse);
+        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
 
         adapter.start();
 
@@ -356,7 +361,7 @@ class DiscordChannelAdapterTest {
 
         adapter.onMessage(message);
 
-        verify(agentService).execute(any());
+        verify(agentExecutor).execute(any(AgentRequest.class));
     }
 
     // ── Event Callbacks ──

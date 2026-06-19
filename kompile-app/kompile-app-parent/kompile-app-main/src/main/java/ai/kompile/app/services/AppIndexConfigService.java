@@ -24,6 +24,7 @@ import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.indexers.NoOpIndexerService;
 import ai.kompile.core.reranking.RerankerService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -75,7 +76,7 @@ public class AppIndexConfigService {
             @Autowired(required = false) List<IndexerService> indexerServices,
             @Autowired(required = false) EmbeddingModel embeddingModel,
             @Autowired(required = false) RerankerService rerankerService) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         // Use provided dataDir, or fall back to ~/.kompile if not set
         String effectiveDataDir = dataDir;

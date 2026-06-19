@@ -17,12 +17,8 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.core.chunking.TextChunker;
-import ai.kompile.app.services.DocumentIngestService;
-import ai.kompile.app.services.IngestProgressTracker;
-import ai.kompile.app.services.VectorStorePopulationService;
-import ai.kompile.app.services.YouTubeTranscriptService;
+import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
-import ai.kompile.core.loaders.DocumentLoadingService;
 import ai.kompile.loaders.orchestrator.config.AppDocumentSourceProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,13 +27,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.http.MediaType;
-import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -57,19 +50,7 @@ class DocumentManagementControllerTest {
     private TextChunker textChunker;
 
     @Mock
-    private DocumentIngestService documentIngestService;
-
-    @Mock
-    private IngestProgressTracker progressTracker;
-
-    @Mock
-    private VectorStorePopulationService vectorStorePopulationService;
-
-    @Mock
-    private YouTubeTranscriptService youTubeTranscriptService;
-
-    @Mock
-    private DocumentLoadingService documentLoadingService;
+    private IndexerService indexerService;
 
     private DocumentManagementController controller;
     private MockMvc mockMvc;
@@ -83,22 +64,10 @@ class DocumentManagementControllerTest {
         // All indexer services are null (no IndexerService available)
         controller = new DocumentManagementController(
                 appDocumentSourceProperties,
-                null,                          // restTemplate
-                List.of(documentLoader),       // documentLoaders
-                documentLoadingService,        // documentLoadingService
-                List.of(textChunker),          // textChunkers
-                null,                          // indexerService list
-                documentIngestService,         // documentIngestService
-                progressTracker,               // progressTracker
-                vectorStorePopulationService,  // vectorStorePopulationService
-                youTubeTranscriptService,      // youTubeTranscriptService
-                null,                          // sourceDocumentStorageService
-                null,                          // factSheetService
-                null                           // jobHistoryRepository
+                List.of(documentLoader),
+                List.of(textChunker),
+                null   // indexerService list
         );
-
-        // Manually call @PostConstruct - not called in unit tests
-        // The constructor handles the uploads path setup
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
@@ -125,8 +94,7 @@ class DocumentManagementControllerTest {
     @Test
     void listAvailableLoaders_withNoLoaders_returnsEmptyList() throws Exception {
         controller = new DocumentManagementController(
-                appDocumentSourceProperties, null, List.of(), documentLoadingService,
-                List.of(), null, null, null, null, null, null, null, null);
+                appDocumentSourceProperties, List.of(), List.of(), null);
         MockMvc emptyMvc = MockMvcBuilders.standaloneSetup(controller).build();
 
         emptyMvc.perform(get("/api/documents/loaders"))
@@ -145,8 +113,7 @@ class DocumentManagementControllerTest {
     @Test
     void listAvailableChunkers_withNoChunkers_returnsEmptyList() throws Exception {
         controller = new DocumentManagementController(
-                appDocumentSourceProperties, null, List.of(), documentLoadingService,
-                List.of(), null, null, null, null, null, null, null, null);
+                appDocumentSourceProperties, List.of(), List.of(), null);
         MockMvc emptyMvc = MockMvcBuilders.standaloneSetup(controller).build();
 
         emptyMvc.perform(get("/api/documents/chunkers"))
@@ -155,61 +122,19 @@ class DocumentManagementControllerTest {
     }
 
     @Test
-    void debugChunkerResolution_returnsDebugInfo() throws Exception {
-        mockMvc.perform(get("/api/documents/debug/chunker-resolution")
-                        .param("name", "recursive-character"))
+    void processingStatus_returnsStatus() throws Exception {
+        mockMvc.perform(get("/api/documents/processing-status"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.requestedName").value("recursive-character"))
-                .andExpect(jsonPath("$.availableChunkers").isArray())
-                .andExpect(jsonPath("$.chunkerCount").value(1));
+                .andExpect(jsonPath("$.indexerAvailable").exists())
+                .andExpect(jsonPath("$.availableLoaders").value(1))
+                .andExpect(jsonPath("$.availableChunkers").value(1));
     }
 
     @Test
-    void debugChunkerResolution_withNoName_returnsDebugInfoWithoutResolution() throws Exception {
-        mockMvc.perform(get("/api/documents/debug/chunker-resolution"))
+    void processingModes_returnsAvailableModes() throws Exception {
+        mockMvc.perform(get("/api/documents/processing-modes"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.requestedName").doesNotExist())
-                .andExpect(jsonPath("$.availableChunkers").isArray());
-    }
-
-    @Test
-    void debugIngestChunkerResolution_withNoIngestService_returnsError() throws Exception {
-        controller = new DocumentManagementController(
-                appDocumentSourceProperties, null, List.of(documentLoader), documentLoadingService,
-                List.of(textChunker), null, null, null, null, null, null, null, null);
-        MockMvc noSvcMvc = MockMvcBuilders.standaloneSetup(controller).build();
-
-        noSvcMvc.perform(get("/api/documents/debug/ingest-chunker-resolution")
-                        .param("name", "recursive-character"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.error").exists());
-    }
-
-    @Test
-    void addDocumentPath_withNullPath_returnsBadRequest() throws Exception {
-        Map<String, Object> body = Map.of();  // missing "path"
-
-        mockMvc.perform(post("/api/documents/add-path")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").exists());
-    }
-
-    @Test
-    void addDocumentPath_withBlankPath_returnsBadRequest() throws Exception {
-        mockMvc.perform(post("/api/documents/add-path")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"path\":\"\"}"))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
-    void addDocumentPath_withNonExistentPath_returnsBadRequest() throws Exception {
-        mockMvc.perform(post("/api/documents/add-path")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"path\":\"/nonexistent/path/that/does/not/exist\"}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").exists());
+                .andExpect(jsonPath("$.modes").isArray())
+                .andExpect(jsonPath("$.default").value("auto"));
     }
 }

@@ -160,6 +160,35 @@ public class ProcessingRouteConfig {
         /** Task types this backend can handle (empty = all). Values: "vlm", "llm", "embedding" */
         @Builder.Default
         private List<String> capabilities = new ArrayList<>();
+
+        /** Explicit backup backend ID to fall back to when this backend fails or is quota-exhausted.
+         *  When set, the dispatcher tries this specific backend before the general fallback chain. */
+        private String backupBackendId;
+
+        /** Cooldown multiplier applied when this backend hits rate limits (default cooldown * this factor).
+         *  Higher values keep rate-limited backends offline longer. Default: 3.0 */
+        @Builder.Default
+        private double rateLimitCooldownMultiplier = 3.0;
+
+        /** Whether this backend should be permanently disabled for a job after quota exhaustion
+         *  (as opposed to the standard circuit breaker cooldown). Default: true */
+        @Builder.Default
+        private boolean disableOnQuotaExhaustion = true;
+
+        /** For CLI_AGENT: per-agent override for the quota exhaustion window in ms.
+         *  0 = use the global CliAgentQuotaLedger default (from crawl runtime config). */
+        @Builder.Default
+        private long quotaWindowOverrideMs = 0;
+
+        /** For CLI_AGENT: max requests allowed per quota window before proactively rerouting.
+         *  0 = no request cap (only the time-window and token-cap gates apply). */
+        @Builder.Default
+        private long maxRequestsPerQuotaWindow = 0;
+
+        /** For CLI_AGENT: max tokens (input+output) allowed per quota window before proactively
+         *  rerouting. 0 = no token cap (only the time-window and request-cap gates apply). */
+        @Builder.Default
+        private long maxTokensPerQuotaWindow = 0;
     }
 
     /**

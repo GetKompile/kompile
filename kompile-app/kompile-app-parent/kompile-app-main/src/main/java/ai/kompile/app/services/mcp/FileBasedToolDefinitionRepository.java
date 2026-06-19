@@ -16,11 +16,11 @@
 
 package ai.kompile.app.services.mcp;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.mcp.EnhancedToolDefinition;
 import ai.kompile.core.mcp.ToolDefinitionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -60,11 +60,8 @@ public class FileBasedToolDefinitionRepository implements ToolDefinitionReposito
     }
 
     private ObjectMapper createObjectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
-        mapper.enable(SerializationFeature.INDENT_OUTPUT);
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        return mapper;
+        return JsonUtils.newStandardMapper()
+                .enable(SerializationFeature.INDENT_OUTPUT);
     }
 
     @PostConstruct

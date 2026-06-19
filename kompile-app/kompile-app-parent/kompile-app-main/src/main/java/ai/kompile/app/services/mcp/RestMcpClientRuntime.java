@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.mcp;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.mcp.server.ExternalMcpServerConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -73,7 +74,7 @@ public class RestMcpClientRuntime {
 
     public RestMcpClientRuntime(ExternalMcpServerConfig config) {
         this.config = config;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

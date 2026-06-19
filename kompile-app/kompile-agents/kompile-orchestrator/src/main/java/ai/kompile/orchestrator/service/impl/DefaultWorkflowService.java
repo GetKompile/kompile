@@ -29,6 +29,7 @@ import ai.kompile.orchestrator.model.task.TaskType;
 import ai.kompile.orchestrator.model.workflow.*;
 import ai.kompile.orchestrator.repository.WorkflowRepository;
 import ai.kompile.orchestrator.repository.WorkflowStepRepository;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,7 +54,7 @@ public class DefaultWorkflowService implements WorkflowService {
     private final ApplicationEventPublisher eventPublisher;
     private final OrchestratorProperties properties;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // ==================== Workflow Lifecycle ====================
 

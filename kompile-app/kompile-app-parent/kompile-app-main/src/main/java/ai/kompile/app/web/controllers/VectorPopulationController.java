@@ -27,7 +27,7 @@ import ai.kompile.app.services.VectorStorePopulationService.PopulationTaskStatus
 import ai.kompile.app.services.subprocess.SubprocessRestartManager;
 import ai.kompile.app.services.subprocess.SubprocessRestartManager.RestartStatus;
 import ai.kompile.app.services.subprocess.VectorPopulationSubprocessLauncher;
-import ai.kompile.app.services.subprocess.VectorPopulationSubprocessLauncher.VectorPopulationHandle;
+import ai.kompile.app.services.subprocess.VectorPopulationHandle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;

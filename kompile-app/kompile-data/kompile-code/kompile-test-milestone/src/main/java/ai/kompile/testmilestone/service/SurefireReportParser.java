@@ -1,6 +1,7 @@
 package ai.kompile.testmilestone.service;
 
 import ai.kompile.testmilestone.domain.TestCaseResultEntity;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.testmilestone.domain.TestCaseStatus;
 import lombok.extern.slf4j.Slf4j;
 
@@ -131,7 +132,7 @@ public class SurefireReportParser {
                     .className(className)
                     .methodName(methodName)
                     .status(status)
-                    .errorMessage(truncate(errorMessage, 2048))
+                    .errorMessage(StringUtils.truncate(errorMessage, 2048))
                     .errorStackTrace(stackTrace)
                     .durationMs(durationMs)
                     .build());
@@ -147,11 +148,6 @@ public class SurefireReportParser {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
-    }
-
-    private static String truncate(String s, int maxLen) {
-        if (s == null) return null;
-        return s.length() <= maxLen ? s : s.substring(0, maxLen);
     }
 
     public record ParseResult(

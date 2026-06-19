@@ -18,6 +18,7 @@ package ai.kompile.ocr.datapipeline.parse;
 
 import ai.kompile.ocr.datapipeline.config.OutputParseConfig;
 import ai.kompile.ocr.datapipeline.entity.*;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -37,7 +38,7 @@ public class JsonOutputParser {
     private final ObjectMapper objectMapper;
 
     public JsonOutputParser() {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

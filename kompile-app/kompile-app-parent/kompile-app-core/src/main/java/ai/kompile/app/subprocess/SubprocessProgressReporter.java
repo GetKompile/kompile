@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -74,7 +75,7 @@ public class SubprocessProgressReporter implements AutoCloseable {
     public SubprocessProgressReporter(String taskId, PrintStream out) {
         this.taskId = taskId;
         this.out = out;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.startTimeMs = System.currentTimeMillis();
         this.heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "ingest-heartbeat-" + taskId);

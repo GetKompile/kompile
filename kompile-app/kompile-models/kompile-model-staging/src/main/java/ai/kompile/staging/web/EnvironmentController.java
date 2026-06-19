@@ -18,6 +18,7 @@ package ai.kompile.staging.web;
 
 import ai.kompile.staging.config.PerformanceProfile;
 import ai.kompile.staging.web.dto.*;
+import ai.kompile.utils.MapUtils;
 import org.nd4j.linalg.api.environment.Nd4jEnvironment;
 import org.nd4j.linalg.factory.Environment;
 import org.nd4j.linalg.factory.Nd4j;
@@ -114,15 +115,15 @@ public class EnvironmentController {
                 updated++;
             }
             if (settings.containsKey("maxPrimaryMemory")) {
-                env.setMaxPrimaryMemory(toLong(settings.get("maxPrimaryMemory")));
+                env.setMaxPrimaryMemory(MapUtils.toLong(settings.get("maxPrimaryMemory")));
                 updated++;
             }
             if (settings.containsKey("maxSpecialMemory")) {
-                env.setMaxSpecialMemory(toLong(settings.get("maxSpecialMemory")));
+                env.setMaxSpecialMemory(MapUtils.toLong(settings.get("maxSpecialMemory")));
                 updated++;
             }
             if (settings.containsKey("maxDeviceMemory")) {
-                env.setMaxDeviceMemory(toLong(settings.get("maxDeviceMemory")));
+                env.setMaxDeviceMemory(MapUtils.toLong(settings.get("maxDeviceMemory")));
                 updated++;
             }
             if (settings.containsKey("verbose")) {
@@ -138,19 +139,19 @@ public class EnvironmentController {
                 updated++;
             }
             if (settings.containsKey("tadThreshold")) {
-                env.setTadThreshold(toInt(settings.get("tadThreshold")));
+                env.setTadThreshold(MapUtils.toInt(settings.get("tadThreshold")));
                 updated++;
             }
             if (settings.containsKey("elementwiseThreshold")) {
-                env.setElementwiseThreshold(toInt(settings.get("elementwiseThreshold")));
+                env.setElementwiseThreshold(MapUtils.toInt(settings.get("elementwiseThreshold")));
                 updated++;
             }
             if (settings.containsKey("maxThreads")) {
-                env.setMaxThreads(toInt(settings.get("maxThreads")));
+                env.setMaxThreads(MapUtils.toInt(settings.get("maxThreads")));
                 updated++;
             }
             if (settings.containsKey("maxMasterThreads")) {
-                env.setMaxMasterThreads(toInt(settings.get("maxMasterThreads")));
+                env.setMaxMasterThreads(MapUtils.toInt(settings.get("maxMasterThreads")));
                 updated++;
             }
 
@@ -920,16 +921,6 @@ public class EnvironmentController {
             log.warn("Failed to read DSP settings", e);
             return DspSettingsResponse.builder().build();
         }
-    }
-
-    private long toLong(Object value) {
-        if (value instanceof Number) return ((Number) value).longValue();
-        return Long.parseLong(value.toString());
-    }
-
-    private int toInt(Object value) {
-        if (value instanceof Number) return ((Number) value).intValue();
-        return Integer.parseInt(value.toString());
     }
 
     private long getMaxPrimaryMemory(Environment env) {

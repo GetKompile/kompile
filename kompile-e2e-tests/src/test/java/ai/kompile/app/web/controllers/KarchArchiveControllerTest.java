@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.web.dto.karch.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

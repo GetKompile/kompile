@@ -71,7 +71,7 @@ class UnifiedCrawlGraphToolTest {
                         "docs", "DIRECTORY", "/data/docs",
                         3, 100, null, null, null
                 )),
-                null, null
+                null, null, null, null
         );
 
         Map<String, Object> result = tool.startUnifiedCrawl(input);
@@ -109,7 +109,7 @@ class UnifiedCrawlGraphToolTest {
                         new UnifiedCrawlGraphTool.SourceInput("web", "WEB_CRAWL", "https://docs.example.com",
                                 2, 50, List.of("*.html"), List.of("*.pdf"), null)
                 ),
-                null, null
+                null, null, null, null
         );
 
         Map<String, Object> result = tool.startUnifiedCrawl(input);
@@ -145,7 +145,7 @@ class UnifiedCrawlGraphToolTest {
                         "LENIENT", true, 0.86, false, 0.9,
                         0.7, "Focus on technical entities"
                 ),
-                null
+                null, null, null
         );
 
         tool.startUnifiedCrawl(input);
@@ -178,7 +178,8 @@ class UnifiedCrawlGraphToolTest {
                 "index test",
                 List.of(new UnifiedCrawlGraphTool.SourceInput("docs", "FILE", "/data/doc.txt", null, null, null, null, null)),
                 null,
-                new UnifiedCrawlGraphTool.IndexConfigInput(true, "my-collection", "recursive", 500, 50)
+                new UnifiedCrawlGraphTool.IndexConfigInput(true, "my-collection", "recursive", 500, 50),
+                null, null
         );
 
         tool.startUnifiedCrawl(input);
@@ -197,7 +198,7 @@ class UnifiedCrawlGraphToolTest {
     @Test
     @DisplayName("Start crawl with empty sources returns error map")
     void startCrawl_emptySourcesReturnsError() {
-        var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput("empty", List.of(), null, null);
+        var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput("empty", List.of(), null, null, null, null);
 
         Map<String, Object> result = tool.startUnifiedCrawl(input);
         assertNotNull(result.get("error"));
@@ -207,7 +208,7 @@ class UnifiedCrawlGraphToolTest {
     @Test
     @DisplayName("Start crawl with null sources returns error map")
     void startCrawl_nullSourcesReturnsError() {
-        var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput("null", null, null, null);
+        var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput("null", null, null, null, null, null);
 
         Map<String, Object> result = tool.startUnifiedCrawl(input);
         assertNotNull(result.get("error"));
@@ -222,7 +223,7 @@ class UnifiedCrawlGraphToolTest {
         var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput(
                 "unknown type",
                 List.of(new UnifiedCrawlGraphTool.SourceInput("custom", "NONEXISTENT_TYPE", "/data", null, null, null, null, null)),
-                null, null
+                null, null, null, null
         );
 
         Map<String, Object> result = tool.startUnifiedCrawl(input);
@@ -243,7 +244,7 @@ class UnifiedCrawlGraphToolTest {
         var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput(
                 null,
                 List.of(new UnifiedCrawlGraphTool.SourceInput("docs", "FILE", "/data/f.txt", null, null, null, null, null)),
-                null, null
+                null, null, null, null
         );
 
         tool.startUnifiedCrawl(input);
@@ -261,7 +262,7 @@ class UnifiedCrawlGraphToolTest {
         var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput(
                 "failing",
                 List.of(new UnifiedCrawlGraphTool.SourceInput("docs", "FILE", "/data", null, null, null, null, null)),
-                null, null
+                null, null, null, null
         );
 
         Map<String, Object> result = tool.startUnifiedCrawl(input);

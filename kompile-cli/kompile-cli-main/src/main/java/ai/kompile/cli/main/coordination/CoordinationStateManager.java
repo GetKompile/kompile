@@ -16,6 +16,9 @@
 
 package ai.kompile.cli.main.coordination;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.FormatUtils;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -111,7 +114,7 @@ public class CoordinationStateManager {
      * Create a manager for CLI-only use (no heartbeat, read-only queries).
      */
     public static CoordinationStateManager forCli(Path workDir) {
-        ObjectMapper om = new ObjectMapper();
+        ObjectMapper om = JsonUtils.standardMapper();
         CoordinationStateManager mgr = new CoordinationStateManager(workDir, "cli-" + System.currentTimeMillis(), om);
         mgr.heartbeatExecutor.shutdownNow();
         return mgr;
@@ -528,10 +531,10 @@ public class CoordinationStateManager {
             sb.append("  (none)\n");
         } else {
             for (AgentEntry a : agents) {
-                String dur = formatDuration(Duration.between(a.getStartedAt(), Instant.now()));
+                String dur = FormatUtils.formatDuration(Duration.between(a.getStartedAt(), Instant.now()));
                 sb.append(String.format("  %-30s %-10s depth=%d  \"%s\"  %s\n",
                         a.getSessionId(), a.getAgentName(), a.getDepth(),
-                        truncate(a.getTask(), 40), dur));
+                        StringUtils.truncate(a.getTask(), 40), dur));
             }
         }
 
@@ -540,9 +543,9 @@ public class CoordinationStateManager {
             sb.append("  (none)\n");
         } else {
             for (EditLockEntry e : edits) {
-                String age = formatDuration(Duration.between(e.getAcquiredAt(), Instant.now()));
+                String age = FormatUtils.formatDuration(Duration.between(e.getAcquiredAt(), Instant.now()));
                 sb.append(String.format("  %-50s %-20s %-6s %s\n",
-                        truncate(e.getFilePath(), 50),
+                        StringUtils.truncate(e.getFilePath(), 50),
                         e.getSessionId(), e.getEditType(), age));
             }
         }
@@ -552,10 +555,10 @@ public class CoordinationStateManager {
             sb.append("  (none)\n");
         } else {
             for (ProcessCoordEntry p : processes) {
-                String dur = formatDuration(Duration.between(p.getStartedAt(), Instant.now()));
+                String dur = FormatUtils.formatDuration(Duration.between(p.getStartedAt(), Instant.now()));
                 sb.append(String.format("  %-10s %-20s %-30s %-10s %s\n",
                         p.getProcessId(), p.getSessionId(),
-                        truncate(p.getCommand(), 30), p.getState(), dur));
+                        StringUtils.truncate(p.getCommand(), 30), p.getState(), dur));
             }
         }
 
@@ -696,25 +699,4 @@ public class CoordinationStateManager {
         T execute() throws Exception;
     }
 
-    // ── Internal: Formatting ──────────────────────────────────────────────
-
-    private static String formatDuration(Duration d) {
-        long totalSeconds = d.getSeconds();
-        if (totalSeconds < 60) {
-            return totalSeconds + "s";
-        }
-        long minutes = totalSeconds / 60;
-        long seconds = totalSeconds % 60;
-        if (minutes < 60) {
-            return minutes + "m" + seconds + "s";
-        }
-        long hours = minutes / 60;
-        minutes = minutes % 60;
-        return hours + "h" + minutes + "m" + seconds + "s";
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
-    }
 }

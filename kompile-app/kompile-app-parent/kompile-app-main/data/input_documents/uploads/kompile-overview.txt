@@ -1,7 +1,0 @@
-Kompile is a comprehensive AI/ML platform that combines CLI tools for model conversion,
-a Spring Boot RAG framework with pluggable embeddings and vector stores, and ML pipelines
-for composing workflows. It supports SameDiff, ONNX, TensorFlow, and DL4J model formats.
-
-The platform uses dense retrieval with BGE embeddings for semantic search, backed by
-Apache Lucene's HNSW vector indexing via the Anserini toolkit. Documents are chunked,
-embedded, and stored in a vector index for fast similarity search.

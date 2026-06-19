@@ -19,7 +19,6 @@ package ai.kompile.app.services;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,12 +38,9 @@ public class TableGraphNodeService {
     private static final Logger logger = LoggerFactory.getLogger(TableGraphNodeService.class);
 
     private final KnowledgeGraphService knowledgeGraphService;
-    private final GraphNodeRepository graphNodeRepository;
 
-    public TableGraphNodeService(KnowledgeGraphService knowledgeGraphService,
-                                  GraphNodeRepository graphNodeRepository) {
+    public TableGraphNodeService(KnowledgeGraphService knowledgeGraphService) {
         this.knowledgeGraphService = knowledgeGraphService;
-        this.graphNodeRepository = graphNodeRepository;
     }
 
     /**
@@ -149,18 +145,19 @@ public class TableGraphNodeService {
     /**
      * Finds an existing DOCUMENT-level graph node matching the source path or filename.
      * Returns the node's nodeId (UUID), or null if not found.
+     * Uses the vector store (via KnowledgeGraphService) as the SINGLE SOURCE OF TRUTH.
      */
     private String findParentDocumentNode(String sourcePath, String fileName) {
         if (sourcePath != null) {
-            Optional<GraphNode> node = graphNodeRepository.findByExternalIdAndNodeType(sourcePath, NodeLevel.DOCUMENT);
+            Optional<GraphNode> node = knowledgeGraphService.getNodeByExternalId(sourcePath, NodeLevel.DOCUMENT);
             if (node.isPresent()) {
                 return node.get().getNodeId();
             }
         }
 
-        // Fallback: search by filename in title
+        // Fallback: search by filename in title across all DOCUMENT nodes in vector store
         if (fileName != null) {
-            List<GraphNode> matches = graphNodeRepository.findByNodeType(NodeLevel.DOCUMENT);
+            List<GraphNode> matches = knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT);
             for (GraphNode node : matches) {
                 if (fileName.equals(node.getTitle())) {
                     return node.getNodeId();

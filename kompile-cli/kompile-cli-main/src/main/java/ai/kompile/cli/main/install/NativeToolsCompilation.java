@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.install;
 
+import ai.kompile.cli.common.util.ArchiveUtils;
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.util.OSResolver;
 import picocli.CommandLine;

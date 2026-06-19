@@ -48,6 +48,14 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
     private final Map<String, CompletableFuture<GraphBuildStatus>> runningJobs = new ConcurrentHashMap<>();
     private final Set<String> cancelledJobs = ConcurrentHashMap.newKeySet();
 
+    /**
+     * Short-TTL cache for getGraphStatistics to prevent concurrent GET /job requests
+     * (96+ threads observed) from each independently recomputing the live graph summary.
+     * Key = factSheetId (as String), Value = [resultMap, expiryMs].
+     */
+    private final ConcurrentHashMap<String, Object[]> statsCache = new ConcurrentHashMap<>();
+    private static final long STATS_CACHE_TTL_MS = 5_000L; // 5-second TTL
+
     @Autowired
     public FactSheetGraphServiceImpl(
             GraphNodeRepository nodeRepository,
@@ -132,33 +140,38 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
 
     @Override
     public GraphVisualizationData getVisualizationData(Long factSheetId, int maxNodes, int maxEdges) {
-        List<GraphNode> nodes;
-        if (maxNodes > 0) {
-            // Wrap in ArrayList since Page.getContent() returns an unmodifiable list
-            nodes = new ArrayList<>(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SOURCE,
-                PageRequest.of(0, maxNodes)).getContent());
-            // Add more node types up to limit
-            int remaining = maxNodes - nodes.size();
-            if (remaining > 0) {
-                nodes.addAll(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.DOCUMENT,
-                    PageRequest.of(0, remaining)).getContent());
+        // Vector store is the SINGLE SOURCE OF TRUTH — read all nodes via the matrix service.
+        List<GraphNode> nodes = new ArrayList<>(knowledgeGraphService.getNodesInFactSheet(factSheetId));
+
+        // Apply maxNodes limit preserving type priority: SOURCE > DOCUMENT > ENTITY > others
+        if (maxNodes > 0 && nodes.size() > maxNodes) {
+            int[] typeOrder = new int[NodeLevel.values().length];
+            for (NodeLevel lvl : NodeLevel.values()) {
+                typeOrder[lvl.ordinal()] = switch (lvl) {
+                    case SOURCE -> 0;
+                    case DOCUMENT -> 1;
+                    case TABLE -> 2;
+                    case ENTITY -> 3;
+                    case CUSTOM -> 4;
+                    case SNIPPET -> 5;
+                    case ATTACHMENT -> 6;
+                };
             }
-            remaining = maxNodes - nodes.size();
-            if (remaining > 0) {
-                nodes.addAll(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY,
-                    PageRequest.of(0, remaining)).getContent());
-            }
-        } else {
-            nodes = new ArrayList<>(nodeRepository.findByFactSheetId(factSheetId));
+            nodes = nodes.stream()
+                    .sorted(Comparator.comparingInt(n -> typeOrder[n.getNodeType().ordinal()]))
+                    .limit(maxNodes)
+                    .collect(Collectors.toList());
         }
 
-        List<GraphEdge> edges;
-        if (maxEdges > 0) {
-            edges = edgeRepository.findByFactSheetId(factSheetId).stream()
-                .limit(maxEdges)
+        // Collect edges between visible nodes from the vector store.
+        Set<String> nodeIds = nodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId).stream()
+                .filter(e -> e.getSourceNode() != null && e.getTargetNode() != null
+                        && nodeIds.contains(e.getSourceNode().getNodeId())
+                        && nodeIds.contains(e.getTargetNode().getNodeId()))
                 .collect(Collectors.toList());
-        } else {
-            edges = edgeRepository.findByFactSheetId(factSheetId);
+        if (maxEdges > 0 && edges.size() > maxEdges) {
+            edges = edges.subList(0, maxEdges);
         }
 
         // Convert to D3 format
@@ -166,14 +179,7 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
             .map(this::nodeToD3Format)
             .collect(Collectors.toList());
 
-        Set<String> nodeIds = nodes.stream()
-            .map(GraphNode::getNodeId)
-            .collect(Collectors.toSet());
-
-        // Only include edges where both endpoints are in our node set
         List<Map<String, Object>> edgeData = edges.stream()
-            .filter(e -> nodeIds.contains(e.getSourceNode().getNodeId()) &&
-                        nodeIds.contains(e.getTargetNode().getNodeId()))
             .map(this::edgeToD3Format)
             .collect(Collectors.toList());
 
@@ -189,58 +195,150 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public Map<String, Object> getGraphStatistics(Long factSheetId) {
+        // P2: single-flight short-TTL cache — prevents 96 concurrent GET /job calls from
+        // each independently recomputing the live graph summary.
+        String cacheKey = String.valueOf(factSheetId);
+        Object[] cached = statsCache.get(cacheKey);
+        if (cached != null && (long) cached[1] > System.currentTimeMillis()) {
+            return (Map<String, Object>) cached[0];
+        }
+
         Map<String, Object> stats = new LinkedHashMap<>();
 
-        // Node counts by type
-        Map<String, Long> nodesByType = new HashMap<>();
-        for (NodeLevel level : NodeLevel.values()) {
-            long count = nodeRepository.countByFactSheetIdAndNodeType(factSheetId, level);
-            if (count > 0) {
-                nodesByType.put(level.name(), count);
+        // --- Vector/matrix store is the SINGLE SOURCE OF TRUTH for all counts ---
+        // Per-fact-sheet node counts come directly from the matrix store, where
+        // MatrixKnowledgeGraphService.createNode stores factSheetId on each MatrixGraphNode.
+        // No JPA reads for graph operations.
+        Map<String, Long> nodesByType = new LinkedHashMap<>();
+        long totalEdges = 0L;
+        Map<String, Long> edgesByType = new LinkedHashMap<>();
+
+        if (knowledgeGraphService != null && factSheetId != null) {
+            try {
+                for (NodeLevel level : NodeLevel.values()) {
+                    long count = knowledgeGraphService.countNodesByTypeInFactSheet(factSheetId, level);
+                    if (count > 0) {
+                        nodesByType.put(level.name(), count);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Failed to count vector-store nodes for factSheetId={}: {}", factSheetId, e.getMessage());
+            }
+
+            // Edge counts: delegate to the global graph statistics from the vector store
+            // (edges are not fact-sheet scoped in the matrix adjacency structure, so we
+            // read the global edge-type breakdown which is what populates relationshipTypeCounts).
+            try {
+                Map<String, Object> globalStats = knowledgeGraphService.getGraphStatistics();
+                // Collect per-type edge counts from "edges_<type>" keys
+                for (Map.Entry<String, Object> entry : globalStats.entrySet()) {
+                    String key = entry.getKey();
+                    if (key != null && key.startsWith("edges_") && entry.getValue() instanceof Number num) {
+                        String edgeType = key.substring("edges_".length()).toUpperCase(java.util.Locale.ROOT);
+                        long count = num.longValue();
+                        if (count > 0) {
+                            edgesByType.put(edgeType, count);
+                            totalEdges += count;
+                        }
+                    }
+                }
+                // Fallback: if no "edges_*" keys, use the scalar "totalEdges" from global stats
+                if (totalEdges == 0 && globalStats.get("totalEdges") instanceof Number num) {
+                    totalEdges = num.longValue();
+                }
+            } catch (Exception e) {
+                log.warn("Failed to read edge counts from vector store for factSheetId={}: {}", factSheetId, e.getMessage());
             }
         }
+
         stats.put("nodesByType", nodesByType);
+        // Convenience top-level keys for UnifiedCrawlController.buildLiveGraphSummary
+        // and the /api/unified-crawl/graph-stats endpoint.
+        stats.put("entityCount",   nodesByType.getOrDefault("ENTITY",   0L));
+        stats.put("documentCount", nodesByType.getOrDefault("DOCUMENT", 0L));
+        stats.put("snippetCount",  nodesByType.getOrDefault("SNIPPET",  0L));
+        stats.put("tableCount",    nodesByType.getOrDefault("TABLE",    0L));
+        long totalNodes = nodesByType.values().stream().mapToLong(Long::longValue).sum();
+        stats.put("totalNodes", totalNodes);
 
-        // Edge counts by type
-        Map<String, Long> edgesByType = new HashMap<>();
-        for (EdgeType type : EdgeType.values()) {
-            long count = edgeRepository.countByFactSheetIdAndEdgeType(factSheetId, type);
-            if (count > 0) {
-                edgesByType.put(type.name(), count);
+        // Edge counts — all from the vector store
+        stats.put("relationshipTypeCounts", edgesByType);
+        stats.put("totalEdges", totalEdges);
+
+        // Entity statistics — null-guarded
+        long distinctConcepts = 0;
+        if (entityMentionRepository != null && factSheetId != null) {
+            try {
+                distinctConcepts = entityMentionRepository.countDistinctEntitiesByFactSheet(factSheetId);
+            } catch (Exception e) {
+                log.warn("Failed to count distinct entities for factSheetId={}: {}", factSheetId, e.getMessage());
             }
         }
-        stats.put("edgesByType", edgesByType);
+        stats.put("distinctConcepts", distinctConcepts);
 
-        // Entity statistics
-        stats.put("distinctConcepts", entityMentionRepository.countDistinctEntitiesByFactSheet(factSheetId));
+        // Top concepts — null-guarded
+        List<Map<String, Object>> topConceptsList = Collections.emptyList();
+        if (entityMentionRepository != null && factSheetId != null) {
+            try {
+                List<Object[]> topConcepts = entityMentionRepository.findTopEntitiesByFactSheet(
+                        factSheetId, PageRequest.of(0, 10));
+                topConceptsList = topConcepts.stream()
+                        .filter(arr -> arr != null && arr.length >= 2 && arr[0] != null && arr[1] != null)
+                        .map(arr -> Map.<String, Object>of("name", arr[0], "count", arr[1]))
+                        .collect(Collectors.toList());
+            } catch (Exception e) {
+                log.warn("Failed to fetch top concepts for factSheetId={}: {}", factSheetId, e.getMessage());
+            }
+        }
+        stats.put("topConcepts", topConceptsList);
 
-        // Top concepts
-        List<Object[]> topConcepts = entityMentionRepository.findTopEntitiesByFactSheet(
-            factSheetId, PageRequest.of(0, 10));
-        stats.put("topConcepts", topConcepts.stream()
-            .map(arr -> Map.of("name", arr[0], "count", arr[1]))
-            .collect(Collectors.toList()));
+        // Source connectivity — null-guarded
+        Object connectivity = Map.of();
+        if (sourceLinkingService != null && factSheetId != null) {
+            try {
+                connectivity = sourceLinkingService.getConnectivitySummary(factSheetId);
+            } catch (Exception e) {
+                log.warn("Failed to get connectivity summary for factSheetId={}: {}", factSheetId, e.getMessage());
+            }
+        }
+        stats.put("sourceConnectivity", connectivity);
 
-        // Connectivity summary from source linking service
-        stats.put("sourceConnectivity", sourceLinkingService.getConnectivitySummary(factSheetId));
+        // Populate cache entry for subsequent concurrent calls
+        statsCache.put(cacheKey, new Object[]{stats, System.currentTimeMillis() + STATS_CACHE_TTL_MS});
 
         return stats;
     }
 
     @Override
-    @Transactional
     public int clearGraph(Long factSheetId) {
         log.warn("Clearing graph for fact sheet {}", factSheetId);
 
-        int mentionsDeleted = entityMentionRepository.deleteByFactSheetId(factSheetId);
-        int edgesDeleted = edgeRepository.deleteByFactSheetId(factSheetId);
-        int nodesDeleted = nodeRepository.deleteByFactSheetId(factSheetId);
+        // Count nodes in vector store before deletion so we can return a meaningful count.
+        long nodesBefore = 0;
+        for (NodeLevel level : NodeLevel.values()) {
+            nodesBefore += knowledgeGraphService.countNodesByTypeInFactSheet(factSheetId, level);
+        }
 
-        log.info("Cleared graph for fact sheet {}: {} nodes, {} edges, {} mentions",
-            factSheetId, nodesDeleted, edgesDeleted, mentionsDeleted);
+        // Vector store is the SINGLE SOURCE OF TRUTH — delete via matrix service.
+        knowledgeGraphService.deleteByFactSheetId(factSheetId);
 
-        return nodesDeleted + edgesDeleted + mentionsDeleted;
+        // Also clean up JPA entity mentions (which are still persisted there)
+        int mentionsDeleted = 0;
+        if (entityMentionRepository != null) {
+            try {
+                mentionsDeleted = entityMentionRepository.deleteByFactSheetId(factSheetId);
+            } catch (Exception e) {
+                log.warn("Failed to delete entity mentions for factSheetId={}: {}", factSheetId, e.getMessage());
+            }
+        }
+
+        int nodesDeleted = (int) nodesBefore;
+        log.info("Cleared graph for fact sheet {}: ~{} nodes deleted, {} mentions deleted",
+            factSheetId, nodesDeleted, mentionsDeleted);
+
+        return nodesDeleted + mentionsDeleted;
     }
 
     @Override
@@ -419,8 +517,8 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
 
     @Override
     public List<Map<String, Object>> searchNodes(Long factSheetId, String query, int limit) {
-        return nodeRepository.searchByFactSheetAndQuery(factSheetId, query, PageRequest.of(0, limit))
-            .getContent().stream()
+        // Vector store is the SINGLE SOURCE OF TRUTH — delegate to matrix service.
+        return knowledgeGraphService.searchNodesInFactSheet(factSheetId, query, limit).stream()
             .map(this::nodeToD3Format)
             .collect(Collectors.toList());
     }
@@ -428,7 +526,8 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
     @Override
     public List<Map<String, Object>> getRelatedDocuments(Long factSheetId, String documentNodeId,
                                                           int minSharedConcepts, int limit) {
-        GraphNode docNode = nodeRepository.findByNodeId(documentNodeId).orElse(null);
+        // Vector store is the SINGLE SOURCE OF TRUTH — look up the node via matrix service.
+        GraphNode docNode = knowledgeGraphService.getNode(documentNodeId).orElse(null);
         if (docNode == null) {
             return List.of();
         }
@@ -458,7 +557,8 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
             .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
             .limit(limit)
             .map(e -> {
-                GraphNode node = nodeRepository.findByNodeId(e.getKey()).orElse(null);
+                // Vector store is the SINGLE SOURCE OF TRUTH — look up via matrix service.
+                GraphNode node = knowledgeGraphService.getNode(e.getKey()).orElse(null);
                 Map<String, Object> result = new HashMap<>();
                 if (node != null) {
                     result.put("nodeId", node.getNodeId());

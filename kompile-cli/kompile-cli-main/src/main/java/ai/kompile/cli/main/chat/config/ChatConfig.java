@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,7 +44,7 @@ import java.util.Map;
 public class ChatConfig {
 
     private static final String CONFIG_FILE = "chat-config.json";
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     @JsonProperty
@@ -135,6 +137,7 @@ public class ChatConfig {
     /**
      * Check if this config has enough info to make LLM calls.
      */
+    @JsonIgnore
     public boolean isValid() {
         // Passthrough mode doesn't need provider/model/key - the agent handles its own auth
         if ("passthrough".equals(chatMode)) return true;
@@ -150,6 +153,7 @@ public class ChatConfig {
     /**
      * Whether this provider connects to a kompile-app instance (server mode).
      */
+    @JsonIgnore
     public boolean isKompileServer() {
         return "kompile".equals(provider);
     }
@@ -190,6 +194,7 @@ public class ChatConfig {
      * Whether this provider uses the Anthropic Messages API format
      * (vs OpenAI Chat Completions format).
      */
+    @JsonIgnore
     public boolean isAnthropicFormat() {
         return "anthropic".equals(provider);
     }
@@ -197,6 +202,7 @@ public class ChatConfig {
     /**
      * Whether this provider uses OpenAI-compatible Chat Completions format.
      */
+    @JsonIgnore
     public boolean isOpenAiCompatible() {
         return !isAnthropicFormat();
     }

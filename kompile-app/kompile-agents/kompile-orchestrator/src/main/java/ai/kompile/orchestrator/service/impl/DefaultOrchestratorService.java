@@ -34,6 +34,7 @@ import ai.kompile.orchestrator.repository.OrchestratorSnapshotRepository;
 import ai.kompile.orchestrator.service.TriggerManager;
 import ai.kompile.orchestrator.service.registry.HookRegistry;
 import ai.kompile.orchestrator.service.registry.StateRegistry;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -57,7 +58,7 @@ public class DefaultOrchestratorService implements OrchestratorService {
     private final StateRegistry stateRegistry;
     private final ApplicationEventPublisher eventPublisher;
     private final OrchestratorProperties properties;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // Optional components (can be set after construction)
     private HookRegistry hookRegistry;

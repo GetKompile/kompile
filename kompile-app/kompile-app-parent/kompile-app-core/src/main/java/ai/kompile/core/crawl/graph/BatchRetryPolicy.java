@@ -21,6 +21,8 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlJob.RetryEvent;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -48,7 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *     .build();
  *
  * BatchRetryPolicy.RetryDecision decision = policy.evaluateFailure(
- *     batchItems, batchSize, "OutOfMemoryError", backendId, job);
+ *     batchIndex, batchItems, batchSize, "OutOfMemoryError", backendId, fallbackSelector, job);
  *
  * switch (decision.getAction()) {
  *     case RETRY_SAME_BACKEND:
@@ -137,9 +139,13 @@ public class BatchRetryPolicy<T> {
     private final long maxBackoffMs;
     private final double batchShrinkFactor;
     private final int minBatchSize;
+    private final double rateLimitBackoffMultiplier;
 
-    // Per-batch attempt tracking (keyed by batch identity via sequential calls)
-    private final AtomicInteger currentAttempt = new AtomicInteger(0);
+    // Per-batch attempt tracking, keyed by a caller-supplied batch identity so attempts for one
+    // batch never bleed into another. The prior single shared counter accumulated failures across
+    // every batch in the phase and dead-lettered late batches once the cumulative count exceeded
+    // maxRetries (silent data loss under sporadic failures).
+    private final ConcurrentHashMap<Object, AtomicInteger> attemptsByBatch = new ConcurrentHashMap<>();
 
     // Dead-letter queue
     private final List<T> deadLetterQueue = new CopyOnWriteArrayList<>();
@@ -152,35 +158,40 @@ public class BatchRetryPolicy<T> {
         this.maxBackoffMs = builder.maxBackoffMs;
         this.batchShrinkFactor = builder.batchShrinkFactor;
         this.minBatchSize = builder.minBatchSize;
+        this.rateLimitBackoffMultiplier = builder.rateLimitBackoffMultiplier;
     }
 
     /**
      * Evaluate a batch failure and return a retry decision.
      *
+     * @param batchKey        stable identity of the batch (e.g. its index); attempts are counted
+     *                        per key so one batch's retries never dead-letter another
      * @param items          the failed batch items
      * @param currentBatchSize the batch size that failed
      * @param errorMessage   the error message/exception text
      * @param currentBackend the backend that failed (may be null for local)
-     * @param balancer       workload balancer for finding fallback backends (may be null)
+     * @param fallbackSelector selector for an alternate backend on rate-limit (may be null)
      * @param job            the crawl job for recording retry events
      * @return the retry decision
      */
-    public RetryDecision<T> evaluateFailure(List<T> items, int currentBatchSize,
+    public RetryDecision<T> evaluateFailure(Object batchKey, List<T> items, int currentBatchSize,
                                             String errorMessage, String currentBackend,
-                                            WorkloadBalancer balancer, UnifiedCrawlJob job) {
-        int attempt = currentAttempt.incrementAndGet();
+                                            FallbackBackendSelector fallbackSelector, UnifiedCrawlJob job) {
+        int attempt = attemptsByBatch.computeIfAbsent(batchKey, k -> new AtomicInteger(0)).incrementAndGet();
         FailureCategory category = categorize(errorMessage);
 
         // Fatal errors — never retry
         if (category == FailureCategory.FATAL) {
+            attemptsByBatch.remove(batchKey);
             recordEvent(job, attempt, items.size(), currentBatchSize, currentBatchSize,
                     errorMessage, currentBackend, null, 0, false, false);
             return new RetryDecision<>(RetryAction.ABORT, currentBatchSize, 0,
                     null, "fatal: " + errorMessage, attempt, items);
         }
 
-        // Check if we've exhausted retries
+        // Check if we've exhausted retries for THIS batch
         if (attempt > maxRetries) {
+            attemptsByBatch.remove(batchKey);
             deadLetterQueue.addAll(items);
             if (job != null) {
                 job.getDeadLetterCount().addAndGet(items.size());
@@ -203,19 +214,27 @@ public class BatchRetryPolicy<T> {
                     null, category.name().toLowerCase(), attempt, items);
         }
 
-        // Rate limiting / capacity — try fallback backend
-        if (category == FailureCategory.RATE_LIMITED && balancer != null) {
-            var fallback = balancer.selectBackend(stage.toLowerCase());
-            if (fallback.isPresent() && !fallback.get().equals(currentBackend)) {
-                recordEvent(job, attempt, items.size(), currentBatchSize, currentBatchSize,
-                        errorMessage, currentBackend, fallback.get(), backoff, false, false);
-                if (job != null) {
-                    job.recordRerouteEvent(currentBackend, fallback.get(),
-                            stage, "retry_fallback", items.size());
+        // Rate limiting / quota — back off harder, and reroute to a fallback backend if available.
+        if (category == FailureCategory.RATE_LIMITED) {
+            long rlBackoff = Math.min(maxBackoffMs, (long)(backoff * rateLimitBackoffMultiplier));
+            if (fallbackSelector != null) {
+                Optional<String> fallback = fallbackSelector.selectFallback(stage.toLowerCase(), currentBackend);
+                if (fallback.isPresent() && !fallback.get().equals(currentBackend)) {
+                    recordEvent(job, attempt, items.size(), currentBatchSize, currentBatchSize,
+                            errorMessage, currentBackend, fallback.get(), rlBackoff, false, false);
+                    if (job != null) {
+                        job.recordRerouteEvent(currentBackend, fallback.get(),
+                                stage, "rate_limited_fallback", items.size());
+                    }
+                    return new RetryDecision<>(RetryAction.RETRY_FALLBACK_BACKEND, currentBatchSize,
+                            rlBackoff, fallback.get(), "rate_limited_fallback", attempt, items);
                 }
-                return new RetryDecision<>(RetryAction.RETRY_FALLBACK_BACKEND, currentBatchSize,
-                        backoff, fallback.get(), "rate_limited_fallback", attempt, items);
             }
+            // No fallback — retry the same backend after a longer (rate-limit-aware) backoff.
+            recordEvent(job, attempt, items.size(), currentBatchSize, currentBatchSize,
+                    errorMessage, currentBackend, null, rlBackoff, false, false);
+            return new RetryDecision<>(RetryAction.RETRY_SAME_BACKEND, currentBatchSize, rlBackoff,
+                    null, "rate_limited", attempt, items);
         }
 
         // Timeout / bad response / unknown — retry same backend with backoff
@@ -226,10 +245,18 @@ public class BatchRetryPolicy<T> {
     }
 
     /**
-     * Reset attempt counter (call when starting a new batch).
+     * Reset the attempt counter for a specific batch. Optional — each batch is already isolated by
+     * key — but callers may use it to free the entry once a batch finally succeeds.
+     */
+    public void resetAttempts(Object batchKey) {
+        attemptsByBatch.remove(batchKey);
+    }
+
+    /**
+     * Reset all per-batch attempt counters (e.g. when reusing a policy for a fresh phase).
      */
     public void resetAttempts() {
-        currentAttempt.set(0);
+        attemptsByBatch.clear();
     }
 
     /**
@@ -330,6 +357,7 @@ public class BatchRetryPolicy<T> {
         private long maxBackoffMs = 60_000;
         private double batchShrinkFactor = 0.5;
         private int minBatchSize = 1;
+        private double rateLimitBackoffMultiplier = 3.0;
 
         public Builder<T> stage(String stage) { this.stage = stage; return this; }
         public Builder<T> maxRetries(int max) { this.maxRetries = max; return this; }
@@ -338,6 +366,7 @@ public class BatchRetryPolicy<T> {
         public Builder<T> maxBackoffMs(long ms) { this.maxBackoffMs = ms; return this; }
         public Builder<T> batchShrinkFactor(double factor) { this.batchShrinkFactor = factor; return this; }
         public Builder<T> minBatchSize(int min) { this.minBatchSize = min; return this; }
+        public Builder<T> rateLimitBackoffMultiplier(double mult) { this.rateLimitBackoffMultiplier = mult; return this; }
 
         public BatchRetryPolicy<T> build() {
             return new BatchRetryPolicy<>(this);

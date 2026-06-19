@@ -86,11 +86,14 @@ public class MatrixGraphAlgorithms {
         if (n == 0) {
             return Collections.emptyMap();
         }
-        INDArray adj = graph.getCombinedAdjacencyMatrix().get(
-                NDArrayIndex.indices(createRange(n)),
-                NDArrayIndex.indices(createRange(n))
-        );
-        return pageRank(adj, nodeIdsOf(graph), dampingFactor, convergence, maxIterations);
+        // getCombinedAdjacencyMatrix() now returns a compact [n×n] matrix built on demand
+        // from sparse storage. We own this array and must close it when done.
+        INDArray adj = graph.getCombinedAdjacencyMatrix();
+        try {
+            return pageRank(adj, nodeIdsOf(graph), dampingFactor, convergence, maxIterations);
+        } finally {
+            if (!adj.wasClosed()) adj.close();
+        }
     }
 
     /**
@@ -180,12 +183,9 @@ public class MatrixGraphAlgorithms {
             return new HITSResult(Collections.emptyMap(), Collections.emptyMap());
         }
 
-        INDArray adjacency = graph.getCombinedAdjacencyMatrix();
-        INDArray adj = adjacency.get(
-                NDArrayIndex.indices(createRange(n)),
-                NDArrayIndex.indices(createRange(n))
-        );
-
+        // getCombinedAdjacencyMatrix() returns compact [n×n]; owned by this call.
+        INDArray adj = graph.getCombinedAdjacencyMatrix();
+        try {
         // Initialize hub and authority vectors
         INDArray hubs = Nd4j.ones(DataType.FLOAT, n, 1);
         INDArray authorities = Nd4j.ones(DataType.FLOAT, n, 1);
@@ -233,6 +233,9 @@ public class MatrixGraphAlgorithms {
         }
 
         return new HITSResult(hubScores, authorityScores);
+        } finally {
+            if (!adj.wasClosed()) adj.close();
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -369,11 +372,13 @@ public class MatrixGraphAlgorithms {
     public static List<Set<String>> findConnectedComponents(AdjacencyMatrixGraph graph) {
         int n = graph.getNodeCount();
         if (n == 0) return Collections.emptyList();
-        INDArray adj = graph.getCombinedAdjacencyMatrix().get(
-                NDArrayIndex.indices(createRange(n)),
-                NDArrayIndex.indices(createRange(n))
-        );
-        return findConnectedComponents(adj, nodeIdsOf(graph));
+        // compact [n×n] — owned here, closed after use
+        INDArray adj = graph.getCombinedAdjacencyMatrix();
+        try {
+            return findConnectedComponents(adj, nodeIdsOf(graph));
+        } finally {
+            if (!adj.wasClosed()) adj.close();
+        }
     }
 
     /**
@@ -389,23 +394,27 @@ public class MatrixGraphAlgorithms {
 
         boolean[] visited = new boolean[n];
         List<Set<String>> components = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            if (visited[i]) continue;
-            Set<String> component = new HashSet<>();
-            Queue<Integer> queue = new ArrayDeque<>();
-            queue.add(i);
-            visited[i] = true;
-            while (!queue.isEmpty()) {
-                int current = queue.poll();
-                component.add(nodeIds.get(current));
-                for (int j = 0; j < n; j++) {
-                    if (!visited[j] && symmetric.getDouble(current, j) > 0) {
-                        visited[j] = true;
-                        queue.add(j);
+        try {
+            for (int i = 0; i < n; i++) {
+                if (visited[i]) continue;
+                Set<String> component = new HashSet<>();
+                Queue<Integer> queue = new ArrayDeque<>();
+                queue.add(i);
+                visited[i] = true;
+                while (!queue.isEmpty()) {
+                    int current = queue.poll();
+                    component.add(nodeIds.get(current));
+                    for (int j = 0; j < n; j++) {
+                        if (!visited[j] && symmetric.getDouble(current, j) > 0) {
+                            visited[j] = true;
+                            queue.add(j);
+                        }
                     }
                 }
+                components.add(component);
             }
-            components.add(component);
+        } finally {
+            if (!symmetric.wasClosed()) symmetric.close();
         }
         return components;
     }
@@ -430,6 +439,7 @@ public class MatrixGraphAlgorithms {
         }
 
         int sourceIdx = sourceOpt.get().getMatrixIndex();
+        // compact [n×n] built on demand; closed when BFS is done
         INDArray adjacency = graph.getCombinedAdjacencyMatrix();
         Map<Integer, String> indexToId = graph.getIndexToNodeId();
 
@@ -441,15 +451,19 @@ public class MatrixGraphAlgorithms {
         Queue<Integer> queue = new LinkedList<>();
         queue.add(sourceIdx);
 
-        while (!queue.isEmpty()) {
-            int current = queue.poll();
+        try {
+            while (!queue.isEmpty()) {
+                int current = queue.poll();
 
-            for (int j = 0; j < n; j++) {
-                if (distances[j] == -1 && adjacency.getDouble(current, j) > 0) {
-                    distances[j] = distances[current] + 1;
-                    queue.add(j);
+                for (int j = 0; j < n; j++) {
+                    if (distances[j] == -1 && adjacency.getDouble(current, j) > 0) {
+                        distances[j] = distances[current] + 1;
+                        queue.add(j);
+                    }
                 }
             }
+        } finally {
+            if (!adjacency.wasClosed()) adjacency.close();
         }
 
         // Convert to map
@@ -477,18 +491,20 @@ public class MatrixGraphAlgorithms {
     public static Map<String, Double> degreeCentrality(AdjacencyMatrixGraph graph) {
         int n = graph.getNodeCount();
         if (n == 0) return Collections.emptyMap();
-        INDArray adj = graph.getCombinedAdjacencyMatrix().get(
-                NDArrayIndex.indices(createRange(n)),
-                NDArrayIndex.indices(createRange(n))
-        );
-        INDArray totals = degrees(adj, DegreeType.TOTAL_WEIGHTED);
-        double maxDegree = totals.maxNumber().doubleValue();
-        List<String> nodeIds = nodeIdsOf(graph);
-        Map<String, Double> result = new HashMap<>(n);
-        for (int i = 0; i < n; i++) {
-            result.put(nodeIds.get(i), maxDegree > 0 ? totals.getDouble(i) / maxDegree : 0.0);
+        // compact [n×n] — owned here, closed after degree computation
+        INDArray adj = graph.getCombinedAdjacencyMatrix();
+        try {
+            INDArray totals = degrees(adj, DegreeType.TOTAL_WEIGHTED);
+            double maxDegree = totals.maxNumber().doubleValue();
+            List<String> nodeIds = nodeIdsOf(graph);
+            Map<String, Double> result = new HashMap<>(n);
+            for (int i = 0; i < n; i++) {
+                result.put(nodeIds.get(i), maxDegree > 0 ? totals.getDouble(i) / maxDegree : 0.0);
+            }
+            return result;
+        } finally {
+            if (!adj.wasClosed()) adj.close();
         }
-        return result;
     }
 
     /**
@@ -573,6 +589,7 @@ public class MatrixGraphAlgorithms {
 
     private static void computeBetweennessFromSource(AdjacencyMatrixGraph graph, int source, double[] centrality) {
         int n = graph.getNodeCount();
+        // compact [n×n] built on demand; closed after this BFS pass
         INDArray adjacency = graph.getCombinedAdjacencyMatrix();
 
         int[] distance = new int[n];
@@ -591,22 +608,26 @@ public class MatrixGraphAlgorithms {
 
         queue.add(source);
 
-        while (!queue.isEmpty()) {
-            int v = queue.poll();
-            stack.push(v);
+        try {
+            while (!queue.isEmpty()) {
+                int v = queue.poll();
+                stack.push(v);
 
-            for (int w = 0; w < n; w++) {
-                if (adjacency.getDouble(v, w) > 0) {
-                    if (distance[w] < 0) {
-                        distance[w] = distance[v] + 1;
-                        queue.add(w);
-                    }
-                    if (distance[w] == distance[v] + 1) {
-                        sigma[w] += sigma[v];
-                        predecessors.get(w).add(v);
+                for (int w = 0; w < n; w++) {
+                    if (adjacency.getDouble(v, w) > 0) {
+                        if (distance[w] < 0) {
+                            distance[w] = distance[v] + 1;
+                            queue.add(w);
+                        }
+                        if (distance[w] == distance[v] + 1) {
+                            sigma[w] += sigma[v];
+                            predecessors.get(w).add(v);
+                        }
                     }
                 }
             }
+        } finally {
+            if (!adjacency.wasClosed()) adjacency.close();
         }
 
         double[] delta = new double[n];

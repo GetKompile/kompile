@@ -135,7 +135,7 @@ export interface OptimizationSubPass {
   id: string;
   name: string;
   description: string;
-  category: 'CLEANUP' | 'FUSION' | 'GPU' | 'QUANTIZATION';
+  category: 'CLEANUP' | 'SIMPLIFICATION' | 'FUSION' | 'PERFORMANCE' | 'GPU' | 'QUANTIZATION';
   icon: string;
 }
 
@@ -143,7 +143,7 @@ export interface OptimizationPassDetail {
   id: string;
   name: string;
   description: string;
-  category: 'CLEANUP' | 'FUSION' | 'GPU' | 'QUANTIZATION';
+  category: 'CLEANUP' | 'SIMPLIFICATION' | 'FUSION' | 'PERFORMANCE' | 'GPU' | 'QUANTIZATION';
   icon: string;
   subPasses?: OptimizationSubPass[];
 }
@@ -153,6 +153,7 @@ export interface OptimizationPassDetail {
  * Each group contains individual sub-passes that can be selected independently.
  */
 export const OPTIMIZATION_PASS_GROUPS: OptimizationPassDetail[] = [
+  // ---- Phase 1: Cleanup & Simplification ----
   {
     id: 'dead_code_elimination', name: 'Dead Code Elimination',
     description: 'Removes operations whose outputs are never used by any downstream computation',
@@ -170,16 +171,63 @@ export const OPTIMIZATION_PASS_GROUPS: OptimizationPassDetail[] = [
     ]
   },
   {
+    id: 'broadcast_elimination', name: 'Broadcast Elimination',
+    description: 'Removes redundant broadcasts, double negation, and canonicalizes commutative ops',
+    category: 'SIMPLIFICATION', icon: 'unfold_less',
+    subPasses: [
+      { id: 'RemoveRedundantBroadcast', name: 'Remove Redundant Broadcast', description: 'Removes broadcast ops when shapes already match', category: 'SIMPLIFICATION', icon: 'unfold_less' },
+      { id: 'EliminateDoubleNegation', name: 'Eliminate Double Negation', description: 'Removes neg(neg(x)) pairs', category: 'SIMPLIFICATION', icon: 'unfold_less' },
+      { id: 'CanonicalizeCommutativeOps', name: 'Canonicalize Commutative Ops', description: 'Normalizes operand order for commutative operations', category: 'SIMPLIFICATION', icon: 'unfold_less' }
+    ]
+  },
+  {
+    id: 'reordering', name: 'Expression Reordering',
+    description: 'Reassociates constants and eliminates double transpose',
+    category: 'SIMPLIFICATION', icon: 'swap_vert',
+    subPasses: [
+      { id: 'ReassociateConstants', name: 'Reassociate Constants', description: 'Groups constant operands together to enable further folding', category: 'SIMPLIFICATION', icon: 'swap_vert' },
+      { id: 'EliminateDoubleTranspose', name: 'Eliminate Double Transpose', description: 'Removes transpose(transpose(x)) pairs', category: 'SIMPLIFICATION', icon: 'swap_vert' }
+    ]
+  },
+  {
     id: 'algebraic_simplification', name: 'Algebraic Simplification',
     description: 'Simplifies algebraic expressions such as x*1=x, x+0=x, x*0=0',
-    category: 'CLEANUP', icon: 'functions',
+    category: 'SIMPLIFICATION', icon: 'functions',
     subPasses: [
-      { id: 'AddZero', name: 'Add Zero', description: 'Simplifies x+0 to x', category: 'CLEANUP', icon: 'functions' },
-      { id: 'SubtractZero', name: 'Subtract Zero', description: 'Simplifies x-0 to x', category: 'CLEANUP', icon: 'functions' },
-      { id: 'MultiplyOne', name: 'Multiply One', description: 'Simplifies x*1 to x', category: 'CLEANUP', icon: 'functions' },
-      { id: 'MultiplyZero', name: 'Multiply Zero', description: 'Simplifies x*0 to 0', category: 'CLEANUP', icon: 'functions' },
-      { id: 'SubtractSelf', name: 'Subtract Self', description: 'Simplifies x-x to 0', category: 'CLEANUP', icon: 'functions' },
-      { id: 'DivideOne', name: 'Divide One', description: 'Simplifies x/1 to x', category: 'CLEANUP', icon: 'functions' }
+      { id: 'AddZero', name: 'Add Zero', description: 'Simplifies x+0 to x', category: 'SIMPLIFICATION', icon: 'functions' },
+      { id: 'SubtractZero', name: 'Subtract Zero', description: 'Simplifies x-0 to x', category: 'SIMPLIFICATION', icon: 'functions' },
+      { id: 'MultiplyOne', name: 'Multiply One', description: 'Simplifies x*1 to x', category: 'SIMPLIFICATION', icon: 'functions' },
+      { id: 'MultiplyZero', name: 'Multiply Zero', description: 'Simplifies x*0 to 0', category: 'SIMPLIFICATION', icon: 'functions' },
+      { id: 'SubtractSelf', name: 'Subtract Self', description: 'Simplifies x-x to 0', category: 'SIMPLIFICATION', icon: 'functions' },
+      { id: 'DivideOne', name: 'Divide One', description: 'Simplifies x/1 to x', category: 'SIMPLIFICATION', icon: 'functions' }
+    ]
+  },
+  {
+    id: 'peephole', name: 'Peephole Optimizations',
+    description: 'Removes idempotent ops, inverse pairs, and propagates negation',
+    category: 'SIMPLIFICATION', icon: 'visibility',
+    subPasses: [
+      { id: 'RemoveIdempotentOps', name: 'Remove Idempotent Ops', description: 'Removes ops like abs(abs(x)) or relu(relu(x))', category: 'SIMPLIFICATION', icon: 'visibility' },
+      { id: 'RemoveInversePairs', name: 'Remove Inverse Pairs', description: 'Removes inverse op pairs like exp(log(x))', category: 'SIMPLIFICATION', icon: 'visibility' },
+      { id: 'PropagateNegation', name: 'Propagate Negation', description: 'Pushes negation through arithmetic to enable cancellation', category: 'SIMPLIFICATION', icon: 'visibility' }
+    ]
+  },
+  {
+    id: 'arithmetic_chain', name: 'Arithmetic Chain Folding',
+    description: 'Folds chains of arithmetic operations with constants',
+    category: 'SIMPLIFICATION', icon: 'link',
+    subPasses: [
+      { id: 'FoldAddChain', name: 'Fold Add Chain', description: 'Folds add(add(x,c1),c2) into add(x,c1+c2)', category: 'SIMPLIFICATION', icon: 'link' },
+      { id: 'FoldMulChain', name: 'Fold Mul Chain', description: 'Folds mul(mul(x,c1),c2) into mul(x,c1*c2)', category: 'SIMPLIFICATION', icon: 'link' }
+    ]
+  },
+  {
+    id: 'strength_reduction', name: 'Strength Reduction',
+    description: 'Replaces expensive ops with cheaper equivalents',
+    category: 'SIMPLIFICATION', icon: 'speed',
+    subPasses: [
+      { id: 'PowToSquare', name: 'pow(x,2) → square(x)', description: 'Replaces pow(x,2) with the cheaper square operation', category: 'SIMPLIFICATION', icon: 'speed' },
+      { id: 'DivToMulReciprocal', name: 'div(x,c) → mul(x,1/c)', description: 'Replaces division by constant with multiplication by reciprocal', category: 'SIMPLIFICATION', icon: 'speed' }
     ]
   },
   {
@@ -192,6 +240,34 @@ export const OPTIMIZATION_PASS_GROUPS: OptimizationPassDetail[] = [
     ]
   },
   {
+    id: 'concat_split', name: 'Concat/Split Optimization',
+    description: 'Flattens nested concat operations and eliminates concat-split pairs',
+    category: 'SIMPLIFICATION', icon: 'call_split',
+    subPasses: [
+      { id: 'FlattenNestedConcat', name: 'Flatten Nested Concat', description: 'Flattens concat(concat(a,b),c) into concat(a,b,c)', category: 'SIMPLIFICATION', icon: 'call_split' },
+      { id: 'EliminateConcatSplitPair', name: 'Eliminate Concat-Split Pair', description: 'Removes split(concat(a,b)) when it reproduces the original tensors', category: 'SIMPLIFICATION', icon: 'call_split' }
+    ]
+  },
+  {
+    id: 'select_where', name: 'Select/Where Simplification',
+    description: 'Simplifies select/where operations with constant conditions',
+    category: 'SIMPLIFICATION', icon: 'alt_route',
+    subPasses: [
+      { id: 'SimplifyConstantCondition', name: 'Simplify Constant Condition', description: 'Replaces select(true,a,b) with a or select(false,a,b) with b', category: 'SIMPLIFICATION', icon: 'alt_route' }
+    ]
+  },
+  {
+    id: 'redundancy_elimination', name: 'Redundancy Elimination',
+    description: 'Removes redundant operations that produce no useful transformation',
+    category: 'SIMPLIFICATION', icon: 'filter_alt_off',
+    subPasses: [
+      { id: 'RemoveSingleInputConcat', name: 'Remove Single-Input Concat', description: 'Removes concat with only one input tensor', category: 'SIMPLIFICATION', icon: 'filter_alt_off' },
+      { id: 'RemoveFullExtentSlice', name: 'Remove Full-Extent Slice', description: 'Removes slice that selects the entire tensor', category: 'SIMPLIFICATION', icon: 'filter_alt_off' },
+      { id: 'RemoveIdentityGather', name: 'Remove Identity Gather', description: 'Removes gather with sequential indices that reproduces the input', category: 'SIMPLIFICATION', icon: 'filter_alt_off' }
+    ]
+  },
+  // ---- Phase 1b: Shape & CSE ----
+  {
     id: 'shape_fusion', name: 'Shape Fusion',
     description: 'Fuses consecutive shape manipulation operations into single operations',
     category: 'FUSION', icon: 'view_in_ar',
@@ -202,36 +278,17 @@ export const OPTIMIZATION_PASS_GROUPS: OptimizationPassDetail[] = [
     ]
   },
   {
-    id: 'activation_fusion', name: 'Activation Fusion',
-    description: 'Fuses activation function patterns into single optimized operations',
-    category: 'FUSION', icon: 'merge_type',
+    id: 'common_subexpression_elimination', name: 'Common Subexpression Elimination',
+    description: 'Deduplicates identical operations sharing the same inputs and arguments',
+    category: 'SIMPLIFICATION', icon: 'content_copy',
     subPasses: [
-      { id: 'FuseSigmoidMulToSwish', name: 'Fuse Sigmoid*Mul → Swish', description: 'Detects sigmoid(x)*x and replaces with swish', category: 'FUSION', icon: 'merge_type' },
-      { id: 'FuseSwiGLUPattern', name: 'Fuse SwiGLU Pattern', description: 'Detects SwiGLU gating pattern and replaces with fused op', category: 'FUSION', icon: 'merge_type' }
+      { id: 'DeduplicateIdenticalOps', name: 'Deduplicate Identical Ops', description: 'Finds ops with same opName, inputs, and args and merges them into one', category: 'SIMPLIFICATION', icon: 'content_copy' }
     ]
   },
-  {
-    id: 'normalization_fusion', name: 'Normalization Fusion',
-    description: 'Fuses normalization sub-graphs into single fused operations',
-    category: 'FUSION', icon: 'tune',
-    subPasses: [
-      { id: 'FuseRMSNormPattern', name: 'Fuse RMSNorm', description: 'Detects RMS normalization sub-graph and replaces with fused op', category: 'FUSION', icon: 'tune' },
-      { id: 'FuseMeanSquarePattern', name: 'Fuse Mean Square', description: 'Detects mean-square pattern and replaces with fused op', category: 'FUSION', icon: 'tune' }
-    ]
-  },
-  {
-    id: 'linear_fusion', name: 'Linear Fusion',
-    description: 'Fuses matmul + bias add into a single fused linear op',
-    category: 'FUSION', icon: 'linear_scale',
-    subPasses: [
-      { id: 'FuseMatMulWithAdd', name: 'Fuse MatMul + Add', description: 'Fuses matmul followed by add into xw_plus_b', category: 'FUSION', icon: 'linear_scale' },
-      { id: 'FuseTensorMmulWithAdd', name: 'Fuse TensorMmul + Add', description: 'Fuses tensor matmul followed by add', category: 'FUSION', icon: 'linear_scale' },
-      { id: 'FuseConsecutiveReshapes', name: 'Fuse Consecutive Reshapes', description: 'Merges consecutive reshapes in linear layers', category: 'FUSION', icon: 'linear_scale' }
-    ]
-  },
+  // ---- Phase 2: Fusion passes ----
   {
     id: 'attention_fusion', name: 'Attention Fusion',
-    description: 'Detects and fuses multi-head attention patterns into optimized ops',
+    description: 'Detects and fuses multi-head attention patterns into optimized ops (must run before horizontal fusion)',
     category: 'FUSION', icon: 'hub',
     subPasses: [
       { id: 'FuseManualAttentionPattern', name: 'Fuse Manual Attention', description: 'Detects Q*K^T/sqrt(d)*V and replaces with DotProductAttention', category: 'FUSION', icon: 'hub' },
@@ -243,24 +300,81 @@ export const OPTIMIZATION_PASS_GROUPS: OptimizationPassDetail[] = [
     ]
   },
   {
-    id: 'cudnn_replacement', name: 'cuDNN Replacement',
-    description: 'Replaces compatible operations with cuDNN-accelerated implementations',
-    category: 'GPU', icon: 'memory',
+    id: 'horizontal_fusion', name: 'Horizontal Fusion',
+    description: 'Fuses parallel matmul operations sharing the same input into a single fused matmul plus slice',
+    category: 'FUSION', icon: 'view_column',
     subPasses: [
-      { id: 'CudnnConv2dNCHWtoNHWCConversion', name: 'cuDNN Conv2D NCHW→NHWC', description: 'Converts Conv2D layout for Tensor Core acceleration', category: 'GPU', icon: 'memory' }
+      { id: 'FuseParallelMatMuls', name: 'Fuse Parallel MatMuls', description: 'Detects parallel matmuls with shared input and fuses into one', category: 'FUSION', icon: 'view_column' }
     ]
   },
   {
+    id: 'matmul_chain', name: 'MatMul Chain Optimization',
+    description: 'Folds constant matmul chains and absorbs transposes into matmul flags',
+    category: 'FUSION', icon: 'grid_on',
+    subPasses: [
+      { id: 'FoldConstantMatMulChain', name: 'Fold Constant MatMul Chain', description: 'Pre-computes matmul(C1,C2) for constant weight matrices', category: 'FUSION', icon: 'grid_on' },
+      { id: 'AbsorbTransposeIntoMatMul', name: 'Absorb Transpose into MatMul', description: 'Moves transpose into matmul transA/transB flags', category: 'FUSION', icon: 'grid_on' }
+    ]
+  },
+  {
+    id: 'activation_fusion', name: 'Activation Fusion',
+    description: 'Fuses activation function patterns into single optimized operations (must run before rematerialization)',
+    category: 'FUSION', icon: 'merge_type',
+    subPasses: [
+      { id: 'FuseSigmoidMulToSwish', name: 'Fuse Sigmoid*Mul → Swish', description: 'Detects sigmoid(x)*x and replaces with swish', category: 'FUSION', icon: 'merge_type' },
+      { id: 'FuseSwiGLUPattern', name: 'Fuse SwiGLU Pattern', description: 'Detects SwiGLU gating pattern and replaces with fused op', category: 'FUSION', icon: 'merge_type' }
+    ]
+  },
+  {
+    id: 'normalization_fusion', name: 'Normalization Fusion',
+    description: 'Fuses normalization sub-graphs into single fused operations (must run before rematerialization)',
+    category: 'FUSION', icon: 'tune',
+    subPasses: [
+      { id: 'FuseRMSNormPattern', name: 'Fuse RMSNorm', description: 'Detects RMS normalization sub-graph and replaces with fused op', category: 'FUSION', icon: 'tune' },
+      { id: 'FuseMeanSquarePattern', name: 'Fuse Mean Square', description: 'Detects mean-square pattern and replaces with fused op', category: 'FUSION', icon: 'tune' }
+    ]
+  },
+  // ---- Phase 3: Rematerialization ----
+  {
+    id: 'rematerialization', name: 'Rematerialization',
+    description: 'Duplicates cheap operations to shorten variable live ranges and reduce peak memory (runs after all fusions)',
+    category: 'PERFORMANCE', icon: 'memory',
+    subPasses: [
+      { id: 'DuplicateCheapOps', name: 'Duplicate Cheap Ops', description: 'Recomputes inexpensive ops near their consumers instead of keeping results in memory', category: 'PERFORMANCE', icon: 'memory' }
+    ]
+  },
+  // ---- Phase 4: Linear fusion ----
+  {
+    id: 'linear_fusion', name: 'Linear Fusion',
+    description: 'Fuses matmul + bias add into a single fused linear op',
+    category: 'FUSION', icon: 'linear_scale',
+    subPasses: [
+      { id: 'FuseMatMulWithAdd', name: 'Fuse MatMul + Add', description: 'Fuses matmul followed by add into xw_plus_b', category: 'FUSION', icon: 'linear_scale' },
+      { id: 'FuseTensorMmulWithAdd', name: 'Fuse TensorMmul + Add', description: 'Fuses tensor matmul followed by add', category: 'FUSION', icon: 'linear_scale' },
+      { id: 'FuseConsecutiveReshapes', name: 'Fuse Consecutive Reshapes', description: 'Merges consecutive reshapes in linear layers', category: 'FUSION', icon: 'linear_scale' }
+    ]
+  },
+  // ---- Phase 5: Quantization ----
+  {
     id: 'quantization', name: 'Quantization',
     description: 'Converts floating-point weights to lower-precision types (INT8/FP16)',
-    category: 'QUANTIZATION', icon: 'speed',
+    category: 'QUANTIZATION', icon: 'compress',
     subPasses: [
-      { id: 'QuantizeConstantsToFP16', name: 'Quantize to FP16', description: 'Converts constant weights to FP16 half-precision', category: 'QUANTIZATION', icon: 'speed' },
-      { id: 'QuantizeConstantsToINT8', name: 'Quantize to INT8', description: 'Converts constant weights to INT8 with scale factors', category: 'QUANTIZATION', icon: 'speed' },
-      { id: 'FuseDequantizeQuantizePair', name: 'Fuse Dequant-Quant Pair', description: 'Removes redundant dequantize→quantize pairs', category: 'QUANTIZATION', icon: 'speed' },
-      { id: 'RemoveRedundantCasts', name: 'Remove Redundant Casts', description: 'Removes unnecessary dtype cast operations', category: 'QUANTIZATION', icon: 'speed' },
-      { id: 'OptimizeConstantsForInference', name: 'Optimize Constants', description: 'Optimizes constant storage for inference', category: 'QUANTIZATION', icon: 'speed' },
-      { id: 'QuantizePlaceholder', name: 'Quantize Placeholder', description: 'Adds quantization for placeholder inputs', category: 'QUANTIZATION', icon: 'speed' }
+      { id: 'QuantizeConstantsToFP16', name: 'Quantize to FP16', description: 'Converts constant weights to FP16 half-precision', category: 'QUANTIZATION', icon: 'compress' },
+      { id: 'QuantizeConstantsToINT8', name: 'Quantize to INT8', description: 'Converts constant weights to INT8 with scale factors', category: 'QUANTIZATION', icon: 'compress' },
+      { id: 'FuseDequantizeQuantizePair', name: 'Fuse Dequant-Quant Pair', description: 'Removes redundant dequantize→quantize pairs', category: 'QUANTIZATION', icon: 'compress' },
+      { id: 'RemoveRedundantCasts', name: 'Remove Redundant Casts', description: 'Removes unnecessary dtype cast operations', category: 'QUANTIZATION', icon: 'compress' },
+      { id: 'OptimizeConstantsForInference', name: 'Optimize Constants', description: 'Optimizes constant storage for inference', category: 'QUANTIZATION', icon: 'compress' },
+      { id: 'QuantizePlaceholder', name: 'Quantize Placeholder', description: 'Adds quantization for placeholder inputs', category: 'QUANTIZATION', icon: 'compress' }
+    ]
+  },
+  // ---- Phase 6: Hardware-specific ----
+  {
+    id: 'cudnn_replacement', name: 'cuDNN Replacement',
+    description: 'Replaces compatible operations with cuDNN-accelerated implementations',
+    category: 'GPU', icon: 'developer_board',
+    subPasses: [
+      { id: 'CudnnConv2dNCHWtoNHWCConversion', name: 'cuDNN Conv2D NCHW→NHWC', description: 'Converts Conv2D layout for Tensor Core acceleration', category: 'GPU', icon: 'developer_board' }
     ]
   }
 ];
@@ -292,7 +406,9 @@ export function resolvePassDetail(passId: string): OptimizationPassDetail {
 export function getCategoryColor(category: string): string {
   switch (category) {
     case 'CLEANUP': return '#2196f3';
+    case 'SIMPLIFICATION': return '#00bcd4';
     case 'FUSION': return '#4caf50';
+    case 'PERFORMANCE': return '#ff5722';
     case 'GPU': return '#ff9800';
     case 'QUANTIZATION': return '#9c27b0';
     default: return '#757575';
@@ -1535,12 +1651,20 @@ export function getTrainingStatusIcon(status: string): string {
 
 export function getOptimizationCategoryName(category: string): string {
   switch (category) {
-    case 'graph':
-      return 'Graph';
-    case 'memory':
-      return 'Memory';
-    case 'compute':
-      return 'Compute';
+    case 'cleanup':
+      return 'Cleanup';
+    case 'folding':
+      return 'Constant Folding';
+    case 'simplification':
+      return 'Simplification';
+    case 'fusion':
+      return 'Fusion';
+    case 'performance':
+      return 'Performance';
+    case 'hardware':
+      return 'Hardware';
+    case 'quantization':
+      return 'Quantization';
     default:
       return category;
   }
@@ -1548,12 +1672,20 @@ export function getOptimizationCategoryName(category: string): string {
 
 export function getOptimizationCategoryIcon(category: string): string {
   switch (category) {
-    case 'graph':
-      return 'account_tree';
-    case 'memory':
-      return 'memory';
-    case 'compute':
+    case 'cleanup':
+      return 'delete_sweep';
+    case 'folding':
+      return 'compress';
+    case 'simplification':
+      return 'functions';
+    case 'fusion':
+      return 'merge_type';
+    case 'performance':
       return 'speed';
+    case 'hardware':
+      return 'developer_board';
+    case 'quantization':
+      return 'compress';
     default:
       return 'tune';
   }

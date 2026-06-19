@@ -33,10 +33,16 @@ import java.util.Map;
 /**
  * Global exception handler for REST controllers.
  * Ensures proper error responses are sent even when unexpected exceptions occur.
- * Only applies to controllers in the web.controllers package - static resources
- * use Spring's default error handling.
- */
-@ControllerAdvice(basePackages = "ai.kompile.app.web.controllers")
+     * Applies to controllers in the web.controllers package and the event-attribution
+     * controllers (Bayesian / MEBN / causal attribution, package
+     * ai.kompile.event.attribution.controller) so their failures return a structured
+     * error body ({error, message, type, ...}) instead of an opaque 500 — static
+     * resources use Spring's default error handling.
+     */
+    @ControllerAdvice(basePackages = {
+            "ai.kompile.app.web.controllers",
+            "ai.kompile.event.attribution.controller"
+    })
 public class GlobalExceptionHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);

@@ -17,6 +17,7 @@
 package ai.kompile.app.sync.config;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -45,7 +46,7 @@ public class NoteSyncConfigService {
     private volatile NoteSyncConfig currentConfig;
 
     public NoteSyncConfigService() {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
         this.currentConfig = NoteSyncConfig.defaults();

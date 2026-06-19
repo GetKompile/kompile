@@ -371,33 +371,20 @@ public class OcrModelFactory {
     }
 
     /**
-     * Map ModelType to OcrModelType.
+     * Map ModelType to OcrModelType by name (all OCR constant names are identical).
      */
     private OcrModelType mapModelTypeToOcrType(ModelType type) {
-        switch (type) {
-            case OCR_DETECTION: return OcrModelType.OCR_DETECTION;
-            case OCR_RECOGNITION: return OcrModelType.OCR_RECOGNITION;
-            case OCR_TABLE: return OcrModelType.OCR_TABLE;
-            case LAYOUT_MODEL: return OcrModelType.LAYOUT_MODEL;
-            case OCR_PIPELINE: return OcrModelType.OCR_PIPELINE;
-            case DOCUMENT_CLASSIFIER: return OcrModelType.DOCUMENT_CLASSIFIER;
-            default: throw new IllegalArgumentException("Not an OCR type: " + type);
+        if (!type.isOcr()) {
+            throw new IllegalArgumentException("Not an OCR type: " + type);
         }
+        return OcrModelType.valueOf(type.name());
     }
 
     /**
-     * Map OcrModelType to ModelType.
+     * Map OcrModelType to ModelType by name (all OCR constant names are identical).
      */
     private ModelType mapOcrTypeToModelType(OcrModelType type) {
-        switch (type) {
-            case OCR_DETECTION: return ModelType.OCR_DETECTION;
-            case OCR_RECOGNITION: return ModelType.OCR_RECOGNITION;
-            case OCR_TABLE: return ModelType.OCR_TABLE;
-            case LAYOUT_MODEL: return ModelType.LAYOUT_MODEL;
-            case OCR_PIPELINE: return ModelType.OCR_PIPELINE;
-            case DOCUMENT_CLASSIFIER: return ModelType.DOCUMENT_CLASSIFIER;
-            default: throw new IllegalArgumentException("Unknown OCR type: " + type);
-        }
+        return ModelType.valueOf(type.name());
     }
 
     /**

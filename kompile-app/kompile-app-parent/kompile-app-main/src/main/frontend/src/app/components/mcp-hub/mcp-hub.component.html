@@ -25,63 +25,87 @@
       class="sub-tab"
       [class.active]="activeSubTab === 'tools'"
       (click)="activeSubTab = 'tools'">
-      <span class="tab-icon">🔧</span>
+      <mat-icon class="tab-icon">build</mat-icon>
       <span class="tab-label">Tools</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'toolUseLog'"
+      (click)="switchToToolUseLog()">
+      <mat-icon class="tab-icon">receipt_long</mat-icon>
+      <span class="tab-label">Tool Use Log</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'serverBuilder'"
       (click)="activeSubTab = 'serverBuilder'">
-      <span class="tab-icon">🏗️</span>
+      <mat-icon class="tab-icon">dns</mat-icon>
       <span class="tab-label">Server Builder</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'externalServers'"
       (click)="activeSubTab = 'externalServers'">
-      <span class="tab-icon">🔌</span>
+      <mat-icon class="tab-icon">cloud</mat-icon>
       <span class="tab-label">External Servers</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'restBridge'"
       (click)="activeSubTab = 'restBridge'">
-      <span class="tab-icon">🌉</span>
+      <mat-icon class="tab-icon">swap_horiz</mat-icon>
       <span class="tab-label">REST Bridge</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'cliInjection'"
+      (click)="activeSubTab = 'cliInjection'">
+      <mat-icon class="tab-icon">terminal</mat-icon>
+      <span class="tab-label">CLI Injection</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'debugger'"
       (click)="activeSubTab = 'debugger'">
-      <span class="tab-icon">🐛</span>
+      <mat-icon class="tab-icon">bug_report</mat-icon>
       <span class="tab-label">Debugger</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'toolManager'"
       (click)="activeSubTab = 'toolManager'">
-      <span class="tab-icon">🛠️</span>
+      <mat-icon class="tab-icon">handyman</mat-icon>
       <span class="tab-label">Tool Manager</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'promptTemplates'"
       (click)="activeSubTab = 'promptTemplates'">
-      <span class="tab-icon">📝</span>
+      <mat-icon class="tab-icon">description</mat-icon>
       <span class="tab-label">Prompt Templates</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'clientConnections'"
       (click)="activeSubTab = 'clientConnections'; loadConnections()">
-      <span class="tab-icon">🔗</span>
+      <mat-icon class="tab-icon">link</mat-icon>
       <span class="tab-label">Client Connections</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'usageCatalog'"
+      (click)="activeSubTab = 'usageCatalog'">
+      <mat-icon class="tab-icon">bar_chart</mat-icon>
+      <span class="tab-label">Usage &amp; Tokens</span>
     </button>
   </div>
 
   <div class="sub-tab-content">
     <div *ngIf="activeSubTab === 'tools'">
       <app-mcp-tools-viewer></app-mcp-tools-viewer>
+    </div>
+    <div *ngIf="activeSubTab === 'toolUseLog'">
+      <app-mcp-tool-use-log></app-mcp-tool-use-log>
     </div>
     <div *ngIf="activeSubTab === 'serverBuilder'">
       <app-mcp-server-builder></app-mcp-server-builder>
@@ -92,6 +116,9 @@
     <div *ngIf="activeSubTab === 'restBridge'">
       <app-rest-mcp-bridge></app-rest-mcp-bridge>
     </div>
+    <div *ngIf="activeSubTab === 'cliInjection'">
+      <app-mcp-cli-injection></app-mcp-cli-injection>
+    </div>
     <div *ngIf="activeSubTab === 'debugger'">
       <app-mcp-debugger></app-mcp-debugger>
     </div>
@@ -100,6 +127,9 @@
     </div>
     <div *ngIf="activeSubTab === 'promptTemplates'">
       <app-prompt-template-manager></app-prompt-template-manager>
+    </div>
+    <div *ngIf="activeSubTab === 'usageCatalog'">
+      <app-tool-call-catalog></app-tool-call-catalog>
     </div>
 
     <!-- Client Connections Panel -->

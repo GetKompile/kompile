@@ -16,6 +16,7 @@
 package ai.kompile.tool.graphlocalization;
 
 import ai.kompile.graph.algorithms.adjacency.AdjacencyView;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.graph.algorithms.service.GraphAlgorithmService;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.repository.*;
@@ -441,7 +442,7 @@ public class GraphLocalizationService {
                     resolveNode(e.getKey()).ifPresent(n -> {
                         hub.put("title", n.getTitle());
                         hub.put("nodeType", n.getNodeType().name());
-                        hub.put("description", truncate(n.getDescription(), 150));
+                        hub.put("description", StringUtils.truncate(n.getDescription(), 150));
                     });
                     hub.put("score", Math.round(e.getValue() * 10000.0) / 10000.0);
                     return hub;
@@ -710,7 +711,7 @@ public class GraphLocalizationService {
                     resolveNode(id).ifPresent(n -> {
                         m.put("title", n.getTitle());
                         m.put("nodeType", n.getNodeType().name());
-                        m.put("description", truncate(n.getDescription(), 120));
+                        m.put("description", StringUtils.truncate(n.getDescription(), 120));
                     });
                     m.put("pageRank", Math.round(pageRank.getOrDefault(id, 0.0) * 10000.0) / 10000.0);
                     return m;
@@ -768,7 +769,7 @@ public class GraphLocalizationService {
         m.put("nodeType", node.getNodeType().name());
         if (depth != null) m.put("depth", depth);
         if (node.getDescription() != null) {
-            m.put("description", truncate(node.getDescription(), 150));
+            m.put("description", StringUtils.truncate(node.getDescription(), 150));
         }
         if (node.getEdgeCount() > 0) {
             m.put("edgeCount", node.getEdgeCount());
@@ -784,7 +785,7 @@ public class GraphLocalizationService {
         m.put("to", edge.getTargetNode().getNodeId());
         if (edge.getWeight() != null) m.put("weight", edge.getWeight());
         if (edge.getLabel() != null) m.put("label", edge.getLabel());
-        if (edge.getDescription() != null) m.put("description", truncate(edge.getDescription(), 100));
+        if (edge.getDescription() != null) m.put("description", StringUtils.truncate(edge.getDescription(), 100));
         if (edge.getConfidence() != null) m.put("confidence", edge.getConfidence());
         return m;
     }
@@ -875,9 +876,4 @@ public class GraphLocalizationService {
         return filters;
     }
 
-    private String truncate(String text, int maxLen) {
-        if (text == null) return "";
-        if (text.length() <= maxLen) return text;
-        return text.substring(0, maxLen - 3) + "...";
-    }
 }

@@ -18,6 +18,7 @@ package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.BatchRetryPolicy;
 import ai.kompile.core.crawl.graph.DynamicBatchSizer;
+import ai.kompile.core.crawl.graph.ResourceGovernorAdapter;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.VectorIndexConfig;
 import ai.kompile.core.embeddings.EmbeddingModel;
@@ -74,6 +75,10 @@ class VectorIndexingHelper {
     @Autowired
     private GraphPersistenceHelper graphPersistenceHelper;
 
+    /** Live resource signal (CPU/RAM/heap/native/GPU-VRAM). Null on CPU-only/test contexts. */
+    @Autowired(required = false)
+    private ResourceGovernorAdapter resourceGovernor;
+
     // ------------------------------------------------------------------
     // Configurable fields — kept in sync with the orchestrator via package-private setter
     // ------------------------------------------------------------------
@@ -82,6 +87,28 @@ class VectorIndexingHelper {
     volatile int memoryCriticalThresholdPercent = 90;
     volatile int memoryWaitThresholdPercent = 82;
     volatile int memoryWaitTimeoutSeconds = 300;
+
+    /**
+     * Effective memory pressure (0..1) for the embedding AIMD batch sizer.
+     *
+     * <p>Prefers the governor's unified signal (heap + native + GPU VRAM for this GPU stage); falls
+     * back to JVM-heap-only when no governor is wired. {@link DynamicBatchSizer#recordBatchResult}
+     * expects a 0..1 fraction — passing the raw 0..100 percent previously pinned the batch at minimum.</p>
+     */
+    private double embeddingPressure(UnifiedCrawlJob job) {
+        if (resourceGovernor != null) {
+            return resourceGovernor.effectiveMemoryPressure("EMBEDDING");
+        }
+        return job.getMemoryUsagePercent().get() / 100.0;
+    }
+
+    /**
+     * Whether embedding should be deferred right now because GPU VRAM has no headroom.
+     * Delegates to the governor (which owns the threshold); never defers when no governor is wired.
+     */
+    boolean shouldDeferForGpu() {
+        return resourceGovernor != null && resourceGovernor.shouldDeferLocalWork("EMBEDDING");
+    }
 
     // ------------------------------------------------------------------
     // Main entry point
@@ -186,13 +213,15 @@ class VectorIndexingHelper {
                         long elapsedMs = (System.nanoTime() - batchStartNs) / 1_000_000L;
                         memoryMonitor.updateMemorySnapshot(job);
                         embeddingSizer.recordBatchResult(batch.size(), elapsedMs, false,
-                                job.getMemoryUsagePercent().get());
+                                embeddingPressure(job));
                         embeddingSizer.publishStats(job);
                     }
                     String errorDetail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                     // Evaluate retry policy before giving up
+                    // batchKey = i (the stable start index of this batch); local embedding model has
+                    // no backend chain, so no fallback selector.
                     BatchRetryPolicy.RetryDecision<Document> retryDecision = vectorRetryPolicy.evaluateFailure(
-                            batch, adaptiveBatchSize, errorDetail, null, null, job);
+                            i, batch, adaptiveBatchSize, errorDetail, null, null, job);
                     switch (retryDecision.getAction()) {
                         case RETRY_SAME_BACKEND: {
                             log.warn("[Job {}] Vector batch {}/{} failed ({}), retrying with batch size {} after {}ms backoff",
@@ -209,7 +238,7 @@ class VectorIndexingHelper {
                             if (embeddingSizer != null) {
                                 while (embeddingSizer.currentBatchSize() > retryDecision.getReducedBatchSize()) {
                                     embeddingSizer.recordBatchResult(batch.size(), 0, false,
-                                            job.getMemoryUsagePercent().get());
+                                            embeddingPressure(job));
                                 }
                             }
                             // Don't advance i — retry the same batch segment
@@ -226,8 +255,7 @@ class VectorIndexingHelper {
                             documentTracker.recordEvent(job, "EMBEDDING", "ERROR",
                                     "Vector batch dead-lettered",
                                     batch.size() + " items after " + retryDecision.getAttempt() + " attempts");
-                            vectorRetryPolicy.resetAttempts();
-                            break; // move to next batch
+                            break; // move to next batch (policy already cleared this batch's attempts)
                         }
                         case ABORT:
                         default: {
@@ -400,7 +428,7 @@ class VectorIndexingHelper {
             long elapsedMs = (System.nanoTime() - batchStartNs) / 1_000_000L;
             memoryMonitor.updateMemorySnapshot(job);
             embeddingSizer.recordBatchResult(batch.size(), elapsedMs, true,
-                    job.getMemoryUsagePercent().get());
+                    embeddingPressure(job));
             embeddingSizer.publishStats(job);
         }
         String indexedLabel = "Indexed vector batch " + batchNumber + "/" + totalBatches;

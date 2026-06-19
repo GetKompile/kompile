@@ -16,9 +16,11 @@
 
 package ai.kompile.pipeline.serving.launcher;
 
+import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingMessage;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -73,7 +75,7 @@ public class PipelineSubprocessLauncher {
 
     private final ConcurrentHashMap<String, PipelineServingHandle> activeHandles = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> lastHeartbeats = new ConcurrentHashMap<>();
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .build();
@@ -328,17 +330,7 @@ public class PipelineSubprocessLauncher {
     }
 
     private void propagateEnvironment(Map<String, String> env) {
-        // Forward ND4J/CUDA environment variables
-        String[] envVarPrefixes = {"ND4J_", "KOMPILE_", "CUDA_", "OMP_", "MKL_"};
-        Map<String, String> systemEnv = System.getenv();
-        for (Map.Entry<String, String> entry : systemEnv.entrySet()) {
-            for (String prefix : envVarPrefixes) {
-                if (entry.getKey().startsWith(prefix)) {
-                    env.put(entry.getKey(), entry.getValue());
-                    break;
-                }
-            }
-        }
+        SubprocessEnvironmentPropagator.propagateToEnvironment(env);
     }
 
     private void waitForReady(int port) throws Exception {

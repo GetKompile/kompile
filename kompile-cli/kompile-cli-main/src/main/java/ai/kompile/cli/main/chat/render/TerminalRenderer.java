@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.render;
 
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.TodoWriteTool;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -93,7 +94,7 @@ public class TerminalRenderer {
     );
 
     /** Shared Jackson mapper for JSON input parsing. */
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonUtils.standardMapper();
 
     /**
      * Primary parameter keys per tool — these are extracted from JSON input

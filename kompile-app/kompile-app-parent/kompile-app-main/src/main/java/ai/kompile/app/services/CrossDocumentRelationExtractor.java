@@ -21,9 +21,10 @@ import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,7 +58,7 @@ import java.util.regex.Pattern;
 public class CrossDocumentRelationExtractor {
 
     private static final Logger logger = LoggerFactory.getLogger(CrossDocumentRelationExtractor.class);
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // Pattern to strip version/revision suffixes for base-name matching
     private static final Pattern VERSION_SUFFIX = Pattern.compile(
@@ -66,14 +67,10 @@ public class CrossDocumentRelationExtractor {
 
     @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
-    @Autowired(required = false)
-    private GraphNodeRepository graphNodeRepository;
 
     public CrossDocumentRelationExtractor(
-            KnowledgeGraphService knowledgeGraphService,
-            GraphNodeRepository graphNodeRepository) {
+            KnowledgeGraphService knowledgeGraphService) {
         this.knowledgeGraphService = knowledgeGraphService;
-        this.graphNodeRepository = graphNodeRepository;
     }
 
     /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
@@ -781,13 +778,12 @@ public class CrossDocumentRelationExtractor {
         if (sourcePath == null) sourcePath = (String) meta.get(GraphConstants.META_FILE_NAME);
         if (sourcePath == null) return null;
 
-        // Look up in the graph
+        // Look up in the vector store (SSOT)
         Optional<GraphNode> node;
         if (factSheetId != null) {
-            node = graphNodeRepository.findByExternalIdAndNodeTypeAndFactSheetId(
-                    sourcePath, NodeLevel.DOCUMENT, factSheetId);
+            node = knowledgeGraphService.getNodeByExternalIdInFactSheet(sourcePath, NodeLevel.DOCUMENT, factSheetId);
         } else {
-            node = graphNodeRepository.findByExternalIdAndNodeType(sourcePath, NodeLevel.DOCUMENT);
+            node = knowledgeGraphService.getNodeByExternalId(sourcePath, NodeLevel.DOCUMENT);
         }
 
         return node.map(GraphNode::getNodeId).orElse(null);
@@ -828,11 +824,12 @@ public class CrossDocumentRelationExtractor {
      */
     @Transactional
     public int extractRelationsFromGraphNodes(Long factSheetId) {
+        // Use vector store (SSOT) to enumerate DOCUMENT nodes
         List<GraphNode> docNodes;
         if (factSheetId != null) {
-            docNodes = graphNodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.DOCUMENT);
+            docNodes = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.DOCUMENT);
         } else {
-            docNodes = graphNodeRepository.findByNodeType(NodeLevel.DOCUMENT);
+            docNodes = knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT);
         }
 
         if (docNodes == null || docNodes.size() < 2) {
@@ -1089,11 +1086,12 @@ public class CrossDocumentRelationExtractor {
         // Build index of TABLE node titles and headers → parent DOCUMENT node
         Map<String, GraphNode> sheetTermIndex = new LinkedHashMap<>();
 
+        // Use vector store (SSOT) to enumerate TABLE nodes
         List<GraphNode> tableNodes;
         if (factSheetId != null) {
-            tableNodes = graphNodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.TABLE);
+            tableNodes = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.TABLE);
         } else {
-            tableNodes = graphNodeRepository.findByNodeType(NodeLevel.TABLE);
+            tableNodes = knowledgeGraphService.getNodesByType(NodeLevel.TABLE);
         }
 
         for (GraphNode tableNode : tableNodes) {

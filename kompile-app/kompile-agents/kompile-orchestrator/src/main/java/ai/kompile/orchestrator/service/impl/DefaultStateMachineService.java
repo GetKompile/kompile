@@ -505,7 +505,7 @@ public class DefaultStateMachineService implements StateMachineService {
         pollingTasks.clear();
         pollingExecutor.shutdown();
         try {
-            if (!pollingExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+            if (!pollingExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
                 pollingExecutor.shutdownNow();
             }
         } catch (InterruptedException e) {

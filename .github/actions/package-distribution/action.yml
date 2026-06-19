@@ -1,0 +1,205 @@
+name: Package Distribution
+description: >
+  Package a full kompile distribution archive containing CLI binaries,
+  application JARs, and default configuration. The archive follows a flat
+  layout that can be extracted directly to ~/.kompile/.
+
+  Distribution layout:
+    bin/              CLI native binaries (kompile-cli, kompile-agent, ...)
+    lib/              Application JARs (kompile-app-main.jar, kompile-model-staging.jar)
+    conf/             Default application.properties
+    data/             Seed data directories (prompt-templates, input_documents, etc.)
+
+inputs:
+  platform:
+    description: 'Platform identifier (e.g., linux-x86_64, macosx-arm64, windows-x86_64)'
+    required: true
+  version:
+    description: 'Release version (e.g., 1.0.0)'
+    required: true
+  variant:
+    description: 'Distribution variant (e.g., cli-only, hosted, cpu-intel, cuda)'
+    required: false
+    default: 'hosted'
+  cli-binaries-dir:
+    description: 'Directory containing CLI native binaries (kompile-cli, kompile-agent, etc.)'
+    required: true
+  app-jars-dir:
+    description: 'Directory containing application JARs (kompile-app-main.jar, etc.)'
+    required: false
+    default: ''
+  extra-libs-dir:
+    description: 'Directory containing extra shared libraries (.so/.dylib/.dll) to include in bin/'
+    required: false
+    default: ''
+  artifact-name:
+    description: 'Workflow artifact name for upload'
+    required: false
+    default: ''
+  release-version:
+    description: 'When set, upload to GitHub Release with tag v<version>'
+    required: false
+    default: ''
+  prerelease:
+    description: 'Mark the release as a pre-release'
+    required: false
+    default: 'true'
+  retention-days:
+    description: 'Workflow artifact retention in days'
+    required: false
+    default: '14'
+
+runs:
+  using: composite
+  steps:
+    - name: Build distribution layout
+      id: layout
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        PLATFORM="${{ inputs.platform }}"
+        VERSION="${{ inputs.version }}"
+        CLI_DIR="${{ inputs.cli-binaries-dir }}"
+        APP_DIR="${{ inputs.app-jars-dir }}"
+        EXTRA_DIR="${{ inputs.extra-libs-dir }}"
+
+        DIST_DIR="${GITHUB_WORKSPACE}/dist-staging/kompile"
+        mkdir -p "${DIST_DIR}"/{bin,lib,conf,data}
+
+        echo "Building distribution layout for ${PLATFORM} v${VERSION}"
+
+        # ── bin/ — CLI native binaries ──
+        if [ -d "${CLI_DIR}" ]; then
+          echo "Copying CLI binaries from ${CLI_DIR}"
+          for binary in "${CLI_DIR}"/*; do
+            if [ -f "${binary}" ]; then
+              cp "${binary}" "${DIST_DIR}/bin/"
+              chmod +x "${DIST_DIR}/bin/$(basename "${binary}")" 2>/dev/null || true
+              echo "  bin/$(basename "${binary}")"
+            fi
+          done
+        else
+          echo "WARNING: CLI binaries directory not found: ${CLI_DIR}"
+        fi
+
+        # ── lib/ — Application JARs ──
+        if [ -n "${APP_DIR}" ] && [ -d "${APP_DIR}" ]; then
+          echo "Copying application JARs from ${APP_DIR}"
+          for jar in "${APP_DIR}"/*.jar; do
+            if [ -f "${jar}" ]; then
+              cp "${jar}" "${DIST_DIR}/lib/"
+              echo "  lib/$(basename "${jar}")"
+            fi
+          done
+        fi
+
+        # ── bin/ — Extra shared libraries ──
+        if [ -n "${EXTRA_DIR}" ] && [ -d "${EXTRA_DIR}" ]; then
+          echo "Copying extra libraries from ${EXTRA_DIR}"
+          for lib in "${EXTRA_DIR}"/*.{so,dylib,dll} 2>/dev/null; do
+            if [ -f "${lib}" ]; then
+              cp "${lib}" "${DIST_DIR}/bin/"
+              echo "  bin/$(basename "${lib}")"
+            fi
+          done
+        fi
+
+        # ── Seed directory structure (matches GlobalBootstrap.ensureHomeDirectory) ──
+        echo "Creating seed directories"
+        mkdir -p "${DIST_DIR}"/{config,components}
+        mkdir -p "${DIST_DIR}/data"/{input_documents/uploads,shared_files}
+        mkdir -p "${DIST_DIR}/data"/{prompt-templates,models/.staging}
+        mkdir -p "${DIST_DIR}/data"/{logs,tool-definitions,folders}
+        mkdir -p "${DIST_DIR}/data"/{mcp-servers,mcp-bridges,pids}
+        mkdir -p "${DIST_DIR}"/{fact-sheets,archives}
+        mkdir -p "${DIST_DIR}/anserini/indexes"
+
+        echo "This is a sample document. Add your own documents here or upload via the web UI." \
+          > "${DIST_DIR}/data/input_documents/sample.txt"
+
+        cat > "${DIST_DIR}/data/mcp-config.json" << 'MCPEOF'
+{"mcpServers":{}}
+MCPEOF
+
+        # ── Version & variant markers ──
+        VARIANT="${{ inputs.variant }}"
+        echo "${VERSION}" > "${DIST_DIR}/.version"
+        echo "${VARIANT}" > "${DIST_DIR}/.variant"
+
+        # ── Summary ──
+        echo ""
+        echo "Distribution layout:"
+        find "${DIST_DIR}" -type f | sort | while read -r f; do
+          echo "  ${f#${DIST_DIR}/}"
+        done
+
+        DIST_PARENT="${GITHUB_WORKSPACE}/dist-staging"
+        echo "dist-dir=${DIST_DIR}" >> "${GITHUB_OUTPUT}"
+        echo "dist-parent=${DIST_PARENT}" >> "${GITHUB_OUTPUT}"
+
+    - name: Create archive
+      id: archive
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        PLATFORM="${{ inputs.platform }}"
+        VERSION="${{ inputs.version }}"
+        DIST_PARENT="${{ steps.layout.outputs.dist-parent }}"
+
+        STAGING="${GITHUB_WORKSPACE}/release-dist-staging"
+        mkdir -p "${STAGING}"
+
+        VARIANT="${{ inputs.variant }}"
+        ARCHIVE_BASE="kompile-dist-${VERSION}-${VARIANT}-${PLATFORM}"
+
+        if [[ "${PLATFORM}" == windows* ]]; then
+          ARCHIVE_FILE="${STAGING}/${ARCHIVE_BASE}.zip"
+          cd "${DIST_PARENT}"
+          zip -r "${ARCHIVE_FILE}" kompile/
+        else
+          ARCHIVE_FILE="${STAGING}/${ARCHIVE_BASE}.tar.gz"
+          tar -czf "${ARCHIVE_FILE}" -C "${DIST_PARENT}" kompile/
+        fi
+
+        echo "Created: ${ARCHIVE_FILE} ($(du -h "${ARCHIVE_FILE}" | cut -f1))"
+
+        # Checksum
+        cd "${STAGING}"
+        sha256sum "$(basename "${ARCHIVE_FILE}")" > "$(basename "${ARCHIVE_FILE}").sha256"
+        echo "SHA256:"
+        cat "$(basename "${ARCHIVE_FILE}").sha256"
+
+        echo "archive-file=${ARCHIVE_FILE}" >> "${GITHUB_OUTPUT}"
+        echo "staging-dir=${STAGING}" >> "${GITHUB_OUTPUT}"
+
+    - name: Upload as workflow artifact
+      if: inputs.artifact-name != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ steps.archive.outputs.staging-dir }}/*
+        if-no-files-found: warn
+        retention-days: ${{ inputs.retention-days }}
+
+    - name: Upload to GitHub Release
+      if: inputs.release-version != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: v${{ inputs.release-version }}
+        STAGING_DIR: ${{ steps.archive.outputs.staging-dir }}
+      run: |
+        set -euo pipefail
+
+        for file in "${STAGING_DIR}"/*; do
+          if [ -f "${file}" ]; then
+            echo "Uploading $(basename "${file}") to release ${RELEASE_TAG}"
+            gh release upload "${RELEASE_TAG}" "${file}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber \
+            || echo "WARNING: Failed to upload $(basename "${file}")"
+          fi
+        done

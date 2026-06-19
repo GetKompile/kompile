@@ -19,7 +19,7 @@ package ai.kompile.cli.main.build;
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.build.config.Nd4jBuildConfig;
 import ai.kompile.cli.main.build.config.Nd4jBuildConfig.*;
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import ai.kompile.cli.main.util.OSResolver;
 import org.apache.maven.shared.invoker.*;
 import picocli.CommandLine;
@@ -66,6 +66,8 @@ public class BuildNd4jBackend implements Callable<Integer> {
             "  minimal-cpu: Fastest build with minimal types\n" +
             "  training: Full training support with common types\n" +
             "  cuda-training: CUDA with cuDNN for training\n" +
+            "  zluda-amd-training: AMD GPU via ZLUDA with MIOpen for training\n" +
+            "  zluda-amd-inference: AMD GPU via ZLUDA with MIOpen for inference\n" +
             "  full: All types and operations")
     private String preset;
 
@@ -82,6 +84,37 @@ public class BuildNd4jBackend implements Callable<Integer> {
 
     @Option(names = {"--zluda-target"}, description = "ZLUDA target: AMD or INTEL (only with --backend=ZLUDA)")
     private ZludaTarget zludaTarget;
+
+    // =============================================
+    // ZLUDA-Specific Options
+    // =============================================
+
+    @Option(names = {"--rocm-version"}, description = "ROCm version for AMD ZLUDA target (e.g., 6.1)")
+    private String rocmVersion;
+
+    @Option(names = {"--hip-version"}, description = "HIP version for AMD ZLUDA target (e.g., 6.0)")
+    private String hipVersion;
+
+    @Option(names = {"--miopen-version"}, description = "MIOpen version for AMD deep learning acceleration (e.g., 3.1)")
+    private String miopenVersion;
+
+    @Option(names = {"--amd-gpu-targets"}, description = "AMD GPU architecture targets (semicolon-separated):\n" +
+            "  gfx900  - Vega (MI25, Radeon VII)\n" +
+            "  gfx906  - Vega 20 (MI50/MI60)\n" +
+            "  gfx908  - CDNA (MI100)\n" +
+            "  gfx90a  - CDNA2 (MI210/MI250)\n" +
+            "  gfx942  - CDNA3 (MI300)\n" +
+            "  gfx1030 - RDNA2 (RX 6800/6900)\n" +
+            "  gfx1100 - RDNA3 (RX 7900)\n" +
+            "  gfx1150 - RDNA3.5 (RX 9070)\n" +
+            "  gfx1200 - RDNA4 (RX 9060)")
+    private String amdGpuTargets;
+
+    @Option(names = {"--oneapi-version"}, description = "Intel oneAPI version for Intel ZLUDA target (e.g., 2024.1)")
+    private String oneApiVersion;
+
+    @Option(names = {"--zluda-path"}, description = "Path to ZLUDA installation directory")
+    private String zludaPath;
 
     // =============================================
     // Type Profiles
@@ -132,9 +165,6 @@ public class BuildNd4jBackend implements Callable<Integer> {
 
     @Option(names = {"--helper-miopen"}, description = "Enable MIOpen for AMD GPUs (ZLUDA)")
     private boolean helperMiopen = false;
-
-    @Option(names = {"--helper-llamacpp"}, description = "Enable LlamaCpp for LLM operations")
-    private boolean helperLlamacpp = false;
 
     @Option(names = {"--helper-vlm"}, description = "Enable VLM for Vision-Language Models")
     private boolean helperVlm = false;
@@ -308,6 +338,12 @@ public class BuildNd4jBackend implements Callable<Integer> {
                 .backend(backend)
                 .mavenProfile(mavenProfile)
                 .zludaTarget(zludaTarget)
+                .rocmVersion(rocmVersion)
+                .hipVersion(hipVersion)
+                .miopenVersion(miopenVersion)
+                .amdGpuTargets(amdGpuTargets)
+                .oneApiVersion(oneApiVersion)
+                .zludaPath(zludaPath)
                 .typeProfile(typeProfile)
                 .dataTypes(dataTypes)
                 .helperOnednn(helperOnednn)
@@ -319,7 +355,6 @@ public class BuildNd4jBackend implements Callable<Integer> {
                 .mlirVersion(mlirVersion)
                 .helperPjrt(helperPjrt)
                 .helperMiopen(helperMiopen)
-                .helperLlamacpp(helperLlamacpp)
                 .helperVlm(helperVlm)
                 .helpersList(helpersList)
                 .helperPriority(helperPriority)
@@ -371,6 +406,18 @@ public class BuildNd4jBackend implements Callable<Integer> {
                 String cv = cudaVersion != null ? cudaVersion : "12.3";
                 String cc = computeCapability != null ? computeCapability : "80,86,89";
                 return Nd4jBuildConfig.cudaTraining(cv, cc);
+
+            case "zluda-amd-training":
+                out().println("Applying preset: zluda-amd-training");
+                String rv = rocmVersion != null ? rocmVersion : "6.1";
+                String gt = amdGpuTargets != null ? amdGpuTargets : "gfx1030;gfx1100";
+                return Nd4jBuildConfig.zludaAmdTraining(rv, gt);
+
+            case "zluda-amd-inference":
+                out().println("Applying preset: zluda-amd-inference");
+                String rvi = rocmVersion != null ? rocmVersion : "6.1";
+                String gti = amdGpuTargets != null ? amdGpuTargets : "gfx1030;gfx1100";
+                return Nd4jBuildConfig.zludaAmdInference(rvi, gti);
 
             case "full":
                 out().println("Applying preset: full (all types and operations)");
@@ -453,6 +500,21 @@ public class BuildNd4jBackend implements Callable<Integer> {
             if (config.getCudaVersion() != null) pw.println("  CUDA Version: " + config.getCudaVersion());
             if (config.getCudnnVersion() != null) pw.println("  cuDNN Version: " + config.getCudnnVersion());
             if (config.getComputeCapability() != null) pw.println("  Compute Capability: " + config.getComputeCapability());
+        }
+
+        if (config.getBackend() == Backend.ZLUDA) {
+            pw.println("\nZLUDA Settings:");
+            if (config.getZludaTarget() != null) pw.println("  Target: " + config.getZludaTarget());
+            if (config.getZludaPath() != null) pw.println("  ZLUDA Path: " + config.getZludaPath());
+            if (config.getZludaTarget() == ZludaTarget.AMD) {
+                if (config.getRocmVersion() != null) pw.println("  ROCm Version: " + config.getRocmVersion());
+                if (config.getHipVersion() != null) pw.println("  HIP Version: " + config.getHipVersion());
+                if (config.getMiopenVersion() != null) pw.println("  MIOpen Version: " + config.getMiopenVersion());
+                if (config.getAmdGpuTargets() != null) pw.println("  GPU Targets: " + config.getAmdGpuTargets());
+            }
+            if (config.getZludaTarget() == ZludaTarget.INTEL) {
+                if (config.getOneApiVersion() != null) pw.println("  oneAPI Version: " + config.getOneApiVersion());
+            }
         }
 
         if (config.getBackend() == Backend.TPU && config.getTpuVersion() != null) {
@@ -591,6 +653,24 @@ public class BuildNd4jBackend implements Callable<Integer> {
                 if (config.getZludaTarget() != null) {
                     props.setProperty("SD_ZLUDA_TARGET", config.getZludaTarget().name());
                 }
+                if (config.getZludaPath() != null) {
+                    props.setProperty("SD_ZLUDA_PATH", config.getZludaPath());
+                }
+                if (config.getRocmVersion() != null) {
+                    props.setProperty("ROCM_VERSION", config.getRocmVersion());
+                }
+                if (config.getHipVersion() != null) {
+                    props.setProperty("HIP_VERSION", config.getHipVersion());
+                }
+                if (config.getMiopenVersion() != null) {
+                    props.setProperty("MIOPEN_VERSION", config.getMiopenVersion());
+                }
+                if (config.getAmdGpuTargets() != null) {
+                    props.setProperty("SD_AMD_GPU_TARGETS", config.getAmdGpuTargets());
+                }
+                if (config.getOneApiVersion() != null) {
+                    props.setProperty("ONEAPI_VERSION", config.getOneApiVersion());
+                }
                 break;
         }
 
@@ -615,7 +695,6 @@ public class BuildNd4jBackend implements Callable<Integer> {
         }
         if (config.isHelperPjrt()) props.setProperty("HELPERS_pjrt", "ON");
         if (config.isHelperMiopen()) props.setProperty("HELPERS_miopen", "ON");
-        if (config.isHelperLlamacpp()) props.setProperty("HELPERS_llamacpp", "ON");
         if (config.isHelperVlm()) props.setProperty("HELPERS_vlm", "ON");
 
         // Kernel selection

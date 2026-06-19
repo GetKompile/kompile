@@ -21,6 +21,7 @@ import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.bytedeco.javacpp.Pointer;
 import org.slf4j.Logger;
@@ -279,7 +280,7 @@ public class GraphCompactionService {
 
     private boolean skipGenericSpreadsheetEntities = true;
 
-    private final ObjectMapper configObjectMapper = new ObjectMapper();
+    private final ObjectMapper configObjectMapper = JsonUtils.standardMapper();
     private final Path graphExtractionConfigPath =
             KompileHome.dataDir().toPath().resolve("config").resolve(GRAPH_EXTRACTION_CONFIG_FILENAME);
     private volatile long graphExtractionConfigLastModified = Long.MIN_VALUE;

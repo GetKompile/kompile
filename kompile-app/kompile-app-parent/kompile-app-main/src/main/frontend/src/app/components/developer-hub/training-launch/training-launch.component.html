@@ -1,0 +1,390 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="training-launch-container">
+
+  <!-- Header -->
+  <div class="launch-header">
+    <div class="header-content">
+      <mat-icon class="header-icon">model_training</mat-icon>
+      <div>
+        <h2>Launch Training Job</h2>
+        <p class="header-subtitle">Configure and start a model training run</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button mat-stroked-button (click)="resetForm()" [disabled]="launching">
+        <mat-icon>refresh</mat-icon>
+        Reset
+      </button>
+    </div>
+  </div>
+
+  <!-- Success Banner -->
+  <div class="success-banner" *ngIf="successMessage">
+    <mat-icon>check_circle</mat-icon>
+    <div class="banner-text">
+      <strong>{{ successMessage }}</strong>
+      <div *ngIf="launchedJobId" class="job-id-line">
+        Job ID: <span class="job-id">{{ launchedJobId }}</span>
+      </div>
+    </div>
+    <button mat-icon-button (click)="successMessage = null">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Error Banner -->
+  <div class="error-banner" *ngIf="errorMessage">
+    <mat-icon>error</mat-icon>
+    <div class="banner-text">{{ errorMessage }}</div>
+    <button mat-icon-button (click)="errorMessage = null">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading Spinner -->
+  <div class="loading-overlay" *ngIf="loading">
+    <mat-spinner diameter="32"></mat-spinner>
+    <span>Loading configuration options...</span>
+  </div>
+
+  <!-- Form Body -->
+  <div class="form-body" *ngIf="!loading">
+
+    <!-- HuggingFace Model Download -->
+    <mat-expansion-panel class="download-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>cloud_download</mat-icon>
+          Download Model from HuggingFace
+        </mat-panel-title>
+        <mat-panel-description>
+          Download and convert a model for local training
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="download-form">
+        <div class="form-grid two-col">
+          <mat-form-field appearance="outline">
+            <mat-label>HuggingFace Repository</mat-label>
+            <input matInput [(ngModel)]="downloadConfig.repository" name="hfRepo"
+                   placeholder="e.g. microsoft/phi-2">
+            <mat-hint>owner/model-name format</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Model ID</mat-label>
+            <input matInput [(ngModel)]="downloadConfig.modelId" name="hfModelId"
+                   placeholder="e.g. phi-2">
+            <mat-hint>Local name for the downloaded model</mat-hint>
+          </mat-form-field>
+        </div>
+
+        <div class="form-grid three-col">
+          <mat-form-field appearance="outline">
+            <mat-label>Format</mat-label>
+            <mat-select [(ngModel)]="downloadConfig.format" name="hfFormat">
+              <mat-option value="onnx">ONNX</mat-option>
+              <mat-option value="safetensors">SafeTensors</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Model Type</mat-label>
+            <mat-select [(ngModel)]="downloadConfig.type" name="hfType">
+              <mat-option value="llm_ggml">LLM</mat-option>
+              <mat-option value="dense_encoder">Encoder</mat-option>
+              <mat-option value="vlm_pipeline">VLM</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Auth Token (optional)</mat-label>
+            <input matInput [(ngModel)]="downloadConfig.authToken" name="hfToken" type="password">
+            <mat-hint>For gated models</mat-hint>
+          </mat-form-field>
+        </div>
+
+        <mat-checkbox [(ngModel)]="downloadConfig.autoConvert" name="autoConvert" class="convert-checkbox">
+          Auto-convert to SameDiff format after download
+        </mat-checkbox>
+
+        <div class="download-actions">
+          <button mat-raised-button color="primary" (click)="downloadModel()"
+                  [disabled]="downloading || !downloadConfig.repository || !downloadConfig.modelId">
+            <mat-icon>download</mat-icon>
+            {{ downloading ? 'Downloading...' : 'Download & Stage' }}
+            <mat-spinner *ngIf="downloading" diameter="18" class="inline-spinner"></mat-spinner>
+          </button>
+        </div>
+
+        <div class="download-status" *ngIf="downloadStatus">
+          <mat-icon [class.success]="downloadStatus === 'completed'" [class.error]="downloadStatus === 'failed'">
+            {{ downloadStatus === 'completed' ? 'check_circle' : downloadStatus === 'failed' ? 'error' : 'hourglass_empty' }}
+          </mat-icon>
+          <span>{{ downloadMessage }}</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Model & Dataset Selection -->
+    <div class="form-section">
+      <div class="section-title">
+        <mat-icon>storage</mat-icon>
+        <span>Model &amp; Dataset</span>
+      </div>
+      <div class="form-grid two-col">
+
+        <mat-form-field appearance="outline">
+          <mat-label>Model</mat-label>
+          <mat-select [(ngModel)]="config.modelId" name="modelId" required>
+            <mat-option value="" disabled>Select a model...</mat-option>
+            <mat-option *ngFor="let m of availableModels" [value]="m.modelId || m.id || m">
+              {{ m.modelId || m.id || m }}
+            </mat-option>
+          </mat-select>
+          <mat-hint>Select the base model to fine-tune</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Dataset</mat-label>
+          <mat-select [(ngModel)]="config.datasetId" name="datasetId" required>
+            <mat-option value="" disabled>Select a dataset...</mat-option>
+            <mat-option *ngFor="let d of datasets" [value]="d.id || d.datasetId || d">
+              {{ d.name || d.datasetId || d.id || d }}
+            </mat-option>
+          </mat-select>
+          <mat-hint>Select the training dataset</mat-hint>
+        </mat-form-field>
+
+      </div>
+    </div>
+
+    <!-- Training Type -->
+    <div class="form-section">
+      <div class="section-title">
+        <mat-icon>tune</mat-icon>
+        <span>Training Configuration</span>
+      </div>
+      <div class="form-grid two-col">
+
+        <mat-form-field appearance="outline">
+          <mat-label>Training Type</mat-label>
+          <mat-select [(ngModel)]="config.trainingType" name="trainingType" (ngModelChange)="onTrainingTypeChange()">
+            <mat-option *ngFor="let t of trainingTypes" [value]="t">{{ t }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>LR Schedule</mat-label>
+          <mat-select [(ngModel)]="config.lrSchedule" name="lrSchedule">
+            <mat-option *ngFor="let s of lrSchedules" [value]="s">{{ s }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Optimizer</mat-label>
+          <mat-select [(ngModel)]="config.updaterConfig.type" name="updaterType">
+            <mat-option *ngFor="let u of updaterTypes" [value]="u">{{ u }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Learning Rate</mat-label>
+          <input matInput type="number" [(ngModel)]="config.updaterConfig.learningRate"
+                 name="learningRate" step="0.0001" min="0">
+          <mat-hint>e.g. 0.0001 (1e-4)</mat-hint>
+        </mat-form-field>
+
+      </div>
+    </div>
+
+    <!-- LoRA / PEFT Config (conditional) -->
+    <div class="form-section lora-section" *ngIf="isLoraMode">
+      <div class="section-title lora-title">
+        <mat-icon>layers</mat-icon>
+        <span>LoRA / PEFT Configuration</span>
+        <span class="section-badge">LORA</span>
+      </div>
+      <div class="form-grid two-col">
+
+        <mat-form-field appearance="outline">
+          <mat-label>PEFT Type</mat-label>
+          <mat-select [(ngModel)]="peftConfig.peftType" name="peftType">
+            <mat-option *ngFor="let p of peftTypes" [value]="p">{{ p }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Rank (r)</mat-label>
+          <input matInput type="number" [(ngModel)]="peftConfig.rank"
+                 name="peftRank" min="1" max="256">
+          <mat-hint>LoRA rank dimension (default: 8)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Alpha</mat-label>
+          <input matInput type="number" [(ngModel)]="peftConfig.alpha"
+                 name="peftAlpha" min="1">
+          <mat-hint>Scaling factor (default: 16)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Dropout</mat-label>
+          <input matInput type="number" [(ngModel)]="peftConfig.dropout"
+                 name="peftDropout" min="0" max="1" step="0.01">
+          <mat-hint>LoRA dropout probability (default: 0.05)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Target Modules</mat-label>
+          <input matInput [(ngModel)]="peftConfig.targetModulesStr"
+                 name="targetModules" placeholder="q_proj,v_proj,k_proj">
+          <mat-hint>Comma-separated module names to apply LoRA to</mat-hint>
+        </mat-form-field>
+
+      </div>
+    </div>
+
+    <!-- Core Hyperparameters -->
+    <div class="form-section">
+      <div class="section-title">
+        <mat-icon>settings</mat-icon>
+        <span>Hyperparameters</span>
+      </div>
+      <div class="form-grid three-col">
+
+        <mat-form-field appearance="outline">
+          <mat-label>Epochs</mat-label>
+          <input matInput type="number" [(ngModel)]="config.epochs"
+                 name="epochs" min="1">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Batch Size</mat-label>
+          <input matInput type="number" [(ngModel)]="config.batchSize"
+                 name="batchSize" min="1">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Warmup Ratio</mat-label>
+          <input matInput type="number" [(ngModel)]="config.warmupRatio"
+                 name="warmupRatio" min="0" max="1" step="0.01">
+        </mat-form-field>
+
+      </div>
+
+      <!-- Precision checkboxes -->
+      <div class="checkbox-row">
+        <mat-checkbox [(ngModel)]="config.fp16" name="fp16">
+          FP16 (half precision)
+        </mat-checkbox>
+        <mat-checkbox [(ngModel)]="config.bf16" name="bf16">
+          BF16 (bfloat16)
+        </mat-checkbox>
+        <mat-checkbox [(ngModel)]="config.autoRegister" name="autoRegister">
+          Auto-register model after training
+        </mat-checkbox>
+        <mat-checkbox [(ngModel)]="config.evaluateAfterTraining" name="evaluateAfterTraining">
+          Evaluate after training completes
+        </mat-checkbox>
+        <mat-checkbox [(ngModel)]="config.enableMonitoring" name="enableMonitoring">
+          Enable monitoring (DSP, throughput, grad norms)
+        </mat-checkbox>
+      </div>
+    </div>
+
+    <!-- Advanced Settings (collapsible) -->
+    <mat-expansion-panel class="advanced-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>expand_more</mat-icon>
+          Advanced Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          Gradient clipping, step limits, logging, checkpointing
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="form-grid three-col advanced-grid">
+
+        <mat-form-field appearance="outline">
+          <mat-label>Gradient Accumulation Steps</mat-label>
+          <input matInput type="number" [(ngModel)]="config.gradientAccumulationSteps"
+                 name="gradAccumSteps" min="1">
+          <mat-hint>Effective batch = batch * steps</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Max Steps</mat-label>
+          <input matInput type="number" [(ngModel)]="config.maxSteps"
+                 name="maxSteps">
+          <mat-hint>-1 means train for all epochs</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Max Grad Norm</mat-label>
+          <input matInput type="number" [(ngModel)]="config.maxGradNorm"
+                 name="maxGradNorm" min="0" step="0.1">
+          <mat-hint>Gradient clipping threshold</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Logging Steps</mat-label>
+          <input matInput type="number" [(ngModel)]="config.loggingSteps"
+                 name="loggingSteps" min="1">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Save Steps</mat-label>
+          <input matInput type="number" [(ngModel)]="config.saveSteps"
+                 name="saveSteps" min="1">
+          <mat-hint>Checkpoint save frequency</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Eval Steps</mat-label>
+          <input matInput type="number" [(ngModel)]="config.evalSteps"
+                 name="evalSteps" min="1">
+          <mat-hint>Evaluation frequency</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Random Seed</mat-label>
+          <input matInput type="number" [(ngModel)]="config.seed"
+                 name="seed">
+        </mat-form-field>
+
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Launch Button -->
+    <div class="launch-row">
+      <button mat-raised-button color="primary"
+              (click)="startTraining()"
+              [disabled]="!canLaunch">
+        <mat-spinner diameter="20" *ngIf="launching"></mat-spinner>
+        <mat-icon *ngIf="!launching">rocket_launch</mat-icon>
+        <span>{{ launching ? 'Launching...' : 'Start Training' }}</span>
+      </button>
+      <span class="launch-hint" *ngIf="!config.modelId || !config.datasetId">
+        Select a model and dataset to enable launch
+      </span>
+    </div>
+
+  </div>
+</div>

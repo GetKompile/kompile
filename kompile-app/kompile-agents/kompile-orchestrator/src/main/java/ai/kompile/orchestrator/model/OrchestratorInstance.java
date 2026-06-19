@@ -15,6 +15,7 @@
  */
 package ai.kompile.orchestrator.model;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.*;
@@ -36,7 +37,7 @@ import java.util.Map;
 @AllArgsConstructor
 public class OrchestratorInstance {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     @Id
     @Column(name = "instance_id", nullable = false, unique = true)

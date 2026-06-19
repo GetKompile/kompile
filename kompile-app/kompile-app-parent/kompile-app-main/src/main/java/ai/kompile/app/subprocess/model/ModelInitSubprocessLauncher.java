@@ -22,8 +22,10 @@ import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.subprocess.SubprocessConfigService;
+import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.common.util.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
@@ -76,7 +78,7 @@ import java.util.function.Consumer;
 public class ModelInitSubprocessLauncher {
 
     private static final Logger logger = LoggerFactory.getLogger(ModelInitSubprocessLauncher.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     // Configuration
     @Value("${kompile.model-init.subprocess.java-path:java}")
@@ -238,6 +240,9 @@ public class ModelInitSubprocessLauncher {
         // Start process
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false); // Keep stderr separate for logging
+
+        // Propagate all ND4J/CUDA/threading/Triton env vars via central propagator
+        SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
 
         // === GPU LIFECYCLE: Acquire GPU resources for this model init job ===
         boolean gpuAcquired = false;

@@ -23,12 +23,14 @@ import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.subprocess.GraphSubprocessArgs;
+import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessMessage;
 import ai.kompile.app.subprocess.SubprocessRegistry;
 import ai.kompile.core.graphrag.GraphSubprocessDelegate;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -72,7 +74,7 @@ import java.util.stream.Collectors;
 public class GraphSubprocessLauncher implements GraphSubprocessDelegate {
 
     private static final Logger logger = LoggerFactory.getLogger(GraphSubprocessLauncher.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     @Value("${kompile.graph.subprocess.java-path:java}")
     private String fallbackJavaPath;
@@ -592,30 +594,7 @@ public class GraphSubprocessLauncher implements GraphSubprocessDelegate {
     }
 
     private void propagateNd4jEnvironment(Map<String, String> env) {
-        List<String> nd4jEnvVars = List.of(
-                "ND4J_BACKEND", "ND4J_DATA_BUFFER_OPS", "ND4J_RESOURCES_DIR", "ND4J_ALLOW_FALLBACK",
-                "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "GOTO_NUM_THREADS",
-                "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
-                "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "CUDA_LAUNCH_BLOCKING", "CUDA_CACHE_PATH",
-                "JAVACPP_PLATFORM", "JAVACPP_CACHESFX",
-                "ND4J_HEAP_SPACE", "ND4J_OFF_HEAP_SPACE",
-                "KOMPILE_MODELS_DIR");
-
-        for (String varName : nd4jEnvVars) {
-            String value = System.getenv(varName);
-            if (value != null && !value.isEmpty()) {
-                env.put(varName, value);
-            }
-        }
-
-        // Propagate all ND4J_ and KOMPILE_ prefixed vars
-        for (Map.Entry<String, String> entry : System.getenv().entrySet()) {
-            String key = entry.getKey();
-            if ((key.startsWith("ND4J_") || key.startsWith("KOMPILE_"))
-                    && !env.containsKey(key)) {
-                env.put(key, entry.getValue());
-            }
-        }
+        SubprocessEnvironmentPropagator.propagateToEnvironment(env);
     }
 
     private record GraphProcessHandle(

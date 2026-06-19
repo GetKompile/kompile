@@ -26,6 +26,7 @@ import ai.kompile.orchestrator.repository.OrchestratorInstanceRepository;
 import ai.kompile.orchestrator.repository.OrchestratorSnapshotRepository;
 import ai.kompile.orchestrator.repository.TaskInstanceRepository;
 import ai.kompile.orchestrator.repository.WorkflowRepository;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,7 +54,7 @@ public class SnapshotService {
     private TaskInstanceRepository taskInstanceRepository;
     private WorkflowRepository workflowRepository;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     public void setTaskInstanceRepository(TaskInstanceRepository taskInstanceRepository) {
         this.taskInstanceRepository = taskInstanceRepository;

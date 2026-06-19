@@ -114,8 +114,11 @@ public interface KnowledgeGraphService {
             description = description.substring(0, 500) + "...";
         }
 
+        // Propagate factSheetId from parent so TABLE nodes are scoped in the
+        // vector store and appear in per-fact-sheet counts (graph-stats tableCount).
+        Long factSheetId = parent.getFactSheetId();
         GraphNode tableNode = createNode(NodeLevel.TABLE, externalId, tableTitle,
-                description, tableMeta);
+                description, tableMeta, factSheetId);
 
         // Create hierarchical CONTAINS edge from parent → table
         try {
@@ -190,6 +193,23 @@ public interface KnowledgeGraphService {
      * Get all source nodes
      */
     List<GraphNode> getAllSources();
+
+    /**
+     * Get all nodes across all types, up to the given limit.
+     * Default implementation combines results from every NodeLevel.
+     */
+    default List<GraphNode> getAllNodes(int limit) {
+        java.util.List<GraphNode> result = new java.util.ArrayList<>();
+        for (NodeLevel level : NodeLevel.values()) {
+            List<GraphNode> byType = getNodesByType(level, limit);
+            result.addAll(byType);
+            if (result.size() >= limit) break;
+        }
+        if (result.size() > limit) {
+            return result.subList(0, limit);
+        }
+        return result;
+    }
 
     /**
      * Search nodes by text

@@ -18,6 +18,7 @@ package ai.kompile.anserini.config;
 
 import ai.kompile.cli.common.KompileHome;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -56,7 +57,7 @@ public class AnseriniConfigService {
     private volatile AnseriniJsonConfig config;
 
     public AnseriniConfigService() {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
         this.config = AnseriniJsonConfig.defaults();
         log.info("AnseriniConfigService initialized, config path: {}", configFilePath);
@@ -70,7 +71,7 @@ public class AnseriniConfigService {
      * @param corpusPath the initial Anserini corpus staging path (may be null)
      */
     public AnseriniConfigService(String indexPath, String corpusPath) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
         AnseriniJsonConfig cfg = new AnseriniJsonConfig();
         cfg.setIndexPath(indexPath);

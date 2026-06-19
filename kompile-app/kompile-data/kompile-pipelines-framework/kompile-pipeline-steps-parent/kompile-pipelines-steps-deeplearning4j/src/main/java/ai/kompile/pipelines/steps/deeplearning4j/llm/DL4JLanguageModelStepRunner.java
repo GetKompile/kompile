@@ -25,6 +25,7 @@ import ai.kompile.pipelines.framework.api.llm.LLMStepConfig;
 import ai.kompile.pipelines.steps.deeplearning4j.nlp.DL4JLLMTokenizer;
 import ai.kompile.pipelines.steps.deeplearning4j.nlp.WordPieceLLMTokenizer;
 import com.fasterxml.jackson.core.type.TypeReference;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.deeplearning4j.nn.graph.ComputationGraph;
@@ -56,7 +57,7 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
     private ComputationGraph computationGraphModel;
     private SameDiff sameDiffModel;
     private DL4JLLMTokenizer tokenizer;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final Random random = new Random();
     private volatile boolean initialized = false;
 

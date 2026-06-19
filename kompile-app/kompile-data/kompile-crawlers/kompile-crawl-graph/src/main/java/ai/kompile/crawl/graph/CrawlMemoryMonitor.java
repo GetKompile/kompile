@@ -16,11 +16,13 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.crawl.graph.ResourceGovernorAdapter;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import org.bytedeco.javacpp.Pointer;
 import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.lang.management.BufferPoolMXBean;
@@ -45,6 +47,11 @@ class CrawlMemoryMonitor {
     /** Rate-limit trimNativeMemory to avoid repeated expensive cleanup within short windows. */
     private final AtomicLong lastTrimNanos = new AtomicLong(0);
     private static final long TRIM_MIN_INTERVAL_NS = TimeUnit.SECONDS.toNanos(5);
+
+    /** Live resource signal — adds GPU-VRAM pressure to the heap/native backpressure gate.
+     *  Null on CPU-only/test contexts (GPU pressure simply isn't considered). */
+    @Autowired(required = false)
+    private ResourceGovernorAdapter resourceGovernor;
 
     // Config fields — synced from orchestrator via applyConfig()
     volatile int memoryWaitThresholdPercent = 82;
@@ -119,7 +126,11 @@ class CrawlMemoryMonitor {
 
         int nativeThreshold = critical ? nativeMemoryCriticalThresholdPercent : nativeMemoryWaitThresholdPercent;
         boolean nativePressure = hasNativeMemoryPressure(job, nativeThreshold);
-        return heapPressure || nativePressure;
+
+        // GPU VRAM pressure — a first-class backpressure signal so GPU-bound phases wait/defer
+        // instead of allocating into a full device. Heap/native alone can't see device VRAM.
+        boolean gpuPressure = resourceGovernor != null && resourceGovernor.isGpuVramPressured(critical);
+        return heapPressure || nativePressure || gpuPressure;
     }
 
     boolean hasNativeMemoryPressure(UnifiedCrawlJob job, int thresholdPercent) {

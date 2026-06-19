@@ -30,7 +30,8 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Implementation of the KnowledgeGraphService interface.
+ * JPA-based implementation of the KnowledgeGraphService interface.
+ * MatrixKnowledgeGraphService is the primary implementation.
  */
 @Service
 @Slf4j
@@ -668,7 +669,7 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
     private Map<String, Object> nodeToVisualizationMap(GraphNode node) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("id", node.getNodeId());
-        map.put("type", node.getNodeType().name().toLowerCase());
+        map.put("type", node.getNodeType().name());
         map.put("label", node.getTitle());
         map.put("title", node.getTitle());
         map.put("description", node.getDescription());
@@ -692,7 +693,7 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         map.put("id", edge.getEdgeId());
         map.put("source", edge.getSourceNode().getNodeId());
         map.put("target", edge.getTargetNode().getNodeId());
-        map.put("type", edge.getEdgeType().name().toLowerCase());
+        map.put("type", edge.getEdgeType().name());
         map.put("weight", edge.getWeight());
         map.put("label", edge.getLabel());
         map.put("description", edge.getDescription());

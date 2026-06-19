@@ -27,6 +27,7 @@ import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.service.ProcessEngineService;
 import ai.kompile.process.workflow.ProcessDefinition;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -50,7 +51,7 @@ import java.util.stream.Collectors;
 public class DiagramGenerationService {
 
     private static final Logger log = LoggerFactory.getLogger(DiagramGenerationService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private final DiagramSessionRepository sessionRepository;
     private final AgentChatService agentChatService;

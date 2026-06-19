@@ -1,0 +1,173 @@
+name: Publish Native Binaries
+description: >
+  Package kompile native binaries into a platform tarball/zip and upload
+  as a workflow artifact. Optionally upload to a GitHub Release.
+
+inputs:
+  artifact-name:
+    description: 'Workflow artifact name (e.g., kompile-native-linux-x86_64)'
+    required: true
+  platform:
+    description: 'Platform identifier (e.g., linux-x86_64, macosx-arm64, windows-x86_64)'
+    required: true
+  binaries-dir:
+    description: 'Directory containing the native binaries'
+    required: true
+  release-version:
+    description: >
+      When set, upload the archive to GitHub Release with tag v<version>.
+      The release is created if it does not already exist.
+    required: false
+    default: ''
+  prerelease:
+    description: 'Mark the release as a pre-release'
+    required: false
+    default: 'true'
+  retention-days:
+    description: 'Workflow artifact retention in days'
+    required: false
+    default: '14'
+
+runs:
+  using: composite
+  steps:
+    - name: Package binaries
+      id: package
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        PLATFORM="${{ inputs.platform }}"
+        BINARIES_DIR="${{ inputs.binaries-dir }}"
+        RELEASE_VERSION="${{ inputs.release-version }}"
+        STAGING_DIR="${GITHUB_WORKSPACE}/release-staging"
+        mkdir -p "${STAGING_DIR}"
+
+        # Count binaries
+        BINARY_COUNT=$(find "${BINARIES_DIR}" -type f | wc -l)
+        if [ "${BINARY_COUNT}" -eq 0 ]; then
+          echo "WARNING: No binaries found in ${BINARIES_DIR}"
+          echo "found=0" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        echo "Found ${BINARY_COUNT} binary(ies) in ${BINARIES_DIR}"
+        ls -lh "${BINARIES_DIR}/"
+
+        # Determine version label for archive name
+        if [ -n "${RELEASE_VERSION}" ]; then
+          VERSION_LABEL="${RELEASE_VERSION}"
+        else
+          VERSION_LABEL="snapshot"
+        fi
+
+        # Create archive
+        ARCHIVE_NAME="kompile-${VERSION_LABEL}-${PLATFORM}"
+        if [[ "${PLATFORM}" == windows* ]]; then
+          # Zip for Windows
+          ARCHIVE_FILE="${STAGING_DIR}/${ARCHIVE_NAME}.zip"
+          cd "${BINARIES_DIR}"
+          zip -j "${ARCHIVE_FILE}" *
+          cd -
+        else
+          # Tar.gz for Linux/macOS
+          ARCHIVE_FILE="${STAGING_DIR}/${ARCHIVE_NAME}.tar.gz"
+          tar -czf "${ARCHIVE_FILE}" -C "${BINARIES_DIR}" .
+        fi
+
+        echo "Created archive: ${ARCHIVE_FILE}"
+        ls -lh "${ARCHIVE_FILE}"
+
+        echo "found=1" >> "${GITHUB_OUTPUT}"
+        echo "archive-file=${ARCHIVE_FILE}" >> "${GITHUB_OUTPUT}"
+        echo "archive-name=$(basename "${ARCHIVE_FILE}")" >> "${GITHUB_OUTPUT}"
+        echo "staging-dir=${STAGING_DIR}" >> "${GITHUB_OUTPUT}"
+
+    - name: Generate checksums
+      if: steps.package.outputs.found == '1'
+      shell: bash
+      run: |
+        ARCHIVE_FILE="${{ steps.package.outputs.archive-file }}"
+        STAGING_DIR="${{ steps.package.outputs.staging-dir }}"
+
+        cd "${STAGING_DIR}"
+        sha256sum "$(basename "${ARCHIVE_FILE}")" > "$(basename "${ARCHIVE_FILE}").sha256"
+        echo "SHA256:"
+        cat "$(basename "${ARCHIVE_FILE}").sha256"
+
+    - name: Upload as workflow artifact
+      if: steps.package.outputs.found == '1'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ steps.package.outputs.staging-dir }}/*
+        if-no-files-found: warn
+        retention-days: ${{ inputs.retention-days }}
+
+    - name: Upload to GitHub Release
+      if: steps.package.outputs.found == '1' && inputs.release-version != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: v${{ inputs.release-version }}
+        RELEASE_VERSION: ${{ inputs.release-version }}
+        PRERELEASE: ${{ inputs.prerelease }}
+        STAGING_DIR: ${{ steps.package.outputs.staging-dir }}
+      run: |
+        set -euo pipefail
+
+        PRERELEASE_FLAG=""
+        if [ "${PRERELEASE}" == "true" ]; then
+          PRERELEASE_FLAG="--prerelease"
+        fi
+
+        # Create release if it doesn't exist (idempotent — parallel jobs may race)
+        if ! gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+          echo "Creating GitHub Release ${RELEASE_TAG}"
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Kompile ${RELEASE_VERSION}" \
+            ${PRERELEASE_FLAG} \
+            --notes "## Kompile ${RELEASE_VERSION}
+
+        Native binary releases for all supported platforms.
+
+        ### Platforms
+        - **Linux x86_64** — \`kompile-*-linux-x86_64.tar.gz\`
+        - **macOS ARM64** — \`kompile-*-macosx-arm64.tar.gz\`
+        - **Windows x86_64** — \`kompile-*-windows-x86_64.zip\`
+
+        ### Included binaries
+        - \`kompile-cli\` — Main CLI for model conversion, pipeline building, and RAG app generation
+        - \`kompile-agent\` — Agent CLI
+        - \`kompile-app-cli\` — Application management CLI
+        - \`kompile-model\` — Model management CLI
+        - \`kompile-component\` — Component management CLI
+
+        ### Installation
+        1. Download the archive for your platform
+        2. Extract: \`tar xzf kompile-*-linux-x86_64.tar.gz\` (or unzip on Windows)
+        3. Add the extracted directory to your PATH
+        4. Run: \`kompile-cli --help\`
+
+        ### Checksums
+        SHA256 checksums are provided alongside each archive (\`.sha256\` files)." \
+          || echo "Release may have been created by another parallel job"
+        fi
+
+        # Upload all files in staging directory
+        UPLOAD_COUNT=0
+        for file in "${STAGING_DIR}"/*; do
+          if [ -f "${file}" ]; then
+            BASENAME="$(basename "${file}")"
+            echo "Uploading ${BASENAME} to release ${RELEASE_TAG}"
+            gh release upload "${RELEASE_TAG}" "${file}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber \
+            || echo "WARNING: Failed to upload ${BASENAME}"
+            UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+          fi
+        done
+
+        echo "Uploaded ${UPLOAD_COUNT} file(s) to release ${RELEASE_TAG}"

@@ -40,7 +40,7 @@ class ResourceSchedulerControllerTest {
 
     @BeforeEach
     void setUp() {
-        controller = new ResourceSchedulerController(scheduler, configService, historyService, null);
+        controller = new ResourceSchedulerController(scheduler, configService, historyService, null, null, null);
     }
 
     @Nested

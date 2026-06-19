@@ -1,0 +1,95 @@
+<div class="agent-model-config">
+  <div class="header">
+    <h3>CLI Agent Models</h3>
+    <p class="subtitle">Configure which model each CLI agent uses for extraction and chat</p>
+    <button mat-stroked-button (click)="loadAgentModels(true)" [disabled]="loading">
+      <mat-icon>refresh</mat-icon>
+      Refresh Models
+    </button>
+  </div>
+
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="32"></mat-spinner>
+    <span>Discovering available models...</span>
+  </div>
+
+  <div class="agents-grid" *ngIf="!loading">
+    <mat-card *ngFor="let agent of agents; trackBy: trackByAgent"
+              class="agent-card"
+              [class.unavailable]="!agent.available">
+
+      <mat-card-header>
+        <mat-icon mat-card-avatar class="agent-icon"
+                  [class.available]="agent.available"
+                  [class.unavailable]="!agent.available">
+          {{ agent.available ? 'smart_toy' : 'block' }}
+        </mat-icon>
+        <mat-card-title>{{ agent.displayName }}</mat-card-title>
+        <mat-card-subtitle>
+          {{ agent.agentName }}
+          <span class="model-source" *ngIf="agent.modelSource">
+            ({{ agent.modelSource === 'discovered' ? 'live discovery' : 'known models' }})
+          </span>
+        </mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        <!-- Current model display -->
+        <div class="current-model" *ngIf="agent.currentModel">
+          <span class="label">Active:</span>
+          <span class="model-name">{{ agent.currentModel }}</span>
+          <button mat-icon-button (click)="clearModel(agent.agentName)"
+                  matTooltip="Clear model (use default)" class="clear-btn">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+        <div class="current-model default" *ngIf="!agent.currentModel">
+          <span class="label">Active:</span>
+          <span class="model-name">Provider default</span>
+        </div>
+
+        <!-- Model selector -->
+        <mat-form-field appearance="outline" class="model-select" *ngIf="agent.available">
+          <mat-label>Select Model</mat-label>
+          <mat-select [value]="getSelectedValue(agent)"
+                      (selectionChange)="onModelSelect(agent, $event.value)">
+            <mat-option [value]="null">Provider Default</mat-option>
+            <mat-option *ngFor="let model of agent.availableModels" [value]="model">
+              {{ model }}
+            </mat-option>
+            <mat-option value="__custom__">Custom model...</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <!-- Custom model input -->
+        <div class="custom-model-input" *ngIf="showCustomInput[agent.agentName] && agent.available">
+          <mat-form-field appearance="outline" class="custom-field">
+            <mat-label>Custom model ID</mat-label>
+            <input matInput [(ngModel)]="customModels[agent.agentName]"
+                   placeholder="e.g., provider/model-name"
+                   (keydown.enter)="onCustomModelSubmit(agent.agentName)">
+          </mat-form-field>
+          <button mat-flat-button color="primary"
+                  (click)="onCustomModelSubmit(agent.agentName)"
+                  [disabled]="!customModels[agent.agentName]?.trim()">
+            Apply
+          </button>
+        </div>
+
+        <!-- Saving indicator -->
+        <div class="saving" *ngIf="saving[agent.agentName]">
+          <mat-spinner diameter="16"></mat-spinner>
+          <span>Saving...</span>
+        </div>
+
+        <!-- Model count -->
+        <div class="model-count" *ngIf="agent.availableModels.length > 0">
+          {{ agent.availableModels.length }} model{{ agent.availableModels.length === 1 ? '' : 's' }} available
+        </div>
+        <div class="model-count empty" *ngIf="agent.availableModels.length === 0 && agent.available">
+          No model list available - use custom model ID
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+</div>

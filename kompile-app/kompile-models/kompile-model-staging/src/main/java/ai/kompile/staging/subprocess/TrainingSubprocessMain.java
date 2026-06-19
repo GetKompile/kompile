@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.subprocess;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.autodiff.loss.LossReduce;
 import org.nd4j.autodiff.samediff.SDVariable;
@@ -55,7 +56,7 @@ import java.util.*;
 public class TrainingSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(TrainingSubprocessMain.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     private static PrintStream originalStdout;
     private static volatile TrainingSubprocessArgs currentArgs;

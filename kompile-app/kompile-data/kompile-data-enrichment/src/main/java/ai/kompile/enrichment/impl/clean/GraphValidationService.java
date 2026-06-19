@@ -21,11 +21,8 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -50,19 +47,13 @@ import java.util.stream.Collectors;
 public class GraphValidationService {
     private static final Logger log = LoggerFactory.getLogger(GraphValidationService.class);
 
-    private final GraphNodeRepository nodeRepository;
-    private final GraphEdgeRepository edgeRepository;
     private final KnowledgeGraphService knowledgeGraphService;
     private final EnrichmentAuditService auditService;
     private final ObjectMapper objectMapper;
 
-    public GraphValidationService(GraphNodeRepository nodeRepository,
-                                  GraphEdgeRepository edgeRepository,
-                                  KnowledgeGraphService knowledgeGraphService,
+    public GraphValidationService(KnowledgeGraphService knowledgeGraphService,
                                   EnrichmentAuditService auditService,
                                   ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
         this.knowledgeGraphService = knowledgeGraphService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
@@ -82,7 +73,8 @@ public class GraphValidationService {
     }
 
     private int fixBlankTitles(Long factSheetId, String jobId) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        // Use vector store (SSOT)
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         int fixed = 0;
         for (GraphNode entity : entities) {
             if (entity.getTitle() != null && !entity.getTitle().isBlank()) continue;
@@ -110,8 +102,16 @@ public class GraphValidationService {
 
             if (newTitle != null) {
                 String beforeTitle = entity.getTitle() != null ? entity.getTitle() : "";
-                entity.setTitle(newTitle);
-                nodeRepository.save(entity);
+                // Persist via vector store (SSOT)
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> meta = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
+                            ? objectMapper.readValue(entity.getMetadataJson(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                            : new java.util.LinkedHashMap<>();
+                    knowledgeGraphService.updateNode(entity.getNodeId(), newTitle, entity.getDescription(), meta);
+                } catch (Exception saveEx) {
+                    log.warn("Failed to update title for entity {}: {}", entity.getNodeId(), saveEx.getMessage());
+                }
                 auditService.logAction(factSheetId, jobId, "CLEAN", "FIX_BLANK_TITLE",
                         entity.getNodeId(), "GRAPH_NODE",
                         String.format("{\"title\":\"%s\"}", escapeJson(beforeTitle)),
@@ -126,15 +126,18 @@ public class GraphValidationService {
     }
 
     private int removeDanglingEdges(Long factSheetId, String jobId) {
-        List<GraphNode> allNodes = nodeRepository.findByFactSheetId(factSheetId);
+        // Use vector store (SSOT) to enumerate all nodes and edges in factSheet
+        List<GraphNode> allNodes = knowledgeGraphService.getNodesInFactSheet(factSheetId);
         Set<String> nodeIds = allNodes.stream().map(GraphNode::getNodeId).collect(Collectors.toSet());
 
-        // Get all edges that touch nodes in this factSheet
+        // Get all edges for this factSheet and find dangling ones
         List<String> edgesToDelete = new ArrayList<>();
-        for (GraphNode node : allNodes) {
-            List<GraphEdge> edges = edgeRepository.findBySourceNodeIdOrTargetNodeId(node.getId());
-            for (GraphEdge edge : edges) {
-                if (!nodeIds.contains(edge.getSourceNode().getNodeId()) || !nodeIds.contains(edge.getTargetNode().getNodeId())) {
+        List<GraphEdge> allEdges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
+        for (GraphEdge edge : allEdges) {
+            if (edge.getSourceNode() == null || edge.getTargetNode() == null
+                    || !nodeIds.contains(edge.getSourceNode().getNodeId())
+                    || !nodeIds.contains(edge.getTargetNode().getNodeId())) {
+                if (edge.getEdgeId() != null) {
                     edgesToDelete.add(edge.getEdgeId());
                 }
             }
@@ -157,7 +160,8 @@ public class GraphValidationService {
         if (factSheetId == null) {
             return 0;
         }
-        List<GraphEdge> edges = edgeRepository.findByFactSheetId(factSheetId);
+        // Use vector store (SSOT)
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
         if (edges == null || edges.isEmpty()) {
             return 0;
         }
@@ -286,51 +290,9 @@ public class GraphValidationService {
     }
 
     private void recalculateEdgeCounts(Long factSheetId) {
-        if (factSheetId == null) {
-            return;
-        }
-        List<GraphNode> nodes = nodeRepository.findByFactSheetId(factSheetId);
-        if (nodes == null || nodes.isEmpty()) {
-            return;
-        }
-
-        Map<String, GraphNode> nodesById = nodes.stream()
-                .filter(node -> node.getNodeId() != null)
-                .collect(Collectors.toMap(GraphNode::getNodeId, node -> node, (a, b) -> a));
-        Map<String, Integer> counts = new HashMap<>();
-        nodesById.keySet().forEach(nodeId -> counts.put(nodeId, 0));
-
-        List<GraphEdge> edges = edgeRepository.findByFactSheetId(factSheetId);
-        if (edges != null) {
-            for (GraphEdge edge : edges) {
-                if (edge == null || edge.getSourceNode() == null || edge.getTargetNode() == null) {
-                    continue;
-                }
-                String sourceNodeId = edge.getSourceNode().getNodeId();
-                String targetNodeId = edge.getTargetNode().getNodeId();
-                if (!nodesById.containsKey(sourceNodeId) || !nodesById.containsKey(targetNodeId)) {
-                    continue;
-                }
-                counts.merge(sourceNodeId, 1, Integer::sum);
-                if (!sourceNodeId.equals(targetNodeId)) {
-                    counts.merge(targetNodeId, 1, Integer::sum);
-                }
-            }
-        }
-
-        List<GraphNode> changed = new ArrayList<>();
-        for (GraphNode node : nodesById.values()) {
-            int recalculated = counts.getOrDefault(node.getNodeId(), 0);
-            int current = node.getEdgeCount() != null ? node.getEdgeCount() : 0;
-            if (current != recalculated) {
-                node.setEdgeCount(recalculated);
-                changed.add(node);
-            }
-        }
-        if (!changed.isEmpty()) {
-            nodeRepository.saveAll(changed);
-            log.info("Recalculated edge counts for {} nodes in factSheet {}", changed.size(), factSheetId);
-        }
+        // The vector store (SSOT) maintains edge counts intrinsically through the adjacency matrix.
+        // No explicit recalculation or JPA save is needed — this method is a no-op in the matrix-store regime.
+        log.debug("recalculateEdgeCounts called for factSheet {} — no-op (vector store is SSOT)", factSheetId);
     }
 
     private String firstNonBlank(String... values) {

@@ -22,7 +22,7 @@ import ai.kompile.enrichment.domain.MassEditResult;
 import ai.kompile.enrichment.repository.EntityCategoryRepository;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,17 +45,17 @@ public class AutoLabelService {
     private static final int BATCH_SIZE = 50;
 
     private final EntityCategoryRepository categoryRepository;
-    private final GraphNodeRepository nodeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final ObjectMapper objectMapper;
 
     @Autowired(required = false)
     private LLMChat llmChat;
 
     public AutoLabelService(EntityCategoryRepository categoryRepository,
-                            GraphNodeRepository nodeRepository,
+                            KnowledgeGraphService knowledgeGraphService,
                             ObjectMapper objectMapper) {
         this.categoryRepository = categoryRepository;
-        this.nodeRepository = nodeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.objectMapper = objectMapper;
     }
 
@@ -78,7 +78,7 @@ public class AutoLabelService {
         List<GraphNode> entities;
         if (entityNodeIds != null && !entityNodeIds.isEmpty()) {
             entities = entityNodeIds.stream()
-                    .map(id -> nodeRepository.findByNodeId(id).orElse(null))
+                    .map(id -> knowledgeGraphService.getNode(id).orElse(null))
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
         } else {
@@ -210,20 +210,18 @@ public class AutoLabelService {
             EntityCategory cat = catMap.get(suggestion.getSuggestedCategoryId());
             if (cat == null) continue;
 
-            nodeRepository.findByNodeId(suggestion.getEntityNodeId()).ifPresent(node -> {
+            // Use vector store (SSOT) for lookup and update
+            knowledgeGraphService.getNode(suggestion.getEntityNodeId()).ifPresent(node -> {
                 try {
-                    ObjectNode meta;
-                    if (node.getMetadataJson() != null && !node.getMetadataJson().isBlank()) {
-                        meta = (ObjectNode) objectMapper.readTree(node.getMetadataJson());
-                    } else {
-                        meta = objectMapper.createObjectNode();
-                    }
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> meta = node.getMetadataJson() != null && !node.getMetadataJson().isBlank()
+                            ? objectMapper.readValue(node.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
+                            : new java.util.LinkedHashMap<>();
                     meta.put("taxonomyCategory", cat.getLabel());
                     // Walk up to find domain
                     String domain = findRootDomain(cat);
                     meta.put("taxonomyDomain", domain);
-                    node.setMetadataJson(objectMapper.writeValueAsString(meta));
-                    nodeRepository.save(node);
+                    knowledgeGraphService.updateNode(node.getNodeId(), node.getTitle(), node.getDescription(), meta);
                 } catch (Exception e) {
                     log.warn("Failed to apply suggestion for {}: {}", suggestion.getEntityNodeId(), e.getMessage());
                 }
@@ -234,7 +232,7 @@ public class AutoLabelService {
     }
 
     private List<GraphNode> getUncategorizedEntities(Long factSheetId) {
-        return nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY).stream()
+        return knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY).stream()
                 .filter(e -> {
                     try {
                         if (e.getMetadataJson() == null) return true;

@@ -17,7 +17,7 @@
 package ai.kompile.app.services.diffindex;
 
 import ai.kompile.cli.common.chat.sources.*;
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -76,7 +76,7 @@ public class DiffIndexService {
 
     public DiffIndexService() {
         this.indexDir = Paths.get(System.getProperty("user.home"), ".kompile", "agent-state", "diff-index");
-        this.mapper = new ObjectMapper()
+        this.mapper = JsonUtils.newStandardMapper()
                 .enable(SerializationFeature.INDENT_OUTPUT)
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     }
@@ -583,55 +583,4 @@ public class DiffIndexService {
                 .count();
     }
 
-    // ── Data model ──────────────────────────────────────────────────────────
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class DiffIndexEntry {
-        private String id;
-        private String agent;
-        private String source;
-        private String sessionId;
-        private String sessionFingerprint;
-        private String projectDirectory;
-        private String filePath;
-        private String toolName;
-        private String diffType;
-        private String oldString;
-        private String newString;
-        private String unifiedDiff;
-        private String timestamp;
-        private long linesAdded;
-        private long linesRemoved;
-
-        public String getId() { return id; }
-        public void setId(String id) { this.id = id; }
-        public String getAgent() { return agent; }
-        public void setAgent(String agent) { this.agent = agent; }
-        public String getSource() { return source; }
-        public void setSource(String source) { this.source = source; }
-        public String getSessionId() { return sessionId; }
-        public void setSessionId(String sessionId) { this.sessionId = sessionId; }
-        public String getSessionFingerprint() { return sessionFingerprint; }
-        public void setSessionFingerprint(String sessionFingerprint) { this.sessionFingerprint = sessionFingerprint; }
-        public String getProjectDirectory() { return projectDirectory; }
-        public void setProjectDirectory(String projectDirectory) { this.projectDirectory = projectDirectory; }
-        public String getFilePath() { return filePath; }
-        public void setFilePath(String filePath) { this.filePath = filePath; }
-        public String getToolName() { return toolName; }
-        public void setToolName(String toolName) { this.toolName = toolName; }
-        public String getDiffType() { return diffType; }
-        public void setDiffType(String diffType) { this.diffType = diffType; }
-        public String getOldString() { return oldString; }
-        public void setOldString(String oldString) { this.oldString = oldString; }
-        public String getNewString() { return newString; }
-        public void setNewString(String newString) { this.newString = newString; }
-        public String getUnifiedDiff() { return unifiedDiff; }
-        public void setUnifiedDiff(String unifiedDiff) { this.unifiedDiff = unifiedDiff; }
-        public String getTimestamp() { return timestamp; }
-        public void setTimestamp(String timestamp) { this.timestamp = timestamp; }
-        public long getLinesAdded() { return linesAdded; }
-        public void setLinesAdded(long linesAdded) { this.linesAdded = linesAdded; }
-        public long getLinesRemoved() { return linesRemoved; }
-        public void setLinesRemoved(long linesRemoved) { this.linesRemoved = linesRemoved; }
-    }
 }

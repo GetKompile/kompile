@@ -407,6 +407,7 @@ export class AgentService extends BaseService {
   }
 
   setAgentModel(agentName: string, model: string | null): Observable<void> {
-    return this.http.put<void>(`${this.agentsUrl}/${agentName}/model`, { model });
+    // Backend route is POST /api/agents/models/{name} (CliAgentModelController)
+    return this.http.post<void>(`${this.agentsUrl}/models/${agentName}`, { model });
   }
 }

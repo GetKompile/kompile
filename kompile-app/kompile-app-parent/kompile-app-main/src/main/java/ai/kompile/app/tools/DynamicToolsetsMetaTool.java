@@ -17,7 +17,7 @@
 package ai.kompile.app.tools;
 
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
-import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService.DiscoveredTool;
+import ai.kompile.app.services.mcp.DiscoveredTool;
 import ai.kompile.app.services.mcp.ToolDefinitionService;
 import ai.kompile.core.mcp.EnhancedToolDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;

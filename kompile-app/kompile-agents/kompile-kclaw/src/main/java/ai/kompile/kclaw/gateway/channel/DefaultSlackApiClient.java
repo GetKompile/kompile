@@ -15,6 +15,7 @@
  */
 package ai.kompile.kclaw.gateway.channel;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.gateway.core.gateway.channel.SlackApiClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -46,7 +47,7 @@ public class DefaultSlackApiClient implements SlackApiClient {
 
     public DefaultSlackApiClient() {
         this.httpClient = HttpClient.newHttpClient();
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     public DefaultSlackApiClient(HttpClient httpClient, ObjectMapper objectMapper) {

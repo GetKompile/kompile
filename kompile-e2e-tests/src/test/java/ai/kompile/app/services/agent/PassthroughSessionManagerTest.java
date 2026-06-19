@@ -67,10 +67,13 @@ class PassthroughSessionManagerTest {
 
     @BeforeEach
     void setUp() {
+        AgentSubprocessExecutor subprocessExecutor = new AgentSubprocessExecutor(
+                agentRegistry, diagnosticService, streamParser);
         agentChatService = new AgentChatService(
                 agentRegistry,
                 diagnosticService,
                 streamParser,
+                subprocessExecutor,
                 List.of(new NoOpDocumentRetrieverImpl()),
                 List.of(new NoOpVectorStoreImpl()),
                 null, // graphRagServices

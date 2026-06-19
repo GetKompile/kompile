@@ -18,6 +18,7 @@ package ai.kompile.guardrails.output;
 
 import ai.kompile.core.guardrails.*;
 import ai.kompile.guardrails.GuardrailsProperties;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,7 +33,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class FormatGuardrail implements OutputGuardrail {
 
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private final GuardrailsProperties properties;
 

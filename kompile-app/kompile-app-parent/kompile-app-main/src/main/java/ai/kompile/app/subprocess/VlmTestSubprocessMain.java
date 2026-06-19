@@ -19,6 +19,8 @@ package ai.kompile.app.subprocess;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.ocr.document.ParsedDocument;
 import ai.kompile.ocr.OcrPipelineConfig;
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.ocr.VlmOutputFormat;
 import ai.kompile.ocr.integration.OcrPipelineService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JSystemProperties;
@@ -50,7 +52,7 @@ import java.util.*;
 public class VlmTestSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(VlmTestSubprocessMain.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     private static PrintStream originalStdout;
     private static volatile VlmTestSubprocessArgs currentArgs;
@@ -158,11 +160,11 @@ public class VlmTestSubprocessMain {
                 }
 
                 String modelId = vlmArgs.modelId();
-                OcrPipelineConfig.VlmOutputFormat format;
+                VlmOutputFormat format;
                 try {
-                    format = OcrPipelineConfig.VlmOutputFormat.valueOf(vlmArgs.outputFormat());
+                    format = VlmOutputFormat.valueOf(vlmArgs.outputFormat());
                 } catch (IllegalArgumentException e) {
-                    format = OcrPipelineConfig.VlmOutputFormat.DOCTAGS;
+                    format = VlmOutputFormat.DOCTAGS;
                 }
 
                 // Track per-page results
@@ -172,7 +174,7 @@ public class VlmTestSubprocessMain {
                 long pipelineStart = System.currentTimeMillis();
 
                 // Use progress callback to get per-page info
-                final OcrPipelineConfig.VlmOutputFormat finalFormat = format;
+                final VlmOutputFormat finalFormat = format;
                 final SubprocessProgressReporter finalReporter = reporter;
                 final int[] pageCount = {0};
 

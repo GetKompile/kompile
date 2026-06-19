@@ -16,11 +16,11 @@
 
 package ai.kompile.app.services.prompt;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.prompt.PromptTemplate;
 import ai.kompile.core.prompt.PromptTemplateRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,9 +55,7 @@ public class FileBasedPromptTemplateRepository implements PromptTemplateReposito
     public FileBasedPromptTemplateRepository(
             @Value("${kompile.prompts.templates.directory:./data/prompt-templates}") String directory) {
         this.storageDirectory = Path.of(directory);
-        this.objectMapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+        this.objectMapper = JsonUtils.newStandardMapper()
                 .enable(SerializationFeature.INDENT_OUTPUT);
     }
 

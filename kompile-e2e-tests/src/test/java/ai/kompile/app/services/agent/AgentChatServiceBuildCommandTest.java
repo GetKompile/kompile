@@ -63,10 +63,13 @@ class AgentChatServiceBuildCommandTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        AgentSubprocessExecutor subprocessExecutor = new AgentSubprocessExecutor(
+                agentRegistry, diagnosticService, streamParser);
         service = new AgentChatService(
                 agentRegistry,
                 diagnosticService,
                 streamParser,
+                subprocessExecutor,
                 List.of(new NoOpDocumentRetrieverImpl()),
                 List.of(new NoOpVectorStoreImpl()),
                 null, // graphRagServices

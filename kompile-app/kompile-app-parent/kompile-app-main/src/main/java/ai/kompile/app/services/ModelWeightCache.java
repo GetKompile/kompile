@@ -18,6 +18,7 @@ package ai.kompile.app.services;
 
 import ai.kompile.app.config.GpuDevice;
 import ai.kompile.app.config.ModelWeightCacheConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -86,7 +87,7 @@ public class ModelWeightCache {
             @Value("${kompile.data.dir:#{null}}") String dataDir) {
         this.memoryPoolManager = memoryPoolManager;
         this.gpuResourceManager = gpuResourceManager;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         String effectiveDataDir = dataDir;
         if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
             effectiveDataDir = System.getProperty("user.home") + "/.kompile";

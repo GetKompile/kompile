@@ -55,82 +55,6 @@ public class ComparisonService {
         this.registryService = registryService;
     }
 
-    // ==================== Request / Result Classes ====================
-
-    public static class ComparisonRequest {
-        private String sampleText;
-        private int sequenceLength = 8;
-
-        public String getSampleText() { return sampleText; }
-        public void setSampleText(String sampleText) { this.sampleText = sampleText; }
-        public int getSequenceLength() { return sequenceLength; }
-        public void setSequenceLength(int sequenceLength) { this.sequenceLength = sequenceLength; }
-    }
-
-    public static class ModelInferenceResult {
-        private String variant;
-        private long inferenceTimeMs;
-        private Map<String, long[]> outputShapes;
-        private Map<String, double[]> outputSample;
-        private int numOps;
-        private int numVars;
-        private long modelSizeBytes;
-
-        public String getVariant() { return variant; }
-        public void setVariant(String variant) { this.variant = variant; }
-        public long getInferenceTimeMs() { return inferenceTimeMs; }
-        public void setInferenceTimeMs(long inferenceTimeMs) { this.inferenceTimeMs = inferenceTimeMs; }
-        public Map<String, long[]> getOutputShapes() { return outputShapes; }
-        public void setOutputShapes(Map<String, long[]> outputShapes) { this.outputShapes = outputShapes; }
-        public Map<String, double[]> getOutputSample() { return outputSample; }
-        public void setOutputSample(Map<String, double[]> outputSample) { this.outputSample = outputSample; }
-        public int getNumOps() { return numOps; }
-        public void setNumOps(int numOps) { this.numOps = numOps; }
-        public int getNumVars() { return numVars; }
-        public void setNumVars(int numVars) { this.numVars = numVars; }
-        public long getModelSizeBytes() { return modelSizeBytes; }
-        public void setModelSizeBytes(long modelSizeBytes) { this.modelSizeBytes = modelSizeBytes; }
-    }
-
-    public static class ComparisonResult {
-        private boolean success;
-        private String modelId;
-        private String error;
-        private ModelInferenceResult optimizedResult;
-        private ModelInferenceResult originalResult;
-        private double maxAbsoluteDifference;
-        private double meanAbsoluteDifference;
-        private boolean outputsMatch;
-        private double speedupFactor;
-
-        public boolean isSuccess() { return success; }
-        public void setSuccess(boolean success) { this.success = success; }
-        public String getModelId() { return modelId; }
-        public void setModelId(String modelId) { this.modelId = modelId; }
-        public String getError() { return error; }
-        public void setError(String error) { this.error = error; }
-        public ModelInferenceResult getOptimizedResult() { return optimizedResult; }
-        public void setOptimizedResult(ModelInferenceResult optimizedResult) { this.optimizedResult = optimizedResult; }
-        public ModelInferenceResult getOriginalResult() { return originalResult; }
-        public void setOriginalResult(ModelInferenceResult originalResult) { this.originalResult = originalResult; }
-        public double getMaxAbsoluteDifference() { return maxAbsoluteDifference; }
-        public void setMaxAbsoluteDifference(double maxAbsoluteDifference) { this.maxAbsoluteDifference = maxAbsoluteDifference; }
-        public double getMeanAbsoluteDifference() { return meanAbsoluteDifference; }
-        public void setMeanAbsoluteDifference(double meanAbsoluteDifference) { this.meanAbsoluteDifference = meanAbsoluteDifference; }
-        public boolean isOutputsMatch() { return outputsMatch; }
-        public void setOutputsMatch(boolean outputsMatch) { this.outputsMatch = outputsMatch; }
-        public double getSpeedupFactor() { return speedupFactor; }
-        public void setSpeedupFactor(double speedupFactor) { this.speedupFactor = speedupFactor; }
-
-        public static ComparisonResult failure(String modelId, String error) {
-            ComparisonResult r = new ComparisonResult();
-            r.success = false;
-            r.modelId = modelId;
-            r.error = error;
-            return r;
-        }
-    }
-
     // ==================== Comparison Logic ====================
 
     /**
@@ -228,15 +152,16 @@ public class ComparisonService {
             cleanupOutputs(originalOutput.outputs);
 
             // Build result
-            ComparisonResult result = new ComparisonResult();
-            result.setSuccess(true);
-            result.setModelId(modelId);
-            result.setOptimizedResult(optimizedResult);
-            result.setOriginalResult(originalResult);
-            result.setMaxAbsoluteDifference(maxAbsDiff);
-            result.setMeanAbsoluteDifference(meanAbsDiff);
-            result.setOutputsMatch(outputsMatch);
-            result.setSpeedupFactor(Math.round(speedupFactor * 100.0) / 100.0);
+            ComparisonResult result = ComparisonResult.builder()
+                    .success(true)
+                    .modelId(modelId)
+                    .optimizedResult(optimizedResult)
+                    .originalResult(originalResult)
+                    .maxAbsoluteDifference(maxAbsDiff)
+                    .meanAbsoluteDifference(meanAbsDiff)
+                    .outputsMatch(outputsMatch)
+                    .speedupFactor(Math.round(speedupFactor * 100.0) / 100.0)
+                    .build();
 
             log.info("Comparison complete for model {}: match={}, maxDiff={}, speedup={}x",
                     modelId, outputsMatch, maxAbsDiff, result.getSpeedupFactor());
@@ -341,13 +266,6 @@ public class ComparisonService {
     }
 
     private ModelInferenceResult buildInferenceResult(String variant, Path modelPath, InferenceOutput output) throws IOException {
-        ModelInferenceResult result = new ModelInferenceResult();
-        result.setVariant(variant);
-        result.setInferenceTimeMs(output.inferenceTimeMs);
-        result.setNumOps(output.numOps);
-        result.setNumVars(output.numVars);
-        result.setModelSizeBytes(Files.size(modelPath));
-
         Map<String, long[]> shapes = new LinkedHashMap<>();
         Map<String, double[]> samples = new LinkedHashMap<>();
 
@@ -365,9 +283,15 @@ public class ComparisonService {
             samples.put(entry.getKey(), sampleValues);
         }
 
-        result.setOutputShapes(shapes);
-        result.setOutputSample(samples);
-        return result;
+        return ModelInferenceResult.builder()
+                .variant(variant)
+                .inferenceTimeMs(output.inferenceTimeMs)
+                .numOps(output.numOps)
+                .numVars(output.numVars)
+                .modelSizeBytes(Files.size(modelPath))
+                .outputShapes(shapes)
+                .outputSample(samples)
+                .build();
     }
 
     private void cleanupOutputs(Map<String, INDArray> outputs) {

@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+# Start the FP&A v3 application and its separate model staging server.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$SCRIPT_DIR"
+REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
+RUN_DIR="$PROJECT_DIR/data/run"
+LOG_DIR="$PROJECT_DIR/data/logs"
+
+APP_PORT="${APP_PORT:-8080}"
+STAGING_PORT="${STAGING_PORT:-8090}"
+APP_URL="${APP_URL:-http://localhost:${APP_PORT}}"
+STAGING_URL="${KOMPILE_STAGING_URL:-http://localhost:${STAGING_PORT}}"
+
+APP_JAR="${APP_JAR:-$PROJECT_DIR/target/kompile-fpna-v3-0.1.0-SNAPSHOT.jar}"
+STAGING_JAR="${STAGING_JAR:-$HOME/.kompile/components/kompile-model-staging/0.1.0-SNAPSHOT/kompile-model-staging-0.1.0-SNAPSHOT-exec.jar}"
+SUBPROCESS_CLASSPATH_FILE="${SUBPROCESS_CLASSPATH_FILE:-$LOG_DIR/subprocess-classpath.txt}"
+
+APP_XMX="${APP_XMX:-10g}"
+STAGING_XMX="${STAGING_XMX:-4g}"
+JAVACPP_MAX_BYTES="${JAVACPP_MAX_BYTES:-48g}"
+STAGING_JAVACPP_MAX_BYTES="${STAGING_JAVACPP_MAX_BYTES:-24g}"
+STAGING_JAVACPP_MAX_PHYSICAL_BYTES="${STAGING_JAVACPP_MAX_PHYSICAL_BYTES:-32g}"
+STAGING_EXPECT_CUDA="${STAGING_EXPECT_CUDA:-false}"
+LLM_SERVING_PORT="${LLM_SERVING_PORT:-8091}"
+LLM_SERVING_URL="${LLM_SERVING_URL:-http://localhost:${LLM_SERVING_PORT}}"
+ND4J_NUM_BLAS_THREADS="${ND4J_NUM_BLAS_THREADS:-1}"
+OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+ANSERINI_PER_DOC_EMBEDDING_FALLBACK="${ANSERINI_PER_DOC_EMBEDDING_FALLBACK:-false}"
+CLI_LLM_AGENT="${CLI_LLM_AGENT:-codex-cli}"
+CLI_AGENT_FALLBACK_ENABLED="${CLI_AGENT_FALLBACK_ENABLED:-true}"
+CLI_AGENT_FALLBACK_LIMIT_ONLY="${CLI_AGENT_FALLBACK_LIMIT_ONLY:-true}"
+CLI_AGENT_TIMEOUT_SECONDS="${CLI_AGENT_TIMEOUT_SECONDS:-360}"
+EMBEDDING_SUBPROCESS_JAVACPP_MAX_BYTES="${EMBEDDING_SUBPROCESS_JAVACPP_MAX_BYTES:-24g}"
+EMBEDDING_SUBPROCESS_JAVACPP_MAX_PHYSICAL_BYTES="${EMBEDDING_SUBPROCESS_JAVACPP_MAX_PHYSICAL_BYTES:-${EMBEDDING_SUBPROCESS_JAVACPP_MAX_BYTES}}"
+EMBEDDING_SUBPROCESS_MAX_RSS_BYTES="${EMBEDDING_SUBPROCESS_MAX_RSS_BYTES:-24g}"
+EMBEDDING_NATIVE_TRIM_INTERVAL="${EMBEDDING_NATIVE_TRIM_INTERVAL:-5}"
+EMBEDDING_EAGER_INIT="${EMBEDDING_EAGER_INIT:-false}"
+LOAD_LFM2_ON_START="${LOAD_LFM2_ON_START:-true}"
+LFM2_MODEL_ID="${LFM2_MODEL_ID:-lfm2.5-1.2b-instruct}"
+
+mkdir -p "$RUN_DIR" "$LOG_DIR"
+
+http_ok() {
+    local url="$1"
+    curl -fsS --max-time 5 "$url" >/dev/null 2>&1
+}
+
+require_command() {
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "FATAL: required command not found: $cmd" >&2
+        exit 1
+    fi
+}
+
+device_route_field() {
+    local service="$1"
+    local field="$2"
+    local config_file="$HOME/.kompile/config/device-routing-config.json"
+    if [ ! -f "$config_file" ] || ! command -v jq >/dev/null 2>&1; then
+        return 0
+    fi
+    jq -r --arg service "$service" --arg field "$field" '
+        if .enabled == true then (.serviceRoutes[$service][$field] // empty) else empty end
+    ' "$config_file" 2>/dev/null || true
+}
+
+stderr_filter() {
+    awk '
+        /libnd4jcpu\.so/ {
+            if (!cpu_note_printed) {
+                print "NOTE: nd4j CPU native library is present because this package carries multiple backends. CUDA remains the configured runtime backend; CPU backend probe warnings do not mean CPU execution is selected."
+                cpu_note_printed = 1
+            }
+            next
+        }
+        /It'\''s highly recommended that you fix the library with/ { next }
+        { print }
+    '
+}
+
+write_stderr_filter_script() {
+    local filter_script="$RUN_DIR/stderr-filter.awk"
+    cat > "$filter_script" <<'AWK'
+/libnd4jcpu\.so/ {
+    if (!cpu_note_printed) {
+        print "NOTE: nd4j CPU native library is present because this package carries multiple backends. CUDA remains the configured runtime backend; CPU backend probe warnings do not mean CPU execution is selected."
+        cpu_note_printed = 1
+    }
+    next
+}
+/It's highly recommended that you fix the library with/ { next }
+{ print }
+AWK
+}
+
+start_detached_java() {
+    local name="$1"
+    local workdir="$2"
+    local out_log="$3"
+    local err_log="$4"
+    local pid_file="$5"
+    shift 5
+
+    write_stderr_filter_script
+
+    local fifo="$RUN_DIR/${name}.stderr.fifo"
+    local filter_pid_file="$RUN_DIR/${name}.stderr-filter.pid"
+    rm -f "$fifo"
+    mkfifo "$fifo"
+    : > "$out_log"
+    : > "$err_log"
+
+    setsid awk -f "$RUN_DIR/stderr-filter.awk" < "$fifo" >> "$err_log" &
+    echo "$!" > "$filter_pid_file"
+
+    setsid bash -c 'cd "$1"; shift; exec "$@"' "$name" "$workdir" "$@" \
+        </dev/null > "$out_log" 2> "$fifo" &
+
+    local pid=$!
+    echo "$pid" > "$pid_file"
+    echo "$pid"
+}
+
+wait_for_http() {
+    local name="$1"
+    local url="$2"
+    local seconds="$3"
+    local waited=0
+
+    while [ "$waited" -lt "$seconds" ]; do
+        if http_ok "$url"; then
+            echo "$name is ready at $url"
+            return 0
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    echo "FATAL: $name did not become ready at $url within ${seconds}s" >&2
+    return 1
+}
+
+pid_from_file() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        local pid
+        pid="$(tr -d '[:space:]' < "$file" || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
+            echo "$pid"
+        fi
+    fi
+    return 0
+}
+
+first_pid_matching() {
+    local pattern="$1"
+    pgrep -f "$pattern" 2>/dev/null | head -n 1 || true
+}
+
+app_process_running() {
+    pgrep -f "java .* -jar .*kompile-fpna-v3-0.1.0-SNAPSHOT.jar" >/dev/null 2>&1
+}
+
+stop_orphan_embedding_subprocesses() {
+    local pids
+    pids="$(pgrep -f 'ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain' 2>/dev/null || true)"
+    if [ -z "$pids" ]; then
+        return 0
+    fi
+
+    if app_process_running; then
+        echo "Embedding subprocess is running with the app; leaving it in place."
+        return 0
+    fi
+
+    echo "Stopping orphaned embedding subprocess before app start: $(echo "$pids" | tr '\n' ' ')"
+    kill $pids >/dev/null 2>&1 || true
+
+    local waited=0
+    while [ "$waited" -lt 15 ]; do
+        local still_running=""
+        local pid
+        for pid in $pids; do
+            if kill -0 "$pid" >/dev/null 2>&1; then
+                still_running="${still_running}${pid} "
+            fi
+        done
+
+        if [ -z "$still_running" ]; then
+            return 0
+        fi
+
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    echo "Forcing orphaned embedding subprocess shutdown: $still_running"
+    kill -KILL $still_running >/dev/null 2>&1 || true
+}
+
+remember_existing_pid() {
+    local pattern="$1"
+    local file="$2"
+    local pid
+    pid="$(first_pid_matching "$pattern")"
+    if [ -n "$pid" ]; then
+        echo "$pid" > "$file"
+        echo "$pid"
+    fi
+    return 0
+}
+
+cleanup_stale_embedding_tmp() {
+    stop_orphan_embedding_subprocesses
+
+    if pgrep -f 'ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain' >/dev/null 2>&1; then
+        echo "Embedding subprocess is running; leaving JavaCPP temp directories in place."
+        return 0
+    fi
+    find /tmp -maxdepth 1 -type d -name 'embedding-subprocess-javacpp-*' -print -exec rm -rf {} + 2>/dev/null || true
+}
+
+require_staging_backend() {
+    if [ "$STAGING_EXPECT_CUDA" = "true" ]; then
+        if jar tf "$STAGING_JAR" | grep -q 'BOOT-INF/lib/nd4j-cuda-12\.9-'; then
+            return 0
+        fi
+        echo "FATAL: staging server JAR is not CUDA-backed: $STAGING_JAR" >&2
+        echo "Rebuild it with: mvn -pl kompile-app/kompile-model-staging -am install -DskipTests -Dskip.ui -Dkompile.cuda=true" >&2
+        exit 1
+    fi
+
+    if jar tf "$STAGING_JAR" | grep -q 'BOOT-INF/lib/nd4j-cuda-12\.9-'; then
+        echo "FATAL: staging server JAR is CUDA-backed, but FP&A v3 uses staging only for CPU model conversion/registry." >&2
+        echo "Rebuild/deploy staging without -Dkompile.cuda=true before starting this project: $STAGING_JAR" >&2
+        exit 1
+    fi
+}
+
+ensure_staging() {
+    local pid_file="$RUN_DIR/staging.pid"
+    local health_url="$STAGING_URL/actuator/health"
+
+    if http_ok "$health_url"; then
+        local pid
+        pid="$(pid_from_file "$pid_file")"
+        if [ -z "${pid:-}" ]; then
+            pid="$(remember_existing_pid "kompile-model-staging-0.1.0-SNAPSHOT-exec.jar.*--server.port=${STAGING_PORT}" "$pid_file")"
+        fi
+        echo "Model staging server already running at $STAGING_URL${pid:+ (pid $pid)}"
+        return 0
+    fi
+
+    if [ ! -f "$STAGING_JAR" ]; then
+        echo "FATAL: staging server JAR not found: $STAGING_JAR" >&2
+        exit 1
+    fi
+    require_staging_backend
+
+    echo "Starting model staging server on $STAGING_URL"
+    local staging_cmd=(
+        env
+        "ND4J_NUM_BLAS_THREADS=${ND4J_NUM_BLAS_THREADS}"
+        "OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+        "MKL_NUM_THREADS=${MKL_NUM_THREADS}"
+        "OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS}"
+        java "-Xmx${STAGING_XMX}"
+        -XX:NativeMemoryTracking=summary
+        -XX:-CreateCoredumpOnCrash
+        "-XX:ErrorFile=${LOG_DIR}/hs_err_staging_%p.log"
+        "-Dorg.bytedeco.javacpp.maxphysicalbytes=${STAGING_JAVACPP_MAX_PHYSICAL_BYTES}"
+        "-Dorg.bytedeco.javacpp.maxbytes=${STAGING_JAVACPP_MAX_BYTES}"
+        -Dorg.bytedeco.javacpp.pathsFirst=true
+        -Dorg.bytedeco.javacpp.nopointergc=false
+        -jar "$STAGING_JAR"
+        --server
+        "--server.port=${STAGING_PORT}"
+        --kompile.model-staging.server.enabled=true
+        "--kompile.subprocess.classpath-file=${SUBPROCESS_CLASSPATH_FILE}"
+        --kompile.subprocess.needs-cuda=false
+    )
+    local pid
+    pid="$(start_detached_java staging "$REPO_ROOT" "$LOG_DIR/staging.out.log" "$LOG_DIR/staging.err.log" "$pid_file" "${staging_cmd[@]}")"
+    echo "Staging PID: $pid"
+    wait_for_http "Model staging server" "$health_url" 180
+}
+
+ensure_lfm2_serving_loaded() {
+    if [ "$LOAD_LFM2_ON_START" != "true" ]; then
+        echo "LOAD_LFM2_ON_START=false; not loading LFM2 serving subprocess."
+        return 0
+    fi
+
+    require_command jq
+
+    # Staging is only the model registry/artifact source. Inference belongs to
+    # app-main's LLM serving subprocess on LLM_SERVING_URL.
+    local status_url="$APP_URL/api/llm/status"
+    local status_json
+    status_json="$(curl -fsS --max-time 20 "$status_url" 2>/dev/null || echo '{}')"
+    if jq -e --arg modelId "$LFM2_MODEL_ID" '.loaded == true and .modelId == $modelId' \
+            >/dev/null 2>&1 <<< "$status_json"; then
+        local loaded_context
+        loaded_context="$(jq -r '.maxContextLength // 0' <<< "$status_json")"
+        echo "LFM2 already loaded in app serving subprocess: $LFM2_MODEL_ID (context=$loaded_context)"
+        return 0
+    fi
+
+    echo "Loading LFM2 through app serving subprocess: $LFM2_MODEL_ID"
+    local payload
+    payload="$(
+        jq -n \
+            --arg modelId "$LFM2_MODEL_ID" \
+            --arg stagingUrl "$STAGING_URL" \
+            '{
+                modelId: $modelId,
+                stagingUrl: $stagingUrl
+            }'
+    )"
+
+    local response
+    response="$(curl -fsS --max-time 900 \
+        -X POST "$APP_URL/api/llm/load" \
+        -H 'Content-Type: application/json' \
+        --data-binary "$payload")"
+    echo "$response" > "$LOG_DIR/lfm2-load-response.json"
+
+    if ! jq -e '.loaded == true' >/dev/null 2>&1 <<< "$response"; then
+        echo "FATAL: app serving subprocess did not load LFM2 successfully. Response:" >&2
+        echo "$response" >&2
+        exit 1
+    fi
+    echo "LFM2 loaded in app serving subprocess. Status saved to $LOG_DIR/lfm2-load-response.json"
+}
+
+ensure_app() {
+    local pid_file="$RUN_DIR/app.pid"
+    local health_url="$APP_URL/api/unified-crawl/source-types"
+
+    if http_ok "$health_url"; then
+        local pid
+        pid="$(pid_from_file "$pid_file")"
+        if [ -z "${pid:-}" ]; then
+            pid="$(remember_existing_pid "java .* -jar .*kompile-fpna-v3-0.1.0-SNAPSHOT.jar" "$pid_file")"
+        fi
+        echo "FP&A v3 app already running at $APP_URL${pid:+ (pid $pid)}"
+        return 0
+    fi
+
+    if [ ! -f "$APP_JAR" ]; then
+        echo "FATAL: app JAR not found: $APP_JAR" >&2
+        echo "Build it with: cd $PROJECT_DIR && mvn clean package -DskipTests -Dmaven.test.skip=true" >&2
+        exit 1
+    fi
+
+    rm -rf "$PROJECT_DIR/target/.boot-inf-extracted"
+
+    # Remove stale H2 lock file from previous unclean shutdown
+    rm -f "$PROJECT_DIR/data/kompile-db.mv.db.lock.db" 2>/dev/null || true
+
+    echo "Starting FP&A v3 app on $APP_URL"
+    local app_cmd=(
+        env
+        "ND4J_NUM_BLAS_THREADS=${ND4J_NUM_BLAS_THREADS}"
+        "OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+        "MKL_NUM_THREADS=${MKL_NUM_THREADS}"
+        "OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS}"
+        java "-Xmx${APP_XMX}"
+        -XX:NativeMemoryTracking=summary
+        -XX:-CreateCoredumpOnCrash
+        "-XX:ErrorFile=${LOG_DIR}/hs_err_app_%p.log"
+        "-Dorg.bytedeco.javacpp.maxphysicalbytes=${JAVACPP_MAX_BYTES}"
+        "-Dorg.bytedeco.javacpp.maxbytes=${JAVACPP_MAX_BYTES}"
+        -Dorg.bytedeco.javacpp.pathsFirst=true
+        "-Dkompile.embedding.subprocess.javacpp.maxbytes=${EMBEDDING_SUBPROCESS_JAVACPP_MAX_BYTES}"
+        "-Dkompile.embedding.subprocess.javacpp.maxphysicalbytes=${EMBEDDING_SUBPROCESS_JAVACPP_MAX_PHYSICAL_BYTES}"
+        "-Dkompile.embedding.subprocess.max-rss-bytes=${EMBEDDING_SUBPROCESS_MAX_RSS_BYTES}"
+        "-Dkompile.embedding.native-trim-interval=${EMBEDDING_NATIVE_TRIM_INTERVAL}"
+        "-Dkompile.embedding.anserini.eager-init=${EMBEDDING_EAGER_INIT}"
+        "-Dkompile.staging.url=${STAGING_URL}"
+        "-Dkompile.llm.serving.url=${LLM_SERVING_URL}"
+        "-Dkompile.cli-agent.default=${CLI_LLM_AGENT}"
+        "-Dkompile.cli-agent.fallback-enabled=${CLI_AGENT_FALLBACK_ENABLED}"
+        "-Dkompile.cli-agent.fallback-limit-only=${CLI_AGENT_FALLBACK_LIMIT_ONLY}"
+        "-Dkompile.cli-agent.timeout-seconds=${CLI_AGENT_TIMEOUT_SECONDS}"
+        "-Dkompile.vectorstore.anserini.per-document-embedding-fallback-enabled=${ANSERINI_PER_DOC_EMBEDDING_FALLBACK}"
+        --add-opens=java.base/java.lang=ALL-UNNAMED
+        --add-opens=java.base/java.lang.invoke=ALL-UNNAMED
+        --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+        --add-opens=java.base/java.lang.ref=ALL-UNNAMED
+        --add-opens=java.base/java.io=ALL-UNNAMED
+        --add-opens=java.base/java.net=ALL-UNNAMED
+        --add-opens=java.base/java.nio=ALL-UNNAMED
+        --add-opens=java.base/java.util=ALL-UNNAMED
+        --add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+        --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED
+        --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+        --add-opens=java.base/sun.nio.cs=ALL-UNNAMED
+        --add-opens=java.base/sun.security.action=ALL-UNNAMED
+        --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
+        --add-opens=java.base/sun.misc=ALL-UNNAMED
+        --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED
+        --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
+        -jar "$APP_JAR"
+        "--server.port=${APP_PORT}"
+    )
+    local pid
+    pid="$(start_detached_java app "$PROJECT_DIR" "$LOG_DIR/app.out.log" "$LOG_DIR/app.err.log" "$pid_file" "${app_cmd[@]}")"
+    echo "App PID: $pid"
+    wait_for_http "FP&A v3 app" "$health_url" 240
+}
+
+register_staging_config() {
+    # Register the staging server in the app's database so the UI shows it as configured.
+    # The app uses H2 in-memory by default, so this must run on every start.
+    local active_config
+    active_config="$(curl -fsS --max-time 10 "$APP_URL/api/staging-config/configs/active" 2>/dev/null || echo '')"
+    if [ -n "$active_config" ] && [ "$active_config" != "null" ]; then
+        echo "Staging config already registered in app"
+        return 0
+    fi
+
+    echo "Registering staging server ($STAGING_URL) in app config..."
+    local create_resp
+    create_resp="$(curl -fsS --max-time 10 \
+        -X POST "$APP_URL/api/staging-config/configs" \
+        -H 'Content-Type: application/json' \
+        -d "{\"name\":\"Local Staging\",\"endpointUrl\":\"$STAGING_URL\",\"active\":true}" 2>/dev/null || echo '')"
+
+    if [ -z "$create_resp" ]; then
+        echo "WARN: Failed to register staging config" >&2
+        return 0
+    fi
+
+    local config_id
+    config_id="$(jq -r '.id // empty' <<< "$create_resp" 2>/dev/null)"
+    if [ -n "$config_id" ]; then
+        # Verify the connection
+        curl -fsS --max-time 15 -X POST "$APP_URL/api/staging-config/configs/${config_id}/test" \
+            > /dev/null 2>&1 || true
+        echo "Staging config registered and verified (id=$config_id)"
+    fi
+}
+
+require_command jq
+
+ensure_staging
+cleanup_stale_embedding_tmp
+ensure_app
+register_staging_config
+ensure_lfm2_serving_loaded
+
+echo "FP&A v3 runtime is ready."
+echo "App:     $APP_URL"
+echo "Staging: $STAGING_URL"
+echo "LLM:     $LLM_SERVING_URL"
+echo "Logs:    $LOG_DIR"

@@ -105,6 +105,59 @@ public class ResourceSchedulerConfig {
     @JsonProperty("externalAuthToken")
     private String externalAuthToken = "";
 
+    // --- Resource governor (CPU/RAM/GPU-VRAM aware admission, batch sizing, pool sizing) ---
+
+    /** Master switch for the resource governor's CPU/RAM admission gate. */
+    @JsonProperty("governorEnabled")
+    private boolean governorEnabled = true;
+
+    /** System CPU load fraction at/above which CPU-bound jobs are deferred. */
+    @JsonProperty("governorCpuHighThreshold")
+    private double governorCpuHighThreshold = 0.85;
+
+    /** System CPU load fraction treated as critical. */
+    @JsonProperty("governorCpuCriticalThreshold")
+    private double governorCpuCriticalThreshold = 0.95;
+
+    /** System RAM used fraction at/above which any job is deferred. */
+    @JsonProperty("governorRamHighThreshold")
+    private double governorRamHighThreshold = 0.85;
+
+    /** System RAM used fraction treated as critical. */
+    @JsonProperty("governorRamCriticalThreshold")
+    private double governorRamCriticalThreshold = 0.92;
+
+    /** Per-GPU VRAM used fraction at/above which GPU stages experience backpressure. */
+    @JsonProperty("governorVramHighFraction")
+    private double governorVramHighFraction = 0.85;
+
+    /** Per-GPU VRAM used fraction treated as critical (triggers deferral of heavy local work). */
+    @JsonProperty("governorVramCriticalFraction")
+    private double governorVramCriticalFraction = 0.92;
+
+    /** Minimum threads for the scheduler's job execution pool (dynamic, CPU-count derived). */
+    @JsonProperty("governorSchedulerPoolMinThreads")
+    private int governorSchedulerPoolMinThreads = 4;
+
+    /** Maximum threads for the scheduler's job execution pool. */
+    @JsonProperty("governorSchedulerPoolMaxThreads")
+    private int governorSchedulerPoolMaxThreads = 32;
+
+    /** Period (ms) at which the DeferredEmbeddingResumer drains pending-embedding jobs. */
+    @JsonProperty("governorDeferredEmbeddingResumeMs")
+    private long governorDeferredEmbeddingResumeMs = 60_000;
+
+    /** Per-service GPU memory budgets as a fraction of the largest device's total VRAM.
+     *  Used to auto-calibrate {@code GpuResourceManager} budgets to the actual hardware. */
+    @JsonProperty("gpuBudgetFractions")
+    private Map<String, Double> gpuBudgetFractions = new LinkedHashMap<>(Map.ofEntries(
+            Map.entry("embedding", 0.20),
+            Map.entry("vlm", 0.70),
+            Map.entry("ingest", 0.10),
+            Map.entry("vectorPopulation", 0.05),
+            Map.entry("modelInit", 0.08)
+    ));
+
     // --- Computed / non-trivial methods ---
 
     public int getMaxConcurrentForType(String type) {

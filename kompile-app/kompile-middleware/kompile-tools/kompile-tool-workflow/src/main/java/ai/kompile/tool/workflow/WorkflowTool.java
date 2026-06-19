@@ -3,6 +3,7 @@ package ai.kompile.tool.workflow;
 import ai.kompile.compute.graph.engine.ComputeGraphEngine;
 import ai.kompile.compute.graph.model.*;
 import ai.kompile.compute.graph.store.WorkflowFileStore;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,7 +31,7 @@ public class WorkflowTool {
                          ComputeGraphEngine graphEngine) {
         this.workflowStore = workflowStore;
         this.graphEngine = graphEngine;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     // ---- Input Records ----

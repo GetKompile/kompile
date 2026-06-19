@@ -17,6 +17,7 @@
 package ai.kompile.loader.gmail;
 
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.crawler.*;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.crawler.AbstractCrawlJob;
@@ -101,11 +102,11 @@ public class GmailCrawler extends AbstractCrawler {
         Map<String, Object> props = config.getProperties();
 
         String accessToken = (String) props.get("accessToken");
-        String gmailQuery = getStringOr(props, "gmailQuery", "in:inbox");
-        int daysBack = getIntOr(props, "daysBack", 30);
-        boolean includeAttachments = getBooleanOr(props, "includeAttachments", true);
-        String labelFilter = getStringOr(props, "labelFilter", null);
-        String excludeLabels = getStringOr(props, "excludeLabels", null);
+        String gmailQuery = MapUtils.getStringNonBlank(props, "gmailQuery", "in:inbox");
+        int daysBack = MapUtils.getInt(props, "daysBack", 30);
+        boolean includeAttachments = MapUtils.getBoolean(props, "includeAttachments", true);
+        String labelFilter = MapUtils.getStringNonBlank(props, "labelFilter", null);
+        String excludeLabels = MapUtils.getStringNonBlank(props, "excludeLabels", null);
 
         GmailApiClient apiClient = new GmailApiClient(accessToken);
 
@@ -354,25 +355,4 @@ public class GmailCrawler extends AbstractCrawler {
         return filename.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
 
-    private static String getStringOr(Map<String, Object> props, String key, String defaultValue) {
-        Object val = props.get(key);
-        if (val instanceof String s && !s.isBlank()) return s;
-        return defaultValue;
-    }
-
-    private static int getIntOr(Map<String, Object> props, String key, int defaultValue) {
-        Object val = props.get(key);
-        if (val instanceof Number n) return n.intValue();
-        if (val instanceof String s) {
-            try { return Integer.parseInt(s); } catch (NumberFormatException e) { /* fall through */ }
-        }
-        return defaultValue;
-    }
-
-    private static boolean getBooleanOr(Map<String, Object> props, String key, boolean defaultValue) {
-        Object val = props.get(key);
-        if (val instanceof Boolean b) return b;
-        if (val instanceof String s) return Boolean.parseBoolean(s);
-        return defaultValue;
-    }
 }

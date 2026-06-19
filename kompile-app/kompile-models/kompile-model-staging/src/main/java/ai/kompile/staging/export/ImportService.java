@@ -18,6 +18,7 @@ package ai.kompile.staging.export;
 
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.RegistryService;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
@@ -49,7 +50,7 @@ public class ImportService {
     @Autowired
     public ImportService(RegistryService registryService) {
         this.registryService = registryService;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

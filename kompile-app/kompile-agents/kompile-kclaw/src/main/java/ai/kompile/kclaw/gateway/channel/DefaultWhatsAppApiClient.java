@@ -15,6 +15,7 @@
  */
 package ai.kompile.kclaw.gateway.channel;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -41,7 +42,7 @@ public class DefaultWhatsAppApiClient implements WhatsAppApiClient {
 
     public DefaultWhatsAppApiClient() {
         this.httpClient = HttpClient.newHttpClient();
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     public DefaultWhatsAppApiClient(HttpClient httpClient, ObjectMapper objectMapper) {

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.format;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,7 +65,7 @@ import java.util.stream.Stream;
  */
 public class ConversationExporter {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     /** Supported export targets */
     public static final List<String> SUPPORTED_AGENTS = List.of(

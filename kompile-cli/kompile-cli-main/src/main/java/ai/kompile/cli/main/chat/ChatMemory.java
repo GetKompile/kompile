@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.MemoryTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -78,7 +79,7 @@ public class ChatMemory {
 
     public ChatMemory(McpSseClient mcpClient, String currentSessionId, boolean enabled) {
         this.mcpClient = mcpClient;
-        this.objectMapper = mcpClient != null ? mcpClient.getObjectMapper() : new ObjectMapper();
+        this.objectMapper = mcpClient != null ? mcpClient.getObjectMapper() : JsonUtils.standardMapper();
         this.currentSessionId = currentSessionId;
         this.conversationsDir = KompileHome.homeDirectory().toPath().resolve("conversations");
         this.workDir = Paths.get(System.getProperty("user.dir"));

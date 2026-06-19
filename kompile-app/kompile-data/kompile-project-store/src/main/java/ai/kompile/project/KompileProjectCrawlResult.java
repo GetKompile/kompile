@@ -16,12 +16,16 @@
 package ai.kompile.project;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * Summary of a completed crawl stored under {@code data/crawls/<id>/crawl-result.json}.
  * Used by the crawl catalog ({@code data/crawls/project-crawls.json}).
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
+@Data
+@NoArgsConstructor
 public class KompileProjectCrawlResult {
     private String profileId;
     private String name;
@@ -35,100 +39,4 @@ public class KompileProjectCrawlResult {
     private int documentCount;
     private int markdownCount;
     private int chunkCount;
-
-    public String getProfileId() {
-        return profileId;
-    }
-
-    public void setProfileId(String profileId) {
-        this.profileId = profileId;
-    }
-
-    public String getName() {
-        return name;
-    }
-
-    public void setName(String name) {
-        this.name = name;
-    }
-
-    public String getStatus() {
-        return status;
-    }
-
-    public void setStatus(String status) {
-        this.status = status;
-    }
-
-    public String getFinishedAt() {
-        return finishedAt;
-    }
-
-    public void setFinishedAt(String finishedAt) {
-        this.finishedAt = finishedAt;
-    }
-
-    public String getLoader() {
-        return loader;
-    }
-
-    public void setLoader(String loader) {
-        this.loader = loader;
-    }
-
-    public String getChunker() {
-        return chunker;
-    }
-
-    public void setChunker(String chunker) {
-        this.chunker = chunker;
-    }
-
-    public String getCollection() {
-        return collection;
-    }
-
-    public void setCollection(String collection) {
-        this.collection = collection;
-    }
-
-    public String getFactSheetName() {
-        return factSheetName;
-    }
-
-    public void setFactSheetName(String factSheetName) {
-        this.factSheetName = factSheetName;
-    }
-
-    public String getMarkdownPath() {
-        return markdownPath;
-    }
-
-    public void setMarkdownPath(String markdownPath) {
-        this.markdownPath = markdownPath;
-    }
-
-    public int getDocumentCount() {
-        return documentCount;
-    }
-
-    public void setDocumentCount(int documentCount) {
-        this.documentCount = documentCount;
-    }
-
-    public int getMarkdownCount() {
-        return markdownCount;
-    }
-
-    public void setMarkdownCount(int markdownCount) {
-        this.markdownCount = markdownCount;
-    }
-
-    public int getChunkCount() {
-        return chunkCount;
-    }
-
-    public void setChunkCount(int chunkCount) {
-        this.chunkCount = chunkCount;
-    }
 }

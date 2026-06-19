@@ -18,6 +18,7 @@ package ai.kompile.pipelines.steps.samediff.llm.util;
 
 import ai.kompile.pipelines.framework.api.data.NDArray;
 import ai.kompile.pipelines.framework.api.data.NDArrayType;
+import ai.kompile.pipelines.framework.core.utils.NDArrayTypeConverter;
 import org.nd4j.common.util.ArrayUtil;
 import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.buffer.DataType;
@@ -106,40 +107,10 @@ public final class LLMSameDiffUtils {
     }
 
     public static DataType mapToNd4jType(NDArrayType type) {
-        switch (type) {
-            case FLOAT: return DataType.FLOAT;
-            case DOUBLE: return DataType.DOUBLE;
-            case INT: case INT32: return DataType.INT32;
-            case LONG: return DataType.INT64;
-            case BYTE: case INT8: return DataType.INT8;
-            case UINT8: return DataType.UINT8;
-            case SHORT: case INT16: return DataType.INT16;
-            case UINT16: return DataType.UINT16;
-            case UINT32: return DataType.UINT32;
-            case UINT64: return DataType.UINT64;
-            case BOOLEAN: return DataType.BOOL;
-            case FLOAT16: return DataType.HALF;
-            case BFLOAT16: return DataType.BFLOAT16;
-            default: throw new UnsupportedOperationException("Unsupported NDArrayType: " + type);
-        }
+        return NDArrayTypeConverter.toNd4jDataType(type);
     }
 
     public static NDArrayType mapFromNd4jType(DataType type) {
-        switch (type) {
-            case FLOAT: return NDArrayType.FLOAT;
-            case DOUBLE: return NDArrayType.DOUBLE;
-            case INT: return NDArrayType.INT32;
-            case LONG: return NDArrayType.LONG;
-            case BYTE: return NDArrayType.INT8;
-            case UBYTE: return NDArrayType.UINT8;
-            case SHORT: return NDArrayType.INT16;
-            case UINT16: return NDArrayType.UINT16;
-            case UINT32: return NDArrayType.UINT32;
-            case UINT64: return NDArrayType.UINT64;
-            case BOOL: return NDArrayType.BOOLEAN;
-            case HALF: return NDArrayType.FLOAT16;
-            case BFLOAT16: return NDArrayType.BFLOAT16;
-            default: throw new UnsupportedOperationException("Unsupported DataType: " + type);
-        }
+        return NDArrayTypeConverter.fromNd4jDataType(type);
     }
 }

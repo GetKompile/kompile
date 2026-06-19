@@ -16,6 +16,11 @@
 
 package ai.kompile.cli.common.registry;
 
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
 import java.time.Instant;
 import java.util.Map;
 
@@ -27,6 +32,10 @@ import java.util.Map;
  * (spawned by the same parent or working on the same project) can discover
  * each other for A2A communication.
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class McpSessionInfo {
 
     /** Unique session identifier (e.g. "mcp-1716400000000-abc12"). */
@@ -61,54 +70,6 @@ public class McpSessionInfo {
 
     /** Optional metadata (e.g. current task description, model name). */
     private Map<String, String> metadata;
-
-    public McpSessionInfo() {
-    }
-
-    public McpSessionInfo(String sessionId, long pid, long parentPid, String workDir, String agentType) {
-        this.sessionId = sessionId;
-        this.pid = pid;
-        this.parentPid = parentPid;
-        this.workDir = workDir;
-        this.agentType = agentType;
-        this.startedAt = Instant.now();
-        this.lastHeartbeat = Instant.now();
-    }
-
-    // ── Getters / Setters ──────────────────────────────────────────────────
-
-    public String getSessionId() { return sessionId; }
-    public void setSessionId(String sessionId) { this.sessionId = sessionId; }
-
-    public long getPid() { return pid; }
-    public void setPid(long pid) { this.pid = pid; }
-
-    public long getParentPid() { return parentPid; }
-    public void setParentPid(long parentPid) { this.parentPid = parentPid; }
-
-    public int getA2aPort() { return a2aPort; }
-    public void setA2aPort(int a2aPort) { this.a2aPort = a2aPort; }
-
-    public String getWorkDir() { return workDir; }
-    public void setWorkDir(String workDir) { this.workDir = workDir; }
-
-    public String getAgentType() { return agentType; }
-    public void setAgentType(String agentType) { this.agentType = agentType; }
-
-    public String getLabel() { return label; }
-    public void setLabel(String label) { this.label = label; }
-
-    public String getProfile() { return profile; }
-    public void setProfile(String profile) { this.profile = profile; }
-
-    public Instant getStartedAt() { return startedAt; }
-    public void setStartedAt(Instant startedAt) { this.startedAt = startedAt; }
-
-    public Instant getLastHeartbeat() { return lastHeartbeat; }
-    public void setLastHeartbeat(Instant lastHeartbeat) { this.lastHeartbeat = lastHeartbeat; }
-
-    public Map<String, String> getMetadata() { return metadata; }
-    public void setMetadata(Map<String, String> metadata) { this.metadata = metadata; }
 
     /** Convenience: base URL for A2A communication with this session. */
     public String getA2aBaseUrl() {

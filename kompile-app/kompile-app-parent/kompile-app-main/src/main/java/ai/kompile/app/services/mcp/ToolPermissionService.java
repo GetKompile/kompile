@@ -16,7 +16,7 @@
 
 package ai.kompile.app.services.mcp;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -26,7 +26,6 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Service for managing tool-level permissions.
@@ -40,29 +39,11 @@ public class ToolPermissionService {
     private static final Logger log = LoggerFactory.getLogger(ToolPermissionService.class);
     private static final String CONFIG_FILE = "tool-permissions.json";
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private volatile ToolPermissionConfig config = new ToolPermissionConfig();
 
     public enum PermissionLevel {
         ALLOW, DENY
-    }
-
-    public static class ToolPermissionConfig {
-        @JsonProperty
-        private PermissionLevel defaultPermission = PermissionLevel.ALLOW;
-
-        @JsonProperty
-        private Map<String, PermissionLevel> categoryRules = new ConcurrentHashMap<>();
-
-        @JsonProperty
-        private Map<String, PermissionLevel> toolRules = new ConcurrentHashMap<>();
-
-        public PermissionLevel getDefaultPermission() { return defaultPermission; }
-        public void setDefaultPermission(PermissionLevel defaultPermission) { this.defaultPermission = defaultPermission; }
-        public Map<String, PermissionLevel> getCategoryRules() { return categoryRules; }
-        public void setCategoryRules(Map<String, PermissionLevel> categoryRules) { this.categoryRules = categoryRules; }
-        public Map<String, PermissionLevel> getToolRules() { return toolRules; }
-        public void setToolRules(Map<String, PermissionLevel> toolRules) { this.toolRules = toolRules; }
     }
 
     @PostConstruct

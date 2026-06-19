@@ -15,31 +15,14 @@
  */
 package ai.kompile.project;
 
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
 public class KompileProjectGitResult {
     private int exitCode;
     private String output;
-
-    public KompileProjectGitResult() {
-    }
-
-    public KompileProjectGitResult(int exitCode, String output) {
-        this.exitCode = exitCode;
-        this.output = output;
-    }
-
-    public int getExitCode() {
-        return exitCode;
-    }
-
-    public void setExitCode(int exitCode) {
-        this.exitCode = exitCode;
-    }
-
-    public String getOutput() {
-        return output;
-    }
-
-    public void setOutput(String output) {
-        this.output = output;
-    }
 }

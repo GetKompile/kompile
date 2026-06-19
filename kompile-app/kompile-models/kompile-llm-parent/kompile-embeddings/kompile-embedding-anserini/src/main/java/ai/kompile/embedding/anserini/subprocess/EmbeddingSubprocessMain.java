@@ -18,6 +18,7 @@ package ai.kompile.embedding.anserini.subprocess;
 
 import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.anserini.encoder.samediff.GenericDenseSameDiffEncoder;
 import io.anserini.encoder.samediff.SameDiffEncoder;
@@ -61,7 +62,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class EmbeddingSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(EmbeddingSubprocessMain.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     // Original stdout for protocol messages (stderr for logging)
     private static PrintStream originalStdout;

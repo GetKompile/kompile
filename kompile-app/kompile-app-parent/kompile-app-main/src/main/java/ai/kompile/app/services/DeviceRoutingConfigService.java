@@ -19,6 +19,7 @@ package ai.kompile.app.services;
 import ai.kompile.app.config.DeviceRoutingConfig;
 import ai.kompile.app.config.DeviceRoutingConfig.ServiceDeviceConfig;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -57,7 +58,7 @@ public class DeviceRoutingConfigService {
 
     public DeviceRoutingConfigService(
             @Value("${kompile.data.dir:#{null}}") String dataDir) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         String effectiveDataDir = dataDir;
         if (effectiveDataDir == null || effectiveDataDir.isBlank()) {

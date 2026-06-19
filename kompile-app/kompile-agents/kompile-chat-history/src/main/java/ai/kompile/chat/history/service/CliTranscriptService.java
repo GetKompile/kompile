@@ -118,7 +118,7 @@ public class CliTranscriptService {
                             s.agent(), s.messageCount(), s.lastModifiedMillis()));
                 }
             } catch (Exception e) {
-                log.debug("Failed to list {} sessions: {}", adapter.id(), e.getMessage());
+                log.warn("Failed to list {} sessions: {}", adapter.id(), e.getMessage());
             }
         }
         all.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));

@@ -17,6 +17,7 @@ package ai.kompile.knowledgegraph.io.format;
 
 import ai.kompile.knowledgegraph.io.model.PortableEdge;
 import ai.kompile.knowledgegraph.io.model.PortableNode;
+import ai.kompile.utils.StringUtils;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -102,7 +103,7 @@ public final class WikiExporter {
                 for (PortableNode n : group.getValue()) {
                     int conn = outgoing.getOrDefault(n.externalId(), List.of()).size()
                             + incoming.getOrDefault(n.externalId(), List.of()).size();
-                    String desc = n.description() != null ? truncate(n.description(), 60) : "—";
+                    String desc = n.description() != null ? StringUtils.truncateEllipsis(n.description(), 60) : "—";
                     art.append("| [").append(title(n)).append("](../entities/").append(safe(title(n))).append(".md) | ")
                             .append(n.nodeType() != null ? n.nodeType() : "—").append(" | ")
                             .append(conn).append(" | ").append(desc).append(" |\n");
@@ -126,7 +127,7 @@ public final class WikiExporter {
                         art.append("- **").append(title(src)).append("** →")
                                 .append(e.edgeType() != null ? " _" + e.edgeType() + "_" : "")
                                 .append(" → **").append(title(tgt)).append("**");
-                        if (e.description() != null) art.append(": ").append(truncate(e.description(), 80));
+                        if (e.description() != null) art.append(": ").append(StringUtils.truncateEllipsis(e.description(), 80));
                         art.append("\n");
                     }
                     art.append("\n");
@@ -226,11 +227,6 @@ public final class WikiExporter {
                 .replaceAll("\\s+", "-")
                 .replaceAll("-{2,}", "-")
                 .replaceAll("^-|-$", "");
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null || s.length() <= max) return s;
-        return s.substring(0, max - 1) + "…";
     }
 
     private static void addEntry(ZipOutputStream zos, String name, String content) throws IOException {

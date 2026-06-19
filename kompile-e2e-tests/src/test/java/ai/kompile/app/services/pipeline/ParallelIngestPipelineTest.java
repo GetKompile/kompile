@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.pipeline;
 
+import ai.kompile.app.services.pipeline.IngestPipelineConfig;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import org.junit.jupiter.api.Test;
 
@@ -157,11 +158,11 @@ class ParallelIngestPipelineTest {
     }
 
     /**
-     * Verifies PipelineConfig builder produces correct defaults.
+     * Verifies IngestPipelineConfig defaults.
      */
     @Test
     void pipelineConfigDefaults() {
-        ParallelIngestPipeline.PipelineConfig config = ParallelIngestPipeline.PipelineConfig.defaults();
+        IngestPipelineConfig config = IngestPipelineConfig.defaults();
 
         assertTrue(config.queueCapacity() > 0, "Queue capacity should be positive");
         assertTrue(config.chunkingThreads() >= 1, "Must have at least 1 chunking thread");
@@ -171,11 +172,11 @@ class ParallelIngestPipelineTest {
     }
 
     /**
-     * Verifies PipelineConfig builder with skipEmbedding.
+     * Verifies IngestPipelineConfig builder with skipEmbedding.
      */
     @Test
     void pipelineConfigSkipEmbedding() {
-        ParallelIngestPipeline.PipelineConfig config = ParallelIngestPipeline.PipelineConfig.builder()
+        IngestPipelineConfig config = IngestPipelineConfig.builder()
                 .skipEmbedding(true)
                 .build();
 

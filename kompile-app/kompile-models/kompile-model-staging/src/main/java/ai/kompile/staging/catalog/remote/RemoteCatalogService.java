@@ -17,6 +17,7 @@
 package ai.kompile.staging.catalog.remote;
 
 import ai.kompile.staging.auth.AuthProviderChain;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,7 +67,7 @@ public class RemoteCatalogService {
     @Autowired
     public RemoteCatalogService(AuthProviderChain authProviderChain) {
         this.authProviderChain = authProviderChain;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

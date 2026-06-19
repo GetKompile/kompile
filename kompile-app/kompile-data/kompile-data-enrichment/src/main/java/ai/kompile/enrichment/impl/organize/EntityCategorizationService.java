@@ -21,7 +21,7 @@ import ai.kompile.enrichment.domain.TaxonomyNode;
 import ai.kompile.enrichment.repository.EntityCategoryRepository;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -39,14 +39,14 @@ import java.util.*;
 public class EntityCategorizationService {
     private static final Logger log = LoggerFactory.getLogger(EntityCategorizationService.class);
 
-    private final GraphNodeRepository nodeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final EntityCategoryRepository categoryRepository;
     private final ObjectMapper objectMapper;
 
-    public EntityCategorizationService(GraphNodeRepository nodeRepository,
+    public EntityCategorizationService(KnowledgeGraphService knowledgeGraphService,
                                        EntityCategoryRepository categoryRepository,
                                        ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.categoryRepository = categoryRepository;
         this.objectMapper = objectMapper;
     }
@@ -59,9 +59,11 @@ public class EntityCategorizationService {
         // Build reverse index: entity_type → (domain, category)
         Map<String, String[]> typeToCategory = buildTypeToCategory(factSheetId, taxonomy);
 
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        // Use vector store (SSOT) to enumerate ENTITY nodes
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         int categorized = 0;
-        List<GraphNode> batch = new ArrayList<>();
+        // batch collects (nodeId, title, description, metaMap) to flush via vector store
+        List<GraphNode> pendingUpdates = new ArrayList<>();
 
         for (GraphNode entity : entities) {
             String entityType = extractEntityType(entity);
@@ -71,35 +73,34 @@ public class EntityCategorizationService {
             String category = domainCategory != null ? domainCategory[1] : "Uncategorized";
 
             try {
-                ObjectNode meta;
-                if (entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()) {
-                    meta = (ObjectNode) objectMapper.readTree(entity.getMetadataJson());
-                } else {
-                    meta = objectMapper.createObjectNode();
-                }
+                @SuppressWarnings("unchecked")
+                Map<String, Object> metaMap = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
+                        ? objectMapper.readValue(entity.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
+                        : new java.util.LinkedHashMap<>();
 
-                String existingDomain = meta.has("taxonomyDomain") ? meta.get("taxonomyDomain").asText() : null;
-                String existingCategory = meta.has("taxonomyCategory") ? meta.get("taxonomyCategory").asText() : null;
+                String existingDomain = metaMap.get("taxonomyDomain") instanceof String s ? s : null;
+                String existingCategory = metaMap.get("taxonomyCategory") instanceof String s ? s : null;
 
                 if (!domain.equals(existingDomain) || !category.equals(existingCategory)) {
-                    meta.put("taxonomyDomain", domain);
-                    meta.put("taxonomyCategory", category);
-                    entity.setMetadataJson(objectMapper.writeValueAsString(meta));
-                    batch.add(entity);
+                    metaMap.put("taxonomyDomain", domain);
+                    metaMap.put("taxonomyCategory", category);
+                    entity.setMetadataJson(objectMapper.writeValueAsString(metaMap));
+                    pendingUpdates.add(entity);
                     categorized++;
                 }
             } catch (Exception e) {
                 log.debug("Failed to update metadataJson for entity {}: {}", entity.getNodeId(), e.getMessage());
             }
 
-            if (batch.size() >= 100) {
-                nodeRepository.saveAll(batch);
-                batch.clear();
+            // Flush to vector store in batches of 100
+            if (pendingUpdates.size() >= 100) {
+                flushToVectorStore(pendingUpdates);
+                pendingUpdates.clear();
             }
         }
 
-        if (!batch.isEmpty()) {
-            nodeRepository.saveAll(batch);
+        if (!pendingUpdates.isEmpty()) {
+            flushToVectorStore(pendingUpdates);
         }
 
         log.info("Categorized {} entities for factSheet {}", categorized, factSheetId);
@@ -174,6 +175,21 @@ public class EntityCategorizationService {
             }
         }
         return category.getLabel();
+    }
+
+    /** Persists a batch of updated entities to the vector store (SSOT). */
+    private void flushToVectorStore(List<GraphNode> nodes) {
+        for (GraphNode entity : nodes) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> metaMap = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
+                        ? objectMapper.readValue(entity.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
+                        : new java.util.LinkedHashMap<>();
+                knowledgeGraphService.updateNode(entity.getNodeId(), entity.getTitle(), entity.getDescription(), metaMap);
+            } catch (Exception e) {
+                log.warn("Failed to flush entity {} to vector store: {}", entity.getNodeId(), e.getMessage());
+            }
+        }
     }
 
     private String extractEntityType(GraphNode node) {

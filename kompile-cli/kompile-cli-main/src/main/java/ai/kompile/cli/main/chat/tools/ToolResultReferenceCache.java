@@ -130,6 +130,7 @@ public class ToolResultReferenceCache {
      */
     public Optional<CacheEntry> get(String id) {
         if (id == null) return Optional.empty();
+        if (id.startsWith("ref:")) id = id.substring(4);
         CacheEntry entry = cache.get(id);
         if (entry == null) return Optional.empty();
         if (entry.expiresAt < System.currentTimeMillis()) {

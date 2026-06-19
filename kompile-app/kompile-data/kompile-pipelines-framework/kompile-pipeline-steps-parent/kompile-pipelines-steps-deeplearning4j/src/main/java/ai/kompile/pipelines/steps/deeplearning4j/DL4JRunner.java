@@ -25,6 +25,7 @@ import ai.kompile.pipelines.framework.api.data.NDArray;
 import ai.kompile.pipelines.framework.api.data.NDArrayType;
 import ai.kompile.pipelines.framework.core.config.ConfigAccessor;
 import ai.kompile.pipelines.framework.core.config.SchemaRegistry;
+import ai.kompile.pipelines.framework.core.utils.NDArrayTypeConverter;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
 import org.deeplearning4j.util.ModelSerializer;
@@ -264,20 +265,7 @@ public class DL4JRunner implements PipelineStepRunner {
         }
 
         // Map Kompile NDArrayType to ND4J DataType
-        DataType nd4jDataType;
-        switch (kompileNDArray.type()) {
-            case FLOAT:
-               nd4jDataType = DataType.FLOAT; break;
-            case DOUBLE: nd4jDataType = DataType.DOUBLE; break;
-            case INT32: case INT: nd4jDataType = DataType.INT32; break;
-             case LONG: nd4jDataType = DataType.INT64; break;
-            case BYTE: case INT8: nd4jDataType = DataType.INT8; break;
-            case UINT8: nd4jDataType = DataType.UINT8; break;
-            case SHORT: case INT16: nd4jDataType = DataType.INT16; break;
-            // Add more mappings as needed (UINT16, FLOAT16, BFLOAT16, BOOLEAN, UTF8 if supported by ND4J in this way)
-            default:
-                throw new UnsupportedOperationException("Unsupported Kompile NDArrayType for INDArray conversion: " + kompileNDArray.type());
-        }
+        DataType nd4jDataType = NDArrayTypeConverter.toNd4jDataType(kompileNDArray.type());
         // Assuming C order ('c') for simplicity. Stride calculation might be needed for other orders.
         DataBuffer buff = Nd4j.createBuffer(bb,nd4jDataType,0);
 
@@ -331,25 +319,7 @@ public class DL4JRunner implements PipelineStepRunner {
     }
 
     private static NDArrayType mapNd4jToKompileType(DataType nd4jType, String name) {
-        switch (nd4jType) {
-            case FLOAT:    return NDArrayType.FLOAT;
-            case DOUBLE:   return NDArrayType.DOUBLE;
-            case INT:      return NDArrayType.INT32;
-            case LONG:     return NDArrayType.LONG;
-            case BYTE:     return NDArrayType.INT8;
-            case UBYTE:    return NDArrayType.UINT8;
-            case SHORT:    return NDArrayType.INT16;
-            case UINT16:   return NDArrayType.UINT16;
-            case UINT32:   return NDArrayType.UINT32;
-            case UINT64:   return NDArrayType.UINT64;
-            case BOOL:     return NDArrayType.BOOLEAN;
-            case HALF:     return NDArrayType.FLOAT16;
-            case BFLOAT16: return NDArrayType.BFLOAT16;
-            case UTF8:     return NDArrayType.UTF8;
-            default:
-                throw new UnsupportedOperationException(
-                        "Unsupported ND4J DataType '" + nd4jType + "' for Kompile NDArray conversion for output '" + name + "'.");
-        }
+        return NDArrayTypeConverter.fromNd4jDataType(nd4jType);
     }
 
     private File downloadModelToTempFile(URI uri, String originalUri) throws IOException {

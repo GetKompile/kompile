@@ -80,6 +80,40 @@ public class UnifiedCrawlRequest {
     /** Distribution configuration for multi-worker crawls (null = single-worker) */
     private DistributionConfig distribution;
 
+    // ---- Selective retry fields ----
+
+    /** When set, this job is a retry of a previous job. Only failed documents from that job are re-processed. */
+    private String retryFromJobId;
+
+    /** Phase to retry from (e.g. "GRAPH_EXTRACTION"). If null, retries all failed documents regardless of phase. */
+    private String retryPhase;
+
+    /** Explicit set of document keys to retry. If null/empty, all failed documents from retryFromJobId are retried. */
+    @Builder.Default
+    private List<String> retryDocumentKeys = new ArrayList<>();
+
+    /** Maximum number of validation retries per document before marking as permanently failed */
+    @Builder.Default
+    private int maxValidationRetries = 2;
+
+    // ---- Modular step selection ----
+
+    /**
+     * Explicit whitelist of pipeline step IDs to run (e.g. "LOADING", "CHUNKING", "VECTOR_INDEXING").
+     * When non-null and non-empty, every step NOT listed defaults to SKIP. Null/empty = run all
+     * steps (backward compatible). Matches the step IDs tracked by PipelineStepTracker.
+     */
+    @Builder.Default
+    private List<String> enabledSteps = new ArrayList<>();
+
+    /**
+     * Pipeline step IDs to ARCHIVE rather than run. Their inputs (e.g. chunked documents) are
+     * persisted to disk and the step is marked ARCHIVED so it can be run later — including after a
+     * process restart. Null/empty = archive nothing.
+     */
+    @Builder.Default
+    private List<String> archivedSteps = new ArrayList<>();
+
     /**
      * Strategy for partitioning sources across workers in distributed crawls.
      */

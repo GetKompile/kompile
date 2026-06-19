@@ -18,6 +18,7 @@ package ai.kompile.staging.cli.archive;
 
 import ai.kompile.modelmanager.registry.ModelRegistry;
 import ai.kompile.modelmanager.registry.RegistryService;
+import ai.kompile.utils.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import picocli.CommandLine.Command;
@@ -92,8 +93,8 @@ public class ArchiveListCommand implements Callable<Integer> {
             int modelCount = archive.getModelIds() != null ? archive.getModelIds().size() : 0;
 
             System.out.printf(format,
-                    truncate(archive.getArchiveId(), 30),
-                    truncate(archive.getVersion(), 12),
+                    StringUtils.truncate(archive.getArchiveId(), 30),
+                    StringUtils.truncate(archive.getVersion(), 12),
                     installedAt != null ? installedAt : "unknown",
                     String.valueOf(modelCount));
 
@@ -143,12 +144,6 @@ public class ArchiveListCommand implements Callable<Integer> {
         }
         sb.append("]");
         System.out.println(sb.toString());
-    }
-
-    private String truncate(String s, int maxLength) {
-        if (s == null) return "";
-        if (s.length() <= maxLength) return s;
-        return s.substring(0, maxLength - 3) + "...";
     }
 
     private String escapeJson(String s) {

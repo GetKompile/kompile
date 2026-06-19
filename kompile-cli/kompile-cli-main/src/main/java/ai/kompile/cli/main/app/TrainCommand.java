@@ -18,6 +18,7 @@ package ai.kompile.cli.main.app;
 
 import ai.kompile.cli.common.http.KompileHttpClient;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -624,7 +625,7 @@ public class TrainCommand implements Callable<Integer> {
             conn.setReadTimeout(0); // no read timeout for SSE
 
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                ObjectMapper mapper = new ObjectMapper();
+                ObjectMapper mapper = JsonUtils.standardMapper();
                 String line;
                 String currentEvent = "";
                 StringBuilder dataBuffer = new StringBuilder();

@@ -21,12 +21,14 @@ import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,12 +54,22 @@ import java.util.stream.Collectors;
  * </ul>
  * </p>
  */
-@RequiredArgsConstructor
+@Service
 @Slf4j
 public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
 
-    private final VectorStore vectorStore;
-    private final ObjectMapper objectMapper;
+    @Autowired
+    private VectorStore vectorStore;
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    public VectorStoreMatrixGraphStore() {}
+
+    /** Test constructor. */
+    public VectorStoreMatrixGraphStore(VectorStore vectorStore, ObjectMapper objectMapper) {
+        this.vectorStore = vectorStore;
+        this.objectMapper = objectMapper;
+    }
 
     /**
      * In-memory cache of loaded graphs.
@@ -524,32 +536,29 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     }
 
     private void saveAdjacencyMatrices(AdjacencyMatrixGraph graph) throws IOException {
-        // Serialize each adjacency matrix as a sparse representation
+        // Serialize each edge type directly from sparse storage — no INDArray needed.
         for (String edgeType : graph.getEdgeTypes()) {
-            INDArray adj = graph.getAdjacencyMatrices().get(edgeType);
-            if (adj != null) {
-                saveAdjacencyMatrix(graph.getGraphId(), edgeType, adj, graph.getNodeCount());
-            }
+            saveAdjacencyMatrix(graph.getGraphId(), edgeType,
+                    graph.getSparseEdges(edgeType));
         }
     }
 
-    private void saveAdjacencyMatrix(String graphId, String edgeType, INDArray matrix, int nodeCount)
+    private void saveAdjacencyMatrix(String graphId, String edgeType,
+                                     AdjacencyMatrixGraph.SparseEdgeData sparseData)
             throws IOException {
         String docId = GRAPH_PREFIX + graphId + ADJ_PREFIX + edgeType;
 
-        // Store as sparse representation (list of non-zero entries)
-        List<Map<String, Object>> edges = new ArrayList<>();
-        for (int i = 0; i < nodeCount; i++) {
-            for (int j = 0; j < nodeCount; j++) {
-                double weight = matrix.getDouble(i, j);
-                if (weight > 0) {
-                    Map<String, Object> edge = new HashMap<>();
-                    edge.put("source", i);
-                    edge.put("target", j);
-                    edge.put("weight", weight);
-                    edges.add(edge);
-                }
-            }
+        // Build the same JSON format as before (list of {source, target, weight} objects)
+        // so that restoreAdjacencyMatrix() requires no changes.
+        List<Map<String, Object>> edges = new ArrayList<>(sparseData.size());
+        for (int i = 0; i < sparseData.size(); i++) {
+            int[] pair = sparseData.indices.get(i);
+            float weight = sparseData.weights.get(i);
+            Map<String, Object> edge = new HashMap<>();
+            edge.put("source", pair[0]);
+            edge.put("target", pair[1]);
+            edge.put("weight", weight);
+            edges.add(edge);
         }
 
         Map<String, Object> metadata = new HashMap<>();

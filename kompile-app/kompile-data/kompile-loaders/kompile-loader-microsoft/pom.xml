@@ -51,7 +51,14 @@
             <artifactId>poi-ooxml</artifactId>
             <version>5.4.0</version>
         </dependency>
-        
+
+        <!-- POI 5.4.0 requires commons-io 2.18+ for BoundedInputStream.builder() -->
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>2.18.0</version>
+        </dependency>
+
         <!-- Microsoft Access support -->
         <dependency>
             <groupId>com.healthmarketscience.jackcess</groupId>

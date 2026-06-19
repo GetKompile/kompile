@@ -17,6 +17,7 @@
 package ai.kompile.loader.discord;
 
 import ai.kompile.core.crawler.*;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
@@ -111,7 +112,7 @@ public class DiscordCrawler extends AbstractCrawler {
         boolean includeAttachments = boolVal(props.get("includeAttachments"), true);
         boolean includeArchivedThreads = boolVal(props.get("includeArchivedThreads"), true);
         int maxMessages = config.getMaxDocuments();
-        Duration rateLimitDelay = Duration.ofMillis(intVal(props.get("rateLimitDelayMs"), 500));
+        Duration rateLimitDelay = Duration.ofMillis(MapUtils.toInt(props.get("rateLimitDelayMs"), 500));
 
         DiscordApiService api = new DiscordApiService(botToken, rateLimitDelay);
 
@@ -619,9 +620,4 @@ public class DiscordCrawler extends AbstractCrawler {
         return Boolean.parseBoolean(obj.toString());
     }
 
-    private static int intVal(Object obj, int defaultValue) {
-        if (obj == null) return defaultValue;
-        if (obj instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(obj.toString()); } catch (NumberFormatException e) { return defaultValue; }
-    }
 }

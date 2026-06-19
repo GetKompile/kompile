@@ -356,17 +356,4 @@ public class LlmModelController {
         void stop();
     }
 
-    /** Request body for {@code POST /api/llm/load}. */
-    public static class LoadRequest {
-        private String modelId;
-        private String stagingUrl;
-        private Map<String, Object> options;
-
-        public String getModelId() { return modelId; }
-        public void setModelId(String modelId) { this.modelId = modelId; }
-        public String getStagingUrl() { return stagingUrl; }
-        public void setStagingUrl(String stagingUrl) { this.stagingUrl = stagingUrl; }
-        public Map<String, Object> getOptions() { return options; }
-        public void setOptions(Map<String, Object> options) { this.options = options; }
-    }
 }

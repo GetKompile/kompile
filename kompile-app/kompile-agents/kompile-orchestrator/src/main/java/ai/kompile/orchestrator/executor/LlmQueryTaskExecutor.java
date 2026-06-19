@@ -22,6 +22,7 @@ import ai.kompile.orchestrator.model.llm.LlmSession;
 import ai.kompile.orchestrator.model.llm.LlmSessionRequest;
 import ai.kompile.orchestrator.model.task.*;
 import ai.kompile.orchestrator.repository.TaskInstanceRepository;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -48,7 +49,7 @@ public class LlmQueryTaskExecutor implements TaskExecutor {
     private final ApplicationEventPublisher eventPublisher;
     private final LlmIntegrationService llmService;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final Map<Long, AtomicBoolean> cancelFlags = new ConcurrentHashMap<>();
     private final Map<Long, StringBuilder> outputBuffers = new ConcurrentHashMap<>();
     private final Map<Long, Long> sessionMapping = new ConcurrentHashMap<>();

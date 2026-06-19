@@ -1,0 +1,358 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.training-launch-container {
+  padding: 0;
+}
+
+/* Header */
+.launch-header {
+  background: linear-gradient(135deg, #1a237e 0%, #283593 100%);
+  color: white;
+  padding: 16px 20px;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.header-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-icon {
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+  opacity: 0.9;
+}
+
+.launch-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.header-subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.header-actions button {
+  color: white;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.header-actions mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+/* Banners */
+.success-banner,
+.error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.success-banner {
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  color: #1b5e20;
+}
+
+.success-banner mat-icon {
+  color: #2e7d32;
+  flex-shrink: 0;
+}
+
+.error-banner {
+  background: #ffebee;
+  border: 1px solid #ef9a9a;
+  color: #b71c1c;
+}
+
+.error-banner mat-icon {
+  color: #c62828;
+  flex-shrink: 0;
+}
+
+.banner-text {
+  flex: 1;
+  font-size: 13px;
+}
+
+.job-id-line {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.job-id {
+  font-family: 'Roboto Mono', monospace;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* Loading */
+.loading-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px;
+  color: #666;
+  font-size: 14px;
+}
+
+/* Form Body */
+.form-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Form Sections */
+.form-section {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.lora-section {
+  border-color: #7b1fa2;
+  border-width: 1.5px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.lora-title {
+  background: #f3e5f5;
+  border-bottom-color: #e1bee7;
+  color: #6a1b9a;
+}
+
+.lora-title mat-icon {
+  color: #7b1fa2;
+}
+
+.section-title mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #666;
+}
+
+.section-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: #7b1fa2;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
+
+/* Form Grids */
+.form-grid {
+  display: grid;
+  gap: 0 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+.two-col {
+  grid-template-columns: 1fr 1fr;
+}
+
+.three-col {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.form-grid mat-form-field {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.full-width {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 768px) {
+  .two-col,
+  .three-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Checkboxes */
+.checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 8px 16px 16px;
+}
+
+.checkbox-row mat-checkbox {
+  font-size: 13px;
+}
+
+/* Advanced Panel */
+.advanced-panel {
+  border-radius: 10px !important;
+  border: 1px solid #e0e0e0;
+  box-shadow: none !important;
+}
+
+.advanced-panel .mat-expansion-panel-header {
+  padding: 0 16px;
+}
+
+.advanced-panel mat-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+}
+
+.advanced-panel mat-panel-title mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.advanced-panel mat-panel-description {
+  font-size: 12px;
+  color: #888;
+}
+
+.advanced-grid {
+  padding-top: 8px;
+}
+
+/* Launch Row */
+.launch-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0 4px;
+}
+
+.launch-row button[mat-raised-button] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px;
+  height: 44px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.launch-row button mat-spinner {
+  display: inline-block;
+}
+
+.launch-hint {
+  font-size: 12px;
+  color: #999;
+  font-style: italic;
+}
+
+/* Download Panel */
+.download-panel {
+  margin-bottom: 16px;
+  border-radius: 10px !important;
+  border: 1px solid #e0e0e0;
+}
+
+.download-panel mat-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.download-panel mat-panel-title mat-icon {
+  color: #1976d2;
+}
+
+.download-form {
+  padding: 8px 0;
+}
+
+.convert-checkbox {
+  margin: 8px 0 16px;
+}
+
+.download-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.download-actions .inline-spinner {
+  margin-left: 8px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.download-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.download-status .success { color: #2e7d32; }
+.download-status .error { color: #c62828; }
+
+.three-col {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 768px) {
+  .three-col {
+    grid-template-columns: 1fr;
+  }
+}

@@ -17,11 +17,14 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.FormatUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -53,7 +56,7 @@ public class ChatStatsCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--json"}, description = "Output as JSON", defaultValue = "false")
     private boolean jsonOutput;
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private static final String RESET = "\033[0m";
     private static final String BOLD = "\033[1m";
@@ -172,19 +175,19 @@ public class ChatStatsCommand implements Callable<Integer> {
             System.out.printf("  %s(+ %d provider transcripts)%s", DIM, providerUsage.size(), RESET);
         }
         System.out.println();
-        System.out.printf("  Duration:    %s%s%s%n", WHITE, formatDuration(totalDuration), RESET);
+        System.out.printf("  Duration:    %s%s%s%n", WHITE, FormatUtils.formatDuration(Duration.ofSeconds(totalDuration)), RESET);
         System.out.printf("  Turns:       %s%d user / %d assistant%s%n",
                 WHITE, totalUserTurns, totalAssistantTurns, RESET);
 
         // Token usage (combined)
         System.out.println();
         System.out.println(BOLD + "  Token Usage (All Sources)" + RESET);
-        System.out.printf("  Input:       %s%s%s%n", GREEN, formatNum(totalInput + provInput), RESET);
-        System.out.printf("  Output:      %s%s%s%n", GREEN, formatNum(totalOutput + provOutput), RESET);
+        System.out.printf("  Input:       %s%s%s%n", GREEN, FormatUtils.formatNumber(totalInput + provInput), RESET);
+        System.out.printf("  Output:      %s%s%s%n", GREEN, FormatUtils.formatNumber(totalOutput + provOutput), RESET);
         System.out.printf("  Total:       %s%s%s%n", BOLD + GREEN,
-                formatNum(totalInput + totalOutput + provInput + provOutput), RESET);
+                FormatUtils.formatNumber(totalInput + totalOutput + provInput + provOutput), RESET);
         if (totalCacheRead + provCacheRead > 0) {
-            System.out.printf("  Cache Read:  %s%s%s%n", CYAN, formatNum(totalCacheRead + provCacheRead), RESET);
+            System.out.printf("  Cache Read:  %s%s%s%n", CYAN, FormatUtils.formatNumber(totalCacheRead + provCacheRead), RESET);
         }
 
         // Per-provider breakdown
@@ -206,7 +209,7 @@ public class ChatStatsCommand implements Callable<Integer> {
 
                 System.out.printf("  %s%-16s%s  %s%s in / %s out%s  %ssessions: %d  api: %d%s%n",
                         BOLD + CYAN, entry.getKey(), RESET,
-                        GREEN, formatNum(pInput), formatNum(pOutput), RESET,
+                        GREEN, FormatUtils.formatNumber(pInput), FormatUtils.formatNumber(pOutput), RESET,
                         DIM, pSessions.size(), pCalls, RESET);
 
                 // Show models used
@@ -218,7 +221,7 @@ public class ChatStatsCommand implements Callable<Integer> {
                         .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                         .limit(5)
                         .forEach(m -> System.out.printf("    %s%-20s %s%s%s%n",
-                                DIM, m.getKey(), WHITE, formatNum(m.getValue()), RESET));
+                                DIM, m.getKey(), WHITE, FormatUtils.formatNumber(m.getValue()), RESET));
             }
         }
 
@@ -276,22 +279,22 @@ public class ChatStatsCommand implements Callable<Integer> {
                 System.out.printf("  %s%s%s %s(%d sessions)%s%n",
                         BOLD + CYAN, shortName, RESET, DIM, totalSess, RESET);
                 System.out.printf("    Tokens: %s%s in / %s out%s  |  Tools: %s%d%s%n",
-                        GREEN, formatNum(projInput), formatNum(projOutput), RESET,
+                        GREEN, FormatUtils.formatNumber(projInput), FormatUtils.formatNumber(projOutput), RESET,
                         WHITE, projTools, RESET);
 
                 // List kompile sessions
                 for (SessionData s : projSessions) {
                     System.out.printf("    %s%-24s%s  %s%s in / %s out%s  %stools: %d%s  %s%s%s%n",
                             DIM, s.sessionId, RESET,
-                            GREEN, formatNum(s.inputTokens), formatNum(s.outputTokens), RESET,
+                            GREEN, FormatUtils.formatNumber(s.inputTokens), FormatUtils.formatNumber(s.outputTokens), RESET,
                             DIM, s.totalToolCalls, RESET,
-                            DIM, formatDuration(s.durationSeconds), RESET);
+                            DIM, FormatUtils.formatDuration(Duration.ofSeconds(s.durationSeconds)), RESET);
                 }
                 // List provider sessions
                 for (ProviderUsageData p : projProvider) {
                     System.out.printf("    %s%-24s%s  %s%s in / %s out%s  %s[%s]%s%n",
                             DIM, truncId(p.sessionId), RESET,
-                            GREEN, formatNum(p.inputTokens), formatNum(p.outputTokens), RESET,
+                            GREEN, FormatUtils.formatNumber(p.inputTokens), FormatUtils.formatNumber(p.outputTokens), RESET,
                             CYAN, p.provider, RESET);
                 }
             }
@@ -303,9 +306,9 @@ public class ChatStatsCommand implements Callable<Integer> {
             for (SessionData s : sessions) {
                 System.out.printf("  %s%-24s%s  %s%s in / %s out%s  tools: %s%d%s  %s%s%s%n",
                         CYAN, s.sessionId, RESET,
-                        GREEN, formatNum(s.inputTokens), formatNum(s.outputTokens), RESET,
+                        GREEN, FormatUtils.formatNumber(s.inputTokens), FormatUtils.formatNumber(s.outputTokens), RESET,
                         WHITE, s.totalToolCalls, RESET,
-                        DIM, formatDuration(s.durationSeconds), RESET);
+                        DIM, FormatUtils.formatDuration(Duration.ofSeconds(s.durationSeconds)), RESET);
             }
         }
 
@@ -319,7 +322,7 @@ public class ChatStatsCommand implements Callable<Integer> {
 
         if (s.started != null) System.out.printf("  Started:     %s%s%n", s.started, RESET);
         if (s.ended != null) System.out.printf("  Ended:       %s%s%n", s.ended, RESET);
-        System.out.printf("  Duration:    %s%n", formatDuration(s.durationSeconds));
+        System.out.printf("  Duration:    %s%n", FormatUtils.formatDuration(Duration.ofSeconds(s.durationSeconds)));
         if (s.provider != null) System.out.printf("  Provider:    %s%n", s.provider);
         if (s.model != null) System.out.printf("  Model:       %s%n", s.model);
         if (s.agent != null) System.out.printf("  Agent:       %s%n", s.agent);
@@ -333,11 +336,11 @@ public class ChatStatsCommand implements Callable<Integer> {
 
         System.out.println();
         System.out.println(BOLD + "  Token Usage" + RESET);
-        System.out.printf("  Input:       %s%s%s%n", GREEN, formatNum(s.inputTokens), RESET);
-        System.out.printf("  Output:      %s%s%s%n", GREEN, formatNum(s.outputTokens), RESET);
-        System.out.printf("  Total:       %s%s%s%n", BOLD + GREEN, formatNum(s.inputTokens + s.outputTokens), RESET);
-        if (s.cacheReadTokens > 0) System.out.printf("  Cache Read:  %s%s%s%n", CYAN, formatNum(s.cacheReadTokens), RESET);
-        if (s.cacheCreationTokens > 0) System.out.printf("  Cache New:   %s%s%s%n", CYAN, formatNum(s.cacheCreationTokens), RESET);
+        System.out.printf("  Input:       %s%s%s%n", GREEN, FormatUtils.formatNumber(s.inputTokens), RESET);
+        System.out.printf("  Output:      %s%s%s%n", GREEN, FormatUtils.formatNumber(s.outputTokens), RESET);
+        System.out.printf("  Total:       %s%s%s%n", BOLD + GREEN, FormatUtils.formatNumber(s.inputTokens + s.outputTokens), RESET);
+        if (s.cacheReadTokens > 0) System.out.printf("  Cache Read:  %s%s%s%n", CYAN, FormatUtils.formatNumber(s.cacheReadTokens), RESET);
+        if (s.cacheCreationTokens > 0) System.out.printf("  Cache New:   %s%s%s%n", CYAN, FormatUtils.formatNumber(s.cacheCreationTokens), RESET);
 
         System.out.println();
         System.out.println(BOLD + "  Tool Calls" + RESET);
@@ -357,7 +360,7 @@ public class ChatStatsCommand implements Callable<Integer> {
             System.out.println(BOLD + "  Agentic" + RESET);
             if (s.agenticSteps > 0) System.out.printf("  Steps:       %d%n", s.agenticSteps);
             if (s.compactions > 0) System.out.printf("  Compactions: %d%n", s.compactions);
-            if (s.thinkingTokens > 0) System.out.printf("  Thinking:    %s tokens%n", formatNum(s.thinkingTokens));
+            if (s.thinkingTokens > 0) System.out.printf("  Thinking:    %s tokens%n", FormatUtils.formatNumber(s.thinkingTokens));
             if (s.subagentsSpawned > 0) System.out.printf("  Subagents:   %d%n", s.subagentsSpawned);
         }
 
@@ -529,21 +532,6 @@ public class ChatStatsCommand implements Callable<Integer> {
     // ========================================================================
     // Formatting helpers
     // ========================================================================
-
-    private static String formatDuration(long seconds) {
-        if (seconds < 60) return seconds + "s";
-        long mins = seconds / 60;
-        long secs = seconds % 60;
-        if (mins < 60) return mins + "m " + secs + "s";
-        long hours = mins / 60;
-        mins = mins % 60;
-        return hours + "h " + mins + "m";
-    }
-
-    private static String formatNum(long n) {
-        if (n < 1000) return String.valueOf(n);
-        return String.format("%,d", n);
-    }
 
     private static String getProjectShortName(String project) {
         if (project == null || project.isEmpty()) return "(unknown)";

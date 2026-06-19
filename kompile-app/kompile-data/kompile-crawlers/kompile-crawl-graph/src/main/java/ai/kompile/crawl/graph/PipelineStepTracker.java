@@ -48,6 +48,7 @@ class PipelineStepTracker {
                 "LOADING",
                 "DISCOVERING",
                 "CONVERTING",
+                "PREPROCESSING",
                 "ROUTING",
                 "GRAPH_PREP",
                 "CHUNKING",
@@ -94,7 +95,8 @@ class PipelineStepTracker {
                 || current == UnifiedCrawlJob.PipelineStepStatus.FAILED
                 || current == UnifiedCrawlJob.PipelineStepStatus.CANCELLED
                 || current == UnifiedCrawlJob.PipelineStepStatus.SKIPPED
-                || current == UnifiedCrawlJob.PipelineStepStatus.DEFERRED) {
+                || current == UnifiedCrawlJob.PipelineStepStatus.DEFERRED
+                || current == UnifiedCrawlJob.PipelineStepStatus.ARCHIVED) {
             return;
         }
         if (step.getStartedAt() == null) {
@@ -211,7 +213,8 @@ class PipelineStepTracker {
                 || status == UnifiedCrawlJob.PipelineStepStatus.FAILED
                 || status == UnifiedCrawlJob.PipelineStepStatus.CANCELLED
                 || status == UnifiedCrawlJob.PipelineStepStatus.SKIPPED
-                || status == UnifiedCrawlJob.PipelineStepStatus.DEFERRED) {
+                || status == UnifiedCrawlJob.PipelineStepStatus.DEFERRED
+                || status == UnifiedCrawlJob.PipelineStepStatus.ARCHIVED) {
             if (step.getStartedAt() == null) {
                 step.setStartedAt(now);
             }
@@ -257,6 +260,15 @@ class PipelineStepTracker {
                 0, 0, 0, 0, 0, 0, null, message);
     }
 
+    /**
+     * Mark a step ARCHIVED: its inputs have been persisted to disk for a later, on-demand run.
+     * Distinct from SKIPPED (never to run) and DEFERRED (auto-resumed under resource pressure).
+     */
+    void archivePipelineStep(UnifiedCrawlJob job, String phase, String message) {
+        updatePipelineStep(job, phase, UnifiedCrawlJob.PipelineStepStatus.ARCHIVED,
+                0, 0, 0, 0, 0, 0, null, message);
+    }
+
     void incrementPipelineStep(UnifiedCrawlJob job,
                                String phase,
                                int completedItemsDelta,
@@ -299,6 +311,7 @@ class PipelineStepTracker {
             case "LOADING" -> "Source Loading";
             case "DISCOVERING" -> "Source Discovery";
             case "CONVERTING" -> "Text Conversion";
+            case "PREPROCESSING" -> "Document Preprocessing";
             case "ROUTING" -> "Content Routing";
             case "GRAPH_PREP" -> "Rule Graph Prep";
             case "CHUNKING" -> "Chunking";
@@ -315,7 +328,7 @@ class PipelineStepTracker {
     String stepType(String phase) {
         return switch (normalizeStepId(phase)) {
             case "LOADING", "DISCOVERING" -> "IO";
-            case "CONVERTING", "ROUTING", "CHUNKING" -> "CPU";
+            case "CONVERTING", "PREPROCESSING", "ROUTING", "CHUNKING" -> "CPU";
             case "GRAPH_PREP", "SURFACING", "ENTITY_RESOLUTION", "EDGE_COMPUTATION" -> "GRAPH";
             case "GRAPH_EXTRACTION" -> graphConstructorPresent ? "GRAPH_CONSTRUCTOR" : "LLM";
             case "VECTOR_INDEXING" -> "EMBEDDING";

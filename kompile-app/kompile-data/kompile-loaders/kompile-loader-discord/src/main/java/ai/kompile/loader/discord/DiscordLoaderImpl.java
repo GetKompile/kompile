@@ -17,6 +17,7 @@
 package ai.kompile.loader.discord;
 
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.utils.MapUtils;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
@@ -93,14 +94,14 @@ public class DiscordLoaderImpl implements DocumentLoader {
 
         boolean includeThreads = boolVal(meta.get("includeThreads"), true);
         boolean includeAttachments = boolVal(meta.get("includeAttachments"), true);
-        int maxMessages = intVal(meta.get("maxMessages"), 0);
-        int daysBack = intVal(meta.get("daysBack"), 30);
+        int maxMessages = MapUtils.toInt(meta.get("maxMessages"), 0);
+        int daysBack = MapUtils.toInt(meta.get("daysBack"), 30);
 
         // Calculate time bounds
         String afterSnowflake = computeAfterSnowflake(meta, daysBack);
         String beforeSnowflake = computeBeforeSnowflake(meta);
 
-        Duration rateLimitDelay = Duration.ofMillis(intVal(meta.get("rateLimitDelayMs"), 500));
+        Duration rateLimitDelay = Duration.ofMillis(MapUtils.toInt(meta.get("rateLimitDelayMs"), 500));
         DiscordApiService api = new DiscordApiService(botToken, rateLimitDelay);
 
         Guild guild = api.getGuild(guildId);
@@ -490,9 +491,4 @@ public class DiscordLoaderImpl implements DocumentLoader {
         return Boolean.parseBoolean(obj.toString());
     }
 
-    private static int intVal(Object obj, int defaultValue) {
-        if (obj == null) return defaultValue;
-        if (obj instanceof Number n) return n.intValue();
-        try { return Integer.parseInt(obj.toString()); } catch (NumberFormatException e) { return defaultValue; }
-    }
 }

@@ -16,9 +16,12 @@
 
 package ai.kompile.ocr.structured;
 
+import lombok.Getter;
+
 /**
  * Types of semantic fields that can be extracted from documents.
  */
+@Getter
 public enum FieldType {
     // Personal information
     NAME("Person name"),
@@ -78,10 +81,6 @@ public enum FieldType {
 
     FieldType(String description) {
         this.description = description;
-    }
-
-    public String getDescription() {
-        return description;
     }
 
     /**

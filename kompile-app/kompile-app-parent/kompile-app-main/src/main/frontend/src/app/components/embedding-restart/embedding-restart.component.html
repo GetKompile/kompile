@@ -1,0 +1,72 @@
+<div style="padding: 16px;">
+  <mat-card>
+    <mat-card-header>
+      <mat-card-title>Embedding Subprocess Restarts</mat-card-title>
+      <mat-card-subtitle>
+        Control automatic restart of the embedding subprocess and the native-crash circuit breaker
+      </mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <div *ngIf="loading" style="display:flex; align-items:center; gap:8px; padding:16px 0;">
+        <mat-spinner diameter="24"></mat-spinner><span>Loading…</span>
+      </div>
+
+      <ng-container *ngIf="!loading">
+        <!-- Paused / circuit-breaker-tripped banner -->
+        <div *ngIf="status?.restartsPaused"
+             style="border:1px solid #f0ad4e; border-radius:6px; padding:12px; margin-bottom:16px;">
+          <div style="display:flex; align-items:center; gap:8px; font-weight:600;">
+            <mat-icon color="warn">pause_circle</mat-icon>
+            <span>Restarts are paused</span>
+          </div>
+          <div style="margin-top:6px;">{{ status?.pausedReason || 'Paused' }}</div>
+          <button mat-flat-button color="primary" (click)="resume()" [disabled]="resuming" style="margin-top:10px;">
+            <mat-icon>play_arrow</mat-icon> {{ resuming ? 'Resuming…' : 'Resume restarts' }}
+          </button>
+        </div>
+
+        <!-- Master toggle -->
+        <div style="margin: 8px 0 16px;">
+          <mat-slide-toggle [(ngModel)]="autoRestartEnabled">
+            Automatically restart the embedding subprocess on crash
+          </mat-slide-toggle>
+          <div style="opacity:0.7; font-size:12px; margin-top:4px;">
+            When off, a crashed embedding subprocess stays down until you resume — useful while rebuilding the native library.
+          </div>
+        </div>
+
+        <!-- Circuit-breaker threshold -->
+        <mat-form-field appearance="outline" style="width: 360px;">
+          <mat-label>Native-crash circuit-breaker threshold</mat-label>
+          <input matInput type="number" min="1" [(ngModel)]="nativeCrashThreshold"
+                 [disabled]="!autoRestartEnabled">
+          <mat-hint>Consecutive native crashes (SIGSEGV/SIGABRT) before restarts auto-pause</mat-hint>
+        </mat-form-field>
+
+        <!-- Live status -->
+        <div style="margin-top:20px; display:grid; grid-template-columns: max-content 1fr; gap:6px 16px; font-size:13px;">
+          <span style="opacity:0.7;">Subprocess</span>
+          <span>{{ status?.subprocessRunning ? 'Running' : 'Not running' }}</span>
+          <span style="opacity:0.7;">Consecutive native crashes</span>
+          <span>{{ status?.consecutiveNativeCrashes }} / {{ status?.nativeCrashThreshold }}</span>
+          <span style="opacity:0.7;">Last crash</span>
+          <span>{{ status?.lastCrashReason || '—' }}</span>
+        </div>
+
+        <div *ngIf="status && !status.modelAvailable" style="opacity:0.7; font-size:12px; margin-top:12px;">
+          Embedding model is not currently loaded in this app; settings are saved and applied when it starts.
+        </div>
+      </ng-container>
+    </mat-card-content>
+
+    <mat-card-actions *ngIf="!loading" style="padding: 8px 16px 16px;">
+      <button mat-flat-button color="primary" (click)="save()" [disabled]="saving">
+        <mat-icon>save</mat-icon> {{ saving ? 'Saving…' : 'Save' }}
+      </button>
+      <button mat-stroked-button (click)="reload()" [disabled]="saving || resuming" style="margin-left:8px;">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+    </mat-card-actions>
+  </mat-card>
+</div>

@@ -109,7 +109,9 @@ public class ServiceManager {
         System.out.println("  PID: " + pid);
 
         // Register instance
-        InstanceInfo instanceInfo = new InstanceInfo(componentId, componentId, port, pid, jarFile.getAbsolutePath());
+        InstanceInfo instanceInfo = InstanceInfo.builder()
+                .name(componentId).type(componentId).port(port).pid(pid)
+                .jarPath(jarFile.getAbsolutePath()).startedAt(java.time.Instant.now()).build();
         InstanceRegistry.register(instanceInfo);
 
         // Wait for startup
@@ -336,8 +338,10 @@ public class ServiceManager {
 
         Process process = pb.start();
 
-        InstanceInfo info = new InstanceInfo(instanceName, type, port, process.pid(),
-                jarFile.getAbsolutePath(), workDir.getAbsolutePath());
+        InstanceInfo info = InstanceInfo.builder()
+                .name(instanceName).type(type).port(port).pid(process.pid())
+                .jarPath(jarFile.getAbsolutePath()).projectDir(workDir.getAbsolutePath())
+                .startedAt(java.time.Instant.now()).build();
         InstanceRegistry.register(info);
 
         return process;

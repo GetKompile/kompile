@@ -1,0 +1,98 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="catalog-container">
+  <div class="header">
+    <div>
+      <h2>Standard Evaluation Datasets</h2>
+      <p class="subtitle">Browse and download standard LLM evaluation benchmarks from HuggingFace. {{ downloadedCount }}/{{ datasets.length }} downloaded.</p>
+    </div>
+    <button mat-raised-button color="primary" (click)="downloadAll()" [disabled]="loading">
+      <mat-icon>cloud_download</mat-icon>
+      Download All{{ selectedCategory ? ' (' + getCategoryLabel(selectedCategory) + ')' : '' }}
+    </button>
+  </div>
+
+  <!-- Category Filter -->
+  <div class="category-filter">
+    <button mat-stroked-button
+            [class.active]="!selectedCategory"
+            (click)="selectedCategory = ''">
+      All ({{ datasets.length }})
+    </button>
+    <button mat-stroked-button
+            *ngFor="let cat of categories"
+            [class.active]="selectedCategory === cat"
+            (click)="selectedCategory = cat">
+      <mat-icon class="category-icon">{{ getCategoryIcon(cat) }}</mat-icon>
+      {{ getCategoryLabel(cat) }} ({{ getCategoryCount(cat) }})
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-spinner">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <!-- Dataset Cards -->
+  <div class="dataset-grid" *ngIf="!loading">
+    <mat-card *ngFor="let ds of filteredDatasets" class="dataset-card" [class.downloaded]="ds.downloaded">
+      <mat-card-header>
+        <mat-icon mat-card-avatar class="category-avatar">{{ getCategoryIcon(ds.category) }}</mat-icon>
+        <mat-card-title>{{ ds.name }}</mat-card-title>
+        <mat-card-subtitle>
+          <span class="category-badge">{{ getCategoryLabel(ds.category) }}</span>
+          <span class="sample-count">{{ ds.sampleCount | number }} samples</span>
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <p class="description">{{ ds.description }}</p>
+        <div class="meta-row">
+          <span class="meta-item" matTooltip="HuggingFace dataset ID">
+            <mat-icon class="meta-icon">hub</mat-icon>
+            {{ ds.huggingFaceId }}
+          </span>
+          <span *ngIf="ds.subset" class="meta-item">
+            <mat-icon class="meta-icon">filter_list</mat-icon>
+            {{ ds.subset }}
+          </span>
+          <span class="meta-item">
+            <mat-icon class="meta-icon">splitscreen</mat-icon>
+            {{ ds.split }}
+          </span>
+        </div>
+
+        <!-- Download Progress -->
+        <div *ngIf="getDownloadStatus(ds.id) as status" class="download-progress">
+          <div class="progress-header">
+            <span class="progress-phase">{{ getPhaseLabel(status.phase) }}</span>
+            <span class="progress-percent">{{ status.progressPercent }}%</span>
+          </div>
+          <mat-progress-bar
+            [mode]="status.phase === 'QUEUED' || status.phase === 'CONNECTING' ? 'indeterminate' : 'determinate'"
+            [value]="status.progressPercent"
+            [color]="status.phase === 'FAILED' ? 'warn' : 'primary'">
+          </mat-progress-bar>
+          <div class="progress-detail">
+            <span>{{ status.message }}</span>
+            <span *ngIf="status.elapsedMs > 0" class="elapsed">{{ formatElapsed(status.elapsedMs) }}</span>
+          </div>
+          <div *ngIf="status.error" class="progress-error">
+            <mat-icon>error_outline</mat-icon> {{ status.error }}
+          </div>
+        </div>
+      </mat-card-content>
+      <mat-card-actions align="end">
+        <span *ngIf="ds.downloaded && !isDownloading(ds.id)" class="downloaded-badge">
+          <mat-icon>check_circle</mat-icon> Downloaded
+        </span>
+        <button *ngIf="!ds.downloaded && !isDownloading(ds.id)" mat-raised-button color="primary"
+                (click)="downloadDataset(ds)">
+          <mat-icon>cloud_download</mat-icon>
+          Download
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+</div>

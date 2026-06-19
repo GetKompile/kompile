@@ -33,6 +33,7 @@ import ai.kompile.pipelines.framework.core.context.DefaultContext;
 import ai.kompile.pipelines.framework.core.context.NoOpMetrics;
 import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
 import ai.kompile.pipelines.framework.runtime.tooling.PipelineToolCallOrchestrator;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.slf4j.Logger;
@@ -100,7 +101,7 @@ public class SequencePipelineExecutor extends BasePipelineExecutor {
         this.toolOrchestrator = new PipelineToolCallOrchestrator(
                 this.pipeline,
                 super.runnerFactories, // From BasePipelineExecutor
-                new ObjectMapper(),
+                JsonUtils.standardMapper(),
                 this.maxToolCallingDepthConfig
         );
 

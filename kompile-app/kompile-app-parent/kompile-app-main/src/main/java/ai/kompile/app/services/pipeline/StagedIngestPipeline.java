@@ -18,7 +18,13 @@ package ai.kompile.app.services.pipeline;
 
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.app.services.GraphExtractionConfigService;
-import ai.kompile.app.services.pipeline.stages.*;
+import ai.kompile.app.services.pipeline.stages.ChunkingStage;
+import ai.kompile.app.services.pipeline.stages.EmbeddingStage.EmbeddedChunk;
+import ai.kompile.app.services.pipeline.stages.EmbeddingStage.EmbeddingOutput;
+import ai.kompile.app.services.pipeline.stages.ExtractionStage;
+import ai.kompile.app.services.pipeline.stages.GraphBuildingStage;
+import ai.kompile.app.services.pipeline.stages.IndexingStage.IndexingOutput;
+import ai.kompile.app.services.pipeline.stages.TokenizationStage;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.graphrag.GraphConstructor;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
@@ -74,8 +80,8 @@ public class StagedIngestPipeline implements AutoCloseable {
     private final ExtractionStage extractionStage;
     private final TokenizationStage tokenizationStage;
     private final ChunkingStage chunkingStage;
-    private final EmbeddingStage embeddingStage;
-    private final IndexingStage indexingStage;
+    private final ai.kompile.app.services.pipeline.stages.EmbeddingStage embeddingStage;
+    private final ai.kompile.app.services.pipeline.stages.IndexingStage indexingStage;
     private final GraphBuildingStage graphBuildingStage;
 
     // Thread pools for each stage
@@ -90,8 +96,8 @@ public class StagedIngestPipeline implements AutoCloseable {
     private final BlockingQueue<ExtractionStage.ExtractionOutput> extractionQueue;
     private final BlockingQueue<TokenizationStage.TokenizationOutput> tokenizationQueue;
     private final BlockingQueue<ChunkingStage.ChunkingOutput> chunkingQueue;
-    private final BlockingQueue<EmbeddingStage.EmbeddingOutput> embeddingQueue;
-    private final BlockingQueue<IndexingStage.IndexingOutput> indexingQueue;
+    private final BlockingQueue<EmbeddingOutput> embeddingQueue;
+    private final BlockingQueue<IndexingOutput> indexingQueue;
 
     // Accumulated chunks for graph building (collected during embedding stage)
     private final List<RetrievedDoc> accumulatedChunks = Collections.synchronizedList(new ArrayList<>());
@@ -195,8 +201,8 @@ public class StagedIngestPipeline implements AutoCloseable {
         this.extractionStage = new ExtractionStage(loaders);
         this.tokenizationStage = new TokenizationStage();
         this.chunkingStage = new ChunkingStage(chunker);
-        this.embeddingStage = new EmbeddingStage(embeddingModel);
-        this.indexingStage = new IndexingStage(indexerService);
+        this.embeddingStage = new ai.kompile.app.services.pipeline.stages.EmbeddingStage(embeddingModel);
+        this.indexingStage = new ai.kompile.app.services.pipeline.stages.IndexingStage(indexerService);
         this.graphBuildingStage = new GraphBuildingStage(graphConstructor);
 
         // Configure stages
@@ -583,7 +589,7 @@ public class StagedIngestPipeline implements AutoCloseable {
                     continue;
                 }
 
-                EmbeddingStage.EmbeddingOutput embedding = embeddingStage.process(chunking);
+                EmbeddingOutput embedding = embeddingStage.process(chunking);
                 embeddingQueue.put(embedding);
                 chunksEmbedded.addAndGet(embedding.chunkCount());
 
@@ -604,7 +610,7 @@ public class StagedIngestPipeline implements AutoCloseable {
 
         while (!cancelled.get() && !Thread.currentThread().isInterrupted()) {
             try {
-                EmbeddingStage.EmbeddingOutput embedding = embeddingQueue.poll(
+                EmbeddingOutput embedding = embeddingQueue.poll(
                         QUEUE_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
                 if (embedding == null) {
@@ -614,12 +620,12 @@ public class StagedIngestPipeline implements AutoCloseable {
 
                 // Collect chunks for graph building before indexing
                 if (isGraphBuildingEnabled() && embedding.embeddedChunks() != null) {
-                    for (EmbeddingStage.EmbeddedChunk ec : embedding.embeddedChunks()) {
+                    for (EmbeddedChunk ec : embedding.embeddedChunks()) {
                         accumulatedChunks.add(ec.chunk());
                     }
                 }
 
-                IndexingStage.IndexingOutput indexing = indexingStage.process(embedding);
+                IndexingOutput indexing = indexingStage.process(embedding);
                 chunksIndexed.addAndGet(indexing.chunksIndexed());
                 allIndexedIds.addAll(indexing.indexedDocumentIds());
 
@@ -669,7 +675,7 @@ public class StagedIngestPipeline implements AutoCloseable {
 
         try {
             // Drain remaining items from indexing queue
-            IndexingStage.IndexingOutput lastIndexingOutput = null;
+            IndexingOutput lastIndexingOutput = null;
             while (!indexingQueue.isEmpty()) {
                 lastIndexingOutput = indexingQueue.poll(100, TimeUnit.MILLISECONDS);
             }
@@ -688,8 +694,8 @@ public class StagedIngestPipeline implements AutoCloseable {
             graphBuildingStage.setChunksToProcess(new ArrayList<>(accumulatedChunks));
 
             // Create a synthetic indexing output for the graph building stage
-            IndexingStage.IndexingOutput syntheticOutput = lastIndexingOutput != null ? lastIndexingOutput :
-                    new IndexingStage.IndexingOutput(
+            IndexingOutput syntheticOutput = lastIndexingOutput != null ? lastIndexingOutput :
+                    new IndexingOutput(
                             List.of(), chunksIndexed.get(), 0, 0,
                             null, null, null, null, Map.of()
                     );

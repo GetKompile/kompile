@@ -39,24 +39,46 @@ const PRESETS: { [key: string]: { name: string; description: string; groups: str
   'NONE': { name: 'None', description: 'No passes selected', groups: [] },
   'BASIC': {
     name: 'Basic',
-    description: 'Cleanup optimizations only',
-    groups: ['dead_code_elimination', 'constant_folding', 'algebraic_simplification', 'identity_removal']
+    description: 'Cleanup and simplification only',
+    groups: ['dead_code_elimination', 'constant_folding', 'algebraic_simplification',
+             'identity_removal', 'redundancy_elimination', 'broadcast_elimination']
+  },
+  'DEFAULT': {
+    name: 'Default',
+    description: 'Full pipeline matching GraphOptimizer defaults (excludes cuDNN and quantization)',
+    groups: ['dead_code_elimination', 'constant_folding', 'broadcast_elimination',
+             'reordering', 'algebraic_simplification', 'peephole', 'arithmetic_chain',
+             'strength_reduction', 'identity_removal', 'concat_split', 'select_where',
+             'redundancy_elimination', 'shape_fusion', 'common_subexpression_elimination',
+             'attention_fusion', 'horizontal_fusion', 'matmul_chain',
+             'activation_fusion', 'normalization_fusion', 'rematerialization',
+             'linear_fusion']
   },
   'TRANSFORMER': {
     name: 'Transformer',
-    description: 'Basic + attention, normalization, and linear fusion',
-    groups: ['dead_code_elimination', 'constant_folding', 'algebraic_simplification', 'identity_removal',
-             'attention_fusion', 'normalization_fusion', 'linear_fusion']
+    description: 'All default passes including attention, activation, and normalization fusion',
+    groups: ['dead_code_elimination', 'constant_folding', 'broadcast_elimination',
+             'reordering', 'algebraic_simplification', 'peephole', 'arithmetic_chain',
+             'strength_reduction', 'identity_removal', 'concat_split', 'select_where',
+             'redundancy_elimination', 'shape_fusion', 'common_subexpression_elimination',
+             'attention_fusion', 'horizontal_fusion', 'matmul_chain',
+             'activation_fusion', 'normalization_fusion', 'rematerialization',
+             'linear_fusion']
   },
   'GPU': {
     name: 'GPU',
-    description: 'Transformer + cuDNN replacement',
-    groups: ['dead_code_elimination', 'constant_folding', 'algebraic_simplification', 'identity_removal',
-             'attention_fusion', 'normalization_fusion', 'linear_fusion', 'cudnn_replacement']
+    description: 'All default passes plus cuDNN hardware acceleration',
+    groups: ['dead_code_elimination', 'constant_folding', 'broadcast_elimination',
+             'reordering', 'algebraic_simplification', 'peephole', 'arithmetic_chain',
+             'strength_reduction', 'identity_removal', 'concat_split', 'select_where',
+             'redundancy_elimination', 'shape_fusion', 'common_subexpression_elimination',
+             'attention_fusion', 'horizontal_fusion', 'matmul_chain',
+             'activation_fusion', 'normalization_fusion', 'rematerialization',
+             'linear_fusion', 'cudnn_replacement']
   },
   'FULL': {
     name: 'Full',
-    description: 'All available optimization passes',
+    description: 'All available optimization passes including quantization',
     groups: OPTIMIZATION_PASS_GROUPS.map(g => g.id)
   }
 };
@@ -71,7 +93,7 @@ export class OptimizeDialogComponent implements OnInit {
 
   groupStates: GroupState[] = [];
   maxIterations = 3;
-  selectedPreset = 'BASIC';
+  selectedPreset = 'DEFAULT';
   presetKeys = Object.keys(PRESETS);
   presets = PRESETS;
   getCategoryColor = getCategoryColor;
@@ -87,7 +109,7 @@ export class OptimizeDialogComponent implements OnInit {
       expanded: false,
       selectedSubPasses: new Set<string>()
     }));
-    this.applyPreset('BASIC');
+    this.applyPreset('DEFAULT');
   }
 
   applyPreset(presetId: string): void {

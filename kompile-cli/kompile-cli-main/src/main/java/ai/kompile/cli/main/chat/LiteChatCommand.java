@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
@@ -54,7 +55,7 @@ public class LiteChatCommand implements Callable<Integer> {
     @Option(names = {"--session-id"}, description = "Chat session ID (generated if not provided)")
     private String sessionId;
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     @Override
     public Integer call() {

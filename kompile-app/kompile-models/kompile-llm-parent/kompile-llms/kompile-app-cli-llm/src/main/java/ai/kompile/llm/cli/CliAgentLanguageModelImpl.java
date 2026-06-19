@@ -17,6 +17,8 @@
 package ai.kompile.llm.cli;
 
 import ai.kompile.core.llm.LanguageModel;
+import ai.kompile.core.llm.chat.LLMChat;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -24,6 +26,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -52,9 +56,21 @@ import java.util.stream.Collectors;
 public class CliAgentLanguageModelImpl implements LanguageModel {
 
     private static final Logger log = LoggerFactory.getLogger(CliAgentLanguageModelImpl.class);
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     private final CliAgentLlmConfigService configService;
+
+    /**
+     * Shared persistent CLI-agent process pool — the same {@link LLMChat} bean the
+     * crawl pipeline uses (bean {@code cliAgentLLMChat}). When present, completions are
+     * routed through it: it builds the interactive command, strips ANSI/TUI escape
+     * sequences, and parses the agent's JSON stream — yielding a real completion instead
+     * of a one-shot spawn that just prints the agent's banner/help. Optional so this
+     * module still works in CLI-only contexts where the app-main pool bean is absent.
+     */
+    @Autowired(required = false)
+    @Qualifier("cliAgentLLMChat")
+    private LLMChat pooledChat;
 
     public CliAgentLanguageModelImpl(CliAgentLlmConfigService configService) {
         this.configService = configService;
@@ -123,6 +139,22 @@ public class CliAgentLanguageModelImpl implements LanguageModel {
      * Execute the CLI agent as a subprocess and capture its response.
      */
     private String executeCliAgent(String prompt) {
+        // Prefer the shared persistent CLI-agent process pool (the same LLMChat bean
+        // the crawl pipeline uses). It builds the interactive command, strips ANSI/TUI
+        // escape sequences, and parses the agent's JSON stream — so callers get a real
+        // completion instead of a one-shot spawn that just prints the agent's banner.
+        if (pooledChat != null) {
+            try {
+                String pooled = pooledChat.prompt(prompt).call().content();
+                if (pooled != null && !pooled.isBlank()) {
+                    return pooled.trim();
+                }
+                log.warn("Pooled LLMChat returned empty output; falling back to one-shot CLI spawn");
+            } catch (Exception e) {
+                log.warn("Pooled LLMChat call failed ({}); falling back to one-shot CLI spawn", e.getMessage());
+            }
+        }
+
         String command = configService.getActiveCommand();
 
         if (!configService.checkAvailability(command)) {

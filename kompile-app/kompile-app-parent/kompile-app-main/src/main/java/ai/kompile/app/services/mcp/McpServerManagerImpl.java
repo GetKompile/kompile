@@ -16,10 +16,10 @@
 
 package ai.kompile.app.services.mcp;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.mcp.server.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -54,8 +54,7 @@ public class McpServerManagerImpl implements McpServerManager {
     private String configDirectory;
 
     public McpServerManagerImpl() {
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     @PostConstruct

@@ -15,6 +15,7 @@
  */
 package ai.kompile.core.graphrag.agent;
 
+import ai.kompile.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -215,12 +216,12 @@ public class ExtractionLlmServiceRegistry {
                             candidate.getId());
                 } catch (ExtractionLlmException e) {
                     String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    failures.add(candidate.getId() + ": " + abbreviate(message, 400));
+                    failures.add(candidate.getId() + ": " + StringUtils.truncate(message, 400));
                     if (!shouldFallback(message)) {
                         throw e;
                     }
                     log.warn("Extraction LLM provider '{}' hit a recoverable limit/capacity failure; trying fallback provider. Error: {}",
-                            candidate.getId(), abbreviate(message, 800));
+                            candidate.getId(), StringUtils.truncate(message, 800));
                 }
             }
             throw new ExtractionLlmException("All extraction LLM providers failed. " + String.join(" | ", failures));
@@ -271,16 +272,6 @@ public class ExtractionLlmServiceRegistry {
                     || lower.contains("error executing cli agent");
         }
 
-        private String abbreviate(String value, int maxChars) {
-            if (value == null) {
-                return "";
-            }
-            String normalized = value.replaceAll("\\s+", " ").trim();
-            if (normalized.length() <= maxChars) {
-                return normalized;
-            }
-            return normalized.substring(0, Math.max(0, maxChars - 15)) + "... [truncated]";
-        }
     }
 
     /**

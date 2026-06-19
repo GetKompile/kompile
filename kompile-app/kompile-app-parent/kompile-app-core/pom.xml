@@ -35,6 +35,11 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-commons</artifactId>
         </dependency>
@@ -77,6 +82,12 @@
             <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>nd4j-api</artifactId>
             <version>${nd4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-ocr-core</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
         <!-- Test dependencies -->

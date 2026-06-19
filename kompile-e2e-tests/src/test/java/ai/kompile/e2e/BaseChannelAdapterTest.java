@@ -1,11 +1,11 @@
 package ai.kompile.e2e;
 
-import ai.kompile.kclaw.agent.KClawAgentService;
-import ai.kompile.kclaw.gateway.channel.BaseChannelAdapter;
+import ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter;
 import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
 import ai.kompile.gateway.core.gateway.channel.ChannelAdapter.*;
 import ai.kompile.gateway.core.model.AgentRequest;
 import ai.kompile.gateway.core.model.AgentResponse;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
@@ -26,7 +26,7 @@ import static org.mockito.Mockito.*;
 class BaseChannelAdapterTest {
 
     @Mock
-    private KClawAgentService agentService;
+    private AgentExecutor agentService;
 
     @Mock
     private MessageResponder responder;
@@ -38,7 +38,7 @@ class BaseChannelAdapterTest {
         boolean doStartCalled = false;
         boolean doStopCalled = false;
 
-        TestChannelAdapter(KClawAgentService agentService) {
+        TestChannelAdapter(AgentExecutor agentService) {
             super(agentService);
         }
 

@@ -17,7 +17,9 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.config.ResourceSchedulerConfig;
+import ai.kompile.app.services.ResourceGovernor;
 import ai.kompile.app.services.scheduler.*;
+import ai.kompile.crawl.graph.CliAgentQuotaLedger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,17 +46,23 @@ public class ResourceSchedulerController {
     private final ResourceSchedulerConfigService configService;
     private final JobSchedulerHistoryService historyService;
     private final JobSchedulerBroadcaster broadcaster;
+    private final ResourceGovernor governor;
+    private final CliAgentQuotaLedger quotaLedger;
 
     @Autowired
     public ResourceSchedulerController(
             ResourceAwareJobScheduler scheduler,
             ResourceSchedulerConfigService configService,
             JobSchedulerHistoryService historyService,
-            @Autowired(required = false) JobSchedulerBroadcaster broadcaster) {
+            @Autowired(required = false) JobSchedulerBroadcaster broadcaster,
+            @Autowired(required = false) ResourceGovernor governor,
+            @Autowired(required = false) CliAgentQuotaLedger quotaLedger) {
         this.scheduler = scheduler;
         this.configService = configService;
         this.historyService = historyService;
         this.broadcaster = broadcaster;
+        this.governor = governor;
+        this.quotaLedger = quotaLedger;
     }
 
     // ==================== Status ====================
@@ -62,6 +70,18 @@ public class ResourceSchedulerController {
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> getStatus() {
         return ResponseEntity.ok(scheduler.getStatus());
+    }
+
+    /**
+     * Live resource-governor signal (CPU/RAM/GPU-VRAM pressure, dynamic pool concurrency) plus the
+     * cross-job CLI-agent quota ledger state. Surfaces the data behind admission/routing/defer decisions.
+     */
+    @GetMapping("/governor")
+    public ResponseEntity<Map<String, Object>> getGovernorStatus() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("governor", governor != null ? governor.status() : Map.of("available", false));
+        out.put("cliAgentQuota", quotaLedger != null ? quotaLedger.snapshot() : Map.of());
+        return ResponseEntity.ok(out);
     }
 
     // ==================== Queue & Running ====================

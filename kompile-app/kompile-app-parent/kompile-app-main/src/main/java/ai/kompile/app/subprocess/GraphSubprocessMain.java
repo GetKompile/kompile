@@ -24,6 +24,7 @@ import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -66,7 +67,7 @@ import java.util.stream.Collectors;
 public class GraphSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(GraphSubprocessMain.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     private static PrintStream originalStdout;
     private static volatile GraphSubprocessArgs currentArgs;

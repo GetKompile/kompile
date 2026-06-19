@@ -18,34 +18,83 @@ package ai.kompile.cli.common.util;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 /**
- * Shared JSON utilities for kompile-cli-common and its dependents.
+ * Canonical {@link ObjectMapper} factory for the entire kompile codebase.
  *
- * <p>Provides a shared lenient {@link ObjectMapper} singleton that silently
- * ignores unknown JSON properties. Using a shared instance avoids the overhead
- * of constructing and configuring an {@code ObjectMapper} in every class that
- * needs basic JSON I/O.</p>
+ * <p>All code — Spring beans, static utility fields, CLI commands — should
+ * obtain its {@code ObjectMapper} from this class rather than calling
+ * {@code new ObjectMapper()} directly.  This guarantees consistent module
+ * registration (JavaTimeModule), date serialization (ISO-8601), and
+ * deserialization leniency across the whole project.</p>
  *
- * <p>{@link ObjectMapper} is thread-safe once configured, so sharing a single
- * instance across many callers is both correct and efficient.</p>
+ * <h3>Which mapper to use</h3>
+ * <ul>
+ *   <li>{@link #standardMapper()} — the default choice. Registers
+ *       {@link JavaTimeModule}, writes dates as ISO-8601 strings, and
+ *       ignores unknown properties on deserialization.</li>
+ *   <li>{@link #newStandardMapper()} — returns a <em>new</em> instance
+ *       with the same configuration. Use this when you need to add extra
+ *       modules or features without mutating the shared singleton (e.g.,
+ *       inside a Spring {@code @Bean} method).</li>
+ *   <li>{@link #lenientMapper()} — legacy alias, identical configuration
+ *       to {@link #standardMapper()}.</li>
+ * </ul>
+ *
+ * <p>{@link ObjectMapper} is thread-safe once configured, so sharing a
+ * single instance across many callers is both correct and efficient.
+ * <strong>Do not</strong> call {@code configure()}, {@code registerModule()},
+ * etc. on a shared singleton — use {@link #newStandardMapper()} instead.</p>
  */
 public final class JsonUtils {
 
-    private static final ObjectMapper LENIENT_MAPPER = new ObjectMapper()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    private static final ObjectMapper STANDARD_MAPPER = createStandardMapper();
 
     private JsonUtils() {}
 
     /**
-     * Returns a shared {@link ObjectMapper} configured to ignore unknown JSON
-     * properties. The returned instance must not be mutated by callers — only
-     * use it for reading and writing; do not call {@code configure()},
-     * {@code registerModule()}, etc. on the returned reference.
+     * Returns the shared, immutable {@link ObjectMapper} singleton.
      *
-     * @return the shared lenient mapper
+     * <p>Configured with:
+     * <ul>
+     *   <li>{@link JavaTimeModule} — correct Instant/LocalDateTime/etc. handling</li>
+     *   <li>{@link SerializationFeature#WRITE_DATES_AS_TIMESTAMPS WRITE_DATES_AS_TIMESTAMPS} = false — ISO-8601 strings</li>
+     *   <li>{@link DeserializationFeature#FAIL_ON_UNKNOWN_PROPERTIES FAIL_ON_UNKNOWN_PROPERTIES} = false — forward-compatible deserialization</li>
+     * </ul>
+     *
+     * @return the shared standard mapper — do not mutate
+     */
+    public static ObjectMapper standardMapper() {
+        return STANDARD_MAPPER;
+    }
+
+    /**
+     * Creates a <em>new</em> {@link ObjectMapper} with the standard kompile
+     * configuration. Use this when you need a mutable instance — e.g., inside
+     * a Spring {@code @Bean} factory method where the container may apply
+     * additional customizers.
+     *
+     * @return a fresh, independently-configurable mapper
+     */
+    public static ObjectMapper newStandardMapper() {
+        return createStandardMapper();
+    }
+
+    /**
+     * Legacy alias for {@link #standardMapper()}.
+     *
+     * @return the shared standard mapper — do not mutate
      */
     public static ObjectMapper lenientMapper() {
-        return LENIENT_MAPPER;
+        return STANDARD_MAPPER;
+    }
+
+    private static ObjectMapper createStandardMapper() {
+        return new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 }

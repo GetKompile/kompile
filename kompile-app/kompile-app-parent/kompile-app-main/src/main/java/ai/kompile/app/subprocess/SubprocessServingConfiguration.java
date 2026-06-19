@@ -25,6 +25,7 @@ import ai.kompile.pipelines.framework.api.data.DataFactory;
 import ai.kompile.pipelines.framework.core.context.NoOpMetrics;
 import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
 import ai.kompile.pipelines.framework.core.data.JDataFactory;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
@@ -69,10 +70,7 @@ public class SubprocessServingConfiguration {
     @Bean
     @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
     public ObjectMapper objectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
-        mapper.configure(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
-        return mapper;
+        return JsonUtils.newStandardMapper();
     }
 
     @Bean

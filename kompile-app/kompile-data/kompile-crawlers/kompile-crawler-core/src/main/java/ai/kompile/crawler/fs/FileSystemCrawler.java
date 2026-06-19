@@ -308,7 +308,10 @@ public class FileSystemCrawler extends AbstractCrawler {
         if (lower.endsWith(".pptx") || lower.endsWith(".ppt")) return "presentation";
         if (lower.endsWith(".html") || lower.endsWith(".htm")) return "HTML Document";
         if (lower.endsWith(".eml") || lower.endsWith(".msg") || lower.endsWith(".mbox")) return "email";
-        if (lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".json") || lower.endsWith(".xml")) return "text";
+        if (lower.endsWith(".json")) return "json";
+        if (lower.endsWith(".xml")) return "xml";
+        if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return "yaml";
+        if (lower.endsWith(".txt") || lower.endsWith(".md")) return "text";
         if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif")) return "image";
         return "file";
     }

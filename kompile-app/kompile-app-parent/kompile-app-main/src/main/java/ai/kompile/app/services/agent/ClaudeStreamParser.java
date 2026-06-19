@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.agent;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,7 +55,7 @@ public class ClaudeStreamParser {
 
     private static final Logger log = LoggerFactory.getLogger(ClaudeStreamParser.class);
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // Track content blocks by session and index for incremental assembly
     private final Map<String, ContentBlock> contentBlocks = new ConcurrentHashMap<>();
@@ -790,16 +791,15 @@ public class ClaudeStreamParser {
         return filterSystemReminders(result);
     }
 
-    /**
-     * Check if the given agent supports structured streaming output.
-     */
     public boolean supportsStreamJson(String agentName) {
         if (agentName == null) {
             return true; // Default to Claude
         }
         String lower = agentName.toLowerCase();
-        // Claude and Codex emit structured JSON streams; Gemini remains plain text here.
-        return !lower.equals("gemini") && !lower.contains("gemini");
+        // Claude and Codex emit structured JSON streams; Gemini/Antigravity remains plain text here.
+        return !lower.equals("gemini") && !lower.contains("gemini")
+                && !lower.equals("agy") && !lower.contains("agy")
+                && !lower.contains("antigravity");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

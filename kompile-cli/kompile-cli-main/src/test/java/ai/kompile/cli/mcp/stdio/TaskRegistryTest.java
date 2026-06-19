@@ -47,8 +47,7 @@ class TaskRegistryTest {
     @Test
     void createPersistsTaskToDisk() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "test task", "test prompt summary", "session-1", tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("test task").promptSummary("test prompt summary").sessionId("session-1").workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         registry.create(record);
 
         // Verify file exists
@@ -83,8 +82,7 @@ class TaskRegistryTest {
     @Test
     void taskLifecyclePendingToRunningToCompleted() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "qwen",
-                "lifecycle test", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("qwen").description("lifecycle test").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         registry.create(record);
 
         // PENDING → RUNNING
@@ -110,8 +108,7 @@ class TaskRegistryTest {
     @Test
     void taskLifecycleRunningToDetached() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "detach test", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("detach test").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         registry.create(record);
 
         registry.update(taskId, r -> r.markRunning(99999));
@@ -126,8 +123,7 @@ class TaskRegistryTest {
     @Test
     void taskLifecycleRunningToFailed() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "codex",
-                "fail test", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("codex").description("fail test").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         registry.create(record);
 
         registry.update(taskId, r -> r.markRunning(11111));
@@ -143,8 +139,7 @@ class TaskRegistryTest {
     @Test
     void taskLifecycleRunningToCancelled() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "gemini",
-                "cancel test", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("gemini").description("cancel test").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         registry.create(record);
 
         registry.update(taskId, r -> r.markRunning(22222));
@@ -164,22 +159,19 @@ class TaskRegistryTest {
     void multiTaskParentChildTracking() {
         // Create parent task
         String parentId = TaskRegistry.generateId("multi");
-        TaskRecord parent = new TaskRecord(parentId, "multi_task", "multi",
-                "parent task", "multi prompt", null, tempDir.toString());
+        TaskRecord parent = TaskRecord.builder().taskId(parentId).taskType("multi_task").agentName("multi").description("parent task").promptSummary("multi prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         parent.markRunning(ProcessHandle.current().pid());
         registry.create(parent);
 
         // Create child tasks
         String child1Id = TaskRegistry.generateId("agent");
-        TaskRecord child1 = new TaskRecord(child1Id, "task", "claude",
-                "child 1", "child prompt 1", null, tempDir.toString());
+        TaskRecord child1 = TaskRecord.builder().taskId(child1Id).taskType("task").agentName("claude").description("child 1").promptSummary("child prompt 1").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         child1.setParentTaskId(parentId);
         child1.setSubtaskName("backend");
         registry.create(child1);
 
         String child2Id = TaskRegistry.generateId("agent");
-        TaskRecord child2 = new TaskRecord(child2Id, "task", "qwen",
-                "child 2", "child prompt 2", null, tempDir.toString());
+        TaskRecord child2 = TaskRecord.builder().taskId(child2Id).taskType("task").agentName("qwen").description("child 2").promptSummary("child prompt 2").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         child2.setParentTaskId(parentId);
         child2.setSubtaskName("tests");
         registry.create(child2);
@@ -203,14 +195,12 @@ class TaskRegistryTest {
     @Test
     void cancelTreeCancelsParentAndChildren() {
         String parentId = TaskRegistry.generateId("multi");
-        TaskRecord parent = new TaskRecord(parentId, "multi_task", "multi",
-                "parent", "prompt", null, tempDir.toString());
+        TaskRecord parent = TaskRecord.builder().taskId(parentId).taskType("multi_task").agentName("multi").description("parent").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         parent.markRunning(ProcessHandle.current().pid());
         registry.create(parent);
 
         String childId = TaskRegistry.generateId("agent");
-        TaskRecord child = new TaskRecord(childId, "task", "claude",
-                "child", "prompt", null, tempDir.toString());
+        TaskRecord child = TaskRecord.builder().taskId(childId).taskType("task").agentName("claude").description("child").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         child.setParentTaskId(parentId);
         child.markRunning(ProcessHandle.current().pid());
         registry.create(child);
@@ -230,8 +220,7 @@ class TaskRegistryTest {
     void listAllReturnsSortedByCreationTime() throws Exception {
         for (int i = 0; i < 3; i++) {
             String id = TaskRegistry.generateId("agent");
-            TaskRecord r = new TaskRecord(id, "task", "agent-" + i,
-                    "task " + i, "prompt " + i, null, tempDir.toString());
+            TaskRecord r = TaskRecord.builder().taskId(id).taskType("task").agentName("agent-" + i).description("task " + i).promptSummary("prompt " + i).sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
             registry.create(r);
             Thread.sleep(10); // ensure different timestamps
         }
@@ -247,22 +236,19 @@ class TaskRegistryTest {
     void listActiveFiltersCorrectly() {
         // Running task
         String runningId = TaskRegistry.generateId("agent");
-        TaskRecord running = new TaskRecord(runningId, "task", "claude",
-                "running", "prompt", null, tempDir.toString());
+        TaskRecord running = TaskRecord.builder().taskId(runningId).taskType("task").agentName("claude").description("running").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         running.markRunning(ProcessHandle.current().pid());
         registry.create(running);
 
         // Completed task
         String completedId = TaskRegistry.generateId("agent");
-        TaskRecord completed = new TaskRecord(completedId, "task", "qwen",
-                "completed", "prompt", null, tempDir.toString());
+        TaskRecord completed = TaskRecord.builder().taskId(completedId).taskType("task").agentName("qwen").description("completed").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         completed.markCompleted(0, "done", null);
         registry.create(completed);
 
         // Detached task — use current process PID so it counts as alive
         String detachedId = TaskRegistry.generateId("agent");
-        TaskRecord detached = new TaskRecord(detachedId, "task", "gemini",
-                "detached", "prompt", null, tempDir.toString());
+        TaskRecord detached = TaskRecord.builder().taskId(detachedId).taskType("task").agentName("gemini").description("detached").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         detached.markRunning(ProcessHandle.current().pid());
         detached.markDetached();
         registry.create(detached);
@@ -279,8 +265,7 @@ class TaskRegistryTest {
     void listRecentFiltersOldTasks() throws Exception {
         // Create a task with a recent timestamp
         String recentId = TaskRegistry.generateId("agent");
-        TaskRecord recent = new TaskRecord(recentId, "task", "claude",
-                "recent", "prompt", null, tempDir.toString());
+        TaskRecord recent = TaskRecord.builder().taskId(recentId).taskType("task").agentName("claude").description("recent").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         registry.create(recent);
 
         List<TaskRecord> recentTasks = registry.listRecent(1); // last 1 hour
@@ -293,8 +278,7 @@ class TaskRegistryTest {
     @Test
     void reconcileMarksDeadProcessAsCompleted() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "dead process", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("dead process").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         // Use a PID that definitely doesn't exist
         record.markRunning(999999999L);
         // Create an output file so reconciliation marks it COMPLETED, not FAILED
@@ -312,8 +296,7 @@ class TaskRegistryTest {
     @Test
     void reconcileMarksDeadProcessWithoutOutputAsFailed() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "dead no output", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("dead no output").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         record.markRunning(999999999L);
         registry.create(record);
 
@@ -327,8 +310,7 @@ class TaskRegistryTest {
     @Test
     void reconcileKeepsAliveProcessRunning() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "alive process", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("alive process").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         // Use current PID which IS alive
         record.markRunning(ProcessHandle.current().pid());
         registry.create(record);
@@ -344,8 +326,7 @@ class TaskRegistryTest {
     @Test
     void deleteRemovesTaskFile() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "to delete", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("to delete").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         registry.create(record);
 
         assertTrue(registry.delete(taskId));
@@ -356,8 +337,7 @@ class TaskRegistryTest {
     @Test
     void evictStaleRemovesOldCompletedTasks() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "old task", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("old task").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         // Simulate a task completed 25 hours ago
         record.markCompleted(0, "done", null);
         record.setCompletedAt(Instant.now().minusSeconds(25 * 3600));
@@ -371,8 +351,7 @@ class TaskRegistryTest {
     @Test
     void evictStaleKeepsRecentCompletedTasks() {
         String taskId = TaskRegistry.generateId("agent");
-        TaskRecord record = new TaskRecord(taskId, "task", "claude",
-                "recent completed", "prompt", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("claude").description("recent completed").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         record.markCompleted(0, "done", null);
         registry.create(record);
 
@@ -385,8 +364,7 @@ class TaskRegistryTest {
 
     @Test
     void formatStatusIncludesKeyFields() {
-        TaskRecord record = new TaskRecord("task-agent-123-1", "task", "claude",
-                "format test", "prompt summary", null, tempDir.toString());
+        TaskRecord record = TaskRecord.builder().taskId("task-agent-123-1").taskType("task").agentName("claude").description("format test").promptSummary("prompt summary").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();
         record.markRunning(12345);
         record.setOutputPath("/path/to/output.md");
         record.setSubtaskName("backend");

@@ -139,13 +139,18 @@ export class CrossIndexStatusComponent implements OnInit, OnDestroy {
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (response) => {
-          this.documents = response.documents.map((doc: IndexedDocumentItem) => ({
+          // Backend returns a Spring Page: {content: [...], totalElements: N}.
+          // The IndexedDocumentResponse type expects {documents: [...], total: N}.
+          // Guard both shapes so the component never crashes on an unexpected response.
+          const raw = response as any;
+          const items: IndexedDocumentItem[] = raw?.documents ?? raw?.content ?? [];
+          this.documents = items.map((doc: IndexedDocumentItem) => ({
             ...doc,
             expanded: false,
             passages: undefined,
             loadingPassages: false
           }));
-          this.totalDocuments = response.total;
+          this.totalDocuments = response?.total ?? raw?.totalElements ?? items.length;
           this.updateSelectionState();
         },
         error: (err) => {
@@ -226,6 +231,11 @@ export class CrossIndexStatusComponent implements OnInit, OnDestroy {
   // ═══════════════════════════════════════════════════════════════════════════
   // ROW EXPANSION
   // ═══════════════════════════════════════════════════════════════════════════
+
+  // Predicate for the expandedDetail row def — always returns true so the row
+  // is present in the DOM for every data row; the [@detailExpand] animation
+  // drives visible expansion, not row existence.
+  isExpanded = (_index: number, _doc: DocumentRow) => true;
 
   toggleExpand(doc: DocumentRow): void {
     doc.expanded = !doc.expanded;

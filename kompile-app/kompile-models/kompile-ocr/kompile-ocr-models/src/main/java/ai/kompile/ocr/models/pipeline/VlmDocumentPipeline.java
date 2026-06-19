@@ -41,11 +41,11 @@ import org.apache.pdfbox.pdmodel.graphics.PDXObject;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
-import org.eclipse.deeplearning4j.llm.generation.KvCacheStrategy;
-import org.eclipse.deeplearning4j.llm.generation.SamplingConfig;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.KvCacheStrategy;
+import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.model.benchmark.BenchmarkConfig;
 import org.eclipse.deeplearning4j.model.benchmark.BenchmarkConfigApplier;
-import org.eclipse.deeplearning4j.vlm.model.VisionEncoderIOConfig;
+import org.eclipse.deeplearning4j.vlm.model.encoder.VisionEncoderIOConfig;
 import org.eclipse.deeplearning4j.vlm.model.VisionLanguageModel;
 import org.eclipse.deeplearning4j.vlm.model.patching.SameDiffGraphPatch;
 import org.eclipse.deeplearning4j.vlm.model.patching.SmolDoclingPositionIdsPatch;
@@ -426,7 +426,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
     /**
      * Builds the prompt based on the desired output format.
      */
-    private String buildPromptForFormat(OcrPipelineConfig.VlmOutputFormat format) {
+    private String buildPromptForFormat(VlmOutputFormat format) {
         switch (format) {
             case DOCTAGS:
                 return "Convert this document to DocTags format with structure tags and bounding boxes.";
@@ -937,7 +937,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
         // Try to create a persistent managed KV cache via kompile's integration service.
         // This makes the cache visible in the KV cache browser UI with live statistics.
-        org.eclipse.deeplearning4j.llm.generation.KvCacheManager externalKvCacheManager = null;
+        org.eclipse.deeplearning4j.llm.generation.kvcache.KvCacheManager externalKvCacheManager = null;
         if (vlmKvCacheIntegrationService != null && vlmKvCacheIntegrationService.isEnabled() && modelId != null) {
             try {
                 externalKvCacheManager = vlmKvCacheIntegrationService.getOrCreateKvCacheManager(modelId, strategy);

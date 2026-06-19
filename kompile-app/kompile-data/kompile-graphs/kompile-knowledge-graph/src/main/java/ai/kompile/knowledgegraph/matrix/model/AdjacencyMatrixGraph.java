@@ -20,8 +20,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
-import org.nd4j.linalg.indexing.INDArrayIndex;
-import org.nd4j.linalg.indexing.NDArrayIndex;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,19 +27,50 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
- * Matrix-based graph representation using ND4J for efficient graph operations.
+ * Matrix-based graph representation using a <em>sparse</em> adjacency structure for low-memory storage,
+ * with on-demand compact dense {@link INDArray} materialization for algorithms that require it.
+ *
+ * <h3>Storage change (sparse refactor)</h3>
  * <p>
- * This class uses an adjacency matrix stored as an INDArray, enabling efficient
- * matrix operations for graph algorithms like PageRank, random walks, and similarity computations.
+ * The previous representation stored one dense {@code FLOAT [capacity × capacity]} {@link INDArray}
+ * per edge type, consuming ~544 MB per edge-type matrix at 9,000 nodes (capacity 11,664) — roughly
+ * <strong>3.8 GB VRAM</strong> for 7 edge types with a graph that was only 0.02% dense.
  * </p>
  * <p>
- * The graph supports:
- * <ul>
- *   <li>Weighted edges via the adjacency matrix values</li>
- *   <li>Multiple edge types via separate adjacency matrices per type</li>
- *   <li>Node embeddings stored as a separate matrix</li>
- *   <li>Dynamic resizing as nodes are added</li>
- * </ul>
+ * The new representation stores edges in pure Java:
+ * <pre>
+ *   Map&lt;String edgeType,
+ *       Map&lt;Integer srcIdx, Map&lt;Integer tgtIdx, Float weight&gt;&gt;&gt;
+ * </pre>
+ * plus a reverse in-degree index:
+ * <pre>
+ *   Map&lt;String edgeType, Map&lt;Integer tgtIdx, Set&lt;Integer srcIdx&gt;&gt;&gt;
+ * </pre>
+ * and a per-type edge counter. This stores only the non-zero entries —
+ * ~17,000 entries × ~100 bytes overhead ≈ <strong>~1.7 MB</strong> for the same graph.
+ * </p>
+ *
+ * <h3>Algorithms that need a dense matrix</h3>
+ * <p>
+ * {@link #getCombinedAdjacencyMatrix()} now builds a <em>compact</em> dense INDArray sized
+ * {@code [nodeCount × nodeCount]} (not {@code [capacity × capacity]}) on demand from the sparse
+ * adjacency data, to be used by PageRank / HITS / betweenness centrality callers and then
+ * immediately discarded. The matrix is <strong>not</strong> kept resident between calls.
+ * Callers that previously received {@code [capacity × capacity]} now receive
+ * {@code [nodeCount × nodeCount]}, which is what all algorithm callers already slice to via
+ * {@code NDArrayIndex.indices(createRange(n))} — so numerical results are unchanged.
+ * </p>
+ *
+ * <h3>Backward-compatible public API</h3>
+ * <p>
+ * All public method signatures are identical. {@link #getAdjacencyMatrices()} returns an
+ * <strong>unmodifiable view</strong> whose keyset is the set of known edge types. The values
+ * are {@code null} — callers that only need the keyset ({@code MatrixKnowledgeGraphService.searchEdges},
+ * {@code VectorStoreMatrixGraphStore.saveAdjacencyMatrices}) must use the keyset only.
+ * {@code MatrixKnowledgeGraphService.countEdgesByType} and
+ * {@code VectorStoreMatrixGraphStore.saveAdjacencyMatrices} are patched separately to use the new
+ * sparse accessors ({@link #getEdgeCountByType(String)} and
+ * {@link #getSparseEdges(String)}).
  * </p>
  */
 @Data
@@ -68,11 +97,32 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
      */
     private final Map<Integer, String> indexToNodeId;
 
+    // ── SPARSE ADJACENCY STORAGE ────────────────────────────────────────────────
+    //
+    // adjacencyData  : edgeType → srcIdx → tgtIdx → weight
+    // reverseIndex   : edgeType → tgtIdx → Set<srcIdx>   (for in-degree queries)
+    // edgeCountByType: edgeType → number of directed edges stored
+    //
+    // Replaces the old `Map<String, INDArray> adjacencyMatrices`.
+    // All fields are ConcurrentHashMap / CopyOnWriteArraySet analogues for thread safety
+    // consistent with the original synchronized putScalar / getDouble usage.
+
     /**
-     * Map from edge type to adjacency matrix.
-     * Each adjacency matrix is of shape [numNodes, numNodes].
+     * Sparse forward adjacency: edgeType → sourceIdx → targetIdx → weight.
      */
-    private final Map<String, INDArray> adjacencyMatrices;
+    private final Map<String, Map<Integer, Map<Integer, Float>>> adjacencyData;
+
+    /**
+     * Sparse reverse adjacency for in-degree lookups: edgeType → targetIdx → Set of sourceIdx.
+     */
+    private final Map<String, Map<Integer, Set<Integer>>> reverseIndex;
+
+    /**
+     * Per-edge-type edge counter (avoids scanning the sparse maps to count).
+     */
+    private final Map<String, AtomicInteger> edgeCountByType;
+
+    // ── NODE EMBEDDINGS (kept as dense INDArray — tiny relative to adj matrices) ──
 
     /**
      * Node embeddings matrix of shape [numNodes, embeddingDim].
@@ -91,17 +141,17 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
     private final AtomicInteger nextIndex;
 
     /**
-     * Current capacity of the adjacency matrices.
+     * Current capacity (retained for API compatibility; no longer drives INDArray allocation).
      */
     private int currentCapacity;
 
     /**
-     * Default initial capacity for the matrices.
+     * Default initial capacity (kept for API compatibility; no INDArray is pre-allocated).
      */
     private static final int DEFAULT_INITIAL_CAPACITY = 1024;
 
     /**
-     * Growth factor when resizing matrices.
+     * Growth factor (kept for API compatibility; no INDArray resize occurs).
      */
     private static final double GROWTH_FACTOR = 1.5;
 
@@ -121,14 +171,16 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
      * Creates a new empty graph with specified capacity.
      *
      * @param graphId  Unique identifier for the graph
-     * @param capacity Initial capacity for the adjacency matrix
+     * @param capacity Initial capacity (no longer allocates dense storage; kept for compatibility)
      */
     public AdjacencyMatrixGraph(String graphId, int capacity) {
         this.graphId = graphId;
         this.currentCapacity = capacity;
         this.nodeById = new ConcurrentHashMap<>();
         this.indexToNodeId = new ConcurrentHashMap<>();
-        this.adjacencyMatrices = new ConcurrentHashMap<>();
+        this.adjacencyData = new ConcurrentHashMap<>();
+        this.reverseIndex = new ConcurrentHashMap<>();
+        this.edgeCountByType = new ConcurrentHashMap<>();
         this.nextIndex = new AtomicInteger(0);
         this.embeddingDimension = 0;
     }
@@ -152,6 +204,9 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         }
 
         int index = nextIndex.getAndIncrement();
+        // Capacity is a soft limit; sparse storage expands without reallocation.
+        // Grow the capacity field in lock-step so callers observing currentCapacity
+        // see a consistent value.
         if (index >= currentCapacity) {
             expandCapacity();
         }
@@ -187,26 +242,71 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         }
 
         String type = edgeType != null ? edgeType : DEFAULT_EDGE_TYPE;
-        INDArray adjacency = getOrCreateAdjacencyMatrix(type);
-
         int srcIdx = source.getMatrixIndex();
         int tgtIdx = target.getMatrixIndex();
+        float w = (float) weight;
 
-        adjacency.putScalar(srcIdx, tgtIdx, weight);
+        addSparseEdge(type, srcIdx, tgtIdx, w);
         if (bidirectional) {
-            adjacency.putScalar(tgtIdx, srcIdx, weight);
+            addSparseEdge(type, tgtIdx, srcIdx, w);
         }
 
         return true;
     }
 
+    // ── PRIVATE SPARSE EDGE HELPERS ────────────────────────────────────────────
+
     /**
-     * Gets or creates an adjacency matrix for the specified edge type.
+     * Inserts or updates a single directed sparse edge entry.
      */
-    private synchronized INDArray getOrCreateAdjacencyMatrix(String edgeType) {
-        return adjacencyMatrices.computeIfAbsent(edgeType,
-            k -> Nd4j.zeros(DataType.FLOAT, currentCapacity, currentCapacity));
+    private void addSparseEdge(String type, int srcIdx, int tgtIdx, float weight) {
+        Map<Integer, Map<Integer, Float>> typeMap =
+                adjacencyData.computeIfAbsent(type, k -> new ConcurrentHashMap<>());
+        Map<Integer, Float> targets =
+                typeMap.computeIfAbsent(srcIdx, k -> new ConcurrentHashMap<>());
+
+        boolean isNew = !targets.containsKey(tgtIdx);
+        targets.put(tgtIdx, weight);
+
+        // Update reverse index
+        reverseIndex
+                .computeIfAbsent(type, k -> new ConcurrentHashMap<>())
+                .computeIfAbsent(tgtIdx, k -> ConcurrentHashMap.newKeySet())
+                .add(srcIdx);
+
+        // Update edge counter only for truly new entries
+        if (isNew) {
+            edgeCountByType
+                    .computeIfAbsent(type, k -> new AtomicInteger(0))
+                    .incrementAndGet();
+        }
     }
+
+    /**
+     * Removes a single directed sparse edge entry.
+     */
+    private void removeSparseEdge(String type, int srcIdx, int tgtIdx) {
+        Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(type);
+        if (typeMap == null) return;
+        Map<Integer, Float> targets = typeMap.get(srcIdx);
+        if (targets == null) return;
+        Float removed = targets.remove(tgtIdx);
+        if (removed != null) {
+            AtomicInteger counter = edgeCountByType.get(type);
+            if (counter != null) counter.decrementAndGet();
+
+            // Clean up reverse index
+            Map<Integer, Set<Integer>> rev = reverseIndex.get(type);
+            if (rev != null) {
+                Set<Integer> srcs = rev.get(tgtIdx);
+                if (srcs != null) {
+                    srcs.remove(srcIdx);
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
 
     /**
      * Gets the edge weight between two nodes.
@@ -225,13 +325,12 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         }
 
         String type = edgeType != null ? edgeType : DEFAULT_EDGE_TYPE;
-        INDArray adjacency = adjacencyMatrices.get(type);
-
-        if (adjacency == null) {
-            return 0.0;
-        }
-
-        return adjacency.getDouble(source.getMatrixIndex(), target.getMatrixIndex());
+        Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(type);
+        if (typeMap == null) return 0.0;
+        Map<Integer, Float> targets = typeMap.get(source.getMatrixIndex());
+        if (targets == null) return 0.0;
+        Float w = targets.get(target.getMatrixIndex());
+        return w != null ? w : 0.0;
     }
 
     /**
@@ -254,13 +353,7 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         }
 
         String type = edgeType != null ? edgeType : DEFAULT_EDGE_TYPE;
-        INDArray adjacency = adjacencyMatrices.get(type);
-
-        if (adjacency == null) {
-            return false;
-        }
-
-        adjacency.putScalar(source.getMatrixIndex(), target.getMatrixIndex(), 0.0);
+        removeSparseEdge(type, source.getMatrixIndex(), target.getMatrixIndex());
         return true;
     }
 
@@ -277,45 +370,161 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
             return Collections.emptyList();
         }
 
-        List<Map.Entry<String, Double>> neighbors = new ArrayList<>();
         int nodeIndex = node.getMatrixIndex();
+        List<Map.Entry<String, Double>> neighbors = new ArrayList<>();
 
-        Collection<INDArray> matrices;
         if (edgeType != null) {
-            INDArray adj = adjacencyMatrices.get(edgeType);
-            matrices = adj != null ? Collections.singleton(adj) : Collections.emptyList();
+            Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(edgeType);
+            if (typeMap != null) {
+                collectNeighborsFromTypeMap(typeMap, nodeIndex, neighbors);
+            }
         } else {
-            matrices = adjacencyMatrices.values();
-        }
-
-        for (INDArray adjacency : matrices) {
-            for (int i = 0; i < getNodeCount(); i++) {
-                double weight = adjacency.getDouble(nodeIndex, i);
-                if (weight > 0) {
-                    String neighborId = indexToNodeId.get(i);
-                    if (neighborId != null) {
-                        neighbors.add(new AbstractMap.SimpleEntry<>(neighborId, weight));
-                    }
-                }
+            for (Map<Integer, Map<Integer, Float>> typeMap : adjacencyData.values()) {
+                collectNeighborsFromTypeMap(typeMap, nodeIndex, neighbors);
             }
         }
 
         return neighbors;
     }
 
+    private void collectNeighborsFromTypeMap(Map<Integer, Map<Integer, Float>> typeMap,
+                                              int nodeIndex,
+                                              List<Map.Entry<String, Double>> neighbors) {
+        Map<Integer, Float> targets = typeMap.get(nodeIndex);
+        if (targets == null) return;
+        for (Map.Entry<Integer, Float> entry : targets.entrySet()) {
+            String neighborId = indexToNodeId.get(entry.getKey());
+            if (neighborId != null) {
+                neighbors.add(new AbstractMap.SimpleEntry<>(neighborId, (double) entry.getValue()));
+            }
+        }
+    }
+
     /**
-     * Gets the combined adjacency matrix summing all edge types.
+     * Builds a compact dense {@link INDArray} of shape {@code [n × n]} (where {@code n = getNodeCount()})
+     * summing all edge types. This is created on demand for algorithm use and must be closed by the
+     * caller after use to release native memory. It is <strong>not</strong> kept resident.
+     *
+     * <p>Callers in {@link ai.kompile.knowledgegraph.matrix.algorithms.MatrixGraphAlgorithms} previously
+     * indexed this with {@code .get(NDArrayIndex.indices(createRange(n)), ...)} to obtain the active
+     * sub-matrix. That slice is now unnecessary since the returned matrix is already {@code [n × n]},
+     * but the existing index operations are safe no-ops on an {@code n×n} matrix when {@code n} equals
+     * the matrix dimension.</p>
+     *
+     * @return A newly allocated compact {@code [nodeCount × nodeCount]} INDArray; caller owns and
+     *         must close it.
      */
     public INDArray getCombinedAdjacencyMatrix() {
-        if (adjacencyMatrices.isEmpty()) {
-            return Nd4j.zeros(DataType.FLOAT, currentCapacity, currentCapacity);
+        int n = getNodeCount();
+        if (n == 0) {
+            return Nd4j.zeros(DataType.FLOAT, 0, 0);
         }
 
-        INDArray combined = Nd4j.zeros(DataType.FLOAT, currentCapacity, currentCapacity);
-        for (INDArray adj : adjacencyMatrices.values()) {
-            combined.addi(adj);
+        INDArray combined = Nd4j.zeros(DataType.FLOAT, n, n);
+        for (Map<Integer, Map<Integer, Float>> typeMap : adjacencyData.values()) {
+            for (Map.Entry<Integer, Map<Integer, Float>> rowEntry : typeMap.entrySet()) {
+                int srcIdx = rowEntry.getKey();
+                if (srcIdx >= n) continue;
+                for (Map.Entry<Integer, Float> colEntry : rowEntry.getValue().entrySet()) {
+                    int tgtIdx = colEntry.getKey();
+                    if (tgtIdx >= n) continue;
+                    // addScalar to combine — equivalent to addi(adj) over all types
+                    combined.putScalar(srcIdx, tgtIdx,
+                            combined.getFloat(srcIdx, tgtIdx) + colEntry.getValue());
+                }
+            }
         }
         return combined;
+    }
+
+    /**
+     * Returns the number of edges for a given edge type without any INDArray operation.
+     * O(1) — backed by a maintained counter.
+     *
+     * @param edgeType the edge type key
+     * @return the number of directed edges of this type
+     */
+    public long getEdgeCountByType(String edgeType) {
+        AtomicInteger counter = edgeCountByType.get(edgeType);
+        return counter != null ? counter.get() : 0L;
+    }
+
+    /**
+     * Returns a read-only view of the sparse edges for a given edge type, as a list of
+     * {@code [sourceIdx, targetIdx, weight]} int-int-float triples — suitable for
+     * persistence serialization (replaces the old dense INDArray scan in
+     * {@link ai.kompile.knowledgegraph.matrix.store.VectorStoreMatrixGraphStore}).
+     *
+     * <p>Each entry is a {@code int[3]} where {@code [0]=srcIdx, [1]=tgtIdx},
+     * and the weight is a separate {@code float[]} at the same position — returned
+     * as a pair of parallel arrays wrapped in {@link SparseEdgeData}.</p>
+     *
+     * @param edgeType the edge type
+     * @return immutable sparse edge data for this type
+     */
+    public SparseEdgeData getSparseEdges(String edgeType) {
+        Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(edgeType);
+        if (typeMap == null) {
+            return new SparseEdgeData(Collections.emptyList());
+        }
+
+        List<int[]> entries = new ArrayList<>();
+        List<Float> weights = new ArrayList<>();
+        for (Map.Entry<Integer, Map<Integer, Float>> rowEntry : typeMap.entrySet()) {
+            int src = rowEntry.getKey();
+            for (Map.Entry<Integer, Float> colEntry : rowEntry.getValue().entrySet()) {
+                entries.add(new int[]{src, colEntry.getKey()});
+                weights.add(colEntry.getValue());
+            }
+        }
+
+        return new SparseEdgeData(entries, weights);
+    }
+
+    /**
+     * Immutable carrier for sparse edge data returned by {@link #getSparseEdges(String)}.
+     */
+    public static final class SparseEdgeData {
+        /** Parallel list of [srcIdx, tgtIdx] pairs. */
+        public final List<int[]> indices;
+        /** Parallel list of weights; same size as {@code indices}. */
+        public final List<Float> weights;
+
+        SparseEdgeData(List<int[]> indices) {
+            this.indices = Collections.unmodifiableList(indices);
+            this.weights = Collections.emptyList();
+        }
+
+        SparseEdgeData(List<int[]> indices, List<Float> weights) {
+            this.indices = Collections.unmodifiableList(indices);
+            this.weights = Collections.unmodifiableList(weights);
+        }
+
+        public int size() { return indices.size(); }
+    }
+
+    /**
+     * Returns a <strong>keyset-only</strong> view for backward compatibility with callers that
+     * only access {@code graph.getAdjacencyMatrices().keySet()} (e.g. {@code searchEdges} in
+     * {@code MatrixKnowledgeGraphService} and the persistence helper in
+     * {@code VectorStoreMatrixGraphStore}).
+     *
+     * <p><strong>WARNING:</strong> The map values are {@code null}. Callers that previously
+     * retrieved INDArray values from this map must be migrated to
+     * {@link #getCombinedAdjacencyMatrix()}, {@link #getEdgeCountByType(String)}, or
+     * {@link #getSparseEdges(String)} as appropriate.</p>
+     *
+     * @return an unmodifiable map whose keyset equals {@code getEdgeTypes()} and whose values are null
+     */
+    public Map<String, INDArray> getAdjacencyMatrices() {
+        // Build a null-value map whose keyset mirrors adjacencyData's keyset.
+        // Using a simple HashMap is acceptable here since this is a compatibility
+        // shim accessed infrequently (only by searchEdges and saveAdjacencyMatrices).
+        Map<String, INDArray> view = new HashMap<>();
+        for (String key : adjacencyData.keySet()) {
+            view.put(key, null);  // values intentionally null — keyset access only
+        }
+        return Collections.unmodifiableMap(view);
     }
 
     /**
@@ -332,11 +541,12 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         this.embeddingDimension = (int) embeddings.columns();
 
         // Initialize or resize embeddings matrix
-        if (nodeEmbeddings == null || nodeEmbeddings.rows() < currentCapacity) {
+        int needed = Math.max(currentCapacity, getNodeCount());
+        if (nodeEmbeddings == null || nodeEmbeddings.rows() < needed) {
             if (nodeEmbeddings != null && !nodeEmbeddings.wasClosed()) {
                 nodeEmbeddings.close();
             }
-            nodeEmbeddings = Nd4j.zeros(DataType.FLOAT, currentCapacity, embeddingDimension);
+            nodeEmbeddings = Nd4j.zeros(DataType.FLOAT, needed, embeddingDimension);
         }
 
         // Copy embeddings for each node
@@ -362,41 +572,13 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
     }
 
     /**
-     * Expands the capacity of the adjacency matrices.
+     * Expands the logical capacity field.
+     * With sparse storage this is a bookkeeping operation only — no INDArray reallocation occurs.
      */
     private synchronized void expandCapacity() {
         int newCapacity = (int) (currentCapacity * GROWTH_FACTOR);
-        log.info("Expanding graph capacity from {} to {}", currentCapacity, newCapacity);
-
-        // Resize each adjacency matrix
-        for (Map.Entry<String, INDArray> entry : adjacencyMatrices.entrySet()) {
-            INDArray oldMatrix = entry.getValue();
-            INDArray newMatrix = Nd4j.zeros(DataType.FLOAT, newCapacity, newCapacity);
-
-            // Copy old data using vectorized submatrix assignment (single operation vs n^2 putScalar calls)
-            newMatrix.put(
-                    new INDArrayIndex[]{NDArrayIndex.interval(0, currentCapacity), NDArrayIndex.interval(0, currentCapacity)},
-                    oldMatrix
-            );
-
-            entry.setValue(newMatrix);
-            if (!oldMatrix.wasClosed()) {
-                oldMatrix.close();
-            }
-        }
-
-        // Resize embeddings if present
-        if (nodeEmbeddings != null) {
-            INDArray oldEmbeddings = nodeEmbeddings;
-            nodeEmbeddings = Nd4j.zeros(DataType.FLOAT, newCapacity, embeddingDimension);
-            for (int i = 0; i < currentCapacity; i++) {
-                nodeEmbeddings.putRow(i, oldEmbeddings.getRow(i));
-            }
-            if (!oldEmbeddings.wasClosed()) {
-                oldEmbeddings.close();
-            }
-        }
-
+        log.debug("Expanding sparse graph capacity field from {} to {} (no INDArray allocation)",
+                currentCapacity, newCapacity);
         currentCapacity = newCapacity;
     }
 
@@ -408,31 +590,21 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
     }
 
     /**
-     * Gets the number of edges in the graph (across all types).
+     * Gets the total number of edges across all types.  O(numEdgeTypes) — reads per-type counters.
      */
     public long getEdgeCount() {
-        long count = 0;
-        int nodeCount = getNodeCount();
-        if (nodeCount == 0) {
-            return 0;
+        long total = 0;
+        for (AtomicInteger counter : edgeCountByType.values()) {
+            total += counter.get();
         }
-        for (INDArray adj : adjacencyMatrices.values()) {
-            // Get submatrix of actual nodes and count non-zero entries (vectorized)
-            INDArray subMatrix = adj.get(
-                    NDArrayIndex.interval(0, nodeCount),
-                    NDArrayIndex.interval(0, nodeCount)
-            );
-            // gt(0) creates boolean mask, castTo converts to countable, sumNumber sums all
-            count += subMatrix.gt(0).castTo(DataType.LONG).sumNumber().longValue();
-        }
-        return count;
+        return total;
     }
 
     /**
      * Gets all edge types in the graph.
      */
     public Set<String> getEdgeTypes() {
-        return new HashSet<>(adjacencyMatrices.keySet());
+        return new HashSet<>(adjacencyData.keySet());
     }
 
     /**
@@ -470,20 +642,42 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
         int idx = node.getMatrixIndex();
         indexToNodeId.remove(idx);
 
-        // Clear all edges for this node using vectorized operations
-        INDArray zeroRow = Nd4j.zeros(DataType.FLOAT, 1, currentCapacity);
-        INDArray zeroCol = Nd4j.zeros(DataType.FLOAT, currentCapacity, 1);
-        for (INDArray adj : adjacencyMatrices.values()) {
-            // Clear row (outgoing edges) - single operation vs currentCapacity putScalar calls
-            adj.putRow(idx, zeroRow);
-            // Clear column (incoming edges) - single operation vs currentCapacity putScalar calls
-            adj.put(new INDArrayIndex[]{NDArrayIndex.all(), NDArrayIndex.point(idx)}, zeroCol);
-        }
-        zeroRow.close();
-        zeroCol.close();
+        // Remove all outgoing and incoming edges for this node from all edge-type maps
+        for (String type : adjacencyData.keySet()) {
+            // Remove outgoing edges (row removal)
+            Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(type);
+            if (typeMap != null) {
+                Map<Integer, Float> outgoing = typeMap.remove(idx);
+                if (outgoing != null) {
+                    AtomicInteger counter = edgeCountByType.get(type);
+                    if (counter != null) counter.addAndGet(-outgoing.size());
+                }
+            }
 
-        // Clear embedding if present using vectorized operation
-        if (nodeEmbeddings != null) {
+            // Remove incoming edges (reverse lookup then remove from forward map)
+            Map<Integer, Set<Integer>> rev = reverseIndex.get(type);
+            if (rev != null) {
+                Set<Integer> incomingSrcs = rev.remove(idx);
+                if (incomingSrcs != null) {
+                    for (int srcIdx : incomingSrcs) {
+                        Map<Integer, Map<Integer, Float>> tm = adjacencyData.get(type);
+                        if (tm != null) {
+                            Map<Integer, Float> tgts = tm.get(srcIdx);
+                            if (tgts != null && tgts.remove(idx) != null) {
+                                AtomicInteger counter = edgeCountByType.get(type);
+                                if (counter != null) counter.decrementAndGet();
+                            }
+                        }
+                    }
+                }
+                // Also clean up any reverse-index entries that pointed to this node as a source
+                rev.values().forEach(srcs -> srcs.remove(idx));
+            }
+        }
+
+        // Clear embedding row if present (write zeros via putRow)
+        if (nodeEmbeddings != null && embeddingDimension > 0
+                && idx < nodeEmbeddings.rows()) {
             INDArray zeroEmbed = Nd4j.zeros(DataType.FLOAT, 1, embeddingDimension);
             nodeEmbeddings.putRow(idx, zeroEmbed);
             zeroEmbed.close();
@@ -500,7 +694,8 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
     }
 
     /**
-     * Gets the degree (number of connections) for a node.
+     * Gets the degree (number of connections) for a node. All operations are O(degree) with
+     * zero INDArray / GPU involvement.
      */
     public int getNodeDegree(String nodeId, String edgeType, boolean outgoing) {
         MatrixGraphNode node = nodeById.get(nodeId);
@@ -510,21 +705,23 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
 
         int idx = node.getMatrixIndex();
         int degree = 0;
-        int nodeCount = getNodeCount();
 
-        Collection<INDArray> matrices;
-        if (edgeType != null) {
-            INDArray adj = adjacencyMatrices.get(edgeType);
-            matrices = adj != null ? Collections.singleton(adj) : Collections.emptyList();
-        } else {
-            matrices = adjacencyMatrices.values();
-        }
+        Collection<String> types = edgeType != null
+                ? Collections.singleton(edgeType)
+                : adjacencyData.keySet();
 
-        for (INDArray adj : matrices) {
-            for (int i = 0; i < nodeCount; i++) {
-                double weight = outgoing ? adj.getDouble(idx, i) : adj.getDouble(i, idx);
-                if (weight > 0) {
-                    degree++;
+        for (String type : types) {
+            if (outgoing) {
+                Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(type);
+                if (typeMap != null) {
+                    Map<Integer, Float> targets = typeMap.get(idx);
+                    if (targets != null) degree += targets.size();
+                }
+            } else {
+                Map<Integer, Set<Integer>> rev = reverseIndex.get(type);
+                if (rev != null) {
+                    Set<Integer> srcs = rev.get(idx);
+                    if (srcs != null) degree += srcs.size();
                 }
             }
         }
@@ -558,15 +755,12 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
 
     @Override
     public void close() {
-        // Close all adjacency matrices
-        for (INDArray adj : adjacencyMatrices.values()) {
-            if (!adj.wasClosed()) {
-                adj.close();
-            }
-        }
-        adjacencyMatrices.clear();
+        // Sparse maps hold no native resources; clear them.
+        adjacencyData.clear();
+        reverseIndex.clear();
+        edgeCountByType.clear();
 
-        // Close embeddings
+        // Close embeddings (the only remaining INDArray)
         if (nodeEmbeddings != null && !nodeEmbeddings.wasClosed()) {
             nodeEmbeddings.close();
             nodeEmbeddings = null;

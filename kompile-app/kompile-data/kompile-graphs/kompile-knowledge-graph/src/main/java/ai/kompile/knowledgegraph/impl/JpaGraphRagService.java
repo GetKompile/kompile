@@ -33,7 +33,7 @@ import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import ai.kompile.knowledgegraph.resolution.SessionEntityState;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -59,7 +59,7 @@ import java.util.stream.Collectors;
  * search relevance and graph proximity (1/hop_distance).
  */
 @Service
-@ConditionalOnProperty(name = "kompile.knowledgegraph.type", havingValue = "jpa", matchIfMissing = false)
+@ConditionalOnMissingBean(GraphRagService.class)
 @Slf4j
 public class JpaGraphRagService implements GraphRagService {
 

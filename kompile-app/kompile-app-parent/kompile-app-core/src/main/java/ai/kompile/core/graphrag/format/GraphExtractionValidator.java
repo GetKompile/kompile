@@ -22,6 +22,7 @@ import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -38,7 +39,7 @@ import java.util.Set;
  */
 public final class GraphExtractionValidator {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     private GraphExtractionValidator() {
@@ -267,6 +268,62 @@ public final class GraphExtractionValidator {
                 - Entity types should be UPPERCASE (PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT, PRODUCT, etc.)
                 - Relation types should be UPPERCASE with underscores (WORKS_AT, LOCATED_IN, FOUNDED_BY, etc.)
                 - Output ONLY valid JSON, no markdown fences, no explanations
+                """;
+    }
+
+    /**
+     * Build extraction prompt instructions for a multi-chunk prompt where each chunk is
+     * delimited by a stable {@code ===== CHUNK k | source=&lt;id&gt; =====} marker.
+     *
+     * <p>The model is told to emit a {@code "chunkId"} property on every extracted entity
+     * and relation that matches the source identifier from the nearest preceding chunk
+     * header. This lets the parser attribute results back to the originating document even
+     * when the model merges entities across chunk boundaries.</p>
+     */
+    public static String getMultiChunkExtractionPromptInstructions() {
+        return """
+                You are extracting entities and relationships from MULTIPLE text chunks provided below.
+                Each chunk is preceded by a header line of the form:
+                  ===== CHUNK <k> | source=<chunkId> =====
+
+                You MUST respond with a single JSON object matching this exact schema:
+                {
+                  "entities": [
+                    {
+                      "id": "e1",
+                      "name": "Acme Corp",
+                      "type": "ORGANIZATION",
+                      "aliases": ["Acme", "ACME Corporation"],
+                      "description": "A technology company",
+                      "confidence": 0.95,
+                      "chunkId": "<chunkId from the chunk header where this entity was found>",
+                      "properties": {"founded": "2010", "industry": "software"}
+                    }
+                  ],
+                  "relations": [
+                    {
+                      "source": "e1",
+                      "target": "e2",
+                      "type": "EMPLOYS",
+                      "description": "CEO employment relationship",
+                      "confidence": 0.95,
+                      "chunkId": "<chunkId from the chunk header where this relation was found>",
+                      "properties": {"since": "2015", "role": "CEO"}
+                    }
+                  ]
+                }
+
+                Rules:
+                - Each entity MUST have: id (unique within this extraction), name, type, description
+                - Each entity MUST have: chunkId set to the source value from the chunk header
+                - Each entity SHOULD have: aliases, confidence (0.0-1.0), properties
+                - Each relation MUST have: source (entity id), target (entity id), type, description
+                - Each relation MUST have: chunkId set to the source value from the chunk header
+                - Each relation SHOULD have: confidence (0.0-1.0), properties
+                - Entity types should be UPPERCASE (PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT, PRODUCT, etc.)
+                - Relation types should be UPPERCASE with underscores (WORKS_AT, LOCATED_IN, FOUNDED_BY, etc.)
+                - Output ONLY valid JSON, no markdown fences, no explanations
+                - If an entity or relation spans multiple chunks, use the chunkId of the chunk where it was first mentioned
                 """;
     }
 }

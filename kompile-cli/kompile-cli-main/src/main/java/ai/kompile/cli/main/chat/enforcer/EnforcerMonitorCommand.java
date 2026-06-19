@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
@@ -55,7 +57,7 @@ public class EnforcerMonitorCommand implements Callable<Integer> {
             defaultValue = "http://localhost:8080")
     static String baseUrl;
 
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Override
     public Integer call() {
@@ -138,7 +140,7 @@ public class EnforcerMonitorCommand implements Callable<Integer> {
                                 e.path("severity").asText(""),
                                 e.path("type").asText(""),
                                 e.path("score").asDouble(1.0) * 100,
-                                truncate(e.path("reason").asText(""), 60));
+                                StringUtils.truncate(e.path("reason").asText(""), 60));
                         shown++;
                     }
                 }
@@ -219,7 +221,7 @@ public class EnforcerMonitorCommand implements Callable<Integer> {
                         double score = data.path("score").asDouble(1.0);
                         String reason = data.path("reason").asText("");
                         System.out.printf("\033[33m[%s] %s %s  score=%.0f%%  %s\033[0m%n",
-                                ts, severity, type, score * 100, truncate(reason, 60));
+                                ts, severity, type, score * 100, StringUtils.truncate(reason, 60));
                     }
                     case "chunk" -> {
                         String text = data.path("text").asText("");
@@ -243,7 +245,7 @@ public class EnforcerMonitorCommand implements Callable<Integer> {
                             System.out.printf("\033[2m[%s] %s\033[0m%n", ts, name);
                 }
             } catch (Exception e) {
-                System.out.println("[" + name + "] " + truncate(dataStr, 80));
+                System.out.println("[" + name + "] " + StringUtils.truncate(dataStr, 80));
             }
         }
     }
@@ -349,7 +351,7 @@ public class EnforcerMonitorCommand implements Callable<Integer> {
                             v.path("type").asText(""),
                             v.path("severity").asText(""),
                             v.path("score").asDouble(1.0) * 100,
-                            truncate(v.path("reason").asText(""), 40));
+                            StringUtils.truncate(v.path("reason").asText(""), 40));
                 }
                 return 0;
             } catch (Exception e) {
@@ -429,10 +431,4 @@ public class EnforcerMonitorCommand implements Callable<Integer> {
         }
     }
 
-    private static String truncate(String text, int max) {
-        if (text == null || text.length() <= max) {
-            return text != null ? text : "";
-        }
-        return text.substring(0, max - 3) + "...";
-    }
 }

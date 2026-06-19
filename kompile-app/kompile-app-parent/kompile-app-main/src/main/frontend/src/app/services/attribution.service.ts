@@ -58,8 +58,10 @@ export class AttributionService extends BaseService {
     if (options?.useLlm !== undefined) params = params.set('useLlm', options.useLlm.toString());
     if (options?.includeCounterfactuals !== undefined) params = params.set('includeCounterfactuals', options.includeCounterfactuals.toString());
 
+    // nodeId is sent as a query param, not a path segment: document node IDs embed
+    // filesystem paths ('/') that Tomcat rejects as %2F in the URL path.
     return this.http.get<AttributionResult>(
-      `${this.backendUrl}${this.apiPath}/explain/${encodeURIComponent(nodeId)}`, { params }
+      `${this.backendUrl}${this.apiPath}/explain`, { params: params.set('nodeId', nodeId) }
     );
   }
 
@@ -89,8 +91,9 @@ export class AttributionService extends BaseService {
     if (options?.maxPredictions) params = params.set('maxPredictions', options.maxPredictions.toString());
     if (options?.useLlm !== undefined) params = params.set('useLlm', options.useLlm.toString());
 
+    // nodeId is sent as a query param, not a path segment (see explainQuick).
     return this.http.get<PredictionResult>(
-      `${this.backendUrl}${this.apiPath}/predict/${encodeURIComponent(nodeId)}`, { params }
+      `${this.backendUrl}${this.apiPath}/predict`, { params: params.set('nodeId', nodeId) }
     );
   }
 }

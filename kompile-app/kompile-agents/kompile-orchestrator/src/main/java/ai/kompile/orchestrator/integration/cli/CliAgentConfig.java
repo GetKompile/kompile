@@ -42,6 +42,7 @@ public class CliAgentConfig {
     private String verboseFlag;             // e.g., "--verbose" for Claude
     private String promptFlag;              // e.g., "-p" for Claude
     private List<String> defaultArgs;        // Default CLI arguments (order-preserving)
+    private String modelFlag;                // e.g., "--model" — flag to pass the model name
     private Map<String, String> environment; // Environment variables
     private boolean available;              // Whether CLI is installed
     private boolean defaultAgent;           // Default agent selection
@@ -85,10 +86,10 @@ public class CliAgentConfig {
             .defaultAgent(false)
             .build();
 
-    public static final CliAgentConfig GEMINI_CLI = CliAgentConfig.builder()
-            .name("gemini-cli")
-            .displayName("Google Gemini CLI")
-            .command("gemini")
+    public static final CliAgentConfig AGY_CLI = CliAgentConfig.builder()
+            .name("agy-cli")
+            .displayName("Antigravity CLI")
+            .command("agy")
             .skipPermissionsFlag("--yolo")
             .promptFlag("-p")
             .defaultArgs(List.of())
@@ -101,7 +102,7 @@ public class CliAgentConfig {
      * Get all pre-configured agents.
      */
     public static List<CliAgentConfig> getAllAgents() {
-        return List.of(CLAUDE_CLI, CODEX_CLI, GEMINI_CLI);
+        return List.of(CLAUDE_CLI, CODEX_CLI, AGY_CLI);
     }
 
     /**

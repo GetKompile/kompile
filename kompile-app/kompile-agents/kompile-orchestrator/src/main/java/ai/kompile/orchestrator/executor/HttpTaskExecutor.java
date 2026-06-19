@@ -19,6 +19,7 @@ import ai.kompile.orchestrator.api.TaskExecutor;
 import ai.kompile.orchestrator.model.event.TaskEvent;
 import ai.kompile.orchestrator.model.task.*;
 import ai.kompile.orchestrator.repository.TaskInstanceRepository;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -53,7 +54,7 @@ public class HttpTaskExecutor implements TaskExecutor {
             .connectTimeout(Duration.ofSeconds(30))
             .build();
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final Map<Long, AtomicBoolean> cancelFlags = new ConcurrentHashMap<>();
     private final Map<Long, StringBuilder> outputBuffers = new ConcurrentHashMap<>();
 

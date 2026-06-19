@@ -16,6 +16,7 @@
 
 package ai.kompile.app.scaffold;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -39,7 +40,7 @@ public class TemplateEngine {
 
     private static final Logger log = LoggerFactory.getLogger(TemplateEngine.class);
     private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\{\\{(\\w+)}}");
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     /**
      * Processes all templates from a resource directory using the given context.

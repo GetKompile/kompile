@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.enforcer;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,7 +45,7 @@ public class EnforcerMetricsService {
     private static final String METRICS_FILENAME = "enforcer-metrics.json";
     private static final int MAX_HISTORY_ENTRIES = 500;
 
-    private static final ObjectMapper MAPPER = new ObjectMapper()
+    private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     // In-memory cache: codingProjectId -> ProjectMetrics

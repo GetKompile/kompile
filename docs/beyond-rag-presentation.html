@@ -1,0 +1,1944 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beyond RAG: Grounding AI in Structured Data with MCP Tools</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+<style>
+  :root {
+    --r-background-color: #0d1117;
+    --r-main-color: #c9d1d9;
+    --r-heading-color: #58a6ff;
+    --r-link-color: #58a6ff;
+    --r-selection-background-color: #388bfd33;
+  }
+  .reveal { font-size: 32px; }
+  .reveal h1 { font-size: 2.0em; color: #58a6ff; text-shadow: none; }
+  .reveal h2 { font-size: 1.5em; color: #58a6ff; text-shadow: none; }
+  .reveal h3 { font-size: 1.2em; color: #79c0ff; }
+  .reveal pre { font-size: 0.48em; width: 95%; box-shadow: none; }
+  .reveal pre code { max-height: 520px; padding: 16px; border-radius: 8px; }
+  .reveal code { color: #ff7b72; }
+  .reveal .accent { color: #f0883e; font-weight: bold; }
+  .reveal .green { color: #3fb950; }
+  .reveal .red { color: #f85149; }
+  .reveal .blue { color: #58a6ff; }
+  .reveal .purple { color: #bc8cff; }
+  .reveal .yellow { color: #d29922; }
+  .reveal .dim { color: #8b949e; }
+  .reveal .pill {
+    display: inline-block; padding: 2px 12px; border-radius: 16px;
+    font-size: 0.7em; margin: 2px 4px; font-weight: 600;
+  }
+  .reveal .pill-green { background: #23853220; border: 1px solid #238532; color: #3fb950; }
+  .reveal .pill-red { background: #f8514920; border: 1px solid #f85149; color: #f85149; }
+  .reveal .pill-blue { background: #58a6ff20; border: 1px solid #58a6ff; color: #58a6ff; }
+  .reveal .pill-purple { background: #bc8cff20; border: 1px solid #bc8cff; color: #bc8cff; }
+  .reveal .pill-yellow { background: #d2992220; border: 1px solid #d29922; color: #d29922; }
+  .reveal table { font-size: 0.65em; margin: 0 auto; border-collapse: collapse; }
+  .reveal table th { background: #161b22; color: #58a6ff; padding: 8px 14px; border-bottom: 2px solid #30363d; }
+  .reveal table td { padding: 6px 14px; border-bottom: 1px solid #21262d; }
+  .reveal table tr:nth-child(even) { background: #161b2280; }
+  .reveal .fragment.highlight-current-blue.current-fragment { color: #58a6ff; }
+  .reveal blockquote { background: #161b22; border-left: 4px solid #f0883e; padding: 12px 20px; font-style: italic; font-size: 0.9em; }
+  .reveal .slide-number { font-size: 14px; color: #8b949e; }
+  .reveal ul { list-style: none; }
+  .reveal ul li::before { content: "->"; color: #58a6ff; font-weight: bold; margin-right: 8px; font-family: monospace; }
+  .reveal ul ul li::before { content: "-"; color: #8b949e; }
+  .reveal .two-col { display: flex; gap: 30px; align-items: flex-start; }
+  .reveal .two-col > div { flex: 1; }
+  .reveal .ascii-box {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px 16px; font-family: monospace; font-size: 0.55em;
+    line-height: 1.3; white-space: pre; text-align: left; color: #c9d1d9;
+  }
+  .reveal .stat-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 16px; text-align: center; margin: 8px;
+  }
+  .reveal .stat-card .number { font-size: 2.2em; font-weight: bold; color: #f0883e; }
+  .reveal .stat-card .label { font-size: 0.7em; color: #8b949e; margin-top: 4px; }
+  .reveal .flow-arrow { color: #f0883e; font-size: 1.4em; margin: 0 8px; }
+  .reveal .tool-grid {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px;
+    font-size: 0.45em; text-align: left;
+  }
+  .reveal .tool-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .reveal .tool-card .tool-name { color: #ff7b72; font-family: monospace; font-weight: 600; }
+  .reveal .tool-card .tool-desc { color: #8b949e; font-size: 0.9em; margin-top: 2px; }
+  .title-subtitle { color: #8b949e !important; font-size: 0.7em !important; margin-top: 10px !important; }
+  .section-divider { background: linear-gradient(135deg, #0d1117 0%, #161b22 100%) !important; }
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- ============================================================ -->
+<!-- TITLE SLIDE -->
+<!-- ============================================================ -->
+<section>
+  <h1>Beyond RAG</h1>
+  <h3>Grounding AI in Structured Data<br>with MCP Tools</h3>
+  <p class="title-subtitle">
+    Kompile Platform &amp; Elthoria Case Study<br>
+    <span class="dim">Adam Gibson | 2026</span>
+  </p>
+  <p style="font-size: 0.45em; color: #8b949e; margin-top: 20px;">
+    I. What is RAG? &rarr;
+    II. Meet Elthoria &rarr;
+    III. Where RAG Breaks &rarr;
+    IV. 196 MCP Tools &rarr;
+    V. 4-Layer Grounding &rarr;
+    VI. Tool-Grounded AI &rarr;
+    VII. Kompile Toolkit &rarr;
+    VIII. Guardrails &rarr;
+    IX. Hybrid Pattern
+  </p>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 1: WHAT IS RAG? -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part I</h2>
+  <h3>What is RAG?<br><span class="dim">Retrieval-Augmented Generation</span></h3>
+</section>
+
+<section>
+  <h2>RAG in 60 Seconds</h2>
+  <p class="dim">Give an LLM context it wasn't trained on</p>
+  <div class="ascii-box" style="font-size: 0.5em;">
+<span class="accent">The Problem:</span>  LLMs only know their training data. They can't answer questions
+             about YOUR documents, YOUR code, YOUR company.
+
+<span class="green">The RAG Solution:</span>
+
+  <span class="yellow">1. Index</span>     Take your documents, split them into chunks, convert each
+               chunk into a vector (embedding), store in a vector database.
+
+  <span class="yellow">2. Retrieve</span>   When a user asks a question, convert the question into a vector,
+               find the most similar chunks via cosine similarity (top-K).
+
+  <span class="yellow">3. Generate</span>   Paste those chunks into the LLM's prompt as context.
+               The LLM answers using the retrieved text.
+
+<span class="blue">Documents</span> &rarr; <span class="blue">Chunks</span> &rarr; <span class="blue">Embeddings</span> &rarr; <span class="purple">Vector Index</span>
+                                                    &uarr;
+<span class="green">Question</span> &rarr; <span class="green">Embed</span> &rarr; <span class="green">Search (top-K)</span> &rarr; <span class="yellow">LLM + Context</span> &rarr; <span class="accent">Answer</span></div>
+  <aside class="notes">For anyone unfamiliar: RAG stands for Retrieval-Augmented Generation. It's the standard pattern for giving LLMs access to private data. You take your documents, split them into chunks, embed each chunk as a vector, and store them in a vector database. When the user asks a question, you embed the question, find the most similar chunks via cosine similarity, paste those chunks into the LLM's prompt, and the LLM generates an answer based on the retrieved context. It works well for documentation Q&A, knowledge bases, and reference lookups. Every major AI framework supports it. But it has fundamental limits that show up quickly in real applications.</aside>
+</section>
+
+<section>
+  <h2>What RAG Does Well</h2>
+  <div class="two-col">
+    <div>
+      <p><span class="green">Unstructured knowledge retrieval</span></p>
+      <ul>
+        <li>Find relevant passages in large corpora</li>
+        <li>Answer questions from documentation</li>
+        <li>Surface related content by meaning</li>
+        <li>Handle natural language queries</li>
+      </ul>
+    </div>
+    <div>
+      <div class="ascii-box">Documents --> Chunks --> Embeddings
+                     |
+              Vector Index
+                     |
+Query --> Embed --> Search --> Top-K
+                     |
+              LLM + Context --> Answer</div>
+    </div>
+  </div>
+  <p class="fragment dim" style="font-size: 0.7em; margin-top: 0.3em;">
+    "What does our refund policy say?" &rarr; perfect RAG use case<br>
+    "What's the current inventory count?" &rarr; not so much
+  </p>
+  <aside class="notes">RAG works great for documentation QA, knowledge bases, and reference lookups. The key insight is that it's a retrieval strategy -- it finds relevant text by semantic similarity. "What does our refund policy say?" is a great RAG question because the answer lives in a static document. But many applications need more than text retrieval -- they need live state, computation, and write-back.</aside>
+</section>
+
+<section>
+  <h2>The Core Problem</h2>
+  <blockquote>
+    RAG retrieves <em>information about</em> things.<br>
+    Applications need to <em>interact with</em> things.
+  </blockquote>
+  <br>
+  <div class="fragment">
+    <p>RAG is <span class="yellow">read-only</span> and <span class="yellow">probabilistic</span>.</p>
+    <p>Real applications need <span class="green">read-write</span> and <span class="green">deterministic</span> access.</p>
+  </div>
+  <aside class="notes">This is the thesis of the entire talk. RAG gives you information about things -- it retrieves relevant passages. But real applications need to interact with things -- query live state, compute values, modify records, and verify results. The shift is from retrieval to agency. To make this concrete, we need a domain where the difference between "approximately right" and "exactly right" actually matters. Where getting the wrong number isn't just annoying -- it breaks the experience.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 2: MEET ELTHORIA -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part II</h2>
+  <h3>Meet Elthoria<br><span class="dim">A domain where "close enough" doesn't work</span></h3>
+</section>
+
+<section>
+  <h2>Elthoria: A Live System</h2>
+  <img src="elthoria-screenshot.png" alt="Elthoria VTT - Game selection screen showing Shadows of Abaddon campaign"
+       style="max-width: 85%; max-height: 500px; border-radius: 8px; border: 1px solid #30363d; box-shadow: 0 4px 24px rgba(0,0,0,0.5);">
+  <p style="font-size: 0.65em; margin-top: 12px;">
+    <span class="accent">Shadows of Abaddon</span> <span class="flow-arrow">&bull;</span>
+    <span class="dim">Pathfinder 1e</span> <span class="flow-arrow">&bull;</span>
+    <span class="dim">10 characters</span> <span class="flow-arrow">&bull;</span>
+    <span class="dim">Last played today</span>
+  </p>
+  <aside class="notes">This is Elthoria's game selection screen -- a real, working Pathfinder 1e virtual tabletop, not a demo. The "Shadows of Abaddon" campaign has 10 characters and 1 act. Each game runs as its own H2 database file on a separate port. Behind this screen: a hex campaign map, tactical grids with ANTLR DSL, a full Pathfinder rules engine with bonus stacking, and an AI Game Master that connects via 196 MCP tools to read and write structured game state. The d20 logo and clean game-card UI hint at what's underneath -- but the real story is the architecture that makes the AI GM work without hallucinating a single dice roll.</aside>
+</section>
+
+<section>
+  <h2>What is Elthoria?</h2>
+  <p style="font-size: 0.75em;">
+    A <span class="accent">Virtual Tabletop</span> (VTT) &mdash; software that replaces the physical table, dice, maps, and character sheets
+    of a pen-and-paper RPG &mdash; built for <strong>solo and GM-less play</strong> using the Pathfinder 1e system.
+  </p>
+  <div class="two-col" style="font-size: 0.65em; margin-top: 8px;">
+    <div>
+      <h3 style="font-size: 0.9em;">GM-less Play + Oracles</h3>
+      <ul>
+        <li>The player drives the story &mdash; no human GM required</li>
+        <li><span class="accent">Mythic Game Master Emulator</span>: 40+ oracle tables for narrative direction (fate checks, random events, scene alterations)</li>
+        <li>AI acts as an <strong>assistant</strong> &mdash; updates game state, narrates outcomes, tracks rules</li>
+        <li>Oracles provide the <em>what happens</em>; the AI helps with the <em>bookkeeping</em></li>
+      </ul>
+      <h3 style="font-size: 0.9em; margin-top: 10px;">The Game Engine</h3>
+      <ul>
+        <li>Full Pathfinder 1e rules engine with bonus stacking</li>
+        <li>Tactical grids + hex overworld maps (ANTLR DSLs)</li>
+        <li>3,000+ monsters, spell DB, equipment DB</li>
+        <li>Session journals, undo/replay</li>
+      </ul>
+    </div>
+    <div>
+      <h3 style="font-size: 0.9em;">AI as Game Assistant</h3>
+      <ul>
+        <li>Reads &amp; writes game state via <span class="accent">196 MCP tools</span></li>
+        <li>Rolls real dice, applies real bonuses &mdash; never hallucinates numbers</li>
+        <li>Builds battle maps mid-conversation</li>
+        <li>Narrates oracle results in character</li>
+        <li>Tracks initiative, HP, buffs, spell slots so the player doesn't have to</li>
+        <li>Rule enforcement catches mistakes &mdash; even the AI's</li>
+      </ul>
+      <p style="margin-top: 10px;">
+        <span class="dim" style="font-size: 0.9em;">4 CLI agents (Claude, Codex, Gemini, OpenCode)<br>with rate-limit-aware fallback</span>
+      </p>
+    </div>
+  </div>
+  <aside class="notes">A Virtual Tabletop is software that replaces the physical table for tabletop RPGs -- it handles maps, dice, character sheets, and rules. Elthoria is a VTT for solo and GM-less play. In traditional RPGs, a Game Master runs the world, controls NPCs, and adjudicates rules. In GM-less play, the player drives the story themselves, using oracle systems like the Mythic Game Master Emulator to answer narrative questions: "Does the guard notice me?" becomes a fate check against the scene's chaos factor. "What's in the next room?" becomes a random event roll. The AI's role is as an assistant, not the decision-maker. It helps update game state -- rolling dice with real modifiers, applying damage, tracking buffs and spell slots, managing initiative order -- so the player can focus on the story. When the oracle says "an unexpected NPC arrives", the AI can narrate that in character, pull from the monster database, generate a stat block, and place the NPC on the battle map. But the oracle drove the decision, not the AI. This separation matters architecturally: the AI needs structured read/write access to game state (196 MCP tools), but the narrative direction comes from randomized oracle tables -- deterministic game mechanics meeting emergent storytelling. Four CLI agents are available with automatic rate-limit fallback so play isn't interrupted if one provider hits its API limit.</aside>
+</section>
+
+<section>
+  <h2>Why a Tabletop RPG?</h2>
+  <p class="dim">It's the perfect stress test for AI + structured data</p>
+  <div class="two-col" style="font-size: 0.7em;">
+    <div>
+      <h3 style="font-size: 0.9em;" class="accent">The Domain Demands</h3>
+      <ul>
+        <li><strong>Exact numbers</strong> &mdash; HP, AC, damage rolls are not approximate</li>
+        <li><strong>Complex rules</strong> &mdash; bonus stacking, spell interactions, feat prerequisites</li>
+        <li><strong>Live mutable state</strong> &mdash; HP changes every round, buffs expire, characters move</li>
+        <li><strong>Spatial reasoning</strong> &mdash; "is the goblin within 30ft?" needs real coordinates</li>
+        <li><strong>Write-back</strong> &mdash; the AI must modify the game world, not just describe it</li>
+      </ul>
+    </div>
+    <div>
+      <h3 style="font-size: 0.9em;" class="green">Why It Generalizes</h3>
+      <ul>
+        <li>HP tracking &rarr; inventory systems, account balances</li>
+        <li>Bonus stacking &rarr; tax rules, pricing engines</li>
+        <li>Battle maps &rarr; floor plans, network topology</li>
+        <li>Spell slots &rarr; resource quotas, rate limits</li>
+        <li>Initiative order &rarr; workflow state machines</li>
+      </ul>
+    </div>
+  </div>
+  <p class="fragment" style="font-size: 0.75em; margin-top: 0.3em;">
+    <span class="accent">If RAG can't handle a tabletop RPG, it can't handle your enterprise data either.</span>
+  </p>
+  <aside class="notes">Tabletop RPGs are the perfect stress test because they demand everything RAG can't do -- simultaneously. You need exact numbers (HP is 42, not "around 40"), complex rule interactions (does this bonus stack with that one? Pathfinder 1e has 13 bonus types with specific stacking rules), live mutable state (HP changes every round, buffs expire on turn count, characters move on a grid), spatial reasoning (is the target within 30 feet? is there line of sight?), and write-back (the AI GM needs to actually deal damage, not just describe it). But here's the key: every one of these maps directly to enterprise problems. HP tracking is inventory management. Bonus stacking is tax code or pricing engine logic. Battle maps are floor plans or network topologies. Spell slots are resource quotas. Initiative order is a workflow state machine. If your AI architecture can handle Pathfinder 1e, it can handle your ERP system.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 3: WHERE RAG BREAKS -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part III</h2>
+  <h3>Where RAG Breaks<br><span class="dim">Now you know the domain &mdash; watch RAG fail</span></h3>
+</section>
+
+<section>
+  <h2>Where RAG Falls Apart</h2>
+  <div class="fragment" data-fragment-index="1">
+    <p><span class="red">When you need exact answers, not similar ones</span></p>
+  </div>
+  <table>
+    <tr>
+      <th>Scenario</th>
+      <th>RAG gives you</th>
+      <th>You actually need</th>
+    </tr>
+    <tr class="fragment" data-fragment-index="2">
+      <td>"What is Aldric's current HP?"</td>
+      <td><span class="red">A passage mentioning HP</span></td>
+      <td><span class="green">42 (from live DB)</span></td>
+    </tr>
+    <tr class="fragment" data-fragment-index="3">
+      <td>"Roll a d20 + attack bonus"</td>
+      <td><span class="red">Text about attack rules</span></td>
+      <td><span class="green">17 (actual dice roll + modifiers)</span></td>
+    </tr>
+    <tr class="fragment" data-fragment-index="4">
+      <td>"Show the current battle map"</td>
+      <td><span class="red">A description of a map</span></td>
+      <td><span class="green">Live ASCII grid with positions</span></td>
+    </tr>
+    <tr class="fragment" data-fragment-index="5">
+      <td>"Apply Bless to the party"</td>
+      <td><span class="red">The Bless spell description</span></td>
+      <td><span class="green">State mutation + bonus tracking</span></td>
+    </tr>
+  </table>
+  <aside class="notes">Now that you know the domain, watch RAG fail at every row. Aldric's HP changes every round of combat -- vector embeddings are stale the moment damage is dealt. Dice rolls require actual randomness with character-specific bonuses computed from the Pathfinder rules engine -- you can't retrieve a dice roll from a document. The battle map is a live data structure with entity positions on a coordinate grid that changes mid-combat. Applying the Bless spell is a state mutation: it adds a +1 morale bonus to attack rolls and saves for the entire party, tracked via the UnifiedBonus engine with type-specific stacking rules. RAG would give you the Bless spell description from the rulebook. The game needs the bonus actually applied to every affected character's computed stats.</aside>
+</section>
+
+<section>
+  <h2>Five Limits of Pure RAG</h2>
+  <ol style="list-style: none; counter-reset: item; font-size: 0.9em;">
+    <li class="fragment"><span class="pill pill-red">1</span> <strong>No live state</strong> &mdash; embeddings are a snapshot, not current truth <span class="dim">(get_character_summary)</span></li>
+    <li class="fragment"><span class="pill pill-red">2</span> <strong>No relationships</strong> &mdash; flat vector space loses graph structure <span class="dim">(graph_find_connected)</span></li>
+    <li class="fragment"><span class="pill pill-red">3</span> <strong>No write-back</strong> &mdash; can't modify the world, only read about it <span class="dim">(update_hit_points)</span></li>
+    <li class="fragment"><span class="pill pill-red">4</span> <strong>No computation</strong> &mdash; can't roll dice, calculate bonuses, run formulas <span class="dim">(roll_attack, UnifiedBonus)</span></li>
+    <li class="fragment"><span class="pill pill-red">5</span> <strong>No guarantees</strong> &mdash; "most similar" != "correct answer" <span class="dim">(HallucinationEvaluator)</span></li>
+  </ol>
+  <aside class="notes">These five limits aren't theoretical -- they show up immediately when you try to build anything beyond a documentation chatbot. The Elthoria case study makes these visceral: you can't approximate HP, you can't hallucinate dice rolls, you can't describe a map that doesn't exist, and you definitely can't let the AI modify game state by generating text about it. Each parenthetical on the right is an actual Elthoria MCP tool that solves that specific limit -- we'll see these in the next section.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 4: THE 196 MCP TOOLS -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part IV</h2>
+  <h3>196 MCP Tools<br><span class="dim">How Elthoria replaces RAG with structured access</span></h3>
+</section>
+
+<section>
+  <h2>The AI GM's MCP Tools</h2>
+  <div class="tool-grid">
+    <div class="tool-card">
+      <div class="tool-name">Character (12)</div>
+      <div class="tool-desc">get/create/edit characters, HP, feats, ability scores</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Combat (15)</div>
+      <div class="tool-desc">initiative, turn order, combatant tracking, buffs</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Combat Actions (18)</div>
+      <div class="tool-desc">attack rolls, spell slots, ki/rage/bardic pools</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Dice (6)</div>
+      <div class="tool-desc">roll_dice, roll_attack, roll_skill, Mythic GME</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Equipment (23)</div>
+      <div class="tool-desc">item DB, equipped gear, inventory, gold</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Spells (11)</div>
+      <div class="tool-desc">spell DB, prepared spells, slot tracking</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">NPCs (7)</div>
+      <div class="tool-desc">create, parse stat blocks, CR scaling</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Grid &amp; Maps (17)</div>
+      <div class="tool-desc">procedural gen, ASCII render, entity placement</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Hex Overworld (14)</div>
+      <div class="tool-desc">terrain, factions, encounter gen, exploration</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Journal (9)</div>
+      <div class="tool-desc">CRUD journal entries, session notes, search</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Bonus Calc (9)</div>
+      <div class="tool-desc">AC, saves, skills, initiative, combat sheets</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Buffs (16)</div>
+      <div class="tool-desc">templates, character buffs, UnifiedBonus effects</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Search (12)</div>
+      <div class="tool-desc">cross-type search, per-type, fuzzy matching</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Random Tables (15)</div>
+      <div class="tool-desc">40+ Mythic GME tables, custom generators</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Discovery (5)</div>
+      <div class="tool-desc">list_all_tools, search_tools, get_tool_details</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">RAG (12)</div>
+      <div class="tool-desc">Kompile rulebook search, ingest, OCR</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Game Mechanics (21)</div>
+      <div class="tool-desc">races, classes, feats, spells with bonuses</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Map Export (7)</div>
+      <div class="tool-desc">export maps, import DSL, format conversion</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Prompt Templates (7)</div>
+      <div class="tool-desc">composable system prompts, preview</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">Undo (6)</div>
+      <div class="tool-desc">action log, undo mutations, session replay</div>
+    </div>
+  </div>
+  <aside class="notes">196 tools across 19+ categories shown here. Note that RAG is just one category of 19+. The AI GM has tools for every aspect of the game -- characters, combat, combat actions with resource pool tracking (ki, rage, bardic performance), dice, maps, NPCs with CR scaling, spells, equipment, journal entries, hex exploration with encounter generation, bonus calculations with full combat sheet output, buff management via the UnifiedBonus engine, search, 40+ Mythic GME random tables, game mechanics (races, classes, feats, spells with bonus effects), map export, composable prompt templates, undo, and tool discovery. Each tool returns structured data from the database, not retrieved text. Equipment at 23 tools is the largest category -- covering weapons, armor, accessories, inventory management, and item bonus tracking.</aside>
+</section>
+
+<section>
+  <h2>Structured Data: The NPC Entity</h2>
+  <p class="dim">40+ fields of ground-truth game state per NPC</p>
+  <pre><code class="language-java">@Entity @Table(name = "npcs")
+public class NPC {
+    private String name, challengeRating, alignment, creatureType;
+    private int xp;
+    private String size, senses, aura;
+    private String specialAbilities, spellLikeAbilities;
+    private String spellsKnown, spellsPrepared;
+    private String beforeCombat, duringCombat, morale;
+    private String environment, organization, treasure;
+    private String worldStatus; // alive / dead / missing / hostile
+
+    @Embedded private Defense defense;    // AC, HP, DR, immunities
+    @Embedded private Offense offense;    // speed, reach, attacks[]
+    @Embedded private Statistics statistics; // STR/DEX/CON/INT/WIS/CHA
+
+    @ElementCollection private Set&lt;String&gt; languages;
+    @ElementCollection private Set&lt;String&gt; combatGear;
+    @ElementCollection private Set&lt;String&gt; otherGear;
+}</code></pre>
+  <aside class="notes">40+ typed fields per NPC. This isn't a text blob -- it's structured data with embedded objects for Defense, Offense, and Statistics. The worldStatus field tracks whether the NPC is alive, dead, missing, or hostile. The AI reads this via get_npc and writes it via create_npc or parse_npc_statblock. The NPC database includes 3,000+ monsters imported from CSV reference files.</aside>
+</section>
+
+<section>
+  <h2>Pre-Structured Format: Stat Blocks</h2>
+  <p class="dim">Enforced via prompt template &mdash; the AI must output this exact format</p>
+  <div class="ascii-box" style="font-size: 0.50em; line-height: 1.35;">
+<span class="accent">Goblin Warrior</span> (CR 1/3)
+<span class="dim">Small Humanoid (Goblinoid), Neutral Evil</span>
+<span class="blue">HP</span> 6 (1d10+1) | <span class="blue">AC</span> 16, touch 13, flat-footed 14 | <span class="blue">Init</span> +6
+<span class="blue">Speed</span> 30 ft.
+<span class="blue">STR</span> 11 (+0) | <span class="blue">DEX</span> 15 (+2) | <span class="blue">CON</span> 12 (+1)
+<span class="blue">INT</span> 10 (+0) | <span class="blue">WIS</span>  9 (-1) | <span class="blue">CHA</span>  6 (-2)
+<span class="blue">Saves</span> Fort +3, Ref +2, Will -1
+<span class="blue">BAB/CMB/CMD</span> +1 / +0 / 12
+<span class="blue">Melee</span> shortsword +2 (1d4/19-20)
+<span class="blue">Ranged</span> shortbow +4 (1d4/x3)
+<span class="blue">Feats</span> Improved Initiative
+<span class="blue">Skills</span> Stealth +10, Ride +6, Perception -1
+<span class="blue">Gear</span> leather armor, light wooden shield, shortsword, shortbow (20 arrows)</div>
+  <p class="fragment dim" style="font-size: 0.7em;">Every number here comes from the <code>StatBlock</code> + <code>UnifiedBonus</code> engine, not LLM imagination</p>
+  <aside class="notes">This stat block format is enforced via prompt template with worked examples. The AI must output this exact format. But more importantly, the numbers aren't generated by the LLM -- they come from the database and the rules engine. The LLM formats, the system computes.</aside>
+</section>
+
+<section>
+  <h2>The UnifiedBonus Engine</h2>
+  <p class="dim">Why an LLM can't compute Pathfinder bonuses from text alone</p>
+  <div class="two-col">
+    <div>
+      <pre><code class="language-java">// UnifiedBonus.java - every modifier in the game
+public class UnifiedBonus {
+    String name;
+    UnifiedBonusType type;     // ARMOR, DODGE, SHIELD,
+                               // ENHANCEMENT, DEFLECTION,
+                               // NATURAL_ARMOR, MORALE...
+    BonusSourceType source;    // FEAT, ITEM, BUFF,
+                               // CLASS_FEATURE,
+                               // ABILITY_MODIFIER
+    int value;
+    boolean stackable;
+}
+
+// Pathfinder stacking rules:
+// - DODGE bonuses always stack
+// - Same-type bonuses: highest wins
+// - Different-type bonuses: all apply
+// - Circumstance bonuses stack
+// - Untyped bonuses stack</code></pre>
+    </div>
+    <div>
+      <div class="ascii-box" style="font-size: 0.48em; line-height: 1.4;">
+<span class="blue">Aldric's AC Breakdown:</span>
+  Base:                      10
+  <span class="green">+ Armor (chain shirt):</span>      +4  <span class="dim">ARMOR</span>
+  <span class="green">+ Shield (heavy steel):</span>     +2  <span class="dim">SHIELD</span>
+  <span class="green">+ DEX modifier:</span>             +2  <span class="dim">ABILITY</span>
+  <span class="yellow">+ Ring of Protection:</span>       +1  <span class="dim">DEFLECTION</span>
+  <span class="green">+ Amulet of Nat Armor:</span>      +1  <span class="dim">NATURAL</span>
+  <span class="green">+ Shield of Faith (buff):</span>   +2  <span class="dim">DEFLECTION</span>
+  <span class="red">^ Ring SUPPRESSED: Shield of Faith +2 > Ring +1</span>
+  <span class="red">  Same-type bonuses: only highest applies!</span>
+  ─────────────────────────────
+  <span class="accent">Total AC: 21</span>  (not 22)
+
+<span class="dim">An LLM adding these up would get 22.
+The rules engine knows to take max(+1, +2)
+for DEFLECTION, giving 21.</span></div>
+    </div>
+  </div>
+  <aside class="notes">This is the single strongest argument for structured computation over RAG. Pathfinder's bonus stacking rules are arcane -- same-type bonuses don't stack (highest wins), except dodge and circumstance which always stack. An LLM reading the rules text will get this wrong regularly. The UnifiedBonus engine applies these rules deterministically. Every feat, item, buff, and class feature registers bonuses with their type, and the engine resolves conflicts automatically. The MCP tool calculate_armor_class returns the breakdown showing exactly which bonuses applied and which were suppressed.</aside>
+</section>
+
+<section>
+  <h2>Pre-Structured Format: The Map</h2>
+  <p class="dim">ANTLR grammar-driven grid with deterministic ASCII rendering</p>
+  <div class="two-col">
+    <div>
+      <div class="ascii-box" style="font-size: 0.50em;">
+################
+#<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#
+#<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#<span class="green">.</span><span class="green">.</span><span class="yellow">L</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#
+#<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="yellow">+</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="red">E</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#
+#<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#
+#<span class="green">.</span><span class="green">.</span><span class="red">T</span><span class="green">.</span>####<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#
+#<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="blue">~</span><span class="blue">~</span><span class="blue">~</span><span class="green">.</span><span class="green">.</span><span class="green">.</span>#
+#<span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="blue">~</span><span class="blue">~</span><span class="blue">~</span><span class="blue">~</span><span class="blue">~</span><span class="green">.</span><span class="green">.</span>#
+#<span class="green">.</span><span class="purple">S</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="green">.</span><span class="blue">~</span><span class="blue">~</span><span class="blue">~</span><span class="green">.</span><span class="accent">X</span>#
+################</div>
+    </div>
+    <div style="font-size: 0.65em;">
+      <h3>Legend</h3>
+      <table style="font-size: 0.85em;">
+        <tr><td><code class="green">.</code></td><td>Floor</td></tr>
+        <tr><td><code>#</code></td><td>Wall</td></tr>
+        <tr><td><code class="blue">~</code></td><td>Water</td></tr>
+        <tr><td><code class="yellow">+</code></td><td>Door</td></tr>
+        <tr><td><code class="red">E</code></td><td>Entity</td></tr>
+        <tr><td><code class="red">T</code></td><td>Trap</td></tr>
+        <tr><td><code class="yellow">L</code></td><td>Loot</td></tr>
+        <tr><td><code class="purple">S</code></td><td>Entrance</td></tr>
+        <tr><td><code class="accent">X</code></td><td>Exit</td></tr>
+      </table>
+    </div>
+  </div>
+  <aside class="notes">This map is not an image and it's not generated text -- it's a data structure rendered deterministically. The Grid object stores cells, entities, traps, loot, and passages in typed collections. The toString method overlays them in strict precedence order. The AI can read this map via get_grid_ascii, modify it via update_grid_cells_batch, and place entities via add_entity_to_grid. Every cell is addressable by coordinates.</aside>
+</section>
+
+<section>
+  <h2>The Grid DSL (ANTLR4)</h2>
+  <p class="dim">A formal grammar for map definitions &mdash; parseable, not prose</p>
+  <pre><code class="language-bnf">grammar TTRPGMap;
+
+dungeon : section+ ;
+
+section
+    : header | gridDef | grid | party | entityStats
+    | entities | encounters | traps | puzzles | loot
+    | obstacles | rooms | passages | terrain | biome ;
+
+// Entity with stat reference, placed at coordinates
+entityPlacementDetailed
+    : entityId COLON position entityRef entityInstanceProps? ;
+
+entityRef
+    : STAT_LITERAL entityStatId     // -> ENTITY_STATS block
+    | CR_LITERAL crValue            // Quick CR-only placement
+    | NPC_LITERAL NUMBER ;          // -> DB NPC by ID
+
+// Fully structured stat block definition
+entityStatDef
+    : entityName cr=challengeRating hp=hitPoints
+      ac=armorClass size=creatureSize
+      type=creatureType alignment=creatureAlignment ;</code></pre>
+  <aside class="notes">The ANTLR grammar means maps are formally parseable, not just text. The entityRef rule shows three ways to place a creature: reference a stat block defined in the same map file, specify a CR for quick placement, or reference an NPC by database ID. This bridges the gap between the map DSL and the structured database -- you can place NPC ID 42 at position 5,3 on the grid, and the AI can query that NPC's full stats via get_npc.</aside>
+</section>
+
+<section>
+  <h2>Grid Rendering: Deterministic Overlay</h2>
+  <p class="dim">Same state &rarr; same output. Every symbol has strict precedence.</p>
+  <div class="two-col">
+    <div>
+      <pre><code class="language-java">// Grid.java toString() - the rendering engine
+// For each cell at (x, y):
+char displayChar = cells[y][x]; // Base terrain
+
+// Overlay in strict precedence order:
+if (entities.containsKey(pos))
+    displayChar = entities.get(pos).getSymbol();
+else if (traps.containsKey(pos))     displayChar = 'T';
+else if (puzzles.containsKey(pos))   displayChar = 'P';
+else if (loot.containsKey(pos))      displayChar = 'L';
+else if (objects.containsKey(pos))   displayChar = 'O';
+else if (obstacles...)               displayChar = 'F';
+else if (passages...)                displayChar = p.getSymbol();</code></pre>
+    </div>
+    <div>
+      <div class="ascii-box" style="font-size: 0.50em;">
+<span class="accent">Precedence (highest to lowest):</span>
+  1. <span class="red">Entities</span>  (creatures, PCs)
+  2. <span class="red">Traps</span>     (T)
+  3. <span class="purple">Puzzles</span>   (P)
+  4. <span class="yellow">Loot</span>      (L)
+  5. <span class="dim">Objects</span>    (O)
+  6. <span class="dim">Obstacles</span>  (F)
+  7. <span class="yellow">Passages</span>  (doors, stairs)
+  8. <span class="green">Terrain</span>   (floor, wall, water)
+
+<span class="dim">Entities always on top.
+Same grid state = same ASCII output.</span></div>
+    </div>
+  </div>
+  <aside class="notes">The rendering is deterministic -- same grid state always produces the same ASCII output. The precedence chain is the key: entities always overlay terrain, traps show above loot, etc. This isn't just a visualization trick -- it means the AI can trust that the ASCII representation is always consistent with the underlying data. Call get_grid_ascii, read the character at position (5,3), and know exactly what's there.</aside>
+</section>
+
+<section>
+  <h2>MCP Grid Tools: AI-Driven Map Building</h2>
+  <pre><code class="language-java">// GridMcpTools.java - 17 grid tools
+
+// Procedural generation with structured return
+"generate_procedural_layout"
+// -> returns: ascii_map, map_text (ANTLR DSL), rooms[], traps[],
+//    puzzles[], loot[], entities[], legend{}
+
+// Live ASCII inspection
+"get_grid_ascii"
+// -> returns current grid state as ASCII string
+
+// Batch cell editing (carve rooms, add water, corridors)
+"update_grid_cells_batch"
+// -> returns the updated ASCII map immediately
+
+// Entity management on the grid
+"add_entity_to_grid"     // place creature at x,y
+"move_entity_on_grid"    // reposition with pathfinding
+"remove_entity_from_grid"
+"list_grid_entities"     // all entities + positions
+
+// ANTLR DSL integration
+"parse_antlr_grid"       // parse DSL text -> Grid object
+"get_grid_antlr_text"    // export grid -> ANTLR DSL text</code></pre>
+  <aside class="notes">17 grid tools covering the full lifecycle: generate a map procedurally, inspect it as ASCII, edit cells in batch, place and move entities, parse ANTLR DSL text, and export back to DSL. The generate_procedural_layout tool returns structured data -- not just the ASCII map but arrays of rooms, traps, puzzles, loot, and a legend dictionary. The AI can iterate: generate, inspect, refine, populate.</aside>
+</section>
+
+<section>
+  <h2>Map Lifecycle: Structured State for the LLM</h2>
+  <p class="dim">One map, three representations &mdash; all grounded, all queryable</p>
+  <div class="ascii-box" style="font-size: 0.38em; line-height: 1.35;">
+<span class="blue">1. ANTLR DSL (parseable source of truth)</span>          <span class="blue">2. Grid Object (in-memory state)</span>
+
+## ENTITY_STATS                                       Grid {
+goblin: "Goblin Warrior" cr=1/3 hp=7 ac=15             <span class="green">cells[12][15]</span>: char[][]
+  size=Small type=Humanoid alignment=NE                 <span class="green">entities</span>: Map&lt;Position, Entity&gt;
+goblin_chief: "Goblin Chief" cr=2 hp=30 ac=17             (2,2) -> Entity{id=E1, name="Goblin",
+  size=Small type=Humanoid alignment=LE                          statBlock={cr=1/3, hp=7, ac=15}}
+                                                          (11,8)-> Entity{id=E4, name="Chief",
+## GRID 15 12                                                    statBlock={cr=2, hp=30, ac=17}}
+###############                                         <span class="green">traps</span>: Map&lt;Position, Trap&gt;
+#.............#                                           (2,6) -> Trap{type="spike_pit"}
+#.<span class="red">E1</span>.......E2.#                                       <span class="green">loot</span>: Map&lt;Position, LootContainer&gt;
+#.............#                                           (8,10)-> Loot{items=["287gp","+1 dagger"]}
+#......+......#                                         <span class="green">rooms</span>: Map&lt;String, Room&gt;
+#.............#                                         <span class="green">passages</span>: Map&lt;String, Passage&gt;
+#.<span class="red">T</span>...........#                                       }
+#.............#
+#.E3.......<span class="accent">E4</span>.#   <span class="yellow">───parse_antlr_grid──></span>   Grid   <span class="yellow">───get_grid_ascii──></span>   ASCII + JSON
+#.............#   <span class="yellow"><──get_grid_antlr_text──</span>          <span class="yellow"><──update/add/move───</span>   (for the LLM)
+#.......L.....#
+###############                                       <span class="blue">3. MCP Tool Response (what the LLM sees)</span>
+
+## ENTITIES                                           { "ascii_map": "###...###\n#.E1...#\n...",
+E1: (2,2) goblin                                        "entity_positions": [
+E2: (11,2) goblin                                         {"x":2, "y":2, "name":"Goblin Warrior",
+E3: (2,8) goblin                                           "cr":"1/3", "hp":7, "ac":15,
+E4: (11,8) goblin_chief                                    "symbol":"M", "size":"small"}],
+                                                         "trap_count": 1, "room_count": 4,
+                                                         "map_text": "## HEADER\n..." }</div>
+  <aside class="notes">This is the key visualization. One map exists in three forms simultaneously. The ANTLR DSL is the parseable source of truth -- formal grammar, not prose. The Grid object holds everything in typed collections: entities keyed by Position, traps, loot, rooms, passages. The MCP tool response gives the LLM exactly what it needs: the ASCII render for spatial reasoning, structured entity positions with stats for tactical decisions, and the full DSL text for round-trip editing. All three stay in sync. Compare this to RAG: you'd get "a passage about a map" -- no coordinates, no entity stats, no mutation capability. Here the LLM can read position (2,2), see the goblin has 7 HP and AC 15, move it to (5,3), and verify the result via get_grid_ascii. That's structured state access, not text retrieval.</aside>
+</section>
+
+<section>
+  <h2>MCP Dice Tools: Real Rolls, Real Bonuses</h2>
+  <p class="dim">The AI never invents a number &mdash; dice are rolled, bonuses are computed</p>
+  <pre><code class="language-java">// DiceMcpTools.java
+
+"roll_dice"
+// Input:  { dice_expression: "2d6+5", advantage: false }
+// Output: { rolls: [3, 5], modifier: 5, total: 13 }
+
+"roll_attack"
+// Input:  { character_id: 42, attack_type: "MELEE" }
+// Output: { roll: 14, attack_bonus: +7, total: 21,
+//           bonus_breakdown: {
+//             BAB: +3, STR: +3, weapon_enhancement: +1
+//           }}
+
+"roll_skill_check"
+// Input:  { character_id: 42, skill_type: "STEALTH", dc: 15 }
+// Output: { roll: 12, skill_bonus: +8, total: 20,
+//           dc: 15, success: true }
+
+"roll_saving_throw"
+// Input:  { character_id: 42, save_type: "REFLEX", dc: 18 }
+// Output: { roll: 7, save_bonus: +5, total: 12,
+//           dc: 18, success: false }</code></pre>
+  <aside class="notes">Every dice roll is real. The AI never makes up a number -- it calls roll_dice and gets back the actual individual rolls, the modifier, and the total. For character-aware rolls like roll_attack, the bonus breakdown shows exactly where each modifier comes from: BAB from class level, STR from ability score, weapon enhancement from equipped item. This is auditable -- the player can verify every number.</aside>
+</section>
+
+<section>
+  <h2>Live Interaction: Tool-Grounded Combat</h2>
+  <p class="dim">What actually happens when the user says "Aldric attacks the goblin"</p>
+  <div class="ascii-box" style="font-size: 0.42em; line-height: 1.5;">
+<span class="blue">User:</span> "Aldric swings his sword at the goblin"
+
+<span class="yellow">AI calls:</span> <span class="accent">get_character_summary</span>({ character_id: 42 })
+<span class="dim">-> { name: "Aldric", class: "Fighter 5", hp: 42, ac: 18 }</span>
+
+<span class="yellow">AI calls:</span> <span class="accent">roll_attack</span>({ character_id: 42, attack_type: "MELEE" })
+<span class="dim">-> { roll: 14, attack_bonus: +7, total: 21,
+     breakdown: { BAB: +3, STR: +3, weapon_enhancement: +1 } }</span>
+
+<span class="yellow">AI calls:</span> <span class="accent">get_npc</span>({ npc_id: 3 })
+<span class="dim">-> { name: "Goblin Warrior", ac: 16, hp: 6, worldStatus: "alive" }</span>
+
+<span class="green">21 >= 16 -> HIT!</span>
+
+<span class="yellow">AI calls:</span> <span class="accent">roll_dice</span>({ dice_expression: "1d8+3" })  <span class="dim">// longsword + STR</span>
+<span class="dim">-> { rolls: [6], modifier: 3, total: 9 }</span>
+
+<span class="yellow">AI calls:</span> <span class="accent">update_hit_points</span>({ npc_encounter_entry_id: 7, damage: 9 })
+<span class="dim">-> { hp_before: 6, hp_after: -3, status: "dead", undo_id: "action_451" }</span>
+
+<span class="blue">AI responds:</span> "Aldric brings his longsword down in a powerful arc <span class="accent">(rolled 14 + 7 = 21
+vs AC 16)</span>, cleaving through the goblin's leather armor. The blade bites deep
+<span class="accent">(9 damage)</span>, and the creature crumples to the ground."</div>
+  <aside class="notes">This is the key slide. Every number in the AI's response came from a tool call, not generation. The d20 roll of 14 is real randomness. The +7 attack bonus is computed from BAB, STR mod, and weapon enhancement via the UnifiedBonus engine. The AC 16 is from the database. The damage is a real dice roll. The HP update mutates game state with an undo token. The AI's job is ONLY the narrative wrapping -- all the numbers are grounded.</aside>
+</section>
+
+<section>
+  <h2>CLI Subprocess Architecture</h2>
+  <p class="dim">How the AI GM actually runs under the hood</p>
+  <div class="ascii-box" style="font-size: 0.42em; line-height: 1.4;">
+<span class="blue">Angular Frontend</span>
+    |  POST /api/chat/sessions/{id}/chat/stream
+    v
+<span class="blue">AgentChatController</span> (Spring Boot)
+    |  1. Build ContextConfig (combat/roleplay/conversation/plot mode)
+    |  2. ContextInjectionService.buildContext()  <span class="dim">-- DB queries -> markdown</span>
+    |  3. McpToolInjectionService  <span class="dim">-- tool docs (full/summary/categories/specific)</span>
+    |  4. Compose: system prompt + context + history + user message
+    |  5. AgentFallbackService.selectAgent()  <span class="dim">-- rate-limit-aware fallback</span>
+    |  6. Write prompt to /tmp/agent-prompt-XXX.txt
+    v
+<span class="accent">CliAgentService.executeChat()</span>  <span class="dim">-- 4 supported agents</span>
+    |  <span class="green">claude  --mcp-config /tmp/mcp-config.json</span>  <span class="dim">(default)</span>
+    |  <span class="yellow">codex   exec</span>                                <span class="dim">(STDIO transport)</span>
+    |  <span class="purple">gemini  --yolo</span>                              <span class="dim">(pre-registered MCP)</span>
+    |  <span class="blue">opencode run</span>                               <span class="dim">(injected config)</span>
+    v
+<span class="accent">ClaudeStreamParser</span>  +  <span class="accent">WebSocketNotificationService</span>
+    |  Parses stdout line-by-line (stream-json + Anthropic streaming)
+    |  <span class="dim">{"type":"tool_use","name":"roll_attack","input":{...}}</span>
+    |  <span class="dim">{"type":"tool_result","content":"..."}</span>
+    v
+<span class="blue">SSE / WebSocket Events -> Angular</span>  (chunk | tool_use | tool_result | complete)</div>
+  <aside class="notes">The architecture uses CLI agents as subprocesses with rate-limit-aware fallback. AgentFallbackService tracks per-agent cooldowns via AgentLimitService and falls back through an ordered list: Claude (default), Codex, Gemini, OpenCode. McpServerAutoConfigService auto-generates per-agent MCP config JSON files at startup, pointing each CLI back to the Spring Boot app's own /mcp/sse endpoint. This creates a circular architecture: the Spring Boot app spawns the CLI subprocess, which connects back to the same JVM via MCP SSE to execute tools against the H2 database. Claude uses --mcp-config; Codex uses STDIO transport; Gemini pre-registers via "gemini mcp add"; OpenCode gets config injected into opencode.json. ClaudeStreamParser handles both Claude's stream-json format and the Anthropic streaming API format, while non-Claude agents stream via WebSocket.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 5: 4-LAYER ARCHITECTURE -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part V</h2>
+  <h3>The 4-Layer Grounding Architecture</h3>
+</section>
+
+<section>
+  <h2>How Context Reaches the AI</h2>
+  <p class="dim">Four complementary layers, each solving a different problem</p>
+  <table style="font-size: 0.6em;">
+    <tr>
+      <th>Layer</th>
+      <th>What</th>
+      <th>How</th>
+      <th>When</th>
+    </tr>
+    <tr class="fragment">
+      <td><span class="pill pill-blue">1</span></td>
+      <td>Mode-Aware Context Injection</td>
+      <td>5 ContextConfigs &rarr; DB queries &rarr; markdown</td>
+      <td>Every request</td>
+    </tr>
+    <tr class="fragment">
+      <td><span class="pill pill-green">2</span></td>
+      <td>Keyword Entity Matching</td>
+      <td>Substring scan &rarr; entity snippets (2K cap)</td>
+      <td>When entities mentioned</td>
+    </tr>
+    <tr class="fragment">
+      <td><span class="pill pill-yellow">3</span></td>
+      <td>Budget-Capped World Assembly</td>
+      <td>Priority-ordered parallel fetch, 12K char cap</td>
+      <td>Plot &amp; roleplay modes</td>
+    </tr>
+    <tr class="fragment">
+      <td><span class="pill pill-purple">4</span></td>
+      <td>MCP Tool Self-Retrieval</td>
+      <td>196 tools &rarr; on-demand DB queries by agent</td>
+      <td>During reasoning</td>
+    </tr>
+  </table>
+  <p class="fragment dim" style="font-size: 0.65em; margin-top: 0.4em;">
+    Plus: <span class="pill pill-red" style="font-size: 0.85em;">Kompile RAG</span> for rulebook lookups via <code>rag_query_rules</code> &mdash; reference material, not game state
+  </p>
+  <aside class="notes">Four layers, each solving a different problem. Layer 1 runs on every request -- five mode-aware configs (default, combat, roleplay, conversation, plot designer) select different boolean flags that control which database queries fire. Layer 2 is reactive -- EntityKeywordMatcherService builds an in-memory index from all entity names and does case-insensitive longest-keyword-first substring scanning, capped at 2,000 characters. Layer 3 uses PlotContextBuilderService to parallel-fetch world data via forkJoin with a hard 12K character budget and priority-ordered assembly (NPCs first, then factions, threads, locations, events). Layer 4 is the agent itself -- 196 MCP tools give it direct database access for anything not pre-injected. Kompile RAG exists as a separate integration for rulebook PDF lookups, but it's not a grounding layer -- it's reference material accessed via rag_query_rules.</aside>
+</section>
+
+<section>
+  <h2>Layer 1: Structured Context Injection</h2>
+  <pre><code class="language-java">// ContextInjectionService.java
+public String buildContext(Long campaignId, String gridContext,
+                           List&lt;Long&gt; characterIds, ContextConfig config) {
+    StringBuilder context = new StringBuilder();
+
+    if (config.isIncludeCharacters())
+        context.append(buildCharacterContext(characterIds, config));
+
+    if (config.isIncludeGrid() && gridContext != null)
+        context.append("\n## CURRENT MAP\n\n").append(gridContext);
+
+    if (config.isIncludeJournalEntries())
+        context.append(buildJournalContext(campaignId, config.getMaxJournalEntries()));
+
+    if (config.isIncludeRagContext())
+        context.append(buildRagContext(config));
+
+    return context.toString();
+}</code></pre>
+  <div class="fragment ascii-box" style="font-size: 0.5em;">
+## PLAYER CHARACTERS
+
+### Aldric
+Race: Human | Class: Fighter 5 | HP: 42 (max: 52) | AC: 18
+STR: 16 (+3)  DEX: 14 (+2)  CON: 14 (+2)
+INT: 10 (+0)  WIS: 12 (+1)  CHA:  8 (-1)
+Saves: Fort +6, Ref +3, Will +2
+Active Buffs: Bless, Shield of Faith</div>
+  <aside class="notes">The ContextInjectionService queries the database directly -- no vector search, no embedding, no similarity. It builds markdown sections from structured data: character name, race, class/level, HP, AC, all six ability scores with modifiers, saves, and active buffs. This is injected into the prompt before the AI even starts reasoning. The AI sees exact current state, not a passage that mentions state.</aside>
+</section>
+
+<section>
+  <h2>Layer 1: Mode-Aware Configs</h2>
+  <p class="dim">Different contexts for different situations &mdash; five preset configurations</p>
+  <pre><code class="language-typescript">// agent-chat.models.ts - Five preset configurations
+
+defaultContextConfig()
+  // characters + grid + entities + journal(5) + buffs + files
+
+combatContextConfig()
+  // characters + grid + entities + buffs ONLY (no journal noise)
+
+roleplayContextConfig()
+  // characters + journal(10) ONLY (no tactical data)
+
+conversationContextConfig()
+  // characters ONLY + StructuredBackground per participant
+  // 15+ fields: backstory, personality, motivations, flaws,
+  // bonds, fears, secrets, mannerisms, voice, relationships
+
+plotDesignerContextConfig()
+  // EVERYTHING: characters + journal(20) + NPCs + factions
+  //   + threads + locations + history + world state
+  //   + accepted plot elements + files</code></pre>
+  <aside class="notes">Five preset configurations, each tuned for a different interaction mode. Combat mode strips journal entries to reduce noise -- you need grid state and character stats, not session notes. Roleplay mode drops tactical data and increases journal entries to 10 for narrative continuity. Conversation mode injects StructuredBackground data per participant with 15+ personality fields -- backstory, personality traits, motivations, flaws, bonds, ideals, fears, secrets, mannerisms, appearance, voice notes, relationships, faction affiliations, notable abilities, and GM-only notes. Plot Designer mode includes everything with 20 journal entries plus accepted plot elements and world state. The configs are defined in the frontend as factory functions, not LLM-chosen -- the mode selection is explicit and deterministic.</aside>
+</section>
+
+<section>
+  <h2>Layer 2: Entity Keyword Matching</h2>
+  <p class="dim">Automatic context injection when entity names appear in user messages</p>
+  <pre><code class="language-typescript">// EntityKeywordMatcherService - frontend, runs on every message
+
+// Builds an in-memory keyword index from all:
+//   NPCs, Locations, Factions, Threads, Characters
+// Both full names AND individual words > 3 chars
+
+// User says: "Aldric attacks the goblin near Thornkeep"
+// Auto-detected: Aldric (character), Thornkeep (location)
+
+// Generates:
+## Auto-detected Context (capped at 2,000 chars)
+
+### Aldric [Character]
+Fighter 5, HP 42/52, AC 18, currently buffed with Bless
+
+### Thornkeep [Location]
+Type: Fortified Settlement | Status: Contested
+Description: A crumbling fortress on the edge of the Echo Wood...</code></pre>
+  <aside class="notes">This is a lightweight NER system built from the game database. It builds a keyword index from all entity names -- NPCs, locations, factions, threads, characters -- including individual words longer than 3 characters. When the user mentions "Thornkeep," it automatically injects that location's structured data. Capped at 2,000 characters to avoid context bloat. Longest keyword first to handle multi-word names correctly.</aside>
+</section>
+
+<section>
+  <h2>Layer 3: Budget-Capped World Assembly</h2>
+  <p class="dim">Priority-ordered context with hard 12K character cap</p>
+  <pre><code class="language-typescript">// PlotContextBuilderService - frontend, Plot Designer mode
+
+MAX_CONTEXT_CHARS = 12_000;
+
+// Load all world data in parallel via forkJoin:
+//   NPCs, Factions, Threads, Locations, History, World State
+
+// Assemble in fixed priority order:
+//   1. Active plot threads        (highest priority)
+//   2. Key NPCs + world status
+//   3. Factions + goals
+//   4. Locations
+//   5. Historical events
+//   6. Hex environment context    (lowest priority)
+
+// Each section added ONLY if budget allows.
+// Lower-priority sections silently dropped.
+
+// This replaces vector similarity ranking with
+// domain-informed, code-declared priority.</code></pre>
+  <aside class="notes">This is the anti-RAG slide. Instead of vector similarity ranking, the PlotContextBuilderService uses domain-informed, code-declared priority. Active plot threads always come first because they're most relevant to plot design. Lower-priority sections like hex environment details are silently dropped if the budget is exceeded. The budget is 12K characters -- enough for rich context without blowing up the prompt. This is deterministic prioritization, not probabilistic retrieval.</aside>
+</section>
+
+<section>
+  <h2>Layer 4: MCP Tool Self-Retrieval</h2>
+  <div class="two-col">
+    <div>
+      <h3><span class="pill pill-purple">4</span> The Agent Retrieves What It Needs</h3>
+      <p style="font-size: 0.7em;">196 MCP tools give the agent <strong>direct DB access</strong> for anything not pre-injected:</p>
+      <ul style="font-size: 0.6em;">
+        <li><code>get_character_summary</code> &mdash; live stats</li>
+        <li><code>get_npc</code> &mdash; full stat blocks</li>
+        <li><code>get_grid_ascii</code> &mdash; current map state</li>
+        <li><code>search_all</code> &mdash; cross-type fuzzy search</li>
+        <li><code>rag_query_rules</code> &mdash; Kompile rulebook PDF search</li>
+        <li><code>get_current_hex_context</code> &mdash; viewport-aware</li>
+      </ul>
+      <p style="font-size: 0.6em;" class="dim">The agent acts as its own retriever.<br><code>ActiveSessionContext</code> provides the current grid/hex without needing IDs.</p>
+    </div>
+    <div>
+      <h3 style="font-size: 0.85em;">New: Rule Enforcement</h3>
+      <p style="font-size: 0.7em;">Per-game toggleable rule subsystems:</p>
+      <ul style="font-size: 0.6em;">
+        <li>Class features &amp; spell slots</li>
+        <li>Racial traits &amp; feat prerequisites</li>
+        <li>XP leveling &amp; combat resolution</li>
+        <li>Action economy &amp; combat maneuvers</li>
+        <li>Narrative skill checks (real stat blocks)</li>
+        <li><span class="accent">Stealth mini-game</span> system</li>
+      </ul>
+      <p style="font-size: 0.6em;" class="dim"><code>RuleEnforcementService</code> &mdash;<br>toggleable per <code>RuleEnforcementConfig</code></p>
+    </div>
+  </div>
+  <aside class="notes">Layer 4 is the agent itself as retriever. With 196 MCP tools, the AI can query any game state on demand during its reasoning loop. ActiveSessionContext -- an AtomicReference singleton set by the controller before agent execution -- lets tools access the user's current grid, campaign map, and hex coordinates without requiring explicit IDs. This is the key difference from RAG: the agent doesn't search for similar text, it queries structured data directly. The new RuleEnforcementService adds per-game toggleable rule subsystems -- class features, spell slots, racial traits, feat prerequisites, XP leveling, combat resolution, action economy, and combat maneuvers. NarrativeSkillCheckService rolls skill checks using real stat blocks for both PCs and NPCs. The stealth mini-game is a dedicated subsystem with its own service layer.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 6: TOOL-GROUNDED AI -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part VI</h2>
+  <h3>196 MCP Tools > Vector Search<br><span class="dim">How tools give the AI deterministic access</span></h3>
+</section>
+
+<section>
+  <h2>The MCP Architecture</h2>
+  <div class="ascii-box" style="font-size: 0.45em; line-height: 1.4;">
+                    +-----------------+
+                    |   AI GM (CLI)   |  Claude / Codex / Gemini
+                    +--------+--------+
+                             |
+                    MCP SSE Transport
+                             |
+                    +--------v--------+
+                    |  MCP SSE Server |  /mcp/sse
+                    +--------+--------+
+                             |
+              +--------------+--------------+
+              |              |              |
+     +--------v--+   +------v------+  +----v--------+
+     | Tool       |   | Tool        |  | Tool         |
+     | Registry   |   | Discovery   |  | Undo/Log     |
+     | (196 tools)|   | (Levenshtein|  | (Rollback    |
+     |            |   |  fuzzy)     |  |  support)    |
+     +------+-----+   +-------------+  +--------------+
+            |
+  +---------+----------+-----------+-----------+-----------+
+  |         |          |           |           |           |
+Character Combat    Grid       NPC        Dice    ... +15
+Tools     Tools     Tools      Tools      Tools    more
+  (12)     (15)      (17)       (7)        (6)   categories
+  |         |          |           |           |
+  v         v          v           v           v
++----------------------------------------------------+
+|              H2 Database (game state)               |
++----------------------------------------------------+</div>
+  <aside class="notes">The key insight in this diagram: the MCP SSE Server sits between the AI and the database. Every tool call goes through the registry, which routes to the appropriate domain tools, which query or mutate the H2 database. Tool Discovery provides fuzzy search so the AI can find the right tool. The Undo/Log system records every mutation for rollback. The AI never touches the database directly -- it goes through typed, validated tool interfaces.</aside>
+</section>
+
+<section>
+  <h2>The Aggregation Pattern</h2>
+  <pre><code class="language-java">// McpToolRegistry.java - 19+ domain classes → 1 flat MCP namespace
+
+@Component
+public class McpToolRegistry {
+    @Autowired private CharacterMcpTools characterTools;    // 12 tools
+    @Autowired private CombatMcpTools combatTools;          // 15 tools
+    @Autowired private CombatActionMcpTools combatActions;  // 18 tools
+    @Autowired private EquipmentMcpTools equipmentTools;    // 23 tools
+    @Autowired private GameMechanicsMcpTools mechanicsTools; // 21 tools
+    // ... 14+ more classes (196 tools total)
+
+    public void registerTools(McpSyncServer server) {
+        List&lt;SyncToolSpecification&gt; allTools = new ArrayList&lt;&gt;();
+        allTools.addAll(characterTools.getToolSpecifications());
+        allTools.addAll(combatTools.getToolSpecifications());
+        // ... aggregate all 19+ classes
+        allTools.forEach(server::addTool);  // flat namespace
+    }
+}</code></pre>
+  <p class="fragment" style="font-size: 0.75em; margin-top: 0.3em;">
+    <span class="green">Key insight:</span> Domain boundaries exist in <em>code</em> (19+ Spring components),<br>
+    but the AI sees a <strong>flat list of 196 tools</strong> &mdash; discovery handles navigation.
+  </p>
+  <aside class="notes">This slide is about the architectural pattern, not the individual tools (the grid showed those). 19+ Spring components each own a domain -- combat, equipment, buffs -- but registerTools() flattens them into a single MCP namespace. The AI never sees these class boundaries. It sees 196 tools and uses the discovery system to navigate them. This separation means developers organize by domain while the AI organizes by intent. Equipment at 23 tools is the largest category. The pattern scales cleanly -- adding a new domain is just another @Autowired field and another addAll() call.</aside>
+</section>
+
+<section>
+  <h2>Tool Discovery: The AI Finds Its Own Tools</h2>
+  <p class="dim">With 196 tools, you can't list them all in the system prompt</p>
+  <pre><code class="language-java">// ToolDiscoveryMcpTools.java
+
+"list_all_tools"
+// Returns: all 196 tool names with brief descriptions
+
+"search_tools"
+// Input:  { query: "attack" }
+// Output: roll_attack, roll_melee_attack, calculate_attack_bonus,
+//         apply_damage, full_attack_action ...
+// Uses Levenshtein fuzzy matching
+
+"get_tool_details"
+// Input:  { tool_name: "roll_attack" }
+// Output: full JSON schema, parameter descriptions,
+//         required vs optional fields, return format</code></pre>
+  <div class="fragment">
+    <blockquote style="font-size: 0.75em;">
+      "ALWAYS use <code>list_all_tools</code>, <code>search_tools</code>, or <code>get_tool_details</code> FIRST to discover exact tool names. Never guess or hallucinate tool names."<br>
+      <span class="dim">&mdash; GAME_MASTER_CONTEXT system prompt</span>
+    </blockquote>
+  </div>
+  <aside class="notes">With 196 tools, you can't list them all in the system prompt. Tool Discovery solves this with three meta-tools. list_all_tools returns brief descriptions. search_tools does fuzzy Levenshtein matching -- type "attack" and get all attack-related tools. get_tool_details returns the full JSON schema for a specific tool. The system prompt explicitly instructs the AI to discover before calling, and to never guess tool names. McpToolInjectionService also supports four doc injection modes -- full, summary, categories, or specific category names -- to tune the context cost of tool documentation per request.</aside>
+</section>
+
+<section>
+  <h2>Tool Enforcement: Guaranteeing Tool Use</h2>
+  <pre><code class="language-typescript">// agent-chat.component.ts - frontend enforcement
+
+// 1. Scan user message for keywords
+detectRequiredTools(message: string): string[] {
+  // "generate map" -> requires grid tools
+  // "roll table"   -> requires table tools
+  // "create npc"   -> requires npc tools
+}
+
+// 2. Prepend instruction if tools are required
+if (requiredTools.length > 0) {
+  message = "IMPORTANT: You MUST use the MCP tools provided. " + message;
+}
+
+// 3. After streaming, verify tools were actually called
+checkRequiredToolsUsed(required: string[], called: string[]): boolean
+
+// 4. If tools weren't called, auto-retry with stronger instructions
+if (!toolsUsed && toolEnforcementRetries < 1) {
+  retryWithStrongerEnforcement();
+}</code></pre>
+  <aside class="notes">Tool enforcement is a safety net. The frontend scans user messages for keywords that imply tool use -- "generate map" means grid tools should be called, "create NPC" means NPC tools. If the AI responds without calling the expected tools, it auto-retries once with stronger instructions. This catches the common failure mode where the AI describes what it would do instead of actually calling the tools. One retry is enough -- if it fails twice, surface the issue to the user.</aside>
+</section>
+
+<section>
+  <h2>Undo Support: Safe AI Write-Back</h2>
+  <p class="dim">Every mutation returns an undo token &mdash; rollback any AI action</p>
+  <pre><code class="language-java">// apply_buff returns:
+{ "character": "Aldric", "buff": "Shield of Faith",
+  "bonuses_applied": [{ "type": "DEFLECTION", "value": +2 }],
+  "undo_id": "action_788" }
+
+// update_hit_points returns:
+{ "character": "Aldric", "hp_before": 42, "hp_after": 30,
+  "undo_id": "action_789" }
+
+// create_npc returns:
+{ "npc_id": 15, "name": "Goblin Chief",
+  "undo_id": "action_790" }
+
+// The AI or user can undo:
+"undo_action" -> { "action_id": "action_789" }
+// -> Restores Aldric's HP to 42
+
+// Full action log:
+"get_action_log" -> chronological list of all mutations
+// -> enables session replay and audit trails</code></pre>
+  <aside class="notes">Undo support is critical for AI write-back. Every mutation -- HP change, NPC creation, buff application -- returns an undo token. The user or AI can call undo_action with that token to restore previous state. The action log records every mutation chronologically, enabling session replay and audit trails. This is what makes tool-based AI safe for production: every action is reversible and traceable.</aside>
+</section>
+
+<section>
+  <h2>MCP Prompts: Orchestrated Workflows</h2>
+  <p class="dim">Higher-level than tools &mdash; multi-step workflows the AI executes</p>
+  <pre><code class="language-java">// GmAssistantMcpPrompts.java - registered as MCP Prompts
+
+"generate_encounter"
+// Instructs AI to: list_npcs -> filter by CR -> create_encounter
+//   -> add_npc_to_encounter -> generate_procedural_layout
+//   -> add_entity_to_grid for each NPC
+
+"generate_map"   // 6-step iterative workflow:
+// 1. generate_procedural_layout (initial map)
+// 2. get_grid_ascii (inspect result)
+// 3. update_grid_cells_batch (refine layout)
+// 4. Repeat 2-3 until satisfied
+// 5. add_entity_to_grid (populate with creatures)
+// 6. save_grid (persist for future sessions)
+
+"session_recap"
+// Reads campaign://current resource + recent journal entries
+// -> Synthesizes narrative summary of last session
+
+"combat_tactics"
+// Reads NPC stats + initiative order + grid positions
+// -> Plans optimal enemy AI moves based on INT score</code></pre>
+  <aside class="notes">MCP Prompts are distinct from tools -- they're pre-built multi-step workflows that tell the AI which tools to call in what order. The generate_map prompt is a 6-step iterative loop where the AI generates a map, inspects the ASCII output, refines it, populates it with entities, and saves it. These are compositional patterns built on top of atomic tools. Think of them as the orchestration layer -- individual tools are atomic operations, prompts compose them into domain workflows.</aside>
+</section>
+
+<section>
+  <h2>Cross-Type Search: Beyond Text Matching</h2>
+  <p class="dim">12 search tools &mdash; entity-aware, not just text-aware</p>
+  <pre><code class="language-java">// SearchMcpTools.java
+
+"search_all"
+// Input:  { query: "dragon" }
+// Output: { npcs: [{id: 42, name: "Young Red Dragon", cr: 10}],
+//           locations: [{id: 7, name: "Dragon's Lair"}],
+//           items: [{id: 15, name: "Dragonbane Sword"}],
+//           threads: [{id: 3, name: "The Dragon Conspiracy"}] }
+// Cross-type structured search, not "similar passages"
+
+"lookup_entity_by_name"
+// Input:  { name: "Aldric", entity_type: "CHARACTER" }
+// Output: full character record (typed, not a text snippet)
+
+"search_npcs"        // filtered by CR, type, status, alignment
+"search_locations"   // filtered by type, status, region
+"search_items"       // filtered by type, slot, price range
+"search_factions"    // filtered by alignment, power level
+"search_threads"     // filtered by status (active/resolved/dormant)
+
+// Levenshtein fuzzy matching on all name fields
+// "Aldrik" still finds "Aldric" (distance: 1)</code></pre>
+  <aside class="notes">Search tools show the difference between structured search and RAG. search_all returns typed results across multiple entity categories -- NPCs, locations, items, threads -- not text snippets ranked by similarity. Each result is a full structured record. The per-type search tools support domain-specific filters: search NPCs by challenge rating and alignment, search items by equipment slot and price range. Levenshtein fuzzy matching handles typos. This is database querying through MCP, not vector similarity.</aside>
+</section>
+
+<section>
+  <h2>From Case Study to Platform</h2>
+  <blockquote>
+    Elthoria proves the pattern with 196 tools and 4 grounding layers.<br>
+    <span class="accent">Kompile generalizes it</span> &mdash; 642+ tools for any domain.
+  </blockquote>
+  <br>
+  <div class="two-col" style="font-size: 0.8em;">
+    <div>
+      <h3><span class="pill pill-blue">Elthoria</span></h3>
+      <ul>
+        <li>Game state via MCP tools</li>
+        <li>Pathfinder rules engine</li>
+        <li>ANTLR grid DSL</li>
+        <li>Domain: tabletop RPGs</li>
+      </ul>
+    </div>
+    <div>
+      <h3><span class="pill pill-green">Kompile</span></h3>
+      <ul>
+        <li>Knowledge graphs via MCP tools</li>
+        <li>Graph algorithms engine</li>
+        <li>REST-MCP bridge (any API)</li>
+        <li>Domain: any enterprise app</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">This is the pivot slide. We've spent 20 minutes showing how structured data and MCP tools solve real problems in one application. Now we zoom out. The same patterns that make Elthoria work -- structured context injection, typed tool interfaces, deterministic computation, write-back with undo -- are exactly what Kompile provides as a platform. The difference: Elthoria is a consumer of this pattern for one domain; Kompile is the toolkit that makes it available for any domain.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 7: KOMPILE TOOLKIT -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part VII</h2>
+  <h3>Kompile's Structured Data Toolkit<br><span class="dim">642+ tools beyond basic RAG</span></h3>
+</section>
+
+<section>
+  <h2>Kompile: Not Just RAG</h2>
+  <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: center;">
+    <div class="stat-card" style="min-width: 140px;">
+      <div class="number" style="font-size: 1.6em;">642+</div>
+      <div class="label">@Tool Methods</div>
+    </div>
+    <div class="stat-card" style="min-width: 140px;">
+      <div class="number" style="font-size: 1.6em;">60+</div>
+      <div class="label">Tool Modules</div>
+    </div>
+    <div class="stat-card" style="min-width: 140px;">
+      <div class="number" style="font-size: 1.6em;">3</div>
+      <div class="label">Graph Engines</div>
+    </div>
+    <div class="stat-card" style="min-width: 140px;">
+      <div class="number" style="font-size: 1.6em;">8</div>
+      <div class="label">Graph Algorithms</div>
+    </div>
+    <div class="stat-card" style="min-width: 140px;">
+      <div class="number" style="font-size: 1.6em;">16</div>
+      <div class="label">Evaluation Types</div>
+    </div>
+  </div>
+  <div class="fragment" style="margin-top: 20px;">
+    <p>RAG is <em>necessary</em>. It's <em>not sufficient</em>.</p>
+  </div>
+  <aside class="notes">Let these numbers sink in. 642 tool methods across 60+ modules. Three different graph engines -- Neo4j, JPA-backed, and matrix-based. Eight graph algorithms running on ND4J tensors. 16 evaluation types for quality assurance. RAG matters -- but it's one capability in a much larger system. The rest of this section walks through what the other 641 tools do.</aside>
+</section>
+
+<section>
+  <h2>Graph RAG: Structured Knowledge</h2>
+  <pre><code class="language-java">// GraphExtractionSchema.java - the extraction data model
+
+public record ExtractedEntity(
+    String id,          // "e1"
+    String name,        // "Acme Corp"
+    String type,        // "ORGANIZATION"
+    List&lt;String&gt; aliases,   // ["Acme", "ACME Corporation"]
+    String description,     // "A technology company"
+    Double confidence,      // 0.95
+    Map&lt;String, String&gt; properties  // {"founded": "2010"}
+) {}
+
+public record ExtractedRelation(
+    String source,      // "e1"
+    String target,      // "e2"
+    String type,        // "EMPLOYS"
+    String description, // "CEO employment relationship"
+    Double confidence,  // 0.95
+    String provenance,  // source chunk reference
+    Map&lt;String, String&gt; properties  // {"since": "2015"}
+) {}</code></pre>
+  <aside class="notes">The GraphExtractionSchema is the standardized format for LLM-driven entity and relationship extraction. Java records give you immutable, typed data structures. Each entity has an ID, name, type, aliases for deduplication, a description, a confidence score, and arbitrary properties. Relations connect entities by ID with typed relationships. This schema is what the LLM must output -- structured JSON, not prose. The validator ensures referential integrity before the data hits the graph store.</aside>
+</section>
+
+<section>
+  <h2>Graph Construction Pipeline</h2>
+  <div class="ascii-box" style="font-size: 0.45em; line-height: 1.4;">
+Documents
+    |
+    v
++------------------+     +-------------------+
+|  Chunk Documents |---->|  LLM Extraction   |  Per-chunk entity/relation extraction
++------------------+     |  (structured JSON) |  via GraphExtractionSchema
+                         +--------+----------+
+                                  |
+                         +--------v----------+
+                         | Entity Resolution |  Merge duplicates across chunks
+                         | Service           |  (same entity, different mentions)
+                         +--------+----------+
+                                  |
+                    +-------------+-------------+
+                    |                           |
+           +--------v--------+        +--------v--------+
+           |   Neo4j Graph   |        |  JPA Knowledge  |
+           |   (Cypher +     |        |  Graph (SQL +   |
+           |   APOC MERGE)   |        |  graph algos)   |
+           +-----------------+        +-----------------+</div>
+  <pre class="fragment"><code class="language-java">// Neo4jGraphConstructor.java - Cypher upsert
+private static final String UPSERT_NODE_QUERY = """
+    UNWIND $rows AS row
+    MERGE (n {id: row.id})
+    ON CREATE SET n = row.properties, n.id = row.id
+    ON MATCH SET n += row.properties
+    WITH n, row.labels AS labels
+    CALL apoc.create.addLabels(n, labels) YIELD node
+    RETURN elementId(node) AS elementId""";</code></pre>
+  <aside class="notes">The pipeline: documents are chunked, each chunk goes to an LLM for entity/relation extraction using the GraphExtractionSchema format, then EntityResolutionService merges duplicate entities across chunks. The results can go to either Neo4j via APOC Cypher MERGE or to the JPA-backed knowledge graph. The MERGE query is idempotent -- running it twice with the same entity updates properties instead of creating duplicates.</aside>
+</section>
+
+<section>
+  <h2>Knowledge Graph Tools</h2>
+  <pre><code class="language-java">// KnowledgeGraphToolImpl.java - @Tool methods for graph navigation
+
+@Tool(name = "graph_search_by_entity",
+      description = "Search for documents mentioning a specific entity")
+public Map&lt;String, Object&gt; searchByEntity(SearchByEntityInput input)
+
+@Tool(name = "graph_find_connected",
+      description = "Explore the graph from a node, finding all connected
+                     nodes up to a certain depth")
+public Map&lt;String, Object&gt; findConnectedNodes(FindConnectedNodesInput input)
+
+@Tool(name = "graph_get_path",
+      description = "Find the shortest path between two nodes")
+public Map&lt;String, Object&gt; getGraphPath(GetGraphPathInput input)
+
+@Tool(name = "graph_get_overview",
+      description = "Get graph statistics, available sources, and topics")
+public Map&lt;String, Object&gt; getGraphOverview()
+
+// Also: get_related_documents, get_source_context,
+//       search_nodes, get_entities_in_document,
+//       find_documents_by_topic</code></pre>
+  <aside class="notes">Eight graph tools exposed as MCP @Tool methods. These enable queries that vector search literally cannot answer: "find all documents connected to this entity," "explore the graph 3 hops from this node," "what's the shortest path between these two concepts?" The graph_get_overview tool returns statistics and topics -- giving the AI a map of what the knowledge graph contains before diving in. Note the MCP optimization-aware truncation -- large descriptions are capped based on configuration.</aside>
+</section>
+
+<section>
+  <h2>Graph Algorithms (ND4J-backed)</h2>
+  <div class="two-col">
+    <div>
+      <pre><code class="language-java">// 8 algorithms in
+// kompile-graph-algorithms:
+
+PageRankAlgorithm
+DegreeCentrality
+BetweennessCentrality
+ShortestPathAlgorithm  // BFS + Dijkstra
+BfsTraversal
+WeaklyConnectedComponents
+LouvainCommunityDetection
+JaccardNodeSimilarity</code></pre>
+    </div>
+    <div>
+      <pre><code class="language-java">// PageRank via ND4J power iteration
+INDArray pr = Nd4j.ones(n, 1).div(n);
+INDArray teleport = Nd4j.ones(n, 1).div(n);
+
+for (int i = 0; i < maxIter; i++) {
+  INDArray newPr = transitionMatrix
+    .mmul(pr).mul(damping)
+    .add(teleport.mul(1 - damping));
+
+  double diff = pr.sub(newPr)
+    .norm2Number().doubleValue();
+  pr.assign(newPr);
+  if (diff < tolerance) break;
+}</code></pre>
+    </div>
+  </div>
+  <div class="fragment" style="font-size: 0.65em; margin-top: 10px;">
+    <table>
+      <tr><td>"Who's most influential?"</td><td><span class="pill pill-blue">PageRank</span></td></tr>
+      <tr><td>"What teams exist?"</td><td><span class="pill pill-purple">Louvain</span></td></tr>
+      <tr><td>"How are X and Y connected?"</td><td><span class="pill pill-green">Shortest Path</span></td></tr>
+      <tr><td>"Who are the bottlenecks?"</td><td><span class="pill pill-yellow">Betweenness</span></td></tr>
+    </table>
+    <p class="dim"><code>CommunitySummarizer</code>: LLM generates natural-language summaries of Louvain clusters</p>
+  </div>
+  <aside class="notes">Eight graph algorithms implemented with ND4J tensors for performance. PageRank uses power iteration on a column-stochastic transition matrix with dangling node handling and teleportation. Louvain community detection finds clusters in the knowledge graph. The CommunitySummarizer then uses an LLM to generate natural-language summaries of each community -- combining graph structure with language generation. This is the hybrid pattern in action: algorithms find the structure, LLMs describe it.</aside>
+</section>
+
+<section>
+  <h2>Code Indexer: 37 Structural Code Tools</h2>
+  <pre><code class="language-java">// CodeIndexerToolImpl.java - structured code navigation
+
+"code_search"          // semantic + keyword code search
+"code_graph_build"     // build call graph from source
+"code_graph_search"    // find symbols by pattern
+"code_callers"         // who calls this function?
+"code_impact_analysis" // what breaks if I change this?
+"code_dependency_tree" // full dependency chain
+"code_component_map"   // architectural component view
+"code_symbol_dossier"  // comprehensive info about a symbol
+"code_graph_shortest_path"  // path between two symbols
+"code_unused_functions"     // dead code detection
+"code_test_coverage"        // test coverage for a symbol
+"code_tests_for_symbol"     // find tests for a function
+
+// + 25 more: code_file_summary, code_hotspots,
+//   code_recent_changes, code_module_dependencies,
+//   code_function_signature, code_cross_references ...</code></pre>
+  <p class="dim" style="font-size: 0.7em;">
+    <span class="green">Structural navigation</span> of code &mdash; relationships, call graphs, impact analysis<br>
+    Not "find me a similar code snippet" (that's RAG)
+  </p>
+  <aside class="notes">The code indexer is a perfect example of structured vs unstructured. RAG on a codebase gives you "here's a similar function." The code indexer gives you "here's the call graph, here's what breaks if you change this, here's the test coverage." Structure enables questions that similarity search literally cannot answer.</aside>
+</section>
+
+<section>
+  <h2>Unified Crawl: Graph + Index Together</h2>
+  <p class="dim"><code>UnifiedCrawlGraphTool</code> &mdash; build knowledge graph and vector index simultaneously</p>
+  <pre><code class="language-java">// UnifiedCrawlGraphTool.java - multi-source ingestion
+
+@Tool(name = "unified_crawl_graph",
+    description = "Crawl sources and simultaneously build a knowledge graph
+                   AND vector index from the same content")
+public Map&lt;String, Object&gt; startUnifiedCrawl(UnifiedCrawlInput input)
+
+// Supported source types:
+//   filesystem, email, web, slack, google_drive
+
+// Graph extraction config per crawl:
+//   entityTypes: ["PERSON", "ORGANIZATION", "CONCEPT"]
+//   relationTypes: ["WORKS_AT", "REPORTS_TO", "MANAGES"]
+//   confidenceThreshold: 0.8
+//   schemaMode: STRICT | PERMISSIVE
+//   entityResolution: true   // merge duplicate entities
+
+// Vector index config per crawl:
+//   collection: "project-docs"
+//   chunkerType: RECURSIVE | TOKEN | SENTENCE
+//   chunkSize: 500, chunkOverlap: 50
+
+// Status tracking:
+"unified_crawl_status"  // progress, docs processed, entities found
+"unified_crawl_list"    // all active/completed crawls
+"unified_crawl_cancel"  // stop a running crawl</code></pre>
+  <div class="fragment">
+    <blockquote style="font-size: 0.7em;">One crawl. Two outputs: a knowledge graph <em>and</em> a vector index.<br>You don't choose structure or RAG &mdash; you get both.</blockquote>
+  </div>
+  <aside class="notes">This is where structured and unstructured come together at ingestion time. The same document gets chunked into a vector index for RAG AND has entities and relationships extracted into a knowledge graph. You don't choose one or the other -- you build both from the same source. The crawler supports filesystem, email, web, Slack, and Google Drive as sources.</aside>
+</section>
+
+<section>
+  <h2>REST-MCP Bridge: Any API as MCP Tools</h2>
+  <p class="dim">Auto-convert REST APIs into MCP tools via OpenAPI discovery</p>
+  <pre><code class="language-java">// RestMcpBridgeManager.java
+
+// 1. Point at any OpenAPI spec
+bridge.discoverEndpoints("https://api.example.com/v3/openapi.json")
+// -> Discovers all endpoints, parameters, schemas
+
+// 2. Auto-generates MCP tool definitions from REST endpoints
+//    GET /users/{id}  ->  tool: "get_user" { id: string }
+//    POST /orders     ->  tool: "create_order" { body: OrderSchema }
+
+// 3. Probe mode: discover endpoints without a spec
+bridge.probeEndpoints("https://api.example.com")
+// -> Tests common paths, infers parameter types
+
+// Transport support:
+//   STDIO  - Claude Desktop format (command + args + env)
+//   SSE    - Server-Sent Events transport
+//   REST   - Direct HTTP bridge
+
+// Bidirectional: REST -> MCP tools AND MCP tools -> REST endpoints
+// Any existing API becomes AI-callable without code changes</code></pre>
+  <p class="fragment dim" style="font-size: 0.7em;">Your existing APIs become AI-callable <span class="green">without writing a single line of integration code</span></p>
+  <aside class="notes">This is a force multiplier. Instead of writing @Tool annotations for every API you want the AI to access, you point the REST-MCP bridge at an OpenAPI spec and it auto-generates MCP tool definitions. Your existing REST APIs become AI-callable without writing a single line of integration code. It works bidirectionally too -- MCP tools can be exposed as REST endpoints for non-MCP clients.</aside>
+</section>
+
+<section>
+  <h2>Workflow &amp; Compute Graph Engine</h2>
+  <div class="two-col">
+    <div>
+      <h3 style="font-size: 0.9em;">WorkflowTool</h3>
+      <pre><code class="language-java">// MCP tools for workflow orchestration
+
+"workflow_execute"
+// Runs Xircuits or n8n workflows
+// as MCP tool calls
+
+"workflow_inspect"
+// Parse structure without executing
+// -> nodes, edges, parameters
+
+// Engine types:
+//   xircuits - Python visual workflows
+//   n8n - JavaScript automation</code></pre>
+    </div>
+    <div>
+      <h3 style="font-size: 0.9em;">ComputeGraphTool</h3>
+      <pre><code class="language-java">// DAG execution with polyglot nodes
+
+NodeExecutionType:
+  JAVASCRIPT  // GraalVM JS
+  PYTHON      // GraalPy
+  DROOLS_RULE // Business rules
+  EXPRESSION  // SpEL / MVEL
+  PASSTHROUGH // Data routing
+
+// Each node: script + params + type
+// Edges form a directed workflow
+// Nodes execute in topological order</code></pre>
+    </div>
+  </div>
+  <aside class="notes">These aren't RAG at all -- they're execution engines. The AI can orchestrate multi-step workflows via MCP tools, running Python scripts, JavaScript, Drools business rules, or expression evaluation in a DAG. The workflow tool wraps Xircuits and n8n, turning visual workflow definitions into AI-callable tools. The compute graph engine runs polyglot code nodes in dependency order via GraalVM.</aside>
+</section>
+
+<section>
+  <h2>Model Staging: Full ML Lifecycle</h2>
+  <p class="dim">92 MCP tools for the complete model lifecycle</p>
+  <pre><code class="language-java">// ModelStagingTool.java - AI-driven ML operations
+
+// Discovery & download
+"staging_catalog_browse"     // browse available models
+"staging_model_download"     // download from registry
+
+// Inference
+"staging_llm_load"           // load model for inference
+"staging_llm_generate"       // text generation
+"staging_llm_chat"           // multi-turn chat
+"staging_vlm_load"           // vision-language models
+"staging_vlm_parse_doctags"  // document structure extraction
+
+// Training & optimization
+"staging_start_training"     // fine-tuning
+"staging_distill_model"      // knowledge distillation
+"staging_align_model"        // RLHF alignment
+"staging_peft_model"         // parameter-efficient fine-tuning
+
+// Lifecycle
+"staging_promote_model"      // promote to production
+"staging_compare_models"     // A/B comparison
+"staging_convert_format"     // format conversion
+
+// + 78 more: quantize, benchmark, export, serve, rollback ...</code></pre>
+  <p class="fragment dim" style="font-size: 0.7em;">An AI agent can <span class="accent">browse &rarr; download &rarr; fine-tune &rarr; evaluate &rarr; promote</span> without leaving the tool loop</p>
+  <aside class="notes">92 MCP tools -- the single largest tool class in kompile. This shows kompile isn't just about retrieval -- it's the full AI/ML lifecycle exposed as MCP tools. An AI agent can browse a model registry, download a model, load it, run inference, compare it against another model, fine-tune it with PEFT/LoRA, align with RLHF, distill knowledge, and promote the winner to production. All through tool calls, all structured, all auditable.</aside>
+</section>
+
+<section>
+  <h2>Fact Sheets: Structured from Unstructured</h2>
+  <p class="dim">LLM-driven extraction of structured facts from documents</p>
+  <pre><code class="language-java">// FactSheetTool.java
+
+@Tool(name = "derive_fact_sheet",
+    description = "Use an LLM to extract structured facts from documents
+                   and create a new fact sheet")
+public Map&lt;String, Object&gt; deriveFactSheet(DeriveFactSheetInput input)
+
+// Input:  a set of documents (PDFs, web pages, emails)
+// Output: structured fact sheet with:
+//   - Key entities and their properties
+//   - Relationships between entities
+//   - Factual claims with source attribution
+//   - Confidence scores per fact
+
+// The fact sheet becomes queryable structured data:
+@Tool(name = "get_active_fact_sheet")
+// -> Returns structured facts as grounding context
+
+// Fact sheets feed the knowledge graph:
+//   derive_fact_sheet -> FactSheetGraphService
+//     -> builds document-linked knowledge graph
+//     -> entities + edges with provenance tracking</code></pre>
+  <aside class="notes">Fact sheets are the bridge between unstructured and structured. You point them at a pile of documents and the LLM extracts structured facts with source attribution and confidence scores. Those facts become queryable structured data AND feed into the knowledge graph. It's turning prose into database-like precision, with provenance tracking so you know where each fact came from.</aside>
+</section>
+
+<section>
+  <h2>ReAct Agent: Graph-Grounded Reasoning</h2>
+  <pre><code class="language-java">// kompile-react-agent - Reason-Act-Observe loop
+
+// Three specialized reasoners:
+DefaultReasoner        // Standard LLM reasoning
+GraphRagReasoner       // Reasoning grounded in graph retrieval
+EvalBasedReasoner      // Evaluation-in-the-loop reasoning
+
+// The loop:
+while (!done) {
+    // REASON: analyze state, decide next action
+    Action action = reasoner.reason(context, memory);
+
+    // ACT: execute tool call (sequential or parallel)
+    Result result = actor.execute(action);
+
+    // OBSERVE: parse result, update memory
+    Observation obs = observer.observe(result);
+    memory.add(obs);
+
+    // Check: is the answer sufficient?
+    done = finalizer.shouldFinalize(memory);
+}
+
+// GraphRagReasoner augments each reasoning step with:
+//   - Entity context from knowledge graph
+//   - Relationship paths between mentioned entities
+//   - Community summaries from Louvain detection</code></pre>
+  <aside class="notes">The ReAct agent framework closes the loop. GraphRagReasoner doesn't just retrieve documents -- it pulls entity context and relationship paths from the knowledge graph at each reasoning step. EvalBasedReasoner runs evaluation after each step to check for hallucination before continuing. These aren't toy patterns -- they're production reasoning loops that combine structured data access with LLM reasoning.</aside>
+</section>
+
+<section>
+  <h2>RAG Tool: Where It Fits</h2>
+  <pre><code class="language-java">// RagToolImpl.java - RAG as one tool among hundreds
+
+@Tool(name = "rag_query",
+    description = "Queries the document corpus using the configured
+                   retriever and returns relevant information snippets.")
+public Map&lt;String, Object&gt; executeRagQuery(RagQueryInput input) {
+    // Optimization: cap docs and content length
+    int maxDocs = cfg.getRagMaxDocs();  // default: 3
+
+    List&lt;RetrievedDoc&gt; docs =
+        documentRetriever.retrieveWithDetails(input.query(), maxDocs);
+
+    // Handle multi-vector docs (tables get full content, not summary)
+    for (RetrievedDoc doc : docs) {
+        String content = extractFullContent(doc);
+
+        // Large results become fetch handles, not inline blobs
+        if (content.length() > maxContentChars) {
+            String resultId = resultCache.store(fullPayload);
+            result.put("result_id", resultId);
+        }
+    }
+    return result;
+}</code></pre>
+  <p class="fragment"><span class="accent">RAG is just one tool.</span> The AI chooses when it needs reference material vs. live data.</p>
+  <aside class="notes">Notice the optimizations here -- response capping, result-reference caching, multi-vector table handling. Even RAG itself benefits from structured thinking. Tables get their full content returned instead of just the embedding summary. Large results become fetch handles so the AI can page through them. RAG is powerful, but it's one tool in a 642-tool arsenal.</aside>
+</section>
+
+<section>
+  <h2>MCP Optimization: Scaling 642 Tools</h2>
+  <pre><code class="language-java">// McpOptimizationConfig.java - three meta-tool modes
+
+enum MetaToolMode {
+    DIRECT,   // Expose all 642 tools (huge context cost)
+    DYNAMIC,  // Only expose: search_tools, describe_tools,
+              //   execute_tool + allow-list
+    HYBRID    // Meta-tools + rag_query + read_file + list_files
+}
+
+// Three optimization layers:
+// 1. Surgical caps on large responses
+ragMaxContentChars = 2000;    // per document
+ragMaxDocs = 3;               // per query
+knowledgeGraphTruncateChars = 200;
+
+// 2. Result-reference cache (fetch handles for large payloads)
+compressionThresholdChars = 4000;
+// -> Returns: { "result_id": "abc123" }
+// -> AI calls: fetch_result("abc123") to page through
+
+// 3. Per-tool overrides
+toolOverrides = { "rag_query": { maxResponseChars: 1500 } };</code></pre>
+  <aside class="notes">Scaling 642 tools is a real problem -- you can't put 642 tool schemas in context. The meta-tool pattern solves this: expose only search_tools, describe_tools, and execute_tool. The AI discovers what it needs on demand. HYBRID mode adds a small whitelist of frequently-used tools like rag_query and read_file that bypass discovery. The three optimization layers -- response caps, result caching, and dynamic toolsets -- work together to keep context manageable.</aside>
+</section>
+
+<section>
+  <h2>DYNAMIC Mode in Action</h2>
+  <p class="dim">AI sees 3 meta-tools instead of 642 &mdash; discovers on demand</p>
+  <div class="ascii-box" style="font-size: 0.42em; line-height: 1.5;">
+<span class="blue">User:</span> "What entities are connected to Acme Corp?"
+
+<span class="dim">AI's visible toolset (DYNAMIC mode): search_tools, describe_tools, execute_tool</span>
+
+<span class="yellow">Step 1:</span> <span class="accent">search_tools</span>({ query: "graph entity connected" })
+<span class="dim">-> ["graph_find_connected", "graph_search_by_entity", "graph_get_path",
+     "graph_get_overview", "graph_get_related_documents"]</span>
+
+<span class="yellow">Step 2:</span> <span class="accent">describe_tools</span>({ tools: ["graph_find_connected"] })
+<span class="dim">-> { name: "graph_find_connected",
+     params: { node_id: "string", max_depth: "int (default 2)" },
+     returns: "connected nodes with relationship types" }</span>
+
+<span class="yellow">Step 3:</span> <span class="accent">execute_tool</span>({ tool: "graph_find_connected",
+                        args: { node_id: "acme-corp", max_depth: 2 } })
+<span class="dim">-> { nodes: [{ id: "john-doe", type: "PERSON", relation: "CEO_OF" },
+              { id: "widget-inc", type: "ORG", relation: "PARTNER_OF" }] }</span>
+
+<span class="green">Result: AI found and used the right tool without ever seeing its schema in context.</span></div>
+  <aside class="notes">This is what DYNAMIC mode looks like in practice. The AI starts with only 3 tools in context -- search_tools to find tools by keyword, describe_tools to get the JSON schema for a specific tool, and execute_tool to call it with arguments. Three tool schemas instead of 642. The AI discovers what it needs on demand. The context savings are massive -- 642 tool schemas might consume 50K+ tokens; 3 meta-tool schemas use under 500 tokens. The trade-off is latency -- 3 tool calls instead of 1 -- but the context savings make longer conversations possible. Note: Kompile's meta-tools (search_tools/describe_tools/execute_tool) are distinct from Elthoria's discovery tools (list_all_tools/search_tools/get_tool_details) shown earlier -- same pattern, independent implementations. Elthoria's discovery runs within a flat tool namespace; Kompile's meta-tools wrap the entire tool execution layer.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 8: GUARDRAILS -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part VIII</h2>
+  <h3>Guardrails &amp; Evaluation<br><span class="dim">Trust but verify</span></h3>
+</section>
+
+<section>
+  <h2>Tool Gateway: LLM-Based Policy</h2>
+  <pre><code class="language-java">// ToolGatewayService.java - policy enforcement on EVERY tool call
+
+public GatewayDecision evaluate(String toolName, Map&lt;String, Object&gt; args) {
+    List&lt;ToolGatewayRule&gt; matchingRules = rulesProvider.getMatchingRules(toolName);
+    if (matchingRules.isEmpty()) return GatewayDecision.allow();
+
+    // LLM evaluates the tool call against matched rules
+    GatewayDecision decision = evaluateWithLlm(toolName, args, matchingRules);
+    // Returns: ALLOW, REWRITE (sanitize args), or BLOCK
+
+    if (properties.isDryRun()) {
+        log.info("[DRY-RUN] Would have {} '{}'", decision.action(), toolName);
+        return GatewayDecision.allow();
+    }
+
+    return decision;
+}
+
+// Example rules:
+// - "Block any write_file to paths containing 'config' or '.env'"
+// - "Rewrite PII in query arguments before passing to RAG"
+// - "Block all tool calls from unauthenticated sessions"</code></pre>
+  <aside class="notes">The Tool Gateway is an LLM-in-the-loop policy enforcer. Before any tool executes, matching rules are sent to a separate LLM that decides: allow, rewrite the arguments, or block. This enables data governance -- block writes to production, sanitize PII from query arguments, enforce access control. It supports dry-run mode for testing policies and fail-open or fail-closed on errors.</aside>
+</section>
+
+<section>
+  <h2>Hallucination Detection</h2>
+  <pre><code class="language-java">// HallucinationEvaluator.java
+
+private static final String EVALUATION_PROMPT = """
+    Analyze the response for hallucinations - claims not
+    supported by the context.
+
+    For each factual claim, check if it can be verified.
+    A hallucination is a claim that:
+    1. Cannot be verified from context documents
+    2. Contradicts information in the context
+    3. Adds specific details not present in the context
+
+    Calculate: score = 1.0 - (hallucinated / total_claims)
+    """;
+
+// Returns:
+{ "score": 0.85,
+  "totalClaims": 7,
+  "hallucinatedClaims": 1,
+  "hallucinations": ["Claimed the company was founded in 2008,
+                      but context says 2010"],
+  "explanation": "6 of 7 claims verified..." }</code></pre>
+  <aside class="notes">Hallucination detection is an LLM-as-judge evaluator. It takes the response and the context documents, identifies every factual claim, and checks each one against the context. Claims that can't be verified, contradict the context, or add unsupported details are flagged. The score is 1 minus the ratio of hallucinated claims to total claims. This runs continuously on AI responses, not just at test time.</aside>
+</section>
+
+<section>
+  <h2>Evaluation Framework: 16 Types</h2>
+  <table>
+    <tr>
+      <th>Category</th>
+      <th>Evaluators</th>
+    </tr>
+    <tr>
+      <td><span class="pill pill-blue">Answer Quality</span></td>
+      <td>Relevancy, Faithfulness, Factuality, Correctness</td>
+    </tr>
+    <tr>
+      <td><span class="pill pill-green">Context</span></td>
+      <td>Context Relevancy, Context Sufficiency</td>
+    </tr>
+    <tr>
+      <td><span class="pill pill-yellow">Output</span></td>
+      <td>Coherence, Completeness, Conciseness</td>
+    </tr>
+    <tr>
+      <td><span class="pill pill-red">Safety</span></td>
+      <td>Hallucination Detection, Semantic Similarity</td>
+    </tr>
+    <tr>
+      <td><span class="pill pill-purple">Graph</span></td>
+      <td>Entity Presence, Relationship Presence,<br>Entity Type Accuracy, Graph Completeness</td>
+    </tr>
+  </table>
+  <p class="fragment dim" style="font-size: 0.7em;">
+    Guardrails: Prompt Injection, Toxicity, PII Detection, Topic Filtering, Format Validation
+  </p>
+  <aside class="notes">16 evaluation types across 5 categories, plus 5 guardrail types. The graph-specific evaluators are unique to kompile -- they check whether extracted entities actually appear in the source, whether relationships are correct, and whether the graph is complete. This is how you evaluate structured extraction quality, not just text generation quality. The guardrails run as input/output filter chains in priority order.</aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- PART 9: THE HYBRID PATTERN -->
+<!-- ============================================================ -->
+<section class="section-divider">
+  <h2>Part IX</h2>
+  <h3>The Hybrid Pattern<br><span class="dim">Complementary, not competing</span></h3>
+</section>
+
+<section>
+  <h2>When to Use What</h2>
+  <table>
+    <tr>
+      <th>Use Case</th>
+      <th>Approach</th>
+      <th>Why</th>
+    </tr>
+    <tr>
+      <td>"What does the Bless spell do?"</td>
+      <td><span class="pill pill-green">RAG</span></td>
+      <td>Reference text, static content</td>
+    </tr>
+    <tr>
+      <td>"What is Aldric's current HP?"</td>
+      <td><span class="pill pill-blue">Tool</span></td>
+      <td>Live state, exact value needed</td>
+    </tr>
+    <tr>
+      <td>"Who is connected to Acme Corp?"</td>
+      <td><span class="pill pill-purple">Graph</span></td>
+      <td>Relationship traversal</td>
+    </tr>
+    <tr>
+      <td>"Roll to attack the goblin"</td>
+      <td><span class="pill pill-blue">Tool</span></td>
+      <td>Computation + state mutation</td>
+    </tr>
+    <tr>
+      <td>"What were the key events last session?"</td>
+      <td><span class="pill pill-yellow">Structured</span></td>
+      <td>Ordered journal entries</td>
+    </tr>
+    <tr>
+      <td>"What functions call parseConfig?"</td>
+      <td><span class="pill pill-purple">Graph</span></td>
+      <td>Code call graph traversal</td>
+    </tr>
+    <tr>
+      <td>"Summarize the project README"</td>
+      <td><span class="pill pill-green">RAG</span></td>
+      <td>Unstructured text retrieval</td>
+    </tr>
+  </table>
+  <aside class="notes">This table is the practical decision framework. RAG for reference text and static content. Tools for live state, computation, and mutations. Graphs for relationship traversal and structural queries. Structured injection for ordered, prioritized data. The answer is almost never "just use RAG" -- it's "use the right tool for the data shape." And in most real applications, you need all of these working together.</aside>
+</section>
+
+<section>
+  <h2>The Full Architecture</h2>
+  <div class="ascii-box" style="font-size: 0.40em; line-height: 1.35;">
+                                  User Query
+                                      |
+                          +-----------v-----------+
+                          |    Context Assembly    |
+                          |  (4 grounding layers)  |
+                          +-----------+-----------+
+                                      |
+                          +-----------v-----------+
+                          |     LLM Reasoning     |
+                          |   (ReAct loop with    |
+                          |    tool discovery)     |
+                          +-----------+-----------+
+                                      |
+     +----------------------------------------------------------------+
+     |              Tool Gateway (LLM policy enforcement)             |
+     |        ALLOW | REWRITE (sanitize args) | BLOCK                 |
+     +------+------------+------------+------------+------------+-----+
+            |            |            |            |            |
+     +------v-----+ +---v----+ +----v-----+ +----v----+ +-----v------+
+     | rag_query   | | graph_ | | code_    | | dice /  | | filesystem |
+     | (vector     | | search | | search   | | combat  | | read/write |
+     | retrieval)  | | (Neo4j | | (call    | | (state  | | (sandboxed |
+     |             | | + JPA) | | graphs)  | | mutate) | | access)    |
+     +------+------+ +---+----+ +----+-----+ +----+----+ +-----+------+
+            |            |            |            |            |
+     +------v-----+ +---v----+ +----v-----+ +----v----+ +-----v------+
+     | Vector     | | Neo4j  | | Code     | | Game    | | Filesystem |
+     | Index      | | Graph  | | Index    | | State   | |            |
+     +------------+ +--------+ +----------+ +---------+ +------------+
+
+     +----------------------------------------------------------------+
+     |              Evaluation + Guardrails (continuous)               |
+     |  Hallucination | Faithfulness | PII | Toxicity | Format        |
+     +----------------------------------------------------------------+</div>
+  <aside class="notes">This is the complete picture. User query flows through context assembly (4 grounding layers), then to LLM reasoning with ReAct tool discovery. The LLM can reach into five different backends: vector index for RAG, Neo4j/JPA for graph queries, code index for structural code navigation, game state for live data, and filesystem for sandboxed file access. Every tool call passes through the Tool Gateway for policy enforcement. Evaluation and guardrails run continuously on outputs. This is the hybrid pattern -- RAG, tools, graphs, and guardrails working together.</aside>
+</section>
+
+<section>
+  <h2>Key Takeaways</h2>
+  <ol style="list-style: none; font-size: 0.85em;">
+    <li class="fragment" style="margin-bottom: 12px;">
+      <span class="pill pill-blue">1</span>
+      <strong>RAG is a retrieval strategy, not an architecture</strong><br>
+      <span class="dim">It's one tool in a toolkit &mdash; not the toolkit itself</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 12px;">
+      <span class="pill pill-green">2</span>
+      <strong>Structured data gives deterministic guarantees</strong><br>
+      <span class="dim">When you need exact answers, query a database, not a vector index</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 12px;">
+      <span class="pill pill-yellow">3</span>
+      <strong>MCP tools give AI agency over live state</strong><br>
+      <span class="dim">Read, write, compute, and rollback &mdash; not just retrieve</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 12px;">
+      <span class="pill pill-purple">4</span>
+      <strong>Graphs capture what vectors can't: relationships</strong><br>
+      <span class="dim">Entity connections, call chains, causal paths &mdash; structure matters</span>
+    </li>
+    <li class="fragment" style="margin-bottom: 12px;">
+      <span class="pill pill-red">5</span>
+      <strong>The hybrid pattern is the answer</strong><br>
+      <span class="dim">RAG for reference, tools for state, graphs for relationships, guardrails for trust</span>
+    </li>
+  </ol>
+  <aside class="notes">Five takeaways to leave them with. First: RAG is a strategy, not an architecture -- stop treating it as the whole solution. Second: structured data wins when you need exactness -- the UnifiedBonus example shows this viscerally. Third: MCP tools transform AI from a reader to an actor -- read, write, compute, rollback. Fourth: graphs are the missing middle between unstructured text and relational databases -- they capture what vectors flatten. Fifth: the hybrid pattern is the real answer -- use all of these together, each for what it does best. Elthoria proves this works at scale: 196 tools, 4 grounding layers, rule enforcement, multi-agent fallback, and RAG as a reference tool -- not the foundation.</aside>
+</section>
+
+<section>
+  <h1>Beyond RAG</h1>
+  <p style="font-size: 1.1em;">
+    <span class="green">Structured data</span> <span class="flow-arrow">+</span>
+    <span class="blue">MCP tools</span> <span class="flow-arrow">+</span>
+    <span class="purple">Knowledge graphs</span> <span class="flow-arrow">+</span>
+    <span class="yellow">Guardrails</span>
+  </p>
+  <br>
+  <p class="dim">
+    github.com/KonduitAI/kompile<br>
+    Kompile Platform | Elthoria VTT
+  </p>
+  <br>
+  <p style="font-size: 0.7em;">
+    <span class="blue">adam@getkompile.com</span><br>
+    <span class="dim">Questions?</span>
+  </p>
+  <p style="font-size: 0.5em; margin-top: 1.5em; opacity: 0.35;">
+    What is RAG? &rarr; Meet Elthoria &rarr; Where RAG Breaks &rarr; 196 MCP Tools &rarr;
+    4-Layer Grounding &rarr; Tool-Grounded AI &rarr; Kompile Toolkit &rarr; Guardrails &rarr; Hybrid Pattern
+  </p>
+  <aside class="notes">Thank the audience. Recap the one-liner: RAG is a retrieval strategy, not an architecture -- use the right tool for each data shape. Open the floor for questions. If time allows, offer to demo the Elthoria combat flow live or show the Kompile tool discovery in action.</aside>
+</section>
+
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script>
+Reveal.initialize({
+  hash: true,
+  center: true,
+  overview: true,
+  slideNumber: 'c/t',
+  width: 1200,
+  height: 700,
+  margin: 0.05,
+  transition: 'fade',
+  transitionSpeed: 'fast',
+  plugins: [RevealHighlight, RevealNotes],
+  highlight: { highlightOnLoad: true }
+});
+</script>
+</body>
+</html>

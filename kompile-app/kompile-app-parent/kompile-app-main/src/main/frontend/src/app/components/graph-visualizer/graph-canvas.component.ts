@@ -135,6 +135,12 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
     </div>
   `,
   styles: [`
+    :host {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
     .graph-canvas-container {
       position: relative;
       width: 100%;
@@ -296,8 +302,8 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
 
   nodeColors = NODE_COLORS;
   edgeColors = EDGE_COLORS;
-  nodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM'];
-  edgeTypes: EdgeType[] = ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED'];
+  nodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT'];
+  edgeTypes: EdgeType[] = ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE'];
 
   private svg!: d3.Selection<SVGSVGElement, unknown, null, undefined>;
   private zoomContainer!: d3.Selection<SVGGElement, unknown, null, undefined>;
@@ -316,6 +322,12 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   private linkSourceNode: SimulationNode | null = null;
   private mfragTickCounter = 0;
 
+  // Cached D3 selections for ticked() performance
+  private cachedLinkSel!: d3.Selection<SVGLineElement, SimulationLink, SVGGElement, unknown>;
+  private cachedNodeSel!: d3.Selection<SVGCircleElement, SimulationNode, SVGGElement, unknown>;
+  private cachedLabelSel!: d3.Selection<SVGTextElement, SimulationNode, SVGGElement, unknown>;
+  private cachedPriorSel!: d3.Selection<SVGCircleElement, SimulationNode, SVGGElement, unknown>;
+
   private resizeObserver!: ResizeObserver;
   private width = 0;
   private height = 0;
@@ -330,6 +342,10 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     this.initializeZoom();
     this.initializeSimulation();
     this.setupResizeObserver();
+    // Render any data that arrived before the simulation was ready
+    if (this.data) {
+      this.updateGraph();
+    }
   }
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -473,7 +489,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       .attr('stroke-dasharray', d => EDGE_DASH_PATTERNS[d.type] || 'none')
       .attr('marker-end', d => this.getMarker(d.type));
 
-    linkSelection.merge(linkEnter)
+    this.cachedLinkSel = linkSelection.merge(linkEnter)
       .attr('stroke', d => EDGE_COLORS[d.type] || '#999')
       .attr('stroke-width', d => Math.max(1, (d.weight || 1) * 2))
       .attr('stroke-dasharray', d => EDGE_DASH_PATTERNS[d.type] || 'none');
@@ -501,7 +517,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       .on('dblclick', (event, d) => this.onNodeDoubleClick(event, d))
       .on('contextmenu', (event, d) => this.onNodeContextMenu(event, d));
 
-    nodeSelection.merge(nodeEnter)
+    this.cachedNodeSel = nodeSelection.merge(nodeEnter)
       .attr('r', d => NODE_SIZES[d.type] || 10)
       .attr('fill', d => NODE_COLORS[d.type] || '#999')
       .classed('selected', d => this.selectedNode?.id === d.id);
@@ -523,32 +539,37 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       .attr('dy', d => -(NODE_SIZES[d.type] || 10) - 8)
       .text(d => this.truncateLabel(d.label || d.title || d.id, 20));
 
-    labelSelection.merge(labelEnter)
+    this.cachedLabelSel = labelSelection.merge(labelEnter)
       .text(d => this.truncateLabel(d.label || d.title || d.id, 20));
   }
 
   private ticked(): void {
-    // Update link positions
-    this.linksGroup.selectAll<SVGLineElement, SimulationLink>('line')
-      .attr('x1', d => (d.source as SimulationNode).x)
-      .attr('y1', d => (d.source as SimulationNode).y)
-      .attr('x2', d => (d.target as SimulationNode).x)
-      .attr('y2', d => (d.target as SimulationNode).y);
+    // Use cached selections — avoids DOM traversal on every tick
+    if (this.cachedLinkSel) {
+      this.cachedLinkSel
+        .attr('x1', d => (d.source as SimulationNode).x)
+        .attr('y1', d => (d.source as SimulationNode).y)
+        .attr('x2', d => (d.target as SimulationNode).x)
+        .attr('y2', d => (d.target as SimulationNode).y);
+    }
 
-    // Update node positions
-    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle')
-      .attr('cx', d => d.x)
-      .attr('cy', d => d.y);
+    if (this.cachedNodeSel) {
+      this.cachedNodeSel
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y);
+    }
 
-    // Update prior ring positions
-    this.priorRingsGroup.selectAll<SVGCircleElement, SimulationNode>('circle')
-      .attr('cx', d => d.x)
-      .attr('cy', d => d.y);
+    if (this.cachedPriorSel) {
+      this.cachedPriorSel
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y);
+    }
 
-    // Update label positions
-    this.labelsGroup.selectAll<SVGTextElement, SimulationNode>('text')
-      .attr('x', d => d.x)
-      .attr('y', d => d.y);
+    if (this.cachedLabelSel) {
+      this.cachedLabelSel
+        .attr('x', d => d.x)
+        .attr('y', d => d.y);
+    }
 
     // Update MFrag region positions (throttled to every 5th tick for performance)
     if (this.mebnMfragMap) {
@@ -683,10 +704,11 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     let minY = Infinity, maxY = -Infinity;
 
     for (const node of this.nodes) {
-      minX = Math.min(minX, node.x);
-      maxX = Math.max(maxX, node.x);
-      minY = Math.min(minY, node.y);
-      maxY = Math.max(maxY, node.y);
+      const r = NODE_SIZES[node.type] || 10;
+      minX = Math.min(minX, node.x - r);
+      maxX = Math.max(maxX, node.x + r);
+      minY = Math.min(minY, node.y - r);
+      maxY = Math.max(maxY, node.y + r);
     }
 
     return { minX, maxX, minY, maxY };
@@ -753,15 +775,16 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     // Remove all existing prior rings
     this.priorRingsGroup.selectAll('circle').remove();
 
-    if (!this.priorOverlay) return;
+    if (!this.priorOverlay) {
+      this.cachedPriorSel = null as any;
+      return;
+    }
 
     // Add a dashed ring for each node with a prior value
-    for (const node of this.nodes) {
+    const nodesWithPrior = this.nodes.filter(n => this.priorOverlay![n.id] !== undefined);
+    for (const node of nodesWithPrior) {
       const prior = this.priorOverlay[node.id];
-      if (prior === undefined) continue;
-
       const baseRadius = (node as any).r || NODE_SIZES[node.type] || 10;
-      // Ring radius scales with prior — outer ring at base+4, proportional fill
       const ringRadius = baseRadius + 4;
 
       this.priorRingsGroup.append('circle')
@@ -776,6 +799,9 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
         .attr('opacity', 0.7)
         .attr('pointer-events', 'none');
     }
+
+    // Cache selection for ticked()
+    this.cachedPriorSel = this.priorRingsGroup.selectAll<SVGCircleElement, SimulationNode>('circle');
   }
 
   private readonly MFRAG_COLORS = [

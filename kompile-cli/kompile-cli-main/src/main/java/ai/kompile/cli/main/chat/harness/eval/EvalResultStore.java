@@ -16,11 +16,10 @@
 
 package ai.kompile.cli.main.chat.harness.eval;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -53,9 +52,7 @@ public class EvalResultStore {
     /** Constructor with custom store file path (for testing). */
     public EvalResultStore(Path storeFile) {
         this.storeFile = storeFile;
-        this.mapper = new ObjectMapper();
-        this.mapper.registerModule(new JavaTimeModule());
-        this.mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        this.mapper = JsonUtils.standardMapper();
         this.runs = new ArrayList<>();
     }
 

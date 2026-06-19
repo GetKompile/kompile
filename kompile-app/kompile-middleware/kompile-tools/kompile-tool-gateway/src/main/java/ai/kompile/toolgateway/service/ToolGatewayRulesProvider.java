@@ -18,6 +18,7 @@ package ai.kompile.toolgateway.service;
 
 import ai.kompile.toolgateway.model.ToolGatewayRule;
 import ai.kompile.toolgateway.model.ToolGatewayRulesConfig;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -46,7 +47,7 @@ public class ToolGatewayRulesProvider {
             + "/.kompile/config/tool-gateway-rules.json";
 
     private final ToolGatewayConfigService configService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private volatile ToolGatewayRulesConfig config = new ToolGatewayRulesConfig();
 
     public ToolGatewayRulesProvider(ToolGatewayConfigService configService) {

@@ -32,6 +32,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Spawns external agent processes (qwen, claude, codex, etc.) as subagents.
@@ -70,14 +72,44 @@ public class DirectSubagentRunnerStdio {
     private volatile Map<String, String> extraEnvironment = Map.of();
     private volatile String lastTaskId;
 
-    /** Persistent claude subprocess — kept alive across task invocations. */
-    private volatile PersistentAgentProcess claudeProcess;
+    /** Cancellation signal for the currently running subagent. */
+    private final AtomicBoolean cancelSignal = new AtomicBoolean(false);
+    /** The managed subprocess currently being executed, if any. */
+    private volatile Process currentProcess;
+    /** The thread blocked inside {@link #executeSubagentProcess}. */
+    private volatile Thread waitingThread;
+
+    // NOTE: there is intentionally NO shared "claudeProcess" field here.
+    // Each call to runClaudeStreaming() creates its own PersistentAgentProcess,
+    // uses it for exactly one turn, then disposes it.  This is the ONLY design
+    // that allows true parallelism: a shared process serialises all callers
+    // through its internal sendLock and contaminates every subtask with the
+    // accumulated conversation context from prior subtasks.
 
     public void setSessionTracker(McpSessionTracker tracker) { this.sessionTracker = tracker; }
     public void setSkillsInjection(SkillsInjection injection) { this.skillsInjection = injection; }
     public void setSystemPromptManager(SystemPromptManager spm) { this.systemPromptManager = spm; }
     public void setExtraEnvironment(Map<String, String> env) { this.extraEnvironment = env != null ? env : Map.of(); }
     public String getLastTaskId() { return lastTaskId; }
+
+    /**
+     * Cancel the currently running subagent, if any.
+     * <p>
+     * Sets the cancellation signal, destroys the managed subprocess (and its
+     * descendants), and interrupts the waiting thread. This is safe to call
+     * from any thread.
+     */
+    public void cancel() {
+        cancelSignal.set(true);
+        Process p = currentProcess;
+        if (p != null && p.isAlive()) {
+            killProcessTree(p);
+        }
+        Thread wt = waitingThread;
+        if (wt != null) {
+            wt.interrupt();
+        }
+    }
 
     /** Maximum subagent recursion depth before MCP tool injection is disabled. */
     private static final int MAX_SUBAGENT_DEPTH = 3;
@@ -196,7 +228,7 @@ public class DirectSubagentRunnerStdio {
 
     String executeSubagentProcess(String agentName, String effectivePrompt, String binary,
                                           String prompt, int currentDepth) throws Exception {
-        List<String> cmd = buildAgentCommand(binary, agentName, effectivePrompt);
+        List<String> cmd = buildAgentCommand(binary, agentName);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(workDir.toFile());
@@ -207,14 +239,14 @@ public class DirectSubagentRunnerStdio {
         // CRITICAL: Do NOT use inheritIO(). When running inside kompile mcp-stdio:
         //   - stdout is the MCP JSON-RPC pipe — subprocess output would corrupt it
         //   - stdin is the MCP JSON-RPC input — subprocess reads would consume messages
-        // Instead: close stdin, merge stderr into stdout, capture all output.
-        // Use platform-specific null device for stdin redirection.
-        String osName = System.getProperty("os.name").toLowerCase();
-        File nullDevice = osName.contains("win") ? new File("NUL") : new File("/dev/null");
-        pb.redirectInput(ProcessBuilder.Redirect.from(nullDevice));
+        // Instead: pipe stdin from this process, merge stderr into stdout, capture all output.
+        pb.redirectInput(ProcessBuilder.Redirect.PIPE);
         pb.redirectErrorStream(true); // merge stderr into stdout for unified capture
 
+        cancelSignal.set(false);
         Process process = pb.start();
+        currentProcess = process;
+        waitingThread = Thread.currentThread();
         long startTime = System.currentTimeMillis();
 
         // Stream full output to a temp file while keeping a bounded buffer for summary.
@@ -267,7 +299,48 @@ public class DirectSubagentRunnerStdio {
         outputReader.setDaemon(true);
         outputReader.start();
 
-        int exitCode = process.waitFor();
+        // Write the prompt to the child's stdin and close it. This is the managed,
+        // provider-agnostic way to deliver a one-shot task to a subagent.
+        Thread stdinWriter = new Thread(() -> {
+            try (OutputStream out = process.getOutputStream()) {
+                out.write(effectivePrompt.getBytes(StandardCharsets.UTF_8));
+                out.flush();
+            } catch (IOException e) {
+                // Process may have exited before consuming all input
+            }
+        }, "subagent-stdin-" + agentName);
+        stdinWriter.setDaemon(true);
+        stdinWriter.start();
+
+        int exitCode;
+        try {
+            while (!process.waitFor(200, TimeUnit.MILLISECONDS)) {
+                if (cancelSignal.get() || Thread.interrupted()) {
+                    cancelSignal.set(true);
+                    killProcessTree(process);
+                    break;
+                }
+            }
+            if (process.isAlive()) {
+                // Either cancelled or a spurious wakeup: give the process a moment to die.
+                process.waitFor(5, TimeUnit.SECONDS);
+            }
+            if (cancelSignal.get()) {
+                throw new InterruptedException("Subagent '" + agentName + "' was cancelled");
+            }
+            exitCode = process.isAlive() ? -1 : process.exitValue();
+        } catch (InterruptedException e) {
+            cancelSignal.set(true);
+            killProcessTree(process);
+            Thread.currentThread().interrupt();
+            throw new InterruptedException("Subagent '" + agentName + "' was cancelled");
+        } finally {
+            waitingThread = null;
+            currentProcess = null;
+            try { process.getOutputStream().close(); } catch (IOException ignored) {}
+            try { stdinWriter.join(2000); } catch (InterruptedException ignored) {}
+        }
+
         outputReader.join(5000); // wait up to 5s for output thread to finish
 
         long elapsed = System.currentTimeMillis() - startTime;
@@ -321,6 +394,25 @@ public class DirectSubagentRunnerStdio {
         return result.toString();
     }
 
+    /**
+     * Destroy a process and its descendants. Tries a graceful destroy first,
+     * then forcibly terminates anything still alive.
+     */
+    private void killProcessTree(Process process) {
+        if (process == null || !process.isAlive()) return;
+        try {
+            process.destroy();
+            process.descendants().forEach(ProcessHandle::destroy);
+            if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.descendants().forEach(ProcessHandle::destroyForcibly);
+                process.waitFor(2, TimeUnit.SECONDS);
+            }
+        } catch (Exception e) {
+            process.destroyForcibly();
+        }
+    }
+
     private String resolveAgentBinary(String agentName) {
         // NOTE: claude is handled via streaming API in runClaudeStreaming(), never reaches here
         String binary = switch (agentName.toLowerCase()) {
@@ -345,98 +437,99 @@ public class DirectSubagentRunnerStdio {
         return null;
     }
 
-    private List<String> buildAgentCommand(String binary, String agentName, String prompt) {
-        List<String> cmd = new ArrayList<>();
-        cmd.add(binary);
-
-        String name = agentName.toLowerCase();
-
-        // Build the non-interactive command for each agent.
-        // NOTE: claude -p is BANNED (expensive one-shot invocation). Claude subagents
-        // must use persistent subprocess mode via the kompile session, not spawned here.
-        if (name.contains("codex")) {
-            // codex exec --full-auto "prompt"
-            cmd.add("exec");
-            cmd.add("--full-auto");
-            cmd.add(prompt);
-        } else if (name.contains("qwen")) {
-            // qwen --yolo -p "prompt"
-            cmd.add("--yolo");
-            cmd.add("-p");
-            cmd.add(prompt);
-        } else if (name.contains("gemini")) {
-            // gemini --yolo -p "prompt"
-            cmd.add("--yolo");
-            cmd.add("-p");
-            cmd.add(prompt);
-        } else if (name.contains("opencode")) {
-            // opencode run "prompt" (auto-approves in non-interactive mode)
-            cmd.add("run");
-            cmd.add(prompt);
-        } else {
-            // Generic fallback: try -p flag
-            cmd.add("-p");
-            cmd.add(prompt);
-        }
-
-        return cmd;
+    /**
+     * Build the provider-agnostic managed command for a subagent.
+     * <p>
+     * Only the resolved binary is returned. The prompt is delivered over stdin
+     * after the process starts, so no provider prompt-mode flags (e.g. {@code -p},
+     * {@code exec}, {@code run}), continuation flags, fork flags, or session flags
+     * are added to the argument vector.
+     */
+    List<String> buildAgentCommand(String binary, String agentName) {
+        return new ArrayList<>(List.of(binary));
     }
 
     /**
-     * Run a claude subagent via persistent subprocess with stream-json protocol.
-     * Keeps the process alive across invocations — no -p one-shot spawn.
+     * Run a claude subagent via the persistent stream-json protocol.
+     * <p>
+     * ISOLATION CONTRACT: A brand-new {@link PersistentAgentProcess} is created,
+     * used for exactly ONE turn, and then closed.  This guarantees:
+     * <ul>
+     *   <li>True parallelism — concurrent callers (multi_task subtasks) each get
+     *       their own OS process, unblocked by any shared sendLock.</li>
+     *   <li>Isolated context — no conversation history leaks between subtasks.</li>
+     *   <li>Deterministic lifecycle — the process dies as soon as the turn
+     *       completes or fails, leaving no dangling processes.</li>
+     * </ul>
+     * There is intentionally NO "keep-alive" or process-reuse logic here.
      */
     private String runClaudeStreaming(AgentConfig agent, String prompt) throws Exception {
         long startTime = System.currentTimeMillis();
-        System.err.println(GREEN + "⟳ Starting claude subagent (persistent stream-json)" + RESET);
+        System.err.println(GREEN + "⟳ Starting claude subagent (isolated stream-json process)" + RESET);
         System.err.println(DIM + "  Prompt: " + prompt.substring(0, Math.min(80, prompt.length())) + "..." + RESET);
         System.err.flush();
 
+        PersistentAgentProcess proc = spawnFreshClaudeProcess(agent);
         try {
-            ensureClaudeProcess(agent);
-            String result = claudeProcess.sendMessage(prompt);
+            String result = proc.sendMessage(prompt);
 
             long elapsed = System.currentTimeMillis() - startTime;
             System.err.println(GREEN + "✓ Claude subagent completed in " +
-                    String.format("%.1fs", elapsed / 1000.0) + RESET);
+                    String.format("%.1fs", elapsed / 1000.0) + " (session: " +
+                    proc.getSessionId() + ")" + RESET);
             System.err.flush();
 
             return result.isEmpty() ? "(claude subagent returned empty response)" : result;
+        } catch (PersistentAgentProcess.TimedOutException toe) {
+            long elapsed = System.currentTimeMillis() - startTime;
+            System.err.println(RED + "⏱ Claude subagent timed out after " +
+                    String.format("%.1fs", elapsed / 1000.0) + ": " + toe.getMessage() + RESET);
+            System.err.flush();
+            // Re-throw so the caller (runSubtask / StdioMultiTaskTool) can record TIMED_OUT
+            throw toe;
         } catch (Exception e) {
-            // Process died — clear reference so next call starts fresh
-            if (claudeProcess != null) {
-                claudeProcess.close();
-                claudeProcess = null;
-            }
             long elapsed = System.currentTimeMillis() - startTime;
             System.err.println(RED + "✗ Claude subagent failed after " +
                     String.format("%.1fs", elapsed / 1000.0) + ": " + e.getMessage() + RESET);
             System.err.flush();
             throw e;
+        } finally {
+            // Always dispose — never leak the subprocess
+            proc.close();
         }
     }
 
     /**
-     * Ensure the persistent claude subprocess is running, starting it if needed.
+     * Spawn a fresh, isolated {@link PersistentAgentProcess} for a single subtask.
+     * <p>
+     * Callers are responsible for closing the returned process via try-finally.
+     * This method only creates and starts the process; it does not send any
+     * messages.
+     *
+     * @param agent config containing optional system prompt / model override
+     * @return a started (ready) process — caller must close it
+     * @throws IOException          if the claude binary is missing or fails to start
+     * @throws InterruptedException if the startup wait is interrupted
      */
-    private void ensureClaudeProcess(AgentConfig agent) throws IOException, InterruptedException {
-        if (claudeProcess != null && claudeProcess.isAlive()) return;
-
-        String systemPrompt = agent.getSystemPrompt();
+    PersistentAgentProcess spawnFreshClaudeProcess(AgentConfig agent)
+            throws IOException, InterruptedException {
         String binary = ai.kompile.cli.main.chat.agent.SubprocessAgentRunner.resolveAgentBinary("claude");
         if (binary == null) {
             throw new IOException("claude not found on PATH");
         }
 
-        claudeProcess = PersistentAgentProcess.builder(binary)
+        String systemPrompt = agent.getSystemPrompt();
+
+        PersistentAgentProcess proc = PersistentAgentProcess.builder(binary)
                 .workDir(workDir)
                 .systemPrompt(systemPrompt)
                 .skipPermissions(true)
                 .build();
-        claudeProcess.start();
-        System.err.println(DIM + "  Persistent claude process started (session: " +
-                claudeProcess.getSessionId() + ")" + RESET);
+        proc.start();
+        System.err.println(DIM + "  Isolated claude process started (session: " +
+                proc.getSessionId() + ")" + RESET);
         System.err.flush();
+        return proc;
     }
 
     private RoleConfig resolveRole(String roleName) {

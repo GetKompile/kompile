@@ -651,61 +651,7 @@ class VirtualTerminalTest {
     // ========================================================================
 
     @Nested
-    class TuiChromeFiltering {
-
-        @Test
-        void filtersCtrCLine() {
-            vt.feed("ctrl+c to cancel or /quit to exit");
-            assertEquals("", vt.getNewText());
-        }
-
-        @Test
-        void filtersGeneratingSpinner() {
-            vt.feed("Generating... please wait");
-            assertEquals("", vt.getNewText());
-        }
-
-        @Test
-        void filtersThinkingSpinner() {
-            vt.feed("Thinking... max effort");
-            assertEquals("", vt.getNewText());
-        }
-
-        @Test
-        void filtersOpenCodeSessionInfo() {
-            vt.feed("opencode session 12345 model gpt-4");
-            assertEquals("", vt.getNewText());
-        }
-
-        @Test
-        void filtersTokenCostLine() {
-            vt.feed("cost: $0.05 tokens: 1234 input/output");
-            assertEquals("", vt.getNewText());
-        }
-
-        @Test
-        void filtersInputPromptLine() {
-            vt.feed("Enter a prompt or type a message here");
-            assertEquals("", vt.getNewText());
-        }
-
-        @Test
-        void filtersHelpHints() {
-            vt.feed("/help for commands /agent to switch /compact context");
-            assertEquals("", vt.getNewText());
-        }
-
-        @Test
-        void filtersEscCancelHints() {
-            vt.feed("Press esc to cancel the current operation");
-            assertEquals("", vt.getNewText());
-        }
-
-        @Test
-        void filtersSketchingSpinner() {
-            vt.feed("Sketching the solution plan now");
-            assertEquals("", vt.getNewText());
-        }
+    class StructuralFiltering {
 
         @Test
         void passesRealLlmContent() {
@@ -722,20 +668,24 @@ class VirtualTerminalTest {
         }
 
         @Test
-        void filtersDecorativeRows() {
-            // Box-drawing characters dominating the row
-            vt.feed("────────────────────────────────");
-            String text = vt.getAllContentText();
-            assertEquals("", text, "Should filter decorative rows");
+        void filtersTooShortLines() {
+            // Lines under 5 chars or without a real word should be filtered
+            vt.feed("ab");
+            assertEquals("", vt.getNewText());
         }
 
         @Test
-        void passesDecorativeRowsWithText() {
-            // Mix of box drawing and real text should pass if enough text
-            vt.feed("│ File: src/main/java/Foo.java │");
-            String text = vt.getAllContentText();
-            // The row has enough alnum content to pass through
-            assertFalse(text.isEmpty(), "Row with real text should pass");
+        void filtersNoRealWords() {
+            // Only short fragments, no 3+ char word tokens
+            vt.feed("a b c d e f g h");
+            assertEquals("", vt.getNewText());
+        }
+
+        @Test
+        void passesLongContentLines() {
+            vt.feed("This is a perfectly normal response from an LLM agent.");
+            String text = vt.getNewText();
+            assertFalse(text.isEmpty(), "Normal content should pass structural filters");
         }
     }
 

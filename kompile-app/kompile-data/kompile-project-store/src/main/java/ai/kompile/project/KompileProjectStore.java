@@ -15,9 +15,9 @@
  */
 package ai.kompile.project;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -46,10 +46,7 @@ public class KompileProjectStore {
     private final ObjectMapper mapper;
 
     public KompileProjectStore() {
-        this.mapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .enable(SerializationFeature.INDENT_OUTPUT);
+        this.mapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
     }
 
     public KompileProjectManifest init(Path root, KompileProjectInitRequest request) {

@@ -16,6 +16,7 @@
 
 package ai.kompile.modelmanager.vlm;
 
+import ai.kompile.utils.FormatUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -138,7 +139,7 @@ public class VlmModelSetDownloader {
                 log.info("Downloaded {}/{}: {} ({})",
                     completedComponents, totalComponents,
                     component.getFileName(),
-                    result.isFromCache() ? "cached" : formatBytes(result.getDownloadedBytes()));
+                    result.isFromCache() ? "cached" : FormatUtils.formatBytes(result.getDownloadedBytes()));
             } catch (Exception e) {
                 log.error("Failed to download component: {}", component.getFileName(), e);
                 componentResults.add(DownloadComponentResult.failed(component, e.getMessage()));
@@ -436,13 +437,6 @@ public class VlmModelSetDownloader {
         } catch (java.security.NoSuchAlgorithmException e) {
             throw new IOException("SHA-256 not available", e);
         }
-    }
-
-    private static String formatBytes(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
     // =====================================================================

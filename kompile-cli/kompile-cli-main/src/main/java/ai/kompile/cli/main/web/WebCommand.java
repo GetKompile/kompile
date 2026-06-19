@@ -25,7 +25,7 @@ import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import ai.kompile.cli.main.manage.ServiceManager;
 import ai.kompile.cli.main.manage.ServiceManager.ComponentStatus;
 import ai.kompile.cli.main.manage.ServiceManager.ProcessResult;
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import org.apache.maven.shared.invoker.*;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;

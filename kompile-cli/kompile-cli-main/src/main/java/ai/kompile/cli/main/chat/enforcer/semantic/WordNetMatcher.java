@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.enforcer.semantic;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -230,7 +231,7 @@ public class WordNetMatcher implements SemanticMatcher {
 
     private static Map<String, Set<String>> parseDictionary(String json) {
         try {
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = JsonUtils.standardMapper();
             JsonNode root = mapper.readTree(json);
             Map<String, Set<String>> result = new HashMap<>();
             Iterator<Map.Entry<String, JsonNode>> fields = root.fields();

@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Slf4j
@@ -57,7 +58,7 @@ public class DefaultDiscordApiClient implements DiscordApiClient {
 
     public DefaultDiscordApiClient() {
         this.httpClient = HttpClient.newHttpClient();
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     public DefaultDiscordApiClient(HttpClient httpClient, ObjectMapper objectMapper) {

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.mcp;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -27,8 +28,10 @@ import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -48,7 +51,7 @@ import java.util.concurrent.TimeUnit;
  */
 public class McpToolInjection {
 
-    private static final ObjectMapper OM = new ObjectMapper();
+    private static final ObjectMapper OM = JsonUtils.standardMapper();
     private static final String BACKUP_SUFFIX = ".kompile-backup";
 
     /** JVM shutdown hook for crash-safe cleanup of injected tools. */
@@ -122,8 +125,8 @@ public class McpToolInjection {
             return registerAndReturn(injectForClaude(normalizedWd, launcher, sseUrl));
         } else if (agent.contains("codex")) {
             return registerAndReturn(injectForCodex(normalizedWd, launcher, sseUrl));
-        } else if (agent.contains("gemini")) {
-            return registerAndReturn(injectForGemini(normalizedWd, launcher, sseUrl));
+        } else if (agent.contains("gemini") || agent.contains("agy") || agent.contains("antigravity")) {
+            return registerAndReturn(injectForAgy(normalizedWd, launcher, sseUrl));
         } else if (agent.contains("opencode")) {
             return registerAndReturn(injectForOpenCode(normalizedWd, launcher, sseUrl));
         } else {
@@ -206,6 +209,8 @@ public class McpToolInjection {
             } else {
                 settings = OM.createObjectNode();
             }
+
+            mergeAllowedProjectMcpServers(settings, workingDir.resolve(".mcp.json"));
 
             // Per-project temp file for timing
             String wdHash = Integer.toHexString(workingDir.toAbsolutePath().toString().hashCode() & 0x7fffffff);
@@ -322,6 +327,37 @@ public class McpToolInjection {
         }
     }
 
+    private static void mergeAllowedProjectMcpServers(ObjectNode settings, Path mcpConfigPath) throws IOException {
+        Set<String> serverNames = new LinkedHashSet<>();
+        serverNames.add("kompile");
+
+        if (Files.exists(mcpConfigPath)) {
+            JsonNode parsed = OM.readTree(Files.readString(mcpConfigPath));
+            JsonNode mcpServers = parsed.path("mcpServers");
+            if (mcpServers.isObject()) {
+                mcpServers.fieldNames().forEachRemaining(serverNames::add);
+            }
+        }
+
+        ArrayNode allowed = settings.has("allowedMcpServers") && settings.get("allowedMcpServers").isArray()
+                ? (ArrayNode) settings.get("allowedMcpServers")
+                : settings.putArray("allowedMcpServers");
+
+        Set<String> existingNames = new LinkedHashSet<>();
+        for (JsonNode entry : allowed) {
+            String name = entry.path("serverName").asText("");
+            if (!name.isBlank()) {
+                existingNames.add(name);
+            }
+        }
+
+        for (String serverName : serverNames) {
+            if (serverName != null && !serverName.isBlank() && existingNames.add(serverName)) {
+                allowed.addObject().put("serverName", serverName);
+            }
+        }
+    }
+
     /** Remove kompile-managed matcher entries from a hook event array. */
     private static void removeKompileMatchersFromArray(ObjectNode hooks, String event) {
         JsonNode arr = hooks.get(event);
@@ -359,7 +395,7 @@ public class McpToolInjection {
     private static Path resolveSettingsPath(Path workingDir, String agent) {
         if (agent.contains("claude")) return workingDir.resolve(".mcp.json");
         if (agent.contains("codex")) return Path.of(System.getProperty("user.home"), ".codex", "config.toml");
-        if (agent.contains("gemini")) return Path.of(System.getProperty("user.home"), ".gemini", "settings.json");
+        if (agent.contains("gemini") || agent.contains("agy") || agent.contains("antigravity")) return Path.of(System.getProperty("user.home"), ".agy", "settings.json");
         if (agent.contains("opencode")) {
             return isCrushFormat() ? workingDir.resolve("opencode.json") : workingDir.resolve(".opencode.json");
         }
@@ -375,7 +411,9 @@ public class McpToolInjection {
     private static Path injectForClaude(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
                                          String sseUrl) throws IOException {
         Path settingsFile = workingDir.resolve(".mcp.json");
-        return writeConfig(settingsFile, workingDir, launcher, sseUrl);
+        Path written = writeConfig(settingsFile, workingDir, launcher, sseUrl);
+        ensureHooksPreConfigured(workingDir);
+        return written;
     }
 
     // ── Qwen Code ──────────────────────────────────────────────────────────
@@ -441,13 +479,13 @@ public class McpToolInjection {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    // ── Gemini CLI ─────────────────────────────────────────────────────────
+    // ── Antigravity CLI ─────────────────────────────────────────────────────
 
-    private static Path injectForGemini(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
+    private static Path injectForAgy(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
                                          String sseUrl) throws IOException {
-        Path geminiDir = Path.of(System.getProperty("user.home"), ".gemini");
-        Files.createDirectories(geminiDir);
-        Path settingsFile = geminiDir.resolve("settings.json");
+        Path agyDir = Path.of(System.getProperty("user.home"), ".agy");
+        Files.createDirectories(agyDir);
+        Path settingsFile = agyDir.resolve("settings.json");
         return writeConfig(settingsFile, workingDir, launcher, sseUrl);
     }
 
@@ -753,7 +791,8 @@ public class McpToolInjection {
             Path.of(System.getProperty("user.home"), ".opencode", "opencode.json"),
             Path.of(System.getProperty("user.home"), ".opencode.json"),
             Path.of(System.getProperty("user.home"), ".codex", "config.toml"),
-            Path.of(System.getProperty("user.home"), ".gemini", "settings.json")
+            Path.of(System.getProperty("user.home"), ".gemini", "settings.json"),
+            Path.of(System.getProperty("user.home"), ".agy", "settings.json")
         );
 
         for (Path candidate : candidates) {

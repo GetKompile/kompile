@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.*;
@@ -41,7 +43,7 @@ import java.util.stream.Stream;
  */
 public class ToolCallIndex {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final String TOOL_CALLS_DIR = "tool-calls";
     private static final String COMBINED_INDEX = "all-tool-calls.jsonl";
 
@@ -443,7 +445,7 @@ public class ToolCallIndex {
     private static String truncate(String s, int max) {
         if (s == null) return "";
         s = s.replace("\n", " ").replace("\r", "");
-        return s.length() > max ? s.substring(0, max - 3) + "..." : s;
+        return StringUtils.truncate(s, max);
     }
 
     private static <K> Map<K, Long> sortByValueDesc(Map<K, Long> map) {

@@ -2199,8 +2199,7 @@ class TuiAgentResponseTest {
             assertTrue(fullScreen.contains("ai.kompile") || fullScreen.contains("kompile-cli")
                             || fullScreen.contains("groupId") || fullScreen.contains("version"),
                     agent + ": file content must be visible");
-            // Filename in header row may be filtered by isDecorativeRow (─── chars),
-            // so check body content which has line numbers and XML tags
+            // Check body content which has line numbers and XML tags
             assertTrue(fullScreen.contains("project") || fullScreen.contains("artifactId")
                             || fullScreen.contains("1.0.0"),
                     agent + ": file content body must be visible");

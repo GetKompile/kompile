@@ -64,9 +64,12 @@ public class BayesianNetworkController {
     /**
      * Quick query: build network from a single target and get all posteriors.
      */
-    @GetMapping("/query/{nodeId}")
+    // nodeId is a query param, not a path segment: KG node IDs (e.g. document nodes)
+    // embed filesystem paths ('/'), which Tomcat rejects as %2F in the URL path.
+    // Matches the KnowledgeGraphController GET /edges?nodeId=... convention.
+    @GetMapping("/query")
     public ResponseEntity<BayesianInferenceResult> queryFromNode(
-            @PathVariable String nodeId,
+            @RequestParam String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
         BayesianInferenceResult result = bayesianService.queryAllPosteriors(
@@ -93,9 +96,9 @@ public class BayesianNetworkController {
     /**
      * Get network statistics without running inference.
      */
-    @GetMapping("/network/{nodeId}/stats")
+    @GetMapping("/network/stats")
     public ResponseEntity<Map<String, Object>> networkStats(
-            @PathVariable String nodeId,
+            @RequestParam String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
         Map<String, Object> stats = bayesianService.getNetworkStatistics(
@@ -126,9 +129,9 @@ public class BayesianNetworkController {
     /**
      * Quick MEBN query from a single target node.
      */
-    @GetMapping("/mebn/query/{nodeId}")
+    @GetMapping("/mebn/query")
     public ResponseEntity<BayesianInferenceResult> queryMebnFromNode(
-            @PathVariable String nodeId,
+            @RequestParam String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
         BayesianInferenceResult result = bayesianService.queryMebnFromKg(
@@ -139,9 +142,9 @@ public class BayesianNetworkController {
     /**
      * Get MTheory statistics (entity types, MFrags, variables) without inference.
      */
-    @GetMapping("/mebn/stats/{nodeId}")
+    @GetMapping("/mebn/stats")
     public ResponseEntity<Map<String, Object>> mebnStats(
-            @PathVariable String nodeId,
+            @RequestParam String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
         Map<String, Object> stats = bayesianService.getMebnStatistics(
@@ -154,9 +157,9 @@ public class BayesianNetworkController {
      * entity type, and related variables — alongside inference results with
      * per-variable MEBN metadata for graph visualization.
      */
-    @GetMapping("/mebn/structure/{nodeId}")
+    @GetMapping("/mebn/structure")
     public ResponseEntity<BayesianInferenceResult> mebnStructure(
-            @PathVariable String nodeId,
+            @RequestParam String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
         BayesianInferenceResult result = bayesianService.queryMebnFromKg(
@@ -205,9 +208,9 @@ public class BayesianNetworkController {
     /**
      * Quick sensitivity: which variables most influence a given node?
      */
-    @GetMapping("/sensitivity/{nodeId}")
+    @GetMapping("/sensitivity")
     public ResponseEntity<SensitivityResult> quickSensitivity(
-            @PathVariable String nodeId,
+            @RequestParam String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "50") int maxNodes) {
         SensitivityResult result = bayesianService.sensitivityAnalysis(

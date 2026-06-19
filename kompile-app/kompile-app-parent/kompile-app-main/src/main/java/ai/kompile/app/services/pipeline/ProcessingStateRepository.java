@@ -16,8 +16,8 @@
 
 package ai.kompile.app.services.pipeline;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -80,8 +80,7 @@ public class ProcessingStateRepository {
             this.stateDir = Paths.get(System.getProperty("java.io.tmpdir"), "kompile-state", STATE_DIR_NAME);
             logger.warn("kompile.ingest.state-directory not configured, using temporary directory: {}", this.stateDir);
         }
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
+        this.objectMapper = JsonUtils.standardMapper();
         this.persistenceExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "state-persistence");
             t.setDaemon(true);

@@ -30,6 +30,7 @@ import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jline.reader.EndOfFileException;
@@ -458,7 +459,7 @@ public class ChatCommand implements Callable<Integer> {
      * EmulatedPassthroughCommand with enforcer fields set. ONE REPL, not two.
      */
     private int runEnforcedPassthroughMode(String agent) {
-        ObjectMapper objectMapper = new ObjectMapper();
+        ObjectMapper objectMapper = JsonUtils.standardMapper();
         Path wd = Path.of(".").toAbsolutePath().normalize();
 
         String rules;

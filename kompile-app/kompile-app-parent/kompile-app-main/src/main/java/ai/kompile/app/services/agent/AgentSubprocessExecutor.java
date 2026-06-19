@@ -111,6 +111,15 @@ public class AgentSubprocessExecutor {
             command.add(agent.getSkipPermissionsFlag());
         }
 
+        // Add model selection if a model is configured for this agent (e.g. "--model <model>").
+        // Left unset, the CLI uses its own default model.
+        String modelFlag = agent.getModelFlag();
+        String modelName = agent.getModelName();
+        if (modelFlag != null && !modelFlag.isBlank() && modelName != null && !modelName.isBlank()) {
+            command.add(modelFlag);
+            command.add(modelName);
+        }
+
         // Add MCP server configuration if agent supports it and tools are available
         if (injectMcpTools && agent.isMcpSupported() && toolDiscoveryService != null) {
             addMcpServerArgs(command, agent);
@@ -142,13 +151,13 @@ public class AgentSubprocessExecutor {
         // Add the prompt - handle Gemini's workspace restrictions
         command.add("-p");
 
-        if (isGeminiAgent(agent)) {
+        if (isAgyAgent(agent)) {
             try {
-                String promptFilePath = createGeminiPromptFile(workingDirectory, prompt);
+                String promptFilePath = createAgyPromptFile(workingDirectory, prompt);
                 command.add("@" + promptFilePath);
-                log.debug("Created Gemini prompt file at: {}", promptFilePath);
+                log.debug("Created Agy prompt file at: {}", promptFilePath);
             } catch (IOException e) {
-                log.warn("Failed to create Gemini prompt file, using inline prompt: {}", e.getMessage());
+                log.warn("Failed to create Agy prompt file, using inline prompt: {}", e.getMessage());
                 command.add(prompt);
             }
         } else {
@@ -378,21 +387,21 @@ public class AgentSubprocessExecutor {
         return name.contains("codex") || command.contains("codex");
     }
 
-    private boolean isGeminiAgent(AgentProvider agent) {
+    private boolean isAgyAgent(AgentProvider agent) {
         if (agent == null || agent.getName() == null) {
             return false;
         }
         String name = agent.getName().toLowerCase();
         String command = agent.getCommand() != null ? agent.getCommand().toLowerCase() : "";
-        return name.contains("gemini") || command.contains("gemini");
+        return name.contains("gemini") || name.contains("agy") || name.contains("antigravity") || command.contains("gemini") || command.contains("agy") || command.contains("antigravity");
     }
 
-    private String createGeminiPromptFile(String workingDirectory, String prompt) throws IOException {
+    private String createAgyPromptFile(String workingDirectory, String prompt) throws IOException {
         Path promptDir;
         if (workingDirectory != null && !workingDirectory.isEmpty()) {
-            promptDir = Path.of(workingDirectory, ".gemini", "tmp");
+            promptDir = Path.of(workingDirectory, ".agy", "tmp");
         } else {
-            throw new IllegalStateException("workingDirectory is required for Gemini agents but was not provided");
+            throw new IllegalStateException("workingDirectory is required for Agy agents but was not provided");
         }
 
         Files.createDirectories(promptDir);

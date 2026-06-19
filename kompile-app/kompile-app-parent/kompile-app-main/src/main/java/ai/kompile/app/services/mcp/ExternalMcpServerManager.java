@@ -16,12 +16,12 @@
 
 package ai.kompile.app.services.mcp;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.mcp.server.ExternalMcpServerConfig;
 import ai.kompile.core.mcp.server.ExternalMcpServerConfig.ServerStatus;
 import ai.kompile.core.mcp.server.UnifiedMcpConfig;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -58,8 +58,7 @@ public class ExternalMcpServerManager {
     private volatile UnifiedMcpConfig config;
 
     public ExternalMcpServerManager() {
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     @PostConstruct

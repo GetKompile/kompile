@@ -17,6 +17,7 @@
 package ai.kompile.app.services.scheduler;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -104,7 +105,7 @@ public class JobSchedulerHistoryService {
 
     public JobSchedulerHistoryService(ResourceSchedulerConfigService configService) {
         this.configService = configService;
-        this.objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         this.historyDir = KompileHome.dataDir().toPath().resolve(HISTORY_DIR);
     }
 

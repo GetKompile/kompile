@@ -40,7 +40,11 @@ public class EnvironmentUtils {
      * @return the first target file matching the given name or null
      */
     public static File executableOnPath(String targetFile) {
-        return Arrays.stream(System.getenv("PATH").split(File.pathSeparator))
+        String pathEnv = System.getenv("PATH");
+        if (pathEnv == null) {
+            return null;
+        }
+        return Arrays.stream(pathEnv.split(File.pathSeparator))
                 .map(File::new)
                 .filter(File::exists)
                 .filter(input -> input.listFiles() != null && input.listFiles().length > 0)

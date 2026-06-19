@@ -16,7 +16,9 @@
 
 package ai.kompile.app.services;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import jakarta.annotation.PostConstruct;
@@ -29,7 +31,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -50,7 +54,7 @@ public class GraphExtractionConfigService {
 
     public GraphExtractionConfigService(
             @Value("${kompile.data.dir:${user.home}/.kompile}") String dataDir) {
-        this.objectMapper = new ObjectMapper()
+        this.objectMapper = JsonUtils.newStandardMapper()
                 .enable(SerializationFeature.INDENT_OUTPUT);
         this.configPath = Paths.get(dataDir, "config", CONFIG_FILENAME);
     }
@@ -162,6 +166,14 @@ public class GraphExtractionConfigService {
             if (newConfig.neo4jDatabase != null) {
                 currentConfig.neo4jDatabase = newConfig.neo4jDatabase;
             }
+            if (newConfig.activeSchemaPresetId != null) {
+                currentConfig.activeSchemaPresetId = newConfig.activeSchemaPresetId;
+            }
+            // Merge pass-through keys (crawl*/llm*/localStaging*/compaction* owned by other
+            // services) so an extraction-config save both PRESERVES and can SET them.
+            if (!newConfig.additionalProperties.isEmpty()) {
+                currentConfig.additionalProperties.putAll(newConfig.additionalProperties);
+            }
 
             saveConfigInternal();
             logger.info("Updated graph extraction config: enabled={}, batchSize={}",
@@ -224,7 +236,6 @@ public class GraphExtractionConfigService {
     /**
      * Graph extraction configuration model.
      */
-    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class GraphExtractionConfig {
         // Extraction settings
         public Boolean enabled;
@@ -255,6 +266,22 @@ public class GraphExtractionConfigService {
         public String neo4jUsername;
         public String neo4jPassword;
         public String neo4jDatabase;
+
+        // Pass-through for keys owned by OTHER services that share this same file — the
+        // crawl*/llm*/localStaging*/compaction* keys read by CrawlRuntimeConfigManager. Captured
+        // on load via @JsonAnySetter and re-emitted on save via @JsonAnyGetter, so updating the
+        // extraction settings never drops them (the data-loss bug) and they stay settable here.
+        private final Map<String, Object> additionalProperties = new LinkedHashMap<>();
+
+        @JsonAnyGetter
+        public Map<String, Object> getAdditionalProperties() {
+            return additionalProperties;
+        }
+
+        @JsonAnySetter
+        public void setAdditionalProperty(String key, Object value) {
+            additionalProperties.put(key, value);
+        }
 
         public static GraphExtractionConfig defaults() {
             GraphExtractionConfig config = new GraphExtractionConfig();
@@ -308,6 +335,8 @@ public class GraphExtractionConfigService {
             // Don't copy password in copies for security
             copy.neo4jPassword = this.neo4jPassword != null && !this.neo4jPassword.isEmpty() ? "********" : "";
             copy.neo4jDatabase = this.neo4jDatabase;
+            copy.activeSchemaPresetId = this.activeSchemaPresetId;
+            copy.additionalProperties.putAll(this.additionalProperties);
             return copy;
         }
 

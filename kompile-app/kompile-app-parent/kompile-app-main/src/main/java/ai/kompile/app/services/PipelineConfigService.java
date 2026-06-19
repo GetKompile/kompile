@@ -16,8 +16,9 @@
 
 package ai.kompile.app.services;
 
-import ai.kompile.app.services.pipeline.ParallelIngestPipeline;
+import ai.kompile.app.services.pipeline.IngestPipelineConfig;
 import ai.kompile.app.web.dto.PipelineConfigDto;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -48,7 +49,7 @@ public class PipelineConfigService {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
     // Current configuration (volatile for visibility)
-    private volatile ParallelIngestPipeline.PipelineConfig currentConfig;
+    private volatile IngestPipelineConfig currentConfig;
     private volatile String currentPreset = "defaults";
     private volatile boolean isModified = false;
 
@@ -58,7 +59,7 @@ public class PipelineConfigService {
     private volatile boolean optimizeGraphOnLoad = false;
 
     public PipelineConfigService(@Value("${kompile.data.dir:#{null}}") String dataDir) {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
 
         // Use provided dataDir, or fall back to ~/.kompile if not set
         String effectiveDataDir = dataDir;
@@ -68,7 +69,7 @@ public class PipelineConfigService {
         this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
 
         // Start with defaults
-        this.currentConfig = ParallelIngestPipeline.PipelineConfig.defaults();
+        this.currentConfig = IngestPipelineConfig.defaults();
 
         log.info("PipelineConfigService initialized, config path: {}", configFilePath);
     }
@@ -96,7 +97,7 @@ public class PipelineConfigService {
             PipelineConfigDto dto = objectMapper.readValue(json, PipelineConfigDto.class);
 
             // Build config from DTO
-            ParallelIngestPipeline.PipelineConfig.Builder builder = ParallelIngestPipeline.PipelineConfig.builder();
+            IngestPipelineConfig.Builder builder = IngestPipelineConfig.builder();
 
             if (dto.getMinBatchSize() != null) builder.minBatchSize(dto.getMinBatchSize());
             if (dto.getDefaultBatchSize() != null) builder.defaultBatchSize(dto.getDefaultBatchSize());
@@ -137,7 +138,7 @@ public class PipelineConfigService {
     /**
      * Get the current pipeline configuration.
      */
-    public ParallelIngestPipeline.PipelineConfig getConfig() {
+    public IngestPipelineConfig getConfig() {
         lock.readLock().lock();
         try {
             return currentConfig;
@@ -186,7 +187,7 @@ public class PipelineConfigService {
         lock.writeLock().lock();
         try {
             // Build new config from current + updates
-            ParallelIngestPipeline.PipelineConfig.Builder builder = ParallelIngestPipeline.PipelineConfig.builder()
+            IngestPipelineConfig.Builder builder = IngestPipelineConfig.builder()
                     .minBatchSize(dto.getMinBatchSize() != null ? dto.getMinBatchSize() : currentConfig.minBatchSize())
                     .defaultBatchSize(dto.getDefaultBatchSize() != null ? dto.getDefaultBatchSize() : currentConfig.defaultBatchSize())
                     .maxBatchSize(dto.getMaxBatchSize() != null ? dto.getMaxBatchSize() : currentConfig.maxBatchSize())
@@ -226,10 +227,10 @@ public class PipelineConfigService {
         lock.writeLock().lock();
         try {
             currentConfig = switch (presetName.toLowerCase()) {
-                case "highthroughput" -> ParallelIngestPipeline.PipelineConfig.highThroughput();
-                case "lowmemory" -> ParallelIngestPipeline.PipelineConfig.lowMemory();
-                case "keywordonly" -> ParallelIngestPipeline.PipelineConfig.keywordOnly();
-                default -> ParallelIngestPipeline.PipelineConfig.defaults();
+                case "highthroughput" -> IngestPipelineConfig.highThroughput();
+                case "lowmemory" -> IngestPipelineConfig.lowMemory();
+                case "keywordonly" -> IngestPipelineConfig.keywordOnly();
+                default -> IngestPipelineConfig.defaults();
             };
             currentPreset = presetName.toLowerCase();
             isModified = false;

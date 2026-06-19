@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.subprocess;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -129,7 +130,7 @@ public record TrainingSubprocessArgs(
         /** Additional options as key-value pairs */
         Map<String, Object> options) {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     public static final int DEFAULT_EPOCHS = 3;
     public static final int DEFAULT_BATCH_SIZE = 8;

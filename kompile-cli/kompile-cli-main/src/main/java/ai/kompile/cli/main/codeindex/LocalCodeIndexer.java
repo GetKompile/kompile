@@ -16,9 +16,8 @@
 
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
 import java.io.PrintStream;
@@ -172,11 +171,7 @@ public class LocalCodeIndexer {
     private final ObjectMapper objectMapper;
 
     public LocalCodeIndexer() {
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.registerModule(new JavaTimeModule());
-        // Compact output for performance — index is machine-read, not human-read
-        this.objectMapper.disable(SerializationFeature.INDENT_OUTPUT);
-        this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

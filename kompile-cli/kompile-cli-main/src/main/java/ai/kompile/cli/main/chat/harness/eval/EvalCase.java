@@ -18,9 +18,14 @@ package ai.kompile.cli.main.chat.harness.eval;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A single evaluation test case — a task to give an agent with
@@ -42,6 +47,10 @@ import java.util.List;
  *   timeoutMs: 60000
  * </pre>
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class EvalCase {
 
@@ -79,6 +88,7 @@ public class EvalCase {
 
     /** Deterministic assertions to check against the agent's output. */
     @JsonProperty
+    @Builder.Default
     private List<Assertion> assertions = new ArrayList<>();
 
     /** Optional task-specific rubric for the judge LLM.
@@ -88,22 +98,27 @@ public class EvalCase {
 
     /** Maximum time for the agent to complete the task. Default: 120000ms (2 min). */
     @JsonProperty
+    @Builder.Default
     private long timeoutMs = 120_000;
 
     /** Maximum agentic steps. Default: 50. */
     @JsonProperty
+    @Builder.Default
     private int maxSteps = 50;
 
     /** Tags for filtering and grouping cases. */
     @JsonProperty
+    @Builder.Default
     private List<String> tags = new ArrayList<>();
 
     /** Priority (1-5, higher = more important). Default: 3. */
     @JsonProperty
+    @Builder.Default
     private int priority = 3;
 
     /** If false, this case is skipped during eval runs. Default: true. */
     @JsonProperty
+    @Builder.Default
     private boolean enabled = true;
 
     /** Working directory for the agent. Defaults to suite-level or cwd. */
@@ -112,47 +127,7 @@ public class EvalCase {
 
     /** Environment variables to set for this case. */
     @JsonProperty
-    private java.util.Map<String, String> env;
-
-    public EvalCase() {}
-
-    // Getters
-    public String getId() { return id; }
-    public String getName() { return name; }
-    public String getPrompt() { return prompt; }
-    public List<String> getSetup() { return setup; }
-    public List<String> getTeardown() { return teardown; }
-    public String getAgent() { return agent; }
-    public String getModel() { return model; }
-    public String getProvider() { return provider; }
-    public List<Assertion> getAssertions() { return assertions; }
-    public String getJudgeRubric() { return judgeRubric; }
-    public long getTimeoutMs() { return timeoutMs; }
-    public int getMaxSteps() { return maxSteps; }
-    public List<String> getTags() { return tags; }
-    public int getPriority() { return priority; }
-    public boolean isEnabled() { return enabled; }
-    public String getWorkingDirectory() { return workingDirectory; }
-    public java.util.Map<String, String> getEnv() { return env; }
-
-    // Setters for Jackson
-    public void setId(String id) { this.id = id; }
-    public void setName(String name) { this.name = name; }
-    public void setPrompt(String prompt) { this.prompt = prompt; }
-    public void setSetup(List<String> setup) { this.setup = setup; }
-    public void setTeardown(List<String> teardown) { this.teardown = teardown; }
-    public void setAgent(String agent) { this.agent = agent; }
-    public void setModel(String model) { this.model = model; }
-    public void setProvider(String provider) { this.provider = provider; }
-    public void setAssertions(List<Assertion> assertions) { this.assertions = assertions; }
-    public void setJudgeRubric(String judgeRubric) { this.judgeRubric = judgeRubric; }
-    public void setTimeoutMs(long timeoutMs) { this.timeoutMs = timeoutMs; }
-    public void setMaxSteps(int maxSteps) { this.maxSteps = maxSteps; }
-    public void setTags(List<String> tags) { this.tags = tags; }
-    public void setPriority(int priority) { this.priority = priority; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
-    public void setWorkingDirectory(String workingDirectory) { this.workingDirectory = workingDirectory; }
-    public void setEnv(java.util.Map<String, String> env) { this.env = env; }
+    private Map<String, String> env;
 
     @Override
     public String toString() {

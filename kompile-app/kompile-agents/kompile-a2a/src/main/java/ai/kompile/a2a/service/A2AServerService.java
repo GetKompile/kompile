@@ -28,7 +28,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import jakarta.annotation.PreDestroy;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Manages A2A server-side functionality — exposes kompile agents to remote consumers
@@ -149,7 +151,15 @@ public class A2AServerService {
 
     @PreDestroy
     public void shutdown() {
-        executors.values().forEach(KompileAgentExecutor::shutdown);
+        // Fan out shutdown to all executors concurrently so they drain in parallel.
+        CompletableFuture<?>[] futures = executors.values().stream()
+                .map(e -> CompletableFuture.runAsync(e::shutdown))
+                .toArray(CompletableFuture[]::new);
+        try {
+            CompletableFuture.allOf(futures).get(10, TimeUnit.SECONDS);
+        } catch (Exception ex) {
+            logger.warn("Timed out or interrupted waiting for A2A executors to shut down", ex);
+        }
         executors.clear();
     }
 

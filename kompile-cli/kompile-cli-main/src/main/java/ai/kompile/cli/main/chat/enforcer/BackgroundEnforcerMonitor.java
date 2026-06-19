@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -129,7 +130,7 @@ public class BackgroundEnforcerMonitor {
         this.outputLogFile = outputLogFile.toAbsolutePath().normalize();
         this.interruptFile = interruptFile.toAbsolutePath().normalize();
         this.workingDir = workingDir.toAbsolutePath().normalize();
-        this.objectMapper = new ObjectMapper()
+        this.objectMapper = JsonUtils.newStandardMapper()
                 .enable(SerializationFeature.INDENT_OUTPUT);
     }
 

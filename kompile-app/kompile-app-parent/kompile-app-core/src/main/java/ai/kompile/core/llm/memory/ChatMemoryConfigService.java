@@ -17,9 +17,11 @@
 package ai.kompile.core.llm.memory;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
+import lombok.Data;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -51,7 +53,7 @@ public class ChatMemoryConfigService {
     private volatile ChatMemoryConfig config;
 
     public ChatMemoryConfigService() {
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.configFilePath = KompileHome.dataDir().toPath().resolve("config").resolve(CONFIG_FILENAME);
         this.config = ChatMemoryConfig.defaults();
         log.info("ChatMemoryConfigService initialized, config path: {}", configFilePath);
@@ -146,6 +148,7 @@ public class ChatMemoryConfigService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @JsonIgnoreProperties(ignoreUnknown = true)
+    @Data
     public static class ChatMemoryConfig {
 
         private boolean enabled = true;
@@ -156,22 +159,6 @@ public class ChatMemoryConfigService {
             cfg.enabled = true;
             cfg.maxMessages = MessageWindowKompileChatMemory.DEFAULT_MAX_MESSAGES;
             return cfg;
-        }
-
-        public boolean isEnabled() {
-            return enabled;
-        }
-
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
-
-        public int getMaxMessages() {
-            return maxMessages;
-        }
-
-        public void setMaxMessages(int maxMessages) {
-            this.maxMessages = maxMessages;
         }
     }
 }

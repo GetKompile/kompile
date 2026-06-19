@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FP&amp;A CPG Channel — Expected Entity Resolution &amp; Business Process Graph</title>
+<style>
+  :root { --bg:#faf9f6; --surface:#fff; --text:#2c2c2a; --text2:#5f5e5a; --border:rgba(0,0,0,.10); --accent:#0078d4; --green:#1a7e44; --red:#c04040; --orange:#b06020; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI",-apple-system,system-ui,sans-serif; background:var(--bg); color:var(--text); line-height:1.55; }
+  .container { max-width:1100px; margin:0 auto; padding:28px 32px 64px; }
+  h1 { font-size:24px; border-bottom:2px solid var(--accent); padding-bottom:8px; margin-bottom:24px; }
+  h2 { font-size:18px; color:var(--accent); margin:32px 0 12px; }
+  h3 { font-size:15px; margin:20px 0 8px; }
+  table { border-collapse:collapse; width:100%; margin:10px 0 20px; font-size:13.5px; }
+  th, td { border:1px solid var(--border); padding:6px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--surface); font-weight:600; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:3px; font-size:12px; font-weight:600; }
+  .tag-person { background:#deecf9; color:#004578; }
+  .tag-org { background:#e8f5e9; color:#1b5e20; }
+  .tag-ref { background:#fce4ec; color:#880e4f; }
+  .tag-process { background:#fff3e0; color:#e65100; }
+  .tag-control { background:#f3e5f5; color:#4a148c; }
+  .tag-metric { background:#e0f7fa; color:#006064; }
+  .tag-doc { background:#efebe9; color:#3e2723; }
+  .merge { background:#fffde7; }
+  code { background:#f5f5f5; padding:1px 5px; border-radius:3px; font-size:12.5px; }
+  .section { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:16px 20px; margin:16px 0; }
+  .note { font-size:12.5px; color:var(--text2); font-style:italic; margin:4px 0 0; }
+  .source { font-size:11px; color:var(--text2); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>FP&amp;A CPG Channel — Expected Entity Resolution &amp; Business Process Graph</h1>
+<p class="note">Ground truth for automated tests. Entity IDs, merge groups, relationships, and business processes
+are validated against the source HTML documents in <code>FP&amp;A workflow artifacts 2026-05/</code>.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>1. Cross-Document Entity Resolution — Persons</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<p>Persons appearing across multiple source documents must resolve to a single canonical entity.</p>
+
+<table>
+<tr>
+  <th>Canonical Name</th>
+  <th>Aliases / Variants</th>
+  <th>Role</th>
+  <th>Source Documents</th>
+  <th>Expected Merge?</th>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-person">PERSON</span> <strong>Mei Chen</strong></td>
+  <td><code>M. Chen</code>, <code>m.chen@northstar.co</code></td>
+  <td>VP FP&amp;A, Corporate</td>
+  <td>06a (AMER email), 06b (EMEA email), 06c (APAC email), 06 (inbox), 02 (process map), 09 (KAA map), 10 (semantic layer)</td>
+  <td>YES &mdash; all mentions merge to 1 entity</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-person">PERSON</span> <strong>J. Park</strong></td>
+  <td><code>J. Park</code></td>
+  <td>Director FP&amp;A, Regional Triage Lead</td>
+  <td>06a (AMER email), 06 (inbox, Slack mention), 02 (process map), 09 (KAA map), 10 (semantic layer)</td>
+  <td>YES &mdash; all mentions merge to 1</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-person">PERSON</span> <strong>Sarah Chen</strong></td>
+  <td><code>S. Chen</code>, <code>s.chen@northstar.co</code></td>
+  <td>Senior Manager, Sales Ops, Americas</td>
+  <td>06a (AMER email), 06 (inbox)</td>
+  <td>YES &mdash; but must NOT merge with Mei Chen (different person, same surname)</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-person">PERSON</span> <strong>Fran&ccedil;ois Vasseur</strong></td>
+  <td><code>F. Vasseur</code>, <code>f.vasseur@northstar.eu</code></td>
+  <td>Sales Director, EMEA</td>
+  <td>06b (EMEA email), 06 (inbox), 02 (process map)</td>
+  <td>YES &mdash; all mentions merge to 1</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-person">PERSON</span> <strong>Ayako Tanaka</strong></td>
+  <td><code>A. Tanaka</code>, <code>a.tanaka@northstar.jp</code>, &#x7530;&#x4E2D; &#x7DBE;&#x5B50;</td>
+  <td>Senior Sales Analyst, APAC</td>
+  <td>06c (APAC email), 06 (inbox), 02 (process map), 09 (KAA map)</td>
+  <td>YES &mdash; all mentions merge to 1</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-person">PERSON</span> <strong>S. Reyes</strong></td>
+  <td><code>Sarah Reyes</code></td>
+  <td>Senior Analyst, Corporate FP&amp;A</td>
+  <td>02 (process map, screen recordings), 09 (KAA map)</td>
+  <td>YES &mdash; merge</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-person">PERSON</span> <strong>L. Okafor</strong></td>
+  <td>(none)</td>
+  <td>Controller</td>
+  <td>02 (process map, Phase 4), 06 (inbox, meeting), 09 (KAA map)</td>
+  <td>YES &mdash; merge</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-person">PERSON</span> <strong>M. Sato</strong></td>
+  <td>(none)</td>
+  <td>CFO</td>
+  <td>02 (process map, Phase 4), 06 (inbox, meeting), 09 (KAA map)</td>
+  <td>YES &mdash; merge</td>
+</tr>
+<tr>
+  <td><span class="tag tag-person">PERSON</span> <strong>Kira O&rsquo;Donnell</strong></td>
+  <td><code>K. O'Donnell</code></td>
+  <td>UK Retail Manager</td>
+  <td>06b (EMEA email)</td>
+  <td>Single source &mdash; no merge needed</td>
+</tr>
+<tr>
+  <td><span class="tag tag-person">PERSON</span> <strong>D. Singh</strong></td>
+  <td>(none)</td>
+  <td>Pipeline stale-deal rule author</td>
+  <td>02 (process map Step 2.2), 09 (KAA map)</td>
+  <td>YES &mdash; merge</td>
+</tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>2. Cross-Document Entity Resolution — Organizations</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<table>
+<tr><th>Canonical</th><th>Aliases</th><th>Sources</th><th>Merge?</th></tr>
+<tr class="merge">
+  <td><span class="tag tag-org">ORG</span> <strong>Northstar Goods</strong></td>
+  <td><code>Northstar Goods Inc</code>, <code>Northstar Goods, Inc.</code>, <code>Northstar</code>, <code>Northstar Japan KK</code> (subsidiary)</td>
+  <td>06a, 06b, 06c, 02, 07, 08, 09, 10</td>
+  <td>YES &mdash; corporate name with suffix variants must merge; subsidiary is separate</td>
+</tr>
+<tr>
+  <td><span class="tag tag-org">ORG</span> <strong>ProssimoTech</strong></td>
+  <td><code>Prossimo</code></td>
+  <td>02, 07, 08, 09, 10</td>
+  <td>YES &mdash; vendor references merge</td>
+</tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>3. Cross-Document Entity Resolution — Channel Taxonomy</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<p>The core semantic alignment problem: 11 regional spellings &rarr; 3 canonical channels.</p>
+
+<table>
+<tr><th>Canonical Channel</th><th>Aliases (all must resolve)</th><th>Source Docs</th></tr>
+<tr class="merge">
+  <td><span class="tag tag-ref">CHANNEL</span> <strong>DTC</strong></td>
+  <td><code>Direct-to-Consumer</code>, <code>ecom</code>, <code>EC</code>, <code>Direct</code>, <code>Marketplace (DTC subset)</code>, <code>DTC Japan</code></td>
+  <td>06a (AMER: DTC/ecom/Direct-to-Consumer), 06b (EMEA: DTC/Marketplace), 06c (APAC: EC), 10 (semantic layer)</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-ref">CHANNEL</span> <strong>Amazon</strong></td>
+  <td><code>Amazon FBA</code>, <code>Amazon Vendor</code>, <code>Amazon SP-API</code></td>
+  <td>06b (EMEA: Marketplace&rarr;Amazon), 02 (process map), 10 (semantic layer)</td>
+</tr>
+<tr class="merge">
+  <td><span class="tag tag-ref">CHANNEL</span> <strong>Wholesale</strong></td>
+  <td><code>Retail</code>, <code>Distributor</code>, <code>B2B</code>, <code>Whlsl</code></td>
+  <td>06b (EMEA: Retail/Distributor), 06c (APAC: B2B/Retail), 10 (semantic layer)</td>
+</tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>4. Business Process — Monthly Close Cycle (14 Steps, 4 Phases)</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<table>
+<tr><th>Step</th><th>Name</th><th>Phase</th><th>Mode</th><th>Key People</th><th>Controls</th></tr>
+<tr><td>1.1</td><td>Pull NetSuite trial balance &amp; AR/AP</td><td>Inputs &amp; Intake</td><td>AUTO</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>1.2</td><td>Pull Shopify + Amazon channel revenue</td><td>Inputs &amp; Intake</td><td>AUTO</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>1.3</td><td>Pull FX rates &amp; forward curve</td><td>Inputs &amp; Intake</td><td>AUTO</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>1.4</td><td>Receive 3 regional forecast workbooks</td><td>Inputs &amp; Intake</td><td>AUTO</td><td>Sarah Chen (AMER), Vasseur (EMEA), Tanaka (APAC)</td><td>&mdash;</td></tr>
+<tr><td>1.5</td><td>Pull Workday roster &amp; Salesforce pipeline</td><td>Inputs &amp; Intake</td><td>AUTO</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>1.6</td><td>Receive marketing &amp; OpEx plan</td><td>Inputs &amp; Intake</td><td>AUTO</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>2.1</td><td>Validate forecast workbook &amp; triage variances</td><td>Validate &amp; Reconcile</td><td>AUTO + HITL</td><td>J. Park (approve batch), M. Chen (channel mismatch)</td><td>C-04 SKU Mapping, C-05 Channel GM</td></tr>
+<tr><td>2.2</td><td>Reconcile forecast to Salesforce pipeline</td><td>Validate &amp; Reconcile</td><td>AUTO</td><td>D. Singh (stale-deal rule)</td><td>C-03 Pipeline Coverage</td></tr>
+<tr><td>2.3</td><td>FX-translate forecast lines to USD</td><td>Validate &amp; Reconcile</td><td>AUTO</td><td>&mdash;</td><td>C-01 FX Consistency</td></tr>
+<tr><td>3.1</td><td>Project COGS at standard cost</td><td>Project &amp; Consolidate</td><td>AUTO</td><td>&mdash;</td><td>C-06 SKU Margin</td></tr>
+<tr><td>3.2</td><td>Roll forward OpEx and headcount comp</td><td>Project &amp; Consolidate</td><td>AUTO + HITL</td><td>M. Chen (attrition assumption)</td><td>&mdash;</td></tr>
+<tr><td>3.3</td><td>Consolidate &amp; eliminate intercompany</td><td>Project &amp; Consolidate</td><td>HUMAN</td><td>L. Okafor ($130k manual adjustment)</td><td>C-02 Regional Total</td></tr>
+<tr><td>4.1</td><td>Variance commentary &amp; CFO pack</td><td>Review &amp; Publish</td><td>AUTO + HITL</td><td>M. Chen (edit), M. Sato (review)</td><td>&mdash;</td></tr>
+<tr><td>4.2</td><td>Controller &amp; CFO sign-off</td><td>Review &amp; Publish</td><td>HUMAN</td><td>L. Okafor (close mechanics), M. Sato (projection)</td><td>C-07 Statement Recon</td></tr>
+<tr><td>4.3</td><td>Publish &amp; archive</td><td>Review &amp; Publish</td><td>AUTO</td><td>&mdash;</td><td>&mdash;</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>5. Business Process — Variance Triage Patterns</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<table>
+<tr><th>Pattern</th><th>Action</th><th>Escalation</th><th>Source</th></tr>
+<tr><td><span class="tag tag-process">TRIAGE</span> ChannelMismatch</td><td>ALWAYS ESCALATE</td><td>M. Chen (never auto-fix, per interview turn 11)</td><td>06a, 10, 09</td></tr>
+<tr><td><span class="tag tag-process">TRIAGE</span> CurrencySymbolDrift</td><td>AUTO-CORRECT &ge;0.85</td><td>J. Park if below threshold</td><td>06c (47 &yen; instances), 10</td></tr>
+<tr><td><span class="tag tag-process">TRIAGE</span> SKUTypoVariant</td><td>AUTO-CORRECT &ge;0.85</td><td>Escalate if below</td><td>10</td></tr>
+<tr><td><span class="tag tag-process">TRIAGE</span> GMOutOfBand</td><td>COMMENTARY REQUIRED</td><td>Analyst &rarr; M. Chen</td><td>10</td></tr>
+<tr><td><span class="tag tag-process">TRIAGE</span> StaleFXRow</td><td>QUARANTINE</td><td>FX agent re-pulls; &gt;72h blocks close</td><td>10</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>6. Business Process — 7 Controls (C-01 through C-07)</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<table>
+<tr><th>ID</th><th>Name</th><th>Type</th><th>Severity</th><th>Owner</th><th>Gate</th></tr>
+<tr><td>C-01</td><td>FX Consistency</td><td>HARD</td><td>BLOCK CLOSE</td><td>J. Park</td><td>rate &asymp; FXForwardCurve &plusmn;0.05%</td></tr>
+<tr><td>C-02</td><td>Regional Total</td><td>HARD</td><td>BLOCK CLOSE</td><td>J. Park</td><td>|&Sigma;regional &minus; corporate| &le; 0.1%</td></tr>
+<tr><td>C-03</td><td>Pipeline Coverage</td><td>SOFT</td><td>COMMENTARY</td><td>M. Chen</td><td>90d coverage &ge; 1.2&times;</td></tr>
+<tr><td>C-04</td><td>SKU Mapping</td><td>HARD</td><td>ALWAYS ESCALATE</td><td>J. Park</td><td>all lines &rarr; active SKU</td></tr>
+<tr><td>C-05</td><td>Channel GM Band</td><td>SOFT</td><td>COMMENTARY</td><td>M. Chen</td><td>GM% &plusmn;1.5% vs trailing-6mo</td></tr>
+<tr><td>C-06</td><td>SKU Margin Discipline</td><td>SOFT</td><td>COMMENTARY</td><td>J. Park</td><td>implied GM% &plusmn;2.0% vs target</td></tr>
+<tr><td>C-07</td><td>Statement Reconciliation</td><td>HARD</td><td>BLOCK CLOSE</td><td>M. Chen</td><td>NI = &Delta;Equity; CFO = &Delta;Cash</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>7. Expected Relationship Chains (Graph Patterns)</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<div class="section">
+<h3>Email &rarr; Person &rarr; Forecast Chain</h3>
+<pre>
+(AMER email)-[:SENT_BY]-&gt;(Sarah Chen)-[:SUBMITTED_BY]-&gt;(Americas Regional Forecast)
+(EMEA email)-[:SENT_BY]-&gt;(Fran&ccedil;ois Vasseur)-[:SUBMITTED_BY]-&gt;(EMEA Regional Forecast)
+(APAC email)-[:SENT_BY]-&gt;(Ayako Tanaka)-[:SUBMITTED_BY]-&gt;(APAC Regional Forecast)
+All 3 emails -[:SENT_TO]-&gt; (Mei Chen)  [resolve to same canonical Mei Chen]
+</pre>
+
+<h3>Email &rarr; Spreadsheet &rarr; Table Containment</h3>
+<pre>
+(AMER email)-[:HAS_ATTACHMENT]-&gt;(AMER_Forecast_Q3_v3_FINAL_v2.xlsx)-[:CONTAINS]-&gt;(Wholesale tab)
+(EMEA email)-[:HAS_ATTACHMENT]-&gt;(EMEA forecast Jun-Aug 2026.xlsx)-[:CONTAINS]-&gt;(UK tab, DE tab, ...)
+(APAC email)-[:HAS_ATTACHMENT]-&gt;(APAC fcst FY27Q1.xlsx)-[:CONTAINS]-&gt;(JP tab, AU tab, SG tab)
+</pre>
+
+<h3>Forecast &rarr; Taxonomy References</h3>
+<pre>
+(Americas Forecast)-[:REFERENCES_TAXONOMY]-&gt;(DTC)
+(Americas Forecast)-[:REFERENCES_TAXONOMY]-&gt;(Wholesale)
+(Americas Forecast)-[:REFERENCES_TAXONOMY]-&gt;(Amazon)
+(EMEA Forecast)-[:REFERENCES_TAXONOMY]-&gt;(DTC)
+(EMEA Forecast)-[:REFERENCES_TAXONOMY]-&gt;(Marketplace/Amazon)
+(APAC Forecast)-[:REFERENCES_TAXONOMY]-&gt;(EC/DTC)
+(APAC Forecast)-[:REFERENCES_TAXONOMY]-&gt;(B2B/Wholesale)
+</pre>
+
+<h3>Variance Triage &rarr; Escalation</h3>
+<pre>
+(ChannelMismatch)-[:ESCALATED_TO]-&gt;(VP FP&amp;A / M. Chen)  [ALWAYS, per UNDOC-3]
+(SKUTypoVariant below 0.85)-[:ESCALATED_TO]-&gt;(J. Park)
+(GMOutOfBand)-[:ESCALATED_TO]-&gt;(M. Chen)
+</pre>
+
+<h3>Control &rarr; Close Step Validation</h3>
+<pre>
+(C-01 FX Consistency)-[:VALIDATES]-&gt;(Step 2.3 FX translate)
+(C-02 Regional Total)-[:VALIDATES]-&gt;(Step 3.3 Consolidate IC)
+(C-03 Pipeline Coverage)-[:VALIDATES]-&gt;(Step 2.2 Reconcile pipeline)
+(C-04 SKU Mapping)-[:VALIDATES]-&gt;(Step 2.1 Validate forecast)
+(C-07 Statement Recon)-[:VALIDATES]-&gt;(Step 4.2 Controller sign-off)
+</pre>
+
+<h3>Approval Chain</h3>
+<pre>
+(J. Park)-[:APPROVED_BY]-&gt;(Step 2.1 auto-correction batch)
+(M. Chen)-[:APPROVED_BY]-&gt;(Step 3.2 attrition assumption)
+(L. Okafor)-[:APPROVED_BY]-&gt;(Step 4.2 close mechanics)
+(M. Sato)-[:APPROVED_BY]-&gt;(Step 4.2 projection reasonableness)
+</pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<h2>8. Currency &amp; Magnitude Registry</h2>
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<table>
+<tr><th>Currency</th><th>Region</th><th>Magnitude</th><th>Source</th></tr>
+<tr><td>USD</td><td>Corporate (reporting)</td><td>Actuals</td><td>02, 10</td></tr>
+<tr><td>GBP</td><td>UK (EMEA)</td><td>Thousands</td><td>06b</td></tr>
+<tr><td>EUR</td><td>DE/FR/IT/ES (EMEA)</td><td>Thousands</td><td>06b</td></tr>
+<tr><td>JPY</td><td>Japan (APAC)</td><td>Thousands (&#21315;&#20870;)</td><td>06c</td></tr>
+<tr><td>AUD</td><td>Australia (APAC)</td><td>Millions</td><td>06c</td></tr>
+<tr><td>SGD</td><td>Singapore (APAC)</td><td>Actuals</td><td>06c</td></tr>
+</table>
+
+</div>
+</body>
+</html>

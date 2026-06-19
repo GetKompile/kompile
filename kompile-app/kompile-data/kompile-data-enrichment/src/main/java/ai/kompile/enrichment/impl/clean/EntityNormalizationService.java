@@ -19,7 +19,8 @@ import ai.kompile.enrichment.config.EnrichmentConfig;
 import ai.kompile.enrichment.impl.EnrichmentAuditService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -39,20 +40,21 @@ public class EntityNormalizationService {
     private static final Logger log = LoggerFactory.getLogger(EntityNormalizationService.class);
     private static final Set<String> TITLE_CASE_TYPES = Set.of("PERSON", "ORGANIZATION", "COMPANY", "LOCATION");
 
-    private final GraphNodeRepository nodeRepository;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final EnrichmentAuditService auditService;
     private final ObjectMapper objectMapper;
 
-    public EntityNormalizationService(GraphNodeRepository nodeRepository,
+    public EntityNormalizationService(KnowledgeGraphService knowledgeGraphService,
                                       EnrichmentAuditService auditService,
                                       ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
+        this.knowledgeGraphService = knowledgeGraphService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
     }
 
     public int normalize(Long factSheetId, String jobId, EnrichmentConfig config) {
-        List<GraphNode> entities = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.ENTITY);
+        // Use vector store (SSOT) to enumerate ENTITY nodes
+        List<GraphNode> entities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
         int normalized = 0;
         for (GraphNode entity : entities) {
             boolean changed = false;
@@ -115,7 +117,16 @@ public class EntityNormalizationService {
             }
 
             if (changed) {
-                nodeRepository.save(entity);
+                // Persist via vector store (SSOT): parse updated metadataJson back to Map
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> metaMap = entity.getMetadataJson() != null && !entity.getMetadataJson().isBlank()
+                            ? objectMapper.readValue(entity.getMetadataJson(), new TypeReference<Map<String, Object>>() {})
+                            : new java.util.LinkedHashMap<>();
+                    knowledgeGraphService.updateNode(entity.getNodeId(), entity.getTitle(), entity.getDescription(), metaMap);
+                } catch (Exception saveEx) {
+                    log.warn("Failed to persist normalized entity {} to vector store: {}", entity.getNodeId(), saveEx.getMessage());
+                }
                 auditService.logAction(factSheetId, jobId, "CLEAN", "NORMALIZE_ENTITY",
                         entity.getNodeId(), "GRAPH_NODE",
                         String.format("{\"title\":\"%s\",\"metadataJson\":%s}",

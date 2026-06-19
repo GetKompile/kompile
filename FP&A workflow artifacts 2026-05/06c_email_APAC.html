@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APAC forecast (FY27 Q1) — some notes, please read first</title>
+<style>
+  :root {
+    --bg: #faf9f6;
+    --surface: #ffffff;
+    --surface-hover: #f3f2ee;
+    --surface-sunken: #ebeae5;
+    --text: #2c2c2a;
+    --text-secondary: #5f5e5a;
+    --text-tertiary: #888780;
+    --border: rgba(0,0,0,0.10);
+    --accent: #0078d4;
+    --accent-bg: #deecf9;
+    --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1f1e1c;
+      --surface: #292826;
+      --surface-hover: #34332f;
+      --surface-sunken: #1a1917;
+      --text: #e5e3da;
+      --text-secondary: #a8a69c;
+      --text-tertiary: #73726c;
+      --border: rgba(255,255,255,0.10);
+      --accent: #60a5fa;
+      --accent-bg: rgba(96,165,250,0.15);
+      --warn: #f59e0b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  .topbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .topbar a { color: var(--accent); text-decoration: none; }
+  .topbar .actions { margin-left: auto; display: flex; gap: 12px; }
+  .actions span { cursor: default; }
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 28px 32px 64px;
+  }
+  h1.subject { font-size: 22px; font-weight: 600; margin: 0 0 16px; line-height: 1.3; }
+  .meta {
+    display: grid;
+    grid-template-columns: 50px 36px 1fr;
+    gap: 12px;
+    align-items: start;
+    padding: 14px 0 18px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 22px;
+  }
+  .avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: #649c4f;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 600;
+    grid-row: span 2;
+  }
+  .from-line { font-size: 14.5px; color: var(--text); margin-top: 2px; }
+  .from-line .name { font-weight: 600; }
+  .from-line .email { color: var(--text-tertiary); }
+  .to-line { font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; }
+  .date-line { grid-column: 3; font-size: 12.5px; color: var(--text-tertiary); margin-top: -2px; align-self: end; }
+
+  .body {
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .body p { margin: 0 0 14px; }
+  .signature {
+    margin-top: 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .signature .ja { color: var(--text-tertiary); font-style: normal; }
+
+  .attach-block {
+    margin-top: 24px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    gap: 14px;
+    align-items: center;
+  }
+  .attach-icon {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, #1a7e44 0%, #186b3a 100%);
+    color: white;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .attach-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+  .attach-name a { color: var(--accent); text-decoration: none; }
+  .attach-name a:hover { text-decoration: underline; }
+  .attach-size { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
+  .attach-actions { font-size: 12.5px; color: var(--accent); display: flex; gap: 14px; }
+  .attach-actions a { color: var(--accent); text-decoration: none; }
+
+  .callout {
+    background: rgba(245,158,11,0.10);
+    border-left: 3px solid var(--warn);
+    padding: 10px 14px;
+    border-radius: 0 4px 4px 0;
+    font-size: 13px;
+    color: var(--warn);
+    margin: 14px 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="06_inbox.html">← Back to inbox</a>
+  <span style="color: var(--text-tertiary);">Inbox</span>
+  <div class="actions">
+    <span>Reply</span>
+    <span>Reply all</span>
+    <span>Forward</span>
+    <span>Delete</span>
+  </div>
+</div>
+
+<div class="container">
+  <h1 class="subject">APAC forecast (FY27 Q1) — some notes, please read first</h1>
+
+  <div class="meta">
+    <div class="avatar">AT</div>
+    <div></div>
+    <div>
+      <div class="from-line"><span class="name">Ayako Tanaka  ·  田中 綾子</span> <span class="email">&lt;a.tanaka@northstar.jp&gt;</span></div>
+      <div class="to-line">To: Mei Chen &lt;m.chen@northstar.co&gt;</div>
+      <div class="to-line">Cc: M. Whitfield &lt;m.whitfield@northstar.au&gt;; R. Lim &lt;r.lim@northstar.sg&gt;</div>
+    </div>
+    <div></div>
+    <div class="date-line">Monday, May 5, 2026  ·  11:08 AM JST  ·  Tokyo</div>
+  </div>
+
+  <div class="body">
+
+    <p>Hi Mei-san,</p>
+
+    <p>Hope you had a good weekend. Attaching APAC forecast as scheduled. Three regional tabs (JP / AU / SG) plus a Summary tab — but please read the notes below <strong>before</strong> looking at the file, there are several things to be careful about.</p>
+
+    <div class="callout">
+      <strong>⚠ Important — fiscal calendar mismatch.</strong> Our file says "FY27 Q1" because Japan fiscal year starts in April, so FY27 Q1 = <strong>April-May-June 2026</strong>. I understand corporate needs <strong>June-July-August 2026</strong>, so my June numbers are correct, but April and May are not what you need. I'm very sorry — I tried to align last quarter but my system in Japan only outputs by JP fiscal quarter. <strong>Please use only the June column from the JP tab</strong>; for July and August in Japan I will send a follow-up tomorrow morning my time (Tuesday late evening for you).
+    </div>
+
+    <p><strong>JP tab</strong> — amounts are in <strong>JPY thousands (千円)</strong>. So 8,400 in cell D6 means ¥8,400,000. Channel column uses our local taxonomy: "EC" for online, "Retail" for stores, "B2B" for wholesale. SKUs use Japan-internal codes (JP-RST-001 etc.) — the master mapping is the same as last quarter; I haven't updated it.</p>
+
+    <p><strong>AU tab</strong> — amounts are in <strong>AUD millions</strong>, not thousands. (Sorry, Mark prepared the AU tab in his preferred format — value of 0.082 means A$82,000.) Three months are correct (Jun / Jul / Aug). SKUs are AU-001 etc., the AU formulation is slightly different but for forecast purposes maps 1:1 to the corp SKU.</p>
+
+    <p><strong>SG tab</strong> — amounts in <strong>SGD actual values</strong> (not thousands or millions, just the raw number). Three months are correct. Prepared by Rachel Lim — small but growing channel.</p>
+
+    <p><strong>Summary tab</strong> — please <strong>do not use</strong>. I started a USD-converted summary but the FX rates I had are stale (from February) and there are some broken formulas where I tried to pull from SG tab. I'll fix and resend later this week, or if helpful you can ignore and just consolidate from the country tabs directly.</p>
+
+    <p>I know this is more work for you on consolidation side. I am happy to do a video call this week if it is easier — Tokyo morning is your previous evening, please let me know what works.</p>
+
+    <p>Many apologies for the inconvenience and thank you for your patience.</p>
+
+    <p>Best regards,<br>
+    Ayako</p>
+
+    <div class="attach-block">
+      <div class="attach-icon">XLSX</div>
+      <div>
+        <div class="attach-name"><a href="05c APAC fcst FY27Q1.xlsx">APAC fcst FY27Q1.xlsx</a></div>
+        <div class="attach-size">Microsoft Excel · 16 KB</div>
+      </div>
+      <div class="attach-actions">
+        <a href="05c APAC fcst FY27Q1.xlsx">Download</a>
+        <span style="color: var(--text-tertiary);">|</span>
+        <a href="05c APAC fcst FY27Q1.xlsx">Open</a>
+      </div>
+    </div>
+
+    <div class="signature">
+      <strong>Ayako Tanaka  ·  <span class="ja">田中 綾子</span></strong> · Senior Sales Analyst, APAC<br>
+      Northstar Japan KK  ·  東京都港区六本木 6-10-1<br>
+      Office: +81 3 6406 0123  ·  Mobile: +81 90 1234 5678
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

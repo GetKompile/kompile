@@ -16,6 +16,7 @@
 package ai.kompile.orchestrator.service.prompt;
 
 import ai.kompile.orchestrator.model.prompt.*;
+import ai.kompile.utils.StringUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -221,7 +222,7 @@ public class PromptManager {
             for (Map.Entry<String, Object> entry : request.getContext().entrySet()) {
                 if (entry.getValue() != null && !entry.getKey().startsWith("_")) {
                     sb.append("- ").append(entry.getKey()).append(": ")
-                            .append(truncate(entry.getValue().toString(), 200))
+                            .append(StringUtils.truncate(entry.getValue().toString(), 200))
                             .append("\n");
                 }
             }
@@ -257,7 +258,7 @@ public class PromptManager {
         if (request.getOutput() != null && !request.getOutput().isEmpty()) {
             sb.append("## Output\n");
             sb.append("```\n");
-            sb.append(truncate(request.getOutput(), 10000));
+            sb.append(StringUtils.truncate(request.getOutput(), 10000));
             sb.append("\n```\n\n");
 
             // Add exit code if available
@@ -502,16 +503,6 @@ public class PromptManager {
         matcher.appendTail(sb);
 
         return sb.toString();
-    }
-
-    /**
-     * Truncate a string to maximum length.
-     */
-    private String truncate(String text, int maxLength) {
-        if (text == null || text.length() <= maxLength) {
-            return text;
-        }
-        return text.substring(0, maxLength - 20) + "\n... [truncated]";
     }
 
     // Configuration methods

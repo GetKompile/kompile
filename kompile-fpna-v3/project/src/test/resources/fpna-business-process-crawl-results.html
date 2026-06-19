@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html><head><meta charset='UTF-8'>
+<title>FP&amp;A Business Process Discovery Results</title>
+<style>
+body{font-family:'Segoe UI',sans-serif;margin:20px;background:#faf9f6;color:#2c2c2a;line-height:1.55}
+h1{color:#1a237e;border-bottom:2px solid #0078d4;padding-bottom:8px}
+h2{color:#0078d4;margin:32px 0 12px}
+h3{color:#3949ab;margin:20px 0 8px}
+h4{color:#455a64;margin:12px 0 6px}
+.section{background:#fff;border:1px solid rgba(0,0,0,.10);border-radius:6px;padding:16px 20px;margin:16px 0;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.process{background:#fff;border:2px solid #0078d4;border-radius:8px;padding:20px;margin:20px 0}
+.phase{background:#e3f2fd;border-left:4px solid #1565c0;padding:12px 16px;margin:12px 0;border-radius:0 6px 6px 0}
+.step{margin:6px 0;padding:8px 12px;border-left:3px solid #90caf9;background:#f5f5f5;border-radius:0 4px 4px 0}
+.entity{margin:4px 0;padding:6px 10px;border-left:3px solid #5c6bc0;background:#e8eaf6;border-radius:0 4px 4px 0}
+.rel{margin:4px 0;padding:6px 10px;border-left:3px solid #66bb6a;background:#e8f5e9;border-radius:0 4px 4px 0}
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+.stat{background:#e3f2fd;padding:8px 14px;border-radius:6px;font-weight:bold}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.8em;font-weight:bold;color:#fff;margin-right:6px}
+.AUTO{background:#2e7d32}.HUMAN{background:#c62828}.APPROVE{background:#ff6f00}
+.TOOL_CALL{background:#1565c0}.EXCEL_COMPUTE{background:#2e7d32}.SCRIPT{background:#4527a0}.HTTP_CALL{background:#00695c}
+.CLOSE_STEP{background:#e65100}.CONTROL_ASSERTION{background:#c62828}.VARIANCE_TRIAGE{background:#ad1457}
+.APPROVAL_ROLE{background:#ff6f00}.PERSON{background:#1565c0}.SPREADSHEET{background:#2e7d32}
+.REGIONAL_FORECAST{background:#00838f}.CHANNEL_TAXONOMY{background:#558b2f}
+.other{background:#546e7a}
+table{border-collapse:collapse;width:100%;margin:10px 0}th,td{text-align:left;padding:6px 10px;border:1px solid rgba(0,0,0,.10);vertical-align:top}th{background:#e8eaf6;font-weight:600}
+.confidence{font-size:.85em;color:#5f5e5a}.evidence{font-size:.85em;color:#37474f;font-style:italic}
+.child-process{margin-left:24px;border-left:2px dashed #90caf9;padding-left:16px}
+</style></head><body>
+<h1>FP&amp;A CPG Channel &mdash; Business Process Discovery Results</h1>
+<p>LLM: <b>cli-agent/claude</b> | Process model: <b>kompile ProcessSuggestion</b> | Discovery: <b>LlmProcessDiscoveryService format</b></p>
+<div class='stats'>
+<div class='stat'>Graph entities: 124</div>
+<div class='stat'>Graph relationships: 132</div>
+<div class='stat'>Processes discovered: 5</div>
+<div class='stat'>Total phases: 19</div>
+<div class='stat'>Total steps: 65</div>
+</div>
+<h2>Discovered Business Processes</h2>
+<div class='process'>
+<h3>Monthly FP&amp;A Close &amp; 3-Month P&amp;L Projection</h3>
+<p>End-to-end monthly financial close process that gathers actuals and forecasts from multiple source systems, validates and triages variances, translates currencies, projects COGS and OpEx, consolidates a group P&amp;L, drafts variance commentary, obtains CFO sign-off, and publishes to the Looker dashboard. Operates on a fixed calendar (BD+4 regional submissions, Day 10 CFO sign-off) with a mix of automated agents and human-in-the-loop gates.</p>
+<p class='confidence'>Confidence: <b>97%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: 14 explicitly numbered CLOSE_STEP nodes (d0_s1 through d0_s14) with sequential FEEDS_INTO edges forming a DAG | Step numbering uses a 4-phase schema: 1.x (Data Gathering), 2.x (Validation), 3.x (Projection), 4.x (Review &amp; Publish) | CFO sign-off at Step 4.2 with specific date reference (Day 10, 09:42 in May cycle) | FP&amp;A_Close_SOP_v3.2.docx (47-page SOP) is the authoritative source document | 12 of 14 flagged variances auto-corrected in Step 2.1; 2 escalated for human review | Full audit trail published to Looker in Step 4.3</p>
+<div class='phase'>
+<h4>Phase 1: Data Gathering &mdash; Pull actuals, rates, forecasts, rosters, and plans from 6+ source systems. Regional workbooks due BD+4 EOD local time. Format-validator agent scans hourly.</h4>
+<div class='step'><span class='badge HTTP_CALL'>HTTP_CALL</span><b>Pull NetSuite Trial Balance &amp; AR/AP</b> &mdash; Authenticate via OAuth, run saved search TB_Detail_Mxx, export CSV with timestamp. Validate row count &gt; 0, debits = credits. <i>(actor: Data Extraction Agent)</i></div>
+<div class='step'><span class='badge HTTP_CALL'>HTTP_CALL</span><b>Pull Shopify &amp; Amazon Channel Revenue</b> &mdash; DTC orders from Shopify Admin API; Amazon settlements from SP-API net of returns and FBA fees. Ship date defines close month. <i>(actor: Data Extraction Agent)</i></div>
+<div class='step'><span class='badge HTTP_CALL'>HTTP_CALL</span><b>Pull FX Rates &amp; Forward Curve</b> &mdash; Spot rates as of last BD of close month + 3-month forward curve from treasury feed. Cross-check against ECB reference rate. <i>(actor: FX Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Receive Regional Forecast Workbooks</b> &mdash; 3 workbooks (AMER, EMEA, APAC) due BD+4 EOD local. Folder scanned hourly; format-validator agent checks template conformance on detection. <i>(actor: Format-Validator Agent)</i></div>
+<div class='step'><span class='badge HTTP_CALL'>HTTP_CALL</span><b>Pull Workday Roster &amp; Salesforce Pipeline</b> &mdash; Headcount + comp plan from Workday; point-in-time pipeline snapshot from Salesforce for reproducibility. <i>(actor: Data Extraction Agent)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Receive Marketing &amp; OpEx Plan</b> &mdash; Campaign calendar from CMO with planned spend by week and channel; run-rate OpEx updates from functional leads (Eng, Ops, G&amp;A). <i>(actor: CMO / Functional Leads)</i></div>
+</div>
+<div class='phase'>
+<h4>Phase 2: Validation &amp; Reconciliation &mdash; Run tie checks and controls (C-01 through C-07), triage variances using 5 pattern-based rules, reconcile forecast to Salesforce pipeline, and FX-translate all lines to USD.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Validate Forecast &amp; Triage Variances</b> &mdash; Tie checks (D60 total, channel total, currency tags), pattern-based triage across 5 variance patterns, auto-fix or escalate. Every correction recorded with before/after values. Max 4 auto-fixes per workbook. <i>(actor: Triage Agent)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Approve Auto-Correction Batch</b> &mdash; J. Park reviews and approves or rejects the batch of auto-corrections from triage agent (12 of 14 in May cycle). <i>(actor: J. Park (AMER Lead))</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Reconcile Forecast to Salesforce Pipeline</b> &mdash; Pipeline coverage ratio = stage 4+ pipeline / forecast wholesale revenue per region. Compare to historical band 1.4x–2.2x. May cycle actual: 1.7x. <i>(actor: Reconciliation Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>FX Translate to USD</b> &mdash; Forecast lines use forward as-of last BD of prior month per FX Policy Memo §2; actuals use month-end spot; hedged use hedge rate. Tolerance: USD = local × rate ± $0.01. <i>(actor: FX Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>Phase 3: Projection &amp; Consolidation &mdash; Project COGS and OpEx forward 3 months using standard costs and run-rates, then consolidate all regional P&amp;Ls with intercompany elimination.</h4>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Review OpEx Attrition Assumption</b> &mdash; M. Chen reviews the OpEx attrition assumption before it is used in projection calculations. <i>(actor: M. Chen (VP FP&amp;A))</i></div>
+<div class='step'><span class='badge EXCEL_COMPUTE'>EXCEL_COMPUTE</span><b>Project COGS &amp; OpEx</b> &mdash; Standard cost × volumes plus run-rate OpEx. 3-month forward projection incorporating approved attrition assumption. <i>(actor: Projection Agent)</i></div>
+<div class='step'><span class='badge EXCEL_COMPUTE'>EXCEL_COMPUTE</span><b>Consolidate Group P&amp;L</b> &mdash; Intercompany elimination → 0. Consolidate all regional P&amp;Ls into group view. ~$130k informal IC adjustment by Controller discovered in L1 (not in SOP). <i>(actor: Consolidation Agent / Controller)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Close Mechanics Sign-off</b> &mdash; Controller signs off on close mechanics (IC eliminations, accruals, cutoff) before projection moves to commentary. <i>(actor: L. Okafor (Controller))</i></div>
+</div>
+<div class='phase'>
+<h4>Phase 4: Review &amp; Publication &mdash; Auto-draft variance commentary, route through M. Chen edit and CFO sign-off, then publish to Looker with full audit trail.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Draft Variance Commentary</b> &mdash; Auto-drafted same-day vs. prior forecast (e.g., gross margin -120bps vs. Apr). Follows house style. Commentary edit-rate tracked for quality drift. <i>(actor: Commentary Agent)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>VP FP&amp;A Commentary Edit</b> &mdash; M. Chen edits auto-drafted commentary. Edit rate monitored — eval set grew 12 → 89 examples over 6 quarters. <i>(actor: M. Chen (VP FP&amp;A))</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>CFO Projection Sign-off</b> &mdash; CFO reviews and signs off on consolidated 3-month P&amp;L projection. May cycle: Day 10, 09:42. SOX-relevant: Phase 4 sign-off is ICFR-scoped. <i>(actor: M. Sato (CFO))</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Publish to Looker Dashboard</b> &mdash; Published to Looker with full audit trail attached. 7-year retention in S3 with object lock. <i>(actor: Publication Agent)</i></div>
+</div>
+<h4>Sub-Processes</h4>
+<div class='child-process'>
+<h3>Variance Triage &amp; Auto-Correction</h3>
+<p>Pattern-based variance triage sub-process triggered during Step 2.1 validation. Classifies each flagged variance into one of 5 patterns, applies auto-correction or escalates to a named human. Budget: max 4 auto-fixes per workbook; exceeding threshold escalates the entire batch. Unknown SKUs always escalate (no auto-fix budget applies).</p>
+<p class='confidence'>Confidence: <b>95%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: 5 VARIANCE_TRIAGE nodes (d0_vt1–d0_vt5) with explicit routing rules | TRIGGERS edges from d0_s7 to each triage pattern | J. Park interview turn 23: confirmed 4–5 triage patterns and auto-fix-budget rule | M. Chen interview turn 11: channel-mismatch always-escalate override | Auto-fix budget ≤4 corrections/workbook (d3_dq1) | 12 of 14 variances auto-corrected in May cycle (d0_fa1)</p>
+<div class='phase'>
+<h4>Pattern Classification &mdash; Each flagged variance is classified against 5 known patterns.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Run Tie Checks</b> &mdash; Fire controls C-01 (FX consistency), C-02 (regional total tie), C-03 (pipeline coverage), C-04 (SKU mapping), C-05 (GM band), C-06 (SKU margin), C-07. Pass rate displayed in dashboard. <i>(actor: Validation Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Classify Variance Pattern</b> &mdash; Match each flagged variance to one of 5 patterns: miscoded SKU, channel mismatch, currency tag mismatch, calendar shift, or other/unknown. <i>(actor: Triage Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>Pattern-Based Resolution &mdash; Route each classified variance to the correct resolution path — auto-correct or escalate.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Auto-Correct Miscoded SKU</b> &mdash; Auto-correct known SKU code translations in place, log on Adjustments tab. Unknown SKUs always escalate to J. Park. <i>(actor: Triage Agent)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Escalate Channel Mismatch to M. Chen</b> &mdash; Always escalate to M. Chen per standing override from interview turn 11. Never auto-fix, even if J. Park could resolve. <i>(actor: M. Chen (VP FP&amp;A))</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Auto-Correct Currency Tag</b> &mdash; Auto-correct currency tag mismatches (including symbol-only entries like ¥ → JPY). Notify regional lead. Budget: 6 symbol corrections per workbook. <i>(actor: Triage Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Auto-Correct Calendar Shift</b> &mdash; Auto-correct using master calendar, handling JP fiscal-year naming (FY2026 = Apr 2025 – Mar 2026). <i>(actor: Triage Agent)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Return Unknown Variance to Regional Lead</b> &mdash; Return unclassified variance to regional lead with variance log for manual resolution. <i>(actor: Regional Lead (J. Park / S. Reyes / A. Tanaka))</i></div>
+</div>
+<div class='phase'>
+<h4>Batch Approval &mdash; Aggregate all auto-corrections into a batch for human approval. If budget exceeded (&gt;4 per workbook), escalate entire batch.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Check Auto-Fix Budget</b> &mdash; Verify total auto-corrections per workbook ≤ 4. If exceeded, escalate entire batch instead of applying corrections. <i>(actor: Triage Agent)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>HITL Approve Auto-Correction Batch</b> &mdash; J. Park approves or rejects the batch of auto-corrections from triage agent. <i>(actor: J. Park (AMER Lead))</i></div>
+</div>
+</div>
+<div class='child-process'>
+<h3>Forecast Control Validation Suite (C-01 through C-07)</h3>
+<p>7 named controls fired every close cycle to validate data integrity across FX rates, regional totals, pipeline coverage, SKU mapping, gross margin bands, and margin discipline. Pass rate displayed in dashboard. SOX/J-SOX tagged per-step.</p>
+<p class='confidence'>Confidence: <b>93%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: Control library node d3_cl1 lists C-01 through C-07 explicitly | d2_c07: '7 controls fired every cycle; pass rate displayed in dashboard' | Individual control nodes: d2_c01 (FX), d3_c02 (regional total), d3_c04 (SKU mapping), d3_c05 (GM band), d3_c06 (SKU margin) | Controls validate against ontology entities: ChannelTaxonomy, SKUMaster, CurrencyRegistry, FXForwardCurve | SOX scope: Phase 4 sign-off and IC eliminations are ICFR-relevant (d2_ca1)</p>
+<div class='phase'>
+<h4>FX &amp; Currency Controls &mdash; Validate FX rates derive from authorized sources and cross-rate consistency.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>C-01: FX Consistency Check</b> &mdash; FX rates in transactional data must derive from FXForwardCurve; raw inline rates rejected. Cross-rate consistency: USD/EUR · EUR/GBP must reconcile to USD/GBP within 0.05%. <i>(actor: FX Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Currency Tag Consistency Check</b> &mdash; Currency tags must be consistent on every revenue line in a regional workbook. <i>(actor: Validation Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>Structural Tie Checks &mdash; Validate internal consistency of forecast workbooks.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>C-02: Regional Total Tie</b> &mdash; D60 regional total must equal sum of Detail tab rows within $1,000 tolerance. <i>(actor: Validation Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Channel Total = Sum(SKU Level)</b> &mdash; Channel total must equal sum of SKU-level lines within each channel. <i>(actor: Validation Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>SKU &amp; Margin Controls &mdash; Validate product-level data integrity and margin discipline.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>C-04: SKU Mapping Validation</b> &mdash; Every revenue/COGS line must resolve to a valid sku_id. Unknown SKUs always escalate to J. Park — no auto-fix budget applies. <i>(actor: Validation Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>C-05: GM Band per Channel</b> &mdash; Implied gross margin per channel must fall within trailing-6mo ± 150bps; otherwise commentary required. <i>(actor: Validation Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>C-06: SKU Margin Discipline</b> &mdash; Implied GM% per SKU within gm_target ± 200bps. Cross-channel price spread &gt; 12% triggers projection-agent review. <i>(actor: Projection Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>Pipeline Coverage &mdash; Validate wholesale forecast plausibility against Salesforce pipeline.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>C-03: Pipeline Coverage Ratio</b> &mdash; Pipeline ÷ forecast wholesale revenue per region. Must fall within 1.4x–2.2x historical band. May cycle: 1.7x. <i>(actor: Reconciliation Agent)</i></div>
+</div>
+</div>
+<div class='child-process'>
+<h3>Regional Forecast Submission &amp; Normalization</h3>
+<p>Sub-process for regional leads to prepare, submit, and normalize their forecast workbooks. Involves alias resolution against canonical channel taxonomy, SKU code translation, currency tag normalization, and calendar alignment — all before the workbooks enter the main validation pipeline.</p>
+<p class='confidence'>Confidence: <b>88%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: 3 regional workbooks (AMER, EMEA, APAC) due BD+4 EOD local (d0_s4) | 11 regional spelling variants mapped to 3 canonical channels (d0_ct1, d3_ct1) | S. Reyes screen recording captured alias correction at 0:42:13 (d3_sp4) | A. Tanaka sometimes uses Japanese fiscal-year naming (d0_rf1, d0_p4) | Format-validator agent checks template conformance on detection (d0_s4)</p>
+<div class='phase'>
+<h4>Workbook Preparation &mdash; Regional leads populate forecast workbooks using local conventions.</h4>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Populate AMER Forecast</b> &mdash; J. Park populates AMER forecast workbook with USD-denominated revenue by SKU and channel. <i>(actor: J. Park (AMER Lead))</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Populate EMEA Forecast</b> &mdash; S. Reyes populates EMEA forecast. Known to use variant spellings (e.g., 'Direct-to-Consumer' instead of 'DTC'). <i>(actor: S. Reyes (EMEA Analyst))</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Populate APAC Forecast</b> &mdash; A. Tanaka populates APAC forecast in JPY/AUD. Sometimes uses Japanese fiscal-year naming (FY2026 = Apr 2025 – Mar 2026). <i>(actor: A. Tanaka (APAC Lead))</i></div>
+</div>
+<div class='phase'>
+<h4>Intake &amp; Format Validation &mdash; Hourly folder scan detects new workbooks and validates template conformance.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Detect Workbook Arrival</b> &mdash; Folder scanned hourly for new regional workbook submissions. <i>(actor: Format-Validator Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Validate Template Conformance</b> &mdash; Check workbook structure against expected template (D60 tab, Detail tab, proper headers). <i>(actor: Format-Validator Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>Normalization &mdash; Normalize regional variants to canonical ontology values.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Resolve Channel Aliases</b> &mdash; Map 11 regional spelling variants to 3 canonical channels (DTC, Amazon, Wholesale). Auto-promoted aliases: 'Direct', 'ecom' → DTC; 'Marketplace (DTC subset)' disambiguated from Amazon. <i>(actor: Normalization Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Translate SKU Codes</b> &mdash; Translate EU internal codes and JP local codes to canonical NS-XXXX-NN format using SKU master (1,240 active SKUs). <i>(actor: Normalization Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Normalize Currency Tags</b> &mdash; Convert symbol-only entries (¥, £) to ISO 4217 codes. Budget: 6 auto-corrections per workbook. <i>(actor: Normalization Agent)</i></div>
+</div>
+</div>
+</div>
+<div class='process'>
+<h3>End-to-End Accounting Close Cycle</h3>
+<p>Broader accounting close cycle encompassing upstream transaction processing (procurement, goods receipt, sales, payroll), core close sub-ledgers (three-way match, revenue, AP, inventory, FX revaluation), the monthly close and P&amp;L projection, and downstream reporting (commentary, board pack, tax provision, external 10-Q/IR). The monthly FP&amp;A close process is the primary node; upstream feeds and downstream consumers form the full cycle.</p>
+<p class='confidence'>Confidence: <b>91%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: 14 CLOSE_STEP nodes (d1_cs1–d1_cs14) with explicit FEEDS_INTO DAG | Clear upstream/core/downstream partitioning: 'Day −5 to Day 0' for PO creation | d1_cs8 (Monthly Close) is the central hub node with 5 inbound and 3 outbound edges | Downstream flows to quarterly board pack (d1_cs12), tax provision (d1_cs13), and external reporting (d1_cs14) | Three-way match (d1_cs5) explicitly described as 'PO · GR · Invoice'</p>
+<div class='phase'>
+<h4>Upstream Transaction Processing &mdash; Pre-close transaction capture from procurement, warehouse, sales channels, and payroll. Day −5 to Day 0.</h4>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Process Purchase Orders</b> &mdash; PO creation and vendor master management. Day −5 to Day 0. <i>(actor: Procurement Team)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Record Goods Receipts</b> &mdash; 3PL and warehouse goods receipt processing against open POs. <i>(actor: Warehouse / 3PL Systems)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Capture Sales Transactions</b> &mdash; Sales transaction capture from Shopify, Amazon, and EDI channels. <i>(actor: E-Commerce / EDI Systems)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Run Payroll Cycle</b> &mdash; Payroll processing via Workday and bank file generation. <i>(actor: Workday / HR)</i></div>
+</div>
+<div class='phase'>
+<h4>Core Sub-Ledger Close &mdash; Close individual sub-ledgers: AP (via three-way match), revenue, inventory, and FX revaluation.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Three-Way Match (PO · GR · Invoice)</b> &mdash; Match purchase orders to goods receipts and vendor invoices. Unmatched items become accruals. <i>(actor: AP Automation Agent)</i></div>
+<div class='step'><span class='badge EXCEL_COMPUTE'>EXCEL_COMPUTE</span><b>Revenue Close (Cutoff + Deferred)</b> &mdash; Revenue recognition cutoff and deferred revenue processing. Ship date defines the close month. <i>(actor: Revenue Agent / Controller)</i></div>
+<div class='step'><span class='badge EXCEL_COMPUTE'>EXCEL_COMPUTE</span><b>AP Close (Accruals + Cutoff)</b> &mdash; Accounts payable accruals and period cutoff based on three-way match results. <i>(actor: AP Agent / Controller)</i></div>
+<div class='step'><span class='badge EXCEL_COMPUTE'>EXCEL_COMPUTE</span><b>Inventory Close (Cycle Counts + WAC)</b> &mdash; Cycle count reconciliation and weighted average cost computation. <i>(actor: Inventory Agent / Ops)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>FX Revaluation (Treasury + OCI)</b> &mdash; Foreign exchange revaluation for treasury positions and other comprehensive income. <i>(actor: FX Agent / Treasury)</i></div>
+</div>
+<div class='phase'>
+<h4>Monthly Close &amp; P&amp;L Projection &mdash; Central consolidation node. Depends on revenue close, AP close, inventory close, FX revaluation, and payroll.</h4>
+<div class='step'><span class='badge EXCEL_COMPUTE'>EXCEL_COMPUTE</span><b>Execute Monthly Close &amp; 3-Mo P&amp;L Projection</b> &mdash; The demo's primary process node — consolidates all sub-ledger closes into monthly actuals and produces 3-month P&amp;L projection. <i>(actor: FP&amp;A Team / Agents)</i></div>
+</div>
+<div class='phase'>
+<h4>Downstream Reporting &mdash; Commentary, board pack, tax provision, and external reporting — all flow from the monthly close.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Produce Variance Commentary</b> &mdash; Auto-drafted variance commentary edited by CFO. <i>(actor: Commentary Agent → M. Chen → CFO)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Assemble Quarterly Board Pack</b> &mdash; Quarterly board presentation pack assembly from monthly close outputs. <i>(actor: FP&amp;A Team)</i></div>
+<div class='step'><span class='badge EXCEL_COMPUTE'>EXCEL_COMPUTE</span><b>Calculate Quarterly Tax Provision</b> &mdash; Quarterly tax provision true-up calculation. <i>(actor: Tax Team)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Prepare External Reporting (10-Q / IR)</b> &mdash; 10-Q SEC filing and investor relations reporting. Depends on variance commentary and board pack. <i>(actor: Controller / IR Team)</i></div>
+</div>
+</div>
+<div class='process'>
+<h3>Process Automation Delivery Stack (L0–L5)</h3>
+<p>ProssimoTech's 6-layer methodology for discovering, modeling, integrating, and automating finance processes. Progresses from engagement scoping (L0) through multi-modal discovery (L1), shared ontology construction (L2), versioned process modeling (L3), authenticated integrations (L4), to specialized agent deployment (L5). Contains two closed-loop feedback paths: agent telemetry flows back to ontology (L5→L2), and recurring exceptions trigger re-discovery (L5→L1).</p>
+<p class='confidence'>Confidence: <b>93%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: 6 explicitly numbered layers (d1_l0–d1_l5) with sequential FEEDS_INTO edges | Two feedback loops: d1_l5→d1_l2 (agent telemetry to ontology) and d1_l5→d1_l1 (exceptions trigger re-discovery) | Each layer has a named approval role: Executive Sponsor (L0), Discovery Owner (L1), Ontology Custodian (L2), Process Steward (L3), IT Owner (L4), Reviewer Pool (L6) | Each layer has a named control assertion: recording consent (L1), schema versioning (L2), SOX tagging (L3), access control (L4), agent liability (L5) | L2 described as 'the strategic moat'</p>
+<div class='phase'>
+<h4>L0: Engagement &amp; Baseline &mdash; Score processes on automatability × value × risk; sign scope; capture as-is metrics.</h4>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Score Process Candidacy</b> &mdash; Score candidate processes on automatability × value × risk matrix. <i>(actor: ProssimoTech + Customer Executive Sponsor)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Sign Engagement Scope</b> &mdash; Customer Executive Sponsor signs SOW with scope, procurement, and legal sign-off. <i>(actor: Customer Executive Sponsor)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Capture As-Is Metrics</b> &mdash; Capture baseline metrics: hours/cycle, error rate, $ at risk, FTE allocation. <i>(actor: ProssimoTech Analysts)</i></div>
+</div>
+<div class='phase'>
+<h4>L1: Discovery &mdash; Multi-modal process mining — Word manuals, Excel macros, screen recordings, AI-led interviews. Output: evidence graph with confidence scores.</h4>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Collect Process Artifacts</b> &mdash; Gather Word manuals (FP&amp;A_Close_SOP_v3.2.docx), Excel macros (3MoP&amp;L_Master_2026.xlsm with 47 macros), FX policy memos. <i>(actor: Discovery Owner (ProssimoTech))</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Conduct AI-Led Interviews</b> &mdash; Interview process participants (M. Chen, J. Park, S. Reyes, D. Singh). Record consent managed. Discover undocumented rules (e.g., channel-mismatch escalation override not in SOP). <i>(actor: Discovery Owner)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Analyze Screen Recordings</b> &mdash; Mine screen recordings (e.g., S. Reyes Mar26 recording at 0:42:13 — alias correction; 1:08:47 — NPI SKU addition via Adjustments tab). <i>(actor: Process Mining Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Decode Excel Macros</b> &mdash; Decode 47 macros in 3MoP&amp;L_Master_2026.xlsm. Extract VLOOKUP references (e.g., cell B14 against canonical channel list in Run_Consolidate). <i>(actor: Macro Analysis Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Build Evidence Graph</b> &mdash; Construct evidence graph with confidence scores per claim. Assign provenance to each discovered rule. <i>(actor: Discovery Agent)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Validate PII &amp; Consent</b> &mdash; Evidence retention policy review, data-localization compliance, GDPR, employee privacy review for discovery artifacts. <i>(actor: Discovery Owner / Legal)</i></div>
+</div>
+<div class='phase'>
+<h4>L2: Ontology Construction &mdash; Build shared vocabulary — entities, relationships, controls, role mappings. Templates seed it; learning specializes it.</h4>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Define Core Entities</b> &mdash; Define ontology entities: ChannelTaxonomy (3 canonical channels from 11 variants), SKUMaster (~1,240 SKUs), CurrencyRegistry (6 currencies), FXForwardCurve, ChartOfAccounts (47 P&amp;L lines), VarianceTriagePattern (5 patterns). <i>(actor: Ontology Custodian (ProssimoTech + Customer SME))</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Map Relationships &amp; Controls</b> &mdash; Define 7 controls (C-01 through C-07) with validation targets, tolerance bands, and escalation paths. <i>(actor: Ontology Custodian)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Approve Schema</b> &mdash; Schema versioning governance: breaking-change approval, cross-customer anonymization, IP firewall. Co-owned by ProssimoTech and customer SME. <i>(actor: Ontology Custodian)</i></div>
+</div>
+<div class='phase'>
+<h4>L3: Process Modeling &mdash; Versioned model of as-is and to-be states with named human approvers gating every transition.</h4>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Model As-Is Process</b> &mdash; Create versioned process model including all discovered steps, undocumented workarounds (e.g., ~$130k informal IC adjustment), and implicit rules. <i>(actor: Process Steward (M. Chen))</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Define To-Be Process</b> &mdash; Design target-state process with automation assignments, HITL gates, and agent specifications. <i>(actor: Process Steward)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Tag SOX/J-SOX Controls</b> &mdash; Per-step SOX/J-SOX tagging with ICFR control mapping and approval evidence retention. Audit-defensible state-transition log. <i>(actor: Process Steward / Internal Audit)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Approve Process Model</b> &mdash; Process Steward gates every state transition in the process model. <i>(actor: Process Steward (M. Chen))</i></div>
+</div>
+<div class='phase'>
+<h4>L4: Integrations &mdash; Authenticated, observable connections to source systems with scope-limited credentials.</h4>
+<div class='step'><span class='badge HTTP_CALL'>HTTP_CALL</span><b>Establish System Connections</b> &mdash; Connect to NetSuite (OAuth), Shopify Admin API, Amazon SP-API, Workday, Salesforce, treasury feed, ECB reference rates. <i>(actor: Integration Team)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Configure Access Controls</b> &mdash; Scope-limited credentials, data-residency rules, SOC 2 / ISO 27001 mappings. Vendor security review. <i>(actor: Customer IT Owner)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Enable Connector Telemetry</b> &mdash; Connector health telemetry with hash-drift monitoring (e.g., NetSuite saved-search hash drift &gt; 50% triggers re-discovery). <i>(actor: Integration Monitoring Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>L5: Agent Deployment &mdash; Deploy specialized agents for judgment-laden steps. Specs (prompt + tools + evals + escalation policy) are the deliverable.</h4>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Define Agent Specifications</b> &mdash; Per-agent specs: prompt, tools, evals, escalation policy, SLA, incident playbooks, EU AI Act risk class, NIST AI RMF mappings. <i>(actor: ProssimoTech Agent Team)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Deploy Agents to Production</b> &mdash; Deploy triage agent, FX agent, commentary agent, projection agent, normalization agent, validation agent, publication agent. <i>(actor: ProssimoTech DevOps)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Establish HITL Review Queue</b> &mdash; On-call rotation for agent review. HITL queue ownership and incident response. <i>(actor: Reviewer Pool / Queue Owner)</i></div>
+</div>
+<h4>Sub-Processes</h4>
+<div class='child-process'>
+<h3>Ontology Evolution &amp; Continuous Improvement</h3>
+<p>Closed-loop feedback process where agent execution telemetry (corrected decisions, exception patterns, triage hit rates, commentary edit rates) flows back into the ontology (L5→L2) and recurring exceptions or confidence divergence trigger re-discovery (L5→L1). Includes drift monitoring, automatic promotion of learned patterns, and schema tightening based on observed data quality issues.</p>
+<p class='confidence'>Confidence: <b>87%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: Feedback edge d1_l5→d1_l2: 'agent telemetry (corrected decisions, exception patterns) flows back into ontology' | Feedback edge d1_l5→d1_l1: 'recurring exceptions and confidence divergence trigger re-discovery' | Triage hit rate improved 79% → 92% over 12 cycles (d2_dq1) | Commentary eval set grew 12 → 89 examples over 6 quarters (d2_dq2) | ERP migration re-discovery trigger: NetSuite saved-search hash drift &gt; 50% (d2_dq3) | Sephora gifting channel rule surfaced via recurring exception class &gt;3 cycles (d2_fa2) | DTC aliases auto-promoted after 8 confirmations across regions (d3_fa1) | lifecycle_status tightened from free-text to enum after 3 cycles of inconsistency (d3_fa3) | parent_sku promoted to formal field after 6 confirmed variant groupings (d3_fa4)</p>
+<div class='phase'>
+<h4>Drift Detection &mdash; Monitor agent performance and data quality metrics for drift signals.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Monitor Triage Hit Rate</b> &mdash; Track triage agent accuracy over cycles. Improved from 79% to 92% over 12 cycles via closed-loop feedback. <i>(actor: Drift Monitor Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Monitor Commentary Edit Rate</b> &mdash; Track how frequently M. Chen / CFO edits auto-drafted commentary. Eval set grew 12 → 89 examples over 6 quarters. <i>(actor: Drift Monitor Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Monitor ERP Schema Drift</b> &mdash; Detect NetSuite saved-search hash drift &gt; 50%. Triggers focused L1 re-mining. <i>(actor: Integration Monitor Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>Pattern Promotion &mdash; Automatically promote observed patterns into the ontology after sufficient confirmations.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Auto-Promote Confirmed Aliases</b> &mdash; Auto-promote channel aliases (e.g., 'Direct' and 'ecom' as DTC) after 8 cross-region confirmations. Notify ontology custodian. <i>(actor: Ontology Learning Agent)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Codify Recurring Exception Rules</b> &mdash; When an exception class recurs &gt;3 cycles, codify into L2 ontology (e.g., Sephora gifting channel rule). <i>(actor: Ontology Custodian (M. Chen))</i></div>
+</div>
+<div class='phase'>
+<h4>Schema Tightening &mdash; Tighten ontology field definitions when data quality issues recur.</h4>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Tighten Enum Fields</b> &mdash; Convert free-text fields to enums after observing inconsistency (e.g., lifecycle_status tightened after 3 cycles of EOL/End of life/Killed variants). <i>(actor: Ontology Custodian)</i></div>
+<div class='step'><span class='badge HUMAN'>HUMAN</span><b>Promote Optional Fields to Formal</b> &mdash; Promote optional flags to formal fields after repeated confirmed usage (e.g., parent_sku after 6 variant groupings from NPI launches). <i>(actor: Ontology Custodian)</i></div>
+</div>
+<div class='phase'>
+<h4>Triggered Re-Discovery &mdash; When drift exceeds thresholds, trigger focused re-discovery (L1 re-mining) rather than full rebuild.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Trigger Focused L1 Re-Mining</b> &mdash; ERP migration detection or confidence divergence triggers focused re-discovery. Ontology patched, not rebuilt. <i>(actor: Discovery Agent)</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Patch Ontology</b> &mdash; Ontology custodian reviews and approves patches from re-discovery findings. Breaking-change governance applies. <i>(actor: Ontology Custodian)</i></div>
+</div>
+</div>
+</div>
+<div class='process'>
+<h3>HITL Approval Chain for Monthly Projection</h3>
+<p>Five-gate human-in-the-loop approval chain that governs the monthly close and projection output. Each gate has a named owner, and gates are sequentially dependent: auto-correction batch → OpEx attrition → close mechanics → variance commentary → CFO projection sign-off. The chain ensures no agent output reaches the dashboard without appropriate human review at each stage.</p>
+<p class='confidence'>Confidence: <b>94%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: 5 HITL approval role nodes (d2_ar1–d2_ar5) with named human approvers | Sequential dependency: auto-corrections must be approved before OpEx review, commentary before CFO sign-off | SOX-relevant: Phase 4 sign-off and IC eliminations are ICFR-scoped (d2_ca1) | Variance commentary has a two-stage approval: M. Chen edit → CFO final (d2_ar3 edges to both d0_p1 and d2_p1) | Controller L. Okafor signs off on close mechanics (d2_ar4) | Quarterly baseline drift &gt; 15% triggers review with CFO M. Sato</p>
+<div class='phase'>
+<h4>Validation Approvals &mdash; Approve outputs from automated triage and assumption inputs.</h4>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Approve Auto-Correction Batch</b> &mdash; J. Park reviews and approves or rejects the batch of auto-corrections from triage agent. Prefers false positives over missed new products for unknown SKUs. <i>(actor: J. Park (AMER Lead))</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Review OpEx Attrition Assumption</b> &mdash; M. Chen reviews the OpEx attrition assumption before it is used in 3-month projection. <i>(actor: M. Chen (VP FP&amp;A))</i></div>
+</div>
+<div class='phase'>
+<h4>Close Mechanics Approval &mdash; Controller verifies sub-ledger closes and intercompany eliminations.</h4>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Sign Off Close Mechanics</b> &mdash; Controller verifies IC eliminations → 0, accruals, and cutoff are correct. <i>(actor: L. Okafor (Controller))</i></div>
+</div>
+<div class='phase'>
+<h4>Commentary &amp; Final Approval &mdash; Two-stage review of variance commentary followed by CFO projection sign-off.</h4>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>Edit Variance Commentary</b> &mdash; M. Chen edits auto-drafted commentary to conform to house style and analytical standards. Edit frequency tracked for agent improvement. <i>(actor: M. Chen (VP FP&amp;A))</i></div>
+<div class='step'><span class='badge APPROVE'>APPROVE</span><b>CFO Final Projection Sign-off</b> &mdash; CFO M. Sato gives final sign-off on consolidated 3-month P&amp;L projection. SOX-relevant ICFR control. Quarterly baseline drift &gt; 15% triggers additional review. <i>(actor: M. Sato (CFO))</i></div>
+</div>
+</div>
+<div class='process'>
+<h3>Data Quality Monitoring &amp; Compliance Retention</h3>
+<p>Continuous data quality monitoring process that runs alongside each close cycle. Tracks auto-fix budgets per workbook, monitors agent accuracy drift, enforces cross-channel price discipline, and maintains a 7-year audit-defensible evidence archive in S3. Designed to satisfy SOX/J-SOX, GDPR, and EU AI Act compliance requirements simultaneously.</p>
+<p class='confidence'>Confidence: <b>82%</b> | Source: LLM_ANALYSIS</p>
+<p class='evidence'>Evidence: Auto-fix budget ≤4 corrections/workbook enforced (d3_dq1) | Currency symbol auto-correct budget 6/workbook (d3_dq2) | Cross-channel price spread &gt;12% flag added 2026-04-22 (d3_dq3) | 7-year retention with S3 object lock (d2_ca3) | SOX/J-SOX in-scope tagging with ICFR control mapping (d1_ca1) | Agent liability boundaries: per-agent SLA, EU AI Act risk class, NIST AI RMF (d1_ca3) | Recording consent and PII redaction for discovery artifacts (d1_ca4)</p>
+<div class='phase'>
+<h4>Per-Cycle Budget Enforcement &mdash; Enforce correction budgets during each close cycle to prevent over-automation.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Enforce Auto-Fix Budget (≤4/workbook)</b> &mdash; Maximum 4 auto-corrections per regional workbook for channel aliases and currency tags. Exceeding threshold escalates entire batch. Does NOT apply to unknown SKUs. <i>(actor: Triage Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Enforce Currency Symbol Budget (≤6/workbook)</b> &mdash; Maximum 6 symbol-only auto-corrections (e.g., ¥ → JPY) per workbook at ingest. <i>(actor: Normalization Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Flag Cross-Channel Price Spread</b> &mdash; Cross-channel price spread &gt; 12% on same SKU triggers projection-agent review for price discipline. <i>(actor: Projection Agent)</i></div>
+</div>
+<div class='phase'>
+<h4>Audit &amp; Compliance Retention &mdash; Maintain audit-defensible records for regulatory compliance.</h4>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Archive Evidence Graph &amp; Run Logs</b> &mdash; 7-year retention of evidence graph + run logs in S3 with object lock. Covers all close cycle artifacts. <i>(actor: Archival Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Maintain SOX Control Evidence</b> &mdash; Per-step SOX/J-SOX tagging with ICFR control mapping. Audit-defensible state-transition log for every process step. <i>(actor: Compliance Agent)</i></div>
+<div class='step'><span class='badge AUTO'>AUTO</span><b>Enforce PII Redaction Policy</b> &mdash; GDPR compliance, employee privacy review, data-localization for L1 discovery artifacts containing interview recordings and screen captures. <i>(actor: Privacy Agent)</i></div>
+</div>
+</div>
+<h2>Graph Extraction (Per Document)</h2>
+<div class='section'><h3>02_process_map.html</h3>
+<h4>Entities (43)</h4>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.1 Pull NetSuite Trial Balance &amp; AR/AP</b> &mdash; Authenticate via OAuth, run saved search TB_Detail_Mxx, export CSV with timestamp. Validate row count &gt; 0, debits = credits.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.2 Pull Shopify &amp; Amazon Channel Revenue</b> &mdash; DTC orders from Shopify Admin API; Amazon settlements from SP-API net of returns and FBA fees. Ship date defines close month.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.3 Pull FX Rates &amp; Forward Curve</b> &mdash; Spot rates as of last BD of close month + 3-month forward curve. Primary: treasury feed; cross-check: ECB reference rate.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.4 Receive Regional Forecast Workbooks</b> &mdash; 3 workbooks (AMER, EMEA, APAC) due BD+4 EOD local. Folder scanned hourly; format-validator agent checks template conformance on detection.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.5 Pull Workday Roster &amp; Salesforce Pipeline</b> &mdash; Headcount + comp plan from Workday; point-in-time pipeline snapshot from Salesforce for reproducibility.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 1.6 Receive Marketing &amp; OpEx Plan</b> &mdash; Campaign calendar from CMO with planned spend by week and channel; run-rate OpEx updates from functional leads (Eng, Ops, G&amp;A).</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 2.1 Validate Forecast &amp; Triage Variances</b> &mdash; Tie checks (D60 total, channel total, currency tags), pattern-based triage, auto-fix or escalate. Every correction recorded with before/after values.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 2.2 Reconcile Forecast to Salesforce Pipeline</b> &mdash; Pipeline coverage ratio = stage 4+ pipeline / forecast wholesale revenue, per region. Compare to historical band 1.4x-2.2x.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 2.3 FX Translate to USD</b> &mdash; Forecast lines use forward as-of last BD of prior month per FX Policy Memo §2; actuals use month-end spot; hedged use hedge rate. Tolerance: USD = local × rate ± $0.01.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 3.1 Project COGS &amp; OpEx</b> &mdash; Standard cost × volumes plus run-rate OpEx. 3-month forward projection.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 3.2 Consolidate Group P&amp;L</b> &mdash; Intercompany elimination → 0. Consolidate all regional P&amp;Ls into group view.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 4.1 Draft Variance Commentary</b> &mdash; Auto-drafted same-day vs. prior forecast (e.g., gross margin -120bps vs. Apr). Follows house style.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 4.2 CFO Sign-off</b> &mdash; CFO reviews and signs off on consolidated 3-month P&amp;L projection. May cycle: Day 10, 09:42.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Step 4.3 Publish to Dashboard</b> &mdash; Published to Looker with full audit trail attached.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Miscoded SKU Pattern</b> &mdash; Auto-correct in place, log on Adjustments tab.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Channel Mismatch Pattern</b> &mdash; Always escalate to M. Chen per standing override from interview turn 11. Never auto-fix.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Currency Tag Mismatch Pattern</b> &mdash; Auto-correct currency tag, notify regional lead.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Calendar Shift Pattern</b> &mdash; Auto-correct using master calendar (handles JP fiscal-year naming).</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Other / Unknown Pattern</b> &mdash; Return to regional lead with variance log for manual resolution.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Tie Check: D60 Regional Total = Sum(Detail)</b> &mdash; Regional total on D60 tab must equal sum of Detail tab rows within $1,000 tolerance.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Tie Check: Channel Total = Sum(SKU Level)</b> &mdash; Channel total must equal sum of SKU-level lines within each channel.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Tie Check: Currency Tag Consistency</b> &mdash; Currency tags must be consistent on every revenue line in a regional workbook.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>CFO Projection Sign-off</b> &mdash; CFO approves final 3-month P&amp;L projection before publication to Looker dashboard.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Chen</b> &mdash; VP FP&amp;A. Owns channel-mismatch escalation override; approves variance commentary; 50 analyst hours under her team per cycle.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> &mdash; AMER regional finance lead. Submits DTC + Wholesale forecast workbook.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>S. Reyes</b> &mdash; EMEA regional finance lead. Submits EUR/GBP-denominated forecast with extra VAT Reconciliation tab.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>A. Tanaka</b> &mdash; APAC regional finance lead. Submits JPY/AUD forecast; sometimes uses Japanese fiscal-year naming.</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>AMER Forecast Workbook</b> &mdash; DTC + Wholesale forecast with wholesale broken out by SKU.</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>EMEA Forecast Workbook</b> &mdash; EUR/GBP-denominated forecast. Includes extra VAT Reconciliation tab not in standard template.</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>APAC Forecast Workbook</b> &mdash; JPY/AUD-denominated forecast. APAC analyst sometimes uses Japanese fiscal-year naming (FY2026 = Apr 2025 – Mar 2026).</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>Northstar Channel Taxonomy</b> &mdash; 3 canonical channels (DTC, Amazon, Wholesale) mapped from 11 regional spelling variants across three regions.</div>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>FX Forward Curve Apr 2026</b> &mdash; 5 currency pairs (USD/EUR, USD/GBP, USD/JPY, USD/AUD, USD/CAD) × spot + 1-mo / 2-mo / 3-mo forward. Primary: treasury feed; cross-check: ECB.</div>
+<div class='entity'><span class='badge PIPELINE_COVERAGE'>PIPELINE_COVERAGE</span><b>Wholesale Pipeline Coverage Ratio</b> &mdash; Stage 4+ pipeline / forecast wholesale revenue per region. Historical band 1.4x–2.2x. May cycle actual: 1.7x (within band).</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>SKU Mapping Miss Flag ($4.2k)</b> &mdash; SKU mapping miss flagged during validation at $4.2k variance in May cycle walkthrough.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>TB_Apr26_Detail.csv</b> &mdash; NetSuite trial balance detail export for April 2026 closing month.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>AR_Aging_Apr26.csv</b> &mdash; Accounts receivable aging report from NetSuite.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>AP_Aging_Apr26.csv</b> &mdash; Accounts payable aging report from NetSuite.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>Shopify_Orders_Apr26.csv</b> &mdash; DTC orders from Shopify with paid status and ship date in closing month.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>Amazon_Settlements_Apr26.csv</b> &mdash; Amazon settlement reports net of returns and FBA fees.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>FX_Forward_Curve_Apr26.csv</b> &mdash; Spot rates + 3-month forward curve for 5 currency pairs.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>Workday_Roster_Apr26.csv</b> &mdash; Headcount and compensation plan export from Workday.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>SF_Pipeline_Snapshot_Apr26.csv</b> &mdash; Point-in-time Salesforce pipeline snapshot for forecast reproducibility.</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Auto-Fix Batch (12 of 14)</b> &mdash; 12 of 14 flagged variances auto-corrected during Step 2.1 validation; 2 escalated for human review.</div>
+<h4>Relationships (45)</h4>
+<div class='rel'><b>d0_s1</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s7</b> <i>Trial balance data feeds into forecast validation and tie checks</i></div>
+<div class='rel'><b>d0_s2</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s7</b> <i>Channel revenue data feeds into forecast validation</i></div>
+<div class='rel'><b>d0_s3</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s9</b> <i>FX forward curve feeds into FX translation step</i></div>
+<div class='rel'><b>d0_s4</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s7</b> <i>Regional forecast workbooks feed into validation and triage</i></div>
+<div class='rel'><b>d0_s5</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s8</b> <i>Salesforce pipeline snapshot feeds into pipeline reconciliation</i></div>
+<div class='rel'><b>d0_s5</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s10</b> <i>Workday roster feeds into OpEx projection</i></div>
+<div class='rel'><b>d0_s6</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s10</b> <i>Marketing &amp; OpEx plan feeds into COGS &amp; OpEx projection</i></div>
+<div class='rel'><b>d0_s7</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s9</b> <i>Validated regional forecasts feed into FX translation</i></div>
+<div class='rel'><b>d0_s8</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s10</b> <i>Reconciled pipeline data feeds into projection step</i></div>
+<div class='rel'><b>d0_s9</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s10</b> <i>USD-translated forecasts feed into COGS &amp; OpEx projection</i></div>
+<div class='rel'><b>d0_s10</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s11</b> <i>Projected COGS &amp; OpEx feeds into Group P&amp;L consolidation</i></div>
+<div class='rel'><b>d0_s11</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s12</b> <i>Consolidated Group P&amp;L feeds into variance commentary drafting</i></div>
+<div class='rel'><b>d0_s12</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s13</b> <i>Drafted variance commentary feeds into CFO review and sign-off</i></div>
+<div class='rel'><b>d0_s13</b> &mdash;[FEEDS_INTO]&rarr; <b>d0_s14</b> <i>CFO-approved projection feeds into Looker dashboard publication</i></div>
+<div class='rel'><b>d0_rf1</b> &mdash;[PART_OF]&rarr; <b>d0_s4</b> <i>AMER forecast is one of three regional workbooks received in Step 1.4</i></div>
+<div class='rel'><b>d0_rf2</b> &mdash;[PART_OF]&rarr; <b>d0_s4</b> <i>EMEA forecast is one of three regional workbooks received in Step 1.4</i></div>
+<div class='rel'><b>d0_rf3</b> &mdash;[PART_OF]&rarr; <b>d0_s4</b> <i>APAC forecast is one of three regional workbooks received in Step 1.4</i></div>
+<div class='rel'><b>d0_rf1</b> &mdash;[SUBMITTED_BY]&rarr; <b>d0_p2</b> <i>AMER forecast workbook submitted by J. Park</i></div>
+<div class='rel'><b>d0_rf2</b> &mdash;[SUBMITTED_BY]&rarr; <b>d0_p3</b> <i>EMEA forecast workbook submitted by S. Reyes</i></div>
+<div class='rel'><b>d0_rf3</b> &mdash;[SUBMITTED_BY]&rarr; <b>d0_p4</b> <i>APAC forecast workbook submitted by A. Tanaka</i></div>
+<div class='rel'><b>d0_rf1</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d0_ct1</b> <i>AMER forecast uses regional channel names mapped to canonical taxonomy</i></div>
+<div class='rel'><b>d0_rf2</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d0_ct1</b> <i>EMEA forecast uses regional channel names mapped to canonical taxonomy</i></div>
+<div class='rel'><b>d0_rf3</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d0_ct1</b> <i>APAC forecast uses regional channel names mapped to canonical taxonomy</i></div>
+<div class='rel'><b>d0_c1</b> &mdash;[VALIDATES]&rarr; <b>d0_s7</b> <i>D60 regional total tie check fires during Step 2.1 validation</i></div>
+<div class='rel'><b>d0_c2</b> &mdash;[VALIDATES]&rarr; <b>d0_s7</b> <i>Channel total tie check fires during Step 2.1 validation</i></div>
+<div class='rel'><b>d0_c3</b> &mdash;[VALIDATES]&rarr; <b>d0_s7</b> <i>Currency tag consistency check fires during Step 2.1 validation</i></div>
+<div class='rel'><b>d0_pc1</b> &mdash;[VALIDATES]&rarr; <b>d0_s8</b> <i>Pipeline coverage ratio validates wholesale forecast against 1.4x–2.2x band</i></div>
+<div class='rel'><b>d0_s13</b> &mdash;[APPROVED_BY]&rarr; <b>d0_ar1</b> <i>Projection sign-off step approved by CFO role</i></div>
+<div class='rel'><b>d0_vt2</b> &mdash;[ESCALATED_TO]&rarr; <b>d0_p1</b> <i>Channel mismatches always escalated to M. Chen per standing override</i></div>
+<div class='rel'><b>d0_vt5</b> &mdash;[ESCALATED_TO]&rarr; <b>d0_p2</b> <i>Unknown variance patterns returned to regional lead with variance log</i></div>
+<div class='rel'><b>d0_s7</b> &mdash;[TRIGGERS]&rarr; <b>d0_vt1</b> <i>Validation step triggers miscoded SKU triage pattern when detected</i></div>
+<div class='rel'><b>d0_s7</b> &mdash;[TRIGGERS]&rarr; <b>d0_vt2</b> <i>Validation step triggers channel mismatch triage pattern when detected</i></div>
+<div class='rel'><b>d0_s7</b> &mdash;[TRIGGERS]&rarr; <b>d0_vt3</b> <i>Validation step triggers currency tag mismatch triage when detected</i></div>
+<div class='rel'><b>d0_s7</b> &mdash;[TRIGGERS]&rarr; <b>d0_vt4</b> <i>Validation step triggers calendar shift triage when detected</i></div>
+<div class='rel'><b>d0_s1</b> &mdash;[SOURCE_OF]&rarr; <b>d0_sp1</b> <i>Step 1.1 produces TB_Apr26_Detail.csv</i></div>
+<div class='rel'><b>d0_s1</b> &mdash;[SOURCE_OF]&rarr; <b>d0_sp2</b> <i>Step 1.1 produces AR_Aging_Apr26.csv</i></div>
+<div class='rel'><b>d0_s1</b> &mdash;[SOURCE_OF]&rarr; <b>d0_sp3</b> <i>Step 1.1 produces AP_Aging_Apr26.csv</i></div>
+<div class='rel'><b>d0_s2</b> &mdash;[SOURCE_OF]&rarr; <b>d0_sp4</b> <i>Step 1.2 produces Shopify_Orders_Apr26.csv</i></div>
+<div class='rel'><b>d0_s2</b> &mdash;[SOURCE_OF]&rarr; <b>d0_sp5</b> <i>Step 1.2 produces Amazon_Settlements_Apr26.csv</i></div>
+<div class='rel'><b>d0_s3</b> &mdash;[SOURCE_OF]&rarr; <b>d0_sp6</b> <i>Step 1.3 produces FX_Forward_Curve_Apr26.csv</i></div>
+<div class='rel'><b>d0_s5</b> &mdash;[SOURCE_OF]&rarr; <b>d0_sp7</b> <i>Step 1.5 produces Workday_Roster_Apr26.csv</i></div>
+<div class='rel'><b>d0_s5</b> &mdash;[SOURCE_OF]&rarr; <b>d0_sp8</b> <i>Step 1.5 produces SF_Pipeline_Snapshot_Apr26.csv</i></div>
+<div class='rel'><b>d0_sp6</b> &mdash;[CONTAINS]&rarr; <b>d0_fx1</b> <i>FX forward curve CSV contains the forward curve data used by FX translation step</i></div>
+<div class='rel'><b>d0_fa1</b> &mdash;[APPLIES_ADJUSTMENT]&rarr; <b>d0_s7</b> <i>Auto-fix batch of 12 corrections applied during validation step</i></div>
+<div class='rel'><b>d0_dq1</b> &mdash;[TRIGGERS]&rarr; <b>d0_vt1</b> <i>SKU mapping miss data quality flag triggers miscoded SKU triage pattern</i></div>
+</div>
+<div class='section'><h3>08_KAA_methodology.html</h3>
+<h4>Entities (31)</h4>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>L0 Engagement &amp; Baseline</b> &mdash; Score processes on automatability × value × risk; sign scope; capture as-is metrics (hours/cycle, error rate, $ at risk, FTE allocation). Prerequisite to the entire stack.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>L1 Discovery</b> &mdash; Multi-modal process mining — Word manuals, Excel macros, screen recordings, AI-led interviews. Output: evidence graph with confidence scores per claim.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>L2 Ontology</b> &mdash; Shared vocabulary — entities, relationships, controls, role mappings. Templates seed it; learning specializes it. The strategic moat.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>L3 Process Model</b> &mdash; Versioned model of as-is and to-be states with named human approvers gating every transition. Process-graph, not single-process.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>L4 Integrations</b> &mdash; Authenticated, observable connections to source systems. Scope-limited credentials, SOC 2 / ISO 27001 mappings, connector health telemetry.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>L5 Agents</b> &mdash; Specialized agents for judgment-laden steps. Specs (prompt + tools + evals + escalation policy) are the deliverable, not the model. Per-agent SLA and incident playbooks.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Procurement / PO Creation</b> &mdash; Upstream dependency: PO creation and vendor master management. Day −5 to Day 0.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Goods Receipt (3PL + Warehouse)</b> &mdash; Upstream dependency: 3PL and warehouse goods receipt processing.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Sales Transactions (Shopify + Amazon + EDI)</b> &mdash; Upstream dependency: Sales transaction capture from Shopify, Amazon, and EDI.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Payroll Cycle (Workday + Bank File)</b> &mdash; Upstream dependency: Payroll processing via Workday and bank file.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Three-Way Match (PO · GR · Invoice)</b> &mdash; Core close: Three-way matching of purchase orders, goods receipts, and invoices.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Revenue Close (Cutoff + Deferred)</b> &mdash; Core close: Revenue recognition cutoff and deferred revenue processing.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>AP Close (Accruals + Cutoff)</b> &mdash; Core close: Accounts payable accruals and period cutoff.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Monthly Close + 3-Mo P&amp;L Projection</b> &mdash; Core close: The demo's primary process node — monthly close and 3-month P&amp;L projection. Depends on revenue close, AP close, inventory close, and FX revaluation.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Inventory Close (Cycle Counts + WAC)</b> &mdash; Core close: Cycle count reconciliation and weighted average cost computation.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>FX Revaluation (Treasury + OCI)</b> &mdash; Core close: Foreign exchange revaluation for treasury positions and other comprehensive income.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Variance Commentary (Auto-Draft + CFO Edit)</b> &mdash; Downstream: Auto-drafted variance commentary edited by CFO.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Board Pack (Quarterly)</b> &mdash; Downstream: Quarterly board presentation pack assembly.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>Tax Provision (Quarterly True-Up)</b> &mdash; Downstream: Quarterly tax provision true-up calculation.</div>
+<div class='entity'><span class='badge CLOSE_STEP'>CLOSE_STEP</span><b>External Reporting (10-Q / IR)</b> &mdash; Downstream: 10-Q SEC filing and investor relations reporting.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Process Steward</b> &mdash; Owns L3 process model. Gates every state transition. Backup: VP Finance. Manages change-management cadence.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Ontology Custodian</b> &mdash; Co-owned by ProssimoTech + customer SME. Manages schema versioning, breaking-change governance, and domain-template library.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Customer Executive Sponsor</b> &mdash; Owns L0 engagement. Procurement &amp; legal sign-off. Chairs steering committee.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Discovery Owner</b> &mdash; ProssimoTech lead for L1 discovery. Manages interview consent workflow and employee communications.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Customer IT Owner</b> &mdash; Owns L4 integrations. Responsible for vendor security review, access control, and deprovisioning runbook.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>Reviewer Pool / Queue Owner</b> &mdash; On-call rotation for L5 agent review. Manages HITL queue ownership and incident response.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>SOX / J-SOX In-Scope Tagging</b> &mdash; Per-step SOX/J-SOX tagging with ICFR control mapping and approval evidence retention. Audit-defensible state-transition log.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Schema Versioning Governance</b> &mdash; Breaking-change governance for ontology schema with cross-customer anonymization rules and IP firewall between customers.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Agent Liability Boundaries</b> &mdash; Per-agent SLA, incident playbooks, EU AI Act risk class mapping, NIST AI RMF mappings.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Recording Consent &amp; PII Redaction</b> &mdash; Evidence retention policy, data-localization, GDPR, employee privacy reviews for L1 discovery artifacts.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Integration Access Control</b> &mdash; Scope-limited credentials, data-residency rules, SOC 2 / ISO 27001 mappings for L4 connectors.</div>
+<h4>Relationships (32)</h4>
+<div class='rel'><b>d1_l0</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_l1</b> <i>Engagement baseline scoping feeds into discovery phase</i></div>
+<div class='rel'><b>d1_l1</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_l2</b> <i>Discovery evidence graph feeds into ontology construction</i></div>
+<div class='rel'><b>d1_l2</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_l3</b> <i>Ontology shared vocabulary feeds into versioned process model</i></div>
+<div class='rel'><b>d1_l3</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_l4</b> <i>Process model defines integration requirements for source systems</i></div>
+<div class='rel'><b>d1_l4</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_l5</b> <i>Integrations enable agent execution on connected systems</i></div>
+<div class='rel'><b>d1_l5</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_l2</b> <i>Closed-loop feedback: agent telemetry (corrected decisions, exception patterns) flows back into ontology refinement</i></div>
+<div class='rel'><b>d1_l5</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_l1</b> <i>Closed-loop feedback: recurring exceptions and confidence divergence trigger re-discovery</i></div>
+<div class='rel'><b>d1_cs1</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs5</b> <i>PO creation feeds into three-way match (PO leg)</i></div>
+<div class='rel'><b>d1_cs2</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs5</b> <i>Goods receipt feeds into three-way match (GR leg)</i></div>
+<div class='rel'><b>d1_cs3</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs6</b> <i>Sales transactions feed into revenue close</i></div>
+<div class='rel'><b>d1_cs5</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs7</b> <i>Three-way match feeds into AP close</i></div>
+<div class='rel'><b>d1_cs6</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs8</b> <i>Revenue close feeds into monthly close + P&amp;L</i></div>
+<div class='rel'><b>d1_cs7</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs8</b> <i>AP close feeds into monthly close + P&amp;L</i></div>
+<div class='rel'><b>d1_cs9</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs8</b> <i>Inventory close feeds into monthly close + P&amp;L</i></div>
+<div class='rel'><b>d1_cs10</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs8</b> <i>FX revaluation feeds into monthly close + P&amp;L</i></div>
+<div class='rel'><b>d1_cs4</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs8</b> <i>Payroll cycle feeds into monthly close for compensation expense</i></div>
+<div class='rel'><b>d1_cs8</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs11</b> <i>Monthly close feeds into variance commentary (downstream)</i></div>
+<div class='rel'><b>d1_cs8</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs12</b> <i>Monthly close feeds into quarterly board pack</i></div>
+<div class='rel'><b>d1_cs8</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs13</b> <i>Monthly close feeds into quarterly tax provision</i></div>
+<div class='rel'><b>d1_cs11</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs14</b> <i>Variance commentary feeds into external reporting (10-Q / IR)</i></div>
+<div class='rel'><b>d1_cs12</b> &mdash;[FEEDS_INTO]&rarr; <b>d1_cs14</b> <i>Board pack feeds into external reporting</i></div>
+<div class='rel'><b>d1_l3</b> &mdash;[APPROVED_BY]&rarr; <b>d1_ar1</b> <i>L3 process model state transitions gated by Process Steward</i></div>
+<div class='rel'><b>d1_l2</b> &mdash;[APPROVED_BY]&rarr; <b>d1_ar2</b> <i>Ontology schema changes approved by Ontology Custodian</i></div>
+<div class='rel'><b>d1_l0</b> &mdash;[APPROVED_BY]&rarr; <b>d1_ar3</b> <i>Engagement scope and SOW approved by Customer Executive Sponsor</i></div>
+<div class='rel'><b>d1_l1</b> &mdash;[APPROVED_BY]&rarr; <b>d1_ar4</b> <i>Discovery execution led by ProssimoTech Discovery Owner</i></div>
+<div class='rel'><b>d1_l4</b> &mdash;[APPROVED_BY]&rarr; <b>d1_ar5</b> <i>Integration access and credentials controlled by Customer IT Owner</i></div>
+<div class='rel'><b>d1_l5</b> &mdash;[APPROVED_BY]&rarr; <b>d1_ar6</b> <i>Agent outputs reviewed by Reviewer Pool with on-call rotation</i></div>
+<div class='rel'><b>d1_ca1</b> &mdash;[VALIDATES]&rarr; <b>d1_l3</b> <i>SOX/J-SOX tagging validates each step in the process model</i></div>
+<div class='rel'><b>d1_ca2</b> &mdash;[VALIDATES]&rarr; <b>d1_l2</b> <i>Schema versioning governance validates ontology changes</i></div>
+<div class='rel'><b>d1_ca3</b> &mdash;[VALIDATES]&rarr; <b>d1_l5</b> <i>Agent liability boundaries and SLAs validate agent specifications</i></div>
+<div class='rel'><b>d1_ca4</b> &mdash;[VALIDATES]&rarr; <b>d1_l1</b> <i>Recording consent and PII redaction validates discovery evidence collection</i></div>
+<div class='rel'><b>d1_ca5</b> &mdash;[VALIDATES]&rarr; <b>d1_l4</b> <i>Access control and SOC 2 mapping validates integration connections</i></div>
+</div>
+<div class='section'><h3>09_process_map_KAA.html</h3>
+<h4>Entities (35)</h4>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Sato</b> &mdash; CFO and Customer Sponsor. Signs off on final projection. Quarterly baseline drift &gt; 15% triggers review with M. Sato.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Chen</b> &mdash; VP FP&amp;A, Process Steward, and Ontology Custodian. Approves commentary, OpEx attrition assumption, channel-mismatch escalations.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> &mdash; AMER regional finance lead. HITL approver for auto-correction batch. Confirmed 4–5 known triage patterns and auto-fix-budget rule.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>S. Reyes</b> &mdash; EMEA analyst. Screen recordings captured close-cycle workflow. Spotted DTC alias correction in Mar 2026.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>A. Tanaka</b> &mdash; APAC regional finance lead. Interviewed as part of L1 Discovery.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>L. Okafor</b> &mdash; Controller. Close mechanics sign-off role. HITL approver for close mechanics.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>D. Singh</b> &mdash; Interviewed as part of L1 Discovery process.</div>
+<div class='entity'><span class='badge REGIONAL_FORECAST'>REGIONAL_FORECAST</span><b>RegionalForecast Entity (Ontology)</b> &mdash; Ontology entity for regional workbook submissions. Instances: AMER, EMEA, APAC.</div>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>ChannelTaxonomy Entity (Ontology)</b> &mdash; Ontology entity: 3 corporate canonical channels (DTC, Amazon, Wholesale) mapping from 11 regional names.</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>SKUMaster Entity (Ontology)</b> &mdash; Ontology entity: 13 SKUs with mappings from EU internal codes and JP local codes.</div>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>FXForwardCurve Entity (Ontology)</b> &mdash; Ontology entity: 5 currencies with M+1/M+2/M+3 forward horizons. Refreshed each cycle.</div>
+<div class='entity'><span class='badge PIPELINE_COVERAGE'>PIPELINE_COVERAGE</span><b>PipelineCoverageRatio (Ontology)</b> &mdash; Ontology metric: pipeline / forecast. SOP band 1.4x–2.2x vs. Sales Ops 1.6x — unresolved conflict from L1 Discovery.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>SKU Mapping Triage Pattern</b> &mdash; One of 5 ontology VarianceTriagePattern instances. Auto-correct for known SKU code translations.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Channel Mismatch Triage Pattern</b> &mdash; Always escalate per M. Chen override. Never auto-fix even if J. Park could resolve.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Currency Tag Triage Pattern</b> &mdash; Auto-correct currency tag mismatches and notify regional lead.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Calendar Shift Triage Pattern</b> &mdash; Auto-correct using master calendar for fiscal-year and period alignment.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>Other / Unknown Triage Pattern</b> &mdash; Catch-all for unclassified variances; returned to regional lead.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Control C-01 (FX Consistency)</b> &mdash; One of 7 controls (C-01..C-07) fired every cycle. FX consistency validation.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Controls C-01 through C-07</b> &mdash; 7 controls fired every cycle; pass rate displayed in dashboard. Includes tie checks, FX, pipeline, GM band, SKU mapping, margin discipline.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>SOX Scope: Phase 4 + IC Eliminations</b> &mdash; Phase 4 sign-off and IC eliminations are ICFR-relevant. Agent participation requires control documentation.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>FX Policy: Forward as of Last BD Prior Month</b> &mdash; Per FX Policy Memo §2, forecast lines use forward rate as of last BD of prior month. Encoded in FX agent spec.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Audit Retention: 7-Year Object Lock</b> &mdash; 7-year retention of evidence graph + run logs in S3 with object lock.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>HITL: Approve Auto-Correction Batch</b> &mdash; J. Park approves or rejects the batch of auto-corrections from triage agent.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>HITL: OpEx Attrition Assumption Review</b> &mdash; M. Chen reviews OpEx attrition assumption before projection.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>HITL: Variance Commentary Edit</b> &mdash; M. Chen edits auto-drafted commentary, then CFO gives final approval.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>HITL: Close Mechanics Sign-off</b> &mdash; Controller (L. Okafor) signs off on close mechanics.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>HITL: Projection Sign-off</b> &mdash; CFO (M. Sato) gives final sign-off on 3-month P&amp;L projection.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>FP&amp;A_Close_SOP_v3.2.docx</b> &mdash; 47-page Standard Operating Procedure document. Primary L1 Discovery evidence source.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>FX_Policy_Memo.pdf</b> &mdash; 12-page FX policy memo. §2 defines forward-rate usage policy.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>3MoP&amp;L_Master_2026.xlsm</b> &mdash; Master P&amp;L workbook with 47 decoded macros. Core consolidation artifact.</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Triage Hit Rate Drift Monitor</b> &mdash; Monitors triage agent hit rate. Improved from 79% to 92% over 12 cycles via closed-loop feedback.</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Commentary Edit-Rate Drift Monitor</b> &mdash; Monitors how frequently M. Chen / CFO edits auto-drafted commentary. Eval set grew 12 → 89 examples over 6 quarters.</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>ERP Migration Re-Discovery Trigger</b> &mdash; Detected when NetSuite saved-search hash drifts &gt; 50%. Triggers focused L1 re-mining; ontology patched, not rebuilt.</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>~$130k Informal IC Adjustment (Apr)</b> &mdash; Informal intercompany adjustment by Controller in April cycle. Discovered during L1 interviews — not documented in SOP.</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Sephora Gifting Channel Rule</b> &mdash; New channel rule surfaced via recurring exception class (&gt;3 cycles). Codified into L2 ontology after process drift detection.</div>
+<h4>Relationships (26)</h4>
+<div class='rel'><b>d2_sp1</b> &mdash;[SOURCE_OF]&rarr; <b>d2_vt2</b> <i>SOP document is source evidence but channel-mismatch escalation rule was NOT documented — only discovered in M. Chen interview</i></div>
+<div class='rel'><b>d2_sp2</b> &mdash;[SOURCE_OF]&rarr; <b>d2_ca2</b> <i>FX Policy Memo §2 is the source for forward-rate usage policy encoded in FX agent</i></div>
+<div class='rel'><b>d2_sp3</b> &mdash;[CONTAINS]&rarr; <b>d2_ct1</b> <i>Master P&amp;L workbook contains Run_Consolidate macro with VLOOKUP against canonical channel list</i></div>
+<div class='rel'><b>d2_rf1</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d2_ct1</b> <i>Regional forecast submissions reference channel taxonomy for normalization</i></div>
+<div class='rel'><b>d2_rf1</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d2_sk1</b> <i>Regional forecasts reference SKU master for product identification</i></div>
+<div class='rel'><b>d2_rf1</b> &mdash;[DERIVES_FROM]&rarr; <b>d2_fx1</b> <i>Regional forecast USD values derive from FX forward curve translation</i></div>
+<div class='rel'><b>d2_vt2</b> &mdash;[ESCALATED_TO]&rarr; <b>d2_p2</b> <i>Channel mismatches always escalated to M. Chen per standing interview override</i></div>
+<div class='rel'><b>d2_vt1</b> &mdash;[ESCALATED_TO]&rarr; <b>d2_p3</b> <i>Unknown SKU IDs escalated to J. Park (prefers false positives over missed new products)</i></div>
+<div class='rel'><b>d2_ar1</b> &mdash;[APPROVED_BY]&rarr; <b>d2_p3</b> <i>Auto-correction batch approval assigned to J. Park</i></div>
+<div class='rel'><b>d2_ar2</b> &mdash;[APPROVED_BY]&rarr; <b>d2_p2</b> <i>OpEx attrition assumption review assigned to M. Chen</i></div>
+<div class='rel'><b>d2_ar3</b> &mdash;[APPROVED_BY]&rarr; <b>d2_p2</b> <i>Variance commentary edit first approved by M. Chen</i></div>
+<div class='rel'><b>d2_ar3</b> &mdash;[APPROVED_BY]&rarr; <b>d2_p1</b> <i>Variance commentary final approval by CFO M. Sato</i></div>
+<div class='rel'><b>d2_ar4</b> &mdash;[APPROVED_BY]&rarr; <b>d2_p6</b> <i>Close mechanics sign-off assigned to Controller L. Okafor</i></div>
+<div class='rel'><b>d2_ar5</b> &mdash;[APPROVED_BY]&rarr; <b>d2_p1</b> <i>Projection sign-off assigned to CFO M. Sato</i></div>
+<div class='rel'><b>d2_c07</b> &mdash;[VALIDATES]&rarr; <b>d2_ct1</b> <i>Controls C-02 and C-05 validate against channel taxonomy (regional total + GM band)</i></div>
+<div class='rel'><b>d2_c07</b> &mdash;[VALIDATES]&rarr; <b>d2_sk1</b> <i>Controls C-04 and C-06 validate against SKU master (mapping + margin discipline)</i></div>
+<div class='rel'><b>d2_c01</b> &mdash;[VALIDATES]&rarr; <b>d2_fx1</b> <i>Control C-01 validates FX consistency against forward curve</i></div>
+<div class='rel'><b>d2_pc1</b> &mdash;[VALIDATES]&rarr; <b>d2_rf1</b> <i>Pipeline coverage ratio validates wholesale forecast plausibility per region</i></div>
+<div class='rel'><b>d2_dq1</b> &mdash;[VALIDATES]&rarr; <b>d2_vt1</b> <i>Triage hit rate drift monitor validates triage pattern accuracy over time</i></div>
+<div class='rel'><b>d2_dq2</b> &mdash;[VALIDATES]&rarr; <b>d2_ar3</b> <i>Commentary edit-rate monitor validates auto-drafted commentary quality</i></div>
+<div class='rel'><b>d2_dq3</b> &mdash;[TRIGGERS]&rarr; <b>d2_sp1</b> <i>ERP migration detection (hash drift &gt; 50%) triggers re-discovery of process evidence</i></div>
+<div class='rel'><b>d2_fa1</b> &mdash;[SUBMITTED_BY]&rarr; <b>d2_p6</b> <i>~$130k informal IC adjustment submitted by Controller in April cycle</i></div>
+<div class='rel'><b>d2_fa2</b> &mdash;[APPLIES_ADJUSTMENT]&rarr; <b>d2_ct1</b> <i>Sephora gifting channel rule codified as adjustment to channel taxonomy in L2 ontology</i></div>
+<div class='rel'><b>d2_ca1</b> &mdash;[VALIDATES]&rarr; <b>d2_ar5</b> <i>SOX scope control validates that Phase 4 sign-off follows ICFR requirements</i></div>
+<div class='rel'><b>d2_ca3</b> &mdash;[CONTAINS]&rarr; <b>d2_sp1</b> <i>7-year audit retention archive contains all evidence graph artifacts and run logs</i></div>
+<div class='rel'><b>d2_vt3</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d2_fx1</b> <i>Currency tag triage pattern references currency registry within FX forward curve entity</i></div>
+</div>
+<div class='section'><h3>10_semantic_layer_DRAFT.html</h3>
+<h4>Entities (28)</h4>
+<div class='entity'><span class='badge CHANNEL_TAXONOMY'>CHANNEL_TAXONOMY</span><b>ChannelTaxonomy</b> &mdash; Canonical 3-channel partition: DTC, Amazon, Wholesale. Holds alias map (11+ regional spellings), GM band per channel (trailing-6mo ± 150bps), auto-fix policy. Confidence 0.94. Derived from FP&amp;A_CPG_Channel template v3.1.</div>
+<div class='entity'><span class='badge SKU_MASTER'>SKU_MASTER</span><b>SKUMaster</b> &mdash; ~1,240 active SKUs. Format NS-XXXX-NN. Fields: sku_id, canonical_name, channel_eligible, base_price_usd, std_cost_usd, gm_target (± 200bps band), lifecycle_status enum, parent_sku. Confidence 0.91. Derived from FP&amp;A_CPG_SKU template v2.4.</div>
+<div class='entity'><span class='badge CURRENCY_REGISTRY'>CURRENCY_REGISTRY</span><b>CurrencyRegistry</b> &mdash; 6 currencies (USD, EUR, GBP, JPY, CAD, AUD) with ISO 4217 codes, symbol aliases, decimal precision, reporting priority, and FX source priority (Bloomberg &gt; ECB &gt; Treasury_internal). Confidence 0.97.</div>
+<div class='entity'><span class='badge FX_FORWARD_CURVE'>FX_FORWARD_CURVE</span><b>FXForwardCurve</b> &mdash; Transactional entity: 5 currency pairs refreshed each cycle. M+1/M+2/M+3 forward horizons. Source: treasury feed. Cross-rate consistency check: USD/EUR · EUR/GBP must reconcile to USD/GBP within 0.05%.</div>
+<div class='entity'><span class='badge TABLE'>TABLE</span><b>ChartOfAccounts</b> &mdash; 47 P&amp;L line items with GL mappings. Referenced in semantic alignment entity catalog.</div>
+<div class='entity'><span class='badge VARIANCE_TRIAGE'>VARIANCE_TRIAGE</span><b>VarianceTriagePattern (5 Patterns)</b> &mdash; 5 pattern instances: SKU mapping, channel mismatch, currency tag, calendar shift, other/unknown. Auto-fix or escalate per pattern. Max auto-fix budget: 4 corrections per workbook.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>ControlLibrary (C-01..C-07)</b> &mdash; 7 controls: C-01 (FX consistency), C-02 (regional total), C-03 (→ PipelineCoverageRatio), C-04 (SKU mapping), C-05 (GM band per channel), C-06 (margin discipline per SKU), C-07.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Control C-01: FX Consistency</b> &mdash; FX rates in transactional data must derive from FXForwardCurve; raw inline rates are rejected. Cross-rate consistency: USD/EUR · EUR/GBP must reconcile to USD/GBP within 0.05%.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Control C-02: Regional Total Tie</b> &mdash; D60 regional total = sum of Detail tab within tolerance. Uses ChannelTaxonomy for validation.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Control C-04: SKU Mapping</b> &mdash; Every revenue/COGS line must resolve to a valid sku_id. Unknown SKUs always escalate — no auto-fix budget applies.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Control C-05: GM Band per Channel</b> &mdash; Implied gross margin per channel must fall within trailing-6mo ± 150bps; otherwise commentary required.</div>
+<div class='entity'><span class='badge CONTROL_ASSERTION'>CONTROL_ASSERTION</span><b>Control C-06: SKU Margin Discipline</b> &mdash; Implied GM% per SKU must sit within gm_target ± 200bps; otherwise commentary required. Cross-channel price spread &gt; 12% triggers projection-agent review.</div>
+<div class='entity'><span class='badge PIPELINE_COVERAGE'>PIPELINE_COVERAGE</span><b>PipelineCoverageRatio (Metric)</b> &mdash; Pipeline ÷ forecast. Band 1.4x–2.2x. Linked from Control C-03.</div>
+<div class='entity'><span class='badge APPROVAL_ROLE'>APPROVAL_ROLE</span><b>ApprovalRole Entity (Ontology)</b> &mdash; Ontology actor entity: 4 human roles + 8 named agents. Human roles gate HITL steps; agents execute judgment-laden automation.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>M. Chen</b> &mdash; VP FP&amp;A. Interview turn 11: channel-mismatch always-escalate override. Turn 8: confirmed 200-bp GM band for SKU-level controls.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>J. Park</b> &mdash; AMER lead. Interview turn 14: SKU resolution policy — unknown IDs come straight to him. Turn 23: confirmed 4–5 triage patterns and auto-fix-budget rule.</div>
+<div class='entity'><span class='badge PERSON'>PERSON</span><b>S. Reyes</b> &mdash; EMEA analyst. Screen recording Mar26 (0:42:13): spotted 'Direct-to-Consumer' and silently corrected to DTC. Recurs Feb and Apr recordings.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>FP&amp;A_Close_SOP_v3.2.docx</b> &mdash; 47-page SOP. §3.2: channel taxonomy definition. §4.1: SKU master discipline. §5.1: multi-currency policy. Primary provenance source.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>3MoP&amp;L_Master_2026.xlsm</b> &mdash; Master workbook. Cell B14: VLOOKUP against canonical channel list in Run_Consolidate macro. 47 macros decoded during L1 Discovery.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>SKU_master_2026Q1.xlsx</b> &mdash; ERP master extract: 1,240 rows. Breakdown: 1,118 Active, 64 Phasing-out, 41 Discontinued, 17 NPI.</div>
+<div class='entity'><span class='badge SPREADSHEET'>SPREADSHEET</span><b>Mar26_close_S.Reyes.mp4 (Screen Recording)</b> &mdash; Screen recording of EMEA analyst S. Reyes during March 2026 close. Captured alias correction at 0:42:13 and NPI SKU addition at 1:08:47.</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Auto-Fix Budget: ≤4 Corrections/Workbook</b> &mdash; Maximum auto-fix budget per regional workbook: 4 corrections. Beyond that, entire batch escalated. Applies to channel aliases and currency tags; NOT to unknown SKUs.</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Currency Symbol Auto-Correct Budget: 6/Workbook</b> &mdash; Symbol-only entries (e.g. ¥) auto-correct to ISO code at ingest; budget = 6 corrections per workbook.</div>
+<div class='entity'><span class='badge DATA_QUALITY_FLAG'>DATA_QUALITY_FLAG</span><b>Cross-Channel Price Spread Flag (&gt;12%)</b> &mdash; Cross-channel price spread &gt; 12% on same SKU triggers Projection-agent review (price-discipline check). Added 2026-04-22.</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Auto-Promoted DTC Aliases (Run #142)</b> &mdash; 2026-05-07: 'Direct' and 'ecom' auto-promoted as DTC aliases after 8 confirmations across regions. Ontology custodian notified.</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Marketplace DTC Subset Rule</b> &mdash; 2026-04-12: Added 'Marketplace (DTC subset)' alias rule to disambiguate from Amazon Marketplace per APAC analyst feedback.</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Lifecycle Status Enum Tightening</b> &mdash; 2026-03-08: lifecycle_status tightened from free-text to enum after 3 close cycles of inconsistent values (EOL, End of life, Killed).</div>
+<div class='entity'><span class='badge FORECAST_ADJUSTMENT'>FORECAST_ADJUSTMENT</span><b>Parent SKU Field Promotion (Run #143)</b> &mdash; 2026-05-09: parent_sku promoted from optional flag to formal field after 6 confirmed variant groupings from NPI launches.</div>
+<h4>Relationships (34)</h4>
+<div class='rel'><b>d3_ct1</b> &mdash;[VALIDATES]&rarr; <b>d3_cl1</b> <i>ChannelTaxonomy validated by Controls C-02 (regional total) and C-05 (GM band per channel)</i></div>
+<div class='rel'><b>d3_sk1</b> &mdash;[VALIDATES]&rarr; <b>d3_cl1</b> <i>SKUMaster validated by Controls C-04 (SKU mapping) and C-06 (margin discipline)</i></div>
+<div class='rel'><b>d3_cr1</b> &mdash;[VALIDATES]&rarr; <b>d3_c01</b> <i>CurrencyRegistry validated by Control C-01 (FX consistency)</i></div>
+<div class='rel'><b>d3_fx1</b> &mdash;[DERIVES_FROM]&rarr; <b>d3_cr1</b> <i>FXForwardCurve currency pairs derive from CurrencyRegistry ISO codes</i></div>
+<div class='rel'><b>d3_sk1</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d3_ct1</b> <i>SKU channel_eligible field must reference canonical ChannelTaxonomy values; mismatches route to ChannelMismatch triage</i></div>
+<div class='rel'><b>d3_pc1</b> &mdash;[PART_OF]&rarr; <b>d3_cl1</b> <i>PipelineCoverageRatio is linked from Control C-03 in the ControlLibrary</i></div>
+<div class='rel'><b>d3_vt1</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d3_ct1</b> <i>ChannelMismatch triage pattern references ChannelTaxonomy for alias resolution</i></div>
+<div class='rel'><b>d3_vt1</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d3_sk1</b> <i>SKU mapping triage pattern references SKUMaster for code translation</i></div>
+<div class='rel'><b>d3_vt1</b> &mdash;[REFERENCES_TAXONOMY]&rarr; <b>d3_cr1</b> <i>Currency tag triage pattern references CurrencyRegistry for tag normalization</i></div>
+<div class='rel'><b>d3_c04</b> &mdash;[VALIDATES]&rarr; <b>d3_sk1</b> <i>Control C-04 validates every revenue/COGS line resolves to valid SKUMaster entry; unknown SKUs always escalate</i></div>
+<div class='rel'><b>d3_c05</b> &mdash;[VALIDATES]&rarr; <b>d3_ct1</b> <i>Control C-05 validates implied GM per channel within trailing-6mo ± 150bps from ChannelTaxonomy</i></div>
+<div class='rel'><b>d3_c06</b> &mdash;[VALIDATES]&rarr; <b>d3_sk1</b> <i>Control C-06 validates implied GM% per SKU within gm_target ± 200bps from SKUMaster</i></div>
+<div class='rel'><b>d3_c01</b> &mdash;[VALIDATES]&rarr; <b>d3_fx1</b> <i>Control C-01 validates all FX rates derive from FXForwardCurve, rejects raw inline rates</i></div>
+<div class='rel'><b>d3_sp1</b> &mdash;[SOURCE_OF]&rarr; <b>d3_ct1</b> <i>SOP §3.2 is provenance source for channel taxonomy definition (p.14)</i></div>
+<div class='rel'><b>d3_sp1</b> &mdash;[SOURCE_OF]&rarr; <b>d3_sk1</b> <i>SOP §4.1 is provenance source for SKU master discipline (p.21)</i></div>
+<div class='rel'><b>d3_sp1</b> &mdash;[SOURCE_OF]&rarr; <b>d3_cr1</b> <i>SOP §5.1 is provenance source for multi-currency policy (p.27)</i></div>
+<div class='rel'><b>d3_sp2</b> &mdash;[SOURCE_OF]&rarr; <b>d3_ct1</b> <i>Run_Consolidate macro (cell B14) is provenance source for canonical channel VLOOKUP</i></div>
+<div class='rel'><b>d3_sp3</b> &mdash;[SOURCE_OF]&rarr; <b>d3_sk1</b> <i>ERP master extract SKU_master_2026Q1.xlsx is provenance source for 1,240 SKU records</i></div>
+<div class='rel'><b>d3_sp4</b> &mdash;[SOURCE_OF]&rarr; <b>d3_ct1</b> <i>Screen recording at 0:42:13 captured S. Reyes correcting Direct-to-Consumer → DTC alias</i></div>
+<div class='rel'><b>d3_sp4</b> &mdash;[SOURCE_OF]&rarr; <b>d3_sk1</b> <i>Screen recording at 1:08:47 captured undocumented NPI SKU addition via Adjustments tab</i></div>
+<div class='rel'><b>d3_p1</b> &mdash;[SOURCE_OF]&rarr; <b>d3_vt1</b> <i>M. Chen interview turn 11: channel-mismatch always-escalate override. Turn 8: confirmed 200-bp GM band.</i></div>
+<div class='rel'><b>d3_p2</b> &mdash;[SOURCE_OF]&rarr; <b>d3_vt1</b> <i>J. Park interview turn 14: SKU resolution policy. Turn 23: confirmed triage patterns and auto-fix-budget.</i></div>
+<div class='rel'><b>d3_vt1</b> &mdash;[ESCALATED_TO]&rarr; <b>d3_p1</b> <i>Channel mismatches always escalated to M. Chen even if J. Park could fix them — wants to see the trend</i></div>
+<div class='rel'><b>d3_c04</b> &mdash;[ESCALATED_TO]&rarr; <b>d3_p2</b> <i>Unknown SKU IDs escalated to J. Park — prefers false positives over missed new products</i></div>
+<div class='rel'><b>d3_dq1</b> &mdash;[VALIDATES]&rarr; <b>d3_vt1</b> <i>Auto-fix budget of ≤4 per workbook validates triage pattern corrections don't exceed threshold</i></div>
+<div class='rel'><b>d3_dq2</b> &mdash;[VALIDATES]&rarr; <b>d3_cr1</b> <i>Symbol auto-correct budget of 6/workbook validates currency normalization volume</i></div>
+<div class='rel'><b>d3_dq3</b> &mdash;[VALIDATES]&rarr; <b>d3_sk1</b> <i>Cross-channel price spread &gt;12% flag validates SKU price discipline</i></div>
+<div class='rel'><b>d3_fa1</b> &mdash;[APPLIES_ADJUSTMENT]&rarr; <b>d3_ct1</b> <i>Auto-promoted 'Direct' and 'ecom' as DTC aliases after 8 cross-region confirmations</i></div>
+<div class='rel'><b>d3_fa2</b> &mdash;[APPLIES_ADJUSTMENT]&rarr; <b>d3_ct1</b> <i>Added Marketplace (DTC subset) alias to disambiguate from Amazon Marketplace</i></div>
+<div class='rel'><b>d3_fa3</b> &mdash;[APPLIES_ADJUSTMENT]&rarr; <b>d3_sk1</b> <i>Tightened lifecycle_status from free-text to enum after 3 cycles of inconsistency</i></div>
+<div class='rel'><b>d3_fa4</b> &mdash;[APPLIES_ADJUSTMENT]&rarr; <b>d3_sk1</b> <i>Promoted parent_sku from optional flag to formal field after 6 confirmed variant groupings</i></div>
+<div class='rel'><b>d3_cr1</b> &mdash;[FEEDS_INTO]&rarr; <b>d3_sk1</b> <i>CurrencyRegistry defines USD denomination for SKUMaster base_price_usd and std_cost_usd fields</i></div>
+<div class='rel'><b>d3_ar1</b> &mdash;[CONTAINS]&rarr; <b>d3_p1</b> <i>ApprovalRole entity includes M. Chen as VP FP&amp;A / Process Steward / Ontology Custodian</i></div>
+<div class='rel'><b>d3_ar1</b> &mdash;[CONTAINS]&rarr; <b>d3_p2</b> <i>ApprovalRole entity includes J. Park as AMER regional triage approver</i></div>
+</div>
+<h2>Resolved Entities (124)</h2>
+<div class='section'>
+<table><tr><th>Type</th><th>Count</th></tr>
+<tr><td>CLOSE_STEP</td><td>34</td></tr>
+<tr><td>CONTROL_ASSERTION</td><td>18</td></tr>
+<tr><td>APPROVAL_ROLE</td><td>13</td></tr>
+<tr><td>SPREADSHEET</td><td>12</td></tr>
+<tr><td>VARIANCE_TRIAGE</td><td>11</td></tr>
+<tr><td>PERSON</td><td>7</td></tr>
+<tr><td>FORECAST_ADJUSTMENT</td><td>7</td></tr>
+<tr><td>DATA_QUALITY_FLAG</td><td>7</td></tr>
+<tr><td>PIPELINE_COVERAGE</td><td>3</td></tr>
+<tr><td>CHANNEL_TAXONOMY</td><td>3</td></tr>
+<tr><td>FX_FORWARD_CURVE</td><td>3</td></tr>
+<tr><td>REGIONAL_FORECAST</td><td>2</td></tr>
+<tr><td>SKU_MASTER</td><td>2</td></tr>
+<tr><td>TABLE</td><td>1</td></tr>
+<tr><td>CURRENCY_REGISTRY</td><td>1</td></tr>
+</table></div>
+</body></html>

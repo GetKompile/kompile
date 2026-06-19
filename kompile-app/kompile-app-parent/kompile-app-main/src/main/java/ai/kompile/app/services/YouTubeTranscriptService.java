@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -55,7 +56,7 @@ public class YouTubeTranscriptService {
 
     public YouTubeTranscriptService(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
     }
 
     /**

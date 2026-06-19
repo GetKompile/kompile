@@ -16,7 +16,6 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.EmbeddingStatusBroadcaster;
-import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.subprocess.model.ModelInitSubprocessLauncher;
 import ai.kompile.app.subprocess.model.ModelInitSubprocessLauncher.ModelInitStatus;
 import ai.kompile.core.embeddings.EmbeddingModel;
@@ -29,7 +28,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.context.ApplicationContext;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -40,21 +38,19 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * Tests for model status endpoints. Previously tested ModelDebugController;
+ * now tests ModelStatusController after the god-class split.
+ */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class ModelDebugControllerTest {
-
-    @Mock
-    private ApplicationContext applicationContext;
 
     @Mock
     private EmbeddingModel embeddingModel;
 
     @Mock
     private LanguageModel languageModel;
-
-    @Mock
-    private Nd4jEnvironmentConfigService nd4jEnvironmentConfigService;
 
     @Mock
     private AnseriniEmbeddingStartupInitializer startupInitializer;
@@ -65,13 +61,11 @@ class ModelDebugControllerTest {
     @Mock
     private EmbeddingStatusBroadcaster embeddingStatusBroadcaster;
 
-    private ModelDebugController controller;
+    private ModelStatusController controller;
 
     @BeforeEach
     void setUp() {
-        controller = new ModelDebugController();
-        ReflectionTestUtils.setField(controller, "applicationContext", applicationContext);
-        ReflectionTestUtils.setField(controller, "nd4jEnvironmentConfigService", nd4jEnvironmentConfigService);
+        controller = new ModelStatusController();
         ReflectionTestUtils.setField(controller, "startupInitializer", startupInitializer);
         ReflectionTestUtils.setField(controller, "subprocessLauncher", subprocessLauncher);
         ReflectionTestUtils.setField(controller, "embeddingStatusBroadcaster", embeddingStatusBroadcaster);

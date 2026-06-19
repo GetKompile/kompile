@@ -179,6 +179,46 @@ class CausalTraversalTest {
     }
 
     @Test
+    void classifyEdge_handlesNullEdgeTypeWithoutThrowing() {
+        // An edge with no edgeType and no causal keywords must not blow up the
+        // EdgeType switch with a NullPointerException — it should classify as a weak
+        // correlation. Guards the "Explain Why?" attribution pipeline against
+        // transient/legacy edges that lack a persisted type.
+        GraphEdge edge = GraphEdge.builder()
+                .edgeId("edge-null-type")
+                .build();
+        assertNull(edge.getEdgeType(), "precondition: edgeType is null");
+        assertDoesNotThrow(() -> CausalTraversal.classifyEdge(edge));
+        assertEquals(CausalEdgeType.CORRELATES_WITH, CausalTraversal.classifyEdge(edge));
+    }
+
+    @Test
+    void traverseBackward_survivesEdgeWithNullEdgeType() {
+        // A -> C where the edge has a null edgeType (bad/legacy data). The backward
+        // traversal behind the attribution "Explain Why?" endpoint must still produce
+        // a chain rather than throwing an opaque 500.
+        GraphEdge edgeAC = GraphEdge.builder()
+                .id(1L).edgeId("edge-ac-null")
+                .sourceNode(nodeA).targetNode(nodeC)
+                .edgeType(null).weight(0.9).confidence(0.8)
+                .bidirectional(false)
+                .createdAt(LocalDateTime.now())
+                .build();
+
+        when(graphService.getNode("node-c")).thenReturn(Optional.of(nodeC));
+        when(graphService.getNode("node-a")).thenReturn(Optional.of(nodeA));
+        when(graphService.getEdgesForNode("node-c")).thenReturn(List.of(edgeAC));
+        when(graphService.getEdgesForNode("node-a")).thenReturn(List.of(edgeAC));
+
+        CausalTraversal.TraversalResult result = assertDoesNotThrow(() ->
+                CausalTraversal.traverseBackward(graphService, "node-c", 5, 5, 0.01));
+
+        assertFalse(result.chains().isEmpty(), "Should still find a chain despite null edgeType");
+        assertEquals(CausalEdgeType.CORRELATES_WITH,
+                result.chains().get(0).getHops().get(0).getCausalType());
+    }
+
+    @Test
     void computeHopStrength_directCausationStrongest() {
         GraphEdge edge = GraphEdge.builder()
                 .weight(0.9).confidence(0.9).build();

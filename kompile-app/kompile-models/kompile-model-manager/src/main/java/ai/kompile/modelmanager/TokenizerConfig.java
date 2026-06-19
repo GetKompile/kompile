@@ -16,19 +16,21 @@
 
 package ai.kompile.modelmanager;
 
+import lombok.Data;
+
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * Configuration class for tokenizer settings.
  * Provides model-specific tokenizer configuration with sensible defaults.
  */
+@Data
 public class TokenizerConfig {
     private final boolean doLowerCase;
     private final boolean addSpecialTokens;
     private final int maxSequenceLength;
     private final boolean stripAccents;
-    
+
     // Default values
     public static final boolean DEFAULT_DO_LOWER_CASE = true;
     public static final boolean DEFAULT_ADD_SPECIAL_TOKENS = true;
@@ -42,27 +44,11 @@ public class TokenizerConfig {
         this.stripAccents = stripAccents;
     }
 
-    public boolean isDoLowerCase() {
-        return doLowerCase;
-    }
-
-    public boolean isAddSpecialTokens() {
-        return addSpecialTokens;
-    }
-
-    public int getMaxSequenceLength() {
-        return maxSequenceLength;
-    }
-
-    public boolean isStripAccents() {
-        return stripAccents;
-    }
-
     /**
      * Creates a TokenizerConfig with default settings.
      */
     public static TokenizerConfig defaultConfig() {
-        return new TokenizerConfig(DEFAULT_DO_LOWER_CASE, DEFAULT_ADD_SPECIAL_TOKENS, 
+        return new TokenizerConfig(DEFAULT_DO_LOWER_CASE, DEFAULT_ADD_SPECIAL_TOKENS,
                                  DEFAULT_MAX_SEQUENCE_LENGTH, DEFAULT_STRIP_ACCENTS);
     }
 
@@ -151,31 +137,5 @@ public class TokenizerConfig {
             }
         }
         return defaultValue;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        TokenizerConfig that = (TokenizerConfig) o;
-        return doLowerCase == that.doLowerCase &&
-               addSpecialTokens == that.addSpecialTokens &&
-               maxSequenceLength == that.maxSequenceLength &&
-               stripAccents == that.stripAccents;
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(doLowerCase, addSpecialTokens, maxSequenceLength, stripAccents);
-    }
-
-    @Override
-    public String toString() {
-        return "TokenizerConfig{" +
-                "doLowerCase=" + doLowerCase +
-                ", addSpecialTokens=" + addSpecialTokens +
-                ", maxSequenceLength=" + maxSequenceLength +
-                ", stripAccents=" + stripAccents +
-                '}';
     }
 }

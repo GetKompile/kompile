@@ -22,7 +22,9 @@ import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import ai.kompile.cli.common.status.ConfigReader;
 import ai.kompile.cli.common.status.ServiceProber;
+import ai.kompile.cli.common.status.ServiceStatus;
 import ai.kompile.cli.main.util.OSResolver;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import picocli.CommandLine;
@@ -161,7 +163,7 @@ public class Info implements Callable<Integer> {
         }
 
         if (jsonOutput) {
-            ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+            ObjectMapper mapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
             System.out.println(mapper.writeValueAsString(output));
         } else {
             renderText(output);
@@ -193,9 +195,9 @@ public class Info implements Callable<Integer> {
     }
 
     private List<Map<String, Object>> buildServicesSection() {
-        List<ServiceProber.ServiceStatus> statuses = ServiceProber.probeAll();
+        List<ServiceStatus> statuses = ServiceProber.probeAll();
         List<Map<String, Object>> result = new ArrayList<>();
-        for (ServiceProber.ServiceStatus s : statuses) {
+        for (ServiceStatus s : statuses) {
             LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
             entry.put("name", s.getName());
             entry.put("port", s.getPort());
@@ -308,7 +310,7 @@ public class Info implements Callable<Integer> {
                 sb.append("  (no config files found)\n");
             } else {
                 try {
-                    ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+                    ObjectMapper mapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
                     for (Map.Entry<String, Object> entry : configs.entrySet()) {
                         sb.append("  ").append(entry.getKey()).append(":\n");
                         String json = mapper.writeValueAsString(entry.getValue());

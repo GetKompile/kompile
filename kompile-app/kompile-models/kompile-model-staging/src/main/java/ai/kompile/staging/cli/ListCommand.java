@@ -18,6 +18,7 @@ package ai.kompile.staging.cli;
 
 import ai.kompile.modelmanager.registry.*;
 import ai.kompile.core.staging.StagingModelInfo;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.staging.staging.StagingService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -137,7 +138,7 @@ public class ListCommand implements Callable<Integer> {
                     info.getModelId(),
                     info.getStatus().getValue(),
                     info.getProgress(),
-                    truncate(info.getMessage(), 20));
+                    StringUtils.truncate(info.getMessage(), 20));
         }
 
         System.out.println();
@@ -145,8 +146,4 @@ public class ListCommand implements Callable<Integer> {
         return 0;
     }
 
-    private String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() > max ? s.substring(0, max - 3) + "..." : s;
-    }
 }

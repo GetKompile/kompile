@@ -148,7 +148,9 @@ public class JobLogEntry {
         /** Application-level logs from the indexing code */
         APPLICATION,
         /** Embedding subprocess logs */
-        EMBEDDING
+        EMBEDDING,
+        /** LLM call transcripts (prompt + response) for graph extraction audit */
+        LLM_TRANSCRIPT
     }
 
     /**
@@ -220,6 +222,23 @@ public class JobLogEntry {
                 .level(level)
                 .source(LogSource.EMBEDDING)
                 .message(message)
+                .sequenceNumber(sequenceNumber)
+                .build();
+    }
+
+    /**
+     * Create an LLM transcript log entry capturing prompt and response for audit.
+     */
+    public static JobLogEntry llmTranscript(String taskId, LogLevel level, String message,
+                                             String backendId, long sequenceNumber) {
+        return JobLogEntry.builder()
+                .taskId(taskId)
+                .timestamp(Instant.now())
+                .level(level)
+                .source(LogSource.LLM_TRANSCRIPT)
+                .message(message)
+                .loggerName(backendId)
+                .threadName(Thread.currentThread().getName())
                 .sequenceNumber(sequenceNumber)
                 .build();
     }

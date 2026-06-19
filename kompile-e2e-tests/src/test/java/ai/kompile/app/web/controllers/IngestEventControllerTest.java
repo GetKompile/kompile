@@ -63,7 +63,7 @@ class IngestEventControllerTest {
         converter.setObjectMapper(objectMapper);
 
         ingestEventService = mock(IngestEventService.class);
-        controller = new IngestEventController(ingestEventService);
+        controller = new IngestEventController(ingestEventService, objectMapper);
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setMessageConverters(converter)
@@ -98,7 +98,7 @@ class IngestEventControllerTest {
 
         @BeforeEach
         void setUp() {
-            controller = new IngestEventController(null);
+            controller = new IngestEventController(null, objectMapper);
 
             MappingJackson2HttpMessageConverter converter = new MappingJackson2HttpMessageConverter();
             converter.setObjectMapper(objectMapper);

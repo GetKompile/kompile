@@ -117,6 +117,18 @@ export interface CrawlPipelineInfo {
   lastUpdatedEpochMs?: number;
 }
 
+export interface CrawlStepInfo {
+  stepId: string;
+  displayName?: string;
+  stepType?: string;
+  status?: string;            // PENDING|RUNNING|COMPLETED|FAILED|SKIPPED|ARCHIVED|DEFERRED|...
+  progressPercent?: number;
+  completedItems?: number;
+  totalItems?: number;
+  failedItems?: number;
+  message?: string;
+}
+
 export interface CrawlJobSummary {
   jobId: string;
   historyTaskId?: string;
@@ -135,6 +147,15 @@ export interface CrawlJobSummary {
     completedTasks: number;
   };
   pipelines?: CrawlPipelineInfo[];
+  // Unified-crawl jobs (mapped in CrawlerManagerComponent) carry the modular pipeline-step
+  // breakdown + a few summary fields so the row can show what ran / was skipped / archived.
+  pipelineSteps?: CrawlStepInfo[];
+  isUnifiedCrawl?: boolean;
+  currentPhase?: string;
+  chunksCreated?: number;
+  chunksEmbedded?: number;
+  entitiesExtracted?: number;
+  relationshipsExtracted?: number;
 }
 
 export interface CrawlJobDetail extends CrawlJobSummary {

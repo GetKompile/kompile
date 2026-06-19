@@ -25,8 +25,8 @@ import ai.kompile.core.crawler.CrawlJob;
 import ai.kompile.core.crawler.CrawlProgress;
 import ai.kompile.core.crawler.CrawlState;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,11 +63,7 @@ public class CrawlJobPersistenceService {
     }
 
     private static ObjectMapper createObjectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
-        mapper.configure(
-                com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        return mapper;
+        return JsonUtils.standardMapper();
     }
 
 

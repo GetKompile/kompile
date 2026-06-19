@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EMEA Q3 2026 forecast — for consolidation</title>
+<style>
+  :root {
+    --bg: #faf9f6;
+    --surface: #ffffff;
+    --surface-hover: #f3f2ee;
+    --surface-sunken: #ebeae5;
+    --text: #2c2c2a;
+    --text-secondary: #5f5e5a;
+    --text-tertiary: #888780;
+    --border: rgba(0,0,0,0.10);
+    --accent: #0078d4;
+    --accent-bg: #deecf9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1f1e1c;
+      --surface: #292826;
+      --surface-hover: #34332f;
+      --surface-sunken: #1a1917;
+      --text: #e5e3da;
+      --text-secondary: #a8a69c;
+      --text-tertiary: #73726c;
+      --border: rgba(255,255,255,0.10);
+      --accent: #60a5fa;
+      --accent-bg: rgba(96,165,250,0.15);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  .topbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .topbar a { color: var(--accent); text-decoration: none; }
+  .topbar .actions { margin-left: auto; display: flex; gap: 12px; }
+  .actions span { cursor: default; }
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 28px 32px 64px;
+  }
+  h1.subject { font-size: 22px; font-weight: 600; margin: 0 0 16px; line-height: 1.3; }
+  .meta {
+    display: grid;
+    grid-template-columns: 50px 36px 1fr;
+    gap: 12px;
+    align-items: start;
+    padding: 14px 0 18px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 22px;
+  }
+  .avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: #8e6fbe;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 600;
+    grid-row: span 2;
+  }
+  .from-line { font-size: 14.5px; color: var(--text); margin-top: 2px; }
+  .from-line .name { font-weight: 600; }
+  .from-line .email { color: var(--text-tertiary); }
+  .to-line { font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; }
+  .date-line { grid-column: 3; font-size: 12.5px; color: var(--text-tertiary); margin-top: -2px; align-self: end; }
+
+  .body {
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .body p { margin: 0 0 14px; }
+  .signature {
+    margin-top: 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .signature .role { color: var(--text-tertiary); font-style: italic; }
+
+  .attach-block {
+    margin-top: 24px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    gap: 14px;
+    align-items: center;
+  }
+  .attach-icon {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, #1a7e44 0%, #186b3a 100%);
+    color: white;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .attach-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+  .attach-name a { color: var(--accent); text-decoration: none; }
+  .attach-name a:hover { text-decoration: underline; }
+  .attach-size { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
+  .attach-actions { font-size: 12.5px; color: var(--accent); display: flex; gap: 14px; }
+  .attach-actions a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a href="06_inbox.html">← Back to inbox</a>
+  <span style="color: var(--text-tertiary);">Inbox</span>
+  <div class="actions">
+    <span>Reply</span>
+    <span>Reply all</span>
+    <span>Forward</span>
+    <span>Delete</span>
+  </div>
+</div>
+
+<div class="container">
+  <h1 class="subject">EMEA Q3 2026 forecast — for consolidation</h1>
+
+  <div class="meta">
+    <div class="avatar">FV</div>
+    <div></div>
+    <div>
+      <div class="from-line"><span class="name">François Vasseur</span> <span class="email">&lt;f.vasseur@northstar.eu&gt;</span></div>
+      <div class="to-line">To: Mei Chen &lt;m.chen@northstar.co&gt;</div>
+      <div class="to-line">Cc: K. O'Donnell &lt;k.odonnell@northstar.eu&gt;; L. Schmidt &lt;l.schmidt@northstar.eu&gt;; P. Greco &lt;p.greco@northstar.eu&gt;; emea-sales-leads@northstar.eu</div>
+    </div>
+    <div></div>
+    <div class="date-line">Monday, May 5, 2026  ·  6:34 AM BST  ·  London</div>
+  </div>
+
+  <div class="body">
+
+    <p>Dear Mei,</p>
+
+    <p>Please find attached the EMEA Q3 2026 forecast (June, July, August), as discussed during our Friday call. Country leads have all locked in their figures by 17:00 local on Friday 2 May.</p>
+
+    <p>A few important notes — kindly read these <strong>before</strong> consolidating:</p>
+
+    <p>
+    <strong>1.&nbsp;Currency.</strong> All amounts are in <em>local currency</em> — GBP for the United Kingdom, EUR for the Eurozone (DE / FR / IT / ES). Currency tag is in column D row by row. We do <em>not</em> pre-translate to USD, as I understand corporate uses the 3-month forward curve rather than spot, and treasury locks the rate centrally. The "FX rates (for ref)" tab in the workbook shows the spot rates we used for our internal sanity-check only.<br><br>
+    <strong>2.&nbsp;Magnitude.</strong> Amounts are in <em>thousands</em> of local currency. So a value of 220 in the Germany Distributor row means EUR 220,000.<br><br>
+    <strong>3.&nbsp;VAT.</strong> Forecast is <em>gross</em> of VAT, as is our internal reporting convention. To net out for corporate consolidation, please apply: amount × (1 − VAT%). VAT rates differ by country (UK 20%, DE 19%, FR 20%, IT 22%, ES 21%) and are in column E. The "Notes" tab in the workbook also describes this.<br><br>
+    <strong>4.&nbsp;Channel taxonomy.</strong> EMEA uses DTC / Marketplace / Retail / Distributor. I understand corporate uses only three channels — please map "Marketplace" → Amazon, and "Retail" + "Distributor" → Wholesale.<br><br>
+    <strong>5.&nbsp;Product codes.</strong> EMEA uses internal codes (NS-{country}-{abbrev}). The mapping table to the corporate SKU master is on our shared drive (file: <em>EMEA_SKU_master_v8.xlsx</em>) — last updated by myself on 14 March. Please let me know if your copy is current; I can resend if helpful.
+    </p>
+
+    <p><strong>Risk callouts:</strong> Boots has verbally confirmed the Q3 placement (UK Retail, Restful + Hydrate lines) but the written PO is not yet in hand — Kira is chasing this morning. If it slips into Q4, this would represent approximately GBP 280,000 of risk for the quarter. The forecast as submitted assumes the PO is received this week.</p>
+
+    <p>I am at the London office today and tomorrow if you would like to discuss any of the above. Kira O'Donnell can answer questions on UK; Lukas Schmidt on Germany / EU North; Paolo Greco on Southern Europe.</p>
+
+    <p>Best regards,<br>
+    François</p>
+
+    <div class="attach-block">
+      <div class="attach-icon">XLSX</div>
+      <div>
+        <div class="attach-name"><a href="05b_EMEA forecast Jun-Aug 2026.xlsx">EMEA forecast Jun-Aug 2026.xlsx</a></div>
+        <div class="attach-size">Microsoft Excel · 14 KB</div>
+      </div>
+      <div class="attach-actions">
+        <a href="05b_EMEA forecast Jun-Aug 2026.xlsx">Download</a>
+        <span style="color: var(--text-tertiary);">|</span>
+        <a href="05b_EMEA forecast Jun-Aug 2026.xlsx">Open</a>
+      </div>
+    </div>
+
+    <div class="signature">
+      <strong>François Vasseur</strong> · Sales Director, EMEA<br>
+      <span class="role">Northstar Europe Ltd.  ·  201 Borough High Street, London SE1 1JA</span><br>
+      Office: +44 20 7946 0123  ·  Mobile: +44 7700 900145<br>
+      <em style="color: var(--text-tertiary);">Please consider the environment before printing this email.</em>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

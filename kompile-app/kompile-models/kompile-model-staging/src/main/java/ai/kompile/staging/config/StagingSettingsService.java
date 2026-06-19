@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.config;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.slf4j.Logger;
@@ -57,8 +58,7 @@ public class StagingSettingsService {
     private String callbackUrlOverride;
 
     public StagingSettingsService() {
-        this.objectMapper = new ObjectMapper();
-        this.objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         this.restTemplate = new RestTemplate();
     }
 

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
@@ -54,7 +55,7 @@ public record McpToolAnnotations(
     public static final McpToolAnnotations DELEGATION =
             new McpToolAnnotations(false, false, false, true);
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     /**
      * Convert to a JSON ObjectNode for inclusion in MCP tools/list response.

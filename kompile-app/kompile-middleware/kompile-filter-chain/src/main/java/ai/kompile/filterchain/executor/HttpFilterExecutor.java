@@ -22,6 +22,7 @@ import ai.kompile.filterchain.config.FilterConfig;
 import ai.kompile.filterchain.config.RemoteFilterConfig;
 import ai.kompile.filterchain.service.FilterChainConfigService;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
@@ -55,7 +56,7 @@ public class HttpFilterExecutor implements FilterExecutor {
     @Autowired
     public HttpFilterExecutor(FilterChainConfigService configService) {
         this.configService = configService;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NORMAL)

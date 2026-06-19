@@ -19,7 +19,7 @@ package ai.kompile.app.tools;
 import ai.kompile.cli.common.config.ComponentFilter;
 import ai.kompile.cli.common.config.ConfigArchiveManifest;
 import ai.kompile.cli.common.config.ConfigArchiveService;
-import ai.kompile.cli.common.config.ConfigArchiveService.ArchiveInfo;
+import ai.kompile.cli.common.config.ArchiveInfo;
 import ai.kompile.cli.common.config.ConfigArchiveService.ImportResult;
 import ai.kompile.cli.common.config.ImportMode;
 import org.slf4j.Logger;

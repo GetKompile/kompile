@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.reporting;
 
 import ai.kompile.core.graphrag.model.Community;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -127,7 +128,7 @@ public class MarkdownReporter implements Reporter {
             String title = e != null ? e.getTitle() : hub.getKey();
             String type = e != null && e.getType() != null ? e.getType() : "—";
             String desc = e != null && e.getDescription() != null
-                    ? truncate(e.getDescription(), 80) : "—";
+                    ? StringUtils.truncateEllipsis(e.getDescription(), 80) : "—";
             w.printf("| %d | **%s** | %s | %d | %s |%n", rank++, title, type, hub.getValue(), desc);
         }
         w.println();
@@ -151,7 +152,7 @@ public class MarkdownReporter implements Reporter {
                 String tgtName = tgt != null ? tgt.getTitle() : sr.rel.getTarget();
                 String relType = sr.rel.getType() != null ? sr.rel.getType() : "RELATED_TO";
                 String desc = sr.rel.getDescription() != null
-                        ? truncate(sr.rel.getDescription(), 60) : "—";
+                        ? StringUtils.truncateEllipsis(sr.rel.getDescription(), 60) : "—";
                 w.printf("| %.2f | %s | %s | %s | %s |%n", sr.score, srcName, tgtName, relType, desc);
             }
         }
@@ -236,7 +237,7 @@ public class MarkdownReporter implements Reporter {
                 if (ent != null) {
                     w.printf("- **%s** (%s)%s%n", ent.getTitle(),
                             ent.getType() != null ? ent.getType() : "unknown",
-                            ent.getDescription() != null ? " — " + truncate(ent.getDescription(), 80) : "");
+                            ent.getDescription() != null ? " — " + StringUtils.truncateEllipsis(ent.getDescription(), 80) : "");
                 } else {
                     w.printf("- %s%n", memberId);
                 }
@@ -437,8 +438,4 @@ public class MarkdownReporter implements Reporter {
         return queries.stream().limit(SUGGESTED_QUERIES).toList();
     }
 
-    private static String truncate(String s, int max) {
-        if (s == null || s.length() <= max) return s;
-        return s.substring(0, max - 1) + "…";
-    }
 }

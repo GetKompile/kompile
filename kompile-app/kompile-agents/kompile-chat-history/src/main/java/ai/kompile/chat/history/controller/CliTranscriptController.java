@@ -21,6 +21,7 @@ import ai.kompile.chat.history.dto.ChatSessionDto;
 import ai.kompile.chat.history.service.CliTranscriptRetentionService;
 import ai.kompile.chat.history.service.CliTranscriptService;
 import ai.kompile.chat.history.service.CliTranscriptService.*;
+import ai.kompile.chat.history.service.CliTranscriptSyncService;
 import ai.kompile.cli.common.chat.aggregate.AggregateChatSourceService;
 import ai.kompile.cli.common.chat.aggregate.ChatTranscriptRetention;
 import ai.kompile.cli.common.chat.aggregate.ChatTranscriptSearch;
@@ -53,12 +54,15 @@ public class CliTranscriptController {
     private final AggregateChatSourceService aggregateService;
     private final ChatTranscriptSearch searchService;
     private final CliTranscriptRetentionService retentionService;
+    private final CliTranscriptSyncService syncService;
 
     @Autowired
     public CliTranscriptController(CliTranscriptService cliTranscriptService,
-                                   CliTranscriptRetentionService retentionService) {
+                                   CliTranscriptRetentionService retentionService,
+                                   CliTranscriptSyncService syncService) {
         this.cliTranscriptService = cliTranscriptService;
         this.retentionService = retentionService;
+        this.syncService = syncService;
         ChatSourceRegistry registry = ChatSourceRegistry.getInstance();
         this.aggregateService = new AggregateChatSourceService(registry);
         this.searchService = new ChatTranscriptSearch(registry);
@@ -144,6 +148,26 @@ public class CliTranscriptController {
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Export failed: " + e.getMessage()));
         }
+    }
+
+    /**
+     * Get the current sync status (running/idle, progress, errors).
+     */
+    @GetMapping("/sync/status")
+    public ResponseEntity<CliTranscriptSyncService.SyncStatus> getSyncStatus() {
+        return ResponseEntity.ok(syncService.getStatus());
+    }
+
+    /**
+     * Manually trigger a full sync of all chat sources.
+     */
+    @PostMapping("/sync/trigger")
+    public ResponseEntity<Map<String, Object>> triggerSync() {
+        boolean started = syncService.triggerSync();
+        return ResponseEntity.ok(Map.of(
+                "triggered", started,
+                "message", started ? "Sync started" : "Sync already in progress"
+        ));
     }
 
     /**

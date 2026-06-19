@@ -23,7 +23,7 @@ import ai.kompile.cli.main.build.config.ModuleCatalog;
 import ai.kompile.cli.main.build.config.ModuleSelection;
 import ai.kompile.cli.main.build.generators.ContainerProfileBuilder;
 import ai.kompile.cli.main.build.generators.PomModelBuilder;
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.maven.shared.invoker.*;
 import picocli.CommandLine;

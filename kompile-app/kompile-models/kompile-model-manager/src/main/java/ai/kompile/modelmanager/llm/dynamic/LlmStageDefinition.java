@@ -17,6 +17,10 @@
 package ai.kompile.modelmanager.llm.dynamic;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * Dynamic stage definition for LLM pipelines, analogous to {@code VlmStageDefinition}.
@@ -24,6 +28,10 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * <p>Describes the interface of a pipeline stage: what it consumes, what it produces,
  * and whether it requires a model component.</p>
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class LlmStageDefinition {
 
@@ -33,63 +41,57 @@ public class LlmStageDefinition {
     private String outputDescription;
     private String modelComponentKey;
     private boolean requiresModel;
-    private boolean isBuiltin;
-
-    public LlmStageDefinition() {}
-
-    public LlmStageDefinition(String stageId, String displayName,
-                               String inputDescription, String outputDescription,
-                               String modelComponentKey, boolean requiresModel, boolean isBuiltin) {
-        this.stageId = stageId;
-        this.displayName = displayName;
-        this.inputDescription = inputDescription;
-        this.outputDescription = outputDescription;
-        this.modelComponentKey = modelComponentKey;
-        this.requiresModel = requiresModel;
-        this.isBuiltin = isBuiltin;
-    }
+    private boolean builtin;
 
     // --- Builtin stage definitions ---
 
-    public static final LlmStageDefinition TOKENIZATION = new LlmStageDefinition(
-            "TOKENIZATION", "Tokenization",
-            "Text prompt (string)", "Token IDs (long array) + attention mask",
-            "tokenizer", true, true);
+    public static final LlmStageDefinition TOKENIZATION = LlmStageDefinition.builder()
+            .stageId("TOKENIZATION")
+            .displayName("Tokenization")
+            .inputDescription("Text prompt (string)")
+            .outputDescription("Token IDs (long array) + attention mask")
+            .modelComponentKey("tokenizer")
+            .requiresModel(true)
+            .builtin(true)
+            .build();
 
-    public static final LlmStageDefinition TOKEN_EMBEDDING = new LlmStageDefinition(
-            "TOKEN_EMBEDDING", "Token Embedding",
-            "Token IDs (long array)", "Hidden states (float tensor [batch, seq, hidden])",
-            "embed_tokens", true, true);
+    public static final LlmStageDefinition TOKEN_EMBEDDING = LlmStageDefinition.builder()
+            .stageId("TOKEN_EMBEDDING")
+            .displayName("Token Embedding")
+            .inputDescription("Token IDs (long array)")
+            .outputDescription("Hidden states (float tensor [batch, seq, hidden])")
+            .modelComponentKey("embed_tokens")
+            .requiresModel(true)
+            .builtin(true)
+            .build();
 
-    public static final LlmStageDefinition AUTOREGRESSIVE_DECODING = new LlmStageDefinition(
-            "AUTOREGRESSIVE_DECODING", "Autoregressive Decoding",
-            "Hidden states + KV cache", "Logits (float tensor [batch, 1, vocab]) + updated KV cache",
-            "decoder", true, true);
+    public static final LlmStageDefinition AUTOREGRESSIVE_DECODING = LlmStageDefinition.builder()
+            .stageId("AUTOREGRESSIVE_DECODING")
+            .displayName("Autoregressive Decoding")
+            .inputDescription("Hidden states + KV cache")
+            .outputDescription("Logits (float tensor [batch, 1, vocab]) + updated KV cache")
+            .modelComponentKey("decoder")
+            .requiresModel(true)
+            .builtin(true)
+            .build();
 
-    public static final LlmStageDefinition TOKEN_SAMPLING = new LlmStageDefinition(
-            "TOKEN_SAMPLING", "Token Sampling",
-            "Logits (float tensor)", "Sampled token ID + is_eos flag",
-            null, false, true);
+    public static final LlmStageDefinition TOKEN_SAMPLING = LlmStageDefinition.builder()
+            .stageId("TOKEN_SAMPLING")
+            .displayName("Token Sampling")
+            .inputDescription("Logits (float tensor)")
+            .outputDescription("Sampled token ID + is_eos flag")
+            .modelComponentKey(null)
+            .requiresModel(false)
+            .builtin(true)
+            .build();
 
-    public static final LlmStageDefinition TOKEN_DECODING = new LlmStageDefinition(
-            "TOKEN_DECODING", "Token Decoding",
-            "Generated token IDs (long array)", "Response text (string)",
-            "tokenizer", true, true);
-
-    // --- Getters and Setters ---
-
-    public String getStageId() { return stageId; }
-    public void setStageId(String stageId) { this.stageId = stageId; }
-    public String getDisplayName() { return displayName; }
-    public void setDisplayName(String displayName) { this.displayName = displayName; }
-    public String getInputDescription() { return inputDescription; }
-    public void setInputDescription(String inputDescription) { this.inputDescription = inputDescription; }
-    public String getOutputDescription() { return outputDescription; }
-    public void setOutputDescription(String outputDescription) { this.outputDescription = outputDescription; }
-    public String getModelComponentKey() { return modelComponentKey; }
-    public void setModelComponentKey(String modelComponentKey) { this.modelComponentKey = modelComponentKey; }
-    public boolean isRequiresModel() { return requiresModel; }
-    public void setRequiresModel(boolean requiresModel) { this.requiresModel = requiresModel; }
-    public boolean isBuiltin() { return isBuiltin; }
-    public void setBuiltin(boolean builtin) { isBuiltin = builtin; }
+    public static final LlmStageDefinition TOKEN_DECODING = LlmStageDefinition.builder()
+            .stageId("TOKEN_DECODING")
+            .displayName("Token Decoding")
+            .inputDescription("Generated token IDs (long array)")
+            .outputDescription("Response text (string)")
+            .modelComponentKey("tokenizer")
+            .requiresModel(true)
+            .builtin(true)
+            .build();
 }

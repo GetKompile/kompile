@@ -300,7 +300,14 @@ public class CausalTraversal {
         if (combined.contains("contributes") || combined.contains("factor")) return CausalEdgeType.CONTRIBUTES_TO;
         if (combined.contains("influences") || combined.contains("affects")) return CausalEdgeType.INFLUENCES;
 
-        // Fall back to EdgeType mapping
+        // Fall back to EdgeType mapping. edgeType can be null for transient or
+        // legacy edges that were never persisted with a type (the DB column is
+        // non-null, but in-memory/unpersisted edges may not set it). Guard against
+        // a null selector so the switch cannot throw a NullPointerException — an
+        // untyped edge is treated as a weak correlation.
+        if (type == null) {
+            return CausalEdgeType.CORRELATES_WITH;
+        }
         return switch (type) {
             case HIERARCHICAL -> CausalEdgeType.DERIVED_FROM;
             case TEMPORAL -> CausalEdgeType.TRIGGERS;

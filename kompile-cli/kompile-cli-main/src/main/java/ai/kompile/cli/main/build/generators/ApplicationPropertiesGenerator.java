@@ -120,12 +120,16 @@ public class ApplicationPropertiesGenerator {
         }
 
         writer.write("\nspring.jpa.hibernate.ddl-auto=none\n");
-        writer.write("spring.jpa.generate-ddl=false\n");
-        writer.write("spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration\n\n");
+        writer.write("spring.jpa.generate-ddl=false\n\n");
     }
 
     private void writeAutoConfigurationExclusions(FileWriter writer) throws IOException {
-        // Currently no exclusions needed - placeholder for future use
+        writer.write("# Hibernate: disable ByteBuddy bytecode provider (kompile-app excludes it for native-image compat)\n");
+        writer.write("spring.jpa.properties.hibernate.bytecode.provider=none\n\n");
+        writer.write("# Auto-configuration exclusions: prevent ambiguous bean errors\n");
+        writer.write("spring.autoconfigure.exclude=\\\n");
+        writer.write("    org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration,\\\n");
+        writer.write("    org.springframework.ai.model.chat.client.autoconfigure.ChatClientAutoConfiguration\n\n");
     }
 
     private void writeProviderEnablementFlags(FileWriter writer) throws IOException {
@@ -228,6 +232,9 @@ public class ApplicationPropertiesGenerator {
         writer.write("app.document.uploads-path=./data/input_documents/uploads\n");
         writer.write("mcp.filesystem.roots.default.path=./data/shared_files\n");
         writer.write("mcp.filesystem.roots.default.alias=default\n\n");
+
+        writer.write("# Ingest state directory (persists crawl/ingest state across restarts)\n");
+        writer.write("kompile.ingest.state-directory=./data/ingest-state\n\n");
 
         if (modules.has("vectorstore-pgvector")) {
             writer.write("# PgVector Configuration\n");

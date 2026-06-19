@@ -17,7 +17,7 @@
 package ai.kompile.cli.main.build;
 
 import ai.kompile.cli.common.util.ByteFormatUtils;
-import ai.kompile.cli.main.util.EnvironmentUtils;
+import ai.kompile.cli.common.util.EnvironmentUtils;
 import org.apache.maven.shared.invoker.*;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;

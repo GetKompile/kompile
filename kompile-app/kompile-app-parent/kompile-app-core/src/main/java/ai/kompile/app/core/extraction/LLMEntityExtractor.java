@@ -16,6 +16,7 @@
 
 package ai.kompile.app.core.extraction;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -84,7 +85,7 @@ public class LLMEntityExtractor extends AbstractStructuredExtractor {
      */
     public LLMEntityExtractor(Function<String, String> llmInvoker) {
         this.llmInvoker = llmInvoker;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonUtils.standardMapper();
         this.batchSize = 5; // LLM calls are expensive, smaller batches
     }
 

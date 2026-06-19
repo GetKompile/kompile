@@ -974,7 +974,7 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
         this.loadNetworkStats();
       },
       error: (err) => {
-        this.error = err.message || 'Inference failed';
+        this.error = this.extractErr(err, 'Inference failed');
         this.loading = false;
       }
     });
@@ -1058,7 +1058,7 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
         this.whatIfLoading = false;
       },
       error: (err) => {
-        this.error = err.message || 'What-if query failed';
+        this.error = this.extractErr(err, 'What-if query failed');
         this.whatIfLoading = false;
       }
     });
@@ -1107,10 +1107,30 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
         this.mpeLoading = false;
       },
       error: (err) => {
-        this.error = err.message || 'MPE query failed';
+        this.error = this.extractErr(err, 'MPE query failed');
         this.mpeLoading = false;
       }
     });
+  }
+
+  /**
+   * Extract a human-readable message from an HttpErrorResponse. The backend now
+   * returns a structured { error, message, type, ... } body (err.error) for
+   * attribution / Bayesian failures — surface that rather than Angular's opaque
+   * "Http failure response for ...: 500 ..." wrapper string.
+   */
+  private extractErr(err: any, fallback: string): string {
+    const body = err?.error;
+    if (body && typeof body === 'object' && body.message) {
+      return body.type ? `${body.message} (${body.type})` : body.message;
+    }
+    if (typeof body === 'string' && body.trim().length > 0) {
+      return body;
+    }
+    if (err?.status === 0) {
+      return 'Could not reach the server (network error, or it is still starting up).';
+    }
+    return err?.message || fallback;
   }
 
   getMpeEntries(): Array<PosteriorEntry & { assignment: number }> {

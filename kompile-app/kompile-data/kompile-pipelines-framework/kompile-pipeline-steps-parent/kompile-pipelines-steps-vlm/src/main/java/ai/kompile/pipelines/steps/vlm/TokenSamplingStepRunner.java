@@ -22,9 +22,9 @@ import ai.kompile.pipelines.framework.api.context.Context;
 import ai.kompile.pipelines.framework.api.data.Data;
 import ai.kompile.pipelines.framework.api.data.NDArray;
 import ai.kompile.pipelines.steps.vlm.util.VLMSameDiffUtils;
-import org.eclipse.deeplearning4j.llm.generation.SamplingConfig;
-import org.eclipse.deeplearning4j.llm.generation.Sampler;
-import org.eclipse.deeplearning4j.llm.generation.SamplerUtils;
+import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
+import org.eclipse.deeplearning4j.llm.generation.sampling.Sampler;
+import org.eclipse.deeplearning4j.llm.generation.sampling.SamplerUtils;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 

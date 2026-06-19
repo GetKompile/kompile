@@ -81,6 +81,16 @@ public interface JobLogRepository extends JpaRepository<JobLogEntry, Long> {
     List<JobLogEntry> findByTaskIdAndSourceOrderBySequenceNumberAsc(String taskId, LogSource source);
 
     /**
+     * Find log entries for a task filtered by source with pagination.
+     */
+    Page<JobLogEntry> findByTaskIdAndSourceOrderBySequenceNumberAsc(String taskId, LogSource source, Pageable pageable);
+
+    /**
+     * Count log entries by source for a task.
+     */
+    long countByTaskIdAndSource(String taskId, LogSource source);
+
+    /**
      * Find the last N log entries for a task (for tailing).
      */
     @Query("SELECT l FROM JobLogEntry l WHERE l.taskId = :taskId ORDER BY l.sequenceNumber DESC")

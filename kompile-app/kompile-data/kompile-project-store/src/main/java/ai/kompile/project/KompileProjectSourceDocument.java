@@ -16,11 +16,19 @@
 package ai.kompile.project;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * Describes a source document in the project's {@code data/input_documents/} directory.
  * Used by the source catalog ({@code data/input_documents/project-sources.json}).
  */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class KompileProjectSourceDocument {
     private String path;
@@ -28,19 +36,4 @@ public class KompileProjectSourceDocument {
     private long sizeBytes;
     private String contentType;
     private String lastModified;
-
-    public String getPath() { return path; }
-    public void setPath(String path) { this.path = path; }
-
-    public String getFileName() { return fileName; }
-    public void setFileName(String fileName) { this.fileName = fileName; }
-
-    public long getSizeBytes() { return sizeBytes; }
-    public void setSizeBytes(long sizeBytes) { this.sizeBytes = sizeBytes; }
-
-    public String getContentType() { return contentType; }
-    public void setContentType(String contentType) { this.contentType = contentType; }
-
-    public String getLastModified() { return lastModified; }
-    public void setLastModified(String lastModified) { this.lastModified = lastModified; }
 }

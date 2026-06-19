@@ -21,6 +21,7 @@ import ai.kompile.toolgateway.model.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,7 +53,7 @@ public class ToolGatewayService {
     private final ToolGatewayConfigService configService;
     private final ToolGatewayRulesProvider rulesProvider;
     private final ChatModel chatModel;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final List<GatewayEvaluationListener> listeners = new ArrayList<>();
     private final ConcurrentLinkedDeque<GatewayJudgeScore> recentScores = new ConcurrentLinkedDeque<>();
 

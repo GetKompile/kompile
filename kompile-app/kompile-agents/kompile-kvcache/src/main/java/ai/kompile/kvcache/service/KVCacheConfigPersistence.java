@@ -1,6 +1,8 @@
 package ai.kompile.kvcache.service;
 
 import ai.kompile.kvcache.config.KVCacheProperties;
+import ai.kompile.utils.MapUtils;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +27,7 @@ public class KVCacheConfigPersistence {
     private final Path configPath;
 
     public KVCacheConfigPersistence() {
-        this.objectMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+        this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         this.configPath = Paths.get(CONFIG_DIR, CONFIG_FILE);
     }
 
@@ -92,35 +94,26 @@ public class KVCacheConfigPersistence {
     private void applyMap(Map<String, Object> saved, KVCacheProperties p) {
         if (saved.containsKey("enabled")) p.setEnabled((Boolean) saved.get("enabled"));
         if (saved.containsKey("defaultType")) p.setDefaultType((String) saved.get("defaultType"));
-        if (saved.containsKey("blockSize")) p.setBlockSize(toInt(saved.get("blockSize")));
-        if (saved.containsKey("maxBatchSize")) p.setMaxBatchSize(toInt(saved.get("maxBatchSize")));
-        if (saved.containsKey("maxSeqLen")) p.setMaxSeqLen(toInt(saved.get("maxSeqLen")));
-        if (saved.containsKey("numKvHeads")) p.setNumKvHeads(toInt(saved.get("numKvHeads")));
-        if (saved.containsKey("headDim")) p.setHeadDim(toInt(saved.get("headDim")));
+        if (saved.containsKey("blockSize")) p.setBlockSize(MapUtils.toInt(saved.get("blockSize")));
+        if (saved.containsKey("maxBatchSize")) p.setMaxBatchSize(MapUtils.toInt(saved.get("maxBatchSize")));
+        if (saved.containsKey("maxSeqLen")) p.setMaxSeqLen(MapUtils.toInt(saved.get("maxSeqLen")));
+        if (saved.containsKey("numKvHeads")) p.setNumKvHeads(MapUtils.toInt(saved.get("numKvHeads")));
+        if (saved.containsKey("headDim")) p.setHeadDim(MapUtils.toInt(saved.get("headDim")));
         if (saved.containsKey("dataType")) p.setDataType((String) saved.get("dataType"));
-        if (saved.containsKey("poolSizeFactor")) p.setPoolSizeFactor(toDouble(saved.get("poolSizeFactor")));
+        if (saved.containsKey("poolSizeFactor")) p.setPoolSizeFactor(MapUtils.toDouble(saved.get("poolSizeFactor")));
         if (saved.containsKey("evictionPolicy")) p.setEvictionPolicy((String) saved.get("evictionPolicy"));
-        if (saved.containsKey("tokenBudget")) p.setTokenBudget(toInt(saved.get("tokenBudget")));
+        if (saved.containsKey("tokenBudget")) p.setTokenBudget(MapUtils.toInt(saved.get("tokenBudget")));
         if (saved.containsKey("quantFormat")) p.setQuantFormat((String) saved.get("quantFormat"));
         if (saved.containsKey("tieredEnabled")) p.setTieredEnabled((Boolean) saved.get("tieredEnabled"));
-        if (saved.containsKey("gpuPressureThreshold")) p.setGpuPressureThreshold(toDouble(saved.get("gpuPressureThreshold")));
-        if (saved.containsKey("hostPoolMaxBlocks")) p.setHostPoolMaxBlocks(toInt(saved.get("hostPoolMaxBlocks")));
+        if (saved.containsKey("gpuPressureThreshold")) p.setGpuPressureThreshold(MapUtils.toDouble(saved.get("gpuPressureThreshold")));
+        if (saved.containsKey("hostPoolMaxBlocks")) p.setHostPoolMaxBlocks(MapUtils.toInt(saved.get("hostPoolMaxBlocks")));
         if (saved.containsKey("diskOffloadPath")) p.setDiskOffloadPath((String) saved.get("diskOffloadPath"));
         if (saved.containsKey("prefixCacheEnabled")) p.setPrefixCacheEnabled((Boolean) saved.get("prefixCacheEnabled"));
-        if (saved.containsKey("prefixCacheMaxEntries")) p.setPrefixCacheMaxEntries(toInt(saved.get("prefixCacheMaxEntries")));
+        if (saved.containsKey("prefixCacheMaxEntries")) p.setPrefixCacheMaxEntries(MapUtils.toInt(saved.get("prefixCacheMaxEntries")));
         if (saved.containsKey("checkpointEnabled")) p.setCheckpointEnabled((Boolean) saved.get("checkpointEnabled"));
-        if (saved.containsKey("maxCheckpoints")) p.setMaxCheckpoints(toInt(saved.get("maxCheckpoints")));
+        if (saved.containsKey("maxCheckpoints")) p.setMaxCheckpoints(MapUtils.toInt(saved.get("maxCheckpoints")));
         if (saved.containsKey("checkpointDir")) p.setCheckpointDir((String) saved.get("checkpointDir"));
-        if (saved.containsKey("statsWindowSeconds")) p.setStatsWindowSeconds(toInt(saved.get("statsWindowSeconds")));
+        if (saved.containsKey("statsWindowSeconds")) p.setStatsWindowSeconds(MapUtils.toInt(saved.get("statsWindowSeconds")));
     }
 
-    private int toInt(Object val) {
-        if (val instanceof Number) return ((Number) val).intValue();
-        return Integer.parseInt(val.toString());
-    }
-
-    private double toDouble(Object val) {
-        if (val instanceof Number) return ((Number) val).doubleValue();
-        return Double.parseDouble(val.toString());
-    }
 }

@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.app;
 
 import ai.kompile.cli.common.http.KompileHttpClient;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
@@ -406,9 +407,9 @@ public class CrawlWizardCmd implements Callable<Integer> {
                         ? formatTokenCount(m.contextWindow)
                         : "unknown";
                 String tools = m.supportsTools ? "yes" : "no";
-                String desc = m.description != null ? truncate(m.description, 30) : "";
+                String desc = m.description != null ? StringUtils.truncate(m.description, 30) : "";
                 System.out.printf("    [%-2d] %-35s %-15s %-12s %s%n",
-                        i + 1, truncate(m.name, 35), ctx, tools, desc);
+                        i + 1, StringUtils.truncate(m.name, 35), ctx, tools, desc);
             }
 
             int modelIdx = promptInt("  Select model (0=provider default)", 0, 0, selected.models.size());
@@ -465,7 +466,7 @@ public class CrawlWizardCmd implements Callable<Integer> {
                 System.out.printf("    [%d] %s — %d node types, %d relationship types%n",
                         i + 1, p.name, p.nodeTypeCount, p.relationshipTypeCount);
                 if (!p.description.isEmpty()) {
-                    System.out.printf("        %s%n", truncate(p.description, 70));
+                    System.out.printf("        %s%n", StringUtils.truncate(p.description, 70));
                 }
             }
             System.out.println("    [0] Custom (define entity/relationship types manually)");
@@ -892,11 +893,6 @@ public class CrawlWizardCmd implements Callable<Integer> {
             return String.format("%dK", n / 1_000);
         }
         return String.valueOf(n);
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
     }
 
     // -----------------------------------------------------------------------

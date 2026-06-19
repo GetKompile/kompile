@@ -31,7 +31,8 @@ import java.util.concurrent.Callable;
         SampleProjectSync.class,
         BuildNativeDevCommand.class,
         BuildNativeDistCommand.class,
-        BuildDistCommand.class
+        BuildDistCommand.class,
+        BuildPlatformCommand.class
 }, mixinStandardHelpOptions = false,
         description = "Commands related to building Kompile applications.\n\n" +
                 "Primary entry point:\n" +

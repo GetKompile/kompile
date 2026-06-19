@@ -1,0 +1,13 @@
+name: Update dependencies linux
+runs:
+  using: composite
+  steps:
+    - name: Update dependencies linux
+      shell: bash
+      run: |
+          sudo apt-get install build-essential make zlib1g-dev wget
+          sudo apt-get install pinentry-curses
+          sudo apt-get install ca-certificates libgomp1
+
+
+

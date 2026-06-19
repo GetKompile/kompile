@@ -1,6 +1,7 @@
 package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConversationContext;
 import ai.kompile.cli.main.chat.enforcer.EnforcerPolicy;
 import ai.kompile.cli.main.chat.enforcer.PostFeedbackDecision;
@@ -242,7 +243,7 @@ public class StdioPostFeedbackTool {
     private String buildJudgePrompt(String originalPrompt, String rules, String evidence) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("[ORIGINAL REQUEST]\n")
-                .append(truncate(originalPrompt, MAX_PROMPT_CHARS))
+                .append(StringUtils.truncateWithSize(originalPrompt, MAX_PROMPT_CHARS))
                 .append("\n[END ORIGINAL REQUEST]\n\n");
 
         prompt.append("[RULES / ACCEPTANCE CRITERIA]\n")
@@ -250,7 +251,7 @@ public class StdioPostFeedbackTool {
                 .append("\n[END RULES / ACCEPTANCE CRITERIA]\n\n");
 
         prompt.append("[EVIDENCE]\n")
-                .append(truncate(evidence, MAX_EVIDENCE_CHARS))
+                .append(StringUtils.truncateWithSize(evidence, MAX_EVIDENCE_CHARS))
                 .append("\n[END EVIDENCE]\n\n");
 
         prompt.append("Audit whether the completed work is correct and rule-compliant. ")
@@ -320,7 +321,7 @@ public class StdioPostFeedbackTool {
             return path == null ? "" : "File not found: " + path;
         }
         try {
-            return truncate(Files.readString(path, StandardCharsets.UTF_8), maxChars);
+            return StringUtils.truncateWithSize(Files.readString(path, StandardCharsets.UTF_8), maxChars);
         } catch (Exception e) {
             return "Could not read " + path + ": " + e.getMessage();
         }
@@ -373,10 +374,10 @@ public class StdioPostFeedbackTool {
         if (!finished) {
             process.destroyForcibly();
             reader.join(Duration.ofSeconds(2).toMillis());
-            return truncate(output + "\n[TIMED OUT after " + timeoutSeconds + "s]", MAX_COMMAND_OUTPUT_CHARS);
+            return StringUtils.truncateWithSize(output + "\n[TIMED OUT after " + timeoutSeconds + "s]", MAX_COMMAND_OUTPUT_CHARS);
         }
         reader.join(Duration.ofSeconds(2).toMillis());
-        return truncate(output + "\n[exit code " + process.exitValue() + "]", MAX_COMMAND_OUTPUT_CHARS);
+        return StringUtils.truncateWithSize(output + "\n[exit code " + process.exitValue() + "]", MAX_COMMAND_OUTPUT_CHARS);
     }
 
     private void appendSection(StringBuilder sb, String title, String body) {
@@ -459,11 +460,4 @@ public class StdioPostFeedbackTool {
         }
     }
 
-    private static String truncate(String text, int maxChars) {
-        if (text == null || text.length() <= maxChars) {
-            return text == null ? "" : text;
-        }
-        return text.substring(0, maxChars - 80)
-                + "\n... (truncated, " + text.length() + " chars total)";
-    }
 }

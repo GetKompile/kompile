@@ -32,31 +32,31 @@ import java.util.Map;
  * | val1    | val2    |
  * </pre>
  */
-final class MarkdownTableParser {
+public final class MarkdownTableParser {
 
     private MarkdownTableParser() {}
 
     /**
      * Parsed table with typed access to headers and rows.
      */
-    static class ParsedTable {
+    public static class ParsedTable {
         private final List<String> headers;
         private final List<List<String>> rows;
 
-        ParsedTable(List<String> headers, List<List<String>> rows) {
+        public ParsedTable(List<String> headers, List<List<String>> rows) {
             this.headers = headers;
             this.rows = rows;
         }
 
-        List<String> getHeaders() { return headers; }
-        List<List<String>> getRows() { return rows; }
-        int getRowCount() { return rows.size(); }
-        int getColumnCount() { return headers.size(); }
+        public List<String> getHeaders() { return headers; }
+        public List<List<String>> getRows() { return rows; }
+        public int getRowCount() { return rows.size(); }
+        public int getColumnCount() { return headers.size(); }
 
         /**
          * Returns rows as list of maps keyed by header name.
          */
-        List<Map<String, String>> toRowMaps() {
+        public List<Map<String, String>> toRowMaps() {
             List<Map<String, String>> result = new ArrayList<>(rows.size());
             for (List<String> row : rows) {
                 Map<String, String> map = new LinkedHashMap<>();
@@ -71,7 +71,7 @@ final class MarkdownTableParser {
         /**
          * Returns all values in a specific column.
          */
-        List<String> getColumn(String header) {
+        public List<String> getColumn(String header) {
             int idx = headers.indexOf(header);
             if (idx < 0) return Collections.emptyList();
             List<String> values = new ArrayList<>(rows.size());
@@ -84,7 +84,7 @@ final class MarkdownTableParser {
         /**
          * Returns the column index for a header, case-insensitive.
          */
-        int findColumnIndex(String header) {
+        public int findColumnIndex(String header) {
             for (int i = 0; i < headers.size(); i++) {
                 if (headers.get(i).equalsIgnoreCase(header)) return i;
             }
@@ -94,7 +94,7 @@ final class MarkdownTableParser {
         /**
          * Renders this table back to markdown format.
          */
-        String toMarkdown() {
+        public String toMarkdown() {
             if (headers.isEmpty()) return "";
             StringBuilder sb = new StringBuilder();
             sb.append("| ").append(String.join(" | ", headers)).append(" |\n");
@@ -118,7 +118,7 @@ final class MarkdownTableParser {
         /**
          * Renders this table as CSV.
          */
-        String toCsv() {
+        public String toCsv() {
             StringBuilder sb = new StringBuilder();
             sb.append(csvRow(headers)).append("\n");
             for (List<String> row : rows) {
@@ -144,7 +144,7 @@ final class MarkdownTableParser {
         /**
          * Renders this table as a list of JSON-style row objects.
          */
-        List<Map<String, Object>> toJsonRows() {
+        public List<Map<String, Object>> toJsonRows() {
             List<Map<String, Object>> result = new ArrayList<>(rows.size());
             for (List<String> row : rows) {
                 Map<String, Object> map = new LinkedHashMap<>();
@@ -161,7 +161,7 @@ final class MarkdownTableParser {
     /**
      * Parses a markdown table string into headers and data rows.
      */
-    static ParsedTable parse(String markdown) {
+    public static ParsedTable parse(String markdown) {
         if (markdown == null || markdown.trim().isEmpty()) {
             return new ParsedTable(Collections.emptyList(), Collections.emptyList());
         }
@@ -221,7 +221,7 @@ final class MarkdownTableParser {
     /**
      * Attempts to parse a string as a number, returning the original string if it fails.
      */
-    static Object tryParseNumeric(String value) {
+    public static Object tryParseNumeric(String value) {
         if (value == null || value.isEmpty()) return value;
         String trimmed = value.trim();
         try {
@@ -237,7 +237,7 @@ final class MarkdownTableParser {
     /**
      * Attempts to parse a string as a double, returning null if it fails.
      */
-    static Double tryParseDouble(String value) {
+    public static Double tryParseDouble(String value) {
         if (value == null || value.isEmpty()) return null;
         try {
             return Double.parseDouble(value.trim());

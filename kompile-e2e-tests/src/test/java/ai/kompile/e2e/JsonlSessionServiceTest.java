@@ -1,6 +1,6 @@
 package ai.kompile.e2e;
 
-import ai.kompile.kclaw.service.SessionService;
+import ai.kompile.gateway.core.service.SessionService;
 import ai.kompile.kclaw.service.impl.JsonlSessionService;
 import ai.kompile.react.model.ReActMessage;
 import ai.kompile.react.model.ToolCall;

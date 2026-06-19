@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.format.ConversationFormatter;
 import ai.kompile.cli.main.chat.format.ConversationReader;
 import ai.kompile.cli.main.chat.tools.ConversationImportTool;
@@ -97,7 +98,7 @@ public class SessionCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             ConversationImportTool importTool = new ConversationImportTool();
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = JsonUtils.standardMapper();
 
             try {
                 if ("all".equalsIgnoreCase(source) || "kompile".equalsIgnoreCase(source)) {
@@ -251,7 +252,7 @@ public class SessionCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             ConversationImportTool importTool = new ConversationImportTool();
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = JsonUtils.standardMapper();
 
             try {
                 ObjectNode params = mapper.createObjectNode();
@@ -322,7 +323,7 @@ public class SessionCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             ConversationImportTool importTool = new ConversationImportTool();
-            ObjectMapper mapper = new ObjectMapper();
+            ObjectMapper mapper = JsonUtils.standardMapper();
 
             System.out.println("Importing all sessions from " + source + "...");
             System.out.println("This may take a while for large collections.");

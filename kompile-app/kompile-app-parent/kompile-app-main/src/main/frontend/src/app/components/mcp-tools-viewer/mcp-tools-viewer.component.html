@@ -14,22 +14,107 @@
   ~ limitations under the License.
   -->
 
-<div class="mcp-tools-viewer-container">
-  <h2>Available MCP Tools (via REST API)</h2>
-  <button (click)="loadMcpTools()" [disabled]="isLoading">Refresh Tools List</button>
+<div class="tools-viewer">
+  <div class="viewer-header">
+    <div class="header-left">
+      <h3>
+        <mat-icon>build</mat-icon>
+        Available Tools
+        <span class="tool-count" *ngIf="mcpTools.length">({{ filteredTools.length }})</span>
+      </h3>
+    </div>
+    <div class="header-actions">
+      <mat-form-field appearance="outline" class="search-field">
+        <mat-label>Search tools</mat-label>
+        <input matInput [(ngModel)]="searchQuery" (ngModelChange)="filterTools()" [ngModelOptions]="{standalone: true}" placeholder="Filter by name...">
+        <mat-icon matSuffix>search</mat-icon>
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="source-filter">
+        <mat-label>Source</mat-label>
+        <mat-select [(ngModel)]="sourceFilter" (selectionChange)="filterTools()" [ngModelOptions]="{standalone: true}">
+          <mat-option value="all">All Sources</mat-option>
+          <mat-option value="built_in">Built-in</mat-option>
+          <mat-option value="mcp_server">MCP Server</mat-option>
+          <mat-option value="rest_bridge">REST Bridge</mat-option>
+        </mat-select>
+      </mat-form-field>
+      <button mat-icon-button (click)="loadMcpTools()" [disabled]="isLoading" matTooltip="Refresh tools">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+  </div>
 
-  <div *ngIf="isLoading" class="message loading">Loading tools...</div>
-  <div *ngIf="errorMessage" class="message error">{{ errorMessage }}</div>
+  <mat-progress-bar *ngIf="isLoading" mode="indeterminate"></mat-progress-bar>
 
-  <ul *ngIf="mcpTools.length > 0; else noTools">
-    <li *ngFor="let tool of mcpTools" class="tool-item">
-      <h3>{{ tool.name }}</h3>
-      <p><strong>Description:</strong> {{ tool.description }}</p>
-      <p><small><em>{{ tool.description }}</em></small></p>
-    </li>
-  </ul>
-  <ng-template #noTools>
-    <p *ngIf="!isLoading && !errorMessage">No MCP tools found or an issue occurred during introspection.</p>
-  </ng-template>
-  <p><small>This list is obtained by introspecting backend components. For authoritative MCP schema, an MCP client should use the 'tools/list' protocol method.</small></p>
+  <div class="error-banner" *ngIf="errorMessage">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ errorMessage }}</span>
+    <button mat-icon-button (click)="errorMessage = null"><mat-icon>close</mat-icon></button>
+  </div>
+
+  <div class="tools-grid" *ngIf="filteredTools.length > 0">
+    <div *ngFor="let tool of filteredTools" class="tool-card"
+         [class.expanded]="expandedTool === tool.name"
+         (click)="toggleExpand(tool.name)">
+      <div class="tool-card-header">
+        <div class="tool-name-row">
+          <mat-icon class="tool-type-icon" [style.color]="getSourceColor(tool)">
+            {{ getSourceIcon(tool) }}
+          </mat-icon>
+          <span class="tool-name">{{ tool.name }}</span>
+          <mat-chip class="source-chip" [style.background]="getSourceColor(tool)" [style.color]="'#fff'">
+            {{ getSourceLabel(tool) }}
+          </mat-chip>
+        </div>
+        <p class="tool-description">{{ tool.description }}</p>
+      </div>
+
+      <div class="tool-card-details" *ngIf="expandedTool === tool.name">
+        <mat-divider></mat-divider>
+
+        <div class="detail-section" *ngIf="tool.inputSchema?.properties">
+          <h4>Parameters</h4>
+          <div class="param-list">
+            <div *ngFor="let param of getSchemaParams(tool.inputSchema)" class="param-item">
+              <code class="param-name">{{ param.name }}</code>
+              <span class="param-type">{{ param.type }}</span>
+              <mat-icon class="param-required" *ngIf="param.required" matTooltip="Required">star</mat-icon>
+              <span class="param-desc" *ngIf="param.description">{{ param.description }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="$any(tool).serverId">
+          <h4>Server</h4>
+          <div class="detail-row">
+            <mat-icon>dns</mat-icon>
+            <span>{{ $any(tool).serverName }} ({{ $any(tool).serverStatus }})</span>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="$any(tool).bridgeId">
+          <h4>Bridge</h4>
+          <div class="detail-row">
+            <mat-icon>swap_horiz</mat-icon>
+            <span>{{ $any(tool).bridgeName }} ({{ $any(tool).bridgeStatus }})</span>
+          </div>
+          <div class="detail-row" *ngIf="$any(tool).restEndpoint">
+            <mat-icon>http</mat-icon>
+            <code>{{ $any(tool).restEndpoint.method }} {{ $any(tool).restEndpoint.path }}</code>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="empty-state" *ngIf="!isLoading && filteredTools.length === 0 && mcpTools.length > 0">
+    <mat-icon>search_off</mat-icon>
+    <p>No tools match your filter.</p>
+  </div>
+
+  <div class="empty-state" *ngIf="!isLoading && mcpTools.length === 0 && !errorMessage">
+    <mat-icon>build_circle</mat-icon>
+    <p>No MCP tools found.</p>
+    <p class="hint">Tools are discovered from Spring beans with &#64;Tool annotations, configured MCP servers, and REST bridges.</p>
+  </div>
 </div>

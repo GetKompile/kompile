@@ -34,6 +34,15 @@
     <dependencies>
         <!-- Minimal dependencies - only what's absolutely necessary -->
 
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+        </dependency>
+
         <!-- Apache Commons Compress for tar.gz extraction -->
         <dependency>
             <groupId>org.apache.commons</groupId>

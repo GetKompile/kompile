@@ -16,6 +16,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -37,7 +38,7 @@ import java.util.Optional;
  */
 public final class AgentFlagOverrides {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
     private static final String CONFIG_FILE = "agent-flags.json";
 
     private AgentFlagOverrides() {

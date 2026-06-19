@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.core.embeddings.ScoredDocument;
+import ai.kompile.utils.StringUtils;
 import ai.kompile.core.rag.ConversationalRagOptions;
 import ai.kompile.core.rag.ConversationalRagResult;
 import ai.kompile.core.rag.ConversationalRagService;
@@ -88,7 +89,7 @@ public class ConversationalRagController {
 
         try {
             log.info("Processing chat request for conversation '{}': '{}'",
-                    sanitizeForLog(conversationId), truncate(request.message(), 100));
+                    sanitizeForLog(conversationId), StringUtils.truncate(request.message(), 100));
 
             ConversationalRagOptions options = buildOptions(request);
             ConversationalRagResult result = ragService.chat(conversationId, request.message(), options);
@@ -257,11 +258,6 @@ public class ConversationalRagController {
         String role = message.getMessageType().name().toLowerCase();
         String content = message.getText();
         return new MessageDto(role, content);
-    }
-
-    private String truncate(String text, int maxLength) {
-        if (text == null) return "";
-        return text.length() <= maxLength ? text : text.substring(0, maxLength) + "...";
     }
 
     private String escapeForSse(String text) {
