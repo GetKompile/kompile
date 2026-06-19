@@ -72,5 +72,13 @@ public enum EdgeType {
     /**
      * Addressee/recipient relationship
      */
-    ADDRESSED_TO
+    ADDRESSED_TO,
+
+    /**
+     * An observed identifier (e.g. a GTIN-14 barcode) resolves to a product
+     * entity. Source = {@link NodeLevel#IDENTIFIER} node, target = product entity.
+     * Multiple identifiers → one product (vendor/format variants); one identifier
+     * → multiple products (a recycled / reassigned code).
+     */
+    RESOLVES_TO
 }

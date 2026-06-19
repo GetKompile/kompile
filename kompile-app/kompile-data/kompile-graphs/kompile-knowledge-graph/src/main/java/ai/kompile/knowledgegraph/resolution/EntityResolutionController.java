@@ -16,6 +16,8 @@
 package ai.kompile.knowledgegraph.resolution;
 
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -37,13 +39,70 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/entity-resolution")
 public class EntityResolutionController {
 
+    private static final Logger log = LoggerFactory.getLogger(EntityResolutionController.class);
+
     private final GraphCompactionService compactionService;
     private final EntityResolutionService resolutionService;
+    private final BarcodeIdentityGraphService identityGraphService;
 
     public EntityResolutionController(GraphCompactionService compactionService,
-                                       EntityResolutionService resolutionService) {
+                                       EntityResolutionService resolutionService,
+                                       BarcodeIdentityGraphService identityGraphService) {
         this.compactionService = compactionService;
         this.resolutionService = resolutionService;
+        this.identityGraphService = identityGraphService;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BARCODE IDENTITY (many-to-many observed-code ↔ product)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Materialize identifier (GTIN-14) nodes and RESOLVES_TO edges for product
+     * entities, giving a durable many-to-many observed-code → product mapping.
+     *
+     * @param factSheetId optional fact-sheet scope (null = all entities)
+     * @return counts of identifier nodes / edges created, plus recycled-code collisions
+     */
+    @PostMapping("/identifiers/materialize")
+    public ResponseEntity<BarcodeIdentityGraphService.MaterializeResult> materializeIdentifiers(
+            @RequestParam(required = false) Long factSheetId) {
+        return ResponseEntity.ok(identityGraphService.materialize(factSheetId));
+    }
+
+    /**
+     * The review queue: GTIN-14s that resolve to more than one product (likely a
+     * recycled / reassigned code). Computed without mutating the graph.
+     */
+    @GetMapping("/identifiers/collisions")
+    public ResponseEntity<Map<String, Object>> identifierCollisions(
+            @RequestParam(required = false) Long factSheetId) {
+        List<BarcodeIdentityGraphService.IdentifierCollision> collisions =
+                identityGraphService.previewCollisions(factSheetId);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("collisionCount", collisions.size());
+        response.put("collisions", collisions);
+        return ResponseEntity.ok(response);
+    }
+
+    /** Product node IDs that a (possibly noisy) barcode resolves to. */
+    @GetMapping("/identifiers/by-gtin/{code}")
+    public ResponseEntity<Map<String, Object>> productsForCode(@PathVariable String code) {
+        List<String> products = identityGraphService.productNodeIdsForGtin(code);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("gtin14", BarcodeNormalizer.parse(code).gtin14());
+        response.put("productNodeIds", products);
+        return ResponseEntity.ok(response);
+    }
+
+    /** Canonical GTIN-14s that resolve to a given product node. */
+    @GetMapping("/identifiers/by-product/{nodeId}")
+    public ResponseEntity<Map<String, Object>> codesForProduct(@PathVariable String nodeId) {
+        List<String> gtins = identityGraphService.gtinsForProduct(nodeId);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("productNodeId", nodeId);
+        response.put("gtins", gtins);
+        return ResponseEntity.ok(response);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -89,7 +148,9 @@ public class EntityResolutionController {
             @RequestParam(required = false) Long factSheetId) {
         CompactionConfig config = CompactionConfig.withThreshold(threshold);
         CompactionResult result = compactionService.compact(factSheetId, config);
-        return ResponseEntity.ok(toCompactionResponse(result));
+        Map<String, Object> response = toCompactionResponse(result);
+        attachIdentifierMaterialization(response, factSheetId);
+        return ResponseEntity.ok(response);
     }
 
     /**
@@ -100,7 +161,29 @@ public class EntityResolutionController {
             @RequestBody CompactionRequest request) {
         CompactionConfig config = request.toConfig(true);
         CompactionResult result = compactionService.compact(request.factSheetId(), config);
-        return ResponseEntity.ok(toCompactionResponse(result));
+        Map<String, Object> response = toCompactionResponse(result);
+        attachIdentifierMaterialization(response, request.factSheetId());
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Refresh the barcode identifier graph after a compaction and attach a summary
+     * (identifier nodes / edges created, plus recycled-code collisions for review)
+     * to the response. Best-effort: a failure here must not fail the compaction.
+     */
+    private void attachIdentifierMaterialization(Map<String, Object> response, Long factSheetId) {
+        try {
+            BarcodeIdentityGraphService.MaterializeResult mr = identityGraphService.materialize(factSheetId);
+            Map<String, Object> identifiers = new LinkedHashMap<>();
+            identifiers.put("identifierNodes", mr.identifierNodes());
+            identifiers.put("resolveEdges", mr.resolveEdges());
+            identifiers.put("collisionCount", mr.collisions().size());
+            identifiers.put("collisions", mr.collisions());
+            response.put("identifiers", identifiers);
+        } catch (Exception e) {
+            log.warn("Identifier materialization after compaction failed: {}", e.getMessage());
+            response.put("identifiers", Map.of("error", String.valueOf(e.getMessage())));
+        }
     }
 
     /**

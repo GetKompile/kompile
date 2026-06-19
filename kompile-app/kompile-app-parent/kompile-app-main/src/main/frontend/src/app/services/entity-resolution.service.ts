@@ -122,6 +122,23 @@ export interface DuplicateReport {
   groups: DuplicateGroup[];
 }
 
+export interface IdentifierCollision {
+  gtin14: string;
+  productNodeIds: string[];
+  productTitles: string[];
+}
+
+export interface IdentifierMaterializeResult {
+  identifierNodes: number;
+  resolveEdges: number;
+  collisions: IdentifierCollision[];
+}
+
+export interface IdentifierCollisionReport {
+  collisionCount: number;
+  collisions: IdentifierCollision[];
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -202,6 +219,46 @@ export class EntityResolutionService extends BaseService {
 
   previewTypeHierarchy(request: CompactionRequest): Observable<TypeHierarchyPreview> {
     return this.http.post<TypeHierarchyPreview>(`${this.backendUrl}${this.apiPath}/type-hierarchy/preview`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // BARCODE IDENTITY (many-to-many observed-code ↔ product)
+  // ═══════════════════════════════════════════════════════════════
+
+  /** Build/refresh identifier (GTIN-14) nodes + RESOLVES_TO edges. */
+  materializeIdentifiers(factSheetId?: number): Observable<IdentifierMaterializeResult> {
+    let params = new HttpParams();
+    if (factSheetId != null) {
+      params = params.set('factSheetId', factSheetId.toString());
+    }
+    return this.http.post<IdentifierMaterializeResult>(
+      `${this.backendUrl}${this.apiPath}/identifiers/materialize`, null, { params })
+      .pipe(catchError(this.handleError));
+  }
+
+  /** The review queue: GTIN-14s resolving to more than one product (recycled codes). */
+  getIdentifierCollisions(factSheetId?: number): Observable<IdentifierCollisionReport> {
+    let params = new HttpParams();
+    if (factSheetId != null) {
+      params = params.set('factSheetId', factSheetId.toString());
+    }
+    return this.http.get<IdentifierCollisionReport>(
+      `${this.backendUrl}${this.apiPath}/identifiers/collisions`, { params })
+      .pipe(catchError(this.handleError));
+  }
+
+  /** Product node IDs that a (possibly noisy) barcode resolves to. */
+  productsForCode(code: string): Observable<{ gtin14: string; productNodeIds: string[] }> {
+    return this.http.get<{ gtin14: string; productNodeIds: string[] }>(
+      `${this.backendUrl}${this.apiPath}/identifiers/by-gtin/${encodeURIComponent(code)}`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /** Canonical GTIN-14s that resolve to a given product node. */
+  codesForProduct(nodeId: string): Observable<{ productNodeId: string; gtins: string[] }> {
+    return this.http.get<{ productNodeId: string; gtins: string[] }>(
+      `${this.backendUrl}${this.apiPath}/identifiers/by-product/${encodeURIComponent(nodeId)}`)
       .pipe(catchError(this.handleError));
   }
 

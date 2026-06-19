@@ -682,6 +682,7 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
             case CUSTOM -> 4;
             case SNIPPET -> 5;
             case ATTACHMENT -> 6;
+            case IDENTIFIER -> 7;
         };
     }
 

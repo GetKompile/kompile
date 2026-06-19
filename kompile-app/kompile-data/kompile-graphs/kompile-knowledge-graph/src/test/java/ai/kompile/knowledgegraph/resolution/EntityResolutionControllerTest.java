@@ -36,13 +36,15 @@ class EntityResolutionControllerTest {
 
     private GraphCompactionService compactionService;
     private EntityResolutionService resolutionService;
+    private BarcodeIdentityGraphService identityGraphService;
     private EntityResolutionController controller;
 
     @BeforeEach
     void setUp() {
         compactionService = mock(GraphCompactionService.class);
         resolutionService = mock(EntityResolutionService.class);
-        controller = new EntityResolutionController(compactionService, resolutionService);
+        identityGraphService = mock(BarcodeIdentityGraphService.class);
+        controller = new EntityResolutionController(compactionService, resolutionService, identityGraphService);
     }
 
     @Test
@@ -63,6 +65,29 @@ class EntityResolutionControllerTest {
         assertEquals(7, body.get("finalEntityCount"));
         assertEquals(3, body.get("entitiesMerged"));
         assertEquals(5, body.get("edgesRedirected"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void compact_alsoMaterializesIdentifiers() {
+        when(compactionService.compact(any(), any()))
+                .thenReturn(new CompactionResult(2, 1, 1, 0, 1, List.of(), 5L));
+        BarcodeIdentityGraphService.IdentifierCollision collision =
+                new BarcodeIdentityGraphService.IdentifierCollision(
+                        "00036000291452", List.of("p1", "p2"), List.of("A", "B"));
+        when(identityGraphService.materialize(any()))
+                .thenReturn(new BarcodeIdentityGraphService.MaterializeResult(3, 4, List.of(collision)));
+
+        ResponseEntity<Map<String, Object>> response = controller.compact(0.85, 7L);
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+
+        // Compaction now auto-refreshes the identifier graph.
+        verify(identityGraphService).materialize(7L);
+        Map<String, Object> identifiers = (Map<String, Object>) response.getBody().get("identifiers");
+        assertNotNull(identifiers);
+        assertEquals(3, identifiers.get("identifierNodes"));
+        assertEquals(4, identifiers.get("resolveEdges"));
+        assertEquals(1, identifiers.get("collisionCount"));
     }
 
     @Test

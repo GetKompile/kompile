@@ -320,6 +320,9 @@ public class CausalTraversal {
             case ADDRESSED_TO -> CausalEdgeType.INFLUENCES;
             case EXTRACTED_FROM -> CausalEdgeType.DERIVED_FROM;
             case USER_DEFINED -> CausalEdgeType.INFLUENCES;
+            // A barcode resolving to a product is an identity association, not a
+            // causal link — treat it as a (weak) correlation.
+            case RESOLVES_TO -> CausalEdgeType.CORRELATES_WITH;
         };
     }
 

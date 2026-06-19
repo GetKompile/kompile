@@ -34,7 +34,9 @@ import {
   CompactionPreview,
   CompactionRequest,
   CompactionResult,
-  MatchExplanation
+  MatchExplanation,
+  IdentifierCollision,
+  IdentifierMaterializeResult
 } from '../../services/entity-resolution.service';
 
 export interface EntityResolutionDialogData {
@@ -86,6 +88,12 @@ export class EntityResolutionDialogComponent implements OnInit {
 
   showSettings = false;
 
+  // Barcode identity / recycled-code review queue
+  collisions: IdentifierCollision[] = [];
+  collisionsLoading = false;
+  materializing = false;
+  lastMaterialize: IdentifierMaterializeResult | null = null;
+
   constructor(
     public dialogRef: MatDialogRef<EntityResolutionDialogComponent, EntityResolutionDialogResult>,
     @Inject(MAT_DIALOG_DATA) public data: EntityResolutionDialogData,
@@ -96,6 +104,44 @@ export class EntityResolutionDialogComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadCandidates();
+    this.loadCollisions();
+  }
+
+  /** Load the recycled-code review queue (barcodes resolving to >1 product). */
+  loadCollisions(): void {
+    this.collisionsLoading = true;
+    this.entityResolutionService.getIdentifierCollisions(this.data.factSheetId).subscribe({
+      next: (report) => {
+        this.collisions = report.collisions || [];
+        this.collisionsLoading = false;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.collisionsLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  /** Rebuild identifier nodes + RESOLVES_TO edges, then refresh the collision list. */
+  materializeIdentifiers(): void {
+    this.materializing = true;
+    this.entityResolutionService.materializeIdentifiers(this.data.factSheetId).subscribe({
+      next: (res) => {
+        this.lastMaterialize = res;
+        this.collisions = res.collisions || [];
+        this.materializing = false;
+        this.snackBar.open(
+          `Linked ${res.identifierNodes} barcode(s) · ${res.collisions.length} collision(s)`,
+          'Close', { duration: 3000 });
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.materializing = false;
+        this.snackBar.open('Failed to link identifiers', 'Close', { duration: 3000 });
+        this.cdr.markForCheck();
+      }
+    });
   }
 
   loadCandidates(): void {
