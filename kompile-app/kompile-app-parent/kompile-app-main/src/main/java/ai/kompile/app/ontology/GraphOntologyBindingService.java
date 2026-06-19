@@ -20,8 +20,10 @@ import ai.kompile.core.graphrag.conformance.GraphConformanceChecker;
 import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.NamedGraph;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.service.NamedGraphService;
 import ai.kompile.process.ontology.OntologyConformanceValidator;
 import ai.kompile.process.ontology.OntologySchema;
 import ai.kompile.process.service.ProcessEngineService;
@@ -63,11 +65,14 @@ public class GraphOntologyBindingService implements GraphConformanceChecker {
 
     private final ProcessEngineService processEngineService;
     private final KnowledgeGraphService knowledgeGraphService;
+    private final NamedGraphService namedGraphService;
 
     public GraphOntologyBindingService(ProcessEngineService processEngineService,
-                                       KnowledgeGraphService knowledgeGraphService) {
+                                       KnowledgeGraphService knowledgeGraphService,
+                                       NamedGraphService namedGraphService) {
         this.processEngineService = processEngineService;
         this.knowledgeGraphService = knowledgeGraphService;
+        this.namedGraphService = namedGraphService;
     }
 
     /**
@@ -119,12 +124,27 @@ public class GraphOntologyBindingService implements GraphConformanceChecker {
             }
         }
 
+        Double score = conformanceScore(entities.size(), nonConformant);
         String message = String.format(
-                "Checked %d ENTITY node(s) against ontology '%s' v%d: %d non-conformant (%d unknown type).",
-                entities.size(), schema.getName(), schema.getVersion(), nonConformant, unknown);
+                "Checked %d ENTITY node(s) against ontology '%s' v%d: %d non-conformant (%d unknown type); "
+                        + "conformance %.1f%%.",
+                entities.size(), schema.getName(), schema.getVersion(), nonConformant, unknown,
+                (score == null ? 1.0 : score) * 100.0);
         log.info("Graph conformance factSheet={}: {}", factSheetId, message);
         return new GraphConformanceReport(factSheetId, true, schema.getId(), schema.getVersion(),
-                schema.getName(), entities.size(), unknown, nonConformant, violations, message);
+                schema.getName(), entities.size(), unknown, nonConformant, score, violations, message);
+    }
+
+    /**
+     * Fraction (0..1) of checked entities that conform, rounded to 4 dp. An empty graph is vacuously
+     * conformant (1.0). Feeds the graph-health time series (Phase 7).
+     */
+    private static Double conformanceScore(int checked, int nonConformant) {
+        if (checked <= 0) {
+            return 1.0;
+        }
+        double frac = (double) (checked - nonConformant) / checked;
+        return Math.round(frac * 10000.0) / 10000.0;
     }
 
     /**
@@ -137,18 +157,80 @@ public class GraphOntologyBindingService implements GraphConformanceChecker {
         GraphConformanceReport report = checkConformance(factSheetId);
         return new GraphConformanceSummary(report.factSheetId(), report.ontologyBound(),
                 report.ontologyName(), report.entitiesChecked(), report.unknownTypeCount(),
-                report.nonConformantCount(), report.message());
+                report.nonConformantCount(), report.conformanceScore(), report.message());
+    }
+
+    // ── binding management ───────────────────────────────────────────────────────
+
+    /**
+     * Bind an ontology to a fact sheet's graph (the priority-1 explicit binding). Validates that the
+     * ontology exists, then stamps {@code ontologySchemaId}/{@code ontologyVersion} on the fact
+     * sheet's {@link NamedGraph} — find-or-create a registry row scoped to the fact sheet if none
+     * exists, so binding is reliable even when the fact sheet has no named graph yet.
+     *
+     * @return the bound {@link NamedGraph}
+     * @throws IllegalArgumentException if the fact sheet or ontology id is missing, or the ontology
+     *                                  cannot be found
+     */
+    public NamedGraph bindOntology(Long factSheetId, String ontologySchemaId, Integer ontologyVersion) {
+        if (factSheetId == null) {
+            throw new IllegalArgumentException("factSheetId is required");
+        }
+        if (ontologySchemaId == null || ontologySchemaId.isBlank()) {
+            throw new IllegalArgumentException("ontologySchemaId is required");
+        }
+        if (loadOntology(ontologySchemaId, ontologyVersion).isEmpty()) {
+            throw new IllegalArgumentException("No ontology found for id=" + ontologySchemaId
+                    + (ontologyVersion != null ? " v" + ontologyVersion : " (latest)"));
+        }
+        NamedGraph target = namedGraphService.getGraphsByFactSheet(factSheetId).stream()
+                .findFirst()
+                .orElseGet(() -> namedGraphService.createGraph(
+                        "Fact sheet " + factSheetId + " graph",
+                        "Auto-created to bind a governing ontology", null, factSheetId, "bound_ontology"));
+        NamedGraph bound = namedGraphService.bindOntology(target.getGraphId(), ontologySchemaId, ontologyVersion);
+        log.info("Bound ontology {} v{} to factSheet={} (graph {})",
+                ontologySchemaId, ontologyVersion, factSheetId, bound.getGraphId());
+        return bound;
+    }
+
+    /** Clear any explicit ontology binding on the fact sheet's named graph(s). */
+    public void unbindOntology(Long factSheetId) {
+        if (factSheetId == null) {
+            return;
+        }
+        for (NamedGraph g : namedGraphService.getGraphsByFactSheet(factSheetId)) {
+            if (g.getOntologySchemaId() != null) {
+                namedGraphService.bindOntology(g.getGraphId(), null, null);
+            }
+        }
     }
 
     // ── binding resolution ─────────────────────────────────────────────────────
 
     /**
-     * Priority 1: an explicit graph-level binding. The planned home is a typed
-     * {@code NamedGraph.ontologySchemaId} column; until that exists this returns empty so resolution
-     * falls through to the process-level binding. Adding the column is a one-method change here.
+     * Priority 1: an explicit graph-level binding — a {@link NamedGraph} scoped to this fact sheet
+     * carrying an {@code ontologySchemaId}. Returns the first such bound ontology that loads; empty
+     * if none, so resolution falls through to the process-level binding.
      */
     private Optional<OntologySchema> resolveExplicitGraphBinding(Long factSheetId) {
-        return Optional.empty();
+        List<NamedGraph> graphs;
+        try {
+            graphs = namedGraphService.getGraphsByFactSheet(factSheetId);
+        } catch (Exception e) {
+            log.warn("Could not resolve named graphs while binding ontology for factSheet={}: {}",
+                    factSheetId, e.getMessage());
+            return Optional.empty();
+        }
+        if (graphs == null) {
+            return Optional.empty();
+        }
+        return graphs.stream()
+                .filter(g -> g.getOntologySchemaId() != null && !g.getOntologySchemaId().isBlank())
+                .map(g -> loadOntology(g.getOntologySchemaId(), g.getOntologyVersion()))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .findFirst();
     }
 
     /**

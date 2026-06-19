@@ -36,6 +36,8 @@ public record GraphConformanceReport(
         int entitiesChecked,
         int unknownTypeCount,
         int nonConformantCount,
+        // Fraction (0..1) of checked ENTITY nodes that conform; null when nothing is bound/checked.
+        Double conformanceScore,
         List<NodeViolation> violations,
         String message
 ) {
@@ -46,7 +48,7 @@ public record GraphConformanceReport(
 
     /** No ontology is bound to the fact sheet; nothing was validated. */
     public static GraphConformanceReport notBound(Long factSheetId) {
-        return new GraphConformanceReport(factSheetId, false, null, null, null, 0, 0, 0, List.of(),
+        return new GraphConformanceReport(factSheetId, false, null, null, null, 0, 0, 0, null, List.of(),
                 "No ontology is bound to this fact sheet (no explicit graph binding and no process "
                         + "definition with an ontology). Bind one to enable conformance checking.");
     }

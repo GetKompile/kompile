@@ -65,6 +65,25 @@ public interface NamedGraphService {
     NamedGraph updateGraph(String graphId, String name, String description, String metadataJson);
 
     /**
+     * Bind a governing {@code OntologySchema} to a named graph — the priority-1 explicit binding the
+     * conformance bridge resolves before falling back to the process-level link.
+     *
+     * @param graphId          External UUID of the graph
+     * @param ontologySchemaId Ontology id to bind; {@code null}/blank clears the binding
+     * @param ontologyVersion  Ontology version, or {@code null} for the latest
+     * @return The updated NamedGraph
+     */
+    NamedGraph bindOntology(String graphId, String ontologySchemaId, Integer ontologyVersion);
+
+    /**
+     * Find all named graphs scoped to a fact sheet (the graphs whose {@code factSheetId} matches).
+     *
+     * @param factSheetId the fact sheet scope; {@code null} yields an empty list
+     * @return matching graphs, possibly empty
+     */
+    List<NamedGraph> getGraphsByFactSheet(Long factSheetId);
+
+    /**
      * Delete a named graph and all its descendants recursively.
      *
      * @param graphId External UUID of the graph to delete

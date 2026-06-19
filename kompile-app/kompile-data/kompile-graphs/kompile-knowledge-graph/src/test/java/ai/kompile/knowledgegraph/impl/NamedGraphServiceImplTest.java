@@ -127,6 +127,14 @@ class NamedGraphServiceImplTest {
                 .toList();
         });
 
+        // findByFactSheetId → all graphs scoped to the fact sheet
+        when(namedGraphRepository.findByFactSheetId(anyLong())).thenAnswer(inv -> {
+            Long fs = inv.getArgument(0);
+            return savedGraphs.values().stream()
+                .filter(g -> fs.equals(g.getFactSheetId()))
+                .toList();
+        });
+
         // node repository
         when(graphNodeRepository.findByNodeId(anyString())).thenAnswer(inv -> {
             String id = inv.getArgument(0);
@@ -465,5 +473,56 @@ class NamedGraphServiceImplTest {
         assertTrue((Boolean) stats.get("isRoot"));
         assertEquals("taxonomy", stats.get("ontologyType"));
         assertEquals(7L, stats.get("factSheetId"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ONTOLOGY BINDING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    void bindOntology_setsIdAndVersion() {
+        NamedGraph graph = service.createGraph("Bindable", null, null, 7L, null);
+
+        NamedGraph bound = service.bindOntology(graph.getGraphId(), "ont-1", 2);
+
+        assertEquals("ont-1", bound.getOntologySchemaId());
+        assertEquals(2, bound.getOntologyVersion());
+        // Reflected on subsequent reads.
+        assertEquals("ont-1", service.getGraph(graph.getGraphId()).orElseThrow().getOntologySchemaId());
+    }
+
+    @Test
+    void bindOntology_blankIdClearsBindingAndVersion() {
+        NamedGraph graph = service.createGraph("Bindable", null, null, 7L, null);
+        service.bindOntology(graph.getGraphId(), "ont-1", 5);
+
+        NamedGraph cleared = service.bindOntology(graph.getGraphId(), "  ", 9);
+
+        assertNull(cleared.getOntologySchemaId());
+        assertNull(cleared.getOntologyVersion(), "version is cleared alongside the id");
+    }
+
+    @Test
+    void bindOntology_unknownGraphThrows() {
+        assertThrows(IllegalArgumentException.class,
+                () -> service.bindOntology("does-not-exist", "ont-1", 1));
+    }
+
+    @Test
+    void getGraphsByFactSheet_returnsOnlyMatchingScope() {
+        service.createGraph("A", null, null, 7L, null);
+        service.createGraph("B", null, null, 7L, null);
+        service.createGraph("Other", null, null, 99L, null);
+
+        List<NamedGraph> graphs = service.getGraphsByFactSheet(7L);
+
+        assertEquals(2, graphs.size());
+        assertTrue(graphs.stream().allMatch(g -> g.getFactSheetId() == 7L));
+    }
+
+    @Test
+    void getGraphsByFactSheet_nullReturnsEmpty() {
+        assertTrue(service.getGraphsByFactSheet(null).isEmpty());
+        verify(namedGraphRepository, never()).findByFactSheetId(anyLong());
     }
 }

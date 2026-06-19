@@ -139,11 +139,15 @@ Split into the reusable engine (A-1, `process-engine`) and the app-main bridge t
 - [x] **Conformance SPI** ✅ (2026-06-19) — `GraphConformanceChecker` + `GraphConformanceSummary` (`kompile-app-core`);
   `GraphOntologyBindingService` implements it. The dependency-inversion seam so the knowledge-graph layer can trigger
   conformance without seeing `OntologySchema` — the foundation the write-hook and B2's maintenance task both build on.
-- [ ] **Graph-level ontology binding field** — add `NamedGraph.ontologySchemaId`/`ontologyVersion` (+ a way to set it)
-  so a fact sheet's graph can be bound explicitly; `GraphOntologyBindingService.resolveExplicitGraphBinding` already has
-  the priority-1 hook waiting for it (currently returns empty → falls through to the process link).
+- [x] **Graph-level ontology binding field** ✅ (2026-06-19) — added `NamedGraph.ontologySchemaId`/`ontologyVersion`
+  (travels on `git clone` via `PortableNamedGraph`) + `NamedGraphService.bindOntology`/`getGraphsByFactSheet`.
+  `GraphOntologyBindingService.resolveExplicitGraphBinding` now reads them as the priority-1 binding (before the
+  process-link fallback), and `bindOntology(factSheetId, …)` (find-or-create the fact sheet's named graph) is exposed at
+  `PUT`/`DELETE /api/process/ontology/binding`. `GraphConformanceReport`/`Summary` now also carry a `conformanceScore`
+  (fraction conformant, 0..1) for the Phase-7 health series. Tests: binding-service 13, NamedGraphServiceImpl +5,
+  NamedGraphPortability round-trip +1; app-main builds with UI.
 - [ ] **Activate `NamedGraph.schemaJson`** — populate from the bound ontology; have `NamedGraphService` + write paths
-  consult it. (NamedGraph has no `ontologySchemaId` today — adding a real graph-level binding field is the clean fix.)
+  consult it. (The graph-level binding field above now exists; `schemaJson` content-population is the remaining half.)
 - [ ] **Ontology-driven `SchemaEnforcementMode`** — STRICT/LENIENT pull allowed node/edge/entity types from the bound
   ontology (today `GraphSchema` is label-names only). LENIENT tags violations; STRICT drops/coerces. Default LENIENT.
 - [ ] **Write-time validation hook** at the `KnowledgeGraphService` seam — call the now-existing

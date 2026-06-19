@@ -105,6 +105,22 @@ public class NamedGraph {
     private String schemaJson;
 
     /**
+     * Optional explicit binding to the governing {@code OntologySchema} (by its id). When set, this
+     * is the priority-1 source for resolving the ontology that validates this graph's nodes (see
+     * {@code GraphOntologyBindingService}); null means no explicit binding, and conformance falls
+     * back to the process-level link. Travels with a {@code git clone} via the portable projection.
+     */
+    @Column(length = 100)
+    private String ontologySchemaId;
+
+    /**
+     * Version of the bound {@code OntologySchema}; null resolves to the latest version of
+     * {@link #ontologySchemaId}.
+     */
+    @Column
+    private Integer ontologyVersion;
+
+    /**
      * Cached count of GraphNode entries associated with this named graph.
      */
     @Column

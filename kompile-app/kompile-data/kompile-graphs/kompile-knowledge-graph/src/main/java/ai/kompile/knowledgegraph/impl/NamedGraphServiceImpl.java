@@ -111,6 +111,29 @@ public class NamedGraphServiceImpl implements NamedGraphService {
 
     @Override
     @Transactional
+    public NamedGraph bindOntology(String graphId, String ontologySchemaId, Integer ontologyVersion) {
+        NamedGraph graph = requireGraph(graphId);
+        String normalized = (ontologySchemaId == null || ontologySchemaId.isBlank()) ? null : ontologySchemaId;
+        graph.setOntologySchemaId(normalized);
+        // A version without an ontology id is meaningless — clear it alongside.
+        graph.setOntologyVersion(normalized == null ? null : ontologyVersion);
+        NamedGraph saved = namedGraphRepository.save(graph);
+        log.debug("Bound ontology {} v{} to graph {}",
+            saved.getOntologySchemaId(), saved.getOntologyVersion(), graphId);
+        return saved;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<NamedGraph> getGraphsByFactSheet(Long factSheetId) {
+        if (factSheetId == null) {
+            return List.of();
+        }
+        return namedGraphRepository.findByFactSheetId(factSheetId);
+    }
+
+    @Override
+    @Transactional
     public void deleteGraph(String graphId) {
         NamedGraph graph = requireGraph(graphId);
         NamedGraph parent = graph.getParentGraph();

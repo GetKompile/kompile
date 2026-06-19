@@ -17,11 +17,17 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.ontology.GraphOntologyBindingService;
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
+import ai.kompile.knowledgegraph.domain.NamedGraph;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Surfaces ontology conformance of a fact sheet's knowledge graph: validates the graph's ENTITY
@@ -49,5 +55,34 @@ public class OntologyConformanceController {
     @GetMapping("/conformance")
     public ResponseEntity<GraphConformanceReport> checkConformance(@RequestParam Long factSheetId) {
         return ResponseEntity.ok(bindingService.checkConformance(factSheetId));
+    }
+
+    /**
+     * Bind a governing ontology to a fact sheet's graph (the priority-1 explicit binding). The next
+     * {@code /conformance} call validates against it. Creates a named-graph registry row for the fact
+     * sheet if none exists.
+     *
+     * @param factSheetId      the fact sheet whose graph to bind
+     * @param ontologySchemaId the ontology id to bind
+     * @param ontologyVersion  the ontology version, or omitted/null for the latest
+     */
+    @PutMapping("/binding")
+    public ResponseEntity<Map<String, Object>> bind(@RequestParam Long factSheetId,
+                                                     @RequestParam String ontologySchemaId,
+                                                     @RequestParam(required = false) Integer ontologyVersion) {
+        NamedGraph g = bindingService.bindOntology(factSheetId, ontologySchemaId, ontologyVersion);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("factSheetId", factSheetId);
+        body.put("graphId", g.getGraphId());
+        body.put("ontologySchemaId", g.getOntologySchemaId());
+        body.put("ontologyVersion", g.getOntologyVersion()); // null = latest
+        return ResponseEntity.ok(body);
+    }
+
+    /** Clear the explicit ontology binding on the fact sheet's graph. */
+    @DeleteMapping("/binding")
+    public ResponseEntity<Void> unbind(@RequestParam Long factSheetId) {
+        bindingService.unbindOntology(factSheetId);
+        return ResponseEntity.noContent().build();
     }
 }

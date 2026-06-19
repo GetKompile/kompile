@@ -63,7 +63,9 @@ public class NamedGraphPortability {
                     g.getSchemaJson(),
                     g.getMetadataJson(),
                     g.getFactSheetId(),
-                    g.getParentGraph() != null ? g.getParentGraph().getGraphId() : null));
+                    g.getParentGraph() != null ? g.getParentGraph().getGraphId() : null,
+                    g.getOntologySchemaId(),
+                    g.getOntologyVersion()));
         }
         try {
             return mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(portable);
@@ -103,6 +105,8 @@ public class NamedGraphPortability {
                     .schemaJson(p.schemaJson())
                     .metadataJson(p.metadataJson())
                     .factSheetId(p.factSheetId())
+                    .ontologySchemaId(p.ontologySchemaId())
+                    .ontologyVersion(p.ontologyVersion())
                     .build();
             repository.save(g);
             created++;

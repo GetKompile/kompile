@@ -13,6 +13,7 @@ import ai.kompile.knowledgegraph.domain.NamedGraph;
 import ai.kompile.knowledgegraph.repository.NamedGraphRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 import java.util.Optional;
@@ -71,6 +72,31 @@ class NamedGraphPortabilityTest {
 
         assertEquals(0, new NamedGraphPortability(repo2, mapper).importGraphs(data));
         verify(repo2, never()).save(any());
+    }
+
+    @Test
+    void binding_survivesRoundTrip() {
+        NamedGraphRepository srcRepo = mock(NamedGraphRepository.class);
+        NamedGraph g = NamedGraph.builder()
+                .graphId("g-bound").name("Bound").factSheetId(9L)
+                .ontologySchemaId("ont-7").ontologyVersion(3).build();
+        when(srcRepo.findAll()).thenReturn(List.of(g));
+
+        byte[] data = new NamedGraphPortability(srcRepo, mapper).export();
+        assertNotNull(data);
+
+        NamedGraphRepository dstRepo = mock(NamedGraphRepository.class);
+        when(dstRepo.existsByGraphId("g-bound")).thenReturn(false);
+
+        int created = new NamedGraphPortability(dstRepo, mapper).importGraphs(data);
+        assertEquals(1, created);
+
+        // The recreated row must carry the ontology binding — otherwise a clone loses governance.
+        ArgumentCaptor<NamedGraph> captor = ArgumentCaptor.forClass(NamedGraph.class);
+        verify(dstRepo).save(captor.capture());
+        NamedGraph imported = captor.getValue();
+        assertEquals("ont-7", imported.getOntologySchemaId());
+        assertEquals(3, imported.getOntologyVersion());
     }
 
     @Test

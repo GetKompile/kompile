@@ -18,8 +18,10 @@ package ai.kompile.app.ontology;
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
 import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.NamedGraph;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.service.NamedGraphService;
 import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.FieldDefinition;
 import ai.kompile.process.ontology.OntologySchema;
@@ -52,6 +54,7 @@ class GraphOntologyBindingServiceTest {
 
     @Mock private ProcessEngineService processEngineService;
     @Mock private KnowledgeGraphService knowledgeGraphService;
+    @Mock private NamedGraphService namedGraphService;
 
     private GraphOntologyBindingService service;
 
@@ -59,7 +62,12 @@ class GraphOntologyBindingServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new GraphOntologyBindingService(processEngineService, knowledgeGraphService);
+        service = new GraphOntologyBindingService(processEngineService, knowledgeGraphService, namedGraphService);
+    }
+
+    private NamedGraph boundGraph(String graphId, String ontologyId, Integer version) {
+        return NamedGraph.builder().graphId(graphId).name(graphId)
+                .ontologySchemaId(ontologyId).ontologyVersion(version).build();
     }
 
     private OntologySchema accountOntology() {
@@ -133,6 +141,7 @@ class GraphOntologyBindingServiceTest {
         assertEquals(1, report.unknownTypeCount());
         assertEquals(2, report.nonConformantCount());
         assertEquals(2, report.violations().size());
+        assertEquals(0.3333, report.conformanceScore(), 1e-9, "1 of 3 entities conform");
     }
 
     @Test
@@ -161,5 +170,101 @@ class GraphOntologyBindingServiceTest {
         assertEquals(1, summary.entitiesChecked());
         assertEquals(1, summary.unknownTypeCount());
         assertEquals(1, summary.nonConformantCount());
+        assertEquals(0.0, summary.conformanceScore(), 1e-9, "the only entity is non-conformant");
+    }
+
+    // ── explicit graph-level binding (priority 1) ──────────────────────────────────
+
+    @Test
+    void resolvesOntologyViaExplicitGraphBinding() {
+        when(namedGraphService.getGraphsByFactSheet(FS))
+                .thenReturn(List.of(boundGraph("g1", "ont-1", 2)));
+        when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
+
+        Optional<OntologySchema> resolved = service.resolveActiveOntology(FS);
+
+        assertTrue(resolved.isPresent());
+        assertEquals("ont-1", resolved.get().getId());
+        // Explicit binding short-circuits before the process-definition fallback is even consulted.
+        verify(processEngineService, never()).listProcessDefinitions();
+    }
+
+    @Test
+    void explicitGraphBindingTakesPriorityOverProcessLink() {
+        when(namedGraphService.getGraphsByFactSheet(FS))
+                .thenReturn(List.of(boundGraph("g1", "ont-explicit", 1)));
+        when(processEngineService.getOntology("ont-explicit", 1)).thenReturn(
+                OntologySchema.builder().id("ont-explicit").name("Explicit").version(1).build());
+
+        Optional<OntologySchema> resolved = service.resolveActiveOntology(FS);
+
+        assertTrue(resolved.isPresent());
+        assertEquals("ont-explicit", resolved.get().getId());
+        verify(processEngineService, never()).listProcessDefinitions();
+    }
+
+    @Test
+    void ignoresGraphsWithoutABindingAndFallsThroughToProcessLink() {
+        when(namedGraphService.getGraphsByFactSheet(FS))
+                .thenReturn(List.of(boundGraph("g1", null, null))); // graph exists but no ontology bound
+        when(processEngineService.listProcessDefinitions())
+                .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
+        when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
+
+        Optional<OntologySchema> resolved = service.resolveActiveOntology(FS);
+
+        assertTrue(resolved.isPresent());
+        assertEquals("ont-1", resolved.get().getId());
+    }
+
+    // ── bind / unbind management ───────────────────────────────────────────────────
+
+    @Test
+    void bindOntologyBindsTheExistingGraphForTheFactSheet() {
+        when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
+        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of(boundGraph("g1", null, null)));
+        when(namedGraphService.bindOntology("g1", "ont-1", 2)).thenReturn(boundGraph("g1", "ont-1", 2));
+
+        NamedGraph result = service.bindOntology(FS, "ont-1", 2);
+
+        assertEquals("ont-1", result.getOntologySchemaId());
+        verify(namedGraphService).bindOntology("g1", "ont-1", 2);
+        verify(namedGraphService, never()).createGraph(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void bindOntologyCreatesAGraphWhenTheFactSheetHasNone() {
+        when(processEngineService.getOntology("ont-1", 2)).thenReturn(accountOntology());
+        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of());
+        when(namedGraphService.createGraph(anyString(), anyString(), isNull(), eq(FS), anyString()))
+                .thenReturn(boundGraph("g-new", null, null));
+        when(namedGraphService.bindOntology("g-new", "ont-1", 2)).thenReturn(boundGraph("g-new", "ont-1", 2));
+
+        NamedGraph result = service.bindOntology(FS, "ont-1", 2);
+
+        assertEquals("g-new", result.getGraphId());
+        verify(namedGraphService).createGraph(anyString(), anyString(), isNull(), eq(FS), anyString());
+        verify(namedGraphService).bindOntology("g-new", "ont-1", 2);
+    }
+
+    @Test
+    void bindOntologyRejectsAnUnknownOntology() {
+        when(processEngineService.getOntology("ghost", 9)).thenReturn(null);
+
+        assertThrows(IllegalArgumentException.class, () -> service.bindOntology(FS, "ghost", 9));
+        verify(namedGraphService, never()).bindOntology(anyString(), any(), any());
+        verify(namedGraphService, never()).createGraph(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void unbindOntologyClearsBoundGraphsOnly() {
+        when(namedGraphService.getGraphsByFactSheet(FS)).thenReturn(List.of(
+                boundGraph("g1", "ont-1", 2),   // bound → cleared
+                boundGraph("g2", null, null))); // already unbound → left alone
+
+        service.unbindOntology(FS);
+
+        verify(namedGraphService).bindOntology("g1", null, null);
+        verify(namedGraphService, never()).bindOntology(eq("g2"), any(), any());
     }
 }

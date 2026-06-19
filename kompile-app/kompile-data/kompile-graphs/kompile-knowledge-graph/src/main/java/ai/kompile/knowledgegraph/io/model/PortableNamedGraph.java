@@ -15,7 +15,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * Portable form of a {@link ai.kompile.knowledgegraph.domain.NamedGraph} registry row.
  * Graph nodes only carry a {@code namedGraphId} string; without exporting these rows a
  * cloned project would lose each named graph's identity (name, description, ontologyType,
- * {@code schemaJson}) and parent/child hierarchy. Identity is preserved by {@code graphId}.
+ * {@code schemaJson}, its bound ontology) and parent/child hierarchy. Identity is preserved by
+ * {@code graphId}.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record PortableNamedGraph(
@@ -26,5 +27,7 @@ public record PortableNamedGraph(
         String schemaJson,
         String metadataJson,
         Long factSheetId,
-        String parentGraphId
+        String parentGraphId,
+        String ontologySchemaId,
+        Integer ontologyVersion
 ) {}

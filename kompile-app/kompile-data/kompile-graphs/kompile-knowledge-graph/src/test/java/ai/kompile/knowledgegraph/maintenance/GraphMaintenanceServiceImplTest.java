@@ -137,7 +137,7 @@ class GraphMaintenanceServiceImplTest {
     @Test
     void ontologyConformanceDelegatesToCheckerWhenWired() {
         GraphConformanceChecker checker = mock(GraphConformanceChecker.class);
-        GraphConformanceSummary summary = new GraphConformanceSummary(FS, true, "FPnA", 10, 1, 2, "ok");
+        GraphConformanceSummary summary = new GraphConformanceSummary(FS, true, "FPnA", 10, 1, 2, 0.8, "ok");
         when(conformanceCheckerProvider.getIfAvailable()).thenReturn(checker);
         when(checker.checkFactSheet(FS)).thenReturn(summary);
 

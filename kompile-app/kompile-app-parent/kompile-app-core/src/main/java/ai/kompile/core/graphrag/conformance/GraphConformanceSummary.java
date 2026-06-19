@@ -28,11 +28,13 @@ public record GraphConformanceSummary(
         int entitiesChecked,
         int unknownTypeCount,
         int nonConformantCount,
+        // Fraction (0..1) of checked entities that conform; null when nothing is bound/checked.
+        Double conformanceScore,
         String message
 ) {
     /** No ontology governs this fact sheet's graph; nothing was checked. */
     public static GraphConformanceSummary notBound(Long factSheetId) {
-        return new GraphConformanceSummary(factSheetId, false, null, 0, 0, 0,
+        return new GraphConformanceSummary(factSheetId, false, null, 0, 0, 0, null,
                 "No ontology is bound to this fact sheet.");
     }
 }
