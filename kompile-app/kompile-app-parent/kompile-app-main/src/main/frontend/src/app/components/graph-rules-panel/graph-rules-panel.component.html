@@ -1,0 +1,122 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  -->
+
+<div class="rules-panel">
+  <div class="toolbar">
+    <button mat-stroked-button (click)="refresh()" [disabled]="loading">
+      <mat-icon>refresh</mat-icon> Refresh
+    </button>
+    <button mat-raised-button color="primary" (click)="openCreate()">
+      <mat-icon>add</mat-icon> New rule
+    </button>
+    <mat-spinner *ngIf="loading" diameter="22"></mat-spinner>
+  </div>
+
+  <!-- Create form -->
+  <mat-card *ngIf="showCreate" class="create-card">
+    <mat-card-header><mat-card-title>New rule</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="form-row">
+        <mat-form-field appearance="outline" class="grow">
+          <mat-label>Name</mat-label>
+          <input matInput [(ngModel)]="draft.name" placeholder="e.g. alert on big crawl">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Trigger</mat-label>
+          <mat-select [(ngModel)]="draft.triggerType">
+            <mat-option value="CHANGESET">Changeset</mat-option>
+            <mat-option value="MUTATION">Per mutation</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+
+      <!-- CHANGESET conditions -->
+      <div class="form-row" *ngIf="draft.triggerType === 'CHANGESET'">
+        <mat-form-field appearance="outline">
+          <mat-label>Min nodes created</mat-label>
+          <input matInput type="number" [(ngModel)]="draft.minNodesCreated">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Min edges created</mat-label>
+          <input matInput type="number" [(ngModel)]="draft.minEdgesCreated">
+        </mat-form-field>
+      </div>
+
+      <!-- MUTATION conditions -->
+      <div class="form-row" *ngIf="draft.triggerType === 'MUTATION'">
+        <mat-form-field appearance="outline">
+          <mat-label>Mutation type</mat-label>
+          <mat-select [(ngModel)]="draft.onMutationType">
+            <mat-option [value]="null">any</mat-option>
+            <mat-option value="NODE_CREATED">NODE_CREATED</mat-option>
+            <mat-option value="NODE_UPDATED">NODE_UPDATED</mat-option>
+            <mat-option value="NODE_DELETED">NODE_DELETED</mat-option>
+            <mat-option value="EDGE_CREATED">EDGE_CREATED</mat-option>
+            <mat-option value="EDGE_UPDATED">EDGE_UPDATED</mat-option>
+            <mat-option value="EDGE_DELETED">EDGE_DELETED</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Entity kind</mat-label>
+          <mat-select [(ngModel)]="draft.onEntityKind">
+            <mat-option [value]="null">any</mat-option>
+            <mat-option value="NODE">NODE</mat-option>
+            <mat-option value="EDGE">EDGE</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Entity type</mat-label>
+          <input matInput [(ngModel)]="draft.onEntityType" placeholder="e.g. PERSON (optional)">
+        </mat-form-field>
+      </div>
+
+      <!-- Action -->
+      <div class="form-row">
+        <mat-form-field appearance="outline">
+          <mat-label>Action</mat-label>
+          <mat-select [(ngModel)]="draft.actionType">
+            <mat-option value="LOG">Log</mat-option>
+            <mat-option value="WEBHOOK">Webhook</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="grow" *ngIf="draft.actionType === 'WEBHOOK'">
+          <mat-label>Webhook URL</mat-label>
+          <input matInput [(ngModel)]="draft.actionTarget" placeholder="https://…">
+        </mat-form-field>
+      </div>
+
+      <div class="form-actions">
+        <button mat-button (click)="showCreate = false">Cancel</button>
+        <button mat-raised-button color="primary" (click)="create()" [disabled]="!draft.name?.trim()">Create</button>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Rules list -->
+  <div *ngIf="rules.length === 0 && !loading" class="empty-state">
+    <mat-icon>rule</mat-icon>
+    <p>No graph rules yet. Create one to react to graph changes with a log entry or webhook.</p>
+  </div>
+
+  <table class="rules-table" *ngIf="rules.length > 0">
+    <thead>
+      <tr><th>Enabled</th><th>Name</th><th>Trigger</th><th>Condition</th><th>Action</th><th>Scope</th><th></th></tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let r of rules">
+        <td><mat-slide-toggle [checked]="!!r.enabled" (change)="toggle(r)"></mat-slide-toggle></td>
+        <td>{{ r.name }}</td>
+        <td><span class="chip">{{ r.triggerType || 'CHANGESET' }}</span></td>
+        <td>{{ condition(r) }}</td>
+        <td>
+          {{ r.actionType }}
+          <span class="target" *ngIf="r.actionType === 'WEBHOOK' && r.actionTarget" [matTooltip]="r.actionTarget">↗</span>
+        </td>
+        <td>{{ r.factSheetId != null ? ('fs #' + r.factSheetId) : 'all' }}</td>
+        <td><button mat-icon-button color="warn" (click)="remove(r)" matTooltip="Delete"><mat-icon>delete</mat-icon></button></td>
+      </tr>
+    </tbody>
+  </table>
+</div>

@@ -22,6 +22,10 @@
       <mat-icon class="tab-icon">build</mat-icon>
       <span class="tab-label">Maintenance</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'rules'" (click)="selectSubTab('rules')">
+      <mat-icon class="tab-icon">rule</mat-icon>
+      <span class="tab-label">Rules</span>
+    </button>
   </div>
 
   <div class="sub-tab-content">
@@ -33,6 +37,9 @@
     </div>
     <div *ngIf="activeSubTab === 'maintenance'">
       <app-graph-maintenance-hub [factSheetId]="activeFactSheetId"></app-graph-maintenance-hub>
+    </div>
+    <div *ngIf="activeSubTab === 'rules'">
+      <app-graph-rules-panel [factSheetId]="activeFactSheetId"></app-graph-rules-panel>
     </div>
   </div>
 </div>

@@ -23,8 +23,9 @@ import { FactSheetService } from '../../services/fact-sheet.service';
 import { GraphOverviewComponent } from '../graph-overview/graph-overview.component';
 import { GraphMaintenanceHubComponent } from '../graph-maintenance-hub/graph-maintenance-hub.component';
 import { GraphHealthPanelComponent } from '../graph-health-panel/graph-health-panel.component';
+import { GraphRulesPanelComponent } from '../graph-rules-panel/graph-rules-panel.component';
 
-type GraphsTab = 'overview' | 'health' | 'maintenance';
+type GraphsTab = 'overview' | 'health' | 'maintenance' | 'rules';
 
 /**
  * Top-level "Graphs" workspace — a first-class home for managing knowledge graphs as assets. Wires
@@ -39,7 +40,8 @@ type GraphsTab = 'overview' | 'health' | 'maintenance';
     MatIconModule,
     GraphOverviewComponent,
     GraphMaintenanceHubComponent,
-    GraphHealthPanelComponent
+    GraphHealthPanelComponent,
+    GraphRulesPanelComponent
   ],
   templateUrl: './graphs-hub.component.html',
   styleUrls: ['./graphs-hub.component.css']
