@@ -176,8 +176,11 @@ public class ConfigDrivenGraphUpdateHook implements GraphUpdateHook {
 
         MergedGraphResult result = extractionService.runExtraction(
                 List.of(doc), agentIds, mergeStrategy, RelationExtractionAgent.ExtractionConfig.defaults());
+        // Dedup across messages by default so a recurring entity maps to one node (step param
+        // "dedup": false disables it).
+        boolean dedup = !Boolean.FALSE.equals(params.get("dedup"));
         MultiAgentExtractionService.PersistenceSummary summary =
-                extractionService.persistToGraph(result, graphService, factSheetId);
+                extractionService.persistToGraph(result, graphService, factSheetId, dedup);
 
         log.info("EXTRACT_GRAPH: pipeline {} extracted {} entities + {} edges from {} message {}",
                 context.getPipelineConfig().getPipelineId(),

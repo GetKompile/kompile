@@ -55,7 +55,7 @@ class ConfigDrivenGraphUpdateHookTest {
 
     @Test
     void extractGraphStep_runsExtractionOnMessage_persistsToTargetFactSheet() {
-        when(extractionService.persistToGraph(any(), any(), any()))
+        when(extractionService.persistToGraph(any(), any(), any(), eq(true)))
                 .thenReturn(new MultiAgentExtractionService.PersistenceSummary(2, 0, 1, 0, List.of()));
 
         GraphUpdatePipelineConfig config = GraphUpdatePipelineConfig.builder()
@@ -70,8 +70,8 @@ class ConfigDrivenGraphUpdateHookTest {
         verify(extractionService).runExtraction(
                 argThat(docs -> docs.size() == 1 && docs.get(0).getText().contains("Acme")),
                 any(), eq("UNION"), any());
-        // Persisted via the shared service, scoped to the pipeline's target fact sheet.
-        verify(extractionService).persistToGraph(any(), eq(graphService), eq(42L));
+        // Persisted via the shared service, scoped to the pipeline's target fact sheet, dedup on.
+        verify(extractionService).persistToGraph(any(), eq(graphService), eq(42L), eq(true));
     }
 
     @Test

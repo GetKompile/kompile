@@ -301,6 +301,46 @@ class MultiAgentExtractionServiceTest {
     }
 
     @Test
+    void persistWithDedup_reusesExistingEntityByNormalizedName() {
+        Entity acme = entity("x1", "Acme Corp", "ORGANIZATION");
+        Graph graph = new Graph();
+        graph.setEntities(List.of(acme));
+        graph.setRelationships(List.of());
+        MergedGraphResult result = buildMergedResult(graph, "UNION");
+
+        // A node with the normalized-name external id already exists in the fact sheet.
+        when(graphService.getNodeByExternalIdInFactSheet(eq("entity:acme corp"), eq(NodeLevel.ENTITY), eq(42L)))
+                .thenReturn(java.util.Optional.of(GraphNode.builder().nodeId("existing-acme").build()));
+
+        MultiAgentExtractionService.PersistenceSummary summary =
+                service.persistToGraph(result, graphService, 42L, true);
+
+        assertEquals(0, summary.entitiesCreated());
+        verify(graphService, never()).createNode(any(), anyString(), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void persistWithDedup_createsWhenAbsentUsingNormalizedNameKey() {
+        Entity acme = entity("x1", "Acme Corp", "ORGANIZATION");
+        Graph graph = new Graph();
+        graph.setEntities(List.of(acme));
+        graph.setRelationships(List.of());
+        MergedGraphResult result = buildMergedResult(graph, "UNION");
+
+        when(graphService.getNodeByExternalIdInFactSheet(anyString(), any(), eq(42L)))
+                .thenReturn(java.util.Optional.empty());
+        when(graphService.createNode(any(), eq("entity:acme corp"), anyString(), any(), any(), eq(42L)))
+                .thenReturn(GraphNode.builder().nodeId("new-acme").build());
+
+        MultiAgentExtractionService.PersistenceSummary summary =
+                service.persistToGraph(result, graphService, 42L, true);
+
+        assertEquals(1, summary.entitiesCreated());
+        // Keyed by normalized name, not the extraction id "x1".
+        verify(graphService).createNode(eq(NodeLevel.ENTITY), eq("entity:acme corp"), anyString(), any(), any(), eq(42L));
+    }
+
+    @Test
     void agentInfoRecordHasCorrectFields() {
         RelationExtractionAgent a = stubAgent("my-agent", List.of(), List.of());
         service = new MultiAgentExtractionService(List.of(a));

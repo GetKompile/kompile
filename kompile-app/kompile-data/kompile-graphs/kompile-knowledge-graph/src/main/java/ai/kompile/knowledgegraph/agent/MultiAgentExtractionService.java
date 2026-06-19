@@ -146,6 +146,22 @@ public class MultiAgentExtractionService {
             MergedGraphResult result,
             KnowledgeGraphService graphService,
             Long factSheetId) {
+        return persistToGraph(result, graphService, factSheetId, false);
+    }
+
+    /**
+     * Persist with optional cross-call dedup. When {@code dedupByName} is true, entities are
+     * keyed by their normalized name within the fact sheet, and an existing matching node is
+     * <em>reused</em> rather than duplicated; duplicate edges (same endpoints in the fact sheet)
+     * are skipped. This makes incremental updates idempotent across calls — e.g. the same entity
+     * mentioned in two channel messages maps to one node. When false, behavior is unchanged
+     * (one node per extracted entity, keyed by the extraction's id).
+     */
+    public PersistenceSummary persistToGraph(
+            MergedGraphResult result,
+            KnowledgeGraphService graphService,
+            Long factSheetId,
+            boolean dedupByName) {
 
         if (result == null || result.mergedGraph() == null) {
             return new PersistenceSummary(0, 0, 0, 0, List.of());
@@ -178,14 +194,29 @@ public class MultiAgentExtractionService {
                         metadata.put("factSheetId", factSheetId.toString());
                     }
 
-                    String externalId = "entity:" + entity.getId();
+                    String title = entity.getTitle() != null ? entity.getTitle() : entity.getId();
+                    // In dedup mode key by normalized name so the same entity across calls maps to
+                    // one node; otherwise key by the extraction's (per-run) id.
+                    String externalId = dedupByName
+                            ? "entity:" + normalizeKey(title)
+                            : "entity:" + entity.getId();
+
+                    GraphNode existing = (dedupByName && factSheetId != null)
+                            ? graphService.getNodeByExternalIdInFactSheet(externalId, NodeLevel.ENTITY, factSheetId).orElse(null)
+                            : null;
+                    if (existing != null) {
+                        // Reuse the existing entity node (cross-call dedup); don't create a duplicate.
+                        entityIdToNodeId.put(entity.getId(), existing.getNodeId());
+                        continue;
+                    }
+
                     // Scope the node to the fact sheet on the JPA entity (not only in metadata) so it
                     // appears in per-fact-sheet queries and travels via per-fact-sheet portability export.
                     // The 6-arg overload no-ops to the 5-arg form when factSheetId is null.
                     GraphNode node = graphService.createNode(
                             NodeLevel.ENTITY,
                             externalId,
-                            entity.getTitle() != null ? entity.getTitle() : entity.getId(),
+                            title,
                             entity.getDescription(),
                             metadata,
                             factSheetId
@@ -216,6 +247,12 @@ public class MultiAgentExtractionService {
                 }
 
                 try {
+                    if (dedupByName && factSheetId != null
+                            && graphService.edgeExistsInFactSheet(sourceNodeId, targetNodeId, factSheetId)) {
+                        // Edge between these entities already exists in this fact sheet — don't duplicate.
+                        edgesSkipped++;
+                        continue;
+                    }
                     String description = buildEdgeDescription(rel);
                     graphService.createEdge(
                             sourceNodeId,
@@ -236,8 +273,8 @@ public class MultiAgentExtractionService {
             }
         }
 
-        log.info("Persisted merged graph: {} entities created, {} skipped; {} edges created, {} skipped",
-                entitiesCreated, entitiesSkipped, edgesCreated, edgesSkipped);
+        log.info("Persisted merged graph (dedup={}): {} entities created, {} skipped; {} edges created, {} skipped",
+                dedupByName, entitiesCreated, entitiesSkipped, edgesCreated, edgesSkipped);
 
         return new PersistenceSummary(entitiesCreated, entitiesSkipped, edgesCreated, edgesSkipped, errors);
     }
@@ -285,6 +322,14 @@ public class MultiAgentExtractionService {
             sb.append(rel.getDescription());
         }
         return sb.isEmpty() ? null : sb.toString();
+    }
+
+    /** Normalized dedup key for an entity name (trim + lowercase + collapse whitespace). */
+    private static String normalizeKey(String name) {
+        if (name == null) {
+            return "";
+        }
+        return name.trim().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
