@@ -50,11 +50,13 @@ import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
+import org.springframework.context.event.EventListener;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -93,8 +95,8 @@ class UnifiedCrawlGraphServiceImplTest {
 
     /** Captures published {@link CrawlProgressEvent}s so tests can assert the SSE pipeline is actually fed. */
     static class CrawlProgressEventCollector {
-        final List<CrawlProgressEvent> events = new java.util.concurrent.CopyOnWriteArrayList<>();
-        @org.springframework.context.event.EventListener
+        final List<CrawlProgressEvent> events = new CopyOnWriteArrayList<>();
+        @EventListener
         void onCrawlProgressEvent(CrawlProgressEvent event) { events.add(event); }
     }
 

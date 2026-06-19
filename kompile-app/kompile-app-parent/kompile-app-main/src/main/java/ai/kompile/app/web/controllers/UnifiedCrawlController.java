@@ -41,6 +41,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -1131,6 +1132,35 @@ public class UnifiedCrawlController {
             } catch (Exception e) {
                 log.warn("Failed to sync crawl job {} to history: {}", jobId, e.getMessage(), e);
             }
+        }
+    }
+
+    /**
+     * Flush a crawl's history the instant it reaches a terminal state, instead of waiting up to 15s for
+     * the next scheduled sync. This closes the window where a JVM crash right after a crawl completes
+     * would otherwise leave its history row marked RUNNING (→ FAILED on restart) with a stale per-step
+     * snapshot — so the persisted per-step state and terminal status stay correct across a restart.
+     * Reuses the scheduled per-job sync; the {@code CrawlProgressEvent} publish in the crawl service is
+     * already guarded, so a slow/failing flush here cannot break the crawl.
+     */
+    @EventListener
+    public void flushHistoryOnTerminalCrawlEvent(CrawlProgressEvent event) {
+        if (jobHistoryService == null || event == null) {
+            return;
+        }
+        CrawlProgressEvent.EventType type = event.getEventType();
+        boolean terminal = type == CrawlProgressEvent.EventType.COMPLETED
+                || type == CrawlProgressEvent.EventType.ERROR
+                || type == CrawlProgressEvent.EventType.CANCELLED;
+        if (!terminal) {
+            return;
+        }
+        try {
+            // The terminal job is still in publishedJobIds; the existing sync persists its final snapshot
+            // (incl. per-step state) and marks the terminal status now rather than up to 15s later.
+            syncCrawlJobsToHistory();
+        } catch (Exception e) {
+            log.debug("Immediate terminal history flush failed for {}: {}", event.getJobId(), e.getMessage());
         }
     }
 

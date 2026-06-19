@@ -39,6 +39,7 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import java.io.IOException;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
@@ -695,7 +696,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     public Map<String, Object> updateCrawlRuntimeConfig(Map<String, Object> updates) {
         try {
             return runtimeConfigManager.updateCrawlRuntimeConfig(updates);
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             throw new IllegalStateException("Failed to persist crawl runtime config: " + e.getMessage(), e);
         }
     }

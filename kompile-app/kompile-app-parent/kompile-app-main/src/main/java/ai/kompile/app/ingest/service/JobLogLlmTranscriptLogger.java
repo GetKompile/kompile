@@ -20,6 +20,7 @@ import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.app.ingest.domain.JobLogEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
@@ -46,7 +47,7 @@ public class JobLogLlmTranscriptLogger implements LlmTranscriptLogger {
 
     public JobLogLlmTranscriptLogger(
             JobLogService jobLogService,
-            @org.springframework.beans.factory.annotation.Value("${kompile.ingest.transcript.max-chars:65536}") int maxTranscriptChars) {
+            @Value("${kompile.ingest.transcript.max-chars:65536}") int maxTranscriptChars) {
         this.jobLogService = jobLogService;
         this.maxTranscriptChars = maxTranscriptChars;
     }
