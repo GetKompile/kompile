@@ -34,6 +34,7 @@ import { GraphNodePopoverComponent } from './graph-node-popover.component';
 import { ExcelArtifactComponent } from './excel-artifact.component';
 import { ProcessDiagramComponent } from './process-diagram.component';
 import { ProcessDiscoverySuggestionsComponent } from './process-discovery-suggestions.component';
+import { ProcessMiningComponent } from './process-mining.component';
 
 @Component({
   standalone: true,
@@ -51,7 +52,8 @@ import { ProcessDiscoverySuggestionsComponent } from './process-discovery-sugges
     GraphNodePopoverComponent,
     ExcelArtifactComponent,
     ProcessDiagramComponent,
-    ProcessDiscoverySuggestionsComponent
+    ProcessDiscoverySuggestionsComponent,
+    ProcessMiningComponent
   ],
   template: `
     <div class="dashboard-container">
@@ -107,6 +109,17 @@ import { ProcessDiscoverySuggestionsComponent } from './process-discovery-sugges
           </ng-template>
           <div class="tab-content">
             <app-process-discovery-suggestions></app-process-discovery-suggestions>
+          </div>
+        </mat-tab>
+
+        <!-- Mining Tab (LLM-free process derivation) -->
+        <mat-tab>
+          <ng-template mat-tab-label>
+            <mat-icon class="tab-icon">insights</mat-icon>
+            Mining
+          </ng-template>
+          <div class="tab-content">
+            <app-process-mining></app-process-mining>
           </div>
         </mat-tab>
 
