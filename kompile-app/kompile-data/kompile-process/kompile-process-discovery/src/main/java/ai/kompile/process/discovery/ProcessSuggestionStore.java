@@ -50,6 +50,12 @@ public class ProcessSuggestionStore {
         loadFromDisk();
     }
 
+    /** Seam for tests/embedding: use an explicit storage directory (e.g. an isolated temp dir). */
+    public ProcessSuggestionStore(Path storageDir) {
+        this.storageDir = storageDir;
+        loadFromDisk();
+    }
+
     /**
      * Persists a suggestion. If the suggestion has no {@code id}, one is generated.
      * If it has no {@code discoveredAt}, the current instant is set.

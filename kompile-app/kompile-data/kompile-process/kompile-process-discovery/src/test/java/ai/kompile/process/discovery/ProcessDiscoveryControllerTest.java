@@ -22,10 +22,12 @@ import ai.kompile.process.workflow.ProcessStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.ResponseEntity;
 
+import java.nio.file.Path;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -37,6 +39,9 @@ import static org.mockito.Mockito.*;
  */
 @ExtendWith(MockitoExtension.class)
 class ProcessDiscoveryControllerTest {
+
+    @TempDir
+    Path tempDir;
 
     @Mock
     private ProcessDiscoveryService discoveryService;
@@ -292,7 +297,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void listSuggestions_returnsAllStoredSuggestions() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         store.save(buildTestSuggestion("s-list-1", "Flow A"));
         store.save(buildTestSuggestion("s-list-2", "Flow B"));
 
@@ -311,7 +316,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void listSuggestions_byFactSheet_returnsOnlyMatchingSuggestions() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         ProcessSuggestion s1 = buildTestSuggestion("s-fs-42", "Flow FS42");
         s1.setFactSheetId(42L);
         ProcessSuggestion s2 = buildTestSuggestion("s-fs-99", "Flow FS99");
@@ -334,7 +339,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void listSuggestions_pendingOnly_excludesAccepted() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         store.save(buildTestSuggestion("s-pending-1", "Pending Flow"));
         store.save(buildTestSuggestion("s-accepted-1", "Accepted Flow"));
         store.markAccepted("s-accepted-1", "proc-def-999");
@@ -365,7 +370,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void getSuggestion_returnsCorrectSuggestion() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         store.save(buildTestSuggestion("s-get-me", "Get Test Flow"));
 
         ProcessDiscoveryController c = controllerWithStore(store);
@@ -381,7 +386,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void getSuggestion_notFound_returns404() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         ProcessDiscoveryController c = controllerWithStore(store);
 
         ResponseEntity<ProcessSuggestion> response = c.getSuggestion("nonexistent-id");
@@ -391,7 +396,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void getSuggestion_includesBayesianPosteriorsAndStructuredEvidence() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         store.save(buildTestSuggestion("s-bayes-check", "Bayesian Flow"));
 
         ProcessDiscoveryController c = controllerWithStore(store);
@@ -419,7 +424,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void acceptStoredSuggestion_notFound_returns404() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         ProcessDiscoveryController c = controllerWithStore(store);
 
         ResponseEntity<ProcessDefinition> response = c.acceptStoredSuggestion("nonexistent-id");
@@ -429,7 +434,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void acceptStoredSuggestion_convertsToProcessDefinitionAndMarksAccepted() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         store.save(buildTestSuggestion("s-accept-stored-1", "Stored Flow"));
 
         ProcessDefinition definition = ProcessDefinition.builder()
@@ -472,7 +477,7 @@ class ProcessDiscoveryControllerTest {
 
     @Test
     void deleteSuggestion_removesFromStore() {
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         store.save(buildTestSuggestion("s-delete-me-1", "Delete Me Flow"));
 
         assertTrue(store.get("s-delete-me-1").isPresent(), "Suggestion must exist before delete");
@@ -489,7 +494,7 @@ class ProcessDiscoveryControllerTest {
     void deleteSuggestion_nonExistentId_returnsNoContent() {
         // Per the controller: delete() on the store is always called; store silently ignores
         // unknown IDs. The controller always returns 204 after calling store.delete().
-        ProcessSuggestionStore store = new ProcessSuggestionStore();
+        ProcessSuggestionStore store = new ProcessSuggestionStore(tempDir.resolve("suggestions"));
         ProcessDiscoveryController c = controllerWithStore(store);
 
         ResponseEntity<Void> response = c.deleteSuggestion("nonexistent-id");
