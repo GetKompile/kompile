@@ -64,7 +64,22 @@ public class MiningProcessDiscoveryService {
 
     private KnowledgeGraphService graph;
     private ProcessSuggestionStore suggestionStore;
-    private final EventLogExtractor extractor = new EventLogExtractor();
+    private EventLogExtractor extractor = new EventLogExtractor();
+
+    /** Optional object-centric case notion: when set, each entity of this type anchors a process instance. */
+    @org.springframework.beans.factory.annotation.Value("${kompile.process.mining.anchor-type:}")
+    private String anchorEntityType;
+
+    /** Switches the extractor to anchor-based correlation when an anchor type is configured. */
+    @jakarta.annotation.PostConstruct
+    void configureCaseNotion() {
+        if (anchorEntityType != null && !anchorEntityType.isBlank()) {
+            this.extractor = new EventLogExtractor(
+                    ai.kompile.process.discovery.mining.extract.ActivityClassifier.byEntityType(),
+                    new ai.kompile.process.discovery.mining.extract.AnchorTypeCorrelation(anchorEntityType),
+                    EventLogExtractor.DEFAULT_EXCLUDED_LEVELS);
+        }
+    }
 
     @Autowired
     public MiningProcessDiscoveryService(KnowledgeGraphService graph) {
