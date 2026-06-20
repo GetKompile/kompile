@@ -86,7 +86,7 @@ import {
         causal, PSL, and Bayesian engines.
       </p>
 
-      <mat-tab-group *ngIf="preview" class="mining-tabs" animationDuration="150ms">
+      <mat-tab-group *ngIf="preview || discovered" class="mining-tabs" animationDuration="150ms">
         <!-- Process map -->
         <mat-tab label="Process map">
           <app-mermaid-renderer [code]="dfgMermaid"></app-mermaid-renderer>
@@ -95,7 +95,7 @@ import {
         <!-- Process tree -->
         <mat-tab label="Process tree">
           <app-mermaid-renderer [code]="treeMermaid"></app-mermaid-renderer>
-          <pre class="tree-text">{{ preview.processTree }}</pre>
+          <pre class="tree-text" *ngIf="preview">{{ preview.processTree }}</pre>
         </mat-tab>
 
         <!-- Causal -->
@@ -180,6 +180,29 @@ import {
             </div>
           </div>
         </mat-tab>
+
+        <!-- Discovered process: the phases → steps that become a ProcessDefinition -->
+        <mat-tab label="Process">
+          <div class="panel">
+            <p class="hint" *ngIf="!discovered">
+              Press <b>Discover &amp; save</b> to generate the executable process (phases → steps).
+            </p>
+            <div *ngIf="discovered">
+              <h4>{{ discovered.name }}
+                <span class="conf-label">confidence {{ pct(discovered.confidence) }}</span></h4>
+              <p class="hint">{{ discovered.description }}</p>
+              <div class="phase" *ngFor="let phase of discovered.phases; let i = index">
+                <div class="phase-head">{{ i + 1 }}. {{ phase.name }}</div>
+                <div class="steps">
+                  <span class="step" *ngFor="let s of phase.steps">
+                    <mat-icon class="step-icon">{{ stepIcon(s.stepType) }}</mat-icon>{{ s.name }}
+                    <em class="step-type">{{ s.stepType }}</em>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </mat-tab>
       </mat-tab-group>
     </div>
   `,
@@ -204,6 +227,14 @@ import {
     @media (max-width: 800px) { .inference-grid { grid-template-columns: 1fr; } }
     .bar { width: 140px; height: 10px; background: rgba(0,0,0,0.08); border-radius: 5px; overflow: hidden; }
     .fill { height: 100%; } .fill.psl { background: #1565c0; } .fill.bayes { background: #6a1b9a; }
+    .conf-label { font-size: 12px; color: #2e7d32; margin-left: 8px; font-weight: 500; }
+    .phase { margin: 12px 0; }
+    .phase-head { font-weight: 600; margin-bottom: 6px; }
+    .steps { display: flex; flex-wrap: wrap; gap: 8px; padding-left: 14px; }
+    .step { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px;
+      background: rgba(21,101,192,0.08); font-size: 13px; }
+    .step-icon { font-size: 16px; width: 16px; height: 16px; }
+    .step-type { color: #888; font-size: 11px; font-style: normal; }
   `]
 })
 export class ProcessMiningComponent {
@@ -274,6 +305,17 @@ export class ProcessMiningComponent {
 
   pct(n: number): string {
     return Math.round((n ?? 0) * 100) + '%';
+  }
+
+  stepIcon(type: string): string {
+    switch (type) {
+      case 'APPROVE': return 'verified';
+      case 'HUMAN': return 'person';
+      case 'TOOL_CALL': return 'build';
+      case 'HTTP_CALL': return 'http';
+      case 'EXCEL_COMPUTE': return 'table_chart';
+      default: return 'bolt';
+    }
   }
 
   private fail(err: any): void {
