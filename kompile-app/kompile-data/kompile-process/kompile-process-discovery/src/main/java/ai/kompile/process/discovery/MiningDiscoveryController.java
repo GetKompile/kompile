@@ -18,6 +18,7 @@ package ai.kompile.process.discovery;
 
 import ai.kompile.process.discovery.mining.MiningProcessDiscoveryService;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
+import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -68,5 +70,16 @@ public class MiningDiscoveryController {
     @GetMapping("/causal")
     public ProcessCausalAnalyzer.ProcessCausalModel causal(@RequestParam Long factSheetId) {
         return miningService.causalAnalysis(factSheetId);
+    }
+
+    /**
+     * Run the project's HL-MRF engine over the discovered process: {@code Link} atoms carry the
+     * directly-follows dependency strengths, optional {@code evidence} activities are clamped active.
+     */
+    @GetMapping("/psl")
+    public ProcessPslInference.Result psl(
+            @RequestParam Long factSheetId,
+            @RequestParam(required = false) List<String> evidence) {
+        return miningService.pslInference(factSheetId, evidence);
     }
 }

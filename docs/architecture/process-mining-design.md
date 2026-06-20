@@ -199,7 +199,10 @@ flag (`kompile.process.discovery.engine = mining | heuristic | both`), so nothin
   (Heuristics dependency + χ² independence test), `ProcessCausalAnalyzer` classifies each
   directly‑follows relation into the attribution `CausalEdgeType` (CAUSES/TRIGGERS vs CORRELATES_WITH,
   with evidence not keywords) and emits weighted Declare→PSL rules **validated against the real
-  `PslRule` engine**; exposed at `GET /api/process/mining/causal`. Remaining (cross‑module /
+  `PslRule` engine**; exposed at `GET /api/process/mining/causal`. **Live PSL inference wired** —
+  `ProcessPslInference` builds a real `PslProgram` (directly-follows dependency strengths become `Link`
+  truths) and runs the project's `HlMrfMapInference`, so the discovered process drives HL-MRF inference;
+  `GET /api/process/mining/psl`. Remaining (cross‑module /
   matrix‑store, riskier): feed the dependency strengths into the live noisy‑OR CPTs +
   `KgPslProgramBuilder`; process‑tree → BN independence skeleton; materialize `PRECEDES` edges via
   `GraphEdge.relationType`.

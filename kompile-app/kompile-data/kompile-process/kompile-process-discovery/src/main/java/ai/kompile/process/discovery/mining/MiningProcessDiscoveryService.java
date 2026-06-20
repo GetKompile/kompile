@@ -20,6 +20,7 @@ import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.discovery.ProcessSuggestion;
 import ai.kompile.process.discovery.ProcessSuggestionStore;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
+import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
 import ai.kompile.process.discovery.mining.convert.ProcessTreeToSuggestion;
 import ai.kompile.process.discovery.mining.dfg.DfgBuilder;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
@@ -128,5 +129,15 @@ public class MiningProcessDiscoveryService {
      */
     public ProcessCausalAnalyzer.ProcessCausalModel causalAnalysis(Long factSheetId) {
         return ProcessCausalAnalyzer.analyze(extractor.extractForFactSheet(graph, factSheetId));
+    }
+
+    /**
+     * Live PSL inference driven by the discovered process: builds an HL-MRF program over the activities
+     * with the directly-follows dependency strengths as {@code Link} truths and runs the existing engine.
+     * Optionally clamp some activities as observed-active evidence.
+     */
+    public ProcessPslInference.Result pslInference(Long factSheetId, java.util.Collection<String> evidenceActive) {
+        DirectlyFollowsGraph dfg = DfgBuilder.build(extractor.extractForFactSheet(graph, factSheetId));
+        return ProcessPslInference.infer(dfg, evidenceActive);
     }
 }
