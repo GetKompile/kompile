@@ -53,13 +53,15 @@ public class MiningDiscoveryController {
     /**
      * Mine a sound, block-structured process from a fact sheet's graph and persist it as a suggestion.
      *
-     * @param noise 0 = classic Inductive Miner; 0&lt;t≤1 = IMf infrequent-behaviour filter
+     * @param noise      0 = classic Inductive Miner; 0&lt;t≤1 = IMf infrequent-behaviour filter
+     * @param anchorType optional object-centric case notion (e.g. "ORDER"); overrides the service-level config
      */
     @GetMapping("/discover")
     public ResponseEntity<ProcessSuggestion> discover(
             @RequestParam Long factSheetId,
-            @RequestParam(defaultValue = "0.0") double noise) {
-        ProcessSuggestion suggestion = miningService.discoverForFactSheet(factSheetId, noise);
+            @RequestParam(defaultValue = "0.0") double noise,
+            @RequestParam(required = false) String anchorType) {
+        ProcessSuggestion suggestion = miningService.discoverForFactSheet(factSheetId, noise, anchorType);
         return suggestion == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(suggestion);
     }
 
@@ -67,14 +69,17 @@ public class MiningDiscoveryController {
     @GetMapping("/preview")
     public Map<String, Object> preview(
             @RequestParam Long factSheetId,
-            @RequestParam(defaultValue = "0.0") double noise) {
-        return miningService.preview(factSheetId, noise);
+            @RequestParam(defaultValue = "0.0") double noise,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.preview(factSheetId, noise, anchorType);
     }
 
     /** The causal coupling: χ²-tested directly-follows dependencies (typed) plus generated PSL rules. */
     @GetMapping("/causal")
-    public ProcessCausalAnalyzer.ProcessCausalModel causal(@RequestParam Long factSheetId) {
-        return miningService.causalAnalysis(factSheetId);
+    public ProcessCausalAnalyzer.ProcessCausalModel causal(
+            @RequestParam Long factSheetId,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.causalAnalysis(factSheetId, anchorType);
     }
 
     /**
@@ -84,16 +89,18 @@ public class MiningDiscoveryController {
     @GetMapping("/psl")
     public ProcessPslInference.Result psl(
             @RequestParam Long factSheetId,
-            @RequestParam(required = false) List<String> evidence) {
-        return miningService.pslInference(factSheetId, evidence);
+            @RequestParam(required = false) List<String> evidence,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.pslInference(factSheetId, evidence, anchorType);
     }
 
     /** Run exact Bayesian inference (noisy-OR + variable elimination) over the discovered process. */
     @GetMapping("/bayesian")
     public ProcessBayesianInference.Result bayesian(
             @RequestParam Long factSheetId,
-            @RequestParam(required = false) List<String> evidence) {
-        return miningService.bayesianInference(factSheetId, evidence);
+            @RequestParam(required = false) List<String> evidence,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.bayesianInference(factSheetId, evidence, anchorType);
     }
 
     /** Declarative constraints (Response/Precedence/ChainResponse/NotCoExistence/Init/End) of the process. */
@@ -101,24 +108,27 @@ public class MiningDiscoveryController {
     public List<DeclareConstraint> declare(
             @RequestParam Long factSheetId,
             @RequestParam(defaultValue = "0.1") double minSupport,
-            @RequestParam(defaultValue = "0.9") double minConfidence) {
-        return miningService.declareConstraints(factSheetId, minSupport, minConfidence);
+            @RequestParam(defaultValue = "0.9") double minConfidence,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.declareConstraints(factSheetId, minSupport, minConfidence, anchorType);
     }
 
     /** Mermaid diagram source (directly-follows process map + process-tree blocks) for rendering. */
     @GetMapping("/mermaid")
     public Map<String, String> mermaid(
             @RequestParam Long factSheetId,
-            @RequestParam(defaultValue = "0.0") double noise) {
-        return miningService.mermaid(factSheetId, noise);
+            @RequestParam(defaultValue = "0.0") double noise,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.mermaid(factSheetId, noise, anchorType);
     }
 
     /** Conformance of the discovered model to the log (fitness / precision / simplicity). */
     @GetMapping("/conformance")
     public ConformanceResult conformance(
             @RequestParam Long factSheetId,
-            @RequestParam(defaultValue = "0.0") double noise) {
-        return miningService.conformance(factSheetId, noise);
+            @RequestParam(defaultValue = "0.0") double noise,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.conformance(factSheetId, noise, anchorType);
     }
 
     /**
@@ -130,13 +140,15 @@ public class MiningDiscoveryController {
      *
      * @param factSheetId the fact sheet whose knowledge graph supplies the event log
      * @param threshold   dependency-measure cut-off; arcs below this value are pruned
+     * @param anchorType  optional object-centric case notion
      * @return the mined {@link HeuristicsNet}
      */
     @GetMapping("/heuristics")
     public HeuristicsNet heuristics(
             @RequestParam Long factSheetId,
-            @RequestParam(defaultValue = "0.5") double threshold) {
-        return miningService.heuristicsNet(factSheetId, threshold);
+            @RequestParam(defaultValue = "0.5") double threshold,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.heuristicsNet(factSheetId, threshold, anchorType);
     }
 
     /**
@@ -145,7 +157,9 @@ public class MiningDiscoveryController {
      * Arcs are sorted by median descending so the slowest transitions (bottlenecks) appear first.
      */
     @GetMapping("/performance")
-    public PerformanceAnalysis performance(@RequestParam Long factSheetId) {
-        return miningService.performance(factSheetId);
+    public PerformanceAnalysis performance(
+            @RequestParam Long factSheetId,
+            @RequestParam(required = false) String anchorType) {
+        return miningService.performance(factSheetId, anchorType);
     }
 }

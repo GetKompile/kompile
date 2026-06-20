@@ -67,6 +67,11 @@ import { FactSheetService } from '../../services/fact-sheet.service';
           <mat-label>Noise filter</mat-label>
           <input matInput type="number" [(ngModel)]="noise" min="0" max="1" step="0.05">
         </mat-form-field>
+        <mat-form-field appearance="outline" class="anchor-field"
+                        matTooltip="Object-centric case: one process instance per entity of this type, e.g. ORDER">
+          <mat-label>Anchor type (optional)</mat-label>
+          <input matInput [(ngModel)]="anchorType" placeholder="e.g. ORDER">
+        </mat-form-field>
         <button mat-flat-button color="primary" (click)="analyze()" [disabled]="loading">
           <mat-icon>insights</mat-icon> Analyze
         </button>
@@ -262,7 +267,7 @@ import { FactSheetService } from '../../services/fact-sheet.service';
   styles: [`
     .mining-container { padding: 12px; }
     .mining-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-    .fs-field { width: 130px; } .noise-field { width: 120px; } .ev-field { width: 360px; max-width: 100%; }
+    .fs-field { width: 130px; } .noise-field { width: 120px; } .anchor-field { width: 180px; } .ev-field { width: 360px; max-width: 100%; }
     .spacer { flex: 1 1 auto; }
     .hint { color: var(--mat-sys-on-surface-variant, #666); max-width: 720px; }
     .mining-tabs { margin-top: 8px; }
@@ -298,6 +303,7 @@ export class ProcessMiningComponent implements OnInit {
 
   factSheetId = 1;
   noise = 0;
+  anchorType = '';
   loading = false;
 
   preview?: MiningPreview;
@@ -330,35 +336,37 @@ export class ProcessMiningComponent implements OnInit {
 
   analyze(): void {
     const id = this.factSheetId;
+    const anchor = this.anchorType || undefined;
     this.loading = true;
     this.psl = undefined;
     this.bayesian = undefined;
     this.performanceAnalysis = undefined;
-    this.mining.preview(id, this.noise).subscribe({
+    this.mining.preview(id, this.noise, anchor).subscribe({
       next: (p) => { this.preview = p; this.loading = false; },
       error: (e) => this.fail(e)
     });
-    this.mining.mermaid(id, this.noise).subscribe({
+    this.mining.mermaid(id, this.noise, anchor).subscribe({
       next: (m) => { this.dfgMermaid = m.dfg; this.treeMermaid = m.tree; },
       error: () => {}
     });
-    this.mining.causal(id).subscribe({ next: (c) => this.causal = c, error: () => {} });
-    this.mining.declareConstraints(id).subscribe({ next: (c) => this.constraints = c, error: () => {} });
-    this.mining.conformance(id, this.noise).subscribe({ next: (c) => this.conformance = c, error: () => {} });
-    this.mining.performance(id).subscribe({ next: (p) => this.performanceAnalysis = p, error: () => {} });
+    this.mining.causal(id, anchor).subscribe({ next: (c) => this.causal = c, error: () => {} });
+    this.mining.declareConstraints(id, 0.1, 0.9, anchor).subscribe({ next: (c) => this.constraints = c, error: () => {} });
+    this.mining.conformance(id, this.noise, anchor).subscribe({ next: (c) => this.conformance = c, error: () => {} });
+    this.mining.performance(id, anchor).subscribe({ next: (p) => this.performanceAnalysis = p, error: () => {} });
   }
 
   runInference(): void {
     const id = this.factSheetId;
+    const anchor = this.anchorType || undefined;
     const ev = this.evidence.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
     this.loading = true;
-    this.mining.psl(id, ev).subscribe({ next: (r) => { this.psl = r; this.loading = false; }, error: (e) => this.fail(e) });
-    this.mining.bayesian(id, ev).subscribe({ next: (r) => this.bayesian = r, error: () => {} });
+    this.mining.psl(id, ev, anchor).subscribe({ next: (r) => { this.psl = r; this.loading = false; }, error: (e) => this.fail(e) });
+    this.mining.bayesian(id, ev, anchor).subscribe({ next: (r) => this.bayesian = r, error: () => {} });
   }
 
   discover(): void {
     this.loading = true;
-    this.mining.discover(this.factSheetId, this.noise).subscribe({
+    this.mining.discover(this.factSheetId, this.noise, this.anchorType || undefined).subscribe({
       next: (s) => {
         this.loading = false;
         this.discovered = s;

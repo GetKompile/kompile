@@ -52,7 +52,7 @@ public class MiningAutoDiscoveryListener {
             return;
         }
         try {
-            ProcessSuggestion suggestion = miningService.discoverForFactSheet(event.getFactSheetId(), 0.0);
+            ProcessSuggestion suggestion = miningService.discoverForFactSheet(event.getFactSheetId(), 0.0, null);
             if (suggestion != null) {
                 log.info("Process mining auto-discovered a process for fact sheet {} after graph build {}",
                         event.getFactSheetId(), event.getJobId());

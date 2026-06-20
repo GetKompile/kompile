@@ -32,6 +32,8 @@ import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
 import ai.kompile.process.discovery.mining.perf.PerformanceMiner;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
 import ai.kompile.process.discovery.mining.export.ProcessMermaidExporter;
+import ai.kompile.process.discovery.mining.extract.ActivityClassifier;
+import ai.kompile.process.discovery.mining.extract.AnchorTypeCorrelation;
 import ai.kompile.process.discovery.mining.extract.EventLogExtractor;
 import ai.kompile.process.discovery.mining.log.EventLog;
 import ai.kompile.process.discovery.mining.miner.HeuristicsMiner;
@@ -100,13 +102,29 @@ public class MiningProcessDiscoveryService {
     }
 
     /**
+     * Returns an event log for the given fact sheet using the per-request anchor type when supplied,
+     * otherwise falls back to the service-level extractor (which may itself be anchor-configured via
+     * {@code kompile.process.mining.anchor-type}).
+     */
+    private EventLog extractLog(Long factSheetId, String anchorType) {
+        if (anchorType == null || anchorType.isBlank()) {
+            return extractor.extractForFactSheet(graph, factSheetId);
+        }
+        return new EventLogExtractor(ActivityClassifier.byEntityType(),
+                new AnchorTypeCorrelation(anchorType),
+                EventLogExtractor.DEFAULT_EXCLUDED_LEVELS)
+                .extractForFactSheet(graph, factSheetId);
+    }
+
+    /**
      * Extract → Inductive Miner → {@link ProcessSuggestion}, persisted to the suggestion store.
      *
      * @param noiseThreshold 0 for classic Inductive Miner; 0&lt;t≤1 for the IMf infrequent-filter variant
+     * @param anchorType     optional object-centric case notion: one process instance per entity of this type
      * @return the discovered suggestion, or {@code null} if the graph yielded no events
      */
-    public ProcessSuggestion discoverForFactSheet(Long factSheetId, double noiseThreshold) {
-        EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
+    public ProcessSuggestion discoverForFactSheet(Long factSheetId, double noiseThreshold, String anchorType) {
+        EventLog eventLog = extractLog(factSheetId, anchorType);
         if (eventLog.isEmpty()) {
             log.info("Process mining: no events extracted for fact sheet {} — nothing to discover", factSheetId);
             return null;
@@ -126,13 +144,13 @@ public class MiningProcessDiscoveryService {
     }
 
     /** The raw discovered model, without conversion or persistence. */
-    public ProcessTree mineFactSheet(Long factSheetId, double noiseThreshold) {
-        return new InductiveMiner(noiseThreshold).mine(extractor.extractForFactSheet(graph, factSheetId));
+    public ProcessTree mineFactSheet(Long factSheetId, double noiseThreshold, String anchorType) {
+        return new InductiveMiner(noiseThreshold).mine(extractLog(factSheetId, anchorType));
     }
 
     /** Inspect the intermediate artifacts (log, DFG, tree) without persisting — drives the UI preview. */
-    public Map<String, Object> preview(Long factSheetId, double noiseThreshold) {
-        EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
+    public Map<String, Object> preview(Long factSheetId, double noiseThreshold, String anchorType) {
+        EventLog eventLog = extractLog(factSheetId, anchorType);
         DirectlyFollowsGraph dfg = DfgBuilder.build(eventLog);
         ProcessTree tree = new InductiveMiner(noiseThreshold).mine(eventLog);
         Map<String, Object> out = new LinkedHashMap<>();
@@ -152,8 +170,8 @@ public class MiningProcessDiscoveryService {
      * with the dependency measure + a χ² independence test, classify it into a {@code CausalEdgeType},
      * and emit the weighted PSL rules it implies — all without an LLM.
      */
-    public ProcessCausalAnalyzer.ProcessCausalModel causalAnalysis(Long factSheetId) {
-        return ProcessCausalAnalyzer.analyze(extractor.extractForFactSheet(graph, factSheetId));
+    public ProcessCausalAnalyzer.ProcessCausalModel causalAnalysis(Long factSheetId, String anchorType) {
+        return ProcessCausalAnalyzer.analyze(extractLog(factSheetId, anchorType));
     }
 
     /**
@@ -161,8 +179,8 @@ public class MiningProcessDiscoveryService {
      * with the directly-follows dependency strengths as {@code Link} truths and runs the existing engine.
      * Optionally clamp some activities as observed-active evidence.
      */
-    public ProcessPslInference.Result pslInference(Long factSheetId, java.util.Collection<String> evidenceActive) {
-        DirectlyFollowsGraph dfg = DfgBuilder.build(extractor.extractForFactSheet(graph, factSheetId));
+    public ProcessPslInference.Result pslInference(Long factSheetId, java.util.Collection<String> evidenceActive, String anchorType) {
+        DirectlyFollowsGraph dfg = DfgBuilder.build(extractLog(factSheetId, anchorType));
         return ProcessPslInference.infer(dfg, evidenceActive);
     }
 
@@ -170,19 +188,19 @@ public class MiningProcessDiscoveryService {
      * Bayesian inference driven by the discovered process: a noisy-OR network over the activities, with
      * directly-follows dependency strengths as edge weights, solved by exact variable elimination.
      */
-    public ProcessBayesianInference.Result bayesianInference(Long factSheetId, java.util.Collection<String> evidenceActive) {
-        DirectlyFollowsGraph dfg = DfgBuilder.build(extractor.extractForFactSheet(graph, factSheetId));
+    public ProcessBayesianInference.Result bayesianInference(Long factSheetId, java.util.Collection<String> evidenceActive, String anchorType) {
+        DirectlyFollowsGraph dfg = DfgBuilder.build(extractLog(factSheetId, anchorType));
         return ProcessBayesianInference.infer(dfg, evidenceActive);
     }
 
     /** The declarative (Declare/MINERful) constraint view of the discovered process. */
-    public List<DeclareConstraint> declareConstraints(Long factSheetId, double minSupport, double minConfidence) {
-        return DeclareMiner.mine(extractor.extractForFactSheet(graph, factSheetId), minSupport, minConfidence);
+    public List<DeclareConstraint> declareConstraints(Long factSheetId, double minSupport, double minConfidence, String anchorType) {
+        return DeclareMiner.mine(extractLog(factSheetId, anchorType), minSupport, minConfidence);
     }
 
     /** Mermaid diagram source for the discovered process: the directly-follows map and the tree blocks. */
-    public Map<String, String> mermaid(Long factSheetId, double noiseThreshold) {
-        EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
+    public Map<String, String> mermaid(Long factSheetId, double noiseThreshold, String anchorType) {
+        EventLog eventLog = extractLog(factSheetId, anchorType);
         DirectlyFollowsGraph dfg = DfgBuilder.build(eventLog);
         ProcessTree tree = new InductiveMiner(noiseThreshold).mine(eventLog);
         Map<String, String> out = new LinkedHashMap<>();
@@ -198,18 +216,19 @@ public class MiningProcessDiscoveryService {
      *
      * @param factSheetId        the fact sheet whose knowledge graph supplies the event log
      * @param dependencyThreshold dependency-measure cut-off in (-1, 1); arcs below this are dropped
+     * @param anchorType         optional object-centric case notion
      * @return the mined {@link HeuristicsNet}, never {@code null} (may have no arcs if the graph is
      *         empty or all activities are symmetric)
      */
-    public HeuristicsNet heuristicsNet(Long factSheetId, double dependencyThreshold) {
-        EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
+    public HeuristicsNet heuristicsNet(Long factSheetId, double dependencyThreshold, String anchorType) {
+        EventLog eventLog = extractLog(factSheetId, anchorType);
         DirectlyFollowsGraph dfg = DfgBuilder.build(eventLog);
         return HeuristicsMiner.mine(dfg, dependencyThreshold);
     }
 
     /** Conformance of the discovered model to its log: fitness, precision, simplicity. */
-    public ConformanceResult conformance(Long factSheetId, double noiseThreshold) {
-        EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
+    public ConformanceResult conformance(Long factSheetId, double noiseThreshold, String anchorType) {
+        EventLog eventLog = extractLog(factSheetId, anchorType);
         ProcessTree tree = new InductiveMiner(noiseThreshold).mine(eventLog);
         return ConformanceChecker.check(tree, eventLog);
     }
@@ -219,7 +238,7 @@ public class MiningProcessDiscoveryService {
      * transition duration in seconds (pairs without timestamps are skipped). Arcs are sorted by
      * median descending so bottlenecks appear first.
      */
-    public PerformanceAnalysis performance(Long factSheetId) {
-        return PerformanceMiner.analyze(extractor.extractForFactSheet(graph, factSheetId));
+    public PerformanceAnalysis performance(Long factSheetId, String anchorType) {
+        return PerformanceMiner.analyze(extractLog(factSheetId, anchorType));
     }
 }

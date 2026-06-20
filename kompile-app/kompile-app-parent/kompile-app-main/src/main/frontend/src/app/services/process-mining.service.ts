@@ -119,61 +119,64 @@ export class ProcessMiningService extends BaseService {
   }
 
   /** Mine a sound process and persist it as a suggestion. */
-  discover(factSheetId: number, noise = 0): Observable<MiningSuggestion> {
-    return this.http.get<MiningSuggestion>(`${this.base}/discover`, { params: this.params(factSheetId, { noise }) });
+  discover(factSheetId: number, noise = 0, anchorType?: string): Observable<MiningSuggestion> {
+    return this.http.get<MiningSuggestion>(`${this.base}/discover`, { params: this.params(factSheetId, { noise }, anchorType) });
   }
 
   /** Event-log stats + directly-follows arc count + process-tree text. */
-  preview(factSheetId: number, noise = 0): Observable<MiningPreview> {
-    return this.http.get<MiningPreview>(`${this.base}/preview`, { params: this.params(factSheetId, { noise }) });
+  preview(factSheetId: number, noise = 0, anchorType?: string): Observable<MiningPreview> {
+    return this.http.get<MiningPreview>(`${this.base}/preview`, { params: this.params(factSheetId, { noise }, anchorType) });
   }
 
   /** Mermaid source for the directly-follows process map and the process-tree blocks. */
-  mermaid(factSheetId: number, noise = 0): Observable<{ dfg: string; tree: string }> {
-    return this.http.get<{ dfg: string; tree: string }>(`${this.base}/mermaid`, { params: this.params(factSheetId, { noise }) });
+  mermaid(factSheetId: number, noise = 0, anchorType?: string): Observable<{ dfg: string; tree: string }> {
+    return this.http.get<{ dfg: string; tree: string }>(`${this.base}/mermaid`, { params: this.params(factSheetId, { noise }, anchorType) });
   }
 
   /** Conformance of the discovered model to the log (fitness / precision / simplicity). */
-  conformance(factSheetId: number, noise = 0): Observable<ConformanceResult> {
-    return this.http.get<ConformanceResult>(`${this.base}/conformance`, { params: this.params(factSheetId, { noise }) });
+  conformance(factSheetId: number, noise = 0, anchorType?: string): Observable<ConformanceResult> {
+    return this.http.get<ConformanceResult>(`${this.base}/conformance`, { params: this.params(factSheetId, { noise }, anchorType) });
   }
 
   /** χ²-tested directly-follows dependencies (typed) plus generated PSL rules. */
-  causal(factSheetId: number): Observable<ProcessCausalModel> {
-    return this.http.get<ProcessCausalModel>(`${this.base}/causal`, { params: this.params(factSheetId) });
+  causal(factSheetId: number, anchorType?: string): Observable<ProcessCausalModel> {
+    return this.http.get<ProcessCausalModel>(`${this.base}/causal`, { params: this.params(factSheetId, {}, anchorType) });
   }
 
   /** Declarative (Declare/MINERful) constraints of the process. */
-  declareConstraints(factSheetId: number, minSupport = 0.1, minConfidence = 0.9): Observable<DeclareConstraint[]> {
+  declareConstraints(factSheetId: number, minSupport = 0.1, minConfidence = 0.9, anchorType?: string): Observable<DeclareConstraint[]> {
     return this.http.get<DeclareConstraint[]>(`${this.base}/declare`,
-      { params: this.params(factSheetId, { minSupport, minConfidence }) });
+      { params: this.params(factSheetId, { minSupport, minConfidence }, anchorType) });
   }
 
   /** Live HL-MRF (PSL) inference; optionally clamp some activities active. */
-  psl(factSheetId: number, evidence: string[] = []): Observable<InferenceResult> {
-    return this.http.get<InferenceResult>(`${this.base}/psl`, { params: this.withEvidence(factSheetId, evidence) });
+  psl(factSheetId: number, evidence: string[] = [], anchorType?: string): Observable<InferenceResult> {
+    return this.http.get<InferenceResult>(`${this.base}/psl`, { params: this.withEvidence(factSheetId, evidence, anchorType) });
   }
 
   /** Exact Bayesian (noisy-OR + variable elimination) inference. */
-  bayesian(factSheetId: number, evidence: string[] = []): Observable<InferenceResult> {
-    return this.http.get<InferenceResult>(`${this.base}/bayesian`, { params: this.withEvidence(factSheetId, evidence) });
+  bayesian(factSheetId: number, evidence: string[] = [], anchorType?: string): Observable<InferenceResult> {
+    return this.http.get<InferenceResult>(`${this.base}/bayesian`, { params: this.withEvidence(factSheetId, evidence, anchorType) });
   }
 
   /** Performance (bottleneck) analysis: per-arc transition durations, slowest first. */
-  performance(factSheetId: number): Observable<PerformanceAnalysis> {
-    return this.http.get<PerformanceAnalysis>(`${this.base}/performance`, { params: this.params(factSheetId) });
+  performance(factSheetId: number, anchorType?: string): Observable<PerformanceAnalysis> {
+    return this.http.get<PerformanceAnalysis>(`${this.base}/performance`, { params: this.params(factSheetId, {}, anchorType) });
   }
 
-  private params(factSheetId: number, extra: Record<string, number | string> = {}): HttpParams {
+  private params(factSheetId: number, extra: Record<string, number | string> = {}, anchorType?: string): HttpParams {
     let params = new HttpParams().set('factSheetId', String(factSheetId));
     for (const [key, value] of Object.entries(extra)) {
       params = params.set(key, String(value));
     }
+    if (anchorType && anchorType.trim().length > 0) {
+      params = params.set('anchorType', anchorType.trim());
+    }
     return params;
   }
 
-  private withEvidence(factSheetId: number, evidence: string[]): HttpParams {
-    let params = this.params(factSheetId);
+  private withEvidence(factSheetId: number, evidence: string[], anchorType?: string): HttpParams {
+    let params = this.params(factSheetId, {}, anchorType);
     for (const activity of evidence) {
       if (activity) {
         params = params.append('evidence', activity);
