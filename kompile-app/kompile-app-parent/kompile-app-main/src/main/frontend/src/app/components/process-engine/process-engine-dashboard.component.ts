@@ -35,6 +35,7 @@ import { ExcelArtifactComponent } from './excel-artifact.component';
 import { ProcessDiagramComponent } from './process-diagram.component';
 import { ProcessDiscoverySuggestionsComponent } from './process-discovery-suggestions.component';
 import { ProcessMiningComponent } from './process-mining.component';
+import { CausalAttributionExtrasComponent } from './causal-attribution-extras.component';
 
 @Component({
   standalone: true,
@@ -53,7 +54,8 @@ import { ProcessMiningComponent } from './process-mining.component';
     ExcelArtifactComponent,
     ProcessDiagramComponent,
     ProcessDiscoverySuggestionsComponent,
-    ProcessMiningComponent
+    ProcessMiningComponent,
+    CausalAttributionExtrasComponent
   ],
   template: `
     <div class="dashboard-container">
@@ -120,6 +122,17 @@ import { ProcessMiningComponent } from './process-mining.component';
           </ng-template>
           <div class="tab-content">
             <app-process-mining></app-process-mining>
+          </div>
+        </mat-tab>
+
+        <!-- Attribution Tab (sensitivity / MEBN structure / prediction for a KG node) -->
+        <mat-tab>
+          <ng-template mat-tab-label>
+            <mat-icon class="tab-icon">analytics</mat-icon>
+            Attribution
+          </ng-template>
+          <div class="tab-content">
+            <app-causal-attribution-extras></app-causal-attribution-extras>
           </div>
         </mat-tab>
 
