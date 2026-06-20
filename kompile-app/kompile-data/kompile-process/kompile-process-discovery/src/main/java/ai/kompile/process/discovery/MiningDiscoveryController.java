@@ -20,6 +20,7 @@ import ai.kompile.process.discovery.mining.MiningProcessDiscoveryService;
 import ai.kompile.process.discovery.mining.causal.ProcessBayesianInference;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
+import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -90,5 +91,14 @@ public class MiningDiscoveryController {
             @RequestParam Long factSheetId,
             @RequestParam(required = false) List<String> evidence) {
         return miningService.bayesianInference(factSheetId, evidence);
+    }
+
+    /** Declarative constraints (Response/Precedence/ChainResponse/NotCoExistence/Init/End) of the process. */
+    @GetMapping("/declare")
+    public List<DeclareConstraint> declare(
+            @RequestParam Long factSheetId,
+            @RequestParam(defaultValue = "0.1") double minSupport,
+            @RequestParam(defaultValue = "0.9") double minConfidence) {
+        return miningService.declareConstraints(factSheetId, minSupport, minConfidence);
     }
 }

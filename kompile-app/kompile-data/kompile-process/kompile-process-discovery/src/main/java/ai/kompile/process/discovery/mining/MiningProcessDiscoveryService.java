@@ -23,6 +23,8 @@ import ai.kompile.process.discovery.mining.causal.ProcessBayesianInference;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
 import ai.kompile.process.discovery.mining.convert.ProcessTreeToSuggestion;
+import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
+import ai.kompile.process.discovery.mining.declare.DeclareMiner;
 import ai.kompile.process.discovery.mining.dfg.DfgBuilder;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
 import ai.kompile.process.discovery.mining.extract.EventLogExtractor;
@@ -149,5 +151,10 @@ public class MiningProcessDiscoveryService {
     public ProcessBayesianInference.Result bayesianInference(Long factSheetId, java.util.Collection<String> evidenceActive) {
         DirectlyFollowsGraph dfg = DfgBuilder.build(extractor.extractForFactSheet(graph, factSheetId));
         return ProcessBayesianInference.infer(dfg, evidenceActive);
+    }
+
+    /** The declarative (Declare/MINERful) constraint view of the discovered process. */
+    public List<DeclareConstraint> declareConstraints(Long factSheetId, double minSupport, double minConfidence) {
+        return DeclareMiner.mine(extractor.extractForFactSheet(graph, factSheetId), minSupport, minConfidence);
     }
 }
