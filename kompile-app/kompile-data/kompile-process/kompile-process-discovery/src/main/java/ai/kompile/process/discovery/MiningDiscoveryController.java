@@ -20,6 +20,7 @@ import ai.kompile.process.discovery.mining.MiningProcessDiscoveryService;
 import ai.kompile.process.discovery.mining.causal.ProcessBayesianInference;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
+import ai.kompile.process.discovery.mining.conformance.ConformanceResult;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.ResponseEntity;
@@ -108,5 +109,13 @@ public class MiningDiscoveryController {
             @RequestParam Long factSheetId,
             @RequestParam(defaultValue = "0.0") double noise) {
         return miningService.mermaid(factSheetId, noise);
+    }
+
+    /** Conformance of the discovered model to the log (fitness / precision / simplicity). */
+    @GetMapping("/conformance")
+    public ConformanceResult conformance(
+            @RequestParam Long factSheetId,
+            @RequestParam(defaultValue = "0.0") double noise) {
+        return miningService.conformance(factSheetId, noise);
     }
 }

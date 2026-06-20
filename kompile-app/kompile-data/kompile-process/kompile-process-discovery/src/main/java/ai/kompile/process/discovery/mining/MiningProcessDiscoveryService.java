@@ -22,6 +22,8 @@ import ai.kompile.process.discovery.ProcessSuggestionStore;
 import ai.kompile.process.discovery.mining.causal.ProcessBayesianInference;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
+import ai.kompile.process.discovery.mining.conformance.ConformanceChecker;
+import ai.kompile.process.discovery.mining.conformance.ConformanceResult;
 import ai.kompile.process.discovery.mining.convert.ProcessTreeToSuggestion;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import ai.kompile.process.discovery.mining.declare.DeclareMiner;
@@ -168,5 +170,12 @@ public class MiningProcessDiscoveryService {
         out.put("dfg", ProcessMermaidExporter.dfgToMermaid(dfg));
         out.put("tree", ProcessMermaidExporter.treeToMermaid(tree));
         return out;
+    }
+
+    /** Conformance of the discovered model to its log: fitness, precision, simplicity. */
+    public ConformanceResult conformance(Long factSheetId, double noiseThreshold) {
+        EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
+        ProcessTree tree = new InductiveMiner(noiseThreshold).mine(eventLog);
+        return ConformanceChecker.check(tree, eventLog);
     }
 }

@@ -79,6 +79,15 @@ export interface MiningSuggestion {
   sourceGraphNodeIds: string[];
 }
 
+export interface ConformanceResult {
+  fitness: number;
+  precision: number;
+  simplicity: number;
+  modelArcs: number;
+  logArcs: number;
+  perfectFit: boolean;
+}
+
 /**
  * Client for the LLM-free process-mining engine (`/api/process/mining/*`): discover a process from a
  * fact sheet's graph, inspect the intermediate artifacts, and drive the causal/PSL/Bayesian couplings.
@@ -105,6 +114,11 @@ export class ProcessMiningService extends BaseService {
   /** Mermaid source for the directly-follows process map and the process-tree blocks. */
   mermaid(factSheetId: number, noise = 0): Observable<{ dfg: string; tree: string }> {
     return this.http.get<{ dfg: string; tree: string }>(`${this.base}/mermaid`, { params: this.params(factSheetId, { noise }) });
+  }
+
+  /** Conformance of the discovered model to the log (fitness / precision / simplicity). */
+  conformance(factSheetId: number, noise = 0): Observable<ConformanceResult> {
+    return this.http.get<ConformanceResult>(`${this.base}/conformance`, { params: this.params(factSheetId, { noise }) });
   }
 
   /** χ²-tested directly-follows dependencies (typed) plus generated PSL rules. */

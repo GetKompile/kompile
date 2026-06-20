@@ -29,7 +29,7 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MermaidRendererComponent } from './mermaid-renderer.component';
 import {
   ProcessMiningService, MiningPreview, ProcessCausalModel,
-  DeclareConstraint, InferenceResult, MiningSuggestion
+  DeclareConstraint, InferenceResult, MiningSuggestion, ConformanceResult
 } from '../../services/process-mining.service';
 
 /**
@@ -71,6 +71,11 @@ import {
           <mat-chip>{{ preview.activities.length }} activities</mat-chip>
           <mat-chip>{{ preview.variants }} variants</mat-chip>
           <mat-chip>{{ preview.directlyFollowsArcs }} edges</mat-chip>
+          <mat-chip *ngIf="conformance" class="conf-chip"
+                    matTooltip="Fitness = behaviour the model replays; precision = how tightly it fits; simplicity = activities ÷ nodes">
+            <mat-icon>verified</mat-icon>
+            fitness {{ pct(conformance.fitness) }} · precision {{ pct(conformance.precision) }} · simplicity {{ pct(conformance.simplicity) }}
+          </mat-chip>
         </mat-chip-set>
       </div>
       <mat-progress-bar *ngIf="loading" mode="indeterminate"></mat-progress-bar>
@@ -216,6 +221,7 @@ export class ProcessMiningComponent {
   psl?: InferenceResult;
   bayesian?: InferenceResult;
   discovered?: MiningSuggestion;
+  conformance?: ConformanceResult;
 
   constructor(private mining: ProcessMiningService, private snack: MatSnackBar) {}
 
@@ -234,6 +240,7 @@ export class ProcessMiningComponent {
     });
     this.mining.causal(id).subscribe({ next: (c) => this.causal = c, error: () => {} });
     this.mining.declareConstraints(id).subscribe({ next: (c) => this.constraints = c, error: () => {} });
+    this.mining.conformance(id, this.noise).subscribe({ next: (c) => this.conformance = c, error: () => {} });
   }
 
   runInference(): void {
