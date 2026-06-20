@@ -341,4 +341,46 @@ export class EnforcerService extends BaseService {
     return this.http.get<EnforcerMetricsDetail>(
       `${this.backendUrl}/enforcer/metrics/${codingProjectId}/${agentName}`);
   }
+
+  // ── Durable judgement log ────────────────────────────────────────
+
+  /** List sessions that have a recorded judgement log. */
+  getJudgementSessions(): Observable<JudgementSessionSummary[]> {
+    return this.http.get<JudgementSessionSummary[]>(`${this.backendUrl}/enforcer/judgements`);
+  }
+
+  /** Get all judgement records (all phases) for one session. */
+  getJudgements(sessionId: string): Observable<JudgementRecord[]> {
+    return this.http.get<JudgementRecord[]>(`${this.backendUrl}/enforcer/judgements/${sessionId}`);
+  }
+}
+
+export interface JudgementSessionSummary {
+  sessionId: string;
+  records: number;
+  lastTimestamp: string;
+  lastBackend: string;
+  lastStatus: string;
+}
+
+export interface JudgementRecord {
+  timestamp?: string;
+  sessionId?: string;
+  phase?: string;
+  attempt?: number;
+  judgeMode?: string;
+  backend?: string;
+  model?: string;
+  latencyMs?: number;
+  compliant?: boolean;
+  stop?: boolean;
+  severity?: string;
+  violations?: string[];
+  correctionPrompt?: string;
+  reasoning?: string;
+  status?: string;
+  userPromptExcerpt?: string;
+  agentOutputExcerpt?: string;
+  toolName?: string;
+  judgeRawResponse?: string;
 }
