@@ -19,6 +19,7 @@ package ai.kompile.process.discovery.mining;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.discovery.ProcessSuggestion;
 import ai.kompile.process.discovery.ProcessSuggestionStore;
+import ai.kompile.process.discovery.mining.causal.ProcessBayesianInference;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
 import ai.kompile.process.discovery.mining.convert.ProcessTreeToSuggestion;
@@ -139,5 +140,14 @@ public class MiningProcessDiscoveryService {
     public ProcessPslInference.Result pslInference(Long factSheetId, java.util.Collection<String> evidenceActive) {
         DirectlyFollowsGraph dfg = DfgBuilder.build(extractor.extractForFactSheet(graph, factSheetId));
         return ProcessPslInference.infer(dfg, evidenceActive);
+    }
+
+    /**
+     * Bayesian inference driven by the discovered process: a noisy-OR network over the activities, with
+     * directly-follows dependency strengths as edge weights, solved by exact variable elimination.
+     */
+    public ProcessBayesianInference.Result bayesianInference(Long factSheetId, java.util.Collection<String> evidenceActive) {
+        DirectlyFollowsGraph dfg = DfgBuilder.build(extractor.extractForFactSheet(graph, factSheetId));
+        return ProcessBayesianInference.infer(dfg, evidenceActive);
     }
 }

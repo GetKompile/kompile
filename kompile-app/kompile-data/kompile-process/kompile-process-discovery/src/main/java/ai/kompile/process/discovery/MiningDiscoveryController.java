@@ -17,6 +17,7 @@
 package ai.kompile.process.discovery;
 
 import ai.kompile.process.discovery.mining.MiningProcessDiscoveryService;
+import ai.kompile.process.discovery.mining.causal.ProcessBayesianInference;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -81,5 +82,13 @@ public class MiningDiscoveryController {
             @RequestParam Long factSheetId,
             @RequestParam(required = false) List<String> evidence) {
         return miningService.pslInference(factSheetId, evidence);
+    }
+
+    /** Run exact Bayesian inference (noisy-OR + variable elimination) over the discovered process. */
+    @GetMapping("/bayesian")
+    public ProcessBayesianInference.Result bayesian(
+            @RequestParam Long factSheetId,
+            @RequestParam(required = false) List<String> evidence) {
+        return miningService.bayesianInference(factSheetId, evidence);
     }
 }

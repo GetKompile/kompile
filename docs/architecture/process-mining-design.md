@@ -202,7 +202,10 @@ flag (`kompile.process.discovery.engine = mining | heuristic | both`), so nothin
   `PslRule` engine**; exposed at `GET /api/process/mining/causal`. **Live PSL inference wired** —
   `ProcessPslInference` builds a real `PslProgram` (directly-follows dependency strengths become `Link`
   truths) and runs the project's `HlMrfMapInference`, so the discovered process drives HL-MRF inference;
-  `GET /api/process/mining/psl`. Remaining (cross‑module /
+  `GET /api/process/mining/psl`. **Live Bayesian inference wired** too — `ProcessBayesianInference`
+  builds a noisy-OR `BayesianNetwork` (dependency strengths as edge weights, cycle-broken to a DAG;
+  concurrent activities get no edge ⇒ independent) and runs exact `VariableElimination`;
+  `GET /api/process/mining/bayesian`. Remaining (cross‑module /
   matrix‑store, riskier): feed the dependency strengths into the live noisy‑OR CPTs +
   `KgPslProgramBuilder`; process‑tree → BN independence skeleton; materialize `PRECEDES` edges via
   `GraphEdge.relationType`.
