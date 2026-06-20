@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.kompile.cli.main.chat.enforcer;
+package ai.kompile.cli.common.enforcer;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -75,22 +75,6 @@ public class DiffPatternEvaluator {
     public DiffPatternEvaluator(List<DiffRule> rules, String rawRulesText) {
         this.rules = rules != null ? List.copyOf(rules) : List.of();
         this.rawRulesText = rawRulesText != null ? rawRulesText : "";
-    }
-
-    /**
-     * Extract diff-scoped rules from a keyword evaluator's rules list.
-     */
-    public static DiffPatternEvaluator fromKeywordRules(List<KeywordEnforcerEvaluator.KeywordRule> allRules,
-                                                         String rawRulesText) {
-        List<DiffRule> diffRules = new ArrayList<>();
-        for (KeywordEnforcerEvaluator.KeywordRule kr : allRules) {
-            if ("diff".equals(kr.getScope())) {
-                diffRules.add(new DiffRule(
-                        kr.getKeyword(), kr.isRegex(), kr.isCaseSensitive(),
-                        kr.getDescription(), kr.getSeverity(), null));
-            }
-        }
-        return new DiffPatternEvaluator(diffRules, rawRulesText);
     }
 
     /**

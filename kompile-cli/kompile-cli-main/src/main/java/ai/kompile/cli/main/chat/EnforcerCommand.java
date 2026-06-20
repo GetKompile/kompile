@@ -17,10 +17,12 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
-import ai.kompile.cli.main.chat.enforcer.DiffPatternEvaluator;
+import ai.kompile.cli.common.enforcer.DiffPatternEvaluator;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
+import ai.kompile.cli.main.chat.enforcer.EnforcerControlServer;
 import ai.kompile.cli.main.chat.enforcer.EnforcerDiffArchive;
 import ai.kompile.cli.main.chat.enforcer.EnforcerEvaluator;
+import ai.kompile.cli.main.chat.enforcer.EnforcerFallbackPolicy;
 import ai.kompile.cli.main.chat.enforcer.EnforcerInitCommand;
 import ai.kompile.cli.main.chat.enforcer.EnforcerJudge;
 import ai.kompile.cli.main.chat.enforcer.EnforcerMonitorCommand;
@@ -30,12 +32,19 @@ import ai.kompile.cli.main.chat.enforcer.EnforcerRealtimeMonitor;
 import ai.kompile.cli.main.chat.enforcer.EnforcerResult;
 import ai.kompile.cli.main.chat.enforcer.EnforcerRuntimePolicy;
 import ai.kompile.cli.main.chat.enforcer.EnforcerService;
+import ai.kompile.cli.main.chat.enforcer.EnforcerAttachCommand;
+import ai.kompile.cli.main.chat.enforcer.EnforcerJudgementsCommand;
+import ai.kompile.cli.main.chat.enforcer.JudgementLog;
+import ai.kompile.cli.main.chat.enforcer.JudgementRecord;
 import ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator;
 import ai.kompile.cli.main.chat.enforcer.KeywordRealtimeMonitor;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tui.KompileTui;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jline.reader.EndOfFileException;
@@ -59,7 +68,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Interactive chat mode that runs a designated external agent behind an enforcer judge.
@@ -70,7 +83,8 @@ import java.util.concurrent.Callable;
         name = "enforcer",
         description = "Enforcer chat mode: launch a designated agent and force rule compliance with a judge loop",
         mixinStandardHelpOptions = true,
-        subcommands = { EnforcerMonitorCommand.class, EnforcerInitCommand.class }
+        subcommands = { EnforcerMonitorCommand.class, EnforcerInitCommand.class,
+                EnforcerJudgementsCommand.class, EnforcerAttachCommand.class }
 )
 public class EnforcerCommand implements Callable<Integer> {
 
@@ -128,6 +142,12 @@ public class EnforcerCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--archive-diffs"}, description = "Archive file diffs per turn for rollback on violation", defaultValue = "true")
     boolean archiveDiffs;
 
+    @CommandLine.Option(names = {"--classic"}, description = "Use the legacy headless per-turn REPL instead of the live PTY TUI", defaultValue = "false")
+    boolean classic;
+
+    @CommandLine.Option(names = {"--control-port"}, description = "Run headless with a localhost REST control server on this port (0 = off)", defaultValue = "0")
+    int controlPort;
+
     @CommandLine.Option(names = {"--purge-archive"}, description = "Purge all enforcer archives and exit", defaultValue = "false")
     boolean purgeArchive;
 
@@ -147,6 +167,8 @@ public class EnforcerCommand implements Callable<Integer> {
     String bootstrapOutput;
 
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
+    private EnforcerFallbackPolicy enforcerFallbackPolicy = EnforcerFallbackPolicy.FAIL_CLOSED;
+    private BackgroundProcessManager bgProcMgr; // judge/enforcer watcher visibility (interactive only)
 
     @Override
     public Integer call() {
@@ -183,6 +205,16 @@ public class EnforcerCommand implements Callable<Integer> {
         EnforcerConfig projectConfig = EnforcerConfig.load(wd);
         if (projectConfig != null) {
             applyProjectConfig(projectConfig, wd);
+        }
+
+        // Default: run the agent as a live PTY TUI under enforcement (KompileTui + VirtualTerminal).
+        // --classic keeps the legacy headless per-turn REPL; --print stays one-shot/headless.
+        boolean oneShot = printPrompt != null && !printPrompt.isBlank();
+        if (controlPort > 0) {
+            return runRestControlled(wd, projectConfig);
+        }
+        if (!oneShot && !classic) {
+            return runLivePtyEnforced(wd, projectConfig);
         }
 
         try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
@@ -227,6 +259,18 @@ public class EnforcerCommand implements Callable<Integer> {
             EnforcerConversationWindow conversationWindow =
                     new EnforcerConversationWindow(runtimePolicy.getContextFile(), objectMapper);
 
+            // Track every judgement made this session (raw judge response included for LLM judges).
+            JudgementLog judgementLog = JudgementLog.forSession(runtimePolicy.getSessionId());
+            if (judge != null) {
+                judge.setJudgementLog(judgementLog);
+            }
+            service.setJudgementLog(judgementLog);
+
+            // Apply the configured fallback policy for judge unavailability / mid-turn failure.
+            this.enforcerFallbackPolicy = EnforcerFallbackPolicy.parse(
+                    projectConfig != null ? projectConfig.getJudgeFallbackPolicy() : null);
+            service.setFallbackPolicy(this.enforcerFallbackPolicy, objectMapper);
+
             SubprocessAgentRunner runner = new SubprocessAgentRunner(
                     agent, wd.toString(), skipPermissions, injectTools, kompileUrl, mcpPort,
                     null, renderer, ascii);
@@ -270,6 +314,23 @@ public class EnforcerCommand implements Callable<Integer> {
                 registerServerSession(sessionId, resolvedRules, evaluator.describe(), wd);
             }
 
+            // Wrap the enforcer REPL in the unified KompileTui chrome (TopBar + StatusBar) and
+            // register the judge + enforcer as visible watcher processes. Skipped for --print.
+            boolean interactive = printPrompt == null || printPrompt.isBlank();
+            KompileTui tui = null;
+            if (interactive) {
+                this.bgProcMgr = new BackgroundProcessManager(sessionId);
+                EmulatedPassthroughCommand.registerEnforcerWatchers(this.bgProcMgr, evaluator, policy);
+                tui = new KompileTui(new BackgroundTaskManager(), this.bgProcMgr,
+                        new MessageQueue(sessionId), renderer);
+                tui.setAgentName(agent);
+                tui.setSessionId(sessionId);
+                tui.setMode("enforcer");
+                tui.setEnforcerActive(true);
+                tui.start(terminal);
+                this.bgProcMgr.addChangeListener(tui.getStatusBar()::requestRedraw);
+            }
+
             try {
                 printWelcome(ascii, sessionId, evaluator.describe(), policy, diffArchive != null);
 
@@ -285,6 +346,10 @@ public class EnforcerCommand implements Callable<Integer> {
                 while (true) {
                     String line;
                     try {
+                        // JLine resets the scroll region; re-assert it so KompileTui chrome holds.
+                        if (tui != null) {
+                            tui.reestablishScrollRegion();
+                        }
                         line = reader.readLine(buildPrompt());
                     } catch (UserInterruptException | EndOfFileException e) {
                         break;
@@ -309,6 +374,12 @@ public class EnforcerCommand implements Callable<Integer> {
                     printResultSummary(renderer, result);
                 }
             } finally {
+                if (tui != null) {
+                    tui.stop();
+                }
+                if (this.bgProcMgr != null) {
+                    this.bgProcMgr.close();
+                }
                 runner.setRealtimeMonitor(null);
                 runner.cleanup();
                 runtimePolicy.cleanup();
@@ -333,6 +404,313 @@ public class EnforcerCommand implements Callable<Integer> {
         }
     }
 
+    /**
+     * Default interactive path: run the subordinate agent as a live PTY TUI under enforcement by
+     * delegating to {@link EmulatedPassthroughCommand} (KompileTui + VirtualTerminal), with the
+     * diff-archive / diff-pattern / rollback features ported into the enforced PTY turn loop.
+     * Mirrors {@code ChatCommand.runEnforcedPassthroughMode}.
+     */
+    private int runLivePtyEnforced(Path wd, EnforcerConfig projectConfig) {
+        try {
+            String resolvedRules = EnforcerPolicy.resolveRules(rules, ruleFile, wd);
+            if ((resolvedRules == null || resolvedRules.isBlank()) && projectConfig != null) {
+                resolvedRules = projectConfig.buildRulesText(wd);
+            }
+            if (resolvedRules == null || resolvedRules.isBlank()) {
+                System.err.println("Enforcer rules are required. Use --rules/--rule-file, "
+                        + "or run 'kompile enforcer init'. (Use --classic for the legacy REPL.)");
+                return 1;
+            }
+
+            HarnessConfig harnessConfig = loadHarnessConfig();
+            EnforcerPolicy policy = new EnforcerPolicy(resolvedRules, maxCorrections, false);
+
+            EnforcerEvaluator evaluator;
+            EnforcerJudge judge = null;
+            if (keywordMode) {
+                KeywordEnforcerEvaluator kw = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper);
+                if (!kw.isAvailable()) {
+                    System.err.println("No keyword rules parsed. Use BAN:/STOP: prefixes or JSON.");
+                    return 1;
+                }
+                evaluator = kw;
+            } else {
+                judge = new EnforcerJudge(harnessConfig, objectMapper);
+                if (!judge.isAvailable()) {
+                    System.err.println("No enforcer judge backend available. Configure "
+                            + "~/.kompile/harness-config.json or pass --judge-provider/--judge-model, "
+                            + "or use --keyword-mode.");
+                    return 1;
+                }
+                evaluator = judge;
+            }
+
+            EnforcerService service = new EnforcerService(evaluator);
+            EnforcerRuntimePolicy runtimePolicy =
+                    EnforcerRuntimePolicy.create(wd, policy, harnessConfig, objectMapper);
+            String sessionId = runtimePolicy.getSessionId();
+            EnforcerConversationWindow conversationWindow =
+                    new EnforcerConversationWindow(runtimePolicy.getContextFile(), objectMapper);
+
+            JudgementLog judgementLog = JudgementLog.forSession(sessionId);
+            if (judge != null) {
+                judge.setJudgementLog(judgementLog);
+            }
+            service.setJudgementLog(judgementLog);
+            this.enforcerFallbackPolicy = EnforcerFallbackPolicy.parse(
+                    projectConfig != null ? projectConfig.getJudgeFallbackPolicy() : null);
+            service.setFallbackPolicy(this.enforcerFallbackPolicy, objectMapper);
+
+            EnforcerDiffArchive diffArchive = archiveDiffs
+                    ? new EnforcerDiffArchive(sessionId, wd, objectMapper) : null;
+            DiffPatternEvaluator diffPatternEvaluator = loadDiffPatternEvaluator(policy, wd);
+            boolean autoRollback = projectConfig == null || projectConfig.isAutoRollbackOnViolation();
+
+            if (kompileUrl != null && !kompileUrl.isBlank()) {
+                registerServerSession(sessionId, resolvedRules, evaluator.describe(), wd);
+            }
+
+            try {
+                EmulatedPassthroughCommand passthrough = new EmulatedPassthroughCommand();
+                passthrough.agent = agent;
+                passthrough.workingDir = wd.toString();
+                passthrough.skipPermissions = skipPermissions;
+                passthrough.injectTools = injectTools;
+                passthrough.kompileUrl = kompileUrl == null ? "" : kompileUrl;
+                passthrough.mcpPort = mcpPort;
+                passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
+                passthrough.enforcerEvaluator = evaluator;
+                passthrough.enforcerPolicy = policy;
+                passthrough.enforcerService = service;
+                passthrough.enforcerConversationWindow = conversationWindow;
+                passthrough.enforcerExtraEnv = runtimePolicy.toEnvironment();
+                passthrough.enforcerDiffArchive = diffArchive;
+                passthrough.enforcerDiffPatternEvaluator = diffPatternEvaluator;
+                passthrough.enforcerAutoRollbackOnViolation = autoRollback;
+                return passthrough.call();
+            } finally {
+                runtimePolicy.cleanup();
+                if (judge != null) {
+                    judge.close();
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error running live-PTY enforcer: " + e.getMessage());
+            return 1;
+        }
+    }
+
+    /**
+     * Headless control mode: run the enforcement engine driven by a localhost REST control server
+     * (POST /send, /command; GET /state, /judgements; POST /stop) so the full engine is scriptable,
+     * manageable, and testable without a TTY. Uses the classic per-turn engine ({@link #runEnforcedTurn}).
+     */
+    private int runRestControlled(Path wd, EnforcerConfig projectConfig) {
+        try {
+            String resolvedRules = EnforcerPolicy.resolveRules(rules, ruleFile, wd);
+            if ((resolvedRules == null || resolvedRules.isBlank()) && projectConfig != null) {
+                resolvedRules = projectConfig.buildRulesText(wd);
+            }
+            if (resolvedRules == null || resolvedRules.isBlank()) {
+                System.err.println("Enforcer rules are required. Use --rules/--rule-file or 'kompile enforcer init'.");
+                return 1;
+            }
+
+            HarnessConfig harnessConfig = loadHarnessConfig();
+            EnforcerPolicy policy = new EnforcerPolicy(resolvedRules, maxCorrections, false);
+
+            EnforcerEvaluator evaluator;
+            EnforcerJudge judge = null;
+            if (keywordMode) {
+                KeywordEnforcerEvaluator kw = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper);
+                if (!kw.isAvailable()) {
+                    System.err.println("No keyword rules parsed.");
+                    return 1;
+                }
+                evaluator = kw;
+            } else {
+                judge = new EnforcerJudge(harnessConfig, objectMapper);
+                if (!judge.isAvailable()) {
+                    System.err.println("No enforcer judge backend available; configure judge or use --keyword-mode.");
+                    return 1;
+                }
+                evaluator = judge;
+            }
+
+            EnforcerService service = new EnforcerService(evaluator);
+            EnforcerRuntimePolicy runtimePolicy =
+                    EnforcerRuntimePolicy.create(wd, policy, harnessConfig, objectMapper);
+            String sessionId = runtimePolicy.getSessionId();
+            EnforcerConversationWindow conversationWindow =
+                    new EnforcerConversationWindow(runtimePolicy.getContextFile(), objectMapper);
+
+            JudgementLog judgementLog = JudgementLog.forSession(sessionId);
+            if (judge != null) {
+                judge.setJudgementLog(judgementLog);
+            }
+            service.setJudgementLog(judgementLog);
+            this.enforcerFallbackPolicy = EnforcerFallbackPolicy.parse(
+                    projectConfig != null ? projectConfig.getJudgeFallbackPolicy() : null);
+            service.setFallbackPolicy(this.enforcerFallbackPolicy, objectMapper);
+
+            EnforcerDiffArchive diffArchive = archiveDiffs
+                    ? new EnforcerDiffArchive(sessionId, wd, objectMapper) : null;
+            DiffPatternEvaluator diffPatternEvaluator = loadDiffPatternEvaluator(policy, wd);
+
+            TerminalRenderer renderer = new TerminalRenderer();
+            AsciiRenderer ascii = new AsciiRenderer(renderer, 120);
+            SubprocessAgentRunner runner = new SubprocessAgentRunner(
+                    agent, wd.toString(), skipPermissions, injectTools, kompileUrl, mcpPort,
+                    null, renderer, ascii);
+            runner.setExtraEnvironment(runtimePolicy.toEnvironment());
+            runner.setInputProvider(prompt -> null);   // headless: no interactive sub-prompts
+            runner.setOutputConsumer(line -> { });      // suppress live rendering; REST carries output
+
+            ChatHistory history = new ChatHistory(sessionId);
+            ChatSessionMetrics metrics = new ChatSessionMetrics(sessionId);
+            metrics.setAgentName(agent + " (enforcer-rest)");
+            history.open(resolvedRules, agent + " (enforcer-rest)", false);
+            runner.injectMcpTools();
+            if (injectSkills) {
+                runner.injectSkills();
+            }
+            if (kompileUrl != null && !kompileUrl.isBlank()) {
+                registerServerSession(sessionId, resolvedRules, evaluator.describe(), wd);
+            }
+
+            ReentrantLock turnLock = new ReentrantLock();
+            CountDownLatch stopLatch = new CountDownLatch(1);
+            EnforcerJudge fjudge = judge;
+            EnforcerDiffArchive fArchive = diffArchive;
+
+            EnforcerControlServer.Session sess = new EnforcerControlServer.Session() {
+                @Override
+                public EnforcerResult send(String message) {
+                    turnLock.lock();
+                    try {
+                        return runEnforcedTurn(service, fjudge, policy, runner, history, metrics,
+                                conversationWindow, fArchive, diffPatternEvaluator, message);
+                    } finally {
+                        turnLock.unlock();
+                    }
+                }
+
+                @Override
+                public String command(String command, String arg) {
+                    return runControlCommand(command, arg, policy, fArchive);
+                }
+
+                @Override
+                public Map<String, Object> state() {
+                    Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("sessionId", sessionId);
+                    m.put("agent", agent);
+                    m.put("mode", "enforcer-rest");
+                    m.put("backend", evaluator.describe());
+                    m.put("maxCorrections", policy.getMaxCorrections());
+                    m.put("archiveEnabled", fArchive != null);
+                    m.put("fallbackPolicy", enforcerFallbackPolicy.configValue());
+                    return m;
+                }
+
+                @Override
+                public List<JudgementRecord> judgements() {
+                    return JudgementLog.readAll(sessionId);
+                }
+
+                @Override
+                public void stop() {
+                    stopLatch.countDown();
+                }
+            };
+
+            String token = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+            EnforcerControlServer server = new EnforcerControlServer(controlPort, token, sess, objectMapper);
+            server.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(stopLatch::countDown));
+
+            System.out.println("[enforcer] REST control server: http://127.0.0.1:" + server.port());
+            System.out.println("[enforcer] token (X-Kompile-Token header): " + token);
+            System.out.println("[enforcer] POST /send {\"message\":\"...\"} · POST /command {\"command\":\"/rollback\"} · "
+                    + "GET /state · GET /judgements · POST /stop");
+            System.out.println("[enforcer] session " + sessionId + " · agent " + agent
+                    + " · judge " + evaluator.describe());
+
+            try {
+                stopLatch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                server.stop();
+                runner.setRealtimeMonitor(null);
+                runner.cleanup();
+                runtimePolicy.cleanup();
+                history.close();
+                if (fjudge != null) {
+                    fjudge.close();
+                }
+            }
+            return 0;
+        } catch (Exception e) {
+            System.err.println("Error running REST-controlled enforcer: " + e.getMessage());
+            return 1;
+        }
+    }
+
+    private String runControlCommand(String command, String arg, EnforcerPolicy policy,
+                                     EnforcerDiffArchive diffArchive) {
+        String c = command.toLowerCase(Locale.ROOT);
+        try {
+            switch (c) {
+                case "/status":
+                    return "enforced · maxCorrections=" + policy.getMaxCorrections()
+                            + " · archive=" + (diffArchive != null);
+                case "/rules":
+                    return policy.getRules();
+                case "/archive": {
+                    if (diffArchive == null) {
+                        return "archiving disabled";
+                    }
+                    StringBuilder sb = new StringBuilder();
+                    for (EnforcerDiffArchive.TurnMetadata t : diffArchive.listTurns()) {
+                        sb.append(t.violated() ? "[VIOLATED] " : "[OK] ").append(t.turnId())
+                                .append("  ").append(t.timestamp())
+                                .append("  files:").append(t.changedFiles().size()).append('\n');
+                    }
+                    return sb.length() == 0 ? "no turns archived" : sb.toString().trim();
+                }
+                case "/rollback": {
+                    if (diffArchive == null) {
+                        return "archiving disabled";
+                    }
+                    EnforcerDiffArchive.RollbackResult rr = (arg == null || arg.isBlank())
+                            ? diffArchive.rollbackViolations() : diffArchive.rollback(arg);
+                    return rr.message() + (rr.success() ? " (restored " + rr.restoredFiles().size() + ")" : "");
+                }
+                case "/diff": {
+                    if (diffArchive == null) {
+                        return "archiving disabled";
+                    }
+                    if (arg == null || arg.isBlank()) {
+                        return "usage: /command {\"command\":\"/diff\",\"arg\":\"<turn-id>\"}";
+                    }
+                    String d = diffArchive.getTurnDiff(arg);
+                    return (d == null || d.isBlank()) ? "no diff for " + arg : d;
+                }
+                case "/purge":
+                    if (diffArchive == null) {
+                        return "archiving disabled";
+                    }
+                    diffArchive.purge();
+                    return "archive purged";
+                default:
+                    return "unknown command: " + command;
+            }
+        } catch (IOException e) {
+            return "error: " + e.getMessage();
+        }
+    }
+
     private EnforcerResult runEnforcedTurn(EnforcerService service, EnforcerJudge judge,
                                            EnforcerPolicy policy,
                                            SubprocessAgentRunner runner, ChatHistory history,
@@ -350,7 +728,9 @@ public class EnforcerCommand implements Callable<Integer> {
         // Install realtime monitor: LLM-based (EnforcerJudge) or keyword-based
         SubprocessAgentRunner.RealtimeMonitor rtMonitor;
         if (judge != null) {
-            rtMonitor = new EnforcerRealtimeMonitor(judge, policy, prompt, conversationWindow);
+            EnforcerRealtimeMonitor llmMonitor = new EnforcerRealtimeMonitor(judge, policy, prompt, conversationWindow);
+            llmMonitor.setFailOpenOnError(enforcerFallbackPolicy == EnforcerFallbackPolicy.FAIL_OPEN);
+            rtMonitor = llmMonitor;
         } else if (keywordMode) {
             KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper);
             rtMonitor = new KeywordRealtimeMonitor(kwEval, policy, conversationWindow);
@@ -522,8 +902,27 @@ public class EnforcerCommand implements Callable<Integer> {
                 + "Archive:   " + (archiveEnabled ? "enabled (rollback on violation)" : "disabled") + "\n\n"
                 + "The subordinate agent is evaluated after each turn. "
                 + "Violations trigger correction attempts; stop decisions block the turn.\n\n"
-                + "Slash commands: /help, /rules, /agent, /status, /archive, /rollback, /quit";
+                + "Slash commands: /help, /rules, /agent, /status, /processes, /archive, /rollback, /quit";
         System.out.println(ascii.panel("Kompile Enforcer", body));
+    }
+
+    private void printProcessMenu(AsciiRenderer ascii, TerminalRenderer renderer) {
+        if (bgProcMgr == null) {
+            System.out.println(renderer.dim("Process watchers are only tracked in interactive mode."));
+            return;
+        }
+        List<BackgroundProcessManager.ProcessEntry> all = bgProcMgr.listAll();
+        if (all.isEmpty()) {
+            System.out.println(renderer.dim("No active watchers."));
+            return;
+        }
+        StringBuilder body = new StringBuilder();
+        for (BackgroundProcessManager.ProcessEntry e : all) {
+            body.append(String.format("  [%s] %-9s %-9s %s%n",
+                    e.getId(), e.getKind().label(),
+                    e.getState().name().toLowerCase(Locale.ROOT), e.getDescription()));
+        }
+        System.out.println(ascii.panel("Judge / Enforcer Processes", body.toString()));
     }
 
     private String handleSlashCommand(String command, LineReader reader, AsciiRenderer ascii,
@@ -538,6 +937,7 @@ public class EnforcerCommand implements Callable<Integer> {
             String body = "/rules      Show active enforcer rules\n"
                     + "/agent      Switch subordinate agent for the next turn\n"
                     + "/status     Show current agent, judge, and correction limit\n"
+                    + "/processes  Show the live judge + enforcer watcher processes\n"
                     + "/archive    List archived turns with violation status\n"
                     + "/rollback   Rollback all violated turns (restore original files)\n"
                     + "/rollback <turn-id>  Rollback a specific turn\n"
@@ -562,6 +962,10 @@ public class EnforcerCommand implements Callable<Integer> {
                 body += "\nPath:    " + diffArchive.getArchiveRoot();
             }
             System.out.println(ascii.panel("Enforcer Status", body));
+            return "continue";
+        }
+        if (lower.equals("/processes") || lower.equals("/activity")) {
+            printProcessMenu(ascii, renderer);
             return "continue";
         }
         if (lower.equals("/archive")) {
@@ -813,8 +1217,17 @@ public class EnforcerCommand implements Callable<Integer> {
         // Extract diff-scoped rules from the policy
         if (policy != null && policy.hasRules()) {
             KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper);
-            DiffPatternEvaluator fromPolicy = DiffPatternEvaluator.fromKeywordRules(
-                    kwEval.getRules(), policy.getRules());
+            // Derive diff-scoped rules from the keyword evaluator (was DiffPatternEvaluator.fromKeywordRules,
+            // dropped when the evaluator moved to kompile-cli-common to keep it free of CLI couplings).
+            List<DiffPatternEvaluator.DiffRule> diffRules = new ArrayList<>();
+            for (KeywordEnforcerEvaluator.KeywordRule kr : kwEval.getRules()) {
+                if ("diff".equals(kr.getScope())) {
+                    diffRules.add(new DiffPatternEvaluator.DiffRule(
+                            kr.getKeyword(), kr.isRegex(), kr.isCaseSensitive(),
+                            kr.getDescription(), kr.getSeverity(), null));
+                }
+            }
+            DiffPatternEvaluator fromPolicy = new DiffPatternEvaluator(diffRules, policy.getRules());
             if (fromPolicy.isAvailable()) {
                 return fromPolicy;
             }

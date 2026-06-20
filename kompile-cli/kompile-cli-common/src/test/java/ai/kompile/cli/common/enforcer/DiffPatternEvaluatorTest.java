@@ -1,4 +1,4 @@
-package ai.kompile.cli.main.chat.enforcer;
+package ai.kompile.cli.common.enforcer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -200,19 +200,6 @@ class DiffPatternEvaluatorTest {
                 """;
         DiffPatternEvaluator eval = DiffPatternEvaluator.fromText(rules, objectMapper);
         assertEquals(2, eval.ruleCount());
-    }
-
-    @Test
-    void fromKeywordRulesExtractsDiffScopeOnly() {
-        List<KeywordEnforcerEvaluator.KeywordRule> allRules = List.of(
-                new KeywordEnforcerEvaluator.KeywordRule("bash", false, false, "no bash", "error", "tool"),
-                new KeywordEnforcerEvaluator.KeywordRule("System.exit", false, false, "no exit", "error", "diff"),
-                new KeywordEnforcerEvaluator.KeywordRule("badword", false, false, "no bad", "error", "output")
-        );
-
-        DiffPatternEvaluator eval = DiffPatternEvaluator.fromKeywordRules(allRules, "");
-        assertEquals(1, eval.ruleCount());
-        assertEquals("System.exit", eval.getRules().get(0).getPattern());
     }
 
     @Test

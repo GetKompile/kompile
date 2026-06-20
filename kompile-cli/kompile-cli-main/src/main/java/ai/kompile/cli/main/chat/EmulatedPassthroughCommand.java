@@ -23,6 +23,7 @@ import ai.kompile.cli.mcp.stdio.TaskRegistry;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.enforcer.*;
+import ai.kompile.cli.common.enforcer.DiffPatternEvaluator;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -172,6 +173,18 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     // screen; reports are NEVER forwarded to the agent (decoder-owned TUIs such
     // as OpenCode render mouse activity if they receive them).
     private volatile boolean transcriptMouseEnabled = false;
+    // Raw key pass-through: while true, the REPL loop forwards every keystroke
+    // straight to the agent (for the agent's own multi-key / menu shortcuts) instead
+    // of running JLine's line editor. Entered via /passthrough, exited with Ctrl+].
+    private volatile boolean agentPassthroughActive = false;
+    // Decoder-owned extraction is gated on output-burst drain + screen-hash change so we
+    // snapshot a coherent screen, never a mid-update frame (the cause of jumbled text).
+    private volatile long lastDecodedRenderAt = 0L;
+    private volatile long lastDecodedScreenHash = Long.MIN_VALUE;
+    // renderMode = mirror: blit the agent's VirtualTerminal screen verbatim into the scroll
+    // region (the agent paints its own UI) instead of decoding+merging it into a transcript.
+    private volatile boolean mirrorRender = false;
+    private volatile boolean mirrorInputPrimed = false;
 
     private final Object activityLock = new Object();
     /** Shared draw lock — same instance as KompileTui.drawLock to prevent interleaved ANSI. */
@@ -261,6 +274,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                                     String latestLog, List<String> logs, String outputPath,
                                     boolean killable, boolean registryBacked) {}
 
+    // Background process manager for this session; the judge + enforcer register as watcher
+    // entries here so they are visible in the status bar and the /processes (/activity) menu.
+    private BackgroundProcessManager bgProcMgr;
+
     private static final class TodoActivityItem {
         private final String key;
         private String id;
@@ -284,6 +301,17 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     EnforcerService enforcerService;
     EnforcerConversationWindow enforcerConversationWindow;
     Map<String, String> enforcerExtraEnv;
+
+    // Live enforcement toggle — /enforcer pause|resume flips this. The dispatch gate skips the
+    // judge while paused WITHOUT tearing down the configured enforcer, so it can be resumed.
+    volatile boolean enforcementPaused;
+
+    // Diff-archive + diff-pattern features ported from the classic `kompile enforcer` (live-PTY
+    // enforcement): per-turn git snapshot, diff-pattern checks, and rollback-on-violation. Set by
+    // EnforcerCommand when delegating to a live PTY session.
+    EnforcerDiffArchive enforcerDiffArchive;
+    DiffPatternEvaluator enforcerDiffPatternEvaluator;
+    boolean enforcerAutoRollbackOnViolation;
 
     // ANSI — delegated to shared constants
     private static final String RESET = ai.kompile.utils.AnsiConstants.RESET;
@@ -384,13 +412,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
             // Initialize unified TUI — KompileTui is the ONE layout manager
             BackgroundTaskManager bgTaskMgr = new BackgroundTaskManager();
-            BackgroundProcessManager bgProcMgr = new BackgroundProcessManager(sessionId);
+            this.bgProcMgr = new BackgroundProcessManager(sessionId);
             this.tui = new KompileTui(bgTaskMgr, bgProcMgr, messageQueue, renderer);
             this.drawLock = tui.getDrawLock();
             tui.setAgentName(agent);
             tui.setSessionId(sessionId);
             tui.setMode("passthrough");
             tui.setEnforcerActive(enforcerEvaluator != null);
+            // Make the judge + enforcer visible as watcher "processes" (status bar + /processes).
+            registerEnforcerWatchers();
             // Tell KompileTui to reserve rows for the input box + status line + activity panel.
             tui.setReservedRowsCalculator((h, w) -> {
                 int ir = h < 12 ? 1 : Math.max(3, Math.min(8, h / 5));
@@ -452,6 +482,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 while (true) {
                     if (shutdownSignal.get()) break;
 
+                    // Raw key pass-through runs its own input loop instead of the line
+                    // editor, forwarding every keystroke to the agent until Ctrl+].
+                    if (agentPassthroughActive) {
+                        runAgentPassthroughLoop();
+                        continue;
+                    }
+
+                    // Mirror mode uses Kompile's input box + dispatch just like decoded mode —
+                    // it ONLY changes how the scroll region is rendered (blit vs transcript).
                     String line;
                     try {
                         // Re-establish scroll region before positioning (JLine may have reset it)
@@ -604,13 +643,43 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             inputRows = h < 12 ? 1 : Math.max(3, Math.min(8, h / 5));
             activityRows = h < 16 ? 1 : Math.max(2, Math.min(4, h / 8));
             // queue(1)+busy(1)+topBorder(1)+input(inputRows)+bottomBorder(1)+status(1)+activity(activityRows)
+            // Kompile keeps its input box + bottom chrome in BOTH modes — mirror only changes how
+            // the scroll-region CONTENT is produced (blit vs decoded transcript), not the layout.
             int reserved = inputRows + activityRows + 5;
             tui.setReservedMiddleRows(reserved);
             tui.reestablishScrollRegion();
             scrollBottom = tui.scrollBottom();
             clampScrollViewportOffsetLocked();
-            redrawScrollViewportContentLocked();
+            if (mirrorRender && virtualTerminal != null) {
+                mirrorVtToScrollRegion(virtualTerminal);
+            } else {
+                redrawScrollViewportContentLocked();
+            }
             drawFixedInputBox();
+        }
+    }
+
+    /**
+     * Clear the entire screen and repaint everything fresh — top/bottom bars, scroll-region
+     * content (mirror blit or decoded transcript), and the input box — so a render-mode switch
+     * leaves NO stale content from the previous mode/state. Driven by {@code /render}.
+     */
+    private void fullRepaint() {
+        if (tui == null) return;
+        synchronized (drawLock) {
+            System.out.print("\033[r\033[2J\033[H");   // reset scroll region, erase screen, home
+            tui.redrawBars();
+            tui.reestablishScrollRegion();
+            scrollBottom = tui.scrollBottom();
+            clampScrollViewportOffsetLocked();
+            if (mirrorRender && virtualTerminal != null) {
+                drawFixedInputBox();                    // Kompile keeps its input box in mirror
+                System.out.flush();
+                mirrorVtToScrollRegion(virtualTerminal); // blit; restores the cursor to the box
+            } else {
+                redrawScrollViewportLocked(activeLineReader);
+                System.out.flush();
+            }
         }
     }
 
@@ -688,14 +757,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private String filterDecodedTuiTextForDisplay(String text) {
-        String echoTrimmed = lastSentMessage == null ? "" : lastSentMessage.trim();
         StringBuilder filtered = new StringBuilder();
         String[] lines = text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
         for (int i = 0; i < lines.length; i++) {
             String line = stripTrailingWhitespace(lines[i]);
             String stripped = line.trim();
             if (!stripped.isEmpty()) {
-                if (!echoTrimmed.isEmpty() && (stripped.equals(echoTrimmed) || stripped.endsWith(echoTrimmed))) {
+                if (isSentMessageEcho(stripped)) {
                     continue;
                 }
                 filtered.append(line);
@@ -705,6 +773,28 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
         }
         return filtered.toString();
+    }
+
+    /**
+     * True when a decoded output line is just the agent echoing the message we sent.
+     * Both sides are normalized first ({@link #normalizeEchoLine}) so box-drawing/dash
+     * glyphs an agent's input frame bleeds into the echoed row don't defeat the match.
+     * Recognized on every repaint of the prompt box — we intentionally do NOT consume
+     * {@code lastSentMessage} — which is what stops the echo from leaking a duplicate
+     * when the agent repaints.
+     */
+    private boolean isSentMessageEcho(String strippedLine) {
+        String echo = normalizeEchoLine(lastSentMessage);
+        if (echo.isEmpty()) return false;
+        String norm = normalizeEchoLine(strippedLine);
+        if (norm.isEmpty()) return false;
+        return norm.equals(echo) || (echo.length() >= 8 && norm.endsWith(echo));
+    }
+
+    /** Drop box-drawing/dash glyphs an input frame can bleed in, then collapse whitespace. */
+    private String normalizeEchoLine(String s) {
+        if (s == null || s.isBlank()) return "";
+        return s.replaceAll("[\\u2500-\\u257F\\u2010-\\u2015]", " ").replaceAll("\\s+", " ").trim();
     }
 
     private boolean scrollTranscriptPageUp() {
@@ -736,6 +826,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private boolean setScrollViewportOffsetLocked(int offset, LineReader reader) {
+        if (mirrorRender) {
+            // Mirror shows the agent's LIVE screen (a blit), not a Kompile scrollback. Repainting
+            // the transcript here would clobber the blit and the agent's UI would vanish. There is
+            // no Kompile scrollback to move through in mirror, so keep painting the agent's current
+            // screen (the agent owns its own scrollback). Scroll is effectively a no-op here.
+            if (virtualTerminal != null) mirrorVtToScrollRegion(virtualTerminal);
+            return false;
+        }
         int before = scrollViewportOffset;
         scrollViewportOffset = Math.max(0, Math.min(offset, maxScrollViewportOffsetLocked()));
         redrawScrollViewportLocked(reader);
@@ -766,7 +864,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         int source = first;
         for (int row = top; row <= scrollBottom; row++) {
             String line = source < last ? scrollbackLines.get(source++) : "";
-            System.out.printf("\033[%d;1H\033[2K%s", row, fitAnsiLine(line, Math.max(1, width - 1)));
+            // Fit to width-1, not full width: printing a full-width line on the bottom
+            // row of the scroll region can trigger an unwanted region scroll (collapse) on
+            // terminals without deferred auto-wrap. fitScrollLine clips without an ellipsis,
+            // so we keep the no-"..." behavior while preserving the safe last-column margin.
+            System.out.printf("\033[%d;1H\033[2K%s", row, fitScrollLine(line, Math.max(1, width - 1)));
         }
     }
 
@@ -883,6 +985,21 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         return truncatePlain(plain, width);
     }
 
+    /**
+     * Fit a transcript line to the scroll viewport. Unlike {@link #fitAnsiLine} this
+     * never appends an ellipsis: a line that exactly fills the width (a separator, a
+     * full-width box border, padded agent output) is legitimate content, and a "..."
+     * marker at the right edge of every such line reads as a spurious column of dots.
+     * Lines that fit keep their ANSI styling; only genuinely over-wide lines are
+     * hard-clipped, with no marker.
+     */
+    private String fitScrollLine(String text, int width) {
+        if (text == null || text.isEmpty()) return "";
+        String plain = stripAnsi(text);
+        if (plain.length() <= width) return text;
+        return plain.substring(0, Math.max(0, width));
+    }
+
     /** Update the managed status line ("kompile [agent] · status …") below the input box. */
     void updateStatusLine(String status) {
         currentStatus = status == null || status.isBlank() ? "idle" : status;
@@ -916,7 +1033,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         if (scrollBottom <= 0) return;
         int w = terminal != null && terminal.getWidth() > 0 ? terminal.getWidth() : 120;
         String status = currentStatus == null || currentStatus.isBlank() ? "idle" : currentStatus;
-        String enforcerTag = enforcerEvaluator != null ? " · enforcer" : "";
+        String enforcerTag = enforcerStatusTag(enforcerEvaluator != null, enforcementPaused);
         String text = "  kompile [" + agent + "] · " + status + enforcerTag + " · Esc cancel · /quit exit";
         System.out.printf("\033[%d;1H\033[2K%s", statusRow(),
                 DIM + truncatePlain(text, Math.max(12, w - 1)) + RESET);
@@ -1035,6 +1152,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         for (TaskRecord record : activeTaskRecords()) {
             addActivityMenuItem(items, seen, activityMenuItem(record));
+        }
+        if (bgProcMgr != null) {
+            for (BackgroundProcessManager.ProcessEntry entry : bgProcMgr.listAll()) {
+                addActivityMenuItem(items, seen, activityMenuItem(entry));
+            }
         }
         return items;
     }
@@ -1170,6 +1292,51 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         boolean killable = record.isActive() && record.getPid() > 0;
         return new ActivityMenuItem(record.getTaskId(), kind, truncatePlain(label, 80), status,
                 latest, logs, record.getOutputPath(), killable, true);
+    }
+
+    private ActivityMenuItem activityMenuItem(BackgroundProcessManager.ProcessEntry entry) {
+        if (entry == null) return null;
+        String status = entry.getState().name().toLowerCase(Locale.ROOT);
+        Map<String, String> md = entry.getMetadata();
+        String latest = md != null && md.get("backend") != null ? md.get("backend") : "";
+        boolean killable = !entry.isVirtual() && entry.isRunning();
+        return new ActivityMenuItem(entry.getId(), entry.getKind().label(),
+                truncatePlain(entry.getDescription(), 80), status,
+                latest, List.of(), "", killable, false);
+    }
+
+    /**
+     * Register the judge + enforcer as virtual watcher entries in the background process manager so
+     * they show up in the status bar and the /processes (/activity) menu. Without this the
+     * enforcement machinery ran invisibly during a passthrough session.
+     */
+    private void registerEnforcerWatchers() {
+        registerEnforcerWatchers(bgProcMgr, enforcerEvaluator, enforcerPolicy);
+    }
+
+    /** Register judge + enforcer watcher entries. Package-private + static for testing. */
+    static void registerEnforcerWatchers(BackgroundProcessManager mgr,
+                                         EnforcerEvaluator evaluator, EnforcerPolicy policy) {
+        if (mgr == null || evaluator == null) {
+            return;
+        }
+        boolean llm = evaluator.recordsJudgements();
+        String mode = llm ? "LLM judge" : "keyword";
+        String backend = evaluator.describe();
+        int ruleCount = 0;
+        if (policy != null && policy.getRules() != null) {
+            ruleCount = (int) policy.getRules().lines().filter(l -> !l.isBlank()).count();
+        }
+        mgr.registerVirtual(
+                BackgroundProcessManager.ProcessKind.ENFORCER, "enforcer",
+                "Enforcer · " + mode + " · " + ruleCount + " rule" + (ruleCount == 1 ? "" : "s"),
+                Map.of("mode", mode, "rules", String.valueOf(ruleCount), "backend", backend));
+        if (llm) {
+            mgr.registerVirtual(
+                    BackgroundProcessManager.ProcessKind.JUDGE, "judge",
+                    "Judge · " + backend,
+                    Map.of("backend", backend, "mode", mode));
+        }
     }
 
     private String activityStatus(ActivityItem item) {
@@ -3277,10 +3444,47 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                                     }
                                 }
                             } else {
-                                // Full-screen alternate TUIs like OpenCode own their screen in
-                                // standalone mode, but Kompile owns this terminal. Render only
-                                // decoder-extracted assistant text into the scroll area.
-                                processDecodedTuiScreen(decoder, vt);
+                                // Decoder-owned (Claude/OpenCode): the agent repaints cells in
+                                // place, and a single repaint can arrive across several reads — so
+                                // is.available()==0 alone catches MID-redraw frames, which are
+                                // jumbled and differ every tick, and the transcript merge then
+                                // duplicates them. Wait for the screen to SETTLE: the redraw must
+                                // have fully drained AND no new bytes for a short window. Only then
+                                // extract one coherent frame (identical tick-to-tick, so the merge
+                                // collapses it). The screen hash skips no-op renders; a time cap
+                                // keeps the UI live if a stream never pauses.
+                                // Mirror mode blits the VT VERBATIM (no jumble filtering), so it
+                                // must wait for a fully COHERENT frame: a longer settle window and
+                                // a much longer time-cap, so a mid-redraw frame (the agent rewriting
+                                // its spinner line) is never captured. Decoder mode filters jumbles
+                                // downstream, so it stays live with a short settle + 400ms cap.
+                                long settleWindow = mirrorRender ? 90L : 60L;
+                                long timeCapMs = mirrorRender ? 1200L : 400L;
+                                boolean settled = false;
+                                if (is.available() == 0) {
+                                    long settleStart = System.currentTimeMillis();
+                                    settled = true;
+                                    while (System.currentTimeMillis() - settleStart < settleWindow) {
+                                        if (is.available() > 0) { settled = false; break; }
+                                        try { Thread.sleep(10); }
+                                        catch (InterruptedException ie) {
+                                            Thread.currentThread().interrupt(); break;
+                                        }
+                                    }
+                                }
+                                long nowMs = System.currentTimeMillis();
+                                if (settled || nowMs - lastDecodedRenderAt >= timeCapMs) {
+                                    long screenHash = vt.getScreenHash();
+                                    if (screenHash != lastDecodedScreenHash) {
+                                        lastDecodedScreenHash = screenHash;
+                                        lastDecodedRenderAt = nowMs;
+                                        if (mirrorRender) {
+                                            mirrorVtToScrollRegion(vt);
+                                        } else {
+                                            processDecodedTuiScreen(decoder, vt);
+                                        }
+                                    }
+                                }
                             }
                         }
                     } catch (IOException e) {
@@ -3441,6 +3645,108 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
     }
 
+    /**
+     * Mirror mode: blit the agent's VirtualTerminal screen verbatim into Kompile's scroll
+     * region (rows scrollTop..scrollBottom), preserving the agent's exact layout/styling and
+     * cursor. No content extraction or transcript merge — the agent paints its own UI; Kompile
+     * keeps only the top bar and bottom status bar. This is the "defer rendering to the agent
+     * CLI" path that avoids the decoder-merge bug class entirely.
+     */
+    private void mirrorVtToScrollRegion(ai.kompile.cli.main.chat.tui.VirtualTerminal vt) {
+        if (vt == null || terminal == null) return;
+        // Mirror mode renders the AGENT's screen into the scroll region but keeps Kompile's own
+        // input box + chrome, and the turn still runs through the normal dispatch (agentBusy +
+        // wait loop). processDecodedTuiScreen is skipped here, so feed the wait loop the
+        // "saw content" signal and reflect the agent's responding/idle state in Kompile's status.
+        ai.kompile.cli.main.chat.tui.AgentTuiDecoder dec = agentDecoder;
+        if (dec != null) {
+            boolean responding = dec.isResponding(vt);
+            if (responding) tuiTurnSawContent.set(true);
+            String status = responding ? "responding" : "idle";
+            if (!status.equals(currentStatus)) updateStatusLine(status);
+            if (tui != null && tuiSubagentId != null) {
+                tui.getStatusBar().updateSubagentStatus(tuiSubagentId, status);
+            }
+        }
+        synchronized (drawLock) {
+            int top = tui != null ? tui.scrollTop() : 2;
+            int bottom = scrollBottom;
+            int regionRows = Math.max(0, bottom - top + 1);
+            // Same code path the headless framebuffer harness exercises (MirrorRenderer).
+            System.out.print(ai.kompile.cli.main.chat.tui.MirrorRenderer.buildMirrorBlit(vt, top, regionRows));
+            // Keep the REAL cursor in Kompile's input box — the user types THERE, not in the
+            // agent's mirrored box. The agent's caret is just a rendered glyph in the mirror above;
+            // we deliberately do NOT steal the terminal cursor for it.
+            LineReader promptReader = activeLineReader;
+            if (promptReader != null && !busyInputActive) {
+                drawActivePromptLine(promptReader, false);
+            } else {
+                drawFixedInputBox(true);
+            }
+            System.out.flush();
+        }
+    }
+
+    /**
+     * Mirror-mode input: raw keystrokes go straight to the agent, which owns its own input
+     * box (shown in the mirror). Ctrl-\ drops to a single Kompile command (the caller runs
+     * one readLine, then re-enters this loop). Returns true on Ctrl-\, false when mirror mode
+     * ended or the agent/shell is shutting down. The 150ms read timeout re-checks liveness so
+     * this can never wedge.
+     */
+    private boolean runMirrorInputLoop() {
+        if (terminal == null || agentStdin == null) return false;
+        org.jline.terminal.Attributes prev = null;
+        try {
+            prev = terminal.enterRawMode();
+            org.jline.utils.NonBlockingReader in = terminal.reader();
+            if (!mirrorInputPrimed) {
+                // Stop the REAL terminal emitting focus/bracketed-paste events that would be
+                // forwarded to the agent and echoed as garbage (^[[I, ^[[?...); drain any
+                // leftover query responses sitting on stdin so they don't reach the agent.
+                try { writeRawTerminal("\033[?1004l\033[?2004l"); } catch (IOException | IOError ignored) {}
+                try {
+                    int d;
+                    while ((d = in.read(5L)) != org.jline.utils.NonBlockingReader.READ_EXPIRED && d >= 0) { /* drain */ }
+                } catch (IOException ignored) {}
+                mirrorInputPrimed = true;
+            }
+            while (mirrorRender && tuiProcess != null && tuiProcess.isAlive() && !shutdownSignal.get()) {
+                int c = in.read(150L);
+                if (c == org.jline.utils.NonBlockingReader.READ_EXPIRED) continue;
+                if (c < 0) break;
+                if (c == 0x1C) return true;     // Ctrl-\ → one Kompile command
+                // Drop terminal-generated noise the agent shouldn't see: focus in/out
+                // (ESC[I / ESC[O) and device/mode query responses (ESC[?...). Real key
+                // sequences (arrows ESC[A.. etc.) are NOT ESC[I/ESC[O/ESC[?, so they pass.
+                if (c == 0x1B) {
+                    int c1 = in.read(20L);
+                    if (c1 == '[') {
+                        int c2 = in.read(20L);
+                        if (c2 == 'I' || c2 == 'O') continue;                 // focus in/out — drop
+                        if (c2 == '?') {                                      // device/mode response — drop
+                            int q;
+                            while ((q = in.read(20L)) >= 0 && !(q >= 0x40 && q <= 0x7E)) { /* skip params */ }
+                            continue;
+                        }
+                        sendRawToAgentStdin(new byte[]{0x1B, '[', (byte) c2});
+                        continue;
+                    }
+                    sendRawToAgentStdin(c1 >= 0 ? new byte[]{0x1B, (byte) c1} : new byte[]{0x1B});
+                    continue;
+                }
+                sendRawToAgentStdin(new byte[]{(byte) c});
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // Any failure just ends the mirror input loop cleanly.
+        } finally {
+            if (prev != null) {
+                try { terminal.setAttributes(prev); } catch (RuntimeException ignored) {}
+            }
+        }
+        return false;
+    }
+
     private synchronized void processDecodedTuiScreen(ai.kompile.cli.main.chat.tui.AgentTuiDecoder decoder,
                                                       ai.kompile.cli.main.chat.tui.VirtualTerminal vt) {
         if (decoder == null || vt == null) return;
@@ -3469,6 +3775,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         if (renderable == null || renderable.isBlank()) return;
         emitDecodedTuiText(renderable, tuiFullText, tuiSpinner, tuiSpinnerStopped, false, false);
         tuiLastRenderedContent = updateRenderedDecodedContent(tuiLastRenderedContent, extracted, renderable);
+        // Keep the cursor in Kompile's input box: the live-block redraw + the spinner-stop
+        // safePrintln above can leave it parked in the content area while the user is typing
+        // at the prompt. Reposition (no forced line redraw → no flicker) on every frame.
+        LineReader promptReader = activeLineReader;
+        if (promptReader != null && !busyInputActive) {
+            synchronized (drawLock) { drawActivePromptLine(promptReader, false); }
+        }
     }
 
     private synchronized void flushDecodedTuiRemainder(StringBuilder fullText,
@@ -3569,16 +3882,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private String filterDecodedTuiText(String text) {
-        String echoRef = lastSentMessage;
-        String echoTrimmed = echoRef == null ? "" : echoRef.trim();
         StringBuilder filtered = new StringBuilder();
         String[] lines = text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
         for (int i = 0; i < lines.length; i++) {
             String line = stripTrailingWhitespace(lines[i]);
             String stripped = line.trim();
             if (!stripped.isEmpty()) {
-                if (!echoTrimmed.isEmpty() && (stripped.equals(echoTrimmed) || stripped.endsWith(echoTrimmed))) {
-                    lastSentMessage = null;
+                if (isSentMessageEcho(stripped)) {
                     continue;
                 }
                 filtered.append(line);
@@ -3714,14 +4024,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             String stripped = line.trim();
             if (stripped.isEmpty() || stripped.length() < 3) continue;
 
-            // Filter exact PTY echo of user input — only suppress lines that
-            // are the user's message verbatim (possibly with a prompt prefix).
-            if (echoRef != null && !echoRef.isEmpty()) {
-                String echoTrimmed = echoRef.trim();
-                if (stripped.equals(echoTrimmed) || stripped.endsWith(echoTrimmed)) {
-                    lastSentMessage = null; // consume — only filter once
-                    continue;
-                }
+            // Filter the agent's echo of the user's message — box-frame tolerant and
+            // recognized on every repaint (see isSentMessageEcho), so it never leaks a
+            // garbled line or a duplicate when the agent repaints its prompt box.
+            if (isSentMessageEcho(stripped)) {
+                continue;
             }
 
             lastOutputTime.set(System.currentTimeMillis());
@@ -3858,6 +4165,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             safePrintln(renderer.renderToolCallStart(tu.name(), tu.input()));
             toolCalls.add(tu.name());
             metrics.recordToolCall(tu.name(), false, 0);
+            // Index the tool call live (not just via post-hoc transcript harvest) so emulated
+            // passthrough sessions surface in the MCP Hub tool-call catalog like native passthrough.
+            ToolCallIndex.getInstance().record(
+                    metrics.getSessionId(), tu.name(),
+                    tu.input() != null ? tu.input().toString() : "",
+                    agent, "emulated-passthrough", false, 0,
+                    System.getProperty("user.dir"));
         } else if (event instanceof PassthroughStreamParser.ToolOutput toolOutput) {
             // Tool is still running — just display the output
             flushPendingText(pendingText, spinner, spinnerStopped);
@@ -4158,6 +4472,84 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
     }
 
+    /**
+     * Forward a raw control key to the agent's stdin — but ONLY once the agent is
+     * actively responding with rendered content, i.e. past its startup handshake
+     * ({@code agentBusy && tuiTurnSawContent}). Forwarding raw keys during launch or at
+     * the idle prompt disrupts the agent's init and can wedge it (e.g. Ctrl+O hit at the
+     * beginning). Always consumes the key so it never leaks into the line editor.
+     */
+    private boolean forwardKeyToAgent(byte[] key) {
+        if (agentBusy && tuiTurnSawContent.get() && decoderOwnsScreen() && agentStdin != null) {
+            sendRawToAgentStdin(key);
+        }
+        return true;
+    }
+
+    /**
+     * Forward the underlying agent's own interactive shortcuts to it. In the managed
+     * (decoder-owned) passthrough the readLine would otherwise consume these, so the
+     * agent never sees them. Ctrl+O (expand) always forwards; Ctrl+B (background)
+     * forwards only when the agent declares native backgrounding
+     * (supportsNativeBackgrounding()) — otherwise Kompile keeps ownership of
+     * backgrounding. Bound across all keymaps so it works at the prompt and while busy.
+     */
+    private void installAgentKeyForwarding(LineReaderImpl impl) {
+        impl.getWidgets().put("forward-ctrl-o", () -> forwardKeyToAgent(new byte[]{0x0F}));
+        impl.getWidgets().put("forward-ctrl-b", () -> {
+            if (agentDecoder != null && agentDecoder.supportsNativeBackgrounding()) {
+                return forwardKeyToAgent(new byte[]{0x02});
+            }
+            // No native backgrounding — leave the key to Kompile's own backgrounding
+            // and just consume it.
+            return true;
+        });
+        org.jline.reader.Reference ctrlO = new org.jline.reader.Reference("forward-ctrl-o");
+        org.jline.reader.Reference ctrlB = new org.jline.reader.Reference("forward-ctrl-b");
+        for (KeyMap<org.jline.reader.Binding> keyMap : impl.getKeyMaps().values()) {
+            keyMap.bind(ctrlO, KeyMap.ctrl('O'));
+            keyMap.bind(ctrlB, KeyMap.ctrl('B'));
+        }
+    }
+
+    /**
+     * Raw key pass-through loop: forwards every keystroke straight to the agent's
+     * stdin so the agent's own multi-key / menu shortcuts work (e.g. Claude Code's
+     * subprocess menus). Runs INSTEAD of the JLine line editor while
+     * {@code agentPassthroughActive} (entered via /passthrough); the terminal is put
+     * in raw mode for the duration. Exits on Ctrl+] (0x1D), agent exit, EOF, or
+     * shutdown — the 200ms read timeout re-checks liveness so it can never wedge, and
+     * the flag is always cleared in finally. Opt-in and self-contained: a bug here
+     * cannot affect normal line editing.
+     */
+    private void runAgentPassthroughLoop() {
+        if (!decoderOwnsScreen() || agentStdin == null || terminal == null) {
+            agentPassthroughActive = false;
+            return;
+        }
+        org.jline.terminal.Attributes prev = null;
+        try {
+            prev = terminal.enterRawMode();
+            safePrintln(renderer.dim("  ▸ Pass-through ON — keys go to " + agent + ". Ctrl+] to exit."));
+            org.jline.utils.NonBlockingReader in = terminal.reader();
+            while (agentPassthroughActive && tuiProcess != null && tuiProcess.isAlive()
+                    && !shutdownSignal.get()) {
+                int c = in.read(200L);
+                if (c == org.jline.utils.NonBlockingReader.READ_EXPIRED) continue;
+                if (c < 0 || c == 0x1D) break;   // EOF on terminal input, or Ctrl+] to leave
+                sendRawToAgentStdin(new byte[]{(byte) c});
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // Any failure just ends pass-through cleanly rather than stranding the user.
+        } finally {
+            if (prev != null) {
+                try { terminal.setAttributes(prev); } catch (RuntimeException ignored) {}
+            }
+            agentPassthroughActive = false;
+            safePrintln(renderer.dim("  ▸ Pass-through OFF."));
+        }
+    }
+
     /** Minimal JSON string escaping for protocol values. */
     private static String escapeJson(String s) {
         if (s == null) return "";
@@ -4190,6 +4582,35 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/agent" -> switchAgent(rest.isBlank() ? null : rest.trim(), lineReader);
             case "/status" -> printStatus(metrics);
             case "/clear" -> initScrollLayout();
+            case "/passthrough", "/keys" -> {
+                if (!decoderOwnsScreen()) {
+                    safePrintln(renderer.dim("  Pass-through needs a managed (decoder-owned) agent."));
+                } else {
+                    // Picked up at the top of the REPL loop on the next iteration.
+                    agentPassthroughActive = true;
+                }
+            }
+            case "/render" -> {
+                String mode = rest.trim().toLowerCase();
+                if (mode.equals("mirror")) {
+                    mirrorRender = true;
+                    lastDecodedScreenHash = Long.MIN_VALUE;     // force the next frame to blit
+                    if (virtualTerminal != null) {
+                        // Full clear + repaint so the agent's screen takes over with NO stale
+                        // decoder content behind it; the blit also parks the cursor in its box.
+                        fullRepaint();
+                    } else {
+                        safePrintln(renderer.dim("  Render mode: mirror — send a message to start the agent."));
+                    }
+                } else if (mode.equals("decoded") || mode.equals("decode")) {
+                    mirrorRender = false;
+                    mirrorInputPrimed = false;
+                    fullRepaint();   // full clear + repaint the decoded transcript cleanly
+                } else {
+                    safePrintln(renderer.dim("  Render mode: " + (mirrorRender ? "mirror" : "decoded")
+                            + " · use /render mirror|decoded"));
+                }
+            }
             case "/mode" -> {
                 safePrintln(renderer.dim("  Current mode: emulated passthrough (" + agent + ")"));
                 safePrintln(renderer.dim("  Available: emulated, passthrough, standard"));
@@ -4218,6 +4639,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/process-output" -> handleActivitySlash("logs " + rest.trim());
             case "/process-kill" -> handleActivitySlash("kill " + rest.trim());
             case "/process-status" -> handleActivitySlash(rest.isBlank() ? "" : rest.trim());
+            case "/archive" -> handleEnforcerArchiveSlash();
+            case "/rollback" -> handleEnforcerRollbackSlash(rest.trim());
+            case "/diff" -> handleEnforcerDiffSlash(rest.trim());
+            case "/purge" -> handleEnforcerPurgeSlash();
             case "/enforcer" -> handleEnforcerSlash(rest.trim());
             default -> {
                 // Forward unrecognized slash commands to the underlying agent
@@ -4377,20 +4802,113 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         return text.length() > 80 ? text.substring(0, 77) + "..." : text;
     }
 
+    /** Whether a turn should be routed through the enforcer. Static + pure for unit testing. */
+    static boolean shouldEnforce(boolean hasService, boolean hasPolicy, boolean paused) {
+        return hasService && hasPolicy && !paused;
+    }
+
+    /** The status-bar enforcer tag for the given state. Static + pure for unit testing. */
+    static String enforcerStatusTag(boolean configured, boolean paused) {
+        if (!configured) {
+            return "";
+        }
+        return paused ? " · enforcer paused" : " · enforcer";
+    }
+
+    /** Live enforcement gate used by {@link #dispatchToAgent}. */
+    private boolean enforcementActive() {
+        return shouldEnforce(enforcerService != null, enforcerPolicy != null, enforcementPaused);
+    }
+
+    /**
+     * The durable judgement records for this enforced session, read from the judge's own log
+     * (falling back to the enforcer session id passed in the environment). Empty for keyword mode
+     * or when no judge is attached.
+     */
+    private List<JudgementRecord> liveEnforcerRecords() {
+        if (enforcerEvaluator instanceof EnforcerJudge ej && ej.getJudgementLog() != null) {
+            return JudgementLog.readFile(ej.getJudgementLog().getFile());
+        }
+        String sid = enforcerExtraEnv != null ? enforcerExtraEnv.get("KOMPILE_ENFORCER_SESSION_ID") : null;
+        if (sid != null && !sid.isBlank()) {
+            return JudgementLog.readAll(sid);
+        }
+        return List.of();
+    }
+
+    private static final java.time.format.DateTimeFormatter JUDGEMENT_HMS =
+            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")
+                    .withZone(java.time.ZoneId.systemDefault());
+
+    /** Format a judgement timestamp as HH:mm:ss (best-effort). */
+    static String judgementShortTime(String iso) {
+        if (iso == null || iso.isBlank()) {
+            return "--:--:--";
+        }
+        try {
+            return JUDGEMENT_HMS.format(java.time.Instant.parse(iso));
+        } catch (Exception e) {
+            return iso.length() > 8 ? iso.substring(0, 8) : iso;
+        }
+    }
+
+    /**
+     * Render the most recent {@code limit} judgement records as compact display lines. Pure +
+     * static so it is unit-testable without a live session. Each record becomes
+     * "{@code <sym> HH:mm:ss <phase> <headline> [backend] tool=…}", optionally followed by an
+     * indented violations line. {@code limit <= 0} renders all.
+     */
+    static List<String> formatJudgementLines(List<JudgementRecord> records, int limit) {
+        List<String> out = new java.util.ArrayList<>();
+        if (records == null || records.isEmpty()) {
+            return out;
+        }
+        int start = (limit > 0 && records.size() > limit) ? records.size() - limit : 0;
+        for (int i = start; i < records.size(); i++) {
+            JudgementRecord r = records.get(i);
+            String sym = r.isCompliant() ? "✓" : (r.isStop() ? "■" : "✗");
+            String headline = r.getStatus() != null ? r.getStatus()
+                    : (r.getSeverity() != null ? r.getSeverity() : "");
+            StringBuilder sb = new StringBuilder();
+            sb.append(sym).append(' ').append(judgementShortTime(r.getTimestamp()));
+            if (r.getPhase() != null && !r.getPhase().isBlank()) {
+                sb.append("  ").append(r.getPhase());
+            }
+            if (r.getAttempt() > 0) {
+                sb.append(" a").append(r.getAttempt());
+            }
+            if (!headline.isBlank()) {
+                sb.append("  ").append(headline);
+            }
+            if (r.getBackend() != null && !r.getBackend().isBlank()) {
+                sb.append("  [").append(r.getBackend()).append(']');
+            }
+            if (r.getToolName() != null && !r.getToolName().isBlank()) {
+                sb.append("  tool=").append(r.getToolName());
+            }
+            out.add(sb.toString());
+            if (r.getViolations() != null && !r.getViolations().isEmpty()) {
+                out.add("     violations: " + String.join("; ", r.getViolations()));
+            }
+        }
+        return out;
+    }
+
     private void handleEnforcerSlash(String args) {
         Path wd = Path.of(workingDir).toAbsolutePath().normalize();
-        String subCmd = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase();
+        String[] parts = args.isBlank() ? new String[0] : args.trim().split("\\s+");
+        String subCmd = parts.length == 0 ? "status" : parts[0].toLowerCase();
         switch (subCmd) {
             case "init", "setup" -> {
                 ai.kompile.cli.main.chat.enforcer.EnforcerConfig config =
                         ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard.run(wd);
                 if (config != null) {
-                    safePrintln(renderer.green("  Enforcer configured."));
+                    safePrintln(renderer.green("  Enforcer configured. Restart the session to apply."));
                 } else {
                     safePrintln("  Setup cancelled.");
                 }
             }
-            case "show", "status" -> {
+            case "show" -> {
                 ai.kompile.cli.main.chat.enforcer.EnforcerConfig config =
                         ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
                 if (config == null) {
@@ -4407,6 +4925,20 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 }
                 safePrintln("");
             }
+            case "status" -> printLiveEnforcerStatus();
+            case "pause", "off" -> setEnforcementPaused(true);
+            case "resume", "on" -> setEnforcementPaused(false);
+            case "judgements", "judgments", "log" -> {
+                int limit = 10;
+                if (parts.length > 1) {
+                    try {
+                        limit = Integer.parseInt(parts[1]);
+                    } catch (NumberFormatException ignored) {
+                        // keep the default
+                    }
+                }
+                printEnforcerJudgements(limit);
+            }
             case "delete" -> {
                 try {
                     ai.kompile.cli.main.chat.enforcer.EnforcerConfig.delete(wd);
@@ -4415,8 +4947,80 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     safePrintln(renderer.yellow("  Failed: " + e.getMessage()));
                 }
             }
-            default -> safePrintln(renderer.dim("  Usage: /enforcer [init|show|delete]"));
+            default -> safePrintln(renderer.dim(
+                    "  Usage: /enforcer [status|pause|resume|judgements [N]|show|init|delete]"));
         }
+    }
+
+    /** Live (in-session) enforcer status: active/paused, backend, rules, retries, judgement count. */
+    private void printLiveEnforcerStatus() {
+        if (enforcerEvaluator == null) {
+            safePrintln(renderer.dim("  No enforcer active in this session. "
+                    + "Configured rules (if any) are shown by /enforcer show."));
+            return;
+        }
+        int ruleCount = enforcerPolicy != null
+                ? (int) enforcerPolicy.getRules().lines().filter(l -> !l.isBlank()).count() : 0;
+        int retries = enforcerPolicy != null ? enforcerPolicy.getMaxCorrections() : 0;
+        int judgements = liveEnforcerRecords().size();
+        safePrintln("");
+        safePrintln("  Enforcement:  " + (enforcementPaused
+                ? renderer.yellow("paused") : renderer.green("active")));
+        safePrintln("  Judge:        " + enforcerEvaluator.describe());
+        safePrintln("  Rules:        " + ruleCount);
+        safePrintln("  Max retries:  " + retries);
+        safePrintln("  Judgements:   " + judgements + " recorded this session");
+        safePrintln(renderer.dim("  Control with: /enforcer pause | resume | judgements [N]"));
+        safePrintln("");
+    }
+
+    /** Pause or resume live enforcement, updating the status bar + TUI chrome. */
+    private void setEnforcementPaused(boolean paused) {
+        if (enforcerEvaluator == null) {
+            safePrintln(renderer.dim("  No enforcer active in this session."));
+            return;
+        }
+        if (enforcementPaused == paused) {
+            safePrintln(renderer.dim("  Enforcement is already " + (paused ? "paused." : "active.")));
+            return;
+        }
+        enforcementPaused = paused;
+        redrawStatusLine();
+        if (tui != null) {
+            tui.setEnforcerActive(!paused);
+        }
+        if (paused) {
+            safePrintln(renderer.yellow(
+                    "  ⏸ Enforcement paused — turns dispatch without judge review. "
+                            + "/enforcer resume to re-enable."));
+        } else {
+            safePrintln(renderer.green("  ▶ Enforcement resumed — turns are judged again."));
+        }
+    }
+
+    /** Print the most recent judgements recorded by this session's judge. */
+    private void printEnforcerJudgements(int limit) {
+        if (enforcerEvaluator == null) {
+            safePrintln(renderer.dim("  No enforcer active in this session."));
+            return;
+        }
+        if (!enforcerEvaluator.recordsJudgements()) {
+            safePrintln(renderer.dim("  Keyword-mode enforcer records no LLM judgements."));
+            return;
+        }
+        List<JudgementRecord> records = liveEnforcerRecords();
+        if (records.isEmpty()) {
+            safePrintln(renderer.dim("  No judgements recorded yet this session."));
+            return;
+        }
+        int shown = Math.min(limit <= 0 ? records.size() : limit, records.size());
+        safePrintln("");
+        safePrintln(renderer.dim("  Recent judgements (" + shown + " of " + records.size() + "):"));
+        for (String line : formatJudgementLines(records, limit)) {
+            safePrintln("  " + line);
+        }
+        safePrintln(renderer.dim("  Full log: kompile enforcer judgements --raw"));
+        safePrintln("");
     }
 
     private void printHelp() {
@@ -4436,16 +5040,23 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /activity          Manage background processes, subagents, and logs
                   /status            Show session metrics
                   /clear             Clear the screen
+                  /passthrough       Forward keys straight to the agent (Ctrl+] to exit)
                   /mode              Show current mode
+                  /archive           List archived turns (enforced sessions)
+                  /rollback [id]     Roll back violated turns (or a specific turn)
+                  /diff <id>         Show the diff for an archived turn
+                  /purge             Purge this session's diff archive
+                  /rules             Show the active enforcer rules
+                  /enforcer [cmd]    Enforcer: status · pause · resume · judgements [N]
                   /help              Show this help
                   /quit              Exit
 
                 Keyboard shortcuts:
-                  Ctrl+C             Cancel in-progress agent call
-                  Ctrl+B             Show background-task prompt while busy
-                  Escape             Pass through to the underlying agent while busy
+                  Ctrl+C             Cancel the in-progress agent call
+                  Ctrl+O             Expand — forwarded to the underlying agent
+                  Ctrl+B             Background — forwarded to the agent when it supports it
                   Type + Enter       Queue a message while the agent is busy
-                  Up arrow           Edit the next queued message while busy
+                  Wheel/PgUp/PgDn    Scroll transcript · Ctrl+Home/End jump to top/bottom
 
                 Supported agents:
                   claude, codex, gemini, qwen, opencode
@@ -4652,6 +5263,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         wrapSlashRefreshWidget(impl, LineReader.BACKWARD_DELETE_CHAR);
         installScrollbackWidgets(impl);
         installActivityNavigationWidgets(impl);
+        // Auto Ctrl+O / Ctrl+B forwarding is OFF: Claude's Ctrl+O is a GLOBAL
+        // detailed-transcript toggle whose re-render destabilized the decoder and broke
+        // scrolling. Forwarding individual control keys into a screen we then have to
+        // reconstruct is a workaround treadmill; raw key interaction stays available on
+        // demand via /passthrough, and the longer-term direction is raw passthrough so the
+        // agent CLI renders itself (panes/scroll/expand native).
+        // installAgentKeyForwarding(impl);
         wrapActivityKillWidget(impl, LineReader.DELETE_CHAR);
         wrapSlashRefreshWidget(impl, LineReader.COMPLETE_WORD);
         wrapActivityAcceptWidget(impl, LineReader.ACCEPT_LINE);
@@ -5027,7 +5645,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         agentBusy = true;
         backgroundSignal.set(false);
         try {
-            if (enforcerService != null && enforcerPolicy != null) {
+            if (enforcementActive()) {
                 dispatchEnforced(message, history, metrics);
             } else {
                 sendToAgent(message, history, metrics);
@@ -5089,6 +5707,16 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             enforcerConversationWindow.addUserMessage(message);
         }
 
+        // Per-turn diff snapshot (for rollback-on-violation), ported from the classic enforcer.
+        EnforcerDiffArchive.TurnSnapshot snapshot = null;
+        if (enforcerDiffArchive != null) {
+            try {
+                snapshot = enforcerDiffArchive.beginTurn();
+            } catch (IOException e) {
+                safePrintln(renderer.dim("[enforcer] could not begin diff snapshot: " + e.getMessage()));
+            }
+        }
+
         int[] attemptCounter = {0};
         try {
             EnforcerResult result = enforcerService.enforce(message, enforcerPolicy,
@@ -5106,6 +5734,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                         }
                         return output;
                     });
+
+            // Complete the diff snapshot + run diff-pattern checks with auto-rollback.
+            result = applyDiffArchive(result, snapshot, history, metrics);
 
             if (result != null) {
                 switch (result.getStatus()) {
@@ -5134,6 +5765,148 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
         } catch (Exception e) {
             safePrintln(renderer.red("[enforcer] error: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Complete the per-turn diff snapshot and run diff-pattern checks with auto-rollback. Ported
+     * from {@code EnforcerCommand.runEnforcedTurn}, substituting {@code sendToAgent} for the
+     * headless {@code SubprocessAgentRunner.runMessage}. No-op when diff archiving is off.
+     */
+    private EnforcerResult applyDiffArchive(EnforcerResult result, EnforcerDiffArchive.TurnSnapshot snapshot,
+                                            ChatHistory history, ChatSessionMetrics metrics) {
+        if (enforcerDiffArchive == null || snapshot == null || result == null) {
+            return result;
+        }
+        boolean violated = !result.isAccepted();
+        try {
+            enforcerDiffArchive.completeTurn(snapshot, violated);
+            if (violated) {
+                safePrintln(renderer.yellow("[enforcer] changes archived for rollback: " + snapshot.getTurnId()));
+            }
+        } catch (IOException e) {
+            safePrintln(renderer.dim("[enforcer] could not complete diff snapshot: " + e.getMessage()));
+        }
+
+        if (enforcerDiffPatternEvaluator != null && enforcerDiffPatternEvaluator.isAvailable()
+                && result.isAccepted()) {
+            try {
+                String turnDiff = enforcerDiffArchive.getTurnDiff(snapshot.getTurnId());
+                if (turnDiff != null && !turnDiff.isBlank()) {
+                    DiffPatternEvaluator.DiffEvaluation diffEval = enforcerDiffPatternEvaluator.evaluate(turnDiff);
+                    if (!diffEval.passed()) {
+                        enforcerDiffArchive.completeTurn(snapshot, true);
+                        safePrintln(renderer.yellow("[enforcer] code pattern violations in diff:"));
+                        for (DiffPatternEvaluator.DiffViolation v : diffEval.violations()) {
+                            safePrintln(renderer.yellow("  - " + v.filePath() + ":" + v.lineNumber()
+                                    + " — " + v.rule().getDescription()));
+                        }
+                        if (enforcerAutoRollbackOnViolation) {
+                            EnforcerDiffArchive.RollbackResult rr =
+                                    enforcerDiffArchive.rollback(snapshot.getTurnId());
+                            if (rr.success()) {
+                                safePrintln(renderer.yellow("[enforcer] rolled back changes ("
+                                        + rr.restoredFiles().size() + " files restored)"));
+                            }
+                        }
+                        if (diffEval.correctionPrompt() != null) {
+                            safePrintln(renderer.yellow("[enforcer] sending correction to agent..."));
+                            String corrected = sendToAgent(diffEval.correctionPrompt(), history, metrics);
+                            if (enforcerConversationWindow != null) {
+                                enforcerConversationWindow.finishAssistantMessage(corrected);
+                            }
+                        }
+                        StringBuilder violationMsg = new StringBuilder();
+                        for (DiffPatternEvaluator.DiffViolation v : diffEval.violations()) {
+                            violationMsg.append(v.filePath()).append(":").append(v.lineNumber())
+                                    .append(" — ").append(v.rule().getDescription()).append("; ");
+                        }
+                        result = EnforcerResult.blocked("", result.getAttempts(),
+                                "Code pattern violations: " + violationMsg, "diff-pattern-evaluator");
+                    }
+                }
+            } catch (IOException e) {
+                safePrintln(renderer.dim("[enforcer] diff pattern check failed: " + e.getMessage()));
+            }
+        }
+        return result;
+    }
+
+    private void handleEnforcerArchiveSlash() {
+        if (enforcerDiffArchive == null) {
+            safePrintln(renderer.dim("Diff archiving is disabled (no --archive-diffs)."));
+            return;
+        }
+        try {
+            List<EnforcerDiffArchive.TurnMetadata> turns = enforcerDiffArchive.listTurns();
+            if (turns.isEmpty()) {
+                safePrintln(renderer.dim("No turns archived yet."));
+                return;
+            }
+            safePrintln("Enforcer archive:");
+            for (EnforcerDiffArchive.TurnMetadata t : turns) {
+                String marker = t.violated() ? renderer.red("[VIOLATED]") : renderer.green("[OK]");
+                safePrintln(String.format("  %s  %-10s  %s  files: %d",
+                        marker, t.turnId(), t.timestamp(), t.changedFiles().size()));
+            }
+        } catch (IOException e) {
+            safePrintln(renderer.red("Error listing archive: " + e.getMessage()));
+        }
+    }
+
+    private void handleEnforcerRollbackSlash(String turnId) {
+        if (enforcerDiffArchive == null) {
+            safePrintln(renderer.dim("Diff archiving is disabled."));
+            return;
+        }
+        try {
+            EnforcerDiffArchive.RollbackResult rr = (turnId == null || turnId.isBlank())
+                    ? enforcerDiffArchive.rollbackViolations()
+                    : enforcerDiffArchive.rollback(turnId);
+            if (rr.success()) {
+                safePrintln(renderer.green("[enforcer] " + rr.message()));
+                for (String f : rr.restoredFiles()) {
+                    safePrintln(renderer.dim("  restored: " + f));
+                }
+            } else {
+                safePrintln(renderer.yellow(rr.message()));
+            }
+        } catch (IOException e) {
+            safePrintln(renderer.red("Rollback failed: " + e.getMessage()));
+        }
+    }
+
+    private void handleEnforcerDiffSlash(String turnId) {
+        if (enforcerDiffArchive == null) {
+            safePrintln(renderer.dim("Diff archiving is disabled."));
+            return;
+        }
+        if (turnId == null || turnId.isBlank()) {
+            safePrintln(renderer.dim("Usage: /diff <turn-id>"));
+            return;
+        }
+        try {
+            String diff = enforcerDiffArchive.getTurnDiff(turnId);
+            if (diff == null || diff.isBlank()) {
+                safePrintln(renderer.dim("No diff found for " + turnId));
+            } else {
+                safePrintln(diff);
+            }
+        } catch (IOException e) {
+            safePrintln(renderer.red("Error reading diff: " + e.getMessage()));
+        }
+    }
+
+    private void handleEnforcerPurgeSlash() {
+        if (enforcerDiffArchive == null) {
+            safePrintln(renderer.dim("Diff archiving is disabled."));
+            return;
+        }
+        try {
+            enforcerDiffArchive.purge();
+            safePrintln(renderer.dim("Archive purged for this session."));
+        } catch (IOException e) {
+            safePrintln(renderer.red("Purge failed: " + e.getMessage()));
         }
     }
 
