@@ -101,4 +101,12 @@ public class MiningDiscoveryController {
             @RequestParam(defaultValue = "0.9") double minConfidence) {
         return miningService.declareConstraints(factSheetId, minSupport, minConfidence);
     }
+
+    /** Mermaid diagram source (directly-follows process map + process-tree blocks) for rendering. */
+    @GetMapping("/mermaid")
+    public Map<String, String> mermaid(
+            @RequestParam Long factSheetId,
+            @RequestParam(defaultValue = "0.0") double noise) {
+        return miningService.mermaid(factSheetId, noise);
+    }
 }

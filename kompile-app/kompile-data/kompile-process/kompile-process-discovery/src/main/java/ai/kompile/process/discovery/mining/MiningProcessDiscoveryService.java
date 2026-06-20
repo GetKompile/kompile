@@ -27,6 +27,7 @@ import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import ai.kompile.process.discovery.mining.declare.DeclareMiner;
 import ai.kompile.process.discovery.mining.dfg.DfgBuilder;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
+import ai.kompile.process.discovery.mining.export.ProcessMermaidExporter;
 import ai.kompile.process.discovery.mining.extract.EventLogExtractor;
 import ai.kompile.process.discovery.mining.log.EventLog;
 import ai.kompile.process.discovery.mining.miner.InductiveMiner;
@@ -156,5 +157,16 @@ public class MiningProcessDiscoveryService {
     /** The declarative (Declare/MINERful) constraint view of the discovered process. */
     public List<DeclareConstraint> declareConstraints(Long factSheetId, double minSupport, double minConfidence) {
         return DeclareMiner.mine(extractor.extractForFactSheet(graph, factSheetId), minSupport, minConfidence);
+    }
+
+    /** Mermaid diagram source for the discovered process: the directly-follows map and the tree blocks. */
+    public Map<String, String> mermaid(Long factSheetId, double noiseThreshold) {
+        EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
+        DirectlyFollowsGraph dfg = DfgBuilder.build(eventLog);
+        ProcessTree tree = new InductiveMiner(noiseThreshold).mine(eventLog);
+        Map<String, String> out = new LinkedHashMap<>();
+        out.put("dfg", ProcessMermaidExporter.dfgToMermaid(dfg));
+        out.put("tree", ProcessMermaidExporter.treeToMermaid(tree));
+        return out;
     }
 }
