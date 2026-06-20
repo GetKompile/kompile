@@ -22,6 +22,7 @@ import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
 import ai.kompile.process.discovery.mining.conformance.ConformanceResult;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
+import ai.kompile.process.discovery.mining.miner.HeuristicsNet;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -117,5 +118,23 @@ public class MiningDiscoveryController {
             @RequestParam Long factSheetId,
             @RequestParam(defaultValue = "0.0") double noise) {
         return miningService.conformance(factSheetId, noise);
+    }
+
+    /**
+     * Mine a Heuristics Net (Weijters &amp; van der Aalst) from the fact sheet's knowledge graph.
+     *
+     * <p>Each dependency arc {@code a → b} is kept when the Heuristics-Miner measure
+     * {@code (|a→b| − |b→a|) / (|a→b| + |b→a| + 1) ≥ threshold}. Lower threshold → denser net;
+     * higher threshold → sparser, more selective net. Typical default: 0.5.
+     *
+     * @param factSheetId the fact sheet whose knowledge graph supplies the event log
+     * @param threshold   dependency-measure cut-off; arcs below this value are pruned
+     * @return the mined {@link HeuristicsNet}
+     */
+    @GetMapping("/heuristics")
+    public HeuristicsNet heuristics(
+            @RequestParam Long factSheetId,
+            @RequestParam(defaultValue = "0.5") double threshold) {
+        return miningService.heuristicsNet(factSheetId, threshold);
     }
 }

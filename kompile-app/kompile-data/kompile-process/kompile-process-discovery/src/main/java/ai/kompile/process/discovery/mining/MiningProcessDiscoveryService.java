@@ -32,6 +32,8 @@ import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
 import ai.kompile.process.discovery.mining.export.ProcessMermaidExporter;
 import ai.kompile.process.discovery.mining.extract.EventLogExtractor;
 import ai.kompile.process.discovery.mining.log.EventLog;
+import ai.kompile.process.discovery.mining.miner.HeuristicsMiner;
+import ai.kompile.process.discovery.mining.miner.HeuristicsNet;
 import ai.kompile.process.discovery.mining.miner.InductiveMiner;
 import ai.kompile.process.discovery.mining.tree.ProcessTree;
 import org.slf4j.Logger;
@@ -185,6 +187,22 @@ public class MiningProcessDiscoveryService {
         out.put("dfg", ProcessMermaidExporter.dfgToMermaid(dfg));
         out.put("tree", ProcessMermaidExporter.treeToMermaid(tree));
         return out;
+    }
+
+    /**
+     * Mine a Heuristics Net from the fact sheet's graph using the Weijters &amp; van der Aalst
+     * dependency-threshold cut. Arcs whose dependency measure is below {@code dependencyThreshold}
+     * are pruned; typical default is 0.5.
+     *
+     * @param factSheetId        the fact sheet whose knowledge graph supplies the event log
+     * @param dependencyThreshold dependency-measure cut-off in (-1, 1); arcs below this are dropped
+     * @return the mined {@link HeuristicsNet}, never {@code null} (may have no arcs if the graph is
+     *         empty or all activities are symmetric)
+     */
+    public HeuristicsNet heuristicsNet(Long factSheetId, double dependencyThreshold) {
+        EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
+        DirectlyFollowsGraph dfg = DfgBuilder.build(eventLog);
+        return HeuristicsMiner.mine(dfg, dependencyThreshold);
     }
 
     /** Conformance of the discovered model to its log: fitness, precision, simplicity. */
