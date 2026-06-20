@@ -28,6 +28,8 @@ import ai.kompile.process.discovery.mining.convert.ProcessTreeToSuggestion;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import ai.kompile.process.discovery.mining.declare.DeclareMiner;
 import ai.kompile.process.discovery.mining.dfg.DfgBuilder;
+import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
+import ai.kompile.process.discovery.mining.perf.PerformanceMiner;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
 import ai.kompile.process.discovery.mining.export.ProcessMermaidExporter;
 import ai.kompile.process.discovery.mining.extract.EventLogExtractor;
@@ -210,5 +212,14 @@ public class MiningProcessDiscoveryService {
         EventLog eventLog = extractor.extractForFactSheet(graph, factSheetId);
         ProcessTree tree = new InductiveMiner(noiseThreshold).mine(eventLog);
         return ConformanceChecker.check(tree, eventLog);
+    }
+
+    /**
+     * Performance (bottleneck) analysis: per directly-follows arc, the count, mean, and median
+     * transition duration in seconds (pairs without timestamps are skipped). Arcs are sorted by
+     * median descending so bottlenecks appear first.
+     */
+    public PerformanceAnalysis performance(Long factSheetId) {
+        return PerformanceMiner.analyze(extractor.extractForFactSheet(graph, factSheetId));
     }
 }

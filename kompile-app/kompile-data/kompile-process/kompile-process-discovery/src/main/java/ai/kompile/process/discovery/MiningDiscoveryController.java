@@ -23,6 +23,7 @@ import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
 import ai.kompile.process.discovery.mining.conformance.ConformanceResult;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import ai.kompile.process.discovery.mining.miner.HeuristicsNet;
+import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -136,5 +137,15 @@ public class MiningDiscoveryController {
             @RequestParam Long factSheetId,
             @RequestParam(defaultValue = "0.5") double threshold) {
         return miningService.heuristicsNet(factSheetId, threshold);
+    }
+
+    /**
+     * Performance (bottleneck) analysis: per directly-follows arc, the count, mean, and median
+     * transition duration in seconds. Pairs without timestamps are excluded from duration calculations.
+     * Arcs are sorted by median descending so the slowest transitions (bottlenecks) appear first.
+     */
+    @GetMapping("/performance")
+    public PerformanceAnalysis performance(@RequestParam Long factSheetId) {
+        return miningService.performance(factSheetId);
     }
 }

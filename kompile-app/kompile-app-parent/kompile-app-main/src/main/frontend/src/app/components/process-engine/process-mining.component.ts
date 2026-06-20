@@ -30,7 +30,8 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MermaidRendererComponent } from './mermaid-renderer.component';
 import {
   ProcessMiningService, MiningPreview, ProcessCausalModel,
-  DeclareConstraint, InferenceResult, MiningSuggestion, ConformanceResult
+  DeclareConstraint, InferenceResult, MiningSuggestion, ConformanceResult,
+  PerformanceAnalysis, PerformanceArc
 } from '../../services/process-mining.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
 
@@ -211,6 +212,50 @@ import { FactSheetService } from '../../services/fact-sheet.service';
             </div>
           </div>
         </mat-tab>
+
+        <!-- Performance / bottleneck tab -->
+        <mat-tab label="Performance">
+          <div class="panel">
+            <p class="hint" *ngIf="!performanceAnalysis">
+              Press <b>Analyze</b> to compute transition durations between activities.
+              Arcs are ranked by median duration — the slowest transitions (bottlenecks) appear first.
+            </p>
+            <ng-container *ngIf="performanceAnalysis">
+              <p class="hint" *ngIf="performanceAnalysis.arcs.length === 0">
+                No directly-follows arcs found, or no events have timestamps (durations cannot be computed).
+              </p>
+              <table class="data" *ngIf="performanceAnalysis.arcs.length > 0">
+                <thead>
+                  <tr>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Count</th>
+                    <th>Median (s)</th>
+                    <th>Mean (s)</th>
+                    <th class="bar-col">Relative duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let arc of performanceAnalysis.arcs">
+                    <td>{{ arc.from }}</td>
+                    <td>{{ arc.to }}</td>
+                    <td class="num">{{ arc.count }}</td>
+                    <td class="num">{{ fmtDuration(arc.medianSeconds) }}</td>
+                    <td class="num">{{ fmtDuration(arc.meanSeconds) }}</td>
+                    <td>
+                      <div class="bar perf-bar">
+                        <div class="fill perf-fill"
+                             [style.width.%]="perfBarWidth(arc.medianSeconds)"
+                             [class.bottleneck]="perfBarWidth(arc.medianSeconds) > 66">
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </ng-container>
+          </div>
+        </mat-tab>
       </mat-tab-group>
     </div>
   `,
@@ -243,6 +288,10 @@ import { FactSheetService } from '../../services/fact-sheet.service';
       background: rgba(21,101,192,0.08); font-size: 13px; }
     .step-icon { font-size: 16px; width: 16px; height: 16px; }
     .step-type { color: #888; font-size: 11px; font-style: normal; }
+    .bar-col { width: 160px; }
+    .perf-bar { width: 140px; height: 10px; background: rgba(0,0,0,0.08); border-radius: 5px; overflow: hidden; }
+    .perf-fill { height: 100%; background: #1565c0; border-radius: 5px; transition: width 0.3s; }
+    .perf-fill.bottleneck { background: #b71c1c; }
   `]
 })
 export class ProcessMiningComponent implements OnInit {
@@ -261,6 +310,7 @@ export class ProcessMiningComponent implements OnInit {
   bayesian?: InferenceResult;
   discovered?: MiningSuggestion;
   conformance?: ConformanceResult;
+  performanceAnalysis?: PerformanceAnalysis;
   sheets: any[] = [];
 
   constructor(private mining: ProcessMiningService, private snack: MatSnackBar,
@@ -283,6 +333,7 @@ export class ProcessMiningComponent implements OnInit {
     this.loading = true;
     this.psl = undefined;
     this.bayesian = undefined;
+    this.performanceAnalysis = undefined;
     this.mining.preview(id, this.noise).subscribe({
       next: (p) => { this.preview = p; this.loading = false; },
       error: (e) => this.fail(e)
@@ -294,6 +345,7 @@ export class ProcessMiningComponent implements OnInit {
     this.mining.causal(id).subscribe({ next: (c) => this.causal = c, error: () => {} });
     this.mining.declareConstraints(id).subscribe({ next: (c) => this.constraints = c, error: () => {} });
     this.mining.conformance(id, this.noise).subscribe({ next: (c) => this.conformance = c, error: () => {} });
+    this.mining.performance(id).subscribe({ next: (p) => this.performanceAnalysis = p, error: () => {} });
   }
 
   runInference(): void {
@@ -338,6 +390,25 @@ export class ProcessMiningComponent implements OnInit {
       case 'EXCEL_COMPUTE': return 'table_chart';
       default: return 'bolt';
     }
+  }
+
+  /** Format a duration in seconds as a human-readable string (e.g. "3 600 s" or "1.5 h"). */
+  fmtDuration(seconds: number): string {
+    if (seconds <= 0) return '—';
+    if (seconds < 60) return seconds.toFixed(1) + ' s';
+    if (seconds < 3600) return (seconds / 60).toFixed(1) + ' min';
+    return (seconds / 3600).toFixed(2) + ' h';
+  }
+
+  /**
+   * Width percentage for the performance bar, scaled so the maximum median arc fills 100%.
+   * Returns 0 for arcs with no timed observations.
+   */
+  perfBarWidth(medianSeconds: number): number {
+    const arcs = this.performanceAnalysis?.arcs;
+    if (!arcs || arcs.length === 0 || medianSeconds <= 0) return 0;
+    const max = arcs[0].medianSeconds; // arcs are sorted desc, so first = max
+    return max <= 0 ? 0 : Math.round((medianSeconds / max) * 100);
   }
 
   private fail(err: any): void {

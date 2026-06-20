@@ -88,6 +88,23 @@ export interface ConformanceResult {
   perfectFit: boolean;
 }
 
+/** Statistics for a single directly-follows arc in a performance analysis. */
+export interface PerformanceArc {
+  from: string;
+  to: string;
+  count: number;
+  meanSeconds: number;
+  medianSeconds: number;
+}
+
+/**
+ * Result of a performance/bottleneck analysis: per-arc transition-time statistics,
+ * sorted by medianSeconds descending (slowest bottlenecks first).
+ */
+export interface PerformanceAnalysis {
+  arcs: PerformanceArc[];
+}
+
 /**
  * Client for the LLM-free process-mining engine (`/api/process/mining/*`): discover a process from a
  * fact sheet's graph, inspect the intermediate artifacts, and drive the causal/PSL/Bayesian couplings.
@@ -140,6 +157,11 @@ export class ProcessMiningService extends BaseService {
   /** Exact Bayesian (noisy-OR + variable elimination) inference. */
   bayesian(factSheetId: number, evidence: string[] = []): Observable<InferenceResult> {
     return this.http.get<InferenceResult>(`${this.base}/bayesian`, { params: this.withEvidence(factSheetId, evidence) });
+  }
+
+  /** Performance (bottleneck) analysis: per-arc transition durations, slowest first. */
+  performance(factSheetId: number): Observable<PerformanceAnalysis> {
+    return this.http.get<PerformanceAnalysis>(`${this.base}/performance`, { params: this.params(factSheetId) });
   }
 
   private params(factSheetId: number, extra: Record<string, number | string> = {}): HttpParams {
