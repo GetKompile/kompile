@@ -31,7 +31,10 @@ import {
   SensitivityResult,
   BayesianInferenceResult,
   PredictionResult,
-  PredictedEvent
+  PredictedEvent,
+  MpeResult,
+  WhatIfRequest,
+  BayesianQueryRequest
 } from '../../models/attribution-models';
 
 /**
@@ -73,18 +76,40 @@ import {
                 [disabled]="loading || !nodeId" matTooltip="Forward causal inference: what will happen next?">
           <mat-icon>trending_up</mat-icon> Predict
         </button>
+
+        <button mat-flat-button color="warn" (click)="runWhatIf()"
+                [disabled]="loading || !nodeId" matTooltip="Recompute posteriors under hypothetical evidence">
+          <mat-icon>science</mat-icon> What-If
+        </button>
+
+        <button mat-stroked-button (click)="runMpe()"
+                [disabled]="loading || !nodeId" matTooltip="Most probable explanation: most likely state of all variables">
+          <mat-icon>psychology</mat-icon> MPE
+        </button>
+      </div>
+
+      <!-- What-If evidence editor (shown when What-If is active) -->
+      <div class="whatif-editor" *ngIf="showWhatIfEditor">
+        <mat-form-field appearance="outline" class="evidence-field">
+          <mat-label>Hypothetical evidence (nodeId=probability, one per line)</mat-label>
+          <textarea matInput [(ngModel)]="evidenceText" rows="4"
+                    placeholder="variable_id_1=0.9&#10;variable_id_2=0.1"></textarea>
+          <mat-hint>Each line: &lt;variable-id&gt;=&lt;0..1 probability&gt;</mat-hint>
+        </mat-form-field>
       </div>
 
       <mat-progress-bar *ngIf="loading" mode="indeterminate"></mat-progress-bar>
 
-      <p class="hint" *ngIf="!sensitivityResult && !mebnResult && !predictionResult && !loading">
-        Enter a KG node ID and choose one of the three analyses above.<br>
+      <p class="hint" *ngIf="!sensitivityResult && !mebnResult && !predictionResult && !whatIfResult && !mpeResult && !loading">
+        Enter a KG node ID and choose one of the five analyses above.<br>
         <b>Sensitivity</b> shows which connected variables most influence the node's posterior probability.<br>
         <b>MEBN structure</b> runs multi-entity Bayesian inference and returns per-variable metadata.<br>
-        <b>Predict</b> walks forward causal edges and returns ranked future events.
+        <b>Predict</b> walks forward causal edges and returns ranked future events.<br>
+        <b>What-If</b> recomputes posteriors under hypothetical evidence you supply.<br>
+        <b>MPE</b> finds the most probable explanation — the most likely assignment of all variables.
       </p>
 
-      <mat-tab-group *ngIf="sensitivityResult || mebnResult || predictionResult"
+      <mat-tab-group *ngIf="sensitivityResult || mebnResult || predictionResult || whatIfResult || mpeResult"
                      class="extras-tabs" animationDuration="150ms">
 
         <!-- ── Sensitivity ──────────────────────────────────────────────── -->
@@ -218,6 +243,102 @@ import {
           </div>
         </mat-tab>
 
+        <!-- ── What-If ──────────────────────────────────────────────────────── -->
+        <mat-tab label="What-If" *ngIf="whatIfResult">
+          <div class="panel">
+            <div class="summary-row">
+              <span class="meta">Seed node: <b>{{ nodeId }}</b></span>
+              <span class="meta">Variables: <b>{{ whatIfPosteriorEntries.length }}</b></span>
+              <span class="meta">Computed in <b>{{ whatIfResult.computationTimeMs }} ms</b></span>
+            </div>
+
+            <div class="evidence-summary" *ngIf="lastEvidenceMap && objectKeys(lastEvidenceMap).length">
+              <span class="label">Hypothetical evidence applied:</span>
+              <span class="tag ev-tag" *ngFor="let kv of objectEntries(lastEvidenceMap)">
+                {{ kv[0] }} = {{ fmt(kv[1]) }}
+              </span>
+            </div>
+
+            <h4>Posteriors under hypothetical evidence</h4>
+            <p class="hint" *ngIf="whatIfPosteriorEntries.length === 0">No posterior data returned.</p>
+            <table class="data" *ngIf="whatIfPosteriorEntries.length">
+              <thead>
+                <tr><th>Variable</th><th>Posterior (what-if)</th><th>Prior (baseline)</th><th>Shift</th></tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let e of whatIfPosteriorEntries">
+                  <td>{{ whatIfResult!.variableToTitle[e[0]] || e[0] }}</td>
+                  <td>
+                    <div class="bar-wrap">
+                      <div class="bar">
+                        <div class="fill whatif" [style.width.%]="e[1] * 100"></div>
+                      </div>
+                      <span class="num">{{ fmt(e[1]) }}</span>
+                    </div>
+                  </td>
+                  <td class="num">{{ fmt(whatIfResult!.priors[e[0]]) }}</td>
+                  <td class="num shift"
+                      [class.pos]="e[1] - (whatIfResult!.priors[e[0]] ?? 0) > 0"
+                      [class.neg]="e[1] - (whatIfResult!.priors[e[0]] ?? 0) < 0">
+                    {{ shiftLabel(e[1], whatIfResult!.priors[e[0]]) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </mat-tab>
+
+        <!-- ── MPE ─────────────────────────────────────────────────────────── -->
+        <mat-tab label="MPE" *ngIf="mpeResult">
+          <div class="panel">
+            <div class="summary-row">
+              <span class="meta">Seed node: <b>{{ nodeId }}</b></span>
+              <span class="meta">Variables: <b>{{ mpeAssignmentEntries.length }}</b></span>
+              <span class="meta">Computed in <b>{{ mpeResult.computationTimeMs }} ms</b></span>
+            </div>
+
+            <h4>Most probable assignments</h4>
+            <p class="hint" *ngIf="mpeAssignmentEntries.length === 0">No assignments returned.</p>
+            <table class="data" *ngIf="mpeAssignmentEntries.length">
+              <thead>
+                <tr><th>Variable</th><th>MAP assignment</th><th>Posterior</th><th>Prior</th></tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let e of mpeAssignmentEntries">
+                  <td>{{ mpeResult!.variableToTitle[e[0]] || e[0] }}</td>
+                  <td class="num"><span class="tag assign-tag">{{ fmt(e[1]) }}</span></td>
+                  <td>
+                    <div class="bar-wrap">
+                      <div class="bar">
+                        <div class="fill mpe" [style.width.%]="(mpeResult!.posteriors[e[0]] ?? 0) * 100"></div>
+                      </div>
+                      <span class="num">{{ fmt(mpeResult!.posteriors[e[0]]) }}</span>
+                    </div>
+                  </td>
+                  <td class="num">{{ fmt(mpeResult!.priors[e[0]]) }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div *ngIf="mpeResult.inferenceTrace?.length">
+              <h4>Inference trace ({{ mpeResult.inferenceTrace.length }} steps)</h4>
+              <table class="data trace-table">
+                <thead>
+                  <tr><th>#</th><th>Eliminated</th><th>Operation</th><th>Factors</th></tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let step of mpeResult.inferenceTrace; let i = index">
+                    <td class="num">{{ i + 1 }}</td>
+                    <td>{{ step.eliminatedTitle || step.eliminatedVariable }}</td>
+                    <td>{{ step.operation }}</td>
+                    <td class="num">{{ step.factorsInvolved }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </mat-tab>
+
       </mat-tab-group>
     </div>
   `,
@@ -255,6 +376,28 @@ import {
     .forecast { font-style: italic; color: var(--mat-sys-on-surface-variant, #555);
                 border-left: 3px solid rgba(21,101,192,0.4); padding-left: 10px; margin-bottom: 16px; }
     .path-cell { font-size: 11px; color: #888; max-width: 280px; word-break: break-word; }
+
+    /* What-If editor */
+    .whatif-editor { margin: 8px 0 4px; }
+    .evidence-field { width: 100%; max-width: 640px; }
+
+    /* Evidence summary chips */
+    .evidence-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+                        margin-bottom: 12px; font-size: 12px; }
+    .evidence-summary .label { color: var(--mat-sys-on-surface-variant, #777); margin-right: 4px; }
+    .tag.ev-tag { background: rgba(211,47,47,0.12); color: #c62828; }
+
+    /* Bar colours for new tabs */
+    .fill.whatif { background: #00796b; }
+    .fill.mpe    { background: #4527a0; }
+
+    /* Shift column colouring */
+    td.shift { font-weight: 600; }
+    td.shift.pos { color: #2e7d32; }
+    td.shift.neg { color: #c62828; }
+
+    /* MPE assignment tag */
+    .tag.assign-tag { background: rgba(69,39,160,0.12); color: #4527a0; font-variant-numeric: tabular-nums; }
   `]
 })
 export class CausalAttributionExtrasComponent {
@@ -265,11 +408,24 @@ export class CausalAttributionExtrasComponent {
   sensitivityResult?: SensitivityResult;
   mebnResult?: BayesianInferenceResult;
   predictionResult?: PredictionResult;
+  whatIfResult?: BayesianInferenceResult;
+  mpeResult?: MpeResult;
 
   // Derived sorted arrays (recomputed after each fetch)
   sensitivityEntries: Array<[string, number]> = [];
   maxSens = 1;
   posteriorEntries: Array<[string, number]> = [];
+  whatIfPosteriorEntries: Array<[string, number]> = [];
+  mpeAssignmentEntries: Array<[string, number]> = [];
+
+  // What-If editor state
+  showWhatIfEditor = false;
+  evidenceText = '';
+  lastEvidenceMap: Record<string, number> = {};
+
+  // Object helpers exposed to template
+  readonly objectKeys = Object.keys;
+  readonly objectEntries = (o: Record<string, number>): [string, number][] => Object.entries(o) as [string, number][];
 
   constructor(
     private attribution: AttributionService,
@@ -333,6 +489,63 @@ export class CausalAttributionExtrasComponent {
     });
   }
 
+  runWhatIf(): void {
+    const id = this.nodeId.trim();
+    if (!id) { return; }
+
+    // Toggle editor visibility; first click shows editor so user can enter evidence.
+    // Subsequent clicks (or if editor already shown) proceed with the query.
+    if (!this.showWhatIfEditor) {
+      this.showWhatIfEditor = true;
+      return;
+    }
+
+    const evidenceMap = this.parseEvidenceText(this.evidenceText);
+    this.lastEvidenceMap = evidenceMap;
+
+    const request: WhatIfRequest = {
+      seedNodeIds: [id],
+      hypotheticalEvidence: evidenceMap
+    };
+
+    this.loading = true;
+    this.whatIfResult = undefined;
+    this.whatIfPosteriorEntries = [];
+
+    this.bayesian.whatIfQuery(request).subscribe({
+      next: (r) => {
+        this.whatIfResult = r;
+        this.whatIfPosteriorEntries = Object.entries(r.posteriors)
+          .sort((a, b) => b[1] - a[1]);
+        this.loading = false;
+      },
+      error: (e) => this.fail('What-If query failed', e)
+    });
+  }
+
+  runMpe(): void {
+    const id = this.nodeId.trim();
+    if (!id) { return; }
+    this.loading = true;
+    this.mpeResult = undefined;
+    this.mpeAssignmentEntries = [];
+
+    const request: BayesianQueryRequest = {
+      seedNodeIds: [id]
+    };
+
+    this.bayesian.mostProbableExplanation(request).subscribe({
+      next: (r) => {
+        this.mpeResult = r;
+        // Sort assignments by descending MAP value
+        this.mpeAssignmentEntries = Object.entries(r.assignments)
+          .sort((a, b) => b[1] - a[1]);
+        this.loading = false;
+      },
+      error: (e) => this.fail('MPE query failed', e)
+    });
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   /** Resolve a variable ID to its human-readable title (from sensitivity result). */
@@ -350,6 +563,29 @@ export class CausalAttributionExtrasComponent {
 
   pct(n?: number): string {
     return Math.round((n ?? 0) * 100) + '%';
+  }
+
+  shiftLabel(posterior: number, prior: number | undefined): string {
+    const delta = posterior - (prior ?? 0);
+    const sign = delta > 0 ? '+' : '';
+    return sign + delta.toFixed(3);
+  }
+
+  /** Parse "varId=0.9\nvarId2=0.1" → { varId: 0.9, varId2: 0.1 } */
+  private parseEvidenceText(text: string): Record<string, number> {
+    const result: Record<string, number> = {};
+    if (!text) { return result; }
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.includes('=')) { continue; }
+      const eqIdx = trimmed.indexOf('=');
+      const key = trimmed.substring(0, eqIdx).trim();
+      const val = parseFloat(trimmed.substring(eqIdx + 1).trim());
+      if (key && !isNaN(val)) {
+        result[key] = Math.min(1, Math.max(0, val));
+      }
+    }
+    return result;
   }
 
   private fail(label: string, err: any): void {
