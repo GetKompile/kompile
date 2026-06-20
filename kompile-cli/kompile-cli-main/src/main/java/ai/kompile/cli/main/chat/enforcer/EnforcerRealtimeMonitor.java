@@ -44,6 +44,7 @@ public class EnforcerRealtimeMonitor implements SubprocessAgentRunner.RealtimeMo
     private final EnforcerPolicy policy;
     private final String userPrompt;
     private final EnforcerConversationWindow conversationWindow;
+    private volatile boolean failOpenOnError = false;
     private volatile int lastEvaluatedLength;
     private volatile long lastEvaluationMs;
 
@@ -68,6 +69,15 @@ public class EnforcerRealtimeMonitor implements SubprocessAgentRunner.RealtimeMo
             t.setDaemon(true);
             return t;
         });
+    }
+
+    /**
+     * When the judge errors or times out evaluating a tool call, allow the call (fail-open)
+     * instead of blocking it. Mirrors {@link EnforcerFallbackPolicy#FAIL_OPEN}. Default false
+     * (fail-closed) because tool calls create side effects.
+     */
+    public void setFailOpenOnError(boolean failOpenOnError) {
+        this.failOpenOnError = failOpenOnError;
     }
 
     @Override
@@ -139,6 +149,9 @@ public class EnforcerRealtimeMonitor implements SubprocessAgentRunner.RealtimeMo
                         decision.blockMessage(), decision.getCorrectionPrompt());
             }
         } catch (Exception e) {
+            if (failOpenOnError) {
+                return SubprocessAgentRunner.MonitorDecision.continueRun();
+            }
             return SubprocessAgentRunner.MonitorDecision.interrupt(
                     "Enforcer tool-use evaluation failed: " + e.getMessage(), "");
         }

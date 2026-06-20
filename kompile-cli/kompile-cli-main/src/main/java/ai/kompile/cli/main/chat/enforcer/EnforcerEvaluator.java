@@ -33,4 +33,13 @@ public interface EnforcerEvaluator {
     boolean isAvailable();
 
     String describe();
+
+    /**
+     * Whether this evaluator records its own judgements to the {@link JudgementLog}
+     * (e.g. an LLM judge that captures the raw judge response per call). When true,
+     * {@link EnforcerService} skips its own per-attempt logging to avoid duplicates.
+     */
+    default boolean recordsJudgements() {
+        return false;
+    }
 }

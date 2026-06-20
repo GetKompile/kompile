@@ -20,6 +20,7 @@ import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
 import ai.kompile.cli.main.chat.harness.JudgeBackendFactory;
+import ai.kompile.cli.main.chat.harness.ResilientJudgeBackend;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
@@ -57,6 +58,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
 
     private final ObjectMapper objectMapper;
     private final JudgeBackend backend;
+    private JudgementLog judgementLog;
 
     public EnforcerJudge(HarnessConfig config, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
@@ -86,9 +88,13 @@ public class EnforcerJudge implements EnforcerEvaluator {
                     "Configure the harness judge provider/model or a local judge backend.");
         }
 
+        long startNanos = System.nanoTime();
         String response = backend.generate(buildJudgePrompt(userPrompt, agentOutput, policy, attempt, context),
                 SYSTEM_PROMPT);
-        return EnforcerDecision.parse(objectMapper, response);
+        long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        EnforcerDecision decision = EnforcerDecision.parse(objectMapper, response);
+        logJudgement("JUDGE_TURN", attempt, decision, response, latencyMs, userPrompt, agentOutput, null);
+        return decision;
     }
 
     public EnforcerDecision evaluatePartialOutput(String userPrompt, String partialOutput,
@@ -105,9 +111,13 @@ public class EnforcerJudge implements EnforcerEvaluator {
                     "Configure the harness judge provider/model or a local judge backend.");
         }
 
+        long startNanos = System.nanoTime();
         String response = backend.generate(buildPartialJudgePrompt(userPrompt, partialOutput, policy, context),
                 SYSTEM_PROMPT);
-        return EnforcerDecision.parse(objectMapper, response);
+        long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        EnforcerDecision decision = EnforcerDecision.parse(objectMapper, response);
+        logJudgement("JUDGE_PARTIAL", 0, decision, response, latencyMs, userPrompt, partialOutput, null);
+        return decision;
     }
 
     public EnforcerToolCallDecision evaluateToolCall(String toolName, String toolInput,
@@ -122,9 +132,13 @@ public class EnforcerJudge implements EnforcerEvaluator {
             return EnforcerToolCallDecision.block("No enforcer judge backend is available");
         }
 
+        long startNanos = System.nanoTime();
         String response = backend.generate(buildToolCallPrompt(toolName, toolInput, policy, context),
                 SYSTEM_PROMPT);
-        return EnforcerToolCallDecision.parse(objectMapper, response);
+        long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        EnforcerToolCallDecision decision = EnforcerToolCallDecision.parse(objectMapper, response);
+        logToolJudgement(toolName, toolInput, decision, response, latencyMs);
+        return decision;
     }
 
     @Override
@@ -141,6 +155,81 @@ public class EnforcerJudge implements EnforcerEvaluator {
         if (backend != null) {
             backend.close();
         }
+    }
+
+    /** The judgement log this judge records to, or {@code null} if none is attached. */
+    public JudgementLog getJudgementLog() {
+        return judgementLog;
+    }
+
+    /** Attach a judgement log so every judge call (raw response + latency) is recorded. */
+    public void setJudgementLog(JudgementLog judgementLog) {
+        this.judgementLog = judgementLog;
+        // If the backend swaps judge models on failure, record those swaps too.
+        if (backend instanceof ResilientJudgeBackend resilient) {
+            resilient.setSwapSink((from, to, reason) -> {
+                JudgementLog log = this.judgementLog;
+                if (log != null) {
+                    log.record(JudgementRecord.builder()
+                            .phase("SWAP")
+                            .judgeMode("llm")
+                            .backend(to)
+                            .reasoning("judge swap: " + from + " → " + to + " (" + reason + ")")
+                            .build());
+                }
+            });
+        }
+    }
+
+    @Override
+    public boolean recordsJudgements() {
+        return judgementLog != null;
+    }
+
+    private void logJudgement(String phase, int attempt, EnforcerDecision decision, String rawResponse,
+                              long latencyMs, String userPrompt, String agentOutput, String toolName) {
+        if (judgementLog == null) {
+            return;
+        }
+        judgementLog.record(JudgementRecord.builder()
+                .phase(phase)
+                .attempt(attempt)
+                .judgeMode("llm")
+                .backend(describe())
+                .latencyMs(latencyMs)
+                .compliant(decision.isCompliant())
+                .stop(decision.isStop())
+                .severity(decision.getSeverity())
+                .violations(decision.getViolations())
+                .correctionPrompt(decision.getCorrectionPrompt())
+                .reasoning(decision.getReasoning())
+                .userPromptExcerpt(userPrompt)
+                .agentOutputExcerpt(agentOutput)
+                .toolName(toolName)
+                .judgeRawResponse(rawResponse)
+                .build());
+    }
+
+    private void logToolJudgement(String toolName, String toolInput, EnforcerToolCallDecision decision,
+                                  String rawResponse, long latencyMs) {
+        if (judgementLog == null) {
+            return;
+        }
+        judgementLog.record(JudgementRecord.builder()
+                .phase("JUDGE_TOOL")
+                .judgeMode("llm")
+                .backend(describe())
+                .latencyMs(latencyMs)
+                .compliant(decision.isAllowed())
+                .stop(!decision.isAllowed())
+                .severity(decision.isAllowed() ? "info" : "error")
+                .violations(decision.getViolations())
+                .correctionPrompt(decision.getCorrectionPrompt())
+                .reasoning(decision.getReason())
+                .toolName(toolName)
+                .agentOutputExcerpt(toolInput)
+                .judgeRawResponse(rawResponse)
+                .build());
     }
 
     private String buildJudgePrompt(String userPrompt, String agentOutput,

@@ -1058,7 +1058,8 @@ public class SubprocessAgentRunner {
         updateActivity(getAgentDisplayName() + ": interrupted by enforcer");
         Process p = activeProcess;
         if (p != null && p.isAlive()) {
-            // Send SIGINT (escape) only — let the agent wind down gracefully
+            // Soft interrupt: SIGINT first (graceful for agents that honor it), escalating to
+            // SIGTERM/SIGKILL for agents that ignore SIGINT (e.g. opencode).
             sendSigint(p);
         }
     }
@@ -1067,16 +1068,26 @@ public class SubprocessAgentRunner {
      * Send SIGINT to a process without escalating to SIGTERM/SIGKILL.
      * This tells the agent to stop generating and exit gracefully.
      */
+    static final int SOFT_INTERRUPT_SIGINT_GRACE_MS = 300;
+    static final int SOFT_INTERRUPT_SIGTERM_GRACE_MS = 200;
+
+    /**
+     * Soft, escalating interrupt for the real-time monitor. SIGINT first so agents that honor it
+     * (e.g. claude, ~1ms) wind down gracefully; if the agent is still alive after a short grace,
+     * escalate to SIGTERM and finally SIGKILL. Some agents (e.g. opencode) IGNORE SIGINT but stop
+     * on SIGTERM, so a SIGINT-only interrupt would never stop them. {@link Process#waitFor(long,
+     * TimeUnit)} returns the instant the process exits, so a cooperative agent is not delayed by
+     * the grace windows.
+     */
     private void sendSigint(Process process) {
         if (process == null || !process.isAlive()) return;
         try {
-            long pid = process.pid();
             boolean isUnix = !System.getProperty("os.name", "").toLowerCase().startsWith("win");
             if (isUnix) {
-                new ProcessBuilder("kill", "-INT", String.valueOf(pid))
-                        .redirectErrorStream(true).start().waitFor();
+                escalatingUnixInterrupt(process, SOFT_INTERRUPT_SIGINT_GRACE_MS, SOFT_INTERRUPT_SIGTERM_GRACE_MS);
             } else {
-                // Windows doesn't have SIGINT for non-console processes — use Ctrl+C via stdin
+                // Windows: no SIGINT for non-console processes — write Ctrl+C (ETX) to stdin, then
+                // terminate if the agent does not stop within the grace window.
                 OutputStream stdin = agentStdin;
                 if (stdin != null) {
                     try {
@@ -1084,8 +1095,29 @@ public class SubprocessAgentRunner {
                         stdin.flush();
                     } catch (IOException ignored) {}
                 }
+                if (!process.waitFor(SOFT_INTERRUPT_SIGINT_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                    process.destroy();
+                }
             }
         } catch (Exception ignored) {}
+    }
+
+    /**
+     * Escalating Unix interrupt: SIGINT → (sigintGraceMs) → SIGTERM → (sigtermGraceMs) → SIGKILL.
+     * Returns the signal that stopped the process ("INT"/"TERM"/"KILL"), or "ALIVE" if it survived
+     * all stages. Package-private for testing.
+     */
+    static String escalatingUnixInterrupt(Process process, int sigintGraceMs, int sigtermGraceMs) throws Exception {
+        long pid = process.pid();
+        new ProcessBuilder("kill", "-INT", String.valueOf(pid))
+                .redirectErrorStream(true).start().waitFor();
+        if (process.waitFor(sigintGraceMs, TimeUnit.MILLISECONDS)) return "INT";
+        new ProcessBuilder("kill", "-TERM", String.valueOf(pid))
+                .redirectErrorStream(true).start().waitFor();
+        if (process.waitFor(sigtermGraceMs, TimeUnit.MILLISECONDS)) return "TERM";
+        new ProcessBuilder("kill", "-9", String.valueOf(pid))
+                .redirectErrorStream(true).start().waitFor();
+        return process.waitFor(1000, TimeUnit.MILLISECONDS) ? "KILL" : "ALIVE";
     }
 
     // ========================================================================

@@ -112,6 +112,10 @@ public class EnforcerConfig {
     @JsonProperty
     private String judgeBaseUrl;
 
+    /** What to do when the judge is unavailable or fails mid-turn: fail_open | fail_closed | degrade_to_keyword. */
+    @JsonProperty
+    private String judgeFallbackPolicy = "degrade_to_keyword";
+
     // ── Semantic matching ─────────────────────────────────────────────────
 
     @JsonProperty
@@ -293,6 +297,25 @@ public class EnforcerConfig {
         }
 
         return sb.toString().trim();
+    }
+
+    /**
+     * Whether this config should activate enforcement for a session.
+     * True for keyword mode, or whenever there is anything to enforce
+     * (inline rules, a rule file, banned tools/commands/keywords, or diff patterns).
+     *
+     * <p>Used by the chat router to escalate passthrough into an enforced session
+     * for BOTH keyword and LLM-judge modes. Previously the router checked only
+     * {@link #isKeywordMode()}, so an LLM-judge config silently never enforced.</p>
+     */
+    public boolean isEnforcementEnabled() {
+        return keywordMode
+                || (inlineRules != null && !inlineRules.isBlank())
+                || (ruleFile != null && !ruleFile.isBlank())
+                || (bannedTools != null && !bannedTools.isEmpty())
+                || (bannedCommands != null && !bannedCommands.isEmpty())
+                || (bannedKeywords != null && !bannedKeywords.isEmpty())
+                || (diffPatternRules != null && !diffPatternRules.isEmpty());
     }
 
 }

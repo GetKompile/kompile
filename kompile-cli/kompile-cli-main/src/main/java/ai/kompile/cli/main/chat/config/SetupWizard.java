@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
+import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -24,6 +26,7 @@ import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -106,6 +109,32 @@ public class SetupWizard {
                 System.out.println();
                 passthroughAgent = selectPassthroughAgent(reader);
                 if (passthroughAgent == null) return null;
+
+                // Step 2b: Optional rule enforcement (judge/enforcer).
+                // Configuring it here writes .kompile/enforcer-config.json, which the
+                // chat router auto-detects to start an enforced (managed) session — for
+                // BOTH keyword and LLM-judge modes.
+                System.out.println();
+                if (promptYesNo(reader,
+                        "Enable rule enforcement (judge/enforcer) for this session?", false)) {
+                    passthroughManaged = true; // enforcement requires the managed REPL
+                    Path enforcerWd = Path.of(System.getProperty("user.dir"))
+                            .toAbsolutePath().normalize();
+                    try {
+                        EnforcerConfig enforcerConfig =
+                                EnforcerSetupWizard.runWithReader(reader, enforcerWd);
+                        if (enforcerConfig != null) {
+                            System.out.println(GREEN + "  ✓ Enforcement configured ("
+                                    + (enforcerConfig.isKeywordMode() ? "keyword rules" : "LLM judge")
+                                    + ") → .kompile/enforcer-config.json" + RESET);
+                        } else {
+                            System.out.println(YELLOW
+                                    + "  Enforcement setup cancelled — continuing without it." + RESET);
+                        }
+                    } catch (Exception e) {
+                        System.err.println("  Enforcer setup failed: " + e.getMessage());
+                    }
+                }
             }
 
             // Step 3: For standard mode, select LLM provider
@@ -338,6 +367,16 @@ public class SetupWizard {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Yes/No prompt. Returns {@code defaultYes} when the user just presses Enter.
+     */
+    private static boolean promptYesNo(LineReader reader, String question, boolean defaultYes) {
+        String suffix = defaultYes ? " [Y/n]: " : " [y/N]: ";
+        String input = promptManual(reader, "  " + question + suffix);
+        if (input == null || input.isBlank()) return defaultYes;
+        return input.trim().toLowerCase().startsWith("y");
     }
 
     // ── API key prompt ──────────────────────────────────────────────────────

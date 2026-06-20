@@ -31,9 +31,29 @@ public class EnforcerService {
     }
 
     private final EnforcerEvaluator evaluator;
+    private JudgementLog judgementLog;
+    private EnforcerFallbackPolicy fallbackPolicy = EnforcerFallbackPolicy.FAIL_CLOSED;
+    private com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     public EnforcerService(EnforcerEvaluator evaluator) {
         this.evaluator = evaluator;
+    }
+
+    /** Attach a judgement log so enforcement outcomes (and keyword decisions) are recorded. */
+    public void setJudgementLog(JudgementLog judgementLog) {
+        this.judgementLog = judgementLog;
+    }
+
+    /**
+     * Configure how the enforcer behaves when the judge is unavailable or fails mid-turn.
+     * The mapper is needed to build a keyword fallback evaluator for DEGRADE_TO_KEYWORD.
+     */
+    public void setFallbackPolicy(EnforcerFallbackPolicy fallbackPolicy,
+                                  com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
+        if (fallbackPolicy != null) {
+            this.fallbackPolicy = fallbackPolicy;
+        }
+        this.objectMapper = objectMapper;
     }
 
     public EnforcerResult enforce(String userPrompt, EnforcerPolicy policy,
@@ -44,12 +64,35 @@ public class EnforcerService {
     public EnforcerResult enforce(String userPrompt, EnforcerPolicy policy,
                                   Supplier<EnforcerConversationContext> contextSupplier,
                                   AgentTurnExecutor executor) {
-        String backend = evaluator != null ? evaluator.describe() : "none";
         if (policy == null || !policy.hasRules()) {
-            return EnforcerResult.error("Enforcer rules are required", List.of(), backend);
+            return finish(EnforcerResult.error("Enforcer rules are required", List.of(), "none"),
+                    null, userPrompt, "", "none");
         }
-        if (evaluator == null || !evaluator.isAvailable()) {
-            return EnforcerResult.unavailable("No enforcer judge backend is available", backend);
+
+        // Resolve the evaluator, applying the fallback policy if the judge is unavailable.
+        EnforcerEvaluator activeEvaluator = evaluator;
+        String backend = activeEvaluator != null ? activeEvaluator.describe() : "none";
+        if (activeEvaluator == null || !activeEvaluator.isAvailable()) {
+            EnforcerEvaluator keyword = buildKeywordFallback(policy);
+            if (keyword != null) {
+                activeEvaluator = keyword;
+                backend = keyword.describe() + " (judge unavailable → keyword)";
+            } else if (fallbackPolicy == EnforcerFallbackPolicy.FAIL_OPEN) {
+                // No judge and no keyword rules: run the agent once, unjudged.
+                try {
+                    String out = executor.run(buildInitialPrompt(userPrompt, policy));
+                    return finish(EnforcerResult.accepted(out, List.of(), "fail-open (no judge)"),
+                            activeEvaluator, userPrompt, out, "fail-open (no judge)");
+                } catch (Exception e) {
+                    return finish(EnforcerResult.error("Agent run failed: " + e.getMessage(), List.of(),
+                                    "fail-open (no judge)"),
+                            activeEvaluator, userPrompt, "", "fail-open (no judge)");
+                }
+            } else {
+                return finish(EnforcerResult.unavailable(
+                                "No enforcer judge backend is available (failing closed)", backend),
+                        activeEvaluator, userPrompt, "", backend);
+            }
         }
 
         List<EnforcerResult.Attempt> attempts = new ArrayList<>();
@@ -62,31 +105,120 @@ public class EnforcerService {
                 lastOutput = executor.run(nextPrompt);
                 EnforcerConversationContext context = contextSupplier != null
                         ? contextSupplier.get() : EnforcerConversationContext.empty();
-                EnforcerDecision decision = evaluator.evaluate(userPrompt, lastOutput, policy,
+                EnforcerDecision decision = activeEvaluator.evaluate(userPrompt, lastOutput, policy,
                         attemptNumber, context);
                 attempts.add(new EnforcerResult.Attempt(attemptNumber, lastOutput, decision));
+                recordAttempt(activeEvaluator, attemptNumber, decision, userPrompt, lastOutput, backend);
 
                 if (decision.isCompliant()) {
-                    return EnforcerResult.accepted(lastOutput, attempts, backend);
+                    return finish(EnforcerResult.accepted(lastOutput, attempts, backend),
+                            activeEvaluator, userPrompt, lastOutput, backend);
                 }
 
                 if (decision.isStop()) {
-                    return EnforcerResult.blocked(lastOutput, attempts,
-                            "Stopped by enforcer: " + summarizeDecision(decision), backend);
+                    return finish(EnforcerResult.blocked(lastOutput, attempts,
+                            "Stopped by enforcer: " + summarizeDecision(decision), backend),
+                            activeEvaluator, userPrompt, lastOutput, backend);
                 }
 
                 if (attemptNumber == totalAttempts) {
-                    return EnforcerResult.blocked(lastOutput, attempts,
-                            "Maximum corrections reached: " + summarizeDecision(decision), backend);
+                    return finish(EnforcerResult.blocked(lastOutput, attempts,
+                            "Maximum corrections reached: " + summarizeDecision(decision), backend),
+                            activeEvaluator, userPrompt, lastOutput, backend);
                 }
 
                 nextPrompt = buildCorrectionPrompt(userPrompt, policy, lastOutput, decision, attemptNumber + 1);
             } catch (Exception e) {
-                return EnforcerResult.error("Enforcer execution failed: " + e.getMessage(), attempts, backend);
+                // Judge failed mid-turn (timeout / exhausted swaps): apply the fallback policy.
+                return finish(applyMidTurnFallback(userPrompt, policy, lastOutput, attempts, backend, e),
+                        activeEvaluator, userPrompt, lastOutput, backend);
             }
         }
 
-        return EnforcerResult.blocked(lastOutput, attempts, "Enforcer exhausted correction attempts", backend);
+        return finish(EnforcerResult.blocked(lastOutput, attempts, "Enforcer exhausted correction attempts", backend),
+                activeEvaluator, userPrompt, lastOutput, backend);
+    }
+
+    /** Record the final enforcement outcome (RESULT phase) and return the result unchanged. */
+    private EnforcerResult finish(EnforcerResult result, EnforcerEvaluator activeEvaluator,
+                                  String userPrompt, String lastOutput, String backend) {
+        if (judgementLog != null && result != null) {
+            judgementLog.record(JudgementRecord.builder()
+                    .phase("RESULT")
+                    .judgeMode(activeEvaluator != null && activeEvaluator.recordsJudgements() ? "llm" : "keyword")
+                    .backend(backend)
+                    .status(result.getStatus() != null ? result.getStatus().name() : "UNKNOWN")
+                    .compliant(result.getStatus() == EnforcerResult.Status.ACCEPTED)
+                    .reasoning(result.getMessage())
+                    .userPromptExcerpt(userPrompt)
+                    .agentOutputExcerpt(lastOutput)
+                    .build());
+        }
+        return result;
+    }
+
+    /**
+     * Record a per-attempt decision. Only fires when the evaluator does not record its own
+     * judgements (i.e. the keyword path) — LLM judges already log a JUDGE_TURN record with the
+     * raw response, so this avoids duplicates.
+     */
+    private void recordAttempt(EnforcerEvaluator activeEvaluator, int attemptNumber, EnforcerDecision decision,
+                               String userPrompt, String lastOutput, String backend) {
+        if (judgementLog == null || (activeEvaluator != null && activeEvaluator.recordsJudgements())) {
+            return;
+        }
+        judgementLog.record(JudgementRecord.builder()
+                .phase("ATTEMPT")
+                .attempt(attemptNumber)
+                .judgeMode("keyword")
+                .backend(backend)
+                .compliant(decision.isCompliant())
+                .stop(decision.isStop())
+                .severity(decision.getSeverity())
+                .violations(decision.getViolations())
+                .correctionPrompt(decision.getCorrectionPrompt())
+                .reasoning(decision.getReasoning())
+                .userPromptExcerpt(userPrompt)
+                .agentOutputExcerpt(lastOutput)
+                .build());
+    }
+
+    /** Build a keyword evaluator from the policy for degrade-to-keyword fallback, or null. */
+    private EnforcerEvaluator buildKeywordFallback(EnforcerPolicy policy) {
+        if (fallbackPolicy != EnforcerFallbackPolicy.DEGRADE_TO_KEYWORD || objectMapper == null) {
+            return null;
+        }
+        KeywordEnforcerEvaluator keyword = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper);
+        return keyword.isAvailable() ? keyword : null;
+    }
+
+    /** Apply the configured fallback when the judge throws mid-turn (after the agent produced output). */
+    private EnforcerResult applyMidTurnFallback(String userPrompt, EnforcerPolicy policy, String lastOutput,
+                                                List<EnforcerResult.Attempt> attempts, String backend,
+                                                Exception cause) {
+        if (fallbackPolicy == EnforcerFallbackPolicy.FAIL_OPEN) {
+            return EnforcerResult.accepted(lastOutput, attempts, backend + " (judge failed → fail-open)");
+        }
+        if (fallbackPolicy == EnforcerFallbackPolicy.DEGRADE_TO_KEYWORD && objectMapper != null
+                && lastOutput != null && !lastOutput.isBlank()) {
+            try {
+                KeywordEnforcerEvaluator keyword = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper);
+                if (keyword.isAvailable()) {
+                    EnforcerDecision decision = keyword.evaluate(userPrompt, lastOutput, policy, attempts.size() + 1);
+                    if (decision.isCompliant()) {
+                        return EnforcerResult.accepted(lastOutput, attempts, backend + " (judge failed → keyword)");
+                    }
+                    return EnforcerResult.blocked(lastOutput, attempts,
+                            "Judge failed; keyword check blocked: " + summarizeDecision(decision),
+                            backend + " (judge failed → keyword)");
+                }
+            } catch (Exception ignored) {
+                // fall through to fail-closed
+            }
+        }
+        // FAIL_CLOSED (default): block the unverified output rather than letting it through.
+        return EnforcerResult.blocked(lastOutput, attempts,
+                "Judge failed; failing closed: " + cause.getMessage(), backend);
     }
 
     public static String buildInitialPrompt(String userPrompt, EnforcerPolicy policy) {

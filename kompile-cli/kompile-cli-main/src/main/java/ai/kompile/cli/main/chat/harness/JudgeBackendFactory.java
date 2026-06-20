@@ -20,6 +20,9 @@ import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Factory that builds the appropriate {@link JudgeBackend} based on
  * {@link HarnessConfig#getJudgeMode()}.
@@ -45,13 +48,14 @@ public class JudgeBackendFactory {
         String mode = config.getJudgeMode();
         if (mode == null) mode = "auto";
 
-        return switch (mode.toLowerCase()) {
+        JudgeBackend primary = switch (mode.toLowerCase()) {
             case "cli" -> new CliJudgeBackend(config.getJudgeModel());
             case "remote" -> createRemote(mainChatClient, config, objectMapper);
             case "local" -> createLocal(config);
             case "auto-server" -> createAutoServer(config, objectMapper);
             default -> createAuto(mainChatClient, config, objectMapper);
         };
+        return wrapResilient(primary, config, objectMapper);
     }
 
     /**
@@ -70,13 +74,45 @@ public class JudgeBackendFactory {
         String mode = config.getJudgeMode();
         if (mode == null) mode = "auto";
 
-        return switch (mode.toLowerCase()) {
+        JudgeBackend primary = switch (mode.toLowerCase()) {
             case "cli" -> new CliJudgeBackend(config.getJudgeModel());
             case "remote" -> createRemote(fallbackClient, config, objectMapper);
             case "local" -> createLocal(config);
             case "auto-server" -> createAutoServer(config, objectMapper);
             default -> createAuto(fallbackClient, config, objectMapper);
         };
+        return wrapResilient(primary, config, objectMapper);
+    }
+
+    /**
+     * Wrap a resolved judge backend with model-swap + per-call-deadline resilience. Backups are
+     * built from {@link HarnessConfig#getJudgeSwapCandidates()} when a dedicated judge client can
+     * be constructed (i.e. a judge provider/key is configured). The wrapper is added whenever a
+     * deadline is set or backups exist, so all judge paths (chat, enforcer, MCP) get it.
+     */
+    private static JudgeBackend wrapResilient(JudgeBackend primary, HarnessConfig config,
+                                              ObjectMapper objectMapper) {
+        if (primary == null) {
+            return null;
+        }
+        long deadlineMs = config.getJudgeDeadlineMs();
+        long cooldownMs = config.getRateLimitCooldownMs();
+        List<JudgeBackend> backups = new ArrayList<>();
+        List<String> candidates = config.getJudgeSwapCandidates();
+        if (candidates != null && !candidates.isEmpty()) {
+            DirectLlmClient judgeClient = buildDedicatedJudgeClient(config, objectMapper);
+            if (judgeClient != null) {
+                for (String model : candidates) {
+                    if (model != null && !model.isBlank()) {
+                        backups.add(new RemoteJudgeBackend(judgeClient, model.trim(), config.getJudgeProvider()));
+                    }
+                }
+            }
+        }
+        if (deadlineMs <= 0 && backups.isEmpty()) {
+            return primary; // nothing to add
+        }
+        return new ResilientJudgeBackend(primary, backups, deadlineMs, cooldownMs);
     }
 
     /**

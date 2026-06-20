@@ -396,6 +396,92 @@ public class EnforcerSessionController {
         }
     }
 
+    // ========================================================================
+    // Durable judgement log — written by the CLI enforcer to
+    // ~/.kompile/sessions/<id>/judgements.jsonl. The server reads it directly,
+    // so judgements are visible in the web UI without the CLI configuring a --url.
+    // ========================================================================
+
+    private static final ObjectMapper JUDGEMENTS_MAPPER = JsonUtils.newStandardMapper();
+
+    private static Path judgementsRoot() {
+        return Path.of(System.getProperty("user.home"), ".kompile", "sessions");
+    }
+
+    /** List sessions that have a recorded judgement log, most-recently-active first. */
+    @GetMapping("/judgements")
+    public ResponseEntity<List<Map<String, Object>>> listJudgementSessions() {
+        Path root = judgementsRoot();
+        List<Map<String, Object>> out = new java.util.ArrayList<>();
+        if (!Files.isDirectory(root)) {
+            return ResponseEntity.ok(out);
+        }
+        try (java.util.stream.Stream<Path> dirs = Files.list(root)) {
+            List<Path> logs = dirs
+                    .filter(Files::isDirectory)
+                    .map(d -> d.resolve("judgements.jsonl"))
+                    .filter(Files::exists)
+                    .sorted((a, b) -> Long.compare(lastModifiedMillis(b), lastModifiedMillis(a)))
+                    .toList();
+            for (Path logFile : logs) {
+                List<JsonNode> records = readJudgements(logFile);
+                JsonNode last = records.isEmpty() ? null : records.get(records.size() - 1);
+                Map<String, Object> summary = new java.util.LinkedHashMap<>();
+                summary.put("sessionId", logFile.getParent().getFileName().toString());
+                summary.put("records", records.size());
+                summary.put("lastTimestamp", last != null ? last.path("timestamp").asText("") : "");
+                summary.put("lastBackend", last != null ? last.path("backend").asText("") : "");
+                summary.put("lastStatus", last != null
+                        ? (last.hasNonNull("status") ? last.path("status").asText("") : last.path("phase").asText(""))
+                        : "");
+                out.add(summary);
+            }
+        } catch (IOException e) {
+            log.warn("Failed to list judgement sessions: {}", e.getMessage());
+        }
+        return ResponseEntity.ok(out);
+    }
+
+    /** Return all judgement records (all phases) for one session. */
+    @GetMapping("/judgements/{sessionId}")
+    public ResponseEntity<List<JsonNode>> getJudgements(@PathVariable String sessionId) {
+        if (sessionId == null || sessionId.contains("/") || sessionId.contains("\\") || sessionId.contains("..")) {
+            return ResponseEntity.badRequest().build();
+        }
+        Path logFile = judgementsRoot().resolve(sessionId).resolve("judgements.jsonl");
+        if (!Files.exists(logFile)) {
+            return ResponseEntity.ok(List.of());
+        }
+        return ResponseEntity.ok(readJudgements(logFile));
+    }
+
+    private static List<JsonNode> readJudgements(Path logFile) {
+        List<JsonNode> records = new java.util.ArrayList<>();
+        try {
+            for (String line : Files.readAllLines(logFile)) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                try {
+                    records.add(JUDGEMENTS_MAPPER.readTree(line));
+                } catch (Exception ignored) {
+                    // skip a malformed line
+                }
+            }
+        } catch (IOException ignored) {
+            // return what we have
+        }
+        return records;
+    }
+
+    private static long lastModifiedMillis(Path file) {
+        try {
+            return Files.getLastModifiedTime(file).toMillis();
+        } catch (IOException e) {
+            return 0L;
+        }
+    }
+
     private Path resolveProjectRoot() {
         try {
             // Use the project backend service's manifest to find the project root

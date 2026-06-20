@@ -211,7 +211,7 @@ public class ChatCommand implements Callable<Integer> {
                 Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
                 ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
                         ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
-                if (enforcerConfig != null && enforcerConfig.isKeywordMode()) {
+                if (enforcerConfig != null && enforcerConfig.isEnforcementEnabled()) {
                     managed = true;
                 }
             }
@@ -385,7 +385,7 @@ public class ChatCommand implements Callable<Integer> {
             Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
             ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
                     ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
-            if (enforcerConfig != null && enforcerConfig.isKeywordMode()) {
+            if (enforcerConfig != null && enforcerConfig.isEnforcementEnabled()) {
                 hasEnforcerRules = true;
             }
         }
@@ -530,6 +530,35 @@ public class ChatCommand implements Callable<Integer> {
         }
         EnforcerConversationWindow conversationWindow =
                 new EnforcerConversationWindow(runtimePolicy.getContextFile(), objectMapper);
+
+        // Track every judgement made this session to a durable JSONL log, and (for an LLM
+        // judge) capture the raw judge response so the managed judge session is observable.
+        ai.kompile.cli.main.chat.enforcer.JudgementLog judgementLog =
+                ai.kompile.cli.main.chat.enforcer.JudgementLog.forSession(runtimePolicy.getSessionId());
+        if (evaluator instanceof EnforcerJudge enforcerJudge) {
+            enforcerJudge.setJudgementLog(judgementLog);
+        }
+        service.setJudgementLog(judgementLog);
+
+        // Apply the configured fallback policy (judge unavailable / mid-turn failure).
+        ai.kompile.cli.main.chat.enforcer.EnforcerFallbackPolicy fallbackPolicy =
+                ai.kompile.cli.main.chat.enforcer.EnforcerFallbackPolicy.parse(
+                        projectEnforcerConfig != null ? projectEnforcerConfig.getJudgeFallbackPolicy() : null);
+        service.setFallbackPolicy(fallbackPolicy, objectMapper);
+
+        // Make the enforced session non-opaque: announce what is enforcing,
+        // which judge backend is in use, and where judgements are recorded.
+        int ruleCount = (int) rules.lines().filter(l -> !l.isBlank()).count();
+        String enfSessionId = runtimePolicy.toEnvironment()
+                .getOrDefault("KOMPILE_ENFORCER_SESSION_ID", "?");
+        System.out.println();
+        System.out.println("\033[1m\033[36m  🛡 Enforced session active\033[0m");
+        System.out.println("     mode:       " + (useKeywordMode ? "keyword" : "LLM judge"));
+        System.out.println("     backend:    " + evaluator.describe());
+        System.out.println("     rules:      " + ruleCount);
+        System.out.println("     session:    " + enfSessionId);
+        System.out.println("     judgements: ~/.kompile/sessions/" + enfSessionId + "/judgements.jsonl");
+        System.out.println();
 
         try {
             // Delegate to the single REPL with enforcer fields set

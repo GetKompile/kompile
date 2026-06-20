@@ -71,6 +71,10 @@ public class HarnessConfig {
     @JsonProperty private String judgeServerType = null;     // "ollama" (default) or "kompile"
     @JsonProperty private int judgeServerPort = 0;           // 0 = default for server type
 
+    // ── Judge call robustness ─────────────────────────────────────
+    @JsonProperty private int judgeDeadlineMs = 15_000;      // hard per-judge-call deadline (0 = none)
+    @JsonProperty private List<String> judgeSwapCandidates = new ArrayList<>(); // backup judge models on failure
+
     // ── Layer toggles ─────────────────────────────────────────────
     @JsonProperty private boolean escapeDetectionEnabled = true;
     @JsonProperty private boolean thinkingAnalysisEnabled = true;
