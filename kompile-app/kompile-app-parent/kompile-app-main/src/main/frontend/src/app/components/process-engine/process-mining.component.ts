@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
@@ -22,6 +22,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
@@ -31,6 +32,7 @@ import {
   ProcessMiningService, MiningPreview, ProcessCausalModel,
   DeclareConstraint, InferenceResult, MiningSuggestion, ConformanceResult
 } from '../../services/process-mining.service';
+import { FactSheetService } from '../../services/fact-sheet.service';
 
 /**
  * Surfaces the LLM-free process-mining engine: derive a sound process from a fact sheet's graph and
@@ -42,14 +44,20 @@ import {
   selector: 'app-process-mining',
   imports: [
     CommonModule, FormsModule,
-    MatTabsModule, MatIconModule, MatButtonModule, MatFormFieldModule, MatInputModule,
+    MatTabsModule, MatIconModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatSelectModule,
     MatProgressBarModule, MatChipsModule, MatTooltipModule, MatSnackBarModule,
     MermaidRendererComponent
   ],
   template: `
     <div class="mining-container">
       <div class="mining-controls">
-        <mat-form-field appearance="outline" class="fs-field">
+        <mat-form-field appearance="outline" class="fs-field" *ngIf="sheets.length">
+          <mat-label>Fact sheet</mat-label>
+          <mat-select [(ngModel)]="factSheetId">
+            <mat-option *ngFor="let s of sheets" [value]="s.id">{{ s.name || ('#' + s.id) }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="fs-field" *ngIf="!sheets.length">
           <mat-label>Fact sheet ID</mat-label>
           <input matInput type="number" [(ngModel)]="factSheetId" min="1">
         </mat-form-field>
@@ -237,7 +245,7 @@ import {
     .step-type { color: #888; font-size: 11px; font-style: normal; }
   `]
 })
-export class ProcessMiningComponent {
+export class ProcessMiningComponent implements OnInit {
 
   factSheetId = 1;
   noise = 0;
@@ -253,8 +261,22 @@ export class ProcessMiningComponent {
   bayesian?: InferenceResult;
   discovered?: MiningSuggestion;
   conformance?: ConformanceResult;
+  sheets: any[] = [];
 
-  constructor(private mining: ProcessMiningService, private snack: MatSnackBar) {}
+  constructor(private mining: ProcessMiningService, private snack: MatSnackBar,
+              private factSheets: FactSheetService) {}
+
+  ngOnInit(): void {
+    this.factSheets.loadSheets().subscribe({
+      next: (s) => {
+        this.sheets = (s as any[]) || [];
+        if (this.sheets.length && !this.factSheetId) {
+          this.factSheetId = this.sheets[0].id;
+        }
+      },
+      error: () => { /* leave the manual id input as the fallback */ }
+    });
+  }
 
   analyze(): void {
     const id = this.factSheetId;
