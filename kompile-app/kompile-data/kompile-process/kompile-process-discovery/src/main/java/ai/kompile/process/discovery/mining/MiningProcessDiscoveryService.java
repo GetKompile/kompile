@@ -21,6 +21,7 @@ import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.discovery.ProcessSuggestion;
 import ai.kompile.process.discovery.ProcessSuggestionStore;
+import ai.kompile.process.discovery.mining.causal.CausalDependency;
 import ai.kompile.process.discovery.mining.causal.ProcessBayesianInference;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;
 import ai.kompile.process.discovery.mining.causal.ProcessPslInference;
@@ -43,6 +44,7 @@ import ai.kompile.process.discovery.mining.miner.InductiveMiner;
 import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
 import ai.kompile.process.discovery.mining.perf.PerformanceMiner;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
+import ai.kompile.process.discovery.mining.rules.MinedRulePersistenceService;
 import ai.kompile.process.discovery.mining.tree.ProcessTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,6 +81,9 @@ public class MiningProcessDiscoveryService {
     /** Optional KB grounding service — wired when kompile-knowledge-graph is present. */
     private KbGroundingService kbGroundingService;
 
+    /** Optional rule persistence service — wired when available (Spring context only). */
+    private MinedRulePersistenceService rulePersistenceService;
+
     /** Optional object-centric case notion: when set, each entity of this type anchors a process instance. */
     @org.springframework.beans.factory.annotation.Value("${kompile.process.mining.anchor-type:}")
     private String anchorEntityType;
@@ -111,6 +116,11 @@ public class MiningProcessDiscoveryService {
     @Autowired(required = false)
     public void setKbGroundingService(KbGroundingService kbGroundingService) {
         this.kbGroundingService = kbGroundingService;
+    }
+
+    @Autowired(required = false)
+    public void setRulePersistenceService(MinedRulePersistenceService rulePersistenceService) {
+        this.rulePersistenceService = rulePersistenceService;
     }
 
     /**
@@ -156,14 +166,51 @@ public class MiningProcessDiscoveryService {
                 RoleBindingExtractor.applyRoleBindings(phase.getSteps(), kbGroundingService, factSheetId));
         }
 
+        // L4: causal analysis → persist PSL rules → propagate into next cascade.
+        // Run on the same event log so no redundant extraction occurs.
+        ProcessCausalAnalyzer.ProcessCausalModel causalModel =
+                ProcessCausalAnalyzer.analyze(eventLog);
+
+        // Attach causal arcs as structured evidence on the suggestion (D3-B)
+        if (!causalModel.dependencies().isEmpty()) {
+            List<ProcessSuggestion.StructuredEvidence> causalEvidence = new java.util.ArrayList<>();
+            for (CausalDependency dep : causalModel.dependencies()) {
+                causalEvidence.add(ProcessSuggestion.StructuredEvidence.builder()
+                        .type("CAUSAL")
+                        .description(dep.from() + " → " + dep.to() +
+                                " [" + dep.type().name() + "]" +
+                                " dep=" + String.format("%.3f", dep.dependency()) +
+                                " sig=" + dep.significant())
+                        .score(dep.dependency())
+                        .build());
+            }
+            suggestion.getStructuredEvidence().addAll(causalEvidence);
+        }
+
+        // Persist mined rules to <dataDir>/rules/<factSheetId>-mined.psl (+ lineage + index + audit)
+        if (rulePersistenceService != null && !causalModel.pslRules().isEmpty()) {
+            try {
+                MinedRulePersistenceService.PersistResult result =
+                        rulePersistenceService.persistCausalRules(factSheetId, causalModel);
+                if (result.persisted()) {
+                    log.info("Process mining: persisted {} rules for fact sheet {} → {} (v{})",
+                            result.ruleCount(), factSheetId, result.fileName(), result.version());
+                }
+            } catch (Exception e) {
+                // Rule persistence failure is non-fatal: suggestion is still returned
+                log.warn("Process mining: rule persistence failed for fact sheet {} — {}", factSheetId, e.getMessage());
+            }
+        }
+
         suggestion.setId("mined-" + UUID.randomUUID());
         suggestion.setFactSheetId(factSheetId);
         suggestion.setDiscoveredAt(Instant.now());
         if (suggestionStore != null) {
             suggestionStore.saveAll(List.of(suggestion));
         }
-        log.info("Process mining discovered a {}-phase process for fact sheet {} (grounding={}): {}",
-                suggestion.getPhases().size(), factSheetId, kbGroundingService != null, tree);
+        log.info("Process mining discovered a {}-phase process for fact sheet {} (grounding={}, causalRules={}): {}",
+                suggestion.getPhases().size(), factSheetId, kbGroundingService != null,
+                causalModel.pslRules().size(), tree);
         return suggestion;
     }
 

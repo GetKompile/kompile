@@ -24,10 +24,12 @@ import ai.kompile.process.discovery.mining.conformance.ConformanceResult;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import ai.kompile.process.discovery.mining.miner.HeuristicsNet;
 import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
+import ai.kompile.process.discovery.mining.rules.MinedRulePersistenceService;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,9 +48,12 @@ import java.util.Map;
 public class MiningDiscoveryController {
 
     private final MiningProcessDiscoveryService miningService;
+    private final MinedRulePersistenceService rulePersistenceService;
 
-    public MiningDiscoveryController(MiningProcessDiscoveryService miningService) {
+    public MiningDiscoveryController(MiningProcessDiscoveryService miningService,
+                                     MinedRulePersistenceService rulePersistenceService) {
         this.miningService = miningService;
+        this.rulePersistenceService = rulePersistenceService;
     }
 
     /**
@@ -81,6 +86,25 @@ public class MiningDiscoveryController {
             @RequestParam Long factSheetId,
             @RequestParam(required = false) String anchorType) {
         return miningService.causalAnalysis(factSheetId, anchorType);
+    }
+
+    /**
+     * Explicitly persist the causal PSL rules for a fact sheet to
+     * {@code <dataDir>/rules/<factSheetId>-mined.psl} so they propagate into the next cascade.
+     * Also writes the lineage sidecar and updates {@code active-rules.json}.
+     * Emits a {@code RULE_CREATED} audit event.
+     *
+     * <p>Note: {@link #discover} already calls this automatically; this endpoint is provided for
+     * operators who want to re-mine rules without running full process discovery.
+     */
+    @PostMapping("/causal/persist")
+    public ResponseEntity<MinedRulePersistenceService.PersistResult> persistCausalRules(
+            @RequestParam Long factSheetId,
+            @RequestParam(required = false) String anchorType) {
+        ProcessCausalAnalyzer.ProcessCausalModel model = miningService.causalAnalysis(factSheetId, anchorType);
+        MinedRulePersistenceService.PersistResult result =
+                rulePersistenceService.persistCausalRules(factSheetId, model);
+        return ResponseEntity.ok(result);
     }
 
     /**
