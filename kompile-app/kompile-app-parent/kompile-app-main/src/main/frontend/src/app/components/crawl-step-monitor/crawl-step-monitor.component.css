@@ -239,6 +239,110 @@
   max-height: 360px;
 }
 
+/* ── Enrichment sub-stage panel ── */
+.csm-enrich-section { margin-bottom: 2px; }
+
+.csm-enrich-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 0;
+}
+
+.csm-enrich-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  transition: background 0.15s ease;
+}
+
+.csm-enrich-icon {
+  flex: 0 0 auto;
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+}
+
+.csm-enrich-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.csm-enrich-label {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.csm-enrich-detail {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.csm-enrich-state {
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 7px;
+  border-radius: 8px;
+  align-self: center;
+}
+
+/* State variants */
+.csm-enrich-row.enrich-pending {
+  background: var(--bg-surface-elevated);
+  opacity: 0.65;
+}
+.csm-enrich-row.enrich-pending .csm-enrich-icon { color: var(--text-tertiary); }
+.csm-enrich-row.enrich-pending .csm-enrich-state {
+  background: rgba(0,0,0,0.06);
+  color: var(--text-tertiary);
+}
+
+.csm-enrich-row.enrich-running {
+  background: rgba(25, 118, 210, 0.06);
+  border-left: 3px solid #1976d2;
+}
+.csm-enrich-row.enrich-running .csm-enrich-icon {
+  color: #1976d2;
+  animation: csm-spin 1.5s linear infinite;
+}
+.csm-enrich-row.enrich-running .csm-enrich-state {
+  background: rgba(25, 118, 210, 0.14);
+  color: #1976d2;
+}
+
+.csm-enrich-row.enrich-done {
+  background: rgba(46, 125, 50, 0.05);
+}
+.csm-enrich-row.enrich-done .csm-enrich-icon { color: #2e7d32; }
+.csm-enrich-row.enrich-done .csm-enrich-state {
+  background: rgba(46, 125, 50, 0.13);
+  color: #2e7d32;
+}
+
+.csm-enrich-row.enrich-failed {
+  background: rgba(198, 40, 40, 0.05);
+}
+.csm-enrich-row.enrich-failed .csm-enrich-icon { color: #c62828; }
+.csm-enrich-row.enrich-failed .csm-enrich-state {
+  background: rgba(198, 40, 40, 0.12);
+  color: #c62828;
+}
+
 /* ── Documents ── */
 .csm-doc-row { display: flex; align-items: center; gap: 8px; padding: 2px 6px; }
 .csm-doc-status { font-size: 0.66rem; font-weight: 700; min-width: 64px; }

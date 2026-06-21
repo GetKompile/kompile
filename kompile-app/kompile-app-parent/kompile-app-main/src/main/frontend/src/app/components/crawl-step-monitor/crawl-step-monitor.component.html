@@ -71,6 +71,29 @@
       <!-- ── Expanded detail ─────────────────────────────────────────────────── -->
       <div class="csm-detail" *ngIf="isStepExpanded(step.stepId)">
 
+        <!-- (0) ENRICHMENT sub-stage panel — shown only for the ENRICHMENT step -->
+        <ng-container *ngIf="isEnrichmentStep(step)">
+          <div class="csm-section csm-enrich-section">
+            <div class="csm-section-head">
+              <mat-icon inline>auto_awesome</mat-icon>
+              <span>Enrichment sub-stages</span>
+              <span class="csm-live" *ngIf="step.status === 'RUNNING'">LIVE</span>
+            </div>
+            <div class="csm-enrich-stages">
+              <div *ngFor="let sub of getEnrichmentSubStages(step)"
+                   class="csm-enrich-row"
+                   [ngClass]="sub.cssClass">
+                <mat-icon class="csm-enrich-icon" inline>{{ sub.icon }}</mat-icon>
+                <div class="csm-enrich-body">
+                  <span class="csm-enrich-label">{{ sub.label }}</span>
+                  <span class="csm-enrich-detail" *ngIf="sub.detail">{{ sub.detail }}</span>
+                </div>
+                <span class="csm-enrich-state">{{ sub.state }}</span>
+              </div>
+            </div>
+          </div>
+        </ng-container>
+
         <!-- (1) Identity + Log ID -->
         <div class="csm-section">
           <div class="csm-section-head"><mat-icon inline>badge</mat-icon><span>Identity</span></div>

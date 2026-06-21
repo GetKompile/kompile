@@ -35,6 +35,16 @@ import {
   TuningDecision
 } from '../../services/unified-crawl.service';
 
+/** One row in the ENRICHMENT sub-stage display. */
+interface EnrichmentSubStage {
+  id: string;
+  label: string;
+  icon: string;
+  detail: string;
+  state: string;   // 'pending' | 'running' | 'done' | 'failed'
+  cssClass: string; // maps to CSS: enrich-pending / enrich-running / enrich-done / enrich-failed
+}
+
 /** Lightweight rich-job shape the monitor reads for per-step detail. Both JobSummary and JobDetail
  *  satisfy it; crawler-manager may pass a thinner object (rich sections then degrade gracefully). */
 type RichJob = JobSummary | JobDetail | {
@@ -178,6 +188,135 @@ export class CrawlStepMonitorComponent {
   isLlmStep(step: PipelineStepProgress): boolean {
     const t = (step.stepType || '').toUpperCase();
     return t.includes('LLM') || t.includes('GRAPH');
+  }
+
+  /** True when this is the ENRICHMENT pipeline step (graph hydration). */
+  isEnrichmentStep(step: PipelineStepProgress): boolean {
+    return (step.stepId || '').toUpperCase() === 'ENRICHMENT'
+        || (step.stepType || '').toUpperCase().includes('ENRICH');
+  }
+
+  /**
+   * Build a display list of ENRICHMENT sub-stages with their current state.
+   * The backend emits stage IDs in `currentItem` and counts in `message`.
+   * Sub-stage order mirrors GraphHydrationOrchestrator: WEIGHT_LEARNING →
+   * DERIVATION → PRUNE_COMPACT → HEALTH.
+   */
+  getEnrichmentSubStages(step: PipelineStepProgress): EnrichmentSubStage[] {
+    const activeStageId = (step.currentItem || '').toUpperCase().trim();
+    const completed     = step.completedItems || 0;
+    const total         = step.totalItems || CrawlStepMonitorComponent.HYDRATION_TOTAL_STAGES;
+    const isDone        = step.status === 'COMPLETED';
+    const isFailed      = step.status === 'FAILED';
+    const message       = step.message || '';
+
+    // Parse counts out of the completion summary message (produced by
+    // UnifiedCrawlGraphServiceImpl.completePipelineStep → summary string).
+    const parseCount = (key: string): string => {
+      const m = message.match(new RegExp(key + '=(\\d+)'));
+      return m ? m[1] : '';
+    };
+
+    // Derive per-sub-stage counts from the live message when it is the active stage.
+    const derivationMsg = activeStageId === 'DERIVATION' ? this.shortMessage(message, 'DERIVATION') : '';
+    const pruneMsg      = activeStageId === 'PRUNE_COMPACT' ? this.shortMessage(message, 'PRUNE_COMPACT') : '';
+    const healthMsg     = activeStageId === 'HEALTH' ? this.shortMessage(message, 'HEALTH') : '';
+
+    // Completed summary counts (available after step finishes).
+    const derived    = parseCount('derived');
+    const retracted  = parseCount('retracted');
+    const prunedRet  = parseCount('prunedRetracted');
+    const prunedConf = parseCount('prunedConfidence');
+    const merges     = parseCount('merges');
+    const orphans    = parseCount('orphans');
+    const comps      = parseCount('components');
+
+    const stages: EnrichmentSubStage[] = [
+      {
+        id: 'WEIGHT_LEARNING',
+        label: 'Reasoning & weight learning — PSL + MEBN',
+        icon: 'model_training',
+        detail: isDone
+          ? (derived ? `${derived} facts derived (PSL MAP); MEBN gradient descent run` : 'PSL minibatch + MEBN gradient descent')
+          : (activeStageId === 'WEIGHT_LEARNING' ? this.shortMessage(message, 'WEIGHT_LEARNING') : ''),
+        state: this.enrichStageState(0, completed, total, activeStageId, 'WEIGHT_LEARNING', isDone, isFailed),
+        cssClass: this.enrichStageCss(0, completed, total, activeStageId, 'WEIGHT_LEARNING', isDone, isFailed),
+      },
+      {
+        id: 'DERIVATION',
+        label: 'Rule derivation (MAP inference)',
+        icon: 'account_tree',
+        detail: isDone
+          ? [derived ? `${derived} facts` : '', retracted ? `${retracted} retracted` : ''].filter(Boolean).join(', ')
+          : derivationMsg,
+        state: this.enrichStageState(1, completed, total, activeStageId, 'DERIVATION', isDone, isFailed),
+        cssClass: this.enrichStageCss(1, completed, total, activeStageId, 'DERIVATION', isDone, isFailed),
+      },
+      {
+        id: 'PRUNE_COMPACT',
+        label: 'Compaction / pruning',
+        icon: 'compress',
+        detail: isDone
+          ? [prunedRet ? `${prunedRet} retracted edges` : '',
+             prunedConf ? `${prunedConf} low-confidence` : '',
+             merges ? `${merges} merges` : '',
+             orphans ? `${orphans} orphans` : '',
+             comps ? `${comps} weak components` : ''].filter(Boolean).join(', ')
+          : pruneMsg,
+        state: this.enrichStageState(2, completed, total, activeStageId, 'PRUNE_COMPACT', isDone, isFailed),
+        cssClass: this.enrichStageCss(2, completed, total, activeStageId, 'PRUNE_COMPACT', isDone, isFailed),
+      },
+      {
+        id: 'HEALTH',
+        label: 'Health snapshot',
+        icon: 'monitor_heart',
+        detail: isDone ? 'Density, orphan ratio, component stats persisted' : healthMsg,
+        state: this.enrichStageState(3, completed, total, activeStageId, 'HEALTH', isDone, isFailed),
+        cssClass: this.enrichStageCss(3, completed, total, activeStageId, 'HEALTH', isDone, isFailed),
+      },
+    ];
+
+    return stages;
+  }
+
+  /** Number of top-level orchestrator stages (mirrors GraphHydrationOrchestrator.TOTAL_STAGES = 3). */
+  private static readonly HYDRATION_TOTAL_STAGES = 3;
+
+  /** Abbreviate a raw message from `[STAGE_ID] text` to just the text part, up to 80 chars. */
+  private shortMessage(message: string, stageId: string): string {
+    // Messages from recordHydrationSubStageProgress are "[STAGE_ID] text"
+    const prefix = '[' + stageId + '] ';
+    const text = message.startsWith(prefix) ? message.slice(prefix.length) : message;
+    return text.length > 90 ? text.slice(0, 87) + '…' : text;
+  }
+
+  /**
+   * Determine the display state label for a sub-stage.
+   * `stageIndex` is the 0-based position of this sub-stage in the ordered list
+   * (WEIGHT_LEARNING=0, DERIVATION=1, PRUNE_COMPACT=2, HEALTH=3).
+   * `completed` is the pipeline-step completedItems (0-based stages done).
+   */
+  private enrichStageState(
+    stageIndex: number, completed: number, total: number,
+    activeId: string, stageId: string, isDone: boolean, isFailed: boolean
+  ): string {
+    if (isDone) return 'done';
+    if (isFailed) return stageIndex < completed ? 'done' : 'failed';
+    if (activeId === stageId) return 'running';
+    // WEIGHT_LEARNING fires before DERIVATION completes (completed still 0)
+    // but after it fires the active ID moves on — treat it as done once any stage has completed.
+    if (stageId === 'WEIGHT_LEARNING') return completed >= 1 ? 'done' : (activeId === '' ? 'pending' : 'pending');
+    // For top-level stages: done when stageIndex (1-based in DERIVATION/PRUNE/HEALTH) <= completed
+    if (stageIndex <= completed) return 'done';
+    return 'pending';
+  }
+
+  private enrichStageCss(
+    stageIndex: number, completed: number, total: number,
+    activeId: string, stageId: string, isDone: boolean, isFailed: boolean
+  ): string {
+    const state = this.enrichStageState(stageIndex, completed, total, activeId, stageId, isDone, isFailed);
+    return 'enrich-' + state;
   }
 
   // ─── Phase mapping (authoritative; consolidated from the 3 former copies) ─────

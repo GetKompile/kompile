@@ -78,6 +78,15 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
     public static final String STAGE_PRUNE_COMPACT = "PRUNE_COMPACT";
     public static final String STAGE_HEALTH        = "HEALTH";
 
+    /**
+     * Sub-stage label emitted immediately before {@link IncrementalReasoningOrchestrator#runFullReground}
+     * to surface the PSL minibatch + MEBN gradient-descent weight learning that runs inside the
+     * derivation/re-ground.  This is an informational label only — the actual weight-update counts
+     * live inside the IncrementalReasoningOrchestrator and would require a new RegroundResult field
+     * to expose; that is deferred as a follow-up.
+     */
+    public static final String STAGE_WEIGHT_LEARNING = "WEIGHT_LEARNING";
+
     @Autowired(required = false)
     @Nullable
     private IncrementalReasoningOrchestrator reasoningOrchestrator;
@@ -119,6 +128,16 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
             if (reasoningOrchestrator != null) {
                 try {
                     log.info("[Hydration factSheet={}] DERIVATION: starting MAP re-ground", factSheetId);
+                    // Signal the learning phase before the MAP solve + weight-update runs.
+                    // IncrementalReasoningOrchestrator.runFullReground() performs PSL minibatch
+                    // weight learning (step 5b) and throttled MEBN finite-difference gradient
+                    // descent (step 9) inside the same call.  Expose it as a distinct sub-stage
+                    // so the crawl status card can name it explicitly.
+                    // NOTE: the actual weight-update iteration counts are not yet surfaced here;
+                    // that requires a new RegroundResult field — deferred as a follow-up.
+                    safeCallback(progressCallback, STAGE_WEIGHT_LEARNING,
+                            "Learning weights: PSL minibatch gradient update + MEBN finite-difference "
+                            + "gradient descent (throttled every 10 cascades) — factSheet=" + factSheetId);
                     RegroundResult rr = reasoningOrchestrator.runFullReground(factSheetId);
                     relationsDerived   = rr.versionsWritten();
                     retractedAtomCount = rr.retractedAtomKeys().size();
