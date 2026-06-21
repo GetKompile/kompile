@@ -74,4 +74,44 @@ public interface InferredFactRowRepository extends JpaRepository<InferredFactRow
      */
     @Query("SELECT COUNT(DISTINCT f.atomKey) FROM InferredFactRow f WHERE f.factSheetId = :factSheetId")
     int countDistinctAtomKeysByFactSheetId(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * The single latest row per atom key for a given fact sheet, filtered by the persisted
+     * {@code band} column.  Used by {@link DualStoreInferredFactStore#allLatestByBand} to
+     * implement a durable "show all SPECULATIVE facts" query against the DB column rather than
+     * recomputing the band from confidence at read time.
+     */
+    @Query("SELECT f FROM InferredFactRow f WHERE f.factSheetId = :factSheetId AND f.band = :band AND f.version = " +
+           "(SELECT MAX(f2.version) FROM InferredFactRow f2 WHERE f2.factSheetId = :factSheetId AND f2.atomKey = f.atomKey)")
+    List<InferredFactRow> findLatestByFactSheetIdAndBand(@Param("factSheetId") Long factSheetId,
+                                                          @Param("band") String band);
+
+    /**
+     * Durably update the {@code band}, {@code promotionStatus}, and {@code corroborationCount}
+     * on the latest version row for the given (factSheetId, atomKey).
+     *
+     * <p>The UPDATE targets the row whose version equals the maximum version for that pair,
+     * avoiding a separate SELECT+save round-trip and preventing dirty-read races.</p>
+     */
+    @Modifying
+    @Transactional
+    @Query("UPDATE InferredFactRow f SET f.band = :band, f.promotionStatus = :promotionStatus, " +
+           "f.corroborationCount = :corroborationCount " +
+           "WHERE f.factSheetId = :factSheetId AND f.atomKey = :atomKey AND f.version = " +
+           "(SELECT MAX(f2.version) FROM InferredFactRow f2 WHERE f2.factSheetId = :factSheetId AND f2.atomKey = :atomKey)")
+    void updateBandAndPromotion(@Param("factSheetId") Long factSheetId,
+                                 @Param("atomKey") String atomKey,
+                                 @Param("band") String band,
+                                 @Param("promotionStatus") String promotionStatus,
+                                 @Param("corroborationCount") int corroborationCount);
+
+    /**
+     * Load the persisted corroboration count and band for all atom keys in a fact sheet.
+     * Used by {@link ai.kompile.knowledgegraph.reasoning.FactPromotionTracker} to hydrate
+     * its in-memory state map from the DB on construction, making the count durable across
+     * restarts.  Returns only the latest row per atom key (highest version).
+     */
+    @Query("SELECT f FROM InferredFactRow f WHERE f.factSheetId = :factSheetId AND f.corroborationCount > 0 AND f.version = " +
+           "(SELECT MAX(f2.version) FROM InferredFactRow f2 WHERE f2.factSheetId = :factSheetId AND f2.atomKey = f.atomKey)")
+    List<InferredFactRow> findLatestWithCorroborationByFactSheetId(@Param("factSheetId") Long factSheetId);
 }

@@ -20,6 +20,8 @@ import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
 import ai.kompile.knowledgegraph.audit.FactAuditEvent;
 import ai.kompile.knowledgegraph.audit.FileBackedAuditLog;
+import ai.kompile.knowledgegraph.persistence.dual.InferredFactRow;
+import ai.kompile.knowledgegraph.persistence.dual.InferredFactRowRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -63,9 +65,12 @@ public class FactPromotionTracker {
 
     /**
      * In-memory promotion state for a single (factSheetId, atomKey) pair.
+     * Fields are set by {@link #checkPromotion} and optionally hydrated from the DB
+     * by {@link #ensureHydrated(long)} on first access per fact sheet.
      */
     private static final class PromotionState {
         volatile StrengthBand lastBand = StrengthBand.SPECULATIVE;
+        volatile String promotionStatus = "NONE";
         final AtomicInteger corroborationCount = new AtomicInteger(0);
     }
 
@@ -80,6 +85,26 @@ public class FactPromotionTracker {
 
     @Nullable
     private final ApplicationEventPublisher eventPublisher;
+
+    /**
+     * Optional JPA repository injected via Spring field injection.
+     *
+     * <p>When non-null (production JPA path), {@link #checkPromotion} durably persists the
+     * updated band, promotionStatus, and corroborationCount on the latest fact row, and
+     * {@link #hydrateFromDb(long)} loads prior corroboration state from the DB on first access
+     * so counts survive a restart.</p>
+     *
+     * <p>When null (plain-Java / no-Spring test contexts), the tracker operates in purely
+     * in-memory mode: existing behaviour is preserved and no DB calls are made.</p>
+     */
+    @Nullable
+    @Autowired(required = false)
+    InferredFactRowRepository factRepo;
+
+    /**
+     * Track which fact sheets have already been hydrated from the DB to avoid repeated queries.
+     */
+    private final ConcurrentHashMap<Long, Boolean> hydratedSheets = new ConcurrentHashMap<>();
 
     /**
      * Per-factSheet audit logs (keyed by factSheetId).
@@ -101,6 +126,7 @@ public class FactPromotionTracker {
 
     /**
      * No-arg constructor for plain-Java test contexts (no Spring, no event publisher).
+     * The {@code factRepo} field remains null and the tracker operates in-memory only.
      */
     public FactPromotionTracker() {
         this.eventPublisher = null;
@@ -120,6 +146,10 @@ public class FactPromotionTracker {
      */
     public void checkPromotion(long factSheetId, String atomKey,
                                 double oldValue, double newValue, String runId) {
+        // Hydrate corroboration state from DB on first access for this fact sheet
+        // (makes counts durable across restarts when a JPA repo is available).
+        ensureHydrated(factSheetId);
+
         PromotionState state = getOrCreateState(factSheetId, atomKey);
 
         StrengthBand oldBand = Double.isNaN(oldValue)
@@ -136,6 +166,7 @@ public class FactPromotionTracker {
                     atomKey, factSheetId, oldBand, newBand, count);
 
             state.lastBand = newBand;
+            state.promotionStatus = "PROMOTED";
 
             // Publish Spring event
             if (eventPublisher != null) {
@@ -161,11 +192,30 @@ public class FactPromotionTracker {
                 state.lastBand = newBand;
             }
         }
+
+        // Persist the updated band, promotionStatus, and corroborationCount to the DB
+        // so they survive a restart (L2 durability gap closed).
+        if (factRepo != null) {
+            try {
+                factRepo.updateBandAndPromotion(
+                        factSheetId, atomKey,
+                        state.lastBand.name(),
+                        state.promotionStatus,
+                        count);
+            } catch (Exception e) {
+                log.warn("FactPromotionTracker: could not persist band/promotion for '{}' sheet={} — {}",
+                        atomKey, factSheetId, e.getMessage());
+            }
+        }
     }
 
     /**
      * Return all latest inferred facts from {@code store} that map to the given
      * {@code band} via {@link StrengthBand#fromScalar(double)} on their confidence value.
+     *
+     * <p>This overload operates against the in-memory store (read-time band computation).
+     * For a durable DB-backed query against the persisted {@code band} column, use
+     * {@link #factsByTierDurable(long, StrengthBand)} when a repo is available.</p>
      *
      * @param factSheetId the fact sheet (used for logging only; the store is already scoped)
      * @param store       the inferred fact store to query
@@ -176,6 +226,43 @@ public class FactPromotionTracker {
         return store.allLatest().stream()
                 .filter(f -> StrengthBand.fromScalar(f.confidence()) == band)
                 .toList();
+    }
+
+    /**
+     * Durable variant of {@link #factsByTier}: queries the persisted {@code band} column in the
+     * DB for the given fact sheet rather than recomputing the band from confidence at read time.
+     *
+     * <p>Returns an empty list if no JPA repository is wired (plain-Java test contexts).</p>
+     *
+     * @param factSheetId the fact sheet to query
+     * @param band        the target tier
+     * @return facts persisted at that tier, unordered
+     */
+    public List<InferredFact> factsByTierDurable(long factSheetId, StrengthBand band) {
+        if (factRepo == null) {
+            return List.of();
+        }
+        try {
+            return factRepo.findLatestByFactSheetIdAndBand(factSheetId, band.name())
+                    .stream()
+                    .map(r -> InferredFact.fromJson(r.getProvenanceJson()))
+                    .toList();
+        } catch (Exception e) {
+            log.warn("FactPromotionTracker: factsByTierDurable query failed for sheet={} band={} — {}",
+                    factSheetId, band, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * Return the promotion status for a specific (factSheetId, atomKey) pair.
+     * Returns "NONE" if the atom has never been promoted.
+     */
+    public String getPromotionStatus(long factSheetId, String atomKey) {
+        ConcurrentHashMap<String, PromotionState> sheetMap = stateMap.get(factSheetId);
+        if (sheetMap == null) return "NONE";
+        PromotionState state = sheetMap.get(atomKey);
+        return state == null ? "NONE" : state.promotionStatus;
     }
 
     /**
@@ -205,6 +292,57 @@ public class FactPromotionTracker {
         ConcurrentHashMap<String, PromotionState> sheetMap =
                 stateMap.computeIfAbsent(factSheetId, id -> new ConcurrentHashMap<>());
         return sheetMap.computeIfAbsent(atomKey, k -> new PromotionState());
+    }
+
+    /**
+     * Hydrate corroboration counts, bands, and promotionStatus from the DB for the given
+     * fact sheet on first access.  Subsequent calls for the same fact sheet are no-ops
+     * (guarded by {@link #hydratedSheets}).
+     *
+     * <p>This is what makes corroboration counts durable across restarts: when the tracker
+     * is re-constructed (e.g. after a JVM restart), the first {@link #checkPromotion} call
+     * for a given fact sheet triggers a DB read that seeds the in-memory map with the
+     * counts that were persisted in the previous session.</p>
+     */
+    private void ensureHydrated(long factSheetId) {
+        if (factRepo == null) return;
+        // computeIfAbsent returns null if key was absent → we only call hydrateFromDb once
+        hydratedSheets.computeIfAbsent(factSheetId, id -> {
+            hydrateFromDb(id);
+            return Boolean.TRUE;
+        });
+    }
+
+    /**
+     * Load corroboration count, band, and promotionStatus for all atom keys in the given
+     * fact sheet from the DB into the in-memory stateMap.  Only called once per fact sheet
+     * (guarded by {@link #hydratedSheets}).
+     */
+    private void hydrateFromDb(long factSheetId) {
+        try {
+            List<InferredFactRow> rows = factRepo.findLatestWithCorroborationByFactSheetId(factSheetId);
+            for (InferredFactRow row : rows) {
+                PromotionState state = getOrCreateState(factSheetId, row.getAtomKey());
+                state.corroborationCount.set(row.getCorroborationCount());
+                if (row.getBand() != null) {
+                    try {
+                        state.lastBand = StrengthBand.valueOf(row.getBand());
+                    } catch (IllegalArgumentException ignored) {
+                        // Unknown band name in DB — keep default SPECULATIVE
+                    }
+                }
+                if (row.getPromotionStatus() != null) {
+                    state.promotionStatus = row.getPromotionStatus();
+                }
+            }
+            if (!rows.isEmpty()) {
+                log.debug("FactPromotionTracker: hydrated corroboration state for {} atoms in factSheet={}",
+                        rows.size(), factSheetId);
+            }
+        } catch (Exception e) {
+            log.warn("FactPromotionTracker: DB hydration failed for factSheet={} — in-memory only: {}",
+                    factSheetId, e.getMessage());
+        }
     }
 
     FileBackedAuditLog getAuditLog(long factSheetId) {

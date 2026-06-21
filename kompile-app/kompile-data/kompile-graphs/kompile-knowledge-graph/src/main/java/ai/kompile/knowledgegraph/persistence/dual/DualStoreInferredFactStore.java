@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.persistence.dual;
 
+import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
 import ai.kompile.graph.reasoning.fol.InMemoryInferredFactStore;
@@ -89,7 +90,9 @@ public class DualStoreInferredFactStore implements InferredFactStore {
         // 1. In-memory write (fast reads stay current)
         delegate.store(fact);
 
-        // 2. Persist to DB
+        // 2. Persist to DB — populate band + promotionStatus eagerly so every row
+        //    carries queryable tier metadata from the moment it is written.
+        String band = StrengthBand.fromScalar(fact.confidence()).name();
         InferredFactRow row = InferredFactRow.builder()
                 .factSheetId(factSheetId)
                 .atomKey(fact.atomKey())
@@ -99,6 +102,9 @@ public class DualStoreInferredFactStore implements InferredFactStore {
                 .runId(fact.runId())
                 .provenanceJson(fact.toJson())
                 .inferredAt(fact.inferredAt())
+                .band(band)
+                .promotionStatus("NONE")
+                .corroborationCount(0)
                 .build();
         repo.save(row);
 
@@ -167,6 +173,50 @@ public class DualStoreInferredFactStore implements InferredFactStore {
     @Override
     public boolean isEmpty() {
         return delegate.isEmpty();
+    }
+
+    /**
+     * Durably update the band, promotionStatus, and corroborationCount on the latest row
+     * for the given (factSheetId, atomKey).  Called by {@link ai.kompile.knowledgegraph.reasoning.FactPromotionTracker}
+     * whenever a promotion event fires or a corroboration count changes.
+     *
+     * <p>If no row exists for the given key, this is a no-op (logged at DEBUG).</p>
+     *
+     * @param atomKey           the atom key whose latest row to update
+     * @param newBand           the new StrengthBand name (e.g. "ESTABLISHED")
+     * @param promotionStatus   "PROMOTED" or "NONE"
+     * @param corroborationCount the durable corroboration count
+     */
+    public void updateBandAndPromotion(String atomKey,
+                                        String newBand,
+                                        String promotionStatus,
+                                        int corroborationCount) {
+        try {
+            repo.updateBandAndPromotion(factSheetId, atomKey, newBand, promotionStatus, corroborationCount);
+        } catch (Exception e) {
+            log.warn("DualStoreInferredFactStore: could not update band/promotion for atomKey='{}' factSheet={} — {}",
+                    atomKey, factSheetId, e.getMessage());
+        }
+    }
+
+    /**
+     * Return all latest facts whose persisted {@code band} column equals the given band name.
+     * This is a direct DB query — it does NOT fall back to the in-memory delegate.
+     *
+     * @param band the StrengthBand to filter on
+     * @return facts at that tier, unordered
+     */
+    public java.util.Collection<InferredFact> allLatestByBand(StrengthBand band) {
+        try {
+            return repo.findLatestByFactSheetIdAndBand(factSheetId, band.name())
+                    .stream()
+                    .map(r -> InferredFact.fromJson(r.getProvenanceJson()))
+                    .toList();
+        } catch (Exception e) {
+            log.warn("DualStoreInferredFactStore: allLatestByBand query failed for factSheet={} band={} — {}",
+                    factSheetId, band, e.getMessage());
+            return java.util.List.of();
+        }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────────

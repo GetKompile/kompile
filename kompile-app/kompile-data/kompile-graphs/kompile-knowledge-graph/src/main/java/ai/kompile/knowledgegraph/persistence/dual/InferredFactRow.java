@@ -98,4 +98,34 @@ public class InferredFactRow {
     /** Wall-clock timestamp when this fact was inferred. */
     @Column(name = "inferred_at", nullable = false)
     private Instant inferredAt;
+
+    /**
+     * Persisted {@link ai.kompile.graph.reasoning.confidence.StrengthBand} name for this fact row
+     * (e.g. "ESTABLISHED", "HIGH", "PROBABLE", "SPECULATIVE", "SUPPRESSED").
+     *
+     * <p>Populated on first store() and updated by {@link ai.kompile.knowledgegraph.reasoning.FactPromotionTracker}
+     * whenever the band changes. Allows durable "show all SPECULATIVE facts" queries against
+     * the {@code band} column rather than recomputing the band from the confidence at read time.</p>
+     *
+     * <p>Nullable: rows written before the L2-durability feature lack a persisted band; callers
+     * should derive the band from {@link #getConfidence()} when this field is null.</p>
+     */
+    @Column(name = "band", nullable = true, length = 32)
+    private String band;
+
+    /**
+     * Promotion status: "NONE" (never promoted), "PROMOTED" (has been promoted at least once).
+     * Set to "NONE" on first store() and flipped to "PROMOTED" by FactPromotionTracker.
+     * Nullable for backward compatibility with pre-feature rows.
+     */
+    @Column(name = "promotion_status", nullable = true, length = 16)
+    private String promotionStatus;
+
+    /**
+     * Durable corroboration count: how many times this atom key has been corroborated across
+     * grounding cascade runs.  Persisted by {@link ai.kompile.knowledgegraph.reasoning.FactPromotionTracker}
+     * so the count survives a restart.
+     */
+    @Column(name = "corroboration_count", nullable = false)
+    private int corroborationCount;
 }
