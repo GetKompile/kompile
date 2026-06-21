@@ -60,6 +60,7 @@
 
 * [Architecture Overview](architecture/README.md)
   * [Distributed Crawl Cluster](architecture/distributed-crawl-cluster.md)
+  * [Distributed Crawl — Resilience Hardening](architecture/distributed-crawl-hardening.md)
 
 ## Development
 

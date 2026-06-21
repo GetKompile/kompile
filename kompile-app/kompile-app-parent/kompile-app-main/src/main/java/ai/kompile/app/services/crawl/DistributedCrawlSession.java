@@ -211,5 +211,153 @@ public class DistributedCrawlSession {
         private volatile Instant lastProgressAt;
         /** How many times this partition has been re-dispatched after a worker loss (Phase E). */
         private volatile int reassignmentCount;
+
+        /** Completed-source keys restored from a persisted manifest (Phase 1); used when {@code latestSnapshot}
+         *  is null after a coordinator restart. Live snapshots take precedence. */
+        private volatile Set<String> restoredCompletedSourceKeys;
+
+        /**
+         * Source keys (label, else path/URL) this worker has already finished — from the live snapshot when
+         * present, otherwise the set restored from a persisted manifest. Drives checkpoint-aware reassignment
+         * so a re-dispatched partition doesn't re-crawl sources already written to the shared stores.
+         */
+        public Set<String> completedSourceKeys() {
+            if (latestSnapshot != null && latestSnapshot.getSourceProgress() != null) {
+                Set<String> done = new HashSet<>();
+                for (UnifiedCrawlJob.SourceProgress sp : latestSnapshot.getSourceProgress()) {
+                    if (isCompletedStatus(sp.getStatus())) {
+                        done.add(sourceKey(sp.getLabel(), sp.getPathOrUrl()));
+                    }
+                }
+                if (!done.isEmpty()) {
+                    return done;
+                }
+            }
+            return restoredCompletedSourceKeys != null ? restoredCompletedSourceKeys : Set.of();
+        }
+    }
+
+    /** Stable key for matching a source across snapshot/request: the label, else the path/URL. */
+    public static String sourceKey(String label, String pathOrUrl) {
+        if (label != null && !label.isBlank()) {
+            return label;
+        }
+        return pathOrUrl != null ? pathOrUrl : "";
+    }
+
+    private static boolean isCompletedStatus(UnifiedCrawlJob.Status s) {
+        return s == UnifiedCrawlJob.Status.COMPLETED
+                || s == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
+                || s == UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH;
+    }
+
+    // ---- Phase 1: durable persistence manifest ----
+
+    /** Lightweight, JSON-serializable snapshot of a session — enough to reconcile + reassign after a restart. */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class Manifest {
+        private String sessionId;
+        private Status status;
+        private int totalWorkers;
+        private Instant startedAt;
+        private Instant completedAt;
+        private int completedWorkers;
+        private int failedWorkers;
+        private UnifiedCrawlRequest originalRequest;
+        private List<String> errors;
+        private List<WorkerManifest> workers;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class WorkerManifest {
+        private String workerId;
+        private List<UnifiedCrawlSource> sources;
+        private WorkerStatus status;
+        private String externalRef;
+        private Instant createdAt;
+        private Instant startedAt;
+        private Instant completedAt;
+        private String errorMessage;
+        private int reassignmentCount;
+        private Instant lastProgressAt;
+        private List<String> completedSourceKeys;
+    }
+
+    /**
+     * Capture the persistable state. The live progress snapshot is intentionally dropped — only the derived
+     * completed-source keys + {@code lastProgressAt} are kept (small, and enough for reconcile/reassign).
+     */
+    public Manifest toManifest() {
+        List<WorkerManifest> wms = new ArrayList<>();
+        for (WorkerInfo w : workers.values()) {
+            wms.add(WorkerManifest.builder()
+                    .workerId(w.getWorkerId())
+                    .sources(w.getSources())
+                    .status(w.getStatus())
+                    .externalRef(w.getExternalRef())
+                    .createdAt(w.getCreatedAt())
+                    .startedAt(w.getStartedAt())
+                    .completedAt(w.getCompletedAt())
+                    .errorMessage(w.getErrorMessage())
+                    .reassignmentCount(w.getReassignmentCount())
+                    .lastProgressAt(w.getLastProgressAt())
+                    .completedSourceKeys(new ArrayList<>(w.completedSourceKeys()))
+                    .build());
+        }
+        return Manifest.builder()
+                .sessionId(sessionId)
+                .status(status)
+                .totalWorkers(totalWorkers)
+                .startedAt(startedAt)
+                .completedAt(completedAt)
+                .completedWorkers(completedWorkers.get())
+                .failedWorkers(failedWorkers.get())
+                .originalRequest(originalRequest)
+                .errors(new ArrayList<>(errors))
+                .workers(wms)
+                .build();
+    }
+
+    /** Rehydrate a session from a persisted manifest (counts + per-worker state + restored completed-source keys). */
+    public static DistributedCrawlSession fromManifest(Manifest m) {
+        DistributedCrawlSession s = DistributedCrawlSession.builder()
+                .sessionId(m.getSessionId())
+                .originalRequest(m.getOriginalRequest())
+                .status(m.getStatus())
+                .totalWorkers(m.getTotalWorkers())
+                .startedAt(m.getStartedAt())
+                .completedAt(m.getCompletedAt())
+                .build();
+        s.getCompletedWorkers().set(m.getCompletedWorkers());
+        s.getFailedWorkers().set(m.getFailedWorkers());
+        if (m.getErrors() != null) {
+            s.getErrors().addAll(m.getErrors());
+        }
+        if (m.getWorkers() != null) {
+            for (WorkerManifest wm : m.getWorkers()) {
+                WorkerInfo w = WorkerInfo.builder()
+                        .workerId(wm.getWorkerId())
+                        .sources(wm.getSources())
+                        .status(wm.getStatus())
+                        .externalRef(wm.getExternalRef())
+                        .createdAt(wm.getCreatedAt())
+                        .startedAt(wm.getStartedAt())
+                        .completedAt(wm.getCompletedAt())
+                        .errorMessage(wm.getErrorMessage())
+                        .reassignmentCount(wm.getReassignmentCount())
+                        .lastProgressAt(wm.getLastProgressAt())
+                        .build();
+                w.setRestoredCompletedSourceKeys(wm.getCompletedSourceKeys() != null
+                        ? new HashSet<>(wm.getCompletedSourceKeys()) : null);
+                s.getWorkers().put(w.getWorkerId(), w);
+            }
+        }
+        return s;
     }
 }

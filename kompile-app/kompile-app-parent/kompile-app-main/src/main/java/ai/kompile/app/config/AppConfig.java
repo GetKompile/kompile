@@ -162,7 +162,12 @@ public class AppConfig {
                     "ai.kompile.core.crawl.graph.UnifiedCrawlJob$LlmCallRecord",
                     "ai.kompile.core.crawl.graph.UnifiedCrawlJob$PipelineStepSnapshot",
                     "ai.kompile.core.crawl.graph.UnifiedCrawlJob$Status",
-                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$PipelineStepStatus"
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$PipelineStepStatus",
+                    // Phase 1: durable distributed-crawl session manifests written to disk by the session store.
+                    "ai.kompile.app.services.crawl.DistributedCrawlSession$Manifest",
+                    "ai.kompile.app.services.crawl.DistributedCrawlSession$WorkerManifest",
+                    "ai.kompile.app.services.crawl.DistributedCrawlSession$Status",
+                    "ai.kompile.app.services.crawl.DistributedCrawlSession$WorkerStatus"
             }) {
                 registerIfPresent(hints, classLoader, crawlWireType,
                         MemberCategory.DECLARED_FIELDS,

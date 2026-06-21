@@ -30,7 +30,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -82,6 +84,13 @@ public class DistributedCrawlCoordinator {
 
     @Autowired(required = false)
     private DistributedCrawlAggregator aggregator;
+
+    /** Optional: durable session persistence + crash recovery (Phase 1). Null in unit tests → in-memory only. */
+    @Autowired(required = false)
+    private DistributedCrawlSessionStore sessionStore;
+
+    private final ConcurrentMap<String, Long> lastPersistMs = new ConcurrentHashMap<>();
+    private static final long PROGRESS_PERSIST_THROTTLE_MS = 30_000L;
 
     public DistributedCrawlCoordinator(List<ExternalJobSchedulerDelegate> delegates,
                                         ResourceSchedulerConfigService configService,
@@ -252,6 +261,7 @@ public class DistributedCrawlCoordinator {
         }
 
         session.setStatus(DistributedCrawlSession.Status.RUNNING);
+        persist(session, true);
         return session;
     }
 
@@ -286,6 +296,7 @@ public class DistributedCrawlCoordinator {
             log.info("Distributed crawl session {} completed: {}/{} succeeded",
                     sessionId, session.getCompletedWorkers().get(), session.getTotalWorkers());
         }
+        persist(session, true);
         publishAggregateProgress(session);
     }
 
@@ -301,6 +312,7 @@ public class DistributedCrawlCoordinator {
             return;
         }
         session.updateWorkerSnapshot(workerId, snapshot);
+        persist(session, false);
         publishAggregateProgress(session);
     }
 
@@ -344,7 +356,26 @@ public class DistributedCrawlCoordinator {
                 .orElse(null);
         if (target == null) {
             session.workerFailed(worker.getWorkerId(), "no live worker available for reassignment");
+            persist(session, true);
             return false;
+        }
+        // Phase 1: don't re-crawl sources this partition already finished — the shared graph/vector stores
+        // already hold them. Match the worker's completed-source keys against its assigned sources.
+        Set<String> alreadyDone = worker.completedSourceKeys();
+        List<UnifiedCrawlSource> remaining = worker.getSources().stream()
+                .filter(s -> !alreadyDone.contains(
+                        DistributedCrawlSession.sourceKey(s.getLabel(), s.getPathOrUrl())))
+                .toList();
+        if (remaining.isEmpty()) {
+            log.info("Reassignment of partition {}: all {} source(s) already completed — marking done",
+                    worker.getWorkerId(), worker.getSources().size());
+            session.workerCompleted(worker.getWorkerId(), Map.of("note", "all sources completed before loss"));
+            persist(session, true);
+            return true;
+        }
+        if (remaining.size() < worker.getSources().size()) {
+            log.info("Reassignment of partition {}: skipping {} already-completed source(s), re-crawling {}",
+                    worker.getWorkerId(), worker.getSources().size() - remaining.size(), remaining.size());
         }
         int workerCount = Math.max(1, session.getTotalWorkers());
         try {
@@ -352,7 +383,7 @@ public class DistributedCrawlCoordinator {
                     .name(original.getName() + " [" + worker.getWorkerId() + " reassigned]")
                     .factSheetId(original.getFactSheetId())
                     .factSheetName(original.getFactSheetName())
-                    .sources(worker.getSources())
+                    .sources(remaining)
                     .graphExtraction(original.getGraphExtraction())
                     .vectorIndex(original.getVectorIndex())
                     .preprocessing(original.getPreprocessing())
@@ -388,6 +419,7 @@ public class DistributedCrawlCoordinator {
                             log.warn("Reassigned partition {} to worker {} (attempt {})",
                                     worker.getWorkerId(), target.workerId(), worker.getReassignmentCount());
                         }
+                        persist(session, true);
                     });
             return true;
         } catch (Exception e) {
@@ -415,6 +447,7 @@ public class DistributedCrawlCoordinator {
                         });
             }
         }
+        persist(session, true);
         return true;
     }
 
@@ -445,10 +478,121 @@ public class DistributedCrawlCoordinator {
                     || s.getStatus() == DistributedCrawlSession.Status.CANCELLED
                     || s.getStatus() == DistributedCrawlSession.Status.FAILED) {
                 it.remove();
+                if (sessionStore != null) {
+                    sessionStore.delete(s.getSessionId());
+                }
+                lastPersistMs.remove(s.getSessionId());
                 removed++;
             }
         }
         return removed;
+    }
+
+    // ---- Phase 1: durable persistence + crash recovery ----
+
+    /**
+     * Persist the session manifest when persistence is enabled. {@code force=true} writes immediately (lifecycle
+     * transitions); {@code force=false} throttles to the progress cadence so ~4s worker reports don't thrash the
+     * disk. No-op without a store or when the feature is disabled.
+     */
+    private void persist(DistributedCrawlSession session, boolean force) {
+        if (sessionStore == null || session == null || session.getSessionId() == null) {
+            return;
+        }
+        if (configService == null || configService.getConfiguration() == null
+                || !configService.getConfiguration().isClusterSessionPersistenceEnabled()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (!force) {
+            Long last = lastPersistMs.get(session.getSessionId());
+            if (last != null && now - last < PROGRESS_PERSIST_THROTTLE_MS) {
+                return;
+            }
+        }
+        lastPersistMs.put(session.getSessionId(), now);
+        sessionStore.persistAsync(session);
+    }
+
+    private static boolean isTerminal(DistributedCrawlSession.Status s) {
+        return s == DistributedCrawlSession.Status.COMPLETED
+                || s == DistributedCrawlSession.Status.PARTIALLY_COMPLETED
+                || s == DistributedCrawlSession.Status.FAILED
+                || s == DistributedCrawlSession.Status.CANCELLED;
+    }
+
+    /**
+     * On startup, reload persisted non-terminal sessions and reconcile each worker against the live scheduler
+     * (Phase 1). Orchestrator-only and gated by {@code clusterSessionPersistenceEnabled}. A worker still running
+     * resumes tracking; one that finished during downtime is marked complete; one that's gone is reassigned (if
+     * {@code clusterReassignOnLoss}) or failed.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void reconcilePersistedSessions() {
+        if (sessionStore == null) {
+            return;
+        }
+        ResourceSchedulerConfig cfg = configService != null ? configService.getConfiguration() : null;
+        if (cfg == null || !cfg.isClusterSessionPersistenceEnabled() || !cfg.isClusterOrchestrator()) {
+            return;
+        }
+        int resumed = 0;
+        for (DistributedCrawlSession.Manifest m : sessionStore.loadAll()) {
+            if (m.getStatus() == null) {
+                continue;
+            }
+            if (isTerminal(m.getStatus())) {
+                sessionStore.delete(m.getSessionId()); // finished before the restart — nothing to recover
+                continue;
+            }
+            DistributedCrawlSession session = DistributedCrawlSession.fromManifest(m);
+            activeSessions.put(session.getSessionId(), session);
+            reconcileWorkers(session);
+            resumed++;
+        }
+        if (resumed > 0) {
+            log.info("Reconciled {} persisted distributed-crawl session(s) on startup", resumed);
+        }
+    }
+
+    /** Reconcile each non-terminal worker of a reloaded session against the external scheduler's current view. */
+    private void reconcileWorkers(DistributedCrawlSession session) {
+        boolean reassignEnabled = configService != null && configService.getConfiguration() != null
+                && configService.getConfiguration().isClusterReassignOnLoss();
+        for (DistributedCrawlSession.WorkerInfo w : session.getWorkers().values()) {
+            if (w.getStatus() != DistributedCrawlSession.WorkerStatus.RUNNING
+                    && w.getStatus() != DistributedCrawlSession.WorkerStatus.DISPATCHING) {
+                continue; // already terminal in the manifest
+            }
+            String statusStr = null;
+            if (w.getExternalRef() != null) {
+                try {
+                    ExternalJobSchedulerDelegate.ExternalJobStatus st =
+                            delegate.getJobStatus(w.getWorkerId(), w.getExternalRef()).get(10, TimeUnit.SECONDS);
+                    statusStr = st != null ? st.status() : null;
+                } catch (Exception e) {
+                    log.debug("Reconcile: status check for {} failed: {}", w.getWorkerId(), e.getMessage());
+                }
+            }
+            if ("COMPLETED".equalsIgnoreCase(statusStr)) {
+                session.workerCompleted(w.getWorkerId(), Map.of("note", "reconciled: completed during downtime"));
+            } else if ("RUNNING".equalsIgnoreCase(statusStr) || "PENDING".equalsIgnoreCase(statusStr)) {
+                w.setStatus(DistributedCrawlSession.WorkerStatus.RUNNING);
+                w.setLastProgressAt(Instant.now()); // alive — reset the loss clock for the reaper
+            } else if (reassignEnabled) {
+                reassignWorkerPartition(session, w);
+            } else {
+                session.workerFailed(w.getWorkerId(),
+                        "reconcile: worker not recoverable (status=" + statusStr + ")");
+            }
+        }
+        if (session.isAllWorkersFinished() && session.getStatus() == DistributedCrawlSession.Status.RUNNING) {
+            session.setStatus(session.getFailedWorkers().get() > 0
+                    ? DistributedCrawlSession.Status.PARTIALLY_COMPLETED
+                    : DistributedCrawlSession.Status.COMPLETED);
+            session.setCompletedAt(Instant.now());
+        }
+        persist(session, true);
     }
 
     // ---- Partitioning ----

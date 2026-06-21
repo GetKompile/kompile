@@ -257,6 +257,15 @@ public class ResourceSchedulerConfig {
     @JsonProperty("clusterMaxReassignments")
     private int clusterMaxReassignments = 2;
 
+    /**
+     * When true, the orchestrator persists distributed-crawl sessions to disk and, on restart, reloads in-flight
+     * sessions and reconciles each worker against the live scheduler (resume / complete / reassign) instead of
+     * silently losing them. Default-ON: it's pure IO safety scoped to the orchestrator, with no crawl-behavior
+     * change — a default-off persistence layer would protect nobody from the crash it exists for.
+     */
+    @JsonProperty("clusterSessionPersistenceEnabled")
+    private boolean clusterSessionPersistenceEnabled = true;
+
     // --- Computed / non-trivial methods ---
 
     public int getMaxConcurrentForType(String type) {
