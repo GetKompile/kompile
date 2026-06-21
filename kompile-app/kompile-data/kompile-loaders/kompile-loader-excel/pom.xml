@@ -39,6 +39,15 @@
             <artifactId>kompile-app-core</artifactId>
         </dependency>
 
+        <!-- Graph reasoning lib: Table primitives (ColumnRole, TableKind, etc.) consumed by
+             XlsDecisionTableImporter / XlsDecisionTableExporter. POI is in this module; the
+             lib itself deliberately defers XLS I/O here. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Apache POI for Excel -->
         <dependency>
             <groupId>org.apache.poi</groupId>
