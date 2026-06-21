@@ -257,10 +257,10 @@ class MatrixGraphConstructorTest {
         @Test
         @DisplayName("continues processing when one document batch fails LLM extraction")
         void continuesOnDocumentFailure() {
-            // The production code batches documents by character budget (BATCH_PROMPT_MAX_CHARS = 120_000).
-            // To ensure doc1 and doc2 are in separate batches, make doc1's text exceed 120k chars.
+            // The production code batches documents by character budget (BATCH_PROMPT_MAX_CHARS = 300_000).
+            // To ensure doc1 and doc2 are in separate batches, make doc1's text exceed 300k chars.
             // First batch (doc1) throws, second batch (doc2) succeeds.
-            String longText = "x".repeat(121_000); // exceeds 120_000-char budget
+            String longText = "x".repeat(301_000); // exceeds 300_000-char budget
             when(callResponseSpec.content())
                     .thenThrow(new RuntimeException("LLM timeout"))
                     .thenReturn(VALID_LLM_RESPONSE);
