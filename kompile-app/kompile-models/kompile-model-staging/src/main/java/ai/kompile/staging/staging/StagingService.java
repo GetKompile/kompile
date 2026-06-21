@@ -23,6 +23,7 @@ import ai.kompile.staging.download.DownloadProgress;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.web.dto.StageWithOptimizationRequest;
 import ai.kompile.modelmanager.registry.*;
+import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.core.staging.StagingStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -246,19 +247,45 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             Path vocabFile = findVocabFile(productionDir);
             boolean sharded = isShardedModel(productionDir);
 
-            // For sharded models, model_file stores the logical base name "model.sdz"
-            // which SameDiff.load() uses to discover shard files in the same directory.
+            // For sharded models, the logical base name is "model.sdnb" and we also
+            // create a 0-byte marker file so SameDiff.load() can discover the shards.
             String modelFileName;
             if (sharded) {
-                modelFileName = "model.sdz";
+                modelFileName = "model.sdnb";
+                // Create 0-byte marker if not already present
+                Path marker = productionDir.resolve("model.sdnb");
+                if (!Files.exists(marker)) {
+                    Files.createFile(marker);
+                } else {
+                    // Truncate to 0 bytes if it has content (pre-existing marker case)
+                    if (Files.size(marker) > 0) {
+                        Files.write(marker, new byte[0]);
+                    }
+                }
             } else {
                 modelFileName = modelFile != null ? modelFile.getFileName().toString() : "model.sdz";
             }
 
             String vocabFileName = vocabFile != null ? vocabFile.getFileName().toString() : "vocab.txt";
 
-            // Calculate checksum on whatever representative file we have
-            String checksum = modelFile != null ? calculateChecksum(modelFile) : null;
+            // Calculate checksum on the most representative file:
+            // prefer shard0 over a 0-byte marker, otherwise the single model file
+            Path checksumTarget = modelFile;
+            if (sharded && checksumTarget != null) {
+                String cName = checksumTarget.getFileName().toString();
+                // If findModelFile returned a shard file, use it; if it returned the marker, find shard0
+                if (!cName.contains(".shard")) {
+                    try (DirectoryStream<Path> ds = Files.newDirectoryStream(productionDir)) {
+                        for (Path p : ds) {
+                            if (p.getFileName().toString().contains(".shard0-of-")) {
+                                checksumTarget = p;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            String checksum = checksumTarget != null ? calculateChecksum(checksumTarget) : null;
 
             // Auto-probe vision encoder IO config for VLM models
             if (metadata == null) {
@@ -267,6 +294,18 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             if (type.isVlm()) {
                 probeVisionEncoderIOConfig(productionDir, modelFile, metadata);
             }
+
+            // Use LLM-style tokenizer config for LLM models (no BERT lowercasing)
+            TokenizerConfig tokenizerConfig = type.isLlm()
+                    ? TokenizerConfig.builder()
+                            .doLowerCase(false)
+                            .addSpecialTokens(true)
+                            .stripAccents(false)
+                            .maxLength(4096)
+                            .padding("max_length")
+                            .truncation(true)
+                            .build()
+                    : TokenizerConfig.defaultBertConfig();
 
             // Create registry entry
             ModelEntry entry = ModelEntry.builder()
@@ -279,7 +318,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                     .status(ModelStatus.ACTIVE)
                     .promotedAt(Instant.now().toString())
                     .metadata(metadata)
-                    .tokenizer(TokenizerConfig.defaultBertConfig())
+                    .tokenizer(tokenizerConfig)
                     .build();
 
             registryService.addModel(entry);
@@ -444,7 +483,12 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
         Path modelPath = Paths.get(filePath);
         String source = "local:" + filePath;
 
-        StagingModelInfo info = StagingModelInfo.create(modelId, source, ModelType.DENSE_ENCODER);
+        // Infer model type from file extension
+        String lowerName = modelPath.getFileName().toString().toLowerCase();
+        ModelType inferredType = (lowerName.endsWith(".gguf") || lowerName.endsWith(".ggml"))
+                ? ModelType.LLM_GGML : ModelType.DENSE_ENCODER;
+
+        StagingModelInfo info = StagingModelInfo.create(modelId, source, inferredType);
         stagingModels.put(modelId, info);
         emitStagingStatus(modelId, info);
 
@@ -469,7 +513,23 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 if (needsConversion(localModelPath)) {
                     info.withStatus(StagingStatus.CONVERTING, 40, "Converting to SameDiff format");
 
-                    outputPath = pendingDir.resolve("model.sdz");
+                    // GGUF/GGML models convert to sharded .sdnb; others use single .sdz
+                    String localFileName = localModelPath.getFileName().toString().toLowerCase();
+                    boolean isGguf = localFileName.endsWith(".gguf") || localFileName.endsWith(".ggml");
+                    outputPath = pendingDir.resolve(isGguf ? "model.sdnb" : "model.sdz");
+
+                    // Copy tokenizer.json from the source directory if present
+                    if (isGguf) {
+                        Path sourceTokenizer = modelPath.getParent() != null
+                                ? modelPath.getParent().resolve("tokenizer.json") : null;
+                        if (sourceTokenizer != null && Files.exists(sourceTokenizer)
+                                && Files.size(sourceTokenizer) > 0) {
+                            Files.copy(sourceTokenizer, pendingDir.resolve("tokenizer.json"),
+                                    StandardCopyOption.REPLACE_EXISTING);
+                            log.info("Copied tokenizer.json from source dir for model {}", modelId);
+                        }
+                    }
+
                     ConversionResult conversionResult = conversionService.convert(
                             localModelPath, outputPath, format);
 
@@ -896,11 +956,21 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      * Returns the shard-0 file if sharded, or a single .sdz/.fb file if present.
      */
     private Path findModelFile(Path dir) throws IOException {
-        // First check for a real single-file model
+        // First check for a real single-file model (.sdz or .fb container)
         Path single = findFile(dir, "model.sdz", ".fb");
         if (single != null) return single;
 
-        // Look for sharded model files
+        // Check for a single (non-sharded) .sdnb file with content
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            for (Path path : stream) {
+                String name = path.getFileName().toString();
+                if (name.endsWith(".sdnb") && !name.contains(".shard") && Files.size(path) > 0) {
+                    return path;
+                }
+            }
+        }
+
+        // Look for sharded model files (shard0 is most representative)
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
             for (Path path : stream) {
                 String name = path.getFileName().toString();
@@ -921,8 +991,24 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
     /**
      * Check if a model directory contains sharded files rather than a single model file.
+     * Returns false if a single-file .sdz or .fb model exists with content,
+     * because that takes precedence over any stale shard files.
      */
     private boolean isShardedModel(Path dir) throws IOException {
+        // If a real single-file model exists, it is NOT sharded regardless of shard files
+        Path sdz = dir.resolve("model.sdz");
+        if (Files.exists(sdz) && Files.size(sdz) > 0) {
+            return false;
+        }
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            for (Path path : stream) {
+                String fname = path.getFileName().toString();
+                if (fname.endsWith(".fb") && Files.size(path) > 0) {
+                    return false;
+                }
+            }
+        }
+        // Now check for shard files
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
             for (Path path : stream) {
                 String name = path.getFileName().toString();
@@ -936,13 +1022,37 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
     private StagingModelInfo findStagedModel(String modelId) {
         Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
-        if (Files.exists(verifiedDir)) {
-            StagingModelInfo info = new StagingModelInfo();
-            info.setModelId(modelId);
-            info.setStatus(StagingStatus.READY);
-            return info;
+        if (!Files.exists(verifiedDir)) {
+            return null;
         }
-        return null;
+
+        // Infer model type by inspecting artefacts in the verified directory
+        ModelType inferredType = ModelType.DENSE_ENCODER;
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(verifiedDir)) {
+            for (Path p : stream) {
+                String fname = p.getFileName().toString().toLowerCase();
+                if (fname.endsWith(".gguf") || fname.endsWith(".ggml")) {
+                    inferredType = ModelType.LLM_GGML;
+                    break;
+                }
+                if (fname.equals("tokenizer.json")) {
+                    try {
+                        if (Files.size(p) > 100) {
+                            inferredType = ModelType.LLM_GGML;
+                            // keep scanning — a .gguf file takes priority but tokenizer.json is sufficient
+                        }
+                    } catch (IOException ignored) { }
+                }
+            }
+        } catch (IOException e) {
+            log.warn("Could not inspect verified dir {} for type inference", verifiedDir, e);
+        }
+
+        StagingModelInfo info = new StagingModelInfo();
+        info.setModelId(modelId);
+        info.setType(inferredType);
+        info.setStatus(StagingStatus.READY);
+        return info;
     }
 
     private String calculateChecksum(Path file) {
