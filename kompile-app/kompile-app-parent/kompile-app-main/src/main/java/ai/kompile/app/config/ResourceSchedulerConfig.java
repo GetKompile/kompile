@@ -245,6 +245,15 @@ public class ResourceSchedulerConfig {
     @JsonProperty("clusterReassignOnLoss")
     private boolean clusterReassignOnLoss = false;
 
+    /**
+     * When true, a worker that <em>reports</em> a retriable failure has its partition re-dispatched — the symmetry
+     * partner of {@link #clusterReassignOnLoss} (which only covers silent loss). Bounded by
+     * {@link #clusterMaxReassignments}; deterministic/fatal failures (cancelled, missing/invalid config, auth) are
+     * never retried. Default-off — enable only for restartable/idempotent crawls.
+     */
+    @JsonProperty("clusterReassignOnFailure")
+    private boolean clusterReassignOnFailure = false;
+
     /** Seconds with no progress from a RUNNING partition before it's considered stalled/lost. */
     @JsonProperty("clusterPartitionProgressTimeoutSeconds")
     private int clusterPartitionProgressTimeoutSeconds = 300;

@@ -1,6 +1,6 @@
 # Distributed Crawl — Resilience Hardening Plan
 
-Status: proposed. The current distributed-crawl coordinator (see
+Status: **Phase 1 + Phase 2 delivered**; Phases 3–4 proposed. The current distributed-crawl coordinator (see
 [distributed-crawl-cluster.md](distributed-crawl-cluster.md)) is a solid **v1 data-partition coordinator**:
 strong live aggregation/observability, idempotent worker lifecycle, assignment-time capacity routing
 (`WorkerWeightFunction`), per-worker LLM circuit breakers, and in-worker OOM avoidance (AIMD batch sizing +
@@ -20,7 +20,7 @@ in priority order, keeping every behavior change **additive and opt-in** (matchi
 
 ---
 
-## Phase 1 — Durable sessions + checkpoint-aware reassignment  *(highest value)*
+## Phase 1 — Durable sessions + checkpoint-aware reassignment  *(highest value)* — ✅ DONE
 
 **Goal:** a coordinator restart recovers in-flight sessions; reassignment reuses what the lost worker already
 finished instead of re-crawling it.
@@ -49,7 +49,14 @@ finished instead of re-crawling it.
 - **Risk:** hot-path IO (mitigate: transition-triggered + throttled async writes); shared-store double-write on
   resume (already idempotent via `factSheetId` + entity-resolution dedup).
 
-## Phase 2 — Reassign on reported failure (failure symmetry)  *(small, high leverage)*
+## Phase 2 — Reassign on reported failure (failure symmetry)  *(small, high leverage)* — ✅ DONE
+
+Implemented coordinator-side (no worker change): the `/distributed-crawl/callback` `resultData.status` already
+distinguishes `FAILED`/`CANCELLED`, so `handleWorkerCallback` classifies retriability (`isRetriableFailure`:
+explicit `resultData.retriable` wins, else `CANCELLED`/fatal-marker → not retriable, else retriable) and routes
+retriable failures to `reassignWorkerPartition` (bounded by `clusterMaxReassignments`). Config:
+`clusterReassignOnFailure=false`.
+
 
 **Goal:** a worker that *reports* FAILED gets its partition retried (bounded), not just a worker that vanishes.
 

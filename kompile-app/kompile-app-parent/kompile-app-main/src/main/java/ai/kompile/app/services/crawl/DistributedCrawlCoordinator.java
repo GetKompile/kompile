@@ -282,6 +282,10 @@ public class DistributedCrawlCoordinator {
             log.info("Worker {} completed for session {} — {}/{} done",
                     workerId, sessionId, session.getCompletedWorkers().get(),
                     session.getTotalWorkers());
+        } else if (shouldReassignOnFailure(session, workerId, message, resultData)) {
+            log.warn("Worker {} reported a retriable failure for session {} ({}) — reassigning partition",
+                    workerId, sessionId, message);
+            reassignWorkerPartition(session, session.getWorkers().get(workerId));
         } else {
             session.workerFailed(workerId, message);
             log.warn("Worker {} failed for session {}: {}", workerId, sessionId, message);
@@ -519,6 +523,58 @@ public class DistributedCrawlCoordinator {
                 || s == DistributedCrawlSession.Status.PARTIALLY_COMPLETED
                 || s == DistributedCrawlSession.Status.FAILED
                 || s == DistributedCrawlSession.Status.CANCELLED;
+    }
+
+    // ---- Phase 2: reassign on reported failure ----
+
+    /** Whether a reported worker failure should be re-dispatched: feature on, worker non-terminal, under the
+     *  reassignment bound, and the failure looks retriable. */
+    private boolean shouldReassignOnFailure(DistributedCrawlSession session, String workerId,
+                                            String message, Map<String, Object> resultData) {
+        ResourceSchedulerConfig cfg = configService != null ? configService.getConfiguration() : null;
+        if (cfg == null || !cfg.isClusterReassignOnFailure()) {
+            return false;
+        }
+        DistributedCrawlSession.WorkerInfo w = session.getWorkers().get(workerId);
+        if (w == null
+                || w.getStatus() == DistributedCrawlSession.WorkerStatus.COMPLETED
+                || w.getStatus() == DistributedCrawlSession.WorkerStatus.FAILED
+                || w.getStatus() == DistributedCrawlSession.WorkerStatus.CANCELLED) {
+            return false; // unknown or already terminal (idempotent against duplicate callbacks)
+        }
+        if (w.getReassignmentCount() >= Math.max(0, cfg.getClusterMaxReassignments())) {
+            return false; // bound reached — let it fail
+        }
+        return isRetriableFailure(message, resultData);
+    }
+
+    private static final List<String> FATAL_FAILURE_MARKERS = List.of(
+            "missing", "invalid", "no unifiedcrawlservice", "unauthorized", "forbidden",
+            "not found", "malformed", "bad request", "unsupported", "cancelled");
+
+    /**
+     * Classify a reported worker failure as transient (worth a bounded retry — OOM, infra, backend) vs
+     * deterministic/fatal (cancelled, missing/invalid config, auth — would just fail again). An explicit
+     * {@code resultData.retriable} Boolean from the worker wins; otherwise classify by {@code status} + message,
+     * defaulting to retriable (the retry count is bounded by {@code clusterMaxReassignments}).
+     */
+    static boolean isRetriableFailure(String message, Map<String, Object> resultData) {
+        if (resultData != null && resultData.get("retriable") instanceof Boolean b) {
+            return b;
+        }
+        Object status = resultData != null ? resultData.get("status") : null;
+        if (status != null && "CANCELLED".equalsIgnoreCase(status.toString())) {
+            return false;
+        }
+        if (message != null) {
+            String m = message.toLowerCase(Locale.ROOT);
+            for (String fatal : FATAL_FAILURE_MARKERS) {
+                if (m.contains(fatal)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /**
