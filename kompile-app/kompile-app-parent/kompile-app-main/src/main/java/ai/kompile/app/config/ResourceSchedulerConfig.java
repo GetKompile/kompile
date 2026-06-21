@@ -258,6 +258,19 @@ public class ResourceSchedulerConfig {
     @JsonProperty("clusterPartitionProgressTimeoutSeconds")
     private int clusterPartitionProgressTimeoutSeconds = 300;
 
+    /**
+     * A worker whose recent GC-overhead fraction is at/above this AND has stopped progressing is reaped on the
+     * shorter {@link #clusterFastStallSeconds} timer instead of the full progress timeout (Phase 3). 0 disables
+     * the GC-stall fast path. The {@link ai.kompile.app.services.crawl.WorkerWeightFunction} also down-weights
+     * GC-heavy workers at assignment time.
+     */
+    @JsonProperty("clusterGcOverheadCriticalFraction")
+    private double clusterGcOverheadCriticalFraction = 0.5;
+
+    /** Fast-stall timeout (seconds) for a GC-churning worker — see {@link #clusterGcOverheadCriticalFraction}. */
+    @JsonProperty("clusterFastStallSeconds")
+    private int clusterFastStallSeconds = 60;
+
     /** How often (seconds) the partition-loss reaper scans active sessions. */
     @JsonProperty("clusterPartitionReaperIntervalSeconds")
     private int clusterPartitionReaperIntervalSeconds = 30;

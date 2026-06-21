@@ -51,7 +51,20 @@ public record WorkerCapabilities(
         @JsonProperty("ramUsedFraction") double ramUsedFraction, // 0..1 host RAM
         @JsonProperty("ramPressure") String ramPressure,
         @JsonProperty("gpus") List<GpuInfo> gpus,              // per-device GPU detail
-        @JsonProperty("draining") boolean draining) {          // operator drained (distinct from "full")
+        @JsonProperty("draining") boolean draining,            // operator drained (distinct from "full")
+        @JsonProperty("gcOverheadFraction") double gcOverheadFraction) { // 0..1 recent GC time / wall (Phase 3)
+
+    /** Backward-compatible constructor for callers / heartbeats predating {@code gcOverheadFraction} (→ 0). */
+    public WorkerCapabilities(String workerId, String baseUrl, String role, List<String> backends,
+                              int gpuDeviceCount, long totalGpuMemoryBytes, int cpuCores,
+                              List<String> supportedJobTypes, int maxConcurrentJobs, int activeJobs,
+                              double cpuLoad, double worstGpuUsedFraction, String cpuPressure, String gpuPressure,
+                              boolean acceptingWork, long advertisedAtEpochMs, double ramUsedFraction,
+                              String ramPressure, List<GpuInfo> gpus, boolean draining) {
+        this(workerId, baseUrl, role, backends, gpuDeviceCount, totalGpuMemoryBytes, cpuCores, supportedJobTypes,
+                maxConcurrentJobs, activeJobs, cpuLoad, worstGpuUsedFraction, cpuPressure, gpuPressure,
+                acceptingWork, advertisedAtEpochMs, ramUsedFraction, ramPressure, gpus, draining, 0.0);
+    }
 
     /** Per-GPU device detail for the resources view. */
     @JsonIgnoreProperties(ignoreUnknown = true)

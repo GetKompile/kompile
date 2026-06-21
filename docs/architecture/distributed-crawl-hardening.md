@@ -1,6 +1,6 @@
 # Distributed Crawl — Resilience Hardening Plan
 
-Status: **Phase 1 + Phase 2 delivered**; Phases 3–4 proposed. The current distributed-crawl coordinator (see
+Status: **Phases 1–3 delivered**; Phase 4 proposed. The current distributed-crawl coordinator (see
 [distributed-crawl-cluster.md](distributed-crawl-cluster.md)) is a solid **v1 data-partition coordinator**:
 strong live aggregation/observability, idempotent worker lifecycle, assignment-time capacity routing
 (`WorkerWeightFunction`), per-worker LLM circuit breakers, and in-worker OOM avoidance (AIMD batch sizing +
@@ -69,7 +69,13 @@ retriable failures to `reassignWorkerPartition` (bounded by `clusterMaxReassignm
 - **Tests:** retriable → bounded reassign; fatal → immediate terminal; max-reassign → terminal.
 - **Risk:** retry storms (bounded by `maxReassignments` + fatal classification).
 
-## Phase 3 — Fast, GC-aware stall signal (congestion reaction)
+## Phase 3 — Fast, GC-aware stall signal (congestion reaction) — ✅ DONE
+
+Workers advertise `gcOverheadFraction` on `WorkerCapabilities` (Δ`GarbageCollectorMXBean.getCollectionTime` / Δwall
+across heartbeats; back-compat constructor defaults it to 0). `WorkerWeightFunction` down-weights (×0.4 at ≥0.3) and
+excludes (0 at ≥0.5) churning workers at assignment time; `PartitionLossReaper` reaps a GC-churning, non-progressing
+worker on `clusterFastStallSeconds` (60s) instead of the full 300s timeout when overhead ≥ `clusterGcOverheadCriticalFraction`.
+
 
 **Goal:** detect a churning/stalled worker in ~seconds, not the flat 300s; feed both assignment and the reaper.
 

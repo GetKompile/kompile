@@ -36,6 +36,10 @@ import ai.kompile.app.services.cluster.WorkerCapabilities;
  */
 public final class WorkerWeightFunction {
 
+    /** Assignment-time GC-overhead thresholds (mirror the reaper's loss-detection config defaults). */
+    private static final double GC_HIGH_FRACTION = 0.3;
+    private static final double GC_CRITICAL_FRACTION = 0.5;
+
     private WorkerWeightFunction() {
     }
 
@@ -84,6 +88,15 @@ public final class WorkerWeightFunction {
         } else if (w.worstGpuUsedFraction() > 0.85) {
             // Non-GPU work: a GPU-saturated node may still be CPU-contended — mild discount.
             weight *= 0.75;
+        }
+
+        // GC-overhead backpressure (Phase 3): a churning JVM is barely progressing — avoid piling on.
+        double gc = w.gcOverheadFraction();
+        if (gc >= GC_CRITICAL_FRACTION) {
+            return 0;
+        }
+        if (gc >= GC_HIGH_FRACTION) {
+            weight *= 0.4;
         }
 
         return Math.max(1, (int) Math.round(weight));

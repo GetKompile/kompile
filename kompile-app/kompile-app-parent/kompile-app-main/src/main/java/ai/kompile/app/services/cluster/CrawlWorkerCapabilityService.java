@@ -29,6 +29,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -80,6 +82,10 @@ public class CrawlWorkerCapabilityService {
 
     private volatile String cachedWorkerId;
     private ScheduledExecutorService heartbeat;
+
+    /** Previous GC sample, for the recent GC-overhead fraction computed across heartbeats (Phase 3). */
+    private volatile long lastGcCollectionMs = -1;
+    private volatile long lastGcSampleWallMs = -1;
 
     @PostConstruct
     public void start() {
@@ -197,7 +203,34 @@ public class CrawlWorkerCapabilityService {
                 s.systemCpuLoad(), s.worstGpuUsedFraction(),
                 s.cpuPressure().name(), s.worstGpuPressure().name(),
                 accepting, System.currentTimeMillis(),
-                s.systemRamUsedFraction(), s.ramPressure().name(), gpuInfos, drained);
+                s.systemRamUsedFraction(), s.ramPressure().name(), gpuInfos, drained,
+                computeGcOverheadFraction());
+    }
+
+    /**
+     * Recent GC overhead = Δ(total GC collection time) / Δ(wall) since the last sample, clamped to [0,1].
+     * A sustained high value means the JVM is spending most of its time collecting rather than making progress —
+     * the cluster uses it to down-weight (assignment) and fast-reap (loss detection) a churning worker.
+     */
+    private double computeGcOverheadFraction() {
+        long gc = 0;
+        for (GarbageCollectorMXBean b : ManagementFactory.getGarbageCollectorMXBeans()) {
+            long t = b.getCollectionTime();
+            if (t > 0) {
+                gc += t;
+            }
+        }
+        long now = System.currentTimeMillis();
+        long prevGc = lastGcCollectionMs;
+        long prevWall = lastGcSampleWallMs;
+        lastGcCollectionMs = gc;
+        lastGcSampleWallMs = now;
+        if (prevGc < 0 || prevWall < 0 || now <= prevWall) {
+            return 0.0; // first sample — no interval yet
+        }
+        long gcDelta = Math.max(0, gc - prevGc);
+        long wallDelta = now - prevWall;
+        return Math.min(1.0, (double) gcDelta / wallDelta);
     }
 
     /**

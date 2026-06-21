@@ -18,6 +18,7 @@ package ai.kompile.app.services.crawl;
 
 import ai.kompile.app.config.ResourceSchedulerConfig;
 import ai.kompile.app.services.cluster.CrawlWorkerRegistry;
+import ai.kompile.app.services.cluster.WorkerCapabilities;
 import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -99,6 +100,8 @@ public class PartitionLossReaper {
         }
         long now = System.currentTimeMillis();
         long timeoutMs = Math.max(1, cfg.getClusterPartitionProgressTimeoutSeconds()) * 1000L;
+        long fastStallMs = Math.max(0, cfg.getClusterFastStallSeconds()) * 1000L;
+        double gcCritical = cfg.getClusterGcOverheadCriticalFraction();
         int maxReassign = Math.max(0, cfg.getClusterMaxReassignments());
 
         for (DistributedCrawlSession session : coordinator.getAllSessions()) {
@@ -109,7 +112,7 @@ public class PartitionLossReaper {
                 if (w.getStatus() != DistributedCrawlSession.WorkerStatus.RUNNING) {
                     continue;
                 }
-                String reason = lossReason(w, now, timeoutMs);
+                String reason = lossReason(w, now, timeoutMs, fastStallMs, gcCritical);
                 if (reason == null) {
                     continue;
                 }
@@ -127,18 +130,29 @@ public class PartitionLossReaper {
     }
 
     /** Null when the worker still looks alive; otherwise a human-readable loss reason. */
-    private String lossReason(DistributedCrawlSession.WorkerInfo w, long now, long timeoutMs) {
+    private String lossReason(DistributedCrawlSession.WorkerInfo w, long now, long timeoutMs,
+                             long fastStallMs, double gcCritical) {
         String ref = w.getExternalRef();
+        WorkerCapabilities caps = null;
         if (registry != null && ref != null) {
-            boolean live = registry.liveWorkers(now).stream()
-                    .anyMatch(lw -> ref.contains(lw.baseUrl()));
-            if (!live) {
+            caps = registry.liveWorkers(now).stream()
+                    .filter(lw -> ref.contains(lw.baseUrl()))
+                    .findFirst().orElse(null);
+            if (caps == null) {
                 return "worker evicted (no heartbeat)";
             }
         }
         Instant last = w.getLastProgressAt();
-        if (last != null && now - last.toEpochMilli() > timeoutMs) {
-            return "no progress for " + ((now - last.toEpochMilli()) / 1000) + "s";
+        long sinceProgressMs = last != null ? now - last.toEpochMilli() : -1;
+        // GC-stall fast path: a churning worker that has also stopped progressing is reaped sooner than the full
+        // progress timeout (Phase 3).
+        if (caps != null && gcCritical > 0 && caps.gcOverheadFraction() >= gcCritical
+                && fastStallMs > 0 && sinceProgressMs > fastStallMs) {
+            return "GC stall (gc=" + Math.round(caps.gcOverheadFraction() * 100) + "%, no progress "
+                    + (sinceProgressMs / 1000) + "s)";
+        }
+        if (sinceProgressMs > timeoutMs) {
+            return "no progress for " + (sinceProgressMs / 1000) + "s";
         }
         return null;
     }

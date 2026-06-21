@@ -32,7 +32,15 @@ class WorkerWeightFunctionTest {
         return new WorkerCapabilities("w", "http://w", "worker",
                 gpu ? List.of("CPU", "CUDA") : List.of("CPU"),
                 gpu ? 1 : 0, gpu ? 16_000_000_000L : 0L, 8, List.of("crawl"),
-                maxJobs, activeJobs, cpuLoad, worstGpuUsed, cpuPressure, gpuPressure, acceptingWork, 0L);
+                maxJobs, activeJobs, cpuLoad, worstGpuUsed, cpuPressure, gpuPressure, acceptingWork, 0L,
+                0.3, "NOMINAL", List.of(), false);
+    }
+
+    /** Idle nominal worker (4 free slots, no CPU-load discount) with a given recent GC-overhead fraction. */
+    private static WorkerCapabilities workerWithGc(double gc) {
+        return new WorkerCapabilities("w", "http://w", "worker", List.of("CPU"),
+                0, 0L, 8, List.of("crawl"), 4, 0, -1, 0.0, "NOMINAL", "NOMINAL", true, 0L,
+                0.3, "NOMINAL", List.of(), false, gc);
     }
 
     @Test
@@ -114,5 +122,23 @@ class WorkerWeightFunctionTest {
         // requiresGpu=false: a GPU-saturated node is mildly discounted (×0.75), not excluded.
         assertEquals(3, WorkerWeightFunction.compute(
                 worker(4, 0, -1, "NOMINAL", true, true, 0.90, "HIGH"), false));
+    }
+
+    @Test
+    void lowGcOverheadHasNoEffect() {
+        // gc 0.2 < HIGH(0.3) → full 4 free slots.
+        assertEquals(4, WorkerWeightFunction.compute(workerWithGc(0.2), false));
+    }
+
+    @Test
+    void highGcOverheadDownWeights() {
+        // gc 0.4 ≥ HIGH(0.3) → 4 × 0.4 = 1.6 → rounds to 2.
+        assertEquals(2, WorkerWeightFunction.compute(workerWithGc(0.4), false));
+    }
+
+    @Test
+    void criticalGcOverheadExcludes() {
+        // gc 0.6 ≥ CRITICAL(0.5) → 0 (don't assign to a churning JVM).
+        assertEquals(0, WorkerWeightFunction.compute(workerWithGc(0.6), false));
     }
 }

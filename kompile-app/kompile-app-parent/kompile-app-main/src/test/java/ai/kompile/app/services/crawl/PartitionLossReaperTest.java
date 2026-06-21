@@ -49,7 +49,14 @@ class PartitionLossReaperTest {
 
     private WorkerCapabilities crawlWorker(String id) {
         return new WorkerCapabilities(id, "http://" + id, "worker", List.of("CPU"),
-                0, 0L, 4, List.of("crawl"), 4, 0, 0.1, 0.0, "NOMINAL", "NOMINAL", true, 0L);
+                0, 0L, 4, List.of("crawl"), 4, 0, 0.1, 0.0, "NOMINAL", "NOMINAL", true, 0L,
+                0.3, "NOMINAL", List.of(), false);
+    }
+
+    private WorkerCapabilities crawlWorkerGc(String id, double gcOverhead) {
+        return new WorkerCapabilities(id, "http://" + id, "worker", List.of("CPU"),
+                0, 0L, 4, List.of("crawl"), 4, 0, 0.1, 0.0, "NOMINAL", "NOMINAL", true, 0L,
+                0.3, "NOMINAL", List.of(), false, gcOverhead);
     }
 
     private record Fixture(DistributedCrawlCoordinator coordinator,
@@ -166,5 +173,33 @@ class PartitionLossReaperTest {
         f.reaper().scan();
         assertEquals(DistributedCrawlSession.WorkerStatus.COMPLETED, w.getStatus());
         assertEquals(0, w.getReassignmentCount());
+    }
+
+    @Test
+    void gcStallReapsBeforeProgressTimeout() {
+        // 300s progress timeout, but defaults give a 60s fast-stall at gc >= 0.5.
+        Fixture f = fixture(cfg(true, 2, 300));
+        DistributedCrawlSession s = startSession(f.coordinator());
+        DistributedCrawlSession.WorkerInfo w = onlyWorker(s);
+        w.setExternalRef("http://w0");
+        w.setLastProgressAt(Instant.now().minusSeconds(90)); // > fast-stall(60s), < progress-timeout(300s)
+        when(f.registry().liveWorkers(anyLong()))
+                .thenReturn(List.of(crawlWorkerGc("w0", 0.7), crawlWorker("target")));
+        f.reaper().scan();
+        assertEquals(1, w.getReassignmentCount(), "a GC-churning, non-progressing worker is reaped early");
+    }
+
+    @Test
+    void lowGcNotReapedWithinProgressTimeout() {
+        Fixture f = fixture(cfg(true, 2, 300));
+        DistributedCrawlSession s = startSession(f.coordinator());
+        DistributedCrawlSession.WorkerInfo w = onlyWorker(s);
+        w.setExternalRef("http://w0");
+        w.setLastProgressAt(Instant.now().minusSeconds(90)); // stale but under the 300s timeout
+        when(f.registry().liveWorkers(anyLong()))
+                .thenReturn(List.of(crawlWorkerGc("w0", 0.1), crawlWorker("target"))); // healthy GC
+        f.reaper().scan();
+        assertEquals(0, w.getReassignmentCount(), "a healthy worker under the progress timeout is left alone");
+        assertEquals(DistributedCrawlSession.WorkerStatus.RUNNING, w.getStatus());
     }
 }
