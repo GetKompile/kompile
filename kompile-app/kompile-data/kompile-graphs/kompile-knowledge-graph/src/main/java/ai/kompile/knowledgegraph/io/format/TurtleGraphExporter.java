@@ -28,6 +28,14 @@ import java.util.Map;
  * Exports a {@link PortableGraph} as <a href="https://www.w3.org/TR/turtle/">Turtle</a> — the same
  * real RDF as {@link NTriplesGraphExporter} (minted absolute IRIs), but grouped by subject with
  * {@code ;} and using the {@code a}/{@code rdfs:}/{@code xsd:} shorthands for readability.
+ *
+ * <p>When an edge carries a {@code weight} and/or {@code confidence} value, a standard RDF
+ * reification block is appended: an {@code rdf:Statement} node (IRI form
+ * {@code https://kompile.ai/kg/stmt/<from>/<type>/<to>}) whose {@code rdf:subject/predicate/object}
+ * point at the original triple, annotated with kompile-namespaced predicates
+ * {@code https://kompile.ai/kg/weight} and {@code https://kompile.ai/kg/confidence}, each a
+ * typed {@code xsd:double} literal.  Only edges that actually have weight or confidence are
+ * reified.</p>
  */
 public final class TurtleGraphExporter {
 
@@ -62,13 +70,35 @@ public final class TurtleGraphExporter {
             }
         }
         for (PortableEdge e : graph.edges()) {
-            String subject = RdfSupport.iriRef(RdfSupport.nodeIri(e.fromExternalId()));
-            bySubject.computeIfAbsent(subject, k -> new ArrayList<>())
-                    .add(RdfSupport.iriRef(RdfSupport.relIri(e.edgeType())) + " "
-                            + RdfSupport.iriRef(RdfSupport.nodeIri(e.toExternalId())));
+            String fromRef = RdfSupport.iriRef(RdfSupport.nodeIri(e.fromExternalId()));
+            String predRef = RdfSupport.iriRef(RdfSupport.relIri(e.edgeType()));
+            String toRef   = RdfSupport.iriRef(RdfSupport.nodeIri(e.toExternalId()));
+
+            bySubject.computeIfAbsent(fromRef, k -> new ArrayList<>())
+                    .add(predRef + " " + toRef);
+
+            // RDF reification for edge weight / confidence (only when present)
+            if (e.weight() != null || e.confidence() != null) {
+                String stmt = RdfSupport.iriRef(
+                        RdfSupport.stmtIri(e.fromExternalId(), e.edgeType(), e.toExternalId()));
+                List<String> spo = bySubject.computeIfAbsent(stmt, k -> new ArrayList<>());
+                spo.add("a " + RdfSupport.iriRef(RdfSupport.RDF_STATEMENT));
+                spo.add(RdfSupport.iriRef(RdfSupport.RDF_SUBJECT)   + " " + fromRef);
+                spo.add(RdfSupport.iriRef(RdfSupport.RDF_PREDICATE) + " " + predRef);
+                spo.add(RdfSupport.iriRef(RdfSupport.RDF_OBJECT)    + " " + toRef);
+                if (e.weight() != null) {
+                    spo.add(RdfSupport.iriRef(RdfSupport.WEIGHT_IRI)
+                            + " \"" + e.weight() + "\"^^xsd:double");
+                }
+                if (e.confidence() != null) {
+                    spo.add(RdfSupport.iriRef(RdfSupport.CONFIDENCE_IRI)
+                            + " \"" + e.confidence() + "\"^^xsd:double");
+                }
+            }
         }
 
         StringBuilder sb = new StringBuilder(256);
+        sb.append("@prefix rdf: <").append(RdfSupport.RDF).append("> .\n");
         sb.append("@prefix rdfs: <").append(RdfSupport.RDFS).append("> .\n");
         sb.append("@prefix xsd: <").append(RdfSupport.XSD).append("> .\n\n");
         for (Map.Entry<String, List<String>> entry : bySubject.entrySet()) {

@@ -42,7 +42,7 @@
 
 .header-subtitle {
   margin: 4px 0 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.9rem;
 }
 
@@ -90,8 +90,8 @@
   gap: 8px;
   padding: 8px 16px;
   border-radius: 20px;
-  background: #f5f5f5;
-  color: #666;
+  background: var(--bg-surface-elevated);
+  color: var(--text-secondary);
 }
 
 .status-indicator.enabled {
@@ -121,7 +121,7 @@
   gap: 32px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 .stat-item {
@@ -132,14 +132,14 @@
 
 .stat-label {
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
 .stat-value {
   font-size: 1.2rem;
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
 }
 
 /* Hotspots Card */
@@ -159,11 +159,11 @@
 
 .hotspots-table th {
   font-weight: 600;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .op-name-cell code {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 8px;
   border-radius: 4px;
   font-family: 'Roboto Mono', monospace;
@@ -197,7 +197,7 @@ button.selected mat-icon {
 }
 
 .helper-none {
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 /* Details Panel */
@@ -212,7 +212,7 @@ button.selected mat-icon {
 }
 
 .details-panel mat-panel-title code {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 8px;
   border-radius: 4px;
   font-family: 'Roboto Mono', monospace;
@@ -267,13 +267,13 @@ button.selected mat-icon {
   display: flex;
   gap: 16px;
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .breakdown-stats {
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 .breakdown-stats h4 {
@@ -309,14 +309,14 @@ button.selected mat-icon {
   min-width: 150px;
   font-family: 'Roboto Mono', monospace;
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
   text-align: right;
 }
 
 .bar-container {
   flex: 1;
   height: 20px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -331,13 +331,13 @@ button.selected mat-icon {
 .bucket-count {
   min-width: 100px;
   font-size: 0.85rem;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .histogram-percentiles {
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 .histogram-percentiles h4 {
@@ -367,8 +367,8 @@ button.selected mat-icon {
 }
 
 .raw-output pre {
-  background: #263238;
-  color: #aed581;
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
   padding: 16px;
   border-radius: 8px;
   overflow-x: auto;
@@ -385,7 +385,7 @@ button.selected mat-icon {
   align-items: center;
   gap: 8px;
   padding: 24px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .no-data mat-icon {
@@ -400,9 +400,9 @@ button.selected mat-icon {
   justify-content: center;
   padding: 48px;
   text-align: center;
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 8px;
-  border: 1px dashed #e0e0e0;
+  border: 1px dashed var(--border-color);
 }
 
 .empty-state mat-icon {
@@ -415,18 +415,18 @@ button.selected mat-icon {
 
 .empty-state h3 {
   margin: 0 0 8px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .empty-state p {
   margin: 0 0 24px;
-  color: #999;
+  color: var(--text-tertiary);
   max-width: 500px;
 }
 
 .empty-state .instructions {
   text-align: left;
-  color: #666;
+  color: var(--text-secondary);
   padding-left: 24px;
 }
 
@@ -501,13 +501,13 @@ button.selected mat-icon {
 
 .active-info .subprocess-type {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
 .active-info .model-id {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .active-stats {
@@ -516,14 +516,14 @@ button.selected mat-icon {
   gap: 2px;
   font-size: 0.85rem;
   text-align: right;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 /* Aggregate Statistics */
 .subprocess-aggregates {
   margin-bottom: 24px;
   padding: 16px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
 }
 
@@ -557,7 +557,7 @@ button.selected mat-icon {
 
 .subprocess-table th {
   font-weight: 600;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -566,7 +566,7 @@ button.selected mat-icon {
 }
 
 .task-id-code {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 4px;
   font-family: 'Roboto Mono', monospace;
@@ -579,7 +579,7 @@ button.selected mat-icon {
   height: 18px;
   vertical-align: middle;
   margin-right: 4px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .success-icon {
@@ -617,7 +617,7 @@ button.selected mat-icon {
   justify-content: center;
   padding: 32px;
   text-align: center;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .subprocess-empty mat-icon {
@@ -662,7 +662,7 @@ button.selected mat-icon {
 }
 
 .subprocess-op-timing-card .hotspots-table {
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .subprocess-op-timing-card .hotspots-table th {
@@ -675,8 +675,8 @@ button.selected mat-icon {
   align-items: center;
   gap: 8px;
   padding: 24px;
-  color: #666;
-  background: #f5f5f5;
+  color: var(--text-secondary);
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
   margin-top: 16px;
 }

@@ -7,7 +7,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .toolbar {
@@ -15,8 +15,8 @@
   align-items: center;
   gap: 12px;
   padding: 12px 24px;
-  background: white;
-  border-bottom: 1px solid #e0e0e0;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
 
   .spacer {
     flex: 1;
@@ -66,7 +66,7 @@
     left: 50%;
     transform: translate(-50%, -50%);
     text-align: center;
-    color: #757575;
+    color: var(--text-secondary);
 
     mat-icon {
       font-size: 64px;
@@ -83,7 +83,7 @@
     .or {
       display: block;
       margin: 12px 0;
-      color: #bdbdbd;
+      color: var(--border-color);
     }
   }
 }
@@ -127,13 +127,13 @@
 .node-name {
   font-size: 14px;
   font-weight: 500;
-  fill: #212121;
+  fill: var(--text-primary);
   pointer-events: none;
 }
 
 .node-category {
   font-size: 10px;
-  fill: #757575;
+  fill: var(--text-secondary);
   pointer-events: none;
 }
 
@@ -176,7 +176,7 @@
 
 .edge-label {
   font-size: 11px;
-  fill: #616161;
+  fill: var(--text-secondary);
   pointer-events: none;
 }
 
@@ -187,8 +187,8 @@
 // Properties Panel
 .properties-panel {
   width: 320px;
-  background: white;
-  border-left: 1px solid #e0e0e0;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-color);
   overflow-y: auto;
 }
 
@@ -202,13 +202,13 @@
   }
 
   .description {
-    color: #616161;
+    color: var(--text-secondary);
     font-size: 0.9rem;
     margin-bottom: 16px;
   }
 
   .transition-info {
-    color: #757575;
+    color: var(--text-secondary);
     font-size: 0.9rem;
     margin-bottom: 16px;
   }
@@ -233,7 +233,7 @@
 
   .label {
     width: 100px;
-    color: #757575;
+    color: var(--text-secondary);
     font-size: 0.9rem;
   }
 
@@ -243,7 +243,7 @@
 
     &.code {
       font-family: monospace;
-      background: #f5f5f5;
+      background: var(--bg-surface-elevated);
       padding: 2px 6px;
       border-radius: 3px;
     }
@@ -264,7 +264,7 @@
   gap: 8px;
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 // Legend
@@ -273,12 +273,12 @@
   align-items: center;
   gap: 16px;
   padding: 8px 24px;
-  background: white;
-  border-top: 1px solid #e0e0e0;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-color);
   font-size: 0.85rem;
 
   .legend-title {
-    color: #757575;
+    color: var(--text-secondary);
     font-weight: 500;
   }
 
@@ -286,7 +286,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    color: #616161;
+    color: var(--text-secondary);
   }
 
   .legend-color {

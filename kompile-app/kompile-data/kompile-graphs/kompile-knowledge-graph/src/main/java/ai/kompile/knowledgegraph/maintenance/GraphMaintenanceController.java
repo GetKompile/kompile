@@ -28,6 +28,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
@@ -57,6 +58,10 @@ public class GraphMaintenanceController {
     private  GraphDataPatchService patchService;
     private  ObjectMapper objectMapper;
 
+    // @Autowired forces Spring to use this constructor for injection. Without it, the no-arg
+    // constructor below (kept for GraalVM native-image proxying) wins on the JVM and every
+    // dependency — including patchService — is left null, NPE-ing every endpoint at runtime.
+    @Autowired
     public GraphMaintenanceController(GraphNodeRepository nodeRepository,
                                       GraphEdgeRepository edgeRepository,
                                       GraphDataPatchService patchService,

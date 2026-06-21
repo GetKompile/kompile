@@ -1,0 +1,134 @@
+.audit-card {
+  margin: 16px;
+}
+
+.audit-card mat-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-section {
+  padding: 12px 0;
+}
+
+.legend-title,
+.form-title,
+.list-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary, #666);
+}
+
+.legend-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--color-surface-secondary, #f5f5f5);
+  font-size: 12px;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-label {
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.correction-form {
+  padding: 16px 0;
+}
+
+.form-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.form-field-wide {
+  flex: 2 1 200px;
+}
+
+.form-field-sm {
+  flex: 1 1 100px;
+}
+
+.form-actions {
+  margin-top: 8px;
+}
+
+.form-actions button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-spinner {
+  display: inline-block;
+}
+
+.corrections-list {
+  padding: 12px 0;
+}
+
+.correction-entry {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-left: 3px solid #4caf50;
+  background: var(--color-surface-secondary, #f9f9f9);
+  border-radius: 0 4px 4px 0;
+}
+
+.entry-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.atom-key {
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.entry-time {
+  font-size: 11px;
+  color: var(--color-text-secondary, #888);
+  margin-left: auto;
+}
+
+.status-chip {
+  font-size: 11px;
+}
+
+.entry-detail {
+  font-size: 12px;
+  color: var(--color-text-secondary, #666);
+  margin-top: 4px;
+  padding-left: 18px;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary, #999);
+  font-size: 13px;
+  padding: 16px 0;
+}

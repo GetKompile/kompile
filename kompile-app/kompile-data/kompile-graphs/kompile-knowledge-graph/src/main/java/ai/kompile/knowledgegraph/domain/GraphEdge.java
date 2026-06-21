@@ -81,6 +81,14 @@ public class GraphEdge {
     private EdgeType edgeType;
 
     /**
+     * Semantic relationship type as extracted/asserted (e.g. "WORKS_AT", "FEEDS_INTO"), distinct from
+     * the structural {@link EdgeType}. Null for purely structural edges (hierarchy, similarity, etc.).
+     * Used for ontology relationship-conformance validation.
+     */
+    @Column(name = "relation_type", length = 255)
+    private String relationType;
+
+    /**
      * Edge weight (0.0 to 1.0 for most types, higher is stronger relationship)
      */
     @Column(nullable = false)
@@ -152,6 +160,16 @@ public class GraphEdge {
      */
     @Column(columnDefinition = "TEXT")
     private String provenance;
+
+    /**
+     * [M-10] Typed epistemological classification of how this edge was derived
+     * ({@code EXTRACTED} / {@code INFERRED} / {@code AMBIGUOUS}) — distinct from the free-text
+     * {@link #provenance} which records the <em>source</em>. Stored typed (rather than flattened
+     * into the freetext field) so the classification round-trips as an enum.
+     */
+    @Column(name = "provenance_type", length = 32)
+    @Enumerated(EnumType.STRING)
+    private EdgeProvenance provenanceType;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // KNOWLEDGE GRAPH EMBEDDINGS

@@ -11,7 +11,8 @@ package ai.kompile.event.attribution.algorithm.bayesian;
 
 import ai.kompile.core.events.EmpiricalPriorSource;
 import ai.kompile.event.attribution.algorithm.CausalTraversal;
-import ai.kompile.event.attribution.domain.CausalEdgeType;
+import ai.kompile.graph.reasoning.domain.CausalEdgeType;
+import ai.kompile.graph.reasoning.bayesian.*;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;

@@ -31,19 +31,57 @@ public final class CypherDumpExporter {
             if (n.description() != null) {
                 sb.append(", description: '").append(escape(n.description())).append("'");
             }
+            if (n.confidence() != null) {
+                sb.append(", confidence: ").append(n.confidence());
+            }
+            if (n.namedGraphId() != null) {
+                sb.append(", namedGraphId: '").append(escape(n.namedGraphId())).append("'");
+            }
+            if (n.factSheetId() != null) {
+                sb.append(", factSheetId: ").append(n.factSheetId());
+            }
+            if (n.occurredAt() != null) {
+                sb.append(", occurredAt: '").append(escape(n.occurredAt())).append("'");
+            }
             sb.append("});\n");
         }
         for (PortableEdge e : graph.edges()) {
             sb.append("MATCH (a {externalId: '").append(escape(e.fromExternalId())).append("'})")
                     .append(", (b {externalId: '").append(escape(e.toExternalId())).append("'}) ")
                     .append("CREATE (a)-[:").append(safeLabel(e.edgeType()));
-            boolean hasProps = e.weight() != null || e.description() != null;
+            boolean hasProps = e.weight() != null || e.description() != null
+                    || e.confidence() != null || e.relationType() != null
+                    || e.provenance() != null || e.factSheetId() != null;
             if (hasProps) {
                 sb.append(" {");
-                if (e.weight() != null) sb.append("weight: ").append(e.weight());
+                boolean first = true;
+                if (e.weight() != null) {
+                    sb.append("weight: ").append(e.weight());
+                    first = false;
+                }
                 if (e.description() != null) {
-                    if (e.weight() != null) sb.append(", ");
+                    if (!first) sb.append(", ");
                     sb.append("description: '").append(escape(e.description())).append("'");
+                    first = false;
+                }
+                if (e.confidence() != null) {
+                    if (!first) sb.append(", ");
+                    sb.append("confidence: ").append(e.confidence());
+                    first = false;
+                }
+                if (e.relationType() != null) {
+                    if (!first) sb.append(", ");
+                    sb.append("relationType: '").append(escape(e.relationType())).append("'");
+                    first = false;
+                }
+                if (e.provenance() != null) {
+                    if (!first) sb.append(", ");
+                    sb.append("provenance: '").append(escape(e.provenance())).append("'");
+                    first = false;
+                }
+                if (e.factSheetId() != null) {
+                    if (!first) sb.append(", ");
+                    sb.append("factSheetId: ").append(e.factSheetId());
                 }
                 sb.append("}");
             }

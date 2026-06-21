@@ -26,12 +26,12 @@
 
 .header h2 {
   margin: 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .header .subtitle {
   margin: 8px 0 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
@@ -40,7 +40,7 @@
   display: flex;
   gap: 8px;
   margin-bottom: 20px;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--border-color);
   padding-bottom: 12px;
 }
 
@@ -69,7 +69,7 @@
 }
 
 .server-card {
-  border-left: 4px solid #e0e0e0;
+  border-left: 4px solid var(--border-color);
   transition: border-color 0.2s ease;
 }
 
@@ -141,8 +141,8 @@
 }
 
 .status-badge.stopped {
-  background-color: #f5f5f5;
-  color: #616161;
+  background-color: var(--bg-surface-elevated);
+  color: var(--text-secondary);
 }
 
 .status-badge.starting,
@@ -168,12 +168,12 @@
 }
 
 .detail-row .label {
-  color: #666;
+  color: var(--text-secondary);
   min-width: 80px;
 }
 
 .detail-row .value {
-  color: #333;
+  color: var(--text-primary);
   font-family: 'Roboto Mono', monospace;
 }
 
@@ -184,7 +184,7 @@
 
 /* Command and Args Display */
 .command-value {
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 3px;
 }
@@ -256,7 +256,7 @@
 }
 
 .description {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
   margin: 8px 0;
 }
@@ -265,14 +265,14 @@
 .empty-state {
   text-align: center;
   padding: 60px 20px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .empty-state mat-icon {
   font-size: 64px;
   width: 64px;
   height: 64px;
-  color: #ccc;
+  color: var(--text-tertiary);
   margin-bottom: 16px;
 }
 
@@ -282,7 +282,7 @@
 
 .empty-state .hint {
   font-size: 13px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .empty-actions {
@@ -296,22 +296,22 @@
 .example-config {
   margin-top: 32px;
   padding: 20px;
-  background-color: #fafafa;
+  background-color: var(--bg-body);
   border-radius: 8px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   text-align: left;
   max-width: 600px;
 }
 
 .example-config h4 {
   margin: 0 0 12px;
-  color: #333;
+  color: var(--text-primary);
   font-size: 14px;
 }
 
 .example-json {
-  background-color: #263238;
-  color: #aed581;
+  background-color: var(--bg-surface-elevated);
+  color: var(--text-primary);
   padding: 16px;
   border-radius: 4px;
   font-family: 'Roboto Mono', monospace;
@@ -386,7 +386,7 @@
 }
 
 .dialog {
-  background-color: white;
+  background-color: var(--bg-surface);
   border-radius: 8px;
   padding: 24px;
   max-width: 500px;
@@ -402,7 +402,7 @@
 
 .dialog h3 {
   margin: 0 0 20px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .form-content {
@@ -425,7 +425,7 @@
   gap: 8px;
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 /* Environment Variables Section */
@@ -438,7 +438,7 @@
   align-items: center;
   margin: 0 0 12px;
   font-size: 14px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .env-section h4 button {
@@ -466,14 +466,14 @@
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background-color: #fafafa;
+  background-color: var(--bg-body);
   border-radius: 8px;
   margin-bottom: 8px;
 }
 
 .transport-description {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Timeout row */
@@ -488,7 +488,7 @@
 
 .hint {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Delete action styling */
@@ -510,7 +510,7 @@ mat-spinner {
 .details-section {
   margin-bottom: 20px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .details-section:last-child {
@@ -520,7 +520,7 @@ mat-spinner {
 .details-section h4 {
   margin: 0 0 12px;
   font-size: 14px;
-  color: #333;
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -544,18 +544,18 @@ mat-spinner {
 
 .detail-label {
   font-size: 11px;
-  color: #666;
+  color: var(--text-secondary);
   text-transform: uppercase;
   font-weight: 500;
 }
 
 .detail-value {
   font-size: 14px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 code.detail-value {
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
   padding: 4px 8px;
   border-radius: 4px;
   font-family: 'Roboto Mono', monospace;
@@ -572,7 +572,7 @@ code.detail-value {
   display: flex;
   align-items: center;
   gap: 8px;
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
   padding: 6px 10px;
   border-radius: 4px;
   font-family: 'Roboto Mono', monospace;
@@ -585,10 +585,10 @@ code.detail-value {
   justify-content: center;
   width: 20px;
   height: 20px;
-  background-color: #e0e0e0;
+  background-color: var(--border-color);
   border-radius: 50%;
   font-size: 11px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Environment Variables Display in Details */
@@ -615,7 +615,7 @@ code.detail-value {
 }
 
 .env-display-value {
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
   padding: 4px 8px;
   border-radius: 4px;
   font-family: 'Roboto Mono', monospace;
@@ -626,8 +626,8 @@ code.detail-value {
 
 /* JSON Display */
 .json-display {
-  background-color: #263238;
-  color: #aed581;
+  background-color: var(--bg-surface-elevated);
+  color: var(--text-primary);
   padding: 16px;
   border-radius: 4px;
   font-family: 'Roboto Mono', monospace;

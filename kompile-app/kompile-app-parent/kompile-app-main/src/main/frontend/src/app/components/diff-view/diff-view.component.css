@@ -1,0 +1,106 @@
+:host {
+  display: block;
+  width: 100%;
+}
+
+.diff-view {
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--surface-card, #ffffff);
+}
+
+.diff-empty {
+  padding: 16px;
+  color: var(--text-secondary, #6b7280);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.diff-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  table-layout: fixed;
+}
+
+.diff-table.split {
+  table-layout: auto;
+}
+
+.diff-row td {
+  vertical-align: top;
+  padding: 0;
+}
+
+.ln {
+  width: 48px;
+  min-width: 40px;
+  text-align: right;
+  padding: 0 8px;
+  color: var(--text-muted, #9aa0a6);
+  background: var(--surface-muted, #f6f8fa);
+  user-select: none;
+  border-right: 1px solid var(--border-subtle, #eceef1);
+  white-space: nowrap;
+}
+
+.gutter {
+  width: 16px;
+  text-align: center;
+  color: var(--text-muted, #9aa0a6);
+  user-select: none;
+}
+
+.code {
+  padding: 0 10px;
+  width: 50%;
+}
+
+.split .code {
+  border-right: 1px solid var(--border-subtle, #eceef1);
+}
+
+.code pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+}
+
+/* Line type colors (light theme; high-contrast diff convention). */
+.row-add .code,
+.code.row-add {
+  background: #e6ffed;
+}
+.row-add .gutter { color: #22863a; }
+
+.row-remove .code,
+.code.row-remove {
+  background: #ffeef0;
+}
+.row-remove .gutter { color: #cb2431; }
+
+.code.row-context,
+.row-context .code {
+  background: transparent;
+}
+
+.code.row-empty {
+  background: var(--surface-muted, #f6f8fa);
+}
+
+.code.row-header,
+.row-header .code {
+  background: #f1f8ff;
+  color: #6f42c1;
+  font-weight: 600;
+}
+
+.code.row-file,
+.row-file .code {
+  background: var(--surface-muted, #f6f8fa);
+  color: var(--text-secondary, #57606a);
+  font-weight: 600;
+}

@@ -14,7 +14,7 @@
 }
 
 .subtitle {
-  color: #666;
+  color: var(--text-secondary);
   margin: 5px 0 0 0;
 }
 
@@ -26,8 +26,8 @@
   padding: 12px 20px;
   border-radius: 8px;
   margin-bottom: 20px;
-  background: #f5f5f5;
-  border: 1px solid #ddd;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
 }
 
 .status-banner.enabled {
@@ -59,7 +59,7 @@
 }
 
 .separator {
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 /* Tab Content */
@@ -105,19 +105,19 @@
 .result-section {
   margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--border-color);
 }
 
 .result-section h3 {
   margin: 0 0 16px 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .result-card {
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 8px;
   padding: 16px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-color);
 }
 
 .result-card.success {
@@ -154,7 +154,7 @@
 }
 
 .timing {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
@@ -166,17 +166,17 @@
 }
 
 .text-block {
-  background: white;
+  background: var(--bg-surface);
   padding: 12px;
   border-radius: 6px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   position: relative;
 }
 
 .text-block h4 {
   margin: 0 0 8px 0;
   font-size: 14px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .text-block pre {
@@ -214,10 +214,10 @@
 }
 
 .compare-card {
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 8px;
   padding: 16px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-color);
 }
 
 .compare-card.contextualized {
@@ -227,7 +227,7 @@
 
 .compare-card h4 {
   margin: 0 0 8px 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .compare-card .stats {
@@ -235,7 +235,7 @@
   gap: 12px;
   margin-bottom: 12px;
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .compare-card .stats .added {
@@ -248,10 +248,10 @@
   white-space: pre-wrap;
   word-wrap: break-word;
   font-size: 13px;
-  background: white;
+  background: var(--bg-surface);
   padding: 12px;
   border-radius: 4px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 /* Batch Results */
@@ -259,7 +259,7 @@
   display: flex;
   gap: 20px;
   padding: 12px 16px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 6px;
   margin-bottom: 16px;
   font-size: 14px;
@@ -301,14 +301,14 @@
 
 .preset-card p {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   margin: 0;
 }
 
 /* Config Form */
 .config-section h3 {
   margin: 0 0 16px 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .config-form {
@@ -318,10 +318,10 @@
 }
 
 .config-group {
-  background: #fafafa;
+  background: var(--bg-body);
   padding: 16px;
   border-radius: 8px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 .config-group h4 {
@@ -348,7 +348,7 @@
 }
 
 .stat-card {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 20px;
   border-radius: 8px;
   text-align: center;
@@ -369,7 +369,7 @@
 .stat-label {
   display: block;
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -379,13 +379,13 @@
 }
 
 .info-text {
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 16px;
 }
 
 .prompt-template {
-  background: #263238;
-  color: #b2dfdb;
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
   padding: 20px;
   border-radius: 8px;
   white-space: pre-wrap;
@@ -396,13 +396,13 @@
 }
 
 .prompt-preview {
-  background: #fafafa;
+  background: var(--bg-body);
   padding: 16px;
   border-radius: 6px;
   white-space: pre-wrap;
   font-family: 'Roboto Mono', monospace;
   font-size: 13px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-color);
 }
 
 .placeholder-table {
@@ -412,7 +412,7 @@
 
 .placeholder-table td {
   padding: 8px 12px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .placeholder-table code {
@@ -423,8 +423,8 @@
 }
 
 .metadata-json {
-  background: #263238;
-  color: #b2dfdb;
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
   padding: 12px;
   border-radius: 4px;
   font-size: 12px;

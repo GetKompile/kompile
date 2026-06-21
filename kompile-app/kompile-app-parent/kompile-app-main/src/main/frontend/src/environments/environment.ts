@@ -31,5 +31,26 @@ function getApiUrl(): string {
 export const environment = {
   production: false,
   apiUrl: getApiUrl(), // Your backend API base URL (dynamically determined)
-  appTitle: 'Kompile RAG Console' // Configurable application title
+  appTitle: 'Kompile RAG Console', // Configurable application title
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // White-label branding (top-left header logo + name).
+  //
+  // These are BUILD-TIME defaults. They can also be overridden at RUNTIME —
+  // without rebuilding the frontend — via the backend `/api/config` endpoint
+  // (see FrontendConfigController), which sources branding from the kompile app
+  // config (app-index-config.json).
+  //
+  // To white-label, set logoUrl / logoAlt / showLogo / faviconUrl in the kompile
+  // app config (app-index-config.json) via either:
+  //   • the CLI:  kompile init-project --logoUrl … --faviconUrl … [--no-showLogo]
+  //   • the app-builder UI (App Title + branding fields), or
+  //   • replace the bundled asset at src/assets/branding/kompile-logo.svg.
+  // ───────────────────────────────────────────────────────────────────────────
+  branding: {
+    logoUrl: 'assets/branding/kompile-logo.svg', // bundled with kompile-app-main
+    logoAlt: 'Kompile',
+    showLogo: true,
+    faviconUrl: 'assets/branding/kompile-logo.svg' // browser tab icon (same brand mark)
+  }
 };

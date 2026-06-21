@@ -51,6 +51,13 @@ public class ModelAutoInitializationService {
 
     private final AtomicBoolean embeddingInitialized = new AtomicBoolean(false);
     private final AtomicBoolean initInProgress = new AtomicBoolean(false);
+    /**
+     * Set once the restart governor has DEFERRED embeddings (circuit breaker tripped / restarts
+     * exhausted). Stops this poll from respawning the subprocess — the whole point of the restart +
+     * enable-toggle infra: a failing embedding step must defer (not crash-loop and wedge the shared DB).
+     * Cleared only by an explicit resume (UI / REST / a job that needs embeddings).
+     */
+    private final AtomicBoolean embeddingDeferred = new AtomicBoolean(false);
 
     @Value("${kompile.models.auto-init.embedding.enabled:true}")
     private boolean embeddingAutoInitEnabled;
@@ -68,7 +75,7 @@ public class ModelAutoInitializationService {
     @Scheduled(initialDelayString = "${kompile.models.auto-init.initial-delay-ms:10000}",
                fixedDelayString = "${kompile.models.auto-init.poll-interval-ms:60000}")
     public void checkAndInitializeModels() {
-        if (embeddingInitialized.get()) {
+        if (embeddingInitialized.get() || embeddingDeferred.get()) {
             return;
         }
         if (!initInProgress.compareAndSet(false, true)) {
@@ -76,6 +83,18 @@ public class ModelAutoInitializationService {
         }
 
         try {
+            // If the restart governor has deferred embeddings (circuit breaker tripped / restarts
+            // exhausted), STOP here and never respawn the subprocess from this poll. A failed embedding
+            // step must defer — not crash-loop and wedge the shared DB. Resume is explicit (UI / REST /
+            // a job that needs embeddings). The deferred state is surfaced to the UI via setup status.
+            if (embeddingModel != null && embeddingModel.isRestartDeferred()) {
+                if (embeddingDeferred.compareAndSet(false, true)) {
+                    log.warn("Embedding auto-init DEFERRED — restart governor tripped: {}. "
+                            + "Resume via Developer > Embedding or POST /api/embedding-restart/resume.",
+                            embeddingModel.getRestartDeferredReason());
+                }
+                return;
+            }
             if (embeddingAutoInitEnabled && !embeddingInitialized.get()) {
                 tryInitializeEmbedding();
             }

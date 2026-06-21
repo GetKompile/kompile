@@ -138,6 +138,54 @@ public interface StepExecutionDispatcher {
         throw new UnsupportedOperationException("Drools decision table execution is not supported by this dispatcher");
     }
 
+    // ─── Native reasoning dispatch (replaces Drools for new nodes) ──────────────
+
+    /**
+     * Executes a native FOL/PSL rule program as a workflow step (replaces DROOLS_RULE).
+     *
+     * @param ruleScript  PSL-style rule text (one rule per line: {@code weight: Body -> Head ^2})
+     * @param facts       named facts / observed atoms derived from run data
+     * @param agendaGroup optional rule subset hint (currently informational)
+     * @param maxFirings  optional cap on PSL MAP iterations
+     * @return map of inferred atom values plus {@code _rulesFired}, {@code _converged}, {@code _inferredFacts}
+     */
+    default Map<String, Object> executeFolRules(String ruleScript,
+                                                Map<String, Object> facts,
+                                                String agendaGroup,
+                                                Integer maxFirings) {
+        throw new UnsupportedOperationException("FOL rule execution is not supported by this dispatcher");
+    }
+
+    /**
+     * Executes a native PSL full-inference program as a workflow step (replaces DROOLS_INFERENCE).
+     * Runs the crisp Datalog fixpoint first, then PSL MAP inference.
+     *
+     * @param ruleScript  PSL-style rule text
+     * @param facts       named facts derived from run data
+     * @return map of inferred atom values plus {@code _rulesFired}, {@code _converged}, {@code _inferredFacts}
+     */
+    default Map<String, Object> executePslRules(String ruleScript,
+                                                Map<String, Object> facts) {
+        throw new UnsupportedOperationException("PSL rule execution is not supported by this dispatcher");
+    }
+
+    /**
+     * Executes a CSV tabular decision table via the native TableDecisionCompiler → PSL pipeline
+     * (replaces DROOLS_DECISION_TABLE).
+     *
+     * @param tableScript CSV decision table (first row = header with optional :CONDITION/:CONCLUSION role suffixes)
+     * @param hitPolicy   hit policy: FIRST (default), ALL, PRIORITY
+     * @param weight      optional base soft-truth weight (default 2.0)
+     * @param facts       named facts / observed atoms derived from run data
+     * @return map of inferred atom values plus {@code _rulesFired}, {@code _converged}, {@code _inferredFacts}
+     */
+    default Map<String, Object> executeTabularRule(String tableScript,
+                                                   String hitPolicy,
+                                                   Double weight,
+                                                   Map<String, Object> facts) {
+        throw new UnsupportedOperationException("Tabular rule execution is not supported by this dispatcher");
+    }
+
     /**
      * Executes a saved or inline workflow definition using a workflow engine such
      * as Xircuits or n8n.

@@ -43,7 +43,10 @@ import java.util.Map;
             "ai.kompile.app.web.controllers",
             "ai.kompile.event.attribution.controller",
             "ai.kompile.event.observation.controller",
-            "ai.kompile.process.attribution.controller"
+            "ai.kompile.process.attribution.controller",
+            "ai.kompile.app.web.controllers.grounding",
+            "ai.kompile.knowledgegraph.grounding.controller",
+            "ai.kompile.app.web.controllers.explain"
     })
 public class GlobalExceptionHandler {
 

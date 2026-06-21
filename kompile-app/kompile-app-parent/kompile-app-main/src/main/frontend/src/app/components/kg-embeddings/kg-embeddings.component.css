@@ -13,7 +13,7 @@
 
 .header h2 {
   margin: 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .header-actions {
@@ -56,7 +56,7 @@
 
 /* Training Section */
 .training-section {
-  background: #f8f9fa;
+  background: var(--bg-body);
   border-radius: 12px;
   padding: 24px;
   margin-bottom: 24px;
@@ -65,7 +65,7 @@
 .training-section h3 {
   margin-top: 0;
   margin-bottom: 20px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .config-grid {
@@ -94,12 +94,12 @@
   justify-content: space-between;
   margin-top: 10px;
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Job History */
 .job-history {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
@@ -119,22 +119,22 @@
 .jobs-table td {
   padding: 12px;
   text-align: left;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .jobs-table th {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .jobs-table tr:hover {
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .job-id {
   font-family: monospace;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .status-badge {
@@ -160,7 +160,7 @@
 }
 
 .embeddings-table-container {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
@@ -175,17 +175,17 @@
 .embeddings-table td {
   padding: 12px;
   text-align: left;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .embeddings-table th {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .embeddings-table tr:hover {
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .entity-name {
@@ -196,7 +196,7 @@
 .embedding-preview {
   font-family: monospace;
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -214,7 +214,7 @@
 /* Link Prediction */
 .prediction-section,
 .similar-section {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
@@ -254,7 +254,7 @@
 .prediction-results h4,
 .similar-results h4 {
   margin-bottom: 16px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .results-table {
@@ -266,23 +266,23 @@
 .results-table td {
   padding: 10px 16px;
   text-align: left;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .results-table th {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .results-table tr:hover {
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 /* No Data Message */
 .no-data {
   text-align: center;
-  color: #888;
+  color: var(--text-tertiary);
   padding: 40px;
   font-style: italic;
 }
@@ -329,7 +329,7 @@ mat-spinner {
 
 /* Settings Section */
 .settings-section {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
@@ -344,7 +344,7 @@ mat-spinner {
 
 .settings-header h3 {
   margin: 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .settings-form {
@@ -353,29 +353,29 @@ mat-spinner {
 
 .settings-description {
   margin-bottom: 24px;
-  color: #666;
+  color: var(--text-secondary);
   line-height: 1.6;
   padding: 12px 16px;
-  background: #f5f7fa;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
   border-left: 4px solid #667eea;
 }
 
 .settings-description strong {
-  color: #333;
+  color: var(--text-primary);
   font-family: monospace;
 }
 
 .toggle-section {
   margin-bottom: 24px;
   padding: 16px;
-  background: #f8f9fa;
+  background: var(--bg-body);
   border-radius: 8px;
 }
 
 .toggle-hint {
   margin: 12px 0 0 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -384,7 +384,7 @@ mat-spinner {
   gap: 12px;
   margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--border-color);
 }
 
 .config-grid.disabled {
@@ -400,7 +400,7 @@ mat-spinner {
   padding: 12px 16px;
   margin: 16px 0;
   border-radius: 8px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
 }
 
 .connection-test-result mat-icon.success,
@@ -415,7 +415,7 @@ mat-spinner {
 
 /* Config Section */
 .config-section {
-  background: #f8f9fa;
+  background: var(--bg-body);
   border-radius: 8px;
   padding: 20px;
   margin-bottom: 20px;
@@ -423,7 +423,7 @@ mat-spinner {
 
 .config-section h4 {
   margin: 0 0 16px 0;
-  color: #333;
+  color: var(--text-primary);
   font-size: 16px;
   font-weight: 600;
 }
@@ -435,7 +435,7 @@ mat-spinner {
 
 .section-hint {
   margin: 0 0 16px 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -455,9 +455,9 @@ mat-spinner {
 .entity-types-grid mat-checkbox {
   display: block;
   padding: 8px 12px;
-  background: white;
+  background: var(--bg-surface);
   border-radius: 4px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 .entity-types-grid mat-checkbox:hover {
@@ -475,8 +475,8 @@ mat-spinner {
 }
 
 .algorithm-card {
-  background: white;
-  border: 2px solid #e0e0e0;
+  background: var(--bg-surface);
+  border: 2px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
   cursor: pointer;
@@ -489,17 +489,17 @@ mat-spinner {
 
 .algorithm-card.selected {
   border-color: #667eea;
-  background: linear-gradient(to right, #f3f4ff, #ffffff);
+  background: linear-gradient(to right, var(--bg-surface-elevated), var(--bg-surface));
 }
 
 .algorithm-card h4 {
   margin: 0 0 8px 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .algorithm-card p {
   margin: 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 

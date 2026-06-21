@@ -16,17 +16,17 @@
   padding-top: 12px;
   gap: 8px;
   cursor: pointer;
-  background: #fafbfc;
-  border-right: 1px solid #e0e0e0;
+  background: var(--bg-body);
+  border-right: 1px solid var(--border-color);
   transition: background 0.15s ease;
 }
 
 .explorer-rail:hover {
-  background: #f0f1f3;
+  background: var(--bg-surface-elevated);
 }
 
 .rail-icon {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 20px;
   width: 20px;
   height: 20px;
@@ -48,8 +48,8 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #fafbfc;
-  border-right: 1px solid #e0e0e0;
+  background: var(--bg-body);
+  border-right: 1px solid var(--border-color);
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -63,8 +63,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 8px 8px 12px;
-  border-bottom: 1px solid #e0e0e0;
-  background: #f5f6f8;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-surface-elevated);
   min-height: 40px;
 }
 
@@ -74,7 +74,7 @@
   gap: 6px;
   font-size: 0.8rem;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -83,7 +83,7 @@
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .collapse-btn {
@@ -117,7 +117,7 @@
 }
 
 .section-header:hover {
-  background: #eef0f2;
+  background: var(--bg-surface-elevated);
 }
 
 .section-header:hover .nav-arrow {
@@ -128,14 +128,14 @@
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .section-title {
   flex: 1;
   font-size: 0.8rem;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -145,15 +145,15 @@
   font-size: 16px;
   width: 16px;
   height: 16px;
-  color: #999;
+  color: var(--text-tertiary);
   opacity: 0;
   transition: opacity 0.15s ease;
 }
 
 .sheet-count {
   font-size: 0.7rem;
-  color: #888;
-  background: #e8e8e8;
+  color: var(--text-tertiary);
+  background: var(--bg-surface-elevated);
   padding: 1px 6px;
   border-radius: 8px;
   font-weight: 500;
@@ -175,14 +175,14 @@
   align-items: center;
   gap: 2px;
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .stat-icon {
   font-size: 14px;
   width: 14px;
   height: 14px;
-  color: #aaa;
+  color: var(--text-tertiary);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════ */
@@ -209,7 +209,7 @@
 }
 
 .sheet-item:hover {
-  background: #eef0f2;
+  background: var(--bg-surface-elevated);
 }
 
 .sheet-item.active {
@@ -249,7 +249,7 @@
 .sheet-name {
   font-size: 0.8rem;
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -257,7 +257,7 @@
 
 .sheet-meta {
   font-size: 0.65rem;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .active-check {
@@ -278,10 +278,10 @@
   gap: 6px;
   padding: 6px 12px;
   margin: 4px 8px 0;
-  border: 1px dashed #ccc;
+  border: 1px dashed var(--border-color);
   border-radius: 6px;
   background: transparent;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -311,7 +311,7 @@
 .create-form-title {
   font-size: 0.8rem;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   margin-bottom: 8px;
 }
 

@@ -17,10 +17,10 @@ package ai.kompile.knowledgegraph.service;
 
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,11 +47,15 @@ public class GraphDataPatchService {
     private static final TypeReference<LinkedHashMap<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final int SAMPLE_LIMIT = 25;
 
-    private GraphNodeRepository nodeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
     private ObjectMapper objectMapper;
 
-    public GraphDataPatchService(GraphNodeRepository nodeRepository, ObjectMapper objectMapper) {
-        this.nodeRepository = nodeRepository;
+    // @Autowired so Spring uses this constructor instead of the no-arg GraalVM one below; otherwise
+    // the deps are null and patchNodeMetadata NPEs. Reads/writes route through KnowledgeGraphService
+    // (the @Primary matrix/vector store), NOT JPA — so the patch affects the live graph.
+    @Autowired
+    public GraphDataPatchService(KnowledgeGraphService knowledgeGraphService, ObjectMapper objectMapper) {
+        this.knowledgeGraphService = knowledgeGraphService;
         this.objectMapper = objectMapper;
     }
 
@@ -86,8 +90,8 @@ public class GraphDataPatchService {
 
         for (NodeLevel nodeType : nodeTypes) {
             List<GraphNode> nodes = request.factSheetId() != null
-                    ? nodeRepository.findByFactSheetIdAndNodeType(request.factSheetId(), nodeType)
-                    : nodeRepository.findByNodeType(nodeType);
+                    ? knowledgeGraphService.getNodesByTypeInFactSheet(request.factSheetId(), nodeType)
+                    : knowledgeGraphService.getNodesByType(nodeType);
 
             for (GraphNode node : nodes) {
                 scannedCount++;
@@ -121,8 +125,9 @@ public class GraphDataPatchService {
                 }
 
                 if (!dryRun) {
-                    node.setMetadataJson(serializeMetadata(outcome.afterMetadata()));
-                    nodeRepository.save(node);
+                    // updateNode replaces the node's metadata map wholesale with the after-map
+                    // (which already has set/removed keys applied) and persists to the live store.
+                    knowledgeGraphService.updateNode(node.getNodeId(), null, null, outcome.afterMetadata());
                     updatedCount++;
                 }
             }
@@ -354,17 +359,6 @@ public class GraphDataPatchService {
 
     private LinkedHashMap<String, Object> deepCopy(Map<String, Object> metadata) {
         return objectMapper.convertValue(metadata, MAP_TYPE);
-    }
-
-    private String serializeMetadata(Map<String, Object> metadata) {
-        if (metadata == null || metadata.isEmpty()) {
-            return null;
-        }
-        try {
-            return objectMapper.writeValueAsString(metadata);
-        } catch (JsonProcessingException e) {
-            throw new IllegalArgumentException("Unable to serialize patched metadata", e);
-        }
     }
 
     private record PatchOutcome(

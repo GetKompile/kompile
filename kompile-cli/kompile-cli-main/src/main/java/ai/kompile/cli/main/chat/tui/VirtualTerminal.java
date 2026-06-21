@@ -67,6 +67,12 @@ public class VirtualTerminal {
 
     private int cursorRow;
     private int cursorCol;
+    // Deferred auto-wrap (DECAWM "last column flag"): after a glyph is written to the final
+    // column the cursor stays put with this flag set, and the wrap happens only when the NEXT
+    // printable glyph arrives. Real terminals do this; eager wrapping shifts a full-width line
+    // (e.g. a "────" rule) a row early and collides it with the following text. Any explicit
+    // cursor move clears the flag.
+    private boolean pendingWrap = false;
 
     // Saved cursor state (DECSC / DECRC — ESC 7 / ESC 8)
     private int savedCursorRow;
@@ -504,6 +510,29 @@ public class VirtualTerminal {
     public int getCursorRow() { return cursorRow; }
     public int getCursorCol() { return cursorCol; }
 
+    /**
+     * Render the current screen as a human-readable framebuffer dump — a bordered grid of the
+     * visible glyphs, one line per terminal row with its index, plus the cursor position. This
+     * lets tests/harnesses "see" the rendered screen headlessly (feed escape sequences in, dump
+     * the result) instead of needing a real terminal screenshot.
+     */
+    public String screenDump() {
+        StringBuilder sb = new StringBuilder();
+        String bar = "─".repeat(cols);
+        sb.append("     ┌").append(bar).append("┐\n");
+        for (int r = 0; r < rows; r++) {
+            sb.append(String.format("%4d │", r));
+            for (int c = 0; c < cols; c++) {
+                char ch = screen[r][c];
+                sb.append(ch < 0x20 ? ' ' : ch);   // render control chars as blanks
+            }
+            sb.append("│\n");
+        }
+        sb.append("     └").append(bar).append("┘\n");
+        sb.append("     cursor row=").append(cursorRow).append(" col=").append(cursorCol).append('\n');
+        return sb.toString();
+    }
+
     /** Whether the terminal is currently in the alternate screen buffer. */
     public boolean isInAlternateScreen() { return inAlternateScreen; }
 
@@ -662,10 +691,13 @@ public class VirtualTerminal {
             linefeed();
         } else if (c == '\r') {
             cursorCol = 0;
+            pendingWrap = false;
         } else if (c == '\t') {
             cursorCol = Math.min(((cursorCol / 8) + 1) * 8, cols - 1);
+            pendingWrap = false;
         } else if (c == '\b') {
             if (cursorCol > 0) cursorCol--;
+            pendingWrap = false;
         } else if (c == '\007') {
             // BEL — ignore
         } else if (c == '\016') {
@@ -719,6 +751,7 @@ public class VirtualTerminal {
             state = STATE_NORMAL;
         } else if (c == 'M') {
             // RI — Reverse Index (reverse linefeed)
+            pendingWrap = false;
             if (cursorRow == scrollTop) {
                 scrollDown();
             } else if (cursorRow > 0) {
@@ -821,6 +854,11 @@ public class VirtualTerminal {
         }
 
         int[] args = parseArgs(p);
+
+        // An explicit cursor move (or scroll-region change) resolves any deferred auto-wrap.
+        if ("HfABCDEFGdr".indexOf(cmd) >= 0) {
+            pendingWrap = false;
+        }
 
         switch (cmd) {
             case 'H': case 'f': // CUP — cursor position
@@ -1085,18 +1123,25 @@ public class VirtualTerminal {
     // ═══════════════════════════════════════════════════════════════════════
 
     private void putChar(char c) {
+        if (pendingWrap) {
+            // Resolve a deferred wrap from the previous glyph before writing this one.
+            pendingWrap = false;
+            cursorCol = 0;
+            linefeed();
+        }
         if (cursorRow >= 0 && cursorRow < rows && cursorCol >= 0 && cursorCol < cols) {
             screen[cursorRow][cursorCol] = c;
             style[cursorRow][cursorCol] = currentStyle;
         }
-        cursorCol++;
-        if (cursorCol >= cols) {
-            cursorCol = 0;
-            linefeed();
+        if (cursorCol >= cols - 1) {
+            pendingWrap = true;   // at the last column — defer the wrap to the next glyph
+        } else {
+            cursorCol++;
         }
     }
 
     private void linefeed() {
+        pendingWrap = false;
         if (cursorRow == scrollBottom) {
             scrollUp();
         } else if (cursorRow < rows - 1) {
@@ -1176,6 +1221,7 @@ public class VirtualTerminal {
         for (int r = 0; r < rows; r++) { Arrays.fill(screen[r], ' '); Arrays.fill(style[r], 0L); }
         cursorRow = 0;
         cursorCol = 0;
+        pendingWrap = false;
     }
 
     /**
@@ -1278,6 +1324,27 @@ public class VirtualTerminal {
                 sb.append(sgrFor(st));
                 active = st;
             }
+            sb.append(screen[row][c]);
+        }
+        if (active != 0L) sb.append("\033[0m");
+        return sb.toString();
+    }
+
+    /**
+     * Styled row content from column 0 to the last non-blank cell, PRESERVING leading
+     * spaces — for a faithful screen mirror (unlike {@link #getStyledRow}, which left-trims
+     * for content extraction). Write the result at column 1 to reproduce the agent's layout.
+     */
+    public String getStyledRowFull(int row) {
+        if (row < 0 || row >= rows) return "";
+        int end = cols;
+        while (end > 0 && screen[row][end - 1] == ' ' && style[row][end - 1] == 0L) end--;
+        if (end == 0) return "";
+        StringBuilder sb = new StringBuilder();
+        long active = 0L;
+        for (int c = 0; c < end; c++) {
+            long st = style[row][c];
+            if (st != active) { sb.append(sgrFor(st)); active = st; }
             sb.append(screen[row][c]);
         }
         if (active != 0L) sb.append("\033[0m");

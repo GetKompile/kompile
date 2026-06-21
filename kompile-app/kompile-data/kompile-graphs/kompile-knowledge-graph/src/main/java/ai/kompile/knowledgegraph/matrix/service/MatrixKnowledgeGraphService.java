@@ -17,11 +17,14 @@ package ai.kompile.knowledgegraph.matrix.service;
 
 import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.knowledgegraph.domain.*;
+import ai.kompile.knowledgegraph.io.model.EdgeMetadata;
 import ai.kompile.knowledgegraph.matrix.algorithms.MatrixGraphAlgorithms;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -92,6 +95,29 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             return EdgeType.valueOf(raw);
         } catch (IllegalArgumentException ex) {
             return EdgeType.USER_DEFINED;
+        }
+    }
+
+    /** Generic/default adjacency keys that carry no ontology relationship meaning (excluded from
+     *  {@code relationType} so they don't generate conformance noise). */
+    private static final Set<String> GENERIC_EDGE_KEYS = Set.of("RELATED_TO");
+
+    /**
+     * The semantic relation type for a stored adjacency edge-type key: the key itself when it is a
+     * meaningful semantic relation (e.g. "WORKS_AT", "FEEDS_INTO"), or {@code null} when it is a
+     * structural {@link EdgeType} constant or a generic default — those have no ontology relationship
+     * meaning. The matrix store keys adjacency by the extractor's relation string, so this recovers it.
+     */
+    private static String semanticRelationType(String edgeTypeKey) {
+        if (edgeTypeKey == null || edgeTypeKey.isBlank()
+                || GENERIC_EDGE_KEYS.contains(edgeTypeKey.toUpperCase(java.util.Locale.ROOT))) {
+            return null;
+        }
+        try {
+            EdgeType.valueOf(edgeTypeKey);
+            return null; // structural enum constant
+        } catch (IllegalArgumentException ex) {
+            return edgeTypeKey; // semantic relation
         }
     }
 
@@ -466,12 +492,11 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             // USER_DEFINED) and a node pair carrying multiple types yields one edge per type —
             // both are required for type-based consumers such as the ContradictionDetector.
             for (String edgeTypeStr : graph.getEdgeTypes()) {
-                EdgeType edgeType = edgeTypeFromString(edgeTypeStr);
                 for (Map.Entry<String, Double> neighbor : graph.getNeighbors(node.getNodeId(), edgeTypeStr)) {
                     String key = node.getNodeId() + "::" + neighbor.getKey() + "::" + edgeTypeStr;
                     if (seen.add(key)) {
-                        result.add(createEdgeObject(node.getNodeId(), neighbor.getKey(),
-                                edgeType, neighbor.getValue(), null));
+                        result.add(buildEdgeWithRelation(graph, node.getNodeId(), neighbor.getKey(),
+                                edgeTypeStr, neighbor.getValue()));
                     }
                 }
             }
@@ -585,6 +610,120 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     }
 
     @Override
+    public GraphEdge createEdge(String sourceNodeId, String targetNodeId, EdgeType edgeType,
+                                 String relationType, Double weight, String description) {
+        // Store the semantic relation as an explicit first-class field on the vector store; keep using
+        // it as the adjacency routing key too (backward-compatible with the extractor's convention,
+        // and required so multiple distinct relations between the same pair stay separate).
+        boolean hasRelation = relationType != null && !relationType.isBlank();
+        String storeKey = hasRelation ? relationType : edgeTypeToString(edgeType);
+        boolean bidirectional = edgeType != EdgeType.HIERARCHICAL;
+        graphStore.addEdge(DEFAULT_GRAPH_ID, sourceNodeId, targetNodeId,
+                weight != null ? weight : 1.0, storeKey, bidirectional, hasRelation ? relationType : null);
+        GraphEdge edge = createEdgeObject(sourceNodeId, targetNodeId, storeKey, weight, description);
+        if (hasRelation) {
+            edge.setRelationType(relationType);
+            edge.setEdgeId(sourceNodeId + "::" + targetNodeId + "::" + relationType);
+        }
+        return edge;
+    }
+
+    /**
+     * [H-2 / M-7] Matrix store override that parses confidence and provenance from
+     * {@code metaJson} and persists them as first-class edge fields in the adjacency store so they
+     * survive vector-store round-trips. This is the path used by {@link ai.kompile.knowledgegraph.io.GraphIOService}
+     * on import to restore edge quality fields that were exported in the portable JSON.
+     */
+    @Override
+    public GraphEdge createEdgeWithMetadata(String sourceNodeId, String targetNodeId,
+                                             EdgeType edgeType, Double weight,
+                                             String label, String description,
+                                             String metaJson, EdgeProvenance provenance,
+                                             Long factSheetId) {
+        boolean hasRelation = label != null && !label.isBlank();
+        String storeKey = hasRelation ? label : edgeTypeToString(edgeType);
+        // Parse the edge metaJson once into a typed view (no stringly-typed key lookups).
+        EdgeMetadata meta = parseEdgeMetadata(metaJson);
+        // [M-3] Honor an explicitly-imported bidirectional flag instead of always deriving it from
+        // the edge type — otherwise a bidirectional edge silently becomes directional after a clone.
+        boolean bidirectional = meta.bidirectional() != null
+                ? meta.bidirectional() : (edgeType != EdgeType.HIERARCHICAL);
+
+        Double confidence = meta.confidence();
+        String desc = description != null ? description : meta.description();
+
+        graphStore.addEdge(DEFAULT_GRAPH_ID, sourceNodeId, targetNodeId,
+                weight != null ? weight : 1.0, storeKey, bidirectional,
+                hasRelation ? label : null, confidence, desc);
+
+        GraphEdge edge = createEdgeObject(sourceNodeId, targetNodeId, storeKey, weight, desc);
+        if (hasRelation) {
+            edge.setRelationType(label);
+            edge.setEdgeId(sourceNodeId + "::" + targetNodeId + "::" + label);
+        }
+        if (confidence != null) {
+            edge.setConfidence(confidence);
+        }
+        edge.setBidirectional(bidirectional);
+        // Surface provenance from metaJson on the returned object
+        if (meta.provenance() != null) {
+            edge.setProvenance(meta.provenance());
+        } else if (provenance != null) {
+            edge.setProvenance(provenance.name());
+        }
+        // [M-1/M-4/M-7] Surface the remaining restored fields on the returned edge so the immediate
+        // caller sees a faithful object. (Full re-read fidelity from the adjacency store for these
+        // is a follow-on — the matrix adjacency record persists weight/relationType/bidirectional/
+        // confidence/description, not yet these extended fields.)
+        if (factSheetId != null) {
+            edge.setFactSheetId(factSheetId);
+        }
+        if (meta.label() != null) {
+            edge.setLabel(meta.label());
+        }
+        if (meta.sharedEntitiesJson() != null) {
+            edge.setSharedEntitiesJson(meta.sharedEntitiesJson());
+        }
+        if (meta.similarityScore() != null) {
+            edge.setSimilarityScore(meta.similarityScore());
+        }
+        // [M-10] Typed provenance classification — prefer the metaJson value, else the
+        // EdgeProvenance param. Kept distinct from the freetext source provenance above.
+        EdgeProvenance pType = parseProvenanceType(meta.provenanceType());
+        if (pType == null) {
+            pType = provenance;
+        }
+        if (pType != null) {
+            edge.setProvenanceType(pType);
+        }
+        return edge;
+    }
+
+    /** Parse an {@link EdgeProvenance} name; null/blank/unknown → null. */
+    private static EdgeProvenance parseProvenanceType(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        try {
+            return EdgeProvenance.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /** Parse the edge {@code metaJson} into a typed {@link EdgeMetadata}; never null. */
+    private EdgeMetadata parseEdgeMetadata(String json) {
+        if (json == null || json.isBlank()) {
+            return EdgeMetadata.EMPTY;
+        }
+        try {
+            return objectMapper.readValue(json, EdgeMetadata.class);
+        } catch (Exception ignored) {
+            return EdgeMetadata.EMPTY;
+        }
+    }
+
+    @Override
     public Optional<GraphEdge> getEdge(String edgeId) {
         // Edge ID format: "source_id::target_id::type"
         String[] parts = edgeId.split("::");
@@ -608,11 +747,25 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     @Override
     public List<GraphEdge> getEdgesForNode(String nodeId) {
-        List<Map.Entry<String, Double>> edges = graphStore.getEdges(DEFAULT_GRAPH_ID, nodeId, null);
-
-        return edges.stream()
-                .map(e -> createEdgeObject(nodeId, e.getKey(), EdgeType.USER_DEFINED, e.getValue(), null))
-                .collect(Collectors.toList());
+        // Iterate per stored edge type so the real EdgeType + semantic relationType are preserved
+        // (rather than flattening every edge to USER_DEFINED).
+        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(DEFAULT_GRAPH_ID);
+        if (graphOpt.isEmpty()) {
+            return Collections.emptyList();
+        }
+        AdjacencyMatrixGraph graph = graphOpt.get();
+        List<GraphEdge> result = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (String edgeTypeStr : graph.getEdgeTypes()) {
+            for (Map.Entry<String, Double> neighbor : graph.getNeighbors(nodeId, edgeTypeStr)) {
+                String key = neighbor.getKey() + "::" + edgeTypeStr;
+                if (seen.add(key)) {
+                    result.add(buildEdgeWithRelation(graph, nodeId, neighbor.getKey(),
+                            edgeTypeStr, neighbor.getValue()));
+                }
+            }
+        }
+        return result;
     }
 
     @Override
@@ -967,6 +1120,39 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                 .build();
     }
 
+    /**
+     * Builds a {@link GraphEdge} from a stored adjacency edge-type key, deriving the structural
+     * {@link EdgeType} and the semantic {@code relationType} (the key itself when semantic, else null).
+     * For semantic edges the edgeId incorporates the relation so distinct relations between the same
+     * pair stay distinct.
+     */
+    private GraphEdge createEdgeObject(String sourceId, String targetId, String edgeTypeKey,
+                                        Double weight, String description) {
+        GraphEdge edge = createEdgeObject(sourceId, targetId, edgeTypeFromString(edgeTypeKey), weight, description);
+        String relationType = semanticRelationType(edgeTypeKey);
+        if (relationType != null) {
+            edge.setRelationType(relationType);
+            edge.setEdgeId(sourceId + "::" + targetId + "::" + relationType);
+        }
+        return edge;
+    }
+
+    /**
+     * Builds a {@link GraphEdge} for a stored adjacency edge, surfacing the relation from the explicit
+     * first-class {@code relationType} field when present, and falling back to the adjacency-key
+     * heuristic for edges persisted before relation types were stored as a field.
+     */
+    private GraphEdge buildEdgeWithRelation(AdjacencyMatrixGraph graph, String sourceId,
+                                            String targetId, String edgeTypeKey, Double weight) {
+        GraphEdge edge = createEdgeObject(sourceId, targetId, edgeTypeKey, weight, null);
+        String explicit = graph.getEdgeRelationType(edgeTypeKey, sourceId, targetId);
+        if (explicit != null && !explicit.isBlank()) {
+            edge.setRelationType(explicit);
+            edge.setEdgeId(sourceId + "::" + targetId + "::" + explicit);
+        }
+        return edge;
+    }
+
     private GraphEdge createEdgeObject(String sourceId, String targetId, EdgeType edgeType,
                                         Double weight, String description) {
         // Populate sourceNode and targetNode so JSON serialization includes
@@ -1021,6 +1207,78 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     private boolean isHierarchicalEdge(String sourceId, String targetId) {
         return graphStore.hasEdge(DEFAULT_GRAPH_ID, sourceId, targetId, "HIERARCHICAL");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NODE EMBEDDINGS (store-agnostic portability — used by GraphEmbeddingSidecar)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Export the live matrix/vector-store embeddings for a fact sheet's nodes. Reads the
+     * per-node vectors held in {@link AdjacencyMatrixGraph} (the text embeddings computed by
+     * {@code MatrixGraphConstructor}); all-zero rows (nodes that were never embedded) are skipped.
+     */
+    @Override
+    public Map<String, INDArray> exportNodeEmbeddings(Long factSheetId) {
+        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(DEFAULT_GRAPH_ID);
+        if (graphOpt.isEmpty()) {
+            return Map.of();
+        }
+        AdjacencyMatrixGraph graph = graphOpt.get();
+        Map<String, INDArray> result = new LinkedHashMap<>();
+        for (MatrixGraphNode n : graphStore.getAllNodes(DEFAULT_GRAPH_ID)) {
+            if (factSheetId != null && !factSheetId.equals(n.getFactSheetId())) {
+                continue;
+            }
+            INDArray emb = graph.getNodeEmbedding(n.getNodeId());
+            // getNodeEmbedding returns a (possibly zero) matrix row; only keep nodes that
+            // actually carry a vector so we don't serialize empty placeholders.
+            if (emb != null && emb.amaxNumber().doubleValue() > 0.0) {
+                result.put(n.getNodeId(), emb.dup());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Reattach node embeddings to the live store in one batched call, which also re-indexes
+     * them into the vector store (warming similarity search after a clone). Embeddings for
+     * nodeIds that are not present in the rehydrated graph are skipped.
+     */
+    @Override
+    public int applyNodeEmbeddings(Map<String, INDArray> embeddingsByNodeId) {
+        if (embeddingsByNodeId == null || embeddingsByNodeId.isEmpty()) {
+            return 0;
+        }
+        List<String> nodeIds = new ArrayList<>();
+        List<INDArray> rows = new ArrayList<>();
+        int dim = -1;
+        for (Map.Entry<String, INDArray> e : embeddingsByNodeId.entrySet()) {
+            INDArray vec = e.getValue();
+            if (vec == null) {
+                continue;
+            }
+            if (graphStore.getNode(DEFAULT_GRAPH_ID, e.getKey()).isEmpty()) {
+                continue; // node must exist in the rehydrated graph to attach an embedding
+            }
+            int len = (int) vec.length();
+            if (dim < 0) {
+                dim = len;
+            } else if (len != dim) {
+                continue; // skip rows whose dimension disagrees with the batch
+            }
+            nodeIds.add(e.getKey());
+            rows.add(vec.reshape(1, len));
+        }
+        if (nodeIds.isEmpty()) {
+            return 0;
+        }
+        INDArray stacked = Nd4j.create(nodeIds.size(), dim);
+        for (int i = 0; i < rows.size(); i++) {
+            stacked.putRow(i, rows.get(i));
+        }
+        graphStore.storeNodeEmbeddings(DEFAULT_GRAPH_ID, nodeIds, stacked);
+        return nodeIds.size();
     }
 
     private long countEdgesByType(String graphId, String edgeType) {

@@ -275,6 +275,10 @@ public class BuildAppController {
      *   <li>{@code buildNative}     — whether to produce a GraalVM native image</li>
      *   <li>{@code skipTests}       — whether to skip tests during the Maven build</li>
      *   <li>{@code appTitle}        — display title for the generated application</li>
+     *   <li>{@code logoUrl}         — header brand logo URL / bundled asset path</li>
+     *   <li>{@code logoAlt}         — brand logo alt text</li>
+     *   <li>{@code showLogo}        — whether to show the brand logo</li>
+     *   <li>{@code faviconUrl}      — browser-tab favicon URL / bundled asset path</li>
      *   <li>{@code backend}         — ND4J backend (e.g. {@code nd4j-cuda-12.9})</li>
      *   <li>{@code javacppPlatform} — target JavaCPP platform classifier</li>
      * </ul>

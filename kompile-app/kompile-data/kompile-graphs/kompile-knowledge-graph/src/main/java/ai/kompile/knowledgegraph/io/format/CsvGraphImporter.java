@@ -38,9 +38,11 @@ public final class CsvGraphImporter {
     private static final Logger log = LoggerFactory.getLogger(CsvGraphImporter.class);
 
     private static final List<String> RESERVED_NODE_COLS = List.of(
-            "externalid", "title", "description", "nodetype");
+            "externalid", "title", "description", "nodetype",
+            "factsheetid", "namedgraphid", "confidence", "occurredat");
     private static final List<String> RESERVED_EDGE_COLS = List.of(
-            "fromexternalid", "toexternalid", "edgetype", "weight", "description");
+            "fromexternalid", "toexternalid", "edgetype", "weight", "description",
+            "confidence", "provenance", "relationtype", "factsheetid");
 
     public PortableGraph parse(byte[] nodesCsv, byte[] edgesCsv) throws IOException {
         List<PortableNode> nodes = new ArrayList<>();
@@ -68,12 +70,34 @@ public final class CsvGraphImporter {
                         meta.put(e.getKey(), e.getValue());
                     }
                 }
+                Long factSheetId = null;
+                String fsRaw = cells.get("factsheetid");
+                if (fsRaw != null && !fsRaw.isBlank()) {
+                    try { factSheetId = Long.parseLong(fsRaw); } catch (NumberFormatException ex) {
+                        log.debug("Invalid node factSheetId '{}' in CSV import, treating as null: {}", fsRaw, ex.getMessage());
+                    }
+                }
+                Double nodeConfidence = null;
+                String ncRaw = cells.get("confidence");
+                if (ncRaw != null && !ncRaw.isBlank()) {
+                    try { nodeConfidence = Double.parseDouble(ncRaw); } catch (NumberFormatException ex) {
+                        log.debug("Invalid node confidence '{}' in CSV import, treating as null: {}", ncRaw, ex.getMessage());
+                    }
+                }
+                String namedGraphId = cells.get("namedgraphid");
+                if (namedGraphId != null && namedGraphId.isBlank()) namedGraphId = null;
+                String occurredAt = cells.get("occurredat");
+                if (occurredAt != null && occurredAt.isBlank()) occurredAt = null;
                 sink.add(new PortableNode(
                         externalId,
                         cells.getOrDefault("title", externalId),
                         cells.get("description"),
                         cells.getOrDefault("nodetype", "ENTITY"),
-                        meta.isEmpty() ? null : meta
+                        meta.isEmpty() ? null : meta,
+                        factSheetId,
+                        namedGraphId,
+                        nodeConfidence,
+                        occurredAt
                 ));
             }
         }
@@ -99,12 +123,42 @@ public final class CsvGraphImporter {
                         log.debug("Invalid edge weight '{}' in CSV import, treating as null: {}", w, e.getMessage());
                     }
                 }
+                Double edgeConfidence = null;
+                String ecRaw = cells.get("confidence");
+                if (ecRaw != null && !ecRaw.isBlank()) {
+                    try { edgeConfidence = Double.parseDouble(ecRaw); } catch (NumberFormatException e) {
+                        log.debug("Invalid edge confidence '{}' in CSV import, treating as null: {}", ecRaw, e.getMessage());
+                    }
+                }
+                String provenance = cells.get("provenance");
+                if (provenance != null && provenance.isBlank()) provenance = null;
+                String relationType = cells.get("relationtype");
+                if (relationType != null && relationType.isBlank()) relationType = null;
+                Long edgeFactSheetId = null;
+                String efsRaw = cells.get("factsheetid");
+                if (efsRaw != null && !efsRaw.isBlank()) {
+                    try { edgeFactSheetId = Long.parseLong(efsRaw); } catch (NumberFormatException e) {
+                        log.debug("Invalid edge factSheetId '{}' in CSV import, treating as null: {}", efsRaw, e.getMessage());
+                    }
+                }
+                String edgeOccurredAt = cells.get("occurredat");
+                if (edgeOccurredAt != null && edgeOccurredAt.isBlank()) edgeOccurredAt = null;
                 sink.add(new PortableEdge(
                         from,
                         to,
                         cells.getOrDefault("edgetype", "USER_DEFINED"),
                         weight,
-                        cells.get("description")
+                        cells.get("description"),
+                        provenance,
+                        edgeConfidence,
+                        edgeOccurredAt,
+                        relationType,
+                        edgeFactSheetId,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null
                 ));
             }
         }

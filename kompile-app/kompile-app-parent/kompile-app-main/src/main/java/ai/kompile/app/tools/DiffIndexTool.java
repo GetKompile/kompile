@@ -86,7 +86,7 @@ public class DiffIndexTool {
         try {
             List<DiffIndexEntry> results = indexService.search(
                     input.agent(), input.projectDirectory(), input.filePath(),
-                    input.contentQuery(), input.source(), input.limit());
+                    input.contentQuery(), input.source(), null, null, input.limit());
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");

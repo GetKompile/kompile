@@ -9,7 +9,8 @@
  */
 package ai.kompile.event.attribution.algorithm.bayesian;
 
-import ai.kompile.event.attribution.domain.InferenceStep;
+import ai.kompile.graph.reasoning.bayesian.*;
+import ai.kompile.graph.reasoning.domain.InferenceStep;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;

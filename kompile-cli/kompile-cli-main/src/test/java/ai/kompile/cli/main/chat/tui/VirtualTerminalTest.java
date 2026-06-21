@@ -84,10 +84,17 @@ class VirtualTerminalTest {
         void wrapAtEndOfLine() {
             String text = "A".repeat(80);
             vt.feed(text);
-            // 80 chars fills the row, cursor wraps to next line
+            // DEFERRED auto-wrap: 80 chars fill the row, but the cursor stays on the last
+            // column of row 0 with the wrap PENDING — it moves to row 1 only when the next
+            // glyph arrives. (Eager wrapping here is what shifts full-width rules a row early
+            // and collides them with the following text — the passthrough "jumble".)
             assertEquals("A".repeat(80), vt.getRow(0));
+            assertEquals(0, vt.getCursorRow());
+            assertEquals(79, vt.getCursorCol());
+            vt.feed("B");
             assertEquals(1, vt.getCursorRow());
-            assertEquals(0, vt.getCursorCol());
+            assertEquals(1, vt.getCursorCol(), "'B' wrote at col 0, cursor then advances to col 1");
+            assertEquals("B", vt.getRow(1).trim());
         }
 
         @Test
@@ -1042,6 +1049,71 @@ class VirtualTerminalTest {
             String fullScreen = statusVt.getFullScreen();
             assertTrue(fullScreen.contains("Content line 1"), "Should have content");
             assertTrue(fullScreen.contains("Status: Ready"), "Should have status bar");
+        }
+    }
+
+    // ========================================================================
+    // Deferred auto-wrap & the rule/text collision behind passthrough "jumbles"
+    // ========================================================================
+
+    @Nested
+    class DeferredAutoWrapAndRuleCollision {
+
+        @Test
+        void fullWidthLineDoesNotShiftNextLine() {
+            VirtualTerminal v = new VirtualTerminal(6, 10);
+            v.feed("ABCDEFGHIJ"); // exactly cols=10 — fills row 0
+            v.feed("\r\n");
+            v.feed("next");
+            assertEquals("ABCDEFGHIJ", v.getRow(0).stripTrailing());
+            assertEquals("next", v.getRow(1).stripTrailing(),
+                    "eager wrap would push 'next' to row 2 and leave row 1 blank");
+            assertEquals("", v.getRow(2).stripTrailing());
+        }
+
+        @Test
+        void writingPastLastColumnWrapsLate() {
+            VirtualTerminal v = new VirtualTerminal(4, 5);
+            v.feed("ABCDE"); // fills row 0; wrap pending, cursor still on row 0
+            assertEquals(0, v.getCursorRow(), "wrap is pending; cursor still on row 0");
+            v.feed("F");
+            assertEquals("F", v.getRow(1).stripTrailing());
+            assertEquals(1, v.getCursorRow());
+        }
+
+        @Test
+        void cursorMoveClearsPendingWrap() {
+            VirtualTerminal v = new VirtualTerminal(4, 5);
+            v.feed("ABCDE");         // pending wrap at last column
+            v.feed("\033[1;1H");     // CUP home must clear it
+            v.feed("X");
+            assertEquals("XBCDE", v.getRow(0).stripTrailing(),
+                    "X overwrites col 0; if the wrap weren't cleared it would land on row 1");
+            assertEquals("", v.getRow(1).stripTrailing());
+        }
+
+        @Test
+        void clearLineRemovesRuleNoShowThrough() {
+            VirtualTerminal v = new VirtualTerminal(4, 12);
+            v.feed("─".repeat(12)); // full-width rule on row 0
+            v.feed("\r");
+            v.feed("\033[2K");           // erase the line
+            v.feed("hi");
+            assertEquals("hi", v.getRow(0).stripTrailing());
+            assertFalse(v.getRow(0).contains("─"), "no rule shows through");
+        }
+
+        @Test
+        void spinnerRedrawOverRuleStaysClean() {
+            // The exact screenshot scenario: a rule row redrawn as a spinner.
+            VirtualTerminal v = new VirtualTerminal(4, 20);
+            v.feed("─".repeat(20));
+            v.feed("\033[1;1H");
+            v.feed("\033[2K");
+            v.feed("✻ Sautéing… (6s)"); // "✻ Sautéing… (6s)"
+            String row = v.getRow(0);
+            assertTrue(row.contains("Saut"), "spinner text present");
+            assertFalse(row.contains("─"), "no rule bleeds through the spinner's spaces");
         }
     }
 }

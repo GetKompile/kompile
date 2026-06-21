@@ -52,7 +52,7 @@ class CsvGraphRoundtripTest {
     void nodesCsv_header() {
         PortableGraph graph = new PortableGraph(List.of(), List.of());
         String csv = exporter.nodesCsv(graph);
-        assertTrue(csv.startsWith("externalId,title,description,nodeType\n"));
+        assertTrue(csv.startsWith("externalId,title,description,nodeType,factSheetId,namedGraphId,confidence,occurredAt\n"));
     }
 
     @Test
@@ -78,7 +78,7 @@ class CsvGraphRoundtripTest {
     void edgesCsv_header() {
         PortableGraph graph = new PortableGraph(List.of(), List.of());
         String csv = exporter.edgesCsv(graph);
-        assertTrue(csv.startsWith("fromExternalId,toExternalId,edgeType,weight,description\n"));
+        assertTrue(csv.startsWith("fromExternalId,toExternalId,edgeType,weight,description,confidence,provenance,relationType,factSheetId\n"));
     }
 
     @Test
@@ -192,13 +192,18 @@ class CsvGraphRoundtripTest {
 
     @Test
     void parse_extraColumnsAsMetadata() throws Exception {
+        // "source" is a free-form extra column → goes to metadata map
+        // "confidence" is a reserved scoping/quality column → goes to node.confidence(), NOT metadata
         String csv = "externalId,title,nodeType,source,confidence\ne1,Apple,ENTITY,wiki,0.95\n";
         PortableGraph graph = importer.parse(csv.getBytes(StandardCharsets.UTF_8), null);
 
         assertEquals(1, graph.nodes().size());
         assertNotNull(graph.nodes().get(0).metadata());
         assertEquals("wiki", graph.nodes().get(0).metadata().get("source"));
-        assertEquals("0.95", graph.nodes().get(0).metadata().get("confidence"));
+        assertNull(graph.nodes().get(0).metadata().get("confidence"),
+                "confidence is a reserved column and must NOT appear in metadata");
+        assertEquals(0.95, graph.nodes().get(0).confidence(), 1e-9,
+                "confidence must be parsed into node.confidence()");
     }
 
     // ─── Importer: skips blank externalId ──────────────────────────────
@@ -273,5 +278,80 @@ class CsvGraphRoundtripTest {
         String csv = "fromExternalId,toExternalId,weight\ne1,e2,0.5\n";
         PortableGraph graph = importer.parse(null, csv.getBytes(StandardCharsets.UTF_8));
         assertEquals("USER_DEFINED", graph.edges().get(0).edgeType());
+    }
+
+    // ─── Roundtrip: scoping/quality fields survive export→import ───────
+
+    @Test
+    void roundtrip_scopingAndQualityFields_preserved() throws Exception {
+        // Node with factSheetId, namedGraphId, confidence, occurredAt
+        PortableNode n = new PortableNode(
+                "n1", "Acme Corp", "A company", "ORG", null,
+                42L, "graph-A", 0.92, "2024-03-15");
+
+        // Edge with confidence, provenance, relationType, factSheetId
+        PortableEdge e = new PortableEdge(
+                "n1", "n2", "OWNS", 0.8, "acquisition",
+                "doc-99", 0.75, "2024-03-15", "HIERARCHICAL",
+                42L, null, null, null, null, null);
+
+        PortableGraph original = new PortableGraph(List.of(n), List.of(e));
+
+        String nodesCsv = exporter.nodesCsv(original);
+        String edgesCsv = exporter.edgesCsv(original);
+
+        // Verify the new columns appear in the exported CSV
+        assertTrue(nodesCsv.contains("factSheetId,namedGraphId,confidence,occurredAt"),
+                "nodes header must include scoping/quality columns");
+        assertTrue(edgesCsv.contains("confidence,provenance,relationType,factSheetId"),
+                "edges header must include scoping/quality columns");
+
+        PortableGraph imported = importer.parse(
+                nodesCsv.getBytes(StandardCharsets.UTF_8),
+                edgesCsv.getBytes(StandardCharsets.UTF_8));
+
+        // Node assertions
+        PortableNode in = imported.nodes().get(0);
+        assertEquals("n1", in.externalId());
+        assertEquals(42L, in.factSheetId(), "factSheetId must survive round-trip");
+        assertEquals("graph-A", in.namedGraphId(), "namedGraphId must survive round-trip");
+        assertEquals(0.92, in.confidence(), 1e-9, "node confidence must survive round-trip");
+        assertEquals("2024-03-15", in.occurredAt(), "occurredAt must survive round-trip");
+
+        // Edge assertions
+        PortableEdge ie = imported.edges().get(0);
+        assertEquals("n1", ie.fromExternalId());
+        assertEquals(0.75, ie.confidence(), 1e-9, "edge confidence must survive round-trip");
+        assertEquals("doc-99", ie.provenance(), "provenance must survive round-trip");
+        assertEquals("HIERARCHICAL", ie.relationType(), "relationType must survive round-trip");
+        assertEquals(42L, ie.factSheetId(), "edge factSheetId must survive round-trip");
+    }
+
+    // ─── Back-compat: old CSV without new columns still imports cleanly ─
+
+    @Test
+    void parse_oldCsvWithoutScopingColumns_importsWithNulls() throws Exception {
+        // Old-format CSV — no factSheetId/namedGraphId/confidence/occurredAt columns
+        String nodesCsv = "externalId,title,description,nodeType\nn1,Apple,Tech co,ORG\n";
+        String edgesCsv = "fromExternalId,toExternalId,edgeType,weight,description\nn1,n2,RELATED,0.5,linked\n";
+
+        PortableGraph graph = importer.parse(
+                nodesCsv.getBytes(StandardCharsets.UTF_8),
+                edgesCsv.getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(1, graph.nodes().size(), "old CSV must still parse nodes");
+        assertEquals(1, graph.edges().size(), "old CSV must still parse edges");
+
+        PortableNode n = graph.nodes().get(0);
+        assertNull(n.factSheetId(), "missing column must parse as null");
+        assertNull(n.namedGraphId(), "missing column must parse as null");
+        assertNull(n.confidence(), "missing column must parse as null");
+        assertNull(n.occurredAt(), "missing column must parse as null");
+
+        PortableEdge e = graph.edges().get(0);
+        assertNull(e.confidence(), "missing edge column must parse as null");
+        assertNull(e.provenance(), "missing edge column must parse as null");
+        assertNull(e.relationType(), "missing edge column must parse as null");
+        assertNull(e.factSheetId(), "missing edge column must parse as null");
     }
 }

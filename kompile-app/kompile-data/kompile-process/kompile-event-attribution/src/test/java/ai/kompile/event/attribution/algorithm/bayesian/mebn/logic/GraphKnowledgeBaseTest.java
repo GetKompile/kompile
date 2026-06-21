@@ -166,8 +166,8 @@ class GraphKnowledgeBaseTest {
 
         when(graphService.getEdgesForNode("s")).thenReturn(List.of(edge));
 
-        assertTrue(kb.edgeExistsOfType("s", "t", EdgeType.HIERARCHICAL));
-        assertFalse(kb.edgeExistsOfType("s", "t", EdgeType.CITATION));
+        assertTrue(kb.edgeExistsOfType("s", "t", EdgeType.HIERARCHICAL.name()));
+        assertFalse(kb.edgeExistsOfType("s", "t", EdgeType.CITATION.name()));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

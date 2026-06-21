@@ -86,6 +86,77 @@ class MatrixKnowledgeGraphServiceTest {
                 "source_ext-1".equals(n.getNodeId()) && "SOURCE".equals(n.getNodeType())));
     }
 
+    // ─── Semantic relationType surfacing ──────────────────────────────────────
+
+    @Test
+    void getEdgesInFactSheetSurfacesSemanticRelationType() {
+        MatrixGraphNode node = MatrixGraphNode.builder().nodeId("n1").factSheetId(1L).build();
+        when(matrixGraph.getAllNodes()).thenReturn(List.of(node));
+        when(matrixGraph.getEdgeTypes()).thenReturn(new LinkedHashSet<>(List.of("WORKS_AT", "RELATED_TO")));
+        when(matrixGraph.getNeighbors("n1", "WORKS_AT")).thenReturn(List.of(Map.entry("n2", 0.9)));
+        when(matrixGraph.getNeighbors("n1", "RELATED_TO")).thenReturn(List.of(Map.entry("n3", 0.5)));
+        when(graphStore.getNode(eq(DEFAULT_GRAPH_ID), anyString())).thenReturn(Optional.empty());
+
+        List<GraphEdge> edges = service.getEdgesInFactSheet(1L);
+
+        GraphEdge worksAt = edges.stream()
+                .filter(e -> "n2".equals(e.getTargetNode().getNodeId())).findFirst().orElseThrow();
+        assertEquals("WORKS_AT", worksAt.getRelationType(),
+                "a semantic adjacency key surfaces as relationType");
+        assertEquals(EdgeType.USER_DEFINED, worksAt.getEdgeType());
+
+        GraphEdge relatedTo = edges.stream()
+                .filter(e -> "n3".equals(e.getTargetNode().getNodeId())).findFirst().orElseThrow();
+        assertNull(relatedTo.getRelationType(),
+                "generic RELATED_TO is not a meaningful semantic relation");
+    }
+
+    @Test
+    void getEdgesInFactSheetUsesExplicitRelationTypeOverKeyHeuristic() {
+        // The edge is keyed by the structural type "USER_DEFINED" but carries an explicit relation
+        // field "WORKS_AT". The key heuristic could never derive "WORKS_AT" from "USER_DEFINED", so a
+        // correct result proves the first-class relationType field is read authoritatively.
+        MatrixGraphNode node = MatrixGraphNode.builder().nodeId("n1").factSheetId(1L).build();
+        when(matrixGraph.getAllNodes()).thenReturn(List.of(node));
+        when(matrixGraph.getEdgeTypes()).thenReturn(new LinkedHashSet<>(List.of("USER_DEFINED")));
+        when(matrixGraph.getNeighbors("n1", "USER_DEFINED")).thenReturn(List.of(Map.entry("n2", 0.9)));
+        when(matrixGraph.getEdgeRelationType("USER_DEFINED", "n1", "n2")).thenReturn("WORKS_AT");
+        when(graphStore.getNode(eq(DEFAULT_GRAPH_ID), anyString())).thenReturn(Optional.empty());
+
+        List<GraphEdge> edges = service.getEdgesInFactSheet(1L);
+
+        GraphEdge edge = edges.stream()
+                .filter(e -> "n2".equals(e.getTargetNode().getNodeId())).findFirst().orElseThrow();
+        assertEquals("WORKS_AT", edge.getRelationType(),
+                "explicit relationType field must win over the adjacency-key heuristic");
+        assertEquals(EdgeType.USER_DEFINED, edge.getEdgeType());
+        assertEquals("n1::n2::WORKS_AT", edge.getEdgeId());
+    }
+
+    @Test
+    void createEdgeWithRelationTypeStoresSemanticKey() {
+        when(graphStore.getNode(eq(DEFAULT_GRAPH_ID), anyString())).thenReturn(Optional.empty());
+
+        GraphEdge edge = service.createEdge("n1", "n2", EdgeType.USER_DEFINED, "WORKS_AT", 0.9, "Alice works at Acme");
+
+        // The semantic relation is stored as the explicit first-class relationType field (and, for
+        // backward-compatible type routing, as the adjacency key too).
+        verify(graphStore).addEdge(eq(DEFAULT_GRAPH_ID), eq("n1"), eq("n2"), eq(0.9), eq("WORKS_AT"), anyBoolean(), eq("WORKS_AT"));
+        assertEquals("WORKS_AT", edge.getRelationType());
+        assertEquals(EdgeType.USER_DEFINED, edge.getEdgeType());
+    }
+
+    @Test
+    void createEdgeWithoutRelationTypeUsesStructuralKey() {
+        when(graphStore.getNode(eq(DEFAULT_GRAPH_ID), anyString())).thenReturn(Optional.empty());
+
+        GraphEdge edge = service.createEdge("n1", "n2", EdgeType.HIERARCHICAL, null, 1.0, null);
+
+        verify(graphStore).addEdge(eq(DEFAULT_GRAPH_ID), eq("n1"), eq("n2"), eq(1.0), eq("HIERARCHICAL"), anyBoolean(), isNull());
+        assertNull(edge.getRelationType());
+        assertEquals(EdgeType.HIERARCHICAL, edge.getEdgeType());
+    }
+
     @Test
     void createOrUpdateSourceNodeUpdatesExistingNode() {
         MatrixGraphNode existingNode = MatrixGraphNode.builder()
@@ -262,12 +333,12 @@ class MatrixKnowledgeGraphServiceTest {
     }
 
     @Test
-    void createUserDefinedEdgesIncludesSemanticLabelAndFactSheetInMatrixType() {
-        // The default KnowledgeGraphService.createEdgeWithMetadata() delegates to createEdge(),
-        // which maps USER_DEFINED → "USER_DEFINED" in the matrix store (no compound key).
-        // The description from createEdgeWithMetadata is passed as the description arg.
+    void createEdgeWithMetadataPreservesSemanticLabelAsMatrixKey() {
+        // createEdgeWithMetadata routes the semantic relation label through the 9-arg addEdge so that
+        // confidence and description are also persisted (M-7).  The matrix store keys the edge by the
+        // semantic relation (recovered as relationType on read) while edgeType stays USER_DEFINED.
         when(graphStore.addEdge(anyString(), anyString(), anyString(),
-                anyDouble(), anyString(), anyBoolean())).thenReturn(true);
+                anyDouble(), anyString(), anyBoolean(), any(), any(), any())).thenReturn(true);
 
         GraphEdge version = service.createEdgeWithMetadata("src", "tgt",
                 EdgeType.USER_DEFINED, 0.9, "VERSION_OF", "Version edge",
@@ -276,11 +347,15 @@ class MatrixKnowledgeGraphServiceTest {
                 EdgeType.USER_DEFINED, 0.7, "REFERENCES_DATA", "Reference edge",
                 null, null, 42L);
 
-        verify(graphStore, times(2)).addEdge(eq(DEFAULT_GRAPH_ID), eq("src"), eq("tgt"),
-                anyDouble(), eq("USER_DEFINED"), eq(true));
+        // [M-7] Verify 9-arg addEdge is called so confidence/description fields are passed through.
+        verify(graphStore).addEdge(eq(DEFAULT_GRAPH_ID), eq("src"), eq("tgt"),
+                anyDouble(), eq("VERSION_OF"), eq(true), eq("VERSION_OF"), isNull(), eq("Version edge"));
+        verify(graphStore).addEdge(eq(DEFAULT_GRAPH_ID), eq("src"), eq("tgt"),
+                anyDouble(), eq("REFERENCES_DATA"), eq(true), eq("REFERENCES_DATA"), isNull(), eq("Reference edge"));
         assertEquals(EdgeType.USER_DEFINED, version.getEdgeType());
-        assertEquals(EdgeType.USER_DEFINED, reference.getEdgeType());
-        assertTrue(version.getEdgeId().contains("USER_DEFINED"));
+        assertEquals("VERSION_OF", version.getRelationType());
+        assertEquals("REFERENCES_DATA", reference.getRelationType());
+        assertTrue(version.getEdgeId().contains("VERSION_OF"));
     }
 
     // ─── edgeExists ──────────────────────────────────────────────────────────

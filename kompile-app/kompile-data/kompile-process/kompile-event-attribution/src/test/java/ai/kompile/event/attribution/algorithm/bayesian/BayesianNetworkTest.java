@@ -9,10 +9,11 @@
  */
 package ai.kompile.event.attribution.algorithm.bayesian;
 
-import ai.kompile.event.attribution.algorithm.bayesian.mebn.*;
-import ai.kompile.event.attribution.algorithm.bayesian.mebn.logic.*;
-import ai.kompile.event.attribution.domain.BayesianInferenceResult;
-import ai.kompile.event.attribution.domain.InferenceStep;
+import ai.kompile.graph.reasoning.bayesian.*;
+import ai.kompile.graph.reasoning.mebn.*;
+import ai.kompile.graph.reasoning.mebn.logic.*;
+import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
+import ai.kompile.graph.reasoning.domain.InferenceStep;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import org.junit.jupiter.api.Test;
 
@@ -626,8 +627,8 @@ class BayesianNetworkTest {
         }
 
         @Override
-        public boolean edgeExistsOfType(String sourceId, String targetId, EdgeType edgeType) {
-            return edgeExists(sourceId, targetId) && edgeType == EdgeType.USER_DEFINED;
+        public boolean edgeExistsOfType(String sourceId, String targetId, String edgeType) {
+            return edgeExists(sourceId, targetId) && "USER_DEFINED".equals(edgeType);
         }
 
         @Override

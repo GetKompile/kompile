@@ -9,7 +9,7 @@
  */
 package ai.kompile.event.attribution.controller;
 
-import ai.kompile.event.attribution.domain.PslInferenceResult;
+import ai.kompile.graph.reasoning.domain.PslInferenceResult;
 import ai.kompile.event.attribution.service.PslReasoningService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;

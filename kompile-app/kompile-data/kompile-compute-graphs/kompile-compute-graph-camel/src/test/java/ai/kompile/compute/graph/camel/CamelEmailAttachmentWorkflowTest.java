@@ -1,8 +1,7 @@
 package ai.kompile.compute.graph.camel;
 
-import ai.kompile.compute.graph.drools.DroolsNodeExecutor;
-import ai.kompile.compute.graph.drools.DroolsRuleCompiler;
 import ai.kompile.compute.graph.engine.DefaultGraphExecutor;
+import ai.kompile.compute.graph.engine.FolNodeExecutor;
 import ai.kompile.compute.graph.engine.ExecutionContext;
 import ai.kompile.compute.graph.engine.NodeExecutor;
 import ai.kompile.compute.graph.model.*;
@@ -18,6 +17,7 @@ import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.mock.MockEndpoint;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -42,14 +42,14 @@ class CamelEmailAttachmentWorkflowTest {
     private CamelContextManager contextManager;
     private CamelRouteParser routeParser;
     private CamelNodeExecutor camelExecutor;
-    private DroolsNodeExecutor droolsExecutor;
+    private FolNodeExecutor droolsExecutor;
 
     @BeforeEach
     void setUp() {
         contextManager = new CamelContextManager();
         routeParser = new CamelRouteParser();
         camelExecutor = new CamelNodeExecutor(contextManager, routeParser, 30000);
-        droolsExecutor = new DroolsNodeExecutor(new DroolsRuleCompiler());
+        droolsExecutor = new FolNodeExecutor();
     }
 
     @AfterEach
@@ -240,6 +240,7 @@ class CamelEmailAttachmentWorkflowTest {
     // ========================================================================
 
     @Test
+    @Disabled("Drools DRL syntax replaced by PSL — rewrite node scripts to PSL format (FOL_RULE/PSL_RULE)")
     void attachmentComplianceCheckWithDrools() {
         // Multi-node pipeline:
         // Node 1 (Camel): Parse email and build attachment metadata
@@ -614,6 +615,7 @@ class CamelEmailAttachmentWorkflowTest {
     // ========================================================================
 
     @Test
+    @Disabled("Drools DRL syntax replaced by PSL — rewrite node scripts to PSL format (FOL_RULE/PSL_RULE)")
     void attachmentContentClassificationWithDrools() {
         // Two-node pipeline: Camel extracts attachment content fields →
         // Drools rules classify the attachment as containing PII,

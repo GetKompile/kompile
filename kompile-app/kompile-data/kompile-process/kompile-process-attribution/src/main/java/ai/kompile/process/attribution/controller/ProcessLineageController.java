@@ -9,7 +9,7 @@
  */
 package ai.kompile.process.attribution.controller;
 
-import ai.kompile.event.attribution.domain.*;
+import ai.kompile.graph.reasoning.domain.*;
 import ai.kompile.event.attribution.service.EventAttributionService;
 import ai.kompile.process.attribution.domain.ProcessRiskAssessment;
 import ai.kompile.process.attribution.domain.StepAttributionResult;

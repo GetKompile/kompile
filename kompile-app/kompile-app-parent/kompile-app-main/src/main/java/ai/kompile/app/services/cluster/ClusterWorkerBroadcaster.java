@@ -16,7 +16,9 @@
 
 package ai.kompile.app.services.cluster;
 
+import ai.kompile.app.services.GpuToCpuMigrationService;
 import ai.kompile.app.services.ResourceGovernor;
+import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -60,6 +62,12 @@ public class ClusterWorkerBroadcaster {
     @Autowired(required = false)
     private ResourceGovernor governor;
 
+    @Autowired
+    private ResourceSchedulerConfigService configService;
+
+    @Autowired(required = false)
+    private GpuToCpuMigrationService migrationService;
+
     private ScheduledExecutorService poller;
 
     @PostConstruct
@@ -99,8 +107,12 @@ public class ClusterWorkerBroadcaster {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("workers", workers);
         payload.put("workerCount", workers.size());
+        payload.put("workerTimeoutSeconds", configService.getConfiguration().getClusterWorkerTimeoutSeconds());
         if (governor != null) {
             payload.put("localSaturated", governor.isLocalSaturated());
+        }
+        if (migrationService != null) {
+            payload.put("migration", migrationService.status());
         }
         payload.put("timestamp", Instant.now().toString());
         return payload;

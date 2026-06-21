@@ -265,4 +265,91 @@ class GraphMLExporterTest {
         String xml = export(PortableGraph.empty());
         assertTrue(xml.contains("edgedefault=\"directed\""));
     }
+
+    // ─── enriched node key declarations (L-3 fix) ─────────────────────
+
+    @Test
+    void output_containsEnrichedNodeKeyDeclarations() {
+        String xml = export(PortableGraph.empty());
+        assertTrue(xml.contains("<key id=\"confidence\" for=\"node\" attr.name=\"confidence\" attr.type=\"double\"/>"),
+                "missing node confidence key");
+        assertTrue(xml.contains("<key id=\"factSheetId\" for=\"node\" attr.name=\"factSheetId\" attr.type=\"string\"/>"),
+                "missing node factSheetId key");
+        assertTrue(xml.contains("<key id=\"namedGraphId\" for=\"node\" attr.name=\"namedGraphId\" attr.type=\"string\"/>"),
+                "missing node namedGraphId key");
+        assertTrue(xml.contains("<key id=\"occurredAt\" for=\"node\" attr.name=\"occurredAt\" attr.type=\"string\"/>"),
+                "missing node occurredAt key");
+    }
+
+    @Test
+    void output_containsEnrichedEdgeKeyDeclarations() {
+        String xml = export(PortableGraph.empty());
+        assertTrue(xml.contains("<key id=\"edgeConfidence\" for=\"edge\" attr.name=\"confidence\" attr.type=\"double\"/>"),
+                "missing edge confidence key");
+        assertTrue(xml.contains("<key id=\"relationType\" for=\"edge\" attr.name=\"relationType\" attr.type=\"string\"/>"),
+                "missing edge relationType key");
+        assertTrue(xml.contains("<key id=\"provenance\" for=\"edge\" attr.name=\"provenance\" attr.type=\"string\"/>"),
+                "missing edge provenance key");
+    }
+
+    @Test
+    void node_confidenceAndFactSheetId_emitted() {
+        PortableNode n = new PortableNode("n1", "Alice", "Engineer", "PERSON", null,
+                42L, "graph-A", 0.95, "2025-01-15");
+        String xml = export(new PortableGraph(List.of(n), List.of()));
+        assertTrue(xml.contains("<data key=\"confidence\">0.95</data>"), "confidence data missing");
+        assertTrue(xml.contains("<data key=\"factSheetId\">42</data>"), "factSheetId data missing");
+        assertTrue(xml.contains("<data key=\"namedGraphId\">graph-A</data>"), "namedGraphId data missing");
+        assertTrue(xml.contains("<data key=\"occurredAt\">2025-01-15</data>"), "occurredAt data missing");
+    }
+
+    @Test
+    void node_nullEnrichedFields_notEmitted() {
+        // Uses the 5-arg backwards-compat constructor — all enriched fields are null
+        PortableNode n = new PortableNode("n1", "Alice", null, "PERSON", null);
+        String xml = export(new PortableGraph(List.of(n), List.of()));
+        assertFalse(xml.contains("key=\"confidence\""), "confidence should be absent when null");
+        assertFalse(xml.contains("key=\"factSheetId\""), "factSheetId should be absent when null");
+        assertFalse(xml.contains("key=\"namedGraphId\""), "namedGraphId should be absent when null");
+        assertFalse(xml.contains("key=\"occurredAt\""), "occurredAt should be absent when null");
+    }
+
+    @Test
+    void edge_confidenceRelationTypeProvenance_emitted() {
+        // Uses the 9-arg constructor (fromExternalId,toExternalId,edgeType,weight,description,provenance,confidence,occurredAt,relationType)
+        PortableEdge e = new PortableEdge("n1", "n2", "KNOWS", 0.8, null,
+                "EXTRACTED", 0.9, "2025-03-01", "SYMMETRIC");
+        String xml = export(new PortableGraph(List.of(), List.of(e)));
+        assertTrue(xml.contains("<data key=\"edgeConfidence\">0.9</data>"), "edge confidence data missing");
+        assertTrue(xml.contains("<data key=\"relationType\">SYMMETRIC</data>"), "relationType data missing");
+        assertTrue(xml.contains("<data key=\"provenance\">EXTRACTED</data>"), "provenance data missing");
+    }
+
+    @Test
+    void edge_nullEnrichedFields_notEmitted() {
+        // Uses the 5-arg backwards-compat constructor — confidence/relationType/provenance all null
+        PortableEdge e = new PortableEdge("n1", "n2", "KNOWS", 0.5, null);
+        String xml = export(new PortableGraph(List.of(), List.of(e)));
+        assertFalse(xml.contains("key=\"edgeConfidence\""), "edge confidence should be absent when null");
+        assertFalse(xml.contains("key=\"relationType\""), "relationType should be absent when null");
+        assertFalse(xml.contains("key=\"provenance\""), "provenance should be absent when null");
+    }
+
+    @Test
+    void namedGraphId_xmlEscaped() {
+        PortableNode n = new PortableNode("n1", "T", null, "X", null,
+                null, "graph<A>&B", null, null);
+        String xml = export(new PortableGraph(List.of(n), List.of()));
+        assertTrue(xml.contains("<data key=\"namedGraphId\">graph&lt;A&gt;&amp;B</data>"),
+                "namedGraphId must be XML-escaped");
+    }
+
+    @Test
+    void provenance_xmlEscaped() {
+        PortableEdge e = new PortableEdge("n1", "n2", "REL", null, null,
+                "source<X>&Y", null, null, null);
+        String xml = export(new PortableGraph(List.of(), List.of(e)));
+        assertTrue(xml.contains("<data key=\"provenance\">source&lt;X&gt;&amp;Y</data>"),
+                "provenance must be XML-escaped");
+    }
 }

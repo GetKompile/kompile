@@ -53,6 +53,11 @@
 
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-process-engine</artifactId>
         </dependency>
 

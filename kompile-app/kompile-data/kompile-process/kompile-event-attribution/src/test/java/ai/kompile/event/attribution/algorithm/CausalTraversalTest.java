@@ -9,8 +9,8 @@
  */
 package ai.kompile.event.attribution.algorithm;
 
-import ai.kompile.event.attribution.domain.AttributionChain;
-import ai.kompile.event.attribution.domain.CausalEdgeType;
+import ai.kompile.graph.reasoning.domain.AttributionChain;
+import ai.kompile.graph.reasoning.domain.CausalEdgeType;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;

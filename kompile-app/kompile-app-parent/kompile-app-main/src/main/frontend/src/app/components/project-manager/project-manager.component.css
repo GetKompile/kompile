@@ -104,8 +104,8 @@
   margin: 0;
   padding: 12px;
   border-radius: 6px;
-  background: #17202a;
-  color: #f1f5f9;
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
   white-space: pre-wrap;
   overflow-x: auto;
   font-size: 0.82rem;

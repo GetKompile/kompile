@@ -68,10 +68,13 @@ class JsonLdGraphExporterTest {
     }
 
     @Test
-    void context_containsSchemaOrg() throws IOException {
+    void context_usesKompileNamespace_notSchemaOrg() throws IOException {
+        // L-5 fix: @context must use https://kompile.ai/kg/ IRIs, consistent with
+        // the N-Triples / Turtle exporters.  schema.org MUST NOT appear.
         byte[] bytes = exporter.toBytes(PortableGraph.empty());
         String json = new String(bytes, StandardCharsets.UTF_8);
-        assertTrue(json.contains("schema.org"));
+        assertTrue(json.contains("https://kompile.ai/kg/"), "kompile IRI base must be in @context: " + json);
+        assertFalse(json.contains("schema.org"), "schema.org must not appear in @context after L-5 fix");
     }
 
     // ─── empty graph ──────────────────────────────────────────────────

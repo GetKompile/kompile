@@ -51,12 +51,14 @@ public class DiffIndexController {
             @RequestParam(required = false) String filePath,
             @RequestParam(required = false) String contentQuery,
             @RequestParam(required = false) String source,
+            @RequestParam(required = false) String since,
+            @RequestParam(required = false) String until,
             @RequestParam(required = false) Integer limit) {
         if (diffIndexService == null) {
             return ResponseEntity.ok(List.of());
         }
         return ResponseEntity.ok(diffIndexService.search(
-                agent, projectDirectory, filePath, contentQuery, source, limit));
+                agent, projectDirectory, filePath, contentQuery, source, since, until, limit));
     }
 
     @GetMapping("/entries/{id}")
@@ -85,6 +87,24 @@ public class DiffIndexController {
             return ResponseEntity.ok(List.of());
         }
         return ResponseEntity.ok(diffIndexService.listAgents());
+    }
+
+    /** Per-session aggregates for browsing the mined diffs across transcript sessions. */
+    @GetMapping("/sessions")
+    public ResponseEntity<List<Map<String, Object>>> listSessions() {
+        if (diffIndexService == null) {
+            return ResponseEntity.ok(List.of());
+        }
+        return ResponseEntity.ok(diffIndexService.listSessions());
+    }
+
+    /** All diff entries belonging to a single transcript session. */
+    @GetMapping("/sessions/{sessionId}")
+    public ResponseEntity<List<DiffIndexEntry>> sessionEntries(@PathVariable String sessionId) {
+        if (diffIndexService == null) {
+            return ResponseEntity.ok(List.of());
+        }
+        return ResponseEntity.ok(diffIndexService.sessionEntries(sessionId));
     }
 
     @GetMapping("/stats")

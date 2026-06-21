@@ -16,8 +16,8 @@
 
 package ai.kompile.process.discovery.mining.causal;
 
-import ai.kompile.event.attribution.algorithm.psl.HlMrfMapInference;
-import ai.kompile.event.attribution.algorithm.psl.PslProgram;
+import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
+import ai.kompile.graph.reasoning.psl.PslProgram;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph.Arc;
 

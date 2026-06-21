@@ -9,7 +9,7 @@
  */
 package ai.kompile.event.attribution.llm;
 
-import ai.kompile.event.attribution.domain.*;
+import ai.kompile.graph.reasoning.domain.*;
 import ai.kompile.core.llm.LanguageModel;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;

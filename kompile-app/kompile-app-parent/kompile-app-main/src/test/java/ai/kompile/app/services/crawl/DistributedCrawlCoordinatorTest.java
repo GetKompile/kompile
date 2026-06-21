@@ -118,7 +118,8 @@ class DistributedCrawlCoordinatorTest {
 
     private WorkerCapabilities crawlWorker(String id, int freeSlots) {
         return new WorkerCapabilities(id, "http://" + id, "worker", List.of("CPU"),
-                0, 0L, 4, List.of("crawl"), freeSlots, 0, 0.1, 0.0, "NOMINAL", "NOMINAL", true, 0L);
+                0, 0L, 4, List.of("crawl"), freeSlots, 0, 0.1, 0.0, "NOMINAL", "NOMINAL", true, 0L,
+                0.3, "NOMINAL", List.of(), false);
     }
 
     @Test

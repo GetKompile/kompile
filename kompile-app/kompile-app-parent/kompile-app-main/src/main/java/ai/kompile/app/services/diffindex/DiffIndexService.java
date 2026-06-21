@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.diffindex;
 
+import ai.kompile.app.services.diffpolicy.PathGlobMatcher;
 import ai.kompile.cli.common.chat.sources.*;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -320,19 +321,54 @@ public class DiffIndexService {
      */
     public List<DiffIndexEntry> search(String agent, String projectDirectory,
                                         String filePath, String contentQuery,
-                                        String source, Integer limit) {
+                                        String source, String since, String until,
+                                        Integer limit) {
         int max = limit != null && limit > 0 ? limit : 50;
+        Long sinceMs = toEpochMillis(since);
+        Long untilMs = toEpochMillis(until);
 
         return entries.values().stream()
                 .filter(e -> agent == null || agent.equals(e.getAgent()))
                 .filter(e -> source == null || source.equals(e.getSource()))
                 .filter(e -> projectDirectory == null || matchesProject(e, projectDirectory))
-                .filter(e -> filePath == null || e.getFilePath().contains(filePath))
+                .filter(e -> filePath == null || PathGlobMatcher.matches(e.getFilePath(), filePath))
                 .filter(e -> contentQuery == null || matchesContent(e, contentQuery))
+                .filter(e -> sinceMs == null || afterOrEqual(e.getTimestamp(), sinceMs))
+                .filter(e -> untilMs == null || beforeOrEqual(e.getTimestamp(), untilMs))
                 .sorted(Comparator.comparing(DiffIndexEntry::getTimestamp).reversed())
                 .limit(max)
                 .collect(Collectors.toList());
     }
+
+    /** Keep entries whose (best-effort parsed) timestamp is >= the bound; unparseable timestamps pass. */
+    private static boolean afterOrEqual(String timestamp, long boundMs) {
+        Long t = toEpochMillis(timestamp);
+        return t == null || t >= boundMs;
+    }
+
+    /** Keep entries whose (best-effort parsed) timestamp is <= the bound; unparseable timestamps pass. */
+    private static boolean beforeOrEqual(String timestamp, long boundMs) {
+        Long t = toEpochMillis(timestamp);
+        return t == null || t <= boundMs;
+    }
+
+    /**
+     * Tolerant timestamp -> epoch-millis parse. Handles ISO instants ({@code ...Z}),
+     * offset date-times, local date-times (e.g. an HTML {@code datetime-local} value
+     * like {@code 2026-06-20T13:14}), and bare dates. Returns null if blank/unparseable
+     * so the caller can treat it as "no bound".
+     */
+    private static Long toEpochMillis(String ts) {
+        if (ts == null || ts.isBlank()) return null;
+        String s = ts.trim();
+        try { return java.time.Instant.parse(s).toEpochMilli(); } catch (Exception ignore) { }
+        try { return java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli(); } catch (Exception ignore) { }
+        try { return java.time.LocalDateTime.parse(s).toInstant(java.time.ZoneOffset.UTC).toEpochMilli(); } catch (Exception ignore) { }
+        try { return java.time.LocalDate.parse(s).atStartOfDay().toInstant(java.time.ZoneOffset.UTC).toEpochMilli(); } catch (Exception ignore) { }
+        return null;
+    }
+
+    // File-path matching (substring + glob) is shared with diff policy via PathGlobMatcher.
 
     /**
      * Get a single entry by ID.
@@ -425,6 +461,82 @@ public class DiffIndexService {
                     return agent;
                 })
                 .sorted(Comparator.<Map<String, Object>, Integer>comparing(m -> (Integer) m.get("entryCount")).reversed())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * List distinct transcript sessions with per-session aggregates, most recently
+     * active first. Lets the UI browse the mined diffs grouped by session, across all
+     * agents.
+     */
+    public List<Map<String, Object>> listSessions() {
+        Map<String, List<DiffIndexEntry>> bySession = entries.values().stream()
+                .filter(e -> e.getSessionId() != null)
+                .collect(Collectors.groupingBy(DiffIndexEntry::getSessionId));
+
+        return bySession.entrySet().stream()
+                .map(entry -> {
+                    List<DiffIndexEntry> es = entry.getValue();
+                    Map<String, Object> session = new LinkedHashMap<>();
+                    session.put("sessionId", entry.getKey());
+
+                    es.stream().map(DiffIndexEntry::getSessionFingerprint)
+                            .filter(Objects::nonNull).findFirst()
+                            .ifPresent(fp -> session.put("sessionFingerprint", fp));
+
+                    session.put("entryCount", es.size());
+
+                    Set<String> agents = es.stream().map(DiffIndexEntry::getAgent)
+                            .filter(Objects::nonNull).collect(Collectors.toSet());
+                    session.put("agents", agents);
+
+                    Set<String> sources = es.stream().map(DiffIndexEntry::getSource)
+                            .filter(Objects::nonNull).collect(Collectors.toSet());
+                    session.put("sources", sources);
+
+                    Set<String> projects = es.stream().map(DiffIndexEntry::getProjectDirectory)
+                            .filter(Objects::nonNull).collect(Collectors.toSet());
+                    session.put("projects", projects);
+
+                    long fileCount = es.stream().map(DiffIndexEntry::getFilePath)
+                            .filter(Objects::nonNull).distinct().count();
+                    session.put("fileCount", fileCount);
+
+                    session.put("totalLinesAdded", es.stream().mapToLong(DiffIndexEntry::getLinesAdded).sum());
+                    session.put("totalLinesRemoved", es.stream().mapToLong(DiffIndexEntry::getLinesRemoved).sum());
+
+                    String first = es.stream().map(DiffIndexEntry::getTimestamp)
+                            .filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null);
+                    String last = es.stream().map(DiffIndexEntry::getTimestamp)
+                            .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
+                    session.put("firstTimestamp", first);
+                    session.put("lastTimestamp", last);
+
+                    // Primary agent = whoever produced the most recent edit in the session.
+                    String primaryAgent = es.stream()
+                            .max(Comparator.comparing(e -> e.getTimestamp() == null ? "" : e.getTimestamp()))
+                            .map(DiffIndexEntry::getAgent).orElse(null);
+                    session.put("agent", primaryAgent);
+
+                    return session;
+                })
+                .sorted(Comparator.comparing((Map<String, Object> m) -> {
+                    Object ts = m.get("lastTimestamp");
+                    return ts == null ? "" : ts.toString();
+                }).reversed())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * All diff entries belonging to a single transcript session, newest first.
+     */
+    public List<DiffIndexEntry> sessionEntries(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return List.of();
+        }
+        return entries.values().stream()
+                .filter(e -> sessionId.equals(e.getSessionId()))
+                .sorted(Comparator.comparing((DiffIndexEntry e) -> e.getTimestamp() == null ? "" : e.getTimestamp()).reversed())
                 .collect(Collectors.toList());
     }
 

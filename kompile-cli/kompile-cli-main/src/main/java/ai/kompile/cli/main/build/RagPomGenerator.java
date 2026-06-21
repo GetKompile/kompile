@@ -237,6 +237,12 @@ public class RagPomGenerator implements Callable<Void> {
     private boolean buildNative = true;
 
     @CommandLine.Option(names = {
+            "--multiBackend" }, negatable = true, description = "Package BOTH the primary backend (--backend, typically nd4j-cuda) AND nd4j-native (CPU) so the app "
+                    + "can route work per-device at runtime via ND4J multi-backend. ND4J auto-activates multi-backend when both are on the classpath; "
+                    + "the CUDA backend self-skips when no GPU/libcudart is present, so this is safe on CPU-only machines. Use --no-multiBackend for a single ${backend} build.", defaultValue = "true")
+    private boolean multiBackend = true;
+
+    @CommandLine.Option(names = {
             "--appTitle" }, description = "Application title displayed in the UI banner", defaultValue = "Kompile RAG Console")
     private String appTitle = "Kompile RAG Console";
 
@@ -969,10 +975,22 @@ public class RagPomGenerator implements Callable<Void> {
      * This allows -Pcpu to swap the entire backend by overriding the property.
      */
     private void addBackendDependencies() {
+        // Primary backend (from --backend, typically nd4j-cuda-12.9), base + platform-classified.
         addDependency(defaultDependencies, "org.eclipse.deeplearning4j", "${backend}",
                 "1.0.0-SNAPSHOT");
         addDependency(defaultDependencies, "org.eclipse.deeplearning4j", "${backend}",
                 "1.0.0-SNAPSHOT", "compile", javacppPlatform, false);
+        // Multi-backend: also ship nd4j-native (CPU) alongside the primary so the app can route
+        // some services to CPU and others to CUDA at runtime. ND4J auto-activates multi-backend
+        // when both backends are on one classpath; the CUDA backend self-skips when no GPU is
+        // present (so this is safe on CPU-only hosts). With -Pcpu the ${backend} property flips to
+        // nd4j-native, making both deps resolve to nd4j-native (deduped) => CPU-only build.
+        if (multiBackend && !"nd4j-native".equals(backend)) {
+            addDependency(defaultDependencies, "org.eclipse.deeplearning4j", "nd4j-native",
+                    "1.0.0-SNAPSHOT");
+            addDependency(defaultDependencies, "org.eclipse.deeplearning4j", "nd4j-native",
+                    "1.0.0-SNAPSHOT", "compile", javacppPlatform, false);
+        }
     }
 
     /**

@@ -323,11 +323,75 @@ export class ToolCallCatalogComponent implements OnInit {
   }
 
   getSourceColor(source: string): string {
-    switch (source) {
+    switch ((source || '').toLowerCase()) {
       case 'passthrough': return '#4caf50';
       case 'emulated-passthrough': return '#2196f3';
-      case 'mcp': return '#ff9800';
+      case 'agent-chat': return '#7c3aed';
+      case 'mcp':
+      case 'mcp-stdio':
+      case 'mcp-daemon':
+      case 'mcp_server': return '#ff9800';
+      case 'transcript': return '#607d8b';
       default: return '#9e9e9e';
+    }
+  }
+
+  /** Friendly, human-readable label for a tool-call source. */
+  getSourceLabel(source: string): string {
+    switch ((source || '').toLowerCase()) {
+      case 'passthrough': return 'Passthrough';
+      case 'emulated-passthrough': return 'Passthrough (TUI)';
+      case 'agent-chat': return 'Managed Agent';
+      case 'mcp':
+      case 'mcp-stdio': return 'MCP (stdio)';
+      case 'mcp-daemon': return 'MCP (daemon)';
+      case 'mcp_server': return 'MCP Server';
+      case 'transcript': return 'Transcript';
+      default: return source || 'unknown';
+    }
+  }
+
+  /** Icon glyph for a tool-call source. */
+  getSourceIcon(source: string): string {
+    switch ((source || '').toLowerCase()) {
+      case 'passthrough': return 'sync_alt';
+      case 'emulated-passthrough': return 'terminal';
+      case 'agent-chat': return 'smart_toy';
+      case 'mcp':
+      case 'mcp-stdio':
+      case 'mcp-daemon':
+      case 'mcp_server': return 'dns';
+      case 'transcript': return 'history_edu';
+      default: return 'build';
+    }
+  }
+
+  /**
+   * Coarse session classification surfaced as a badge: distinguishes
+   * pass-through agent sessions from kompile-managed sessions and the MCP
+   * server's own tool layer.
+   */
+  getSessionKind(source: string): string {
+    switch ((source || '').toLowerCase()) {
+      case 'passthrough':
+      case 'emulated-passthrough': return 'Passthrough';
+      case 'agent-chat': return 'Kompile-Managed';
+      case 'mcp':
+      case 'mcp-stdio':
+      case 'mcp-daemon':
+      case 'mcp_server': return 'MCP Server';
+      case 'transcript': return 'Transcript';
+      default: return 'Other';
+    }
+  }
+
+  getSessionKindIcon(source: string): string {
+    switch (this.getSessionKind(source)) {
+      case 'Passthrough': return 'sync_alt';
+      case 'Kompile-Managed': return 'smart_toy';
+      case 'MCP Server': return 'dns';
+      case 'Transcript': return 'history_edu';
+      default: return 'help_outline';
     }
   }
 

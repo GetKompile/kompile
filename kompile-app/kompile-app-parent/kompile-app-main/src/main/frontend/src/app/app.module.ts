@@ -49,11 +49,11 @@ import { SubprocessLogsComponent } from './components/subprocess-logs/subprocess
 import { SettingsComponent } from './components/settings/settings.component';
 import { DeveloperHubComponent } from './components/developer-hub/developer-hub.component';
 import { ToolsHubComponent } from './components/tools-hub/tools-hub.component';
+import { ProjectStorePanelComponent } from './components/project-store-panel/project-store-panel.component';
 import { PipelineSettingsPanelComponent } from './components/document-manager/pipeline-settings-panel/pipeline-settings-panel.component';
 import { ProcessingSettingsComponent } from './components/processing-settings/processing-settings.component';
 import { GraphVisualizerComponent } from './components/graph-visualizer/graph-visualizer.component';
 import { EntityBrowserComponent } from './components/entity-browser/entity-browser.component';
-import { KnowledgeGraphHubComponent } from './components/knowledge-graph-hub/knowledge-graph-hub.component';
 import { GraphHierarchyComponent } from './components/graph-hierarchy/graph-hierarchy.component';
 import { ConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { ConnectionsManagerComponent } from './components/connections-manager/connections-manager.component';
@@ -63,11 +63,10 @@ import { StagingConfigComponent } from './components/staging-config/staging-conf
 import { ArchiveManagerComponent } from './components/archive-manager/archive-manager.component';
 import { ArchiveAssemblyComponent } from './components/archive-assembly/archive-assembly.component';
 import { TableRendererComponent } from './components/table-renderer/table-renderer.component';
-import { EventObservationDashboardComponent } from './components/event-observation/event-observation-dashboard.component';
-import { CausalAttributionPanelComponent } from './components/event-observation/causal-attribution-panel.component';
 import { IndexStatusBannerComponent } from './components/index-status-banner/index-status-banner.component';
 import { BackupManagerComponent } from './components/backup-manager/backup-manager.component';
 import { ModelStatusIndicatorComponent } from './components/model-status-indicator/model-status-indicator.component';
+import { BrandingComponent } from './components/branding/branding.component';
 import { SystemDiagnosticsComponent } from './components/system-diagnostics/system-diagnostics.component';
 import { Nd4jEnvironmentComponent } from './components/nd4j-environment/nd4j-environment.component';
 import { OpTimingComponent } from './components/op-timing/op-timing.component';
@@ -117,6 +116,7 @@ import { SameDiffLLMModelsComponent } from './components/samediff-llm-models/sam
 import { VlmManagementComponent } from './components/developer-hub/vlm-management/vlm-management.component';
 import { GpuManagementComponent } from './components/developer-hub/gpu-management/gpu-management.component';
 import { SchedulerDashboardComponent } from './components/developer-hub/scheduler-dashboard/scheduler-dashboard.component';
+import { ClusterWorkersComponent } from './components/developer-hub/cluster-workers/cluster-workers.component';
 import { ModelStagingComponent } from './components/developer-hub/model-staging/model-staging.component';
 import { IngestHistoryComponent } from './components/developer-hub/ingest-history/ingest-history.component';
 import { SkillsManagerComponent } from './components/skills-manager/skills-manager.component';
@@ -142,6 +142,7 @@ import { CrawlerManagerComponent } from './components/crawler-manager/crawler-ma
 import { CodeProjectsHubComponent } from './components/code-projects-hub/code-projects-hub.component';
 import { CodeGraphBuilderComponent } from './components/code-graph-builder/code-graph-builder.component';
 import { DiffIndexBrowserComponent } from './components/diff-index-browser/diff-index-browser.component';
+import { CodeDiffBrowserComponent } from './components/code-diff-browser/code-diff-browser.component';
 import { ProjectManagerComponent } from './components/project-manager/project-manager.component';
 import { MarkdownRendererComponent } from './components/markdown-renderer/markdown-renderer.component';
 import { ProjectExplorerComponent } from './components/project-explorer/project-explorer.component';
@@ -149,6 +150,7 @@ import { TrainingDashboardComponent } from './components/developer-hub/training-
 import { TrainingLaunchComponent } from './components/developer-hub/training-launch/training-launch.component';
 import { AgentModelConfigComponent } from './components/agent-model-config/agent-model-config.component';
 import { GraphsHubComponent } from './components/graphs-hub/graphs-hub.component';
+import { EnforcerHubComponent } from './components/enforcer-hub/enforcer-hub.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -234,6 +236,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     VlmManagementComponent,
     GpuManagementComponent,
     SchedulerDashboardComponent,
+    ClusterWorkersComponent,
     ModelStagingComponent,
     IngestHistoryComponent,
     SkillsManagerComponent,
@@ -254,8 +257,6 @@ import { MatNativeDateModule } from '@angular/material/core';
   imports: [
     // Standalone, reused across module-declared and standalone components.
     TableRendererComponent,
-    EventObservationDashboardComponent,
-    CausalAttributionPanelComponent,
     BrowserModule,
     HttpClientModule,
     FormsModule,
@@ -298,6 +299,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     MatDatepickerModule,
     MatNativeDateModule,
     // Standalone components
+    ProjectStorePanelComponent,
     BatchSizeConfigComponent,
     SubprocessConfigComponent,
     DeviceRoutingComponent,
@@ -306,7 +308,6 @@ import { MatNativeDateModule } from '@angular/material/core';
     PipelineSettingsPanelComponent,
     GraphVisualizerComponent,
     EntityBrowserComponent,
-    KnowledgeGraphHubComponent,
     GraphHierarchyComponent,
     ConfirmDialogComponent,
     ConnectionsManagerComponent,
@@ -317,6 +318,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     IndexStatusBannerComponent,
     BackupManagerComponent,
     ModelStatusIndicatorComponent,
+    BrandingComponent,
     SystemDiagnosticsComponent,
     Nd4jEnvironmentComponent,
     OpTimingComponent,
@@ -353,13 +355,15 @@ import { MatNativeDateModule } from '@angular/material/core';
     CodeProjectsHubComponent,
     CodeGraphBuilderComponent,
     DiffIndexBrowserComponent,
+    CodeDiffBrowserComponent,
     MarkdownRendererComponent,
     ProjectExplorerComponent,
     TrainingDashboardComponent,
     TrainingLaunchComponent,
     ToolCallCatalogComponent,
     AgentModelConfigComponent,
-    GraphsHubComponent
+    GraphsHubComponent,
+    EnforcerHubComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

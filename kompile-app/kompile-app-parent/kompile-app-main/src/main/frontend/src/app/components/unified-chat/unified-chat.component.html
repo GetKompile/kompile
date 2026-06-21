@@ -887,11 +887,17 @@
             <label>Search Type</label>
             <select [(ngModel)]="graphRagSearchType" [ngModelOptions]="{standalone: true}" class="select-input">
               <option value="LOCAL">Local (Entity-focused)</option>
-              <option value="GLOBAL">Global (Full graph)</option>
+              <option value="HYBRID">Hybrid (Personalized PageRank)</option>
+              <option value="GLOBAL">Global (Communities)</option>
+              <option value="CAUSAL">Causal (Why / root-cause)</option>
+              <option value="PROBABILISTIC">Probabilistic (MEBN / Bayesian)</option>
             </select>
           </div>
-          <p class="setting-hint" *ngIf="graphRagSearchType === 'LOCAL'">Searches entities related to your query</p>
-          <p class="setting-hint" *ngIf="graphRagSearchType === 'GLOBAL'">Uses PageRank to find important entities across the entire graph</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'LOCAL'">Searches entities related to your query, expands one hop</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'HYBRID'">Embedding-seeded Personalized PageRank: multi-hop, blends vector similarity, graph structure, KG embeddings and connecting paths</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'GLOBAL'">Community detection + LLM community reports for whole-graph sensemaking</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'CAUSAL'">Causal attribution: traces causal chains and root causes ("why did X happen?")</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'PROBABILISTIC'">Builds a situation-specific MEBN/Bayesian network and ranks the most likely related factors</p>
 
           <div class="setting-row">
             <label>Max Graph Results</label>

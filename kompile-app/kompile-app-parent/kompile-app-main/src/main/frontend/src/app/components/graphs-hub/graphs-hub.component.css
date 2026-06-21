@@ -33,7 +33,7 @@
   padding: 8px 14px;
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-surface);
   cursor: pointer;
   font: inherit;
   color: rgba(0, 0, 0, 0.75);
@@ -41,7 +41,7 @@
 }
 
 .sub-tab:hover {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
 }
 
 .sub-tab.active {
@@ -59,4 +59,12 @@
 
 .sub-tab-content {
   min-height: 200px;
+}
+
+/* Interactive explorer views (visualizer / entity browser / hierarchy) need a definite
+   viewport so the graph canvas (height: 100%) renders and long lists scroll internally. */
+.graph-explore-panel {
+  height: calc(100vh - 320px);
+  min-height: 480px;
+  overflow: auto;
 }

@@ -64,7 +64,8 @@ import java.util.Properties;
         "ai.kompile.staging.repository",
         "ai.kompile.testmilestone.repository",
         "ai.kompile.codeindexer.domain",
-        "ai.kompile.event.observation.repository"
+        "ai.kompile.event.observation.repository",
+        "ai.kompile.graphchangetracking.repository"
     },
     entityManagerFactoryRef = "entityManagerFactory",
     transactionManagerRef = "transactionManager"
@@ -88,14 +89,21 @@ import java.util.Properties;
     "ai.kompile.staging.domain",
     "ai.kompile.testmilestone.domain",
     "ai.kompile.codeindexer.domain",
-    "ai.kompile.event.observation.domain"
+    "ai.kompile.event.observation.domain",
+    "ai.kompile.graphchangetracking.domain"
 })
 public class PrimaryDataSourceConfig {
 
     /** Constant for the transaction manager bean name shared by all ingest-related services. */
     public static final String INGEST_EVENT_TRANSACTION_MANAGER = "ingestEventTransactionManager";
 
-    @Value("${spring.datasource.url:jdbc:h2:file:./data/kompile-db;DB_CLOSE_ON_EXIT=FALSE;AUTO_RECONNECT=TRUE}")
+    // DB_CLOSE_DELAY=-1: keep the file-backed H2 database open for the JVM lifetime.
+    // Without it, H2 closes the ENTIRE database when HikariCP releases its last physical
+    // connection (e.g. a transient pool drop-to-zero while the JVM is under load), after
+    // which every query fails permanently with "The database has been closed [90098]".
+    // Pairs with DB_CLOSE_ON_EXIT=FALSE (Spring/Hikari owns shutdown); AUTO_RECONNECT
+    // only re-dials a connection and cannot revive an already-closed file store.
+    @Value("${spring.datasource.url:jdbc:h2:file:./data/kompile-db;DB_CLOSE_ON_EXIT=FALSE;DB_CLOSE_DELAY=-1;AUTO_RECONNECT=TRUE}")
     private String jdbcUrl;
 
     @Value("${spring.datasource.driverClassName:org.h2.Driver}")
@@ -140,7 +148,8 @@ public class PrimaryDataSourceConfig {
         "ai.kompile.staging.domain",
         "ai.kompile.testmilestone.domain",
         "ai.kompile.codeindexer.domain",
-        "ai.kompile.event.observation.domain"
+        "ai.kompile.event.observation.domain",
+        "ai.kompile.graphchangetracking.domain"
     };
 
     @Bean

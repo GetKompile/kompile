@@ -236,19 +236,19 @@ class KnowledgeGraphControllerTest {
     void createNode_delegatesToGraphService() {
         GraphNode created = makeNode(NODE_ID, NodeLevel.ENTITY);
         when(graphService.createNode(eq(NodeLevel.ENTITY), anyString(), anyString(),
-                anyString(), any())).thenReturn(created);
+                anyString(), any(), any())).thenReturn(created);
 
         KnowledgeGraphController.CreateNodeRequest req =
                 new KnowledgeGraphController.CreateNodeRequest(
                         "entity", "ext-1", "My Entity", "a description",
-                        Map.of("k", "v"));
+                        Map.of("k", "v"), 1L);
 
         ResponseEntity<GraphNode> resp = controller.createNode(req);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         assertEquals(NODE_ID, resp.getBody().getNodeId());
         verify(graphService).createNode(NodeLevel.ENTITY, "ext-1", "My Entity",
-                "a description", Map.of("k", "v"));
+                "a description", Map.of("k", "v"), 1L);
     }
 
     // --- updateNode ---

@@ -262,7 +262,7 @@ mat-expansion-panel {
 }
 
 .subsystem-card {
-  background-color: #fafafa;
+  background-color: var(--bg-body);
 }
 
 .subsystem-card mat-card-title {
@@ -322,7 +322,7 @@ mat-expansion-panel {
 /* Help Card */
 .help-card {
   margin-top: 24px;
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
 }
 
 .help-card mat-card-title {

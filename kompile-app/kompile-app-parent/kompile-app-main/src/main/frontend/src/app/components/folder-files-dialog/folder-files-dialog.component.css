@@ -388,7 +388,7 @@ mat-dialog-actions {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: white;
+  background: var(--bg-surface);
   border: 1px solid var(--border-color, #e0e0e0);
   border-radius: 4px;
   margin-bottom: 12px;

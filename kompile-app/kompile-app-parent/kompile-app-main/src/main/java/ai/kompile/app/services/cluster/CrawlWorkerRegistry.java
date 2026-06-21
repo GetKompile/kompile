@@ -98,6 +98,13 @@ public class CrawlWorkerRegistry {
                         .thenComparing(Comparator.comparingDouble(WorkerCapabilities::cpuLoad).reversed()));
     }
 
+    /** A specific live worker by id (used by lifecycle proxy endpoints). */
+    public Optional<WorkerCapabilities> find(String workerId, long nowEpochMs) {
+        evictStale(nowEpochMs);
+        Registration r = workers.get(workerId);
+        return r == null ? Optional.empty() : Optional.of(r.capabilities());
+    }
+
     /** Count of live workers. */
     public int size(long nowEpochMs) {
         evictStale(nowEpochMs);

@@ -16,7 +16,7 @@
 
 package ai.kompile.process.discovery.mining.causal;
 
-import ai.kompile.event.attribution.domain.CausalEdgeType;
+import ai.kompile.graph.reasoning.domain.CausalEdgeType;
 import ai.kompile.process.discovery.mining.dfg.DfgBuilder;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph.Arc;

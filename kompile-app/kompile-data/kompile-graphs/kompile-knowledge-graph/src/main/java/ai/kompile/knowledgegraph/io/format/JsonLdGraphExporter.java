@@ -63,10 +63,25 @@ public final class JsonLdGraphExporter {
             if (e.description() != null) ref.put("description", e.description());
             existing.add(ref);
         }
+        // @context maps JSON-LD term names to the SAME IRIs minted by the N-Triples / Turtle
+        // exporters (kompile namespace under https://kompile.ai/kg/).  This makes all three
+        // RDF-family formats semantically consistent.
+        //   title       → rdfs:label   (same predicate used by NTriplesGraphExporter)
+        //   description → rdfs:comment (same predicate used by NTriplesGraphExporter)
+        //   weight      → https://kompile.ai/kg/weight      (L-5 / reification parity)
+        //   confidence  → https://kompile.ai/kg/confidence  (L-5 / reification parity)
+        Map<String, Object> ctx = new LinkedHashMap<>();
+        ctx.put("kg",          "https://kompile.ai/kg/");
+        ctx.put("rdf",         "http://www.w3.org/1999/02/22-rdf-syntax-ns#");
+        ctx.put("rdfs",        "http://www.w3.org/2000/01/rdf-schema#");
+        ctx.put("xsd",         "http://www.w3.org/2001/XMLSchema#");
+        ctx.put("title",       "http://www.w3.org/2000/01/rdf-schema#label");
+        ctx.put("description", "http://www.w3.org/2000/01/rdf-schema#comment");
+        ctx.put("weight",      "https://kompile.ai/kg/weight");
+        ctx.put("confidence",  "https://kompile.ai/kg/confidence");
+
         Map<String, Object> root = new LinkedHashMap<>();
-        root.put("@context", Map.of(
-                "title", "http://schema.org/name",
-                "description", "http://schema.org/description"));
+        root.put("@context", ctx);
         root.put("@graph", new ArrayList<>(nodeIndex.values()));
         return mapper.writeValueAsBytes(root);
     }

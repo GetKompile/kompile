@@ -48,6 +48,10 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-graph-algorithms</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

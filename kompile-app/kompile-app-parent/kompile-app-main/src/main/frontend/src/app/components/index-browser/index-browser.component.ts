@@ -115,6 +115,7 @@ const TAB_ENTITIES = 3;
 const TAB_TABLES = 4;
 const TAB_GRAPH = 5;
 const TAB_CROSS_INDEX = 6;
+const TAB_DIFFS = 7;
 
 @Component({
   selector: 'app-index-browser',

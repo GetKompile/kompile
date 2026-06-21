@@ -42,7 +42,7 @@
 }
 
 .subtitle {
-  color: #666;
+  color: var(--text-secondary);
   margin: 0;
   font-size: 14px;
 }
@@ -55,7 +55,7 @@
   justify-content: center;
   padding: 64px 24px;
   text-align: center;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Status Card */
@@ -82,7 +82,7 @@
 
 .status-item .label {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -94,12 +94,12 @@
 .status-description {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 .status-description .label {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -110,7 +110,7 @@
 
 /* Tabs */
 mat-tab-group {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
@@ -146,7 +146,7 @@ mat-tab-group {
 }
 
 .archive-item {
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .archive-item.loaded {
@@ -155,7 +155,7 @@ mat-tab-group {
 
 .archive-meta {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* No Archives */
@@ -165,21 +165,21 @@ mat-tab-group {
   align-items: center;
   padding: 48px 24px;
   text-align: center;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .no-archives mat-icon, .no-models mat-icon {
   font-size: 48px;
   width: 48px;
   height: 48px;
-  color: #ccc;
+  color: var(--border-color);
   margin-bottom: 16px;
 }
 
 .no-archives p, .no-models p {
   margin: 0 0 8px 0;
   font-size: 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .no-archives span {
@@ -212,7 +212,7 @@ mat-tab-group {
 
 .model-description {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   margin: 8px 0 0 0;
 }
 

@@ -113,6 +113,16 @@ public interface AgentTuiDecoder {
     }
 
     /**
+     * True if this agent has its own backgrounding for long-running work (e.g. Claude
+     * Code backgrounding a running command). When true, Kompile forwards the
+     * backgrounding key to the agent instead of running its own backgrounding — the
+     * agent owns that UX. When false, Kompile's backgrounding applies.
+     */
+    default boolean supportsNativeBackgrounding() {
+        return false;
+    }
+
+    /**
      * Extract the current text intended for live rendering. The default is the
      * final content extractor; decoders can override if their live screen needs
      * different filtering from their final transcript.

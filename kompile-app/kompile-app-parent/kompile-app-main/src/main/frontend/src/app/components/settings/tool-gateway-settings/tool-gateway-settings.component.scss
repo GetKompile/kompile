@@ -253,31 +253,31 @@ mat-expansion-panel {
 .scores-panel { margin-top: 16px; }
 .scores-summary {
   display: flex; gap: 24px; margin-bottom: 16px; padding: 12px;
-  background: #f5f5f5; border-radius: 6px;
+  background: var(--bg-surface-elevated); border-radius: 6px;
 }
 .score-avg {
   display: flex; gap: 6px; align-items: center;
 }
-.score-label { font-weight: 600; color: #555; font-size: 13px; }
+.score-label { font-weight: 600; color: var(--text-secondary); font-size: 13px; }
 .score-value { font-size: 16px; font-weight: 600; color: #1565c0; }
 .score-entry {
   padding: 8px 12px; margin-bottom: 8px;
-  border: 1px solid #e0e0e0; border-radius: 6px; background: #fafafa;
+  border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-body);
 }
 .score-header {
   display: flex; align-items: center; gap: 8px;
 }
-.score-tool { font-weight: 600; font-size: 13px; color: #333; flex: 1; }
+.score-tool { font-weight: 600; font-size: 13px; color: var(--text-primary); flex: 1; }
 .score-badge {
   padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
   &.correctness { background: #e3f2fd; color: #1565c0; }
   &.completeness { background: #e8f5e9; color: #2e7d32; }
 }
 .score-reasoning {
-  margin-top: 4px; font-size: 12px; color: #666; font-style: italic;
+  margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-style: italic;
 }
 .empty-scores {
-  text-align: center; padding: 16px; color: #888; font-size: 13px;
+  text-align: center; padding: 16px; color: var(--text-tertiary); font-size: 13px;
 }
 .refresh-scores { margin-top: 8px; }
 

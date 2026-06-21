@@ -9,6 +9,7 @@
  */
 package ai.kompile.event.attribution.algorithm.psl;
 
+import ai.kompile.graph.reasoning.psl.*;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

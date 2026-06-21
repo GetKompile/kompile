@@ -39,8 +39,8 @@
   border-radius: 10px;
   font-size: 0.75em;
   font-weight: 600;
-  background: #eee;
-  color: #555;
+  background: var(--bg-surface-elevated);
+  color: var(--text-secondary);
 }
 
 .status-chip.active {
@@ -54,8 +54,8 @@
 }
 
 .status-chip.cancelled {
-  background: #fafafa;
-  color: #757575;
+  background: var(--bg-body);
+  color: var(--text-tertiary);
 }
 
 .status-chip.error {
@@ -64,7 +64,7 @@
 }
 
 .empty-hint {
-  color: #888;
+  color: var(--text-tertiary);
   font-style: italic;
   margin: 12px 0 0;
 }
@@ -84,13 +84,13 @@
   gap: 12px;
   align-items: center;
   padding: 6px 8px;
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 6px;
 }
 
 .event-time {
   font-family: monospace;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .event-title {
@@ -103,11 +103,11 @@
 }
 
 .event-session {
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .event-message {
-  color: #333;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

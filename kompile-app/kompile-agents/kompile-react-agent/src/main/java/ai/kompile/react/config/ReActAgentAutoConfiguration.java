@@ -29,6 +29,7 @@ import ai.kompile.react.eval.impl.InMemoryEvalTracker;
 import ai.kompile.react.hook.AgentHook;
 import ai.kompile.react.hook.EvalHook;
 import ai.kompile.react.hook.FilterChainHook;
+import ai.kompile.react.hook.ToolCallLoggingHook;
 import ai.kompile.react.service.ReActAgentService;
 import ai.kompile.react.service.impl.DefaultReActAgentService;
 import ai.kompile.react.service.impl.ReActWorkflowAdapter;
@@ -175,6 +176,13 @@ public class ReActAgentAutoConfiguration {
     public FilterChainHook filterChainHook(FilterChainService filterChainService) {
         log.info("Configuring FilterChainHook");
         return new FilterChainHook(filterChainService);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "kompile.react", name = "tool-call-logging-enabled", havingValue = "true", matchIfMissing = true)
+    public ToolCallLoggingHook toolCallLoggingHook() {
+        log.info("Configuring ToolCallLoggingHook (ReAct tool calls -> shared tool-call index / MCP Hub catalog)");
+        return new ToolCallLoggingHook();
     }
 
     // ==================== Eval Configuration ====================

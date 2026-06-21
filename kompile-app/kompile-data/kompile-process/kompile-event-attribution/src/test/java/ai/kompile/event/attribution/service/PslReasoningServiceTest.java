@@ -9,7 +9,7 @@
  */
 package ai.kompile.event.attribution.service;
 
-import ai.kompile.event.attribution.domain.PslInferenceResult;
+import ai.kompile.graph.reasoning.domain.PslInferenceResult;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;

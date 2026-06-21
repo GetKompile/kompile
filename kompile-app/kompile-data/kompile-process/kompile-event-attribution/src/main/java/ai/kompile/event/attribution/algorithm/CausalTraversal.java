@@ -9,7 +9,7 @@
  */
 package ai.kompile.event.attribution.algorithm;
 
-import ai.kompile.event.attribution.domain.*;
+import ai.kompile.graph.reasoning.domain.*;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;

@@ -194,7 +194,8 @@ public class KnowledgeGraphController {
             request.externalId(),
             request.title(),
             request.description(),
-            request.metadata()
+            request.metadata(),
+            request.factSheetId()
         );
         return ResponseEntity.ok(node);
     }
@@ -645,7 +646,8 @@ public class KnowledgeGraphController {
         String externalId,
         String title,
         String description,
-        Map<String, Object> metadata
+        Map<String, Object> metadata,
+        Long factSheetId
     ) {}
 
     public record UpdateNodeRequest(

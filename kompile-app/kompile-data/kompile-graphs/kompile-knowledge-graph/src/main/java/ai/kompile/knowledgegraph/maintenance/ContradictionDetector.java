@@ -22,6 +22,7 @@ import ai.kompile.core.graphrag.maintenance.model.TaskReport;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -56,6 +57,7 @@ public class ContradictionDetector {
 
     private KnowledgeGraphService knowledgeGraphService;
 
+    @Autowired
     public ContradictionDetector(KnowledgeGraphService knowledgeGraphService) {
         this.knowledgeGraphService = knowledgeGraphService;
     }

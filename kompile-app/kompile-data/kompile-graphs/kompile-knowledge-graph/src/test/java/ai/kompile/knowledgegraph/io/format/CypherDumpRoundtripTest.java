@@ -257,4 +257,80 @@ class CypherDumpRoundtripTest {
         assertTrue(cypher.contains("weight: 1.0"));
         assertTrue(cypher.contains("description: 'note'"));
     }
+
+    // ─── L-4: previously-dropped scoping/quality fields ──────────────
+
+    /**
+     * Verifies that the L-4 audit gap is closed: confidence, namedGraphId, factSheetId,
+     * occurredAt on nodes and confidence, relationType, provenance, factSheetId on edges
+     * all survive a full export → import round-trip.
+     */
+    @Test
+    void extendedFields_roundtrip() {
+        PortableNode node = new PortableNode(
+                "entity-1",
+                "Entity One",
+                "A scoped entity",
+                "CONCEPT",
+                null,
+                42L,           // factSheetId
+                "graph-ng-7",  // namedGraphId
+                0.87,          // confidence
+                "2024-01-15"   // occurredAt
+        );
+
+        PortableEdge edge = new PortableEdge(
+                "entity-1",
+                "entity-2",
+                "CAUSES",
+                0.75,
+                "causal link",
+                "crawl-run-99",  // provenance
+                0.92,            // confidence
+                null,            // occurredAt (not emitted by exporter currently)
+                "CAUSAL",        // relationType
+                7L,              // factSheetId
+                null, null, null, null, null
+        );
+
+        // Need a second node for the edge to reference
+        PortableNode node2 = new PortableNode("entity-2", "Entity Two", null, "CONCEPT", null);
+        PortableGraph original = new PortableGraph(List.of(node, node2), List.of(edge));
+
+        byte[] bytes = exporter.toBytes(original);
+        String cypher = new String(bytes, StandardCharsets.UTF_8);
+
+        // Verify the extended node fields appear in emitted Cypher
+        assertTrue(cypher.contains("confidence: 0.87"), "node confidence must be emitted");
+        assertTrue(cypher.contains("namedGraphId: 'graph-ng-7'"), "namedGraphId must be emitted");
+        assertTrue(cypher.contains("factSheetId: 42"), "node factSheetId must be emitted");
+        assertTrue(cypher.contains("occurredAt: '2024-01-15'"), "occurredAt must be emitted");
+
+        // Verify the extended edge fields appear in emitted Cypher
+        assertTrue(cypher.contains("confidence: 0.92"), "edge confidence must be emitted");
+        assertTrue(cypher.contains("relationType: 'CAUSAL'"), "relationType must be emitted");
+        assertTrue(cypher.contains("provenance: 'crawl-run-99'"), "provenance must be emitted");
+        assertTrue(cypher.contains("factSheetId: 7"), "edge factSheetId must be emitted");
+
+        // Re-import and assert all values survive
+        PortableGraph parsed = importer.parse(bytes);
+        assertEquals(2, parsed.nodes().size());
+        assertEquals(1, parsed.edges().size());
+
+        PortableNode parsedNode = parsed.nodes().stream()
+                .filter(n -> "entity-1".equals(n.externalId()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("entity-1 not found after import"));
+
+        assertEquals(0.87, parsedNode.confidence(), 0.0001, "node confidence must round-trip");
+        assertEquals("graph-ng-7", parsedNode.namedGraphId(), "namedGraphId must round-trip");
+        assertEquals(42L, parsedNode.factSheetId(), "node factSheetId must round-trip");
+        assertEquals("2024-01-15", parsedNode.occurredAt(), "occurredAt must round-trip");
+
+        PortableEdge parsedEdge = parsed.edges().get(0);
+        assertEquals(0.92, parsedEdge.confidence(), 0.0001, "edge confidence must round-trip");
+        assertEquals("CAUSAL", parsedEdge.relationType(), "relationType must round-trip");
+        assertEquals("crawl-run-99", parsedEdge.provenance(), "provenance must round-trip");
+        assertEquals(7L, parsedEdge.factSheetId(), "edge factSheetId must round-trip");
+    }
 }

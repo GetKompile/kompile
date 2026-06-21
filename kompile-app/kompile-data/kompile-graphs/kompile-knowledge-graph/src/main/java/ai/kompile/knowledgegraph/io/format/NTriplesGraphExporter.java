@@ -27,8 +27,14 @@ import java.util.Map;
  *
  * <p>Per node: {@code rdf:type} → class IRI, {@code rdfs:label} ← title, {@code rdfs:comment} ←
  * description, a {@code prop/confidence} typed double, {@code prop/occurredAt}, and one
- * {@code prop/<key>} triple per metadata entry. Per edge: one {@code <from> <rel/TYPE> <to>} triple.
- * Edge attributes (weight/confidence) are intentionally not represented (that needs reification).
+ * {@code prop/<key>} triple per metadata entry.</p>
+ *
+ * <p>Per edge: one {@code <from> <rel/TYPE> <to>} triple. When the edge carries a {@code weight}
+ * and/or {@code confidence} value, a standard RDF reification block is appended: an
+ * {@code rdf:Statement} node (IRI form {@code https://kompile.ai/kg/stmt/<from>/<type>/<to>})
+ * whose {@code rdf:subject/predicate/object} point at the original triple, annotated with
+ * kompile-namespaced predicates {@code https://kompile.ai/kg/weight} and
+ * {@code https://kompile.ai/kg/confidence}, each a typed {@code xsd:double} literal.</p>
  */
 public final class NTriplesGraphExporter {
 
@@ -62,10 +68,29 @@ public final class NTriplesGraphExporter {
             }
         }
         for (PortableEdge e : graph.edges()) {
-            triple(sb,
-                    RdfSupport.iriRef(RdfSupport.nodeIri(e.fromExternalId())),
-                    RdfSupport.iriRef(RdfSupport.relIri(e.edgeType())),
-                    RdfSupport.iriRef(RdfSupport.nodeIri(e.toExternalId())));
+            String fromRef = RdfSupport.iriRef(RdfSupport.nodeIri(e.fromExternalId()));
+            String predRef = RdfSupport.iriRef(RdfSupport.relIri(e.edgeType()));
+            String toRef   = RdfSupport.iriRef(RdfSupport.nodeIri(e.toExternalId()));
+            triple(sb, fromRef, predRef, toRef);
+
+            // RDF reification for edge weight / confidence (only when present)
+            if (e.weight() != null || e.confidence() != null) {
+                String stmt = RdfSupport.iriRef(
+                        RdfSupport.stmtIri(e.fromExternalId(), e.edgeType(), e.toExternalId()));
+                triple(sb, stmt, RdfSupport.iriRef(RdfSupport.RDF_TYPE),
+                        RdfSupport.iriRef(RdfSupport.RDF_STATEMENT));
+                triple(sb, stmt, RdfSupport.iriRef(RdfSupport.RDF_SUBJECT),   fromRef);
+                triple(sb, stmt, RdfSupport.iriRef(RdfSupport.RDF_PREDICATE), predRef);
+                triple(sb, stmt, RdfSupport.iriRef(RdfSupport.RDF_OBJECT),    toRef);
+                if (e.weight() != null) {
+                    triple(sb, stmt, RdfSupport.iriRef(RdfSupport.WEIGHT_IRI),
+                            RdfSupport.typedLiteral(e.weight().toString(), RdfSupport.XSD_DOUBLE));
+                }
+                if (e.confidence() != null) {
+                    triple(sb, stmt, RdfSupport.iriRef(RdfSupport.CONFIDENCE_IRI),
+                            RdfSupport.typedLiteral(e.confidence().toString(), RdfSupport.XSD_DOUBLE));
+                }
+            }
         }
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }

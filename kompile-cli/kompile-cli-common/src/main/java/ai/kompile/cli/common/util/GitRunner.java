@@ -102,6 +102,26 @@ public final class GitRunner {
     }
 
     /**
+     * Run a git command with inherited IO and additional environment variables (e.g.
+     * {@code HF_ENDPOINT}/{@code HF_TOKEN} so the Xet transfer agent authenticates against a
+     * self-hosted kompile-saas instance). PATH is still augmented with {@code ~/.kompile/bin/}.
+     */
+    public static int runInheritedWithEnv(Path workingDir, Map<String, String> extraEnv, String... args)
+            throws IOException, InterruptedException {
+        String[] cmd = new String[args.length + 1];
+        cmd[0] = "git";
+        System.arraycopy(args, 0, cmd, 1, args.length);
+        ProcessBuilder pb = new ProcessBuilder(cmd)
+                .directory(workingDir != null ? workingDir.toFile() : null)
+                .inheritIO();
+        augmentPath(pb);
+        if (extraEnv != null) {
+            pb.environment().putAll(extraEnv);
+        }
+        return pb.start().waitFor();
+    }
+
+    /**
      * Check whether git-xet is installed and available.
      * Probes both the system PATH and ~/.kompile/bin/.
      */

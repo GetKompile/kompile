@@ -17,6 +17,7 @@
 package ai.kompile.app.services.agent;
 
 import ai.kompile.app.services.ServerPortService;
+import ai.kompile.app.services.ToolCallWriterService;
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
 import ai.kompile.app.web.dto.AgentChatRequest;
 import ai.kompile.chat.history.service.FolderService;
@@ -82,6 +83,11 @@ public class AgentChatService {
 
     // Track running processes by processId for interrupt support
     private final Map<String, Process> runningProcesses = new ConcurrentHashMap<>();
+
+    // Persists tool calls made by kompile-managed agent sessions into the shared
+    // CLI/MCP tool-call index so they surface in the MCP Hub tool-call catalog.
+    @Autowired(required = false)
+    private ToolCallWriterService toolCallWriterService;
 
     // RAG prompt template
     private static final String RAG_CONTEXT_TEMPLATE = """
@@ -304,6 +310,8 @@ public class AgentChatService {
                                     fullResponse.append(result.textContent());
                                     sendEvent(emitter, "chunk", result.textContent());
                                 }
+                                recordManagedToolCall(processId, result, agent.getName(),
+                                        request.getWorkingDirectory());
                                 if (result.isResult()) {
                                     // Build stats map with token metrics if available
                                     Map<String, Object> stats = new HashMap<>();
@@ -484,6 +492,14 @@ public class AgentChatService {
     }
 
     /**
+     * Reasoning-augmented retriever (causal / MEBN). Field-injected and optional so the existing
+     * constructor is unchanged; when absent or a strategy is unsupported, retrieval falls back to
+     * standard graph RAG.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ai.kompile.app.rag.GraphReasoningRetriever graphReasoningRetriever;
+
+    /**
      * Retrieve context from the knowledge graph using GraphRAG.
      */
     private GraphRagResult retrieveGraphContext(
@@ -492,15 +508,35 @@ public class AgentChatService {
             String searchType,
             String conversationId) {
 
+        // Reasoning strategies (causal / probabilistic) route to the reasoning retriever, which turns
+        // the query into causal chains or MEBN posteriors via the event-attribution services.
+        if (graphReasoningRetriever != null && graphReasoningRetriever.supports(searchType)) {
+            String reasoningContext = graphReasoningRetriever.retrieve(query, searchType, maxResults);
+            if (reasoningContext != null && !reasoningContext.isBlank()) {
+                return GraphRagResult.builder()
+                        .answer(reasoningContext)
+                        .formattedContext(reasoningContext)
+                        .build();
+            }
+            // Reasoning produced nothing usable; fall through to standard graph RAG.
+        }
+
         if (graphRagService == null) {
             log.debug("GraphRagService not available");
             return null;
         }
 
         try {
-            SearchType type = "GLOBAL".equalsIgnoreCase(searchType)
-                    ? SearchType.GLOBAL
-                    : SearchType.LOCAL;
+            // Parse the requested search type (LOCAL, GLOBAL, HYBRID, ...); default to LOCAL on
+            // unknown values. Previously only GLOBAL was honored, so HYBRID silently ran LOCAL.
+            SearchType type = SearchType.LOCAL;
+            if (searchType != null && !searchType.isBlank()) {
+                try {
+                    type = SearchType.valueOf(searchType.trim().toUpperCase());
+                } catch (IllegalArgumentException ex) {
+                    log.debug("Unknown graph searchType '{}', defaulting to LOCAL", searchType);
+                }
+            }
 
             GraphRagQuery graphQuery = GraphRagQuery.builder()
                     .query(query)
@@ -722,6 +758,25 @@ public class AgentChatService {
     }
 
     /**
+     * Persist a tool_use parse result from a kompile-managed agent session into the
+     * shared tool-call index (the same store the CLI passthrough harvesters write to),
+     * so these calls surface in the MCP Hub tool-call catalog. No-op for non-tool_use
+     * results or when the writer is unavailable.
+     */
+    private void recordManagedToolCall(String sessionId, ClaudeStreamParser.ParseResult result,
+                                       String agentName, String workingDirectory) {
+        if (toolCallWriterService == null || result == null) {
+            return;
+        }
+        if (!"tool_use".equals(result.type()) || result.toolName() == null) {
+            return;
+        }
+        String toolInput = result.toolInput() != null ? result.toolInput().toString() : "";
+        toolCallWriterService.record(sessionId, result.toolName(), toolInput,
+                agentName, "agent-chat", false, workingDirectory);
+    }
+
+    /**
      * Send SSE event.
      */
     private void sendEvent(SseEmitter emitter, String eventType, Object data) {
@@ -937,6 +992,8 @@ public class AgentChatService {
                             if (result.textContent() != null && !result.textContent().isEmpty()) {
                                 fullResponse.append(result.textContent());
                             }
+                            recordManagedToolCall(processId, result, agent.getName(),
+                                    request.getWorkingDirectory());
                             if (result.isResult()) {
                                 chatStats.put("durationMs", result.durationMs() != null ? result.durationMs() : 0);
                                 chatStats.put("costUsd", result.costUsd() != null ? result.costUsd() : 0.0);

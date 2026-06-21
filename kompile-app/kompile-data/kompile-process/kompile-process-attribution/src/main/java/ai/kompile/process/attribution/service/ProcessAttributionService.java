@@ -9,21 +9,18 @@
  */
 package ai.kompile.process.attribution.service;
 
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNetwork;
 import ai.kompile.event.attribution.algorithm.bayesian.BayesianNetworkBuilder;
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNode;
-import ai.kompile.event.attribution.algorithm.bayesian.VariableElimination;
 import ai.kompile.event.attribution.algorithm.bayesian.mebn.KgMTheoryBuilder;
-import ai.kompile.event.attribution.algorithm.bayesian.mebn.MTheory;
-import ai.kompile.event.attribution.algorithm.bayesian.mebn.SSBNGenerator;
 import ai.kompile.event.attribution.algorithm.bayesian.mebn.logic.GraphKnowledgeBase;
-import ai.kompile.event.attribution.domain.*;
+import ai.kompile.graph.reasoning.bayesian.*;
+import ai.kompile.graph.reasoning.mebn.*;
+import ai.kompile.graph.reasoning.domain.*;
 import ai.kompile.event.attribution.service.EventAttributionService;
 import ai.kompile.core.events.EmpiricalPriorSource;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.attribution.domain.*;
 import ai.kompile.process.attribution.domain.StepAttributionSummary;
-import ai.kompile.event.attribution.domain.AttributionConfidence;
+import ai.kompile.graph.reasoning.domain.AttributionConfidence;
 import ai.kompile.process.execution.StepExecution;
 import ai.kompile.process.execution.StepExecutionStatus;
 import ai.kompile.process.execution.WorkflowRun;

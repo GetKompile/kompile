@@ -15,7 +15,6 @@
 
     <modules>
         <module>kompile-compute-graph-core</module>
-        <module>kompile-compute-graph-drools</module>
         <module>kompile-compute-graph-camel</module>
         <module>kompile-compute-graph-excel</module>
         <module>kompile-compute-graph-n8n</module>

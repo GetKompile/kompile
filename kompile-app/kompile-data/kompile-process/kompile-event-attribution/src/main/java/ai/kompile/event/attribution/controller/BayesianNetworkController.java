@@ -9,9 +9,9 @@
  */
 package ai.kompile.event.attribution.controller;
 
-import ai.kompile.event.attribution.domain.BayesianInferenceResult;
-import ai.kompile.event.attribution.domain.MpeResult;
-import ai.kompile.event.attribution.domain.SensitivityResult;
+import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
+import ai.kompile.graph.reasoning.domain.MpeResult;
+import ai.kompile.graph.reasoning.domain.SensitivityResult;
 import ai.kompile.event.attribution.service.BayesianNetworkService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;

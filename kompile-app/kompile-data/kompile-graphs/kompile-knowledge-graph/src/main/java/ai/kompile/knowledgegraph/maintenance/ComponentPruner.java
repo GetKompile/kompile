@@ -18,50 +18,49 @@ package ai.kompile.knowledgegraph.maintenance;
 import ai.kompile.core.graphrag.maintenance.model.ComponentPrunePolicy;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceTask;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
+import ai.kompile.graph.reasoning.maintenance.ComponentPruningPolicy;
+import ai.kompile.graph.reasoning.maintenance.PruneResult;
+import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
-import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDateTime;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Queue;
-import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Prunes tiny disconnected components from the knowledge graph.
  *
- * <p>Algorithm:</p>
- * <ol>
- *   <li>Load all active entity nodes and non-stale edges for the fact sheet.</li>
- *   <li>Build an in-memory adjacency map over entity-node UUIDs.</li>
- *   <li>Find all connected components via breadth-first search.</li>
- *   <li>Soft-delete the nodes in any component smaller than
- *       {@link ComponentPrunePolicy#minComponentSize()}, unless a pinned node is
- *       present and {@link ComponentPrunePolicy#keepPinned()} is {@code true}.</li>
- * </ol>
+ * <p>The pruning <em>decision</em> is delegated to the generic
+ * {@link ComponentPruningPolicy} from {@code kompile-graph-maintenance}: a
+ * store-agnostic {@link ai.kompile.graph.reasoning.model.ReasoningGraph} is
+ * built from the entity nodes and edges in the fact sheet, the policy
+ * identifies ids belonging to small components, and then the deletions are
+ * applied here via {@link KnowledgeGraphService} (the store-specific step that
+ * stays in this module).</p>
+ *
+ * <p>Operates entirely through {@link KnowledgeGraphService} so it runs against the live
+ * {@code @Primary} matrix/vector store (soft-delete sets the {@code _stale} metadata marker via
+ * {@link KnowledgeGraphService#pruneNodes}); it no longer reads or writes the JPA tables, which
+ * are unpopulated on the live path.</p>
  */
 @Slf4j
 @Component
 public class ComponentPruner {
 
-    private  GraphNodeRepository nodeRepository;
-    private  GraphEdgeRepository edgeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
-    public ComponentPruner(GraphNodeRepository nodeRepository,
-                           GraphEdgeRepository edgeRepository) {
-        this.nodeRepository = nodeRepository;
-        this.edgeRepository = edgeRepository;
+    @Autowired
+    public ComponentPruner(KnowledgeGraphService knowledgeGraphService) {
+        this.knowledgeGraphService = knowledgeGraphService;
     }
 
     /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
@@ -79,15 +78,14 @@ public class ComponentPruner {
     @Transactional
     public TaskReport execute(Long factSheetId, ComponentPrunePolicy policy, boolean dryRun) {
         Instant start = Instant.now();
-        LocalDateTime now = LocalDateTime.now();
-        int scanned = 0;
         int affected = 0;
         int skipped = 0;
         List<String> warnings = new ArrayList<>();
 
-        // ── 1. Load all active entities ──────────────────────────────────────────
-        List<GraphNode> activeEntities = nodeRepository.findActiveEntities(factSheetId);
-        scanned = activeEntities.size();
+        // ── 1. Load all active (non-stale) entities from the live store ──────────
+        List<GraphNode> activeEntities = knowledgeGraphService.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY)
+                .stream().filter(n -> !isStale(n)).collect(Collectors.toList());
+        int scanned = activeEntities.size();
         log.debug("ComponentPruner: {} active entities for factSheet={}", scanned, factSheetId);
 
         if (activeEntities.isEmpty()) {
@@ -95,91 +93,62 @@ public class ComponentPruner {
                     Duration.between(start, Instant.now()));
         }
 
-        // Index nodeId → GraphNode for fast lookup
-        Map<String, GraphNode> nodeById = new HashMap<>();
+        // ── 2. Build a ReasoningGraph from entities + edges ──────────────────────
+        MutableReasoningGraph graph = new MutableReasoningGraph();
         for (GraphNode n : activeEntities) {
-            nodeById.put(n.getNodeId(), n);
+            graph.addEntity(n.getNodeId(),
+                    n.getNodeType() != null ? n.getNodeType().name() : "",
+                    n.getTitle() != null ? n.getTitle() : n.getNodeId());
         }
 
-        // ── 2. Build adjacency map ───────────────────────────────────────────────
-        Map<String, Set<String>> adjacency = new HashMap<>();
-        for (String id : nodeById.keySet()) {
-            adjacency.put(id, new HashSet<>());
-        }
-
-        List<GraphEdge> activeEdges = edgeRepository.findActiveEdges(factSheetId);
+        List<GraphEdge> activeEdges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
         for (GraphEdge edge : activeEdges) {
             if (edge.getSourceNode() == null || edge.getTargetNode() == null) continue;
             String src = edge.getSourceNode().getNodeId();
             String tgt = edge.getTargetNode().getNodeId();
-            // Only include edges where both endpoints are active entities we loaded
-            if (adjacency.containsKey(src) && adjacency.containsKey(tgt)) {
-                adjacency.get(src).add(tgt);
-                adjacency.get(tgt).add(src);
+            if (graph.containsEntity(src) && graph.containsEntity(tgt)) {
+                String relId = edge.getEdgeId() != null ? edge.getEdgeId() : (src + "->" + tgt);
+                graph.addRelation(relId, src, tgt,
+                        edge.getEdgeType() != null ? edge.getEdgeType().name() : "",
+                        edge.getWeight() != null ? edge.getWeight() : 1.0);
             }
         }
 
-        // ── 3. Find connected components via BFS ─────────────────────────────────
-        Set<String> visited = new HashSet<>();
-        List<Set<String>> components = new ArrayList<>();
+        // ── 3. Delegate component DECISION to the generic policy ─────────────────
+        ComponentPruningPolicy genericPolicy = new ComponentPruningPolicy(policy.minComponentSize());
+        PruneResult decision = genericPolicy.evaluate(graph);
+        log.debug("ComponentPruner: {} entities in small components for factSheet={}",
+                decision.entityIds().size(), factSheetId);
 
-        for (String startId : nodeById.keySet()) {
-            if (visited.contains(startId)) continue;
-            Set<String> component = new HashSet<>();
-            Queue<String> queue = new ArrayDeque<>();
-            queue.add(startId);
-            visited.add(startId);
-            while (!queue.isEmpty()) {
-                String current = queue.poll();
-                component.add(current);
-                for (String neighbour : adjacency.getOrDefault(current, Set.of())) {
-                    if (!visited.contains(neighbour)) {
-                        visited.add(neighbour);
-                        queue.add(neighbour);
-                    }
-                }
-            }
-            components.add(component);
+        // ── 4. Apply pinned-node exception (KG-specific, stays here) ─────────────
+        List<String> toPrune = new ArrayList<>();
+
+        // Build a fast lookup: nodeId → GraphNode for pin checks
+        java.util.Map<String, GraphNode> nodeById = new java.util.HashMap<>();
+        for (GraphNode n : activeEntities) {
+            nodeById.put(n.getNodeId(), n);
         }
 
-        log.debug("ComponentPruner: found {} components for factSheet={}", components.size(), factSheetId);
-
-        // ── 4. Soft-delete nodes in small components ─────────────────────────────
-        List<Long> toMark = new ArrayList<>();
-
-        for (Set<String> component : components) {
-            if (component.size() >= policy.minComponentSize()) continue;
-
-            // Check pinned nodes
-            if (policy.keepPinned()) {
-                boolean hasPinned = component.stream()
-                        .map(nodeById::get)
-                        .anyMatch(n -> n != null && Boolean.TRUE.equals(n.getUserPinned()));
-                if (hasPinned) {
-                    skipped += component.size();
-                    log.debug("ComponentPruner: skipping small component of size {} containing pinned node",
-                            component.size());
-                    continue;
-                }
+        for (String entityId : decision.entityIds()) {
+            GraphNode node = nodeById.get(entityId);
+            if (policy.keepPinned() && node != null && Boolean.TRUE.equals(node.getUserPinned())) {
+                skipped++;
+                log.debug("ComponentPruner: skipping pinned node {}", entityId);
+                continue;
             }
-
-            for (String nodeId : component) {
-                GraphNode node = nodeById.get(nodeId);
-                if (node != null) {
-                    toMark.add(node.getId());
-                    affected++;
-                }
-            }
+            toPrune.add(entityId);
+            affected++;
         }
 
-        if (!dryRun && !toMark.isEmpty()) {
-            nodeRepository.bulkMarkStale(toMark, now);
+        // ── 5. Apply deletions via store API ─────────────────────────────────────
+        knowledgeGraphService.pruneNodes(toPrune, true, null, dryRun);
+        if (!dryRun && !toPrune.isEmpty()) {
             log.info("ComponentPruner: marked {} nodes in small components as stale for factSheet={}",
-                    toMark.size(), factSheetId);
+                    toPrune.size(), factSheetId);
         }
 
-        log.info("ComponentPruner (dryRun={}): scanned={}, affected={}, skipped={}, components={} for factSheet={}",
-                dryRun, scanned, affected, skipped, components.size(), factSheetId);
+        log.info("ComponentPruner (dryRun={}): scanned={}, affected={}, skipped={} for factSheet={}",
+                dryRun, scanned, affected, skipped, factSheetId);
 
         return new TaskReport(
                 MaintenanceTask.COMPONENT_PRUNE,
@@ -189,5 +158,26 @@ public class ComponentPruner {
                 warnings,
                 Duration.between(start, Instant.now())
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** A node is stale if its domain flag or its live-store {@code _stale} metadata marker is set. */
+    private static boolean isStale(GraphNode n) {
+        if (Boolean.TRUE.equals(n.getStale())) {
+            return true;
+        }
+        String metadataJson = n.getMetadataJson();
+        if (metadataJson == null || metadataJson.isBlank()) {
+            return false;
+        }
+        try {
+            // Quick check without full parse: _stale:true marker
+            return metadataJson.contains("\"_stale\"") && metadataJson.contains("true");
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

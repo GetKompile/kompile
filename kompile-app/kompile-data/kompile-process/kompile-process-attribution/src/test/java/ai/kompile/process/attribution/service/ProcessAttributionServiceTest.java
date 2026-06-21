@@ -9,7 +9,7 @@
  */
 package ai.kompile.process.attribution.service;
 
-import ai.kompile.event.attribution.domain.*;
+import ai.kompile.graph.reasoning.domain.*;
 import ai.kompile.event.attribution.service.EventAttributionService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.attribution.domain.*;

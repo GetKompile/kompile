@@ -1,0 +1,180 @@
+<div class="dpp">
+
+  <!-- Intro + stats -->
+  <div class="dpp-intro">
+    <mat-icon>policy</mat-icon>
+    <span>Audit how agents change files: scan the captured diffs against policy and review <b>mistakes &amp; policy violations</b> by file, agent, and severity.</span>
+  </div>
+
+  <div class="stat-strip">
+    <div class="stat total"><span class="num">{{ stats['total'] || 0 }}</span><span class="lbl">violations</span></div>
+    <div class="stat sev" *ngFor="let s of severities" [style.borderColor]="severityColor(s)">
+      <mat-icon [style.color]="severityColor(s)">{{ severityIcon(s) }}</mat-icon>
+      <span class="num">{{ severityCount(s) }}</span><span class="lbl">{{ s }}</span>
+    </div>
+    <span class="spacer"></span>
+    <button mat-stroked-button (click)="showRules = !showRules">
+      <mat-icon>tune</mat-icon> {{ showRules ? 'Hide' : 'Edit' }} rules
+    </button>
+  </div>
+
+  <!-- Scan controls -->
+  <div class="scan-bar">
+    <mat-form-field appearance="outline" class="ff-md">
+      <mat-label>Scan file (path or glob)</mat-label>
+      <input matInput [(ngModel)]="scanFilePath" placeholder="all files, or **/*.env">
+    </mat-form-field>
+    <mat-form-field appearance="outline" class="ff-sm">
+      <mat-label>Agent</mat-label>
+      <input matInput [(ngModel)]="scanAgent" placeholder="any">
+    </mat-form-field>
+    <mat-form-field appearance="outline" class="ff-time">
+      <mat-label>Since</mat-label>
+      <input matInput type="datetime-local" [(ngModel)]="scanSince">
+    </mat-form-field>
+    <mat-form-field appearance="outline" class="ff-time">
+      <mat-label>Until</mat-label>
+      <input matInput type="datetime-local" [(ngModel)]="scanUntil">
+    </mat-form-field>
+    <button mat-flat-button color="primary" (click)="runScan()" [disabled]="scanning">
+      <mat-icon>policy</mat-icon> Scan
+    </button>
+    <mat-checkbox [(ngModel)]="useLlm" [disabled]="!llmAvailable"
+                  [matTooltip]="llmAvailable ? 'Also run the LLM judge (slower, costs tokens)' : 'No LLM backend configured'">
+      LLM judge
+    </mat-checkbox>
+    <button mat-stroked-button (click)="clearViolations()" matTooltip="Delete all recorded violations">
+      <mat-icon>delete_sweep</mat-icon> Clear
+    </button>
+    <span class="scan-note" *ngIf="lastScan">
+      Scanned {{ lastScan['scannedDiffs'] }} diffs → {{ lastScan['violations'] }} violations
+    </span>
+  </div>
+
+  <mat-progress-bar mode="indeterminate" *ngIf="scanning || loadingViolations"></mat-progress-bar>
+
+  <!-- Rules editor -->
+  <div class="rules-editor" *ngIf="showRules">
+    <div class="rules-col">
+      <div class="rules-head"><mat-icon>folder_off</mat-icon> Path-of-concern rules <button mat-icon-button (click)="addPathRule()" matTooltip="Add"><mat-icon>add</mat-icon></button></div>
+      <div class="path-rule" *ngFor="let r of rules.pathRules; let i = index">
+        <mat-form-field appearance="outline" class="pr-glob">
+          <mat-label>Glob</mat-label>
+          <input matInput [(ngModel)]="r.glob" placeholder="**/*.env">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="pr-sev">
+          <mat-label>Severity</mat-label>
+          <mat-select [(ngModel)]="r.severity">
+            <mat-option *ngFor="let s of severities" [value]="s">{{ s }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="pr-desc">
+          <mat-label>Description</mat-label>
+          <input matInput [(ngModel)]="r.description">
+        </mat-form-field>
+        <button mat-icon-button (click)="removePathRule(i)" matTooltip="Remove"><mat-icon>close</mat-icon></button>
+      </div>
+    </div>
+    <div class="rules-col">
+      <div class="rules-head"><mat-icon>rule</mat-icon> Content rules (reused enforcer engine)</div>
+      <textarea class="content-rules" [(ngModel)]="rules.contentRulesText" rows="8"
+                placeholder="BAN_DIFF: System.exit(&#10;STOP_DIFF_REGEX: password\s*=\s*&quot;[^&quot;]+&quot;"></textarea>
+      <div class="rules-actions">
+        <button mat-flat-button color="primary" (click)="saveRules()" [disabled]="savingRules">
+          <mat-icon>save</mat-icon> Save rules
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="filter-bar">
+    <mat-form-field appearance="outline" class="ff-md">
+      <mat-label>File (path or glob)</mat-label>
+      <input matInput [(ngModel)]="fileFilter" (keyup.enter)="loadViolations()" placeholder="**/*.env">
+    </mat-form-field>
+    <mat-form-field appearance="outline" class="ff-sm" *ngIf="agentOptions.length">
+      <mat-label>Agent</mat-label>
+      <mat-select [(ngModel)]="agentFilter" (selectionChange)="loadViolations()">
+        <mat-option [value]="''">All</mat-option>
+        <mat-option *ngFor="let a of agentOptions" [value]="a">{{ a }}</mat-option>
+      </mat-select>
+    </mat-form-field>
+    <mat-form-field appearance="outline" class="ff-sm">
+      <mat-label>Severity</mat-label>
+      <mat-select [(ngModel)]="severityFilter" (selectionChange)="loadViolations()">
+        <mat-option [value]="''">All</mat-option>
+        <mat-option *ngFor="let s of severities" [value]="s">{{ s }}</mat-option>
+      </mat-select>
+    </mat-form-field>
+    <mat-form-field appearance="outline" class="ff-sm">
+      <mat-label>Detector</mat-label>
+      <mat-select [(ngModel)]="detectorFilter" (selectionChange)="loadViolations()">
+        <mat-option [value]="''">All</mat-option>
+        <mat-option value="path">path</mat-option>
+        <mat-option value="rule">rule</mat-option>
+        <mat-option value="llm">llm</mat-option>
+      </mat-select>
+    </mat-form-field>
+    <button mat-flat-button color="primary" (click)="loadViolations()"><mat-icon>search</mat-icon> Apply</button>
+  </div>
+
+  <!-- Violations list + detail -->
+  <div class="viol-body">
+    <div class="viol-list">
+      <div class="list-header">{{ violations.length }} violation{{ violations.length === 1 ? '' : 's' }}</div>
+      <div *ngIf="!loadingViolations && violations.length === 0" class="empty-state">
+        <mat-icon>verified_user</mat-icon><p>No violations. Run a scan to evaluate captured diffs.</p>
+      </div>
+      <button class="viol-row" *ngFor="let v of violations"
+              [class.selected]="selectedViolation?.id === v.id"
+              [style.borderLeftColor]="severityColor(v.severity)"
+              (click)="selectViolation(v)">
+        <div class="viol-top">
+          <mat-icon class="sev-icon" [style.color]="severityColor(v.severity)">{{ severityIcon(v.severity) }}</mat-icon>
+          <span class="fname" [matTooltip]="v.filePath">{{ getFileName(v.filePath) }}</span>
+          <span class="detector"><mat-icon>{{ detectorIcon(v.detector) }}</mat-icon>{{ v.detector }}</span>
+        </div>
+        <div class="viol-msg">{{ v.message }}</div>
+        <div class="viol-meta">
+          <span class="agent"><mat-icon>{{ getAgentIcon(v.agent) }}</mat-icon>{{ v.agent }}</span>
+          <span class="date">{{ formatDate(v.timestamp) }}</span>
+        </div>
+      </button>
+    </div>
+
+    <div class="viol-detail">
+      <div *ngIf="!selectedViolation" class="empty-state">
+        <mat-icon>touch_app</mat-icon><p>Select a violation to view the offending change.</p>
+      </div>
+
+      <ng-container *ngIf="selectedViolation">
+        <div class="detail-head" [style.borderColor]="severityColor(selectedViolation.severity)">
+          <div class="dh-top">
+            <span class="sev-badge" [style.background]="severityColor(selectedViolation.severity)">{{ selectedViolation.severity }}</span>
+            <span class="detector"><mat-icon>{{ detectorIcon(selectedViolation.detector) }}</mat-icon>{{ selectedViolation.detector }}</span>
+            <span class="rule-id" [matTooltip]="selectedViolation.ruleId">{{ selectedViolation.ruleId }}</span>
+          </div>
+          <div class="dh-msg">{{ selectedViolation.message }}</div>
+          <div class="dh-path">{{ selectedViolation.filePath }}<span *ngIf="selectedViolation.lineNumber > 0">:{{ selectedViolation.lineNumber }}</span></div>
+          <pre class="matched" *ngIf="selectedViolation.matchedLine">{{ selectedViolation.matchedLine }}</pre>
+        </div>
+
+        <mat-progress-bar mode="indeterminate" *ngIf="loadingEntry"></mat-progress-bar>
+
+        <div class="diff-host" *ngIf="selectedEntry">
+          <app-diff-view
+            [unifiedDiff]="selectedEntry.unifiedDiff"
+            [oldString]="selectedEntry.oldString"
+            [newString]="selectedEntry.newString"
+            [filePath]="selectedEntry.filePath"
+            [viewMode]="viewMode">
+          </app-diff-view>
+        </div>
+        <div *ngIf="!loadingEntry && !selectedEntry" class="empty-state small">
+          <mat-icon>info</mat-icon><p>The underlying diff is no longer in the index.</p>
+        </div>
+      </ng-container>
+    </div>
+  </div>
+</div>

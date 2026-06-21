@@ -82,3 +82,20 @@ export interface ScanResult {
 
 export const OPPORTUNITY_MODELS = ['PRESENCE', 'RELATIVE_FREQUENCY', 'DECAYED_RATE'];
 export const EVENT_TYPES = ['ENTITY_OCCURRENCE', 'CONNECTION_OCCURRENCE', 'PROCESS_STEP_OCCURRENCE', 'USER_DEFINED'];
+
+/**
+ * Body of POST /api/events/observation/observe — record (or correct) a probability by hand. The
+ * backend folds occurrences / opportunities into the running Beta-Binomial for the entity or
+ * connection, exactly as a crawl would, but tagged source=MANUAL.
+ */
+export interface ObserveRequest {
+  eventType: string;             // ENTITY_OCCURRENCE | CONNECTION_OCCURRENCE | USER_DEFINED
+  eventKey?: string;
+  subjectNodeId?: string;        // entity scope
+  sourceNodeId?: string;         // connection scope
+  edgeType?: string;             // connection scope
+  targetNodeId?: string;         // connection scope
+  factSheetId?: number;
+  occurrences?: number;
+  opportunities?: number;
+}

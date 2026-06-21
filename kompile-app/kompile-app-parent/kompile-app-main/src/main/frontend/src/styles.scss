@@ -97,6 +97,67 @@
 }
 
 /* ==========================================================================
+   Dark Theme Token Overrides
+   --------------------------------------------------------------------------
+   Activated by ThemeService toggling `body.dark-theme` (see services/theme.service.ts).
+   Every component that consumes the design tokens (var(--bg-*), var(--text-*),
+   var(--border-color), …) adapts automatically — no per-component dark CSS needed.
+   Components should therefore reference these tokens instead of hardcoding colors.
+   ========================================================================== */
+
+body.dark-theme {
+  /* Backgrounds & Surfaces — elevation increases with lightness on dark */
+  --bg-body: #0f1216;
+  --bg-surface: #1a1e26;
+  --bg-surface-elevated: #232834;
+  --bg-header: #14181f;
+
+  /* Text Colors */
+  --text-primary: #e7e9ee;
+  --text-secondary: #a6aebc;
+  --text-tertiary: #79828f;
+
+  /* Borders & Dividers */
+  --border-color: #2b313c;
+
+  /* Accents — nudge lightness up so they stay legible on dark surfaces */
+  --color-primary: hsl(var(--primary-hue), 90%, 64%);
+  --color-primary-dark: hsl(var(--primary-hue), 90%, 48%);
+  --color-primary-light: hsl(var(--primary-hue), 45%, 22%);
+  --color-secondary: hsl(var(--secondary-hue), 75%, 68%);
+  --color-accent: hsl(var(--accent-hue), 85%, 66%);
+
+  /* Shadows — deeper to read against dark backgrounds */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.55), 0 2px 4px -1px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.6), 0 4px 6px -2px rgba(0, 0, 0, 0.45);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.65), 0 10px 10px -5px rgba(0, 0, 0, 0.5);
+}
+
+/* ==========================================================================
+   Angular Material Dark Colors
+   --------------------------------------------------------------------------
+   The app ships the prebuilt indigo-pink (M2) LIGHT Material theme via angular.json.
+   Here we emit ONLY the dark color styles (not structural/typography, which the prebuilt
+   already provides) scoped under body.dark-theme, so Material components — cards, tabs,
+   menus, form fields, tables, buttons — follow the in-app theme toggle. The nested
+   selectors gain a `body.dark-theme` prefix, so they override the global light colors
+   whenever dark mode is active.
+   ========================================================================== */
+
+$kompile-m2-dark-theme: mat.m2-define-dark-theme((
+  color: (
+    primary: mat.m2-define-palette(mat.$m2-indigo-palette),
+    accent: mat.m2-define-palette(mat.$m2-pink-palette, A200, A100, A400),
+    warn: mat.m2-define-palette(mat.$m2-red-palette),
+  ),
+));
+
+body.dark-theme {
+  @include mat.all-component-colors($kompile-m2-dark-theme);
+}
+
+/* ==========================================================================
    Global Resets & Base Styles
    ========================================================================== */
 
@@ -209,6 +270,14 @@ textarea[class*="config"] {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
+}
+
+body.dark-theme ::-webkit-scrollbar-thumb {
+  background: #3a4150;
+}
+
+body.dark-theme ::-webkit-scrollbar-thumb:hover {
+  background: #4b5364;
 }
 
 /* ==========================================================================

@@ -100,7 +100,7 @@
 .loading-indicator {
   text-align: center;
   padding: 32px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .loading-indicator p {
@@ -110,7 +110,7 @@
 .empty-state {
   text-align: center;
   padding: 48px 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .empty-icon {
@@ -125,7 +125,7 @@
 
 .empty-state .hint {
   font-size: 13px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .job-section {
@@ -149,15 +149,15 @@
   height: 20px;
   padding: 0 6px;
   border-radius: 10px;
-  background: #e5e7eb;
-  color: #374151;
+  background: var(--border-color);
+  color: var(--text-primary);
   font-size: 12px;
   font-weight: 600;
 }
 
 .jobs-table {
   overflow-x: auto;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
 }
 
@@ -168,26 +168,26 @@
 }
 
 .jobs-table thead {
-  background: #f9fafb;
+  background: var(--bg-body);
 }
 
 .jobs-table th {
   padding: 10px 12px;
   text-align: left;
   font-weight: 600;
-  color: #374151;
-  border-bottom: 1px solid #e5e7eb;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
   white-space: nowrap;
 }
 
 .jobs-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid #f3f4f6;
-  color: #374151;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
 }
 
 .jobs-table tbody tr:hover {
-  background: #f9fafb;
+  background: var(--bg-body);
 }
 
 .jobs-table tbody tr:last-child td {
@@ -255,7 +255,7 @@
 
 .progress-text {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -275,17 +275,17 @@
   align-items: center;
   gap: 4px;
   padding: 6px 12px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  background: #fff;
-  color: #374151;
+  background: var(--bg-surface);
+  color: var(--text-primary);
   cursor: pointer;
   font-size: 13px;
   transition: all 0.15s;
 }
 
 .btn:hover:not(:disabled) {
-  background: #f9fafb;
+  background: var(--bg-body);
 }
 
 .btn:disabled {
@@ -308,11 +308,11 @@
 }
 
 .btn-secondary {
-  background: #f3f4f6;
+  background: var(--bg-surface-elevated);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: #e5e7eb;
+  background: var(--border-color);
 }
 
 .small {
@@ -326,15 +326,15 @@
   align-items: center;
 }
 
-.embedded-count { color: #6b7280; font-size: 11px; }
+.embedded-count { color: var(--text-secondary); font-size: 11px; }
 .failed-count { color: #dc2626; font-weight: 600; }
-.loader-cell { font-size: 12px; color: #6b7280; }
+.loader-cell { font-size: 12px; color: var(--text-secondary); }
 
 .checkpoint-detail {
   margin-top: 16px;
   padding: 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-body);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
 }
 
@@ -360,12 +360,12 @@
   display: flex;
   justify-content: space-between;
   padding: 6px 10px;
-  background: white;
+  background: var(--bg-surface);
   border-radius: 4px;
   font-size: 13px;
 }
 
 .ck-label {
-  color: #6b7280;
+  color: var(--text-secondary);
   font-weight: 500;
 }

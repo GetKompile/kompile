@@ -123,7 +123,7 @@
   justify-content: center;
   gap: 12px;
   padding: 40px;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
@@ -136,8 +136,8 @@
 
 /* Form Sections */
 .form-section {
-  background: #fff;
-  border: 1px solid #e0e0e0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 10px;
   overflow: hidden;
 }
@@ -154,9 +154,9 @@
   padding: 10px 16px;
   font-size: 13px;
   font-weight: 600;
-  color: #333;
-  background: #fafafa;
-  border-bottom: 1px solid #f0f0f0;
+  color: var(--text-primary);
+  background: var(--bg-body);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .lora-title {
@@ -173,7 +173,7 @@
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .section-badge {
@@ -233,7 +233,7 @@
 /* Advanced Panel */
 .advanced-panel {
   border-radius: 10px !important;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   box-shadow: none !important;
 }
 
@@ -247,7 +247,7 @@
   gap: 6px;
   font-size: 13px;
   font-weight: 600;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .advanced-panel mat-panel-title mat-icon {
@@ -258,7 +258,7 @@
 
 .advanced-panel mat-panel-description {
   font-size: 12px;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .advanced-grid {
@@ -289,7 +289,7 @@
 
 .launch-hint {
   font-size: 12px;
-  color: #999;
+  color: var(--text-tertiary);
   font-style: italic;
 }
 
@@ -297,7 +297,7 @@
 .download-panel {
   margin-bottom: 16px;
   border-radius: 10px !important;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 .download-panel mat-panel-title {
@@ -336,7 +336,7 @@
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
   font-size: 13px;
   margin-top: 8px;

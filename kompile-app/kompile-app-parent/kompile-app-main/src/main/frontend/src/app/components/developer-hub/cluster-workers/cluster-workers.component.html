@@ -1,0 +1,107 @@
+<div class="cluster-workers">
+  <div class="cluster-summary">
+    <div class="summary-item">
+      <span class="summary-value">{{ workerCount }}</span>
+      <span class="summary-label">live worker{{ workerCount === 1 ? '' : 's' }}</span>
+    </div>
+    <div class="summary-item saturation" [class.saturated]="localSaturated">
+      <mat-icon>{{ localSaturated ? 'warning' : 'check_circle' }}</mat-icon>
+      <span class="summary-label">{{ localSaturated ? 'Local host saturated — failing over to peers' : 'Local host has headroom' }}</span>
+    </div>
+    <div class="summary-item migration" *ngIf="migration?.migrated">
+      <mat-icon>swap_horiz</mat-icon>
+      <span class="summary-label">CPU-migrated: {{ migration?.migratedServices?.join(', ') }}</span>
+    </div>
+    <div class="summary-item updated" *ngIf="lastUpdate">
+      <mat-icon>sync</mat-icon><span class="summary-label">updated {{ lastUpdate | date:'mediumTime' }}</span>
+    </div>
+  </div>
+
+  <div class="action-msg" *ngIf="actionMsg">{{ actionMsg }}</div>
+
+  <div *ngIf="loading" class="empty-state">Loading cluster…</div>
+  <div *ngIf="error" class="error-state">{{ error }}</div>
+  <div *ngIf="!loading && !error && workers.length === 0" class="empty-state">
+    No workers connected — start a node with <code>clusterRole=worker</code> and
+    <code>clusterOrchestratorUrl</code> pointing at this orchestrator.
+  </div>
+
+  <div class="worker-grid">
+    <mat-card class="worker-card" *ngFor="let w of workers; trackBy: trackByWorkerId"
+              [class.selected]="selectedWorkerId === w.workerId" (click)="select(w)">
+      <div class="worker-head">
+        <span class="conn-dot" [ngClass]="'conn-' + connectionStatus(w)"
+              [title]="connectionStatus(w) + ' · last seen ' + lastSeen(w)"></span>
+        <div class="worker-id"><mat-icon>dns</mat-icon><span>{{ w.workerId }}</span></div>
+        <span class="role-badge">{{ w.role }}</span>
+        <span class="drain-badge" *ngIf="w.draining">draining</span>
+        <span class="accepting-badge" [class.no]="!w.acceptingWork" *ngIf="!w.draining">{{ w.acceptingWork ? 'accepting' : 'full' }}</span>
+      </div>
+      <div class="worker-url">{{ w.baseUrl }} · <span [ngClass]="'conn-text-' + connectionStatus(w)">{{ connectionStatus(w) }}</span> ({{ lastSeen(w) }})</div>
+
+      <div class="section-title">Capabilities</div>
+      <div class="chips">
+        <span class="chip backend" *ngFor="let b of w.backends">{{ b }}</span>
+        <span class="chip job" *ngFor="let t of w.supportedJobTypes">{{ t }}</span>
+      </div>
+
+      <div class="section-title">Resources</div>
+      <div class="load-row">
+        <span class="k">Jobs</span>
+        <mat-progress-bar mode="determinate" [value]="loadPercent(w)"></mat-progress-bar>
+        <span class="v">{{ w.activeJobs }}/{{ w.maxConcurrentJobs }} · {{ freeSlots(w) }} free</span>
+      </div>
+      <div class="load-row">
+        <span class="k">CPU</span>
+        <mat-progress-bar mode="determinate" [value]="cpuPercent(w) >= 0 ? cpuPercent(w) : 0"></mat-progress-bar>
+        <span class="v">{{ cpuPercent(w) >= 0 ? cpuPercent(w) + '%' : 'n/a' }}
+          <span class="pressure" [ngClass]="pressureClass(w.cpuPressure)">{{ w.cpuPressure }}</span></span>
+      </div>
+      <div class="load-row">
+        <span class="k">RAM</span>
+        <mat-progress-bar mode="determinate" [value]="ramPercent(w)"></mat-progress-bar>
+        <span class="v">{{ ramPercent(w) }}%
+          <span class="pressure" [ngClass]="pressureClass(w.ramPressure)">{{ w.ramPressure }}</span></span>
+      </div>
+      <div class="load-row" *ngFor="let g of w.gpus">
+        <span class="k">GPU{{ g.index }}</span>
+        <mat-progress-bar mode="determinate" [value]="gpuPercent(g)"></mat-progress-bar>
+        <span class="v">{{ gpuPercent(g) }}% · {{ gb(g.totalBytes) }}GB
+          <span class="pressure" [ngClass]="pressureClass(g.pressure)">{{ g.pressure }}</span></span>
+      </div>
+
+      <div class="worker-foot">
+        <div class="lifecycle">
+          <button class="lc-btn" *ngIf="!w.draining" (click)="drain(w, true, $event)" title="Stop accepting new work">Drain</button>
+          <button class="lc-btn resume" *ngIf="w.draining" (click)="drain(w, false, $event)" title="Resume accepting work">Resume</button>
+          <button class="lc-btn danger" (click)="deregister(w, $event)" title="Remove from cluster">Deregister</button>
+        </div>
+        <a class="logs-link" [href]="w.baseUrl" target="_blank" rel="noopener" (click)="$event.stopPropagation()">
+          <mat-icon>open_in_new</mat-icon> logs
+        </a>
+      </div>
+
+      <div class="jobs-panel" *ngIf="selectedWorkerId === w.workerId" (click)="$event.stopPropagation()">
+        <div class="section-title">Delegated jobs ({{ jobsFor(w.workerId).length }})</div>
+        <div class="job-row" *ngFor="let j of jobsFor(w.workerId)">
+          <span class="job-id">{{ j.jobId }}</span>
+          <span class="job-status" [ngClass]="'js-' + (j.status || '').toLowerCase()">{{ j.status }}</span>
+          <button class="lc-btn danger sm" *ngIf="j.status === 'RUNNING'" (click)="cancelJob(w, j.jobId, $event)">Cancel</button>
+        </div>
+        <div class="job-empty" *ngIf="jobsFor(w.workerId).length === 0">No delegated jobs.</div>
+      </div>
+    </mat-card>
+  </div>
+
+  <div class="sessions" *ngIf="sessions.length > 0">
+    <div class="section-title">Distributed crawl sessions</div>
+    <table class="session-table">
+      <tr><th>Session</th><th>Status</th><th>Workers</th></tr>
+      <tr *ngFor="let s of sessions">
+        <td class="mono">{{ s.sessionId || s.id }}</td>
+        <td>{{ s.status }}</td>
+        <td>{{ (s.completedWorkers ?? s.completed ?? 0) }}/{{ (s.totalWorkers ?? s.workerCount ?? 0) }}</td>
+      </tr>
+    </table>
+  </div>
+</div>

@@ -57,11 +57,28 @@ public final class CypherDumpImporter {
                 String externalId = props.get("externalId");
                 if (externalId == null) externalId = props.get("nodeId");
                 if (externalId == null) continue;
+                // Known scalar props that go into dedicated PortableNode fields
+                java.util.Set<String> knownNodeProps = java.util.Set.of(
+                        "externalId", "nodeId", "title", "description",
+                        "confidence", "namedGraphId", "factSheetId", "occurredAt");
                 Map<String, Object> meta = new HashMap<>();
                 for (Map.Entry<String, String> e : props.entrySet()) {
-                    if (!e.getKey().equals("externalId") && !e.getKey().equals("nodeId")
-                            && !e.getKey().equals("title") && !e.getKey().equals("description")) {
+                    if (!knownNodeProps.contains(e.getKey())) {
                         meta.put(e.getKey(), e.getValue());
+                    }
+                }
+                Double nodeConfidence = null;
+                if (props.containsKey("confidence")) {
+                    try { nodeConfidence = Double.parseDouble(props.get("confidence")); }
+                    catch (NumberFormatException ex) {
+                        log.debug("Invalid node confidence '{}' in Cypher dump: {}", props.get("confidence"), ex.getMessage());
+                    }
+                }
+                Long nodeFactSheetId = null;
+                if (props.containsKey("factSheetId")) {
+                    try { nodeFactSheetId = Long.parseLong(props.get("factSheetId")); }
+                    catch (NumberFormatException ex) {
+                        log.debug("Invalid node factSheetId '{}' in Cypher dump: {}", props.get("factSheetId"), ex.getMessage());
                     }
                 }
                 nodes.add(new PortableNode(
@@ -69,7 +86,11 @@ public final class CypherDumpImporter {
                         props.getOrDefault("title", externalId),
                         props.get("description"),
                         node.group(1).toUpperCase(),
-                        meta.isEmpty() ? null : meta));
+                        meta.isEmpty() ? null : meta,
+                        nodeFactSheetId,
+                        props.get("namedGraphId"),
+                        nodeConfidence,
+                        props.get("occurredAt")));
                 continue;
             }
             Matcher rel = CREATE_REL.matcher(trimmed);
@@ -83,12 +104,32 @@ public final class CypherDumpImporter {
                         log.debug("Invalid relationship weight '{}' in Cypher dump, treating as null: {}", relProps.get("weight"), e.getMessage());
                     }
                 }
+                Double edgeConfidence = null;
+                if (relProps.containsKey("confidence")) {
+                    try { edgeConfidence = Double.parseDouble(relProps.get("confidence")); }
+                    catch (NumberFormatException e) {
+                        log.debug("Invalid edge confidence '{}' in Cypher dump: {}", relProps.get("confidence"), e.getMessage());
+                    }
+                }
+                Long edgeFactSheetId = null;
+                if (relProps.containsKey("factSheetId")) {
+                    try { edgeFactSheetId = Long.parseLong(relProps.get("factSheetId")); }
+                    catch (NumberFormatException e) {
+                        log.debug("Invalid edge factSheetId '{}' in Cypher dump: {}", relProps.get("factSheetId"), e.getMessage());
+                    }
+                }
                 edges.add(new PortableEdge(
                         from.getOrDefault("externalId", from.get("nodeId")),
                         to.getOrDefault("externalId", to.get("nodeId")),
                         rel.group(3).toUpperCase(),
                         weight,
-                        relProps.get("description")));
+                        relProps.get("description"),
+                        relProps.get("provenance"),
+                        edgeConfidence,
+                        null,
+                        relProps.get("relationType"),
+                        edgeFactSheetId,
+                        null, null, null, null, null));
             }
         }
         return new PortableGraph(nodes, edges);

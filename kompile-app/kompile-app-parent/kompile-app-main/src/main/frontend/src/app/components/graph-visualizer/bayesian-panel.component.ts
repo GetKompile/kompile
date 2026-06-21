@@ -890,6 +890,9 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
   private destroy$ = new Subject<void>();
 
   @Input() nodeId: string | null = null;
+  /** Inference reach — how far from the seed node the network is expanded. */
+  @Input() maxDepth = 3;
+  @Input() maxNodes = 100;
   @Output() posteriorOverlayChanged = new EventEmitter<Record<string, number> | null>();
   @Output() priorOverlayChanged = new EventEmitter<Record<string, number> | null>();
   @Output() mebnMfragMapChanged = new EventEmitter<Record<string, string> | null>();
@@ -901,7 +904,7 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
   sensitivities: Record<string, number> = {};
   sensitivityBaselinePosterior: number | null = null;
   sensitivityQueryPrior: number | null = null;
-  useMebn = true;
+  @Input() useMebn = true;
   overlayActive = false;
 
   // Network stats (lightweight, no full inference)
@@ -937,8 +940,8 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
     this.error = null;
 
     const inferenceCall = this.useMebn
-      ? this.bayesianService.queryMebnFromNode(this.nodeId)
-      : this.bayesianService.queryFromNode(this.nodeId);
+      ? this.bayesianService.queryMebnFromNode(this.nodeId, this.maxDepth, this.maxNodes)
+      : this.bayesianService.queryFromNode(this.nodeId, this.maxDepth, this.maxNodes);
 
     inferenceCall.pipe(takeUntil(this.destroy$)).subscribe({
       next: (result) => {
@@ -947,7 +950,7 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
         this.loading = false;
 
         // Also fetch sensitivity (includes priors baseline)
-        this.bayesianService.quickSensitivity(this.nodeId!)
+        this.bayesianService.quickSensitivity(this.nodeId!, this.maxDepth)
           .pipe(takeUntil(this.destroy$))
           .subscribe({
             next: (sensResult) => {
@@ -984,8 +987,8 @@ export class BayesianPanelComponent implements OnChanges, OnDestroy {
     if (!this.nodeId) return;
     this.networkStatsLoading = true;
     const statCall = this.useMebn
-      ? this.bayesianService.mebnStats(this.nodeId)
-      : this.bayesianService.networkStats(this.nodeId);
+      ? this.bayesianService.mebnStats(this.nodeId, this.maxDepth, this.maxNodes)
+      : this.bayesianService.networkStats(this.nodeId, this.maxDepth, this.maxNodes);
     statCall.pipe(takeUntil(this.destroy$)).subscribe({
       next: (stats) => {
         this.networkStatsData = stats;

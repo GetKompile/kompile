@@ -18,6 +18,7 @@ package ai.kompile.knowledgegraph.embedding.util;
 
 import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Converter;
+import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
@@ -117,9 +118,20 @@ public class INDArrayConverter implements AttributeConverter<INDArray, byte[]> {
     }
 
     /**
-     * Converts an INDArray to a double array for storage in databases
-     * that don't support BLOB well (like Neo4j).
+     * Converts an INDArray to a double array for interop with databases that do not support
+     * BLOB well (e.g. Neo4j property arrays).
+     *
+     * <p><b>DEPRECATED — lossy interop path only.</b> This method upcasts float32→float64 via
+     * {@link INDArray#toDoubleVector()}.  The resulting {@code double[]} cannot be round-tripped
+     * back to a FLOAT32 INDArray without an explicit cast.  For all JPA persistence use
+     * {@link #convertToDatabaseColumn}/{@link #convertToEntityAttribute} instead, which preserve
+     * the original float32 representation exactly.
+     *
+     * @deprecated Use {@link #convertToDatabaseColumn}/{@link #convertToEntityAttribute} for
+     *             persistence. Reserve this method only for transient interop layers (e.g. passing
+     *             embeddings to a graph-reasoning library that requires {@code double[]}).
      */
+    @Deprecated
     public static double[] toDoubleArray(INDArray array) {
         if (array == null) {
             return null;
@@ -128,22 +140,40 @@ public class INDArrayConverter implements AttributeConverter<INDArray, byte[]> {
     }
 
     /**
-     * Converts a double array back to an INDArray.
+     * Converts a double array back to a <b>FLOAT32</b> INDArray.
+     *
+     * <p><b>DEPRECATED — lossy interop path only.</b> The input {@code double[]} was typically
+     * produced by {@link #toDoubleArray}, which performs a float32→float64 upcast.  This method
+     * converts back to FLOAT32 (via an intermediate FLOAT64 array cast to {@link DataType#FLOAT})
+     * so that the reconstituted INDArray matches the dtype used by models trained on FLOAT32 data.
+     * Precision beyond float32 is silently lost.  For all JPA persistence use
+     * {@link #convertToDatabaseColumn}/{@link #convertToEntityAttribute} instead.
+     *
+     * @deprecated Use {@link #convertToDatabaseColumn}/{@link #convertToEntityAttribute} for
+     *             persistence. Reserve this method only for transient interop layers.
      */
+    @Deprecated
     public static INDArray fromDoubleArray(double[] data) {
         if (data == null || data.length == 0) {
             return null;
         }
-        return Nd4j.create(data);
+        return Nd4j.create(data).castTo(DataType.FLOAT);
     }
 
     /**
-     * Converts a double array back to an INDArray with specified shape.
+     * Converts a double array back to a <b>FLOAT32</b> INDArray with the specified shape.
+     *
+     * <p><b>DEPRECATED — lossy interop path only.</b> See {@link #fromDoubleArray(double[])} for
+     * the full deprecation rationale. This overload additionally reshapes the result.
+     *
+     * @deprecated Use {@link #convertToDatabaseColumn}/{@link #convertToEntityAttribute} for
+     *             persistence. Reserve this method only for transient interop layers.
      */
+    @Deprecated
     public static INDArray fromDoubleArray(double[] data, long... shape) {
         if (data == null || data.length == 0) {
             return null;
         }
-        return Nd4j.create(data, shape);
+        return Nd4j.create(data, shape).castTo(DataType.FLOAT);
     }
 }

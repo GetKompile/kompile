@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.agent;
 
+import ai.kompile.app.services.ToolCallWriterService;
 import ai.kompile.app.web.dto.PassthroughSessionRequest;
 import ai.kompile.chat.history.domain.ChatMessage;
 import ai.kompile.chat.history.service.ChatHistoryService;
@@ -55,6 +56,7 @@ public class PassthroughSessionManager {
     private final AgentChatService agentChatService;
     private final ClaudeStreamParser streamParser;
     private final ChatHistoryService chatHistoryService;
+    private final ToolCallWriterService toolCallWriterService;
 
     private final Map<String, InteractiveSession> sessions = new ConcurrentHashMap<>();
 
@@ -63,11 +65,13 @@ public class PassthroughSessionManager {
             AgentRegistryService agentRegistry,
             AgentChatService agentChatService,
             ClaudeStreamParser streamParser,
-            @Autowired(required = false) ChatHistoryService chatHistoryService) {
+            @Autowired(required = false) ChatHistoryService chatHistoryService,
+            @Autowired(required = false) ToolCallWriterService toolCallWriterService) {
         this.agentRegistry = agentRegistry;
         this.agentChatService = agentChatService;
         this.streamParser = streamParser;
         this.chatHistoryService = chatHistoryService;
+        this.toolCallWriterService = toolCallWriterService;
     }
 
     /**
@@ -87,11 +91,12 @@ public class PassthroughSessionManager {
         final Instant startedAt = Instant.now();
         final boolean useStreamParser;
         final Pattern promptPattern;
+        final String workingDirectory;
 
         InteractiveSession(String sessionId, String agentName, Process process,
                            SseEmitter emitter, Thread readerThread,
                            String chatHistorySessionId, boolean useStreamParser,
-                           Pattern promptPattern) {
+                           Pattern promptPattern, String workingDirectory) {
             this.sessionId = sessionId;
             this.agentName = agentName;
             this.process = process;
@@ -101,6 +106,7 @@ public class PassthroughSessionManager {
             this.chatHistorySessionId = chatHistorySessionId;
             this.useStreamParser = useStreamParser;
             this.promptPattern = promptPattern;
+            this.workingDirectory = workingDirectory;
         }
     }
 
@@ -180,7 +186,8 @@ public class PassthroughSessionManager {
 
             InteractiveSession session = new InteractiveSession(
                     sessionId, agentName, process, emitter, readerThread,
-                    chatHistorySessionId, useStreamParser, promptPattern);
+                    chatHistorySessionId, useStreamParser, promptPattern,
+                    request.getWorkingDirectory());
 
             sessions.put(sessionId, session);
 
@@ -337,9 +344,16 @@ public class PassthroughSessionManager {
                             sendEvent(emitter, "chunk", result.textContent());
                         }
                         if ("tool_use".equals(result.type()) && result.toolName() != null) {
+                            String toolInput = result.toolInput() != null ? result.toolInput().toString() : "";
                             sendEvent(emitter, "tool_use", Map.of(
                                     "toolName", result.toolName(),
-                                    "input", result.toolInput() != null ? result.toolInput().toString() : ""));
+                                    "input", toolInput));
+                            // Persist the tool call to the shared CLI/MCP tool-call index so
+                            // passthrough sessions surface in the MCP Hub tool-call catalog.
+                            if (toolCallWriterService != null) {
+                                toolCallWriterService.record(sessionId, result.toolName(), toolInput,
+                                        session.agentName, "passthrough", false, session.workingDirectory);
+                            }
                         }
                         if (result.isResult()) {
                             // Turn complete

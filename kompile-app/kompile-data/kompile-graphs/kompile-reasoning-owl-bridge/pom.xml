@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~ http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-graphs</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-reasoning-owl-bridge</artifactId>
+    <name>Kompile OWL-DL Client Bridge</name>
+    <description>
+        OWL-DL reasoning bridge for kompile-graph-reasoning. Adds full OWL 2 DL reasoning via
+        Openllet (SROIQ tableau) and arbitrary OWL file import via the OWL API 5.
+        Implements the infra-free lib's OwlReasoner interface without modifying the lib.
+
+        This module carries OWL API + Openllet as its own dependencies — they do NOT leak into
+        kompile-graph-reasoning. This module is NOT suitable for GraalVM native-image compilation
+        (OWL API and Openllet use extensive reflection and OSGI metadata).
+    </description>
+
+    <dependencies>
+        <!-- Lib: OwlReasoner interface + OwlOntology + OwlRlResult + all owl.* model types -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+        </dependency>
+
+        <!-- OWL API 5 — the de-facto Java OWL ontology framework.
+             owlapi-distribution bundles parsers for RDF/XML, OWL/XML, Manchester, and Turtle. -->
+        <dependency>
+            <groupId>net.sourceforge.owlapi</groupId>
+            <artifactId>owlapi-distribution</artifactId>
+            <version>5.1.20</version>
+        </dependency>
+
+        <!-- DL reasoner: Openllet is the maintained successor to Pellet.
+             It is pure-Java, supports OWL 2 DL (SROIQ), and embeds cleanly as a library. -->
+        <dependency>
+            <groupId>com.github.galigator.openllet</groupId>
+            <artifactId>openllet-owlapi</artifactId>
+            <version>2.6.5</version>
+        </dependency>
+
+        <!-- SLF4J only — no Spring, no JPA, no ND4J in this module -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- SLF4J simple binding for test output -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.9</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -20,7 +20,7 @@
   align-items: flex-start;
   margin-bottom: 24px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .header-title {
@@ -43,7 +43,7 @@
 
 .subtitle {
   margin: 4px 0 0 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.9rem;
 }
 
@@ -60,7 +60,7 @@
   justify-content: center;
   padding: 60px 20px;
   gap: 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Error State */
@@ -206,7 +206,7 @@
 
 .status-timestamp {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Prerequisites Section */
@@ -220,7 +220,7 @@
   gap: 8px;
   margin: 0 0 16px 0;
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .prerequisites-section h3 mat-icon {
@@ -235,9 +235,9 @@
 
 .prereq-card {
   padding: 16px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   transition: all 0.2s ease;
 }
 
@@ -282,7 +282,7 @@
 }
 
 .prereq-missing span {
-  color: #666;
+  color: var(--text-secondary);
   display: block;
   margin-bottom: 4px;
 }
@@ -308,7 +308,7 @@
   gap: 8px;
   margin: 0 0 16px 0;
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .categories-section h3 mat-icon {
@@ -329,7 +329,7 @@
 
 .category-icon {
   margin-right: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .category-name {
@@ -387,7 +387,7 @@
   gap: 12px;
   padding: 12px 16px;
   border-radius: 8px;
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .check-item.status-pass {
@@ -405,7 +405,7 @@
 }
 
 .check-item.status-unknown {
-  border-left: 3px solid #9e9e9e;
+  border-left: 3px solid var(--text-tertiary);
 }
 
 .check-icon {
@@ -431,7 +431,7 @@
 }
 
 .status-unknown .check-icon mat-icon {
-  color: #9e9e9e;
+  color: var(--text-tertiary);
 }
 
 .check-content {
@@ -449,17 +449,17 @@
 
 .check-name {
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .check-message {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.9rem;
 }
 
 .check-details {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -509,8 +509,8 @@
 .inline-edit-form {
   margin-top: 12px;
   padding: 16px;
-  background: #fff;
-  border: 1px solid #e0e0e0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
@@ -524,7 +524,7 @@
 }
 
 ::ng-deep .inline-edit-form .mat-mdc-text-field-wrapper {
-  background-color: #fafafa;
+  background-color: var(--bg-body);
 }
 
 .edit-actions {

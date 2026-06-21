@@ -21,6 +21,7 @@ import ai.kompile.staging.web.dto.*;
 import ai.kompile.core.staging.TrainingJobStatus;
 import ai.kompile.core.staging.TrainingJobStartedEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.nd4j.autodiff.samediff.SameDiff;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,7 +32,6 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.time.Instant;
 import java.util.*;
@@ -65,17 +65,20 @@ public class TrainingService implements ai.kompile.core.staging.TrainingServiceA
     private final PeftService peftService;
     private final TrainingSubprocessLauncher subprocessLauncher;
     private final ApplicationEventPublisher eventPublisher;
+    private final SameDiffCheckpointService checkpointService;
 
     @Value("${kompile.training.subprocess.enabled:false}")
     private boolean subprocessEnabled;
 
     public TrainingService(ObjectMapper objectMapper, PeftService peftService,
                            @Autowired(required = false) TrainingSubprocessLauncher subprocessLauncher,
-                           @Autowired(required = false) ApplicationEventPublisher eventPublisher) {
+                           @Autowired(required = false) ApplicationEventPublisher eventPublisher,
+                           @Autowired(required = false) SameDiffCheckpointService checkpointService) {
         this.objectMapper = objectMapper;
         this.peftService = peftService;
         this.subprocessLauncher = subprocessLauncher;
         this.eventPublisher = eventPublisher;
+        this.checkpointService = checkpointService != null ? checkpointService : new SameDiffCheckpointService();
     }
 
     /**
@@ -173,36 +176,32 @@ public class TrainingService implements ai.kompile.core.staging.TrainingServiceA
                 }
             }
 
-            // Attempt to load model via SameDiff
+            // Load SameDiff model checkpoint via typed integration (graceful fallback when backend absent)
             boolean usingSameDiff = false;
-            Object sameDiffModel = null;
-            try {
-                Class<?> sameDiffClass = Class.forName("org.nd4j.autodiff.samediff.SameDiff");
-                File modelFile = resolveModelFile(request.getModelId());
-                if (modelFile != null && modelFile.exists()) {
-                    Method fromFlatFile = sameDiffClass.getMethod("fromFlatFile", File.class);
-                    sameDiffModel = fromFlatFile.invoke(null, modelFile);
-                    usingSameDiff = true;
-                    emitLog(jobId, "INFO", "Loaded SameDiff model from: " + modelFile.getAbsolutePath(), 0, 0.0, 0.0, null);
-                } else {
-                    emitLog(jobId, "WARN", "Model file not found for: " + request.getModelId() + ", using simulation mode", 0, 0.0, 0.0, null);
+            SameDiff sameDiffModel = null;
+            if (checkpointService.isAvailable()) {
+                try {
+                    File modelFile = resolveModelFile(request.getModelId());
+                    if (modelFile != null && modelFile.exists()) {
+                        sameDiffModel = checkpointService.load(modelFile).orElse(null);
+                        usingSameDiff = sameDiffModel != null;
+                        if (usingSameDiff) {
+                            emitLog(jobId, "INFO", "Loaded SameDiff model from: " + modelFile.getAbsolutePath(), 0, 0.0, 0.0, null);
+                        }
+                    } else {
+                        emitLog(jobId, "WARN", "Model file not found for: " + request.getModelId() + ", using simulation mode", 0, 0.0, 0.0, null);
+                    }
+                } catch (Exception e) {
+                    emitLog(jobId, "WARN", "Failed to load SameDiff model: " + e.getMessage() + ", using simulation mode", 0, 0.0, 0.0, null);
                 }
-            } catch (ClassNotFoundException e) {
-                emitLog(jobId, "INFO", "SameDiff not available on classpath, using simulation mode", 0, 0.0, 0.0, null);
-            } catch (Exception e) {
-                emitLog(jobId, "WARN", "Failed to load SameDiff model: " + e.getMessage() + ", using simulation mode", 0, 0.0, 0.0, null);
+            } else {
+                emitLog(jobId, "INFO", "ND4J backend not available, using simulation mode", 0, 0.0, 0.0, null);
             }
 
-            // Attempt DL4J training via reflection
-            boolean dl4jTrainingAvailable = false;
+            // Native DL4J training loop (placeholder — real training requires TrainingConfig wiring)
+            boolean dl4jTrainingAvailable = usingSameDiff;
             if (usingSameDiff) {
-                try {
-                    Class<?> trainerClass = Class.forName("org.nd4j.autodiff.samediff.training.TrainingConfig");
-                    dl4jTrainingAvailable = true;
-                    emitLog(jobId, "INFO", "DL4J TrainingConfig available, will use native training loop", 0, 0.0, 0.0, null);
-                } catch (ClassNotFoundException e) {
-                    emitLog(jobId, "INFO", "DL4J TrainingConfig not on classpath, using simulation training loop", 0, 0.0, 0.0, null);
-                }
+                emitLog(jobId, "INFO", "SameDiff model loaded; checkpoint saves will use asFlatFile()", 0, 0.0, 0.0, null);
             }
 
             // Training loop parameters
@@ -310,8 +309,19 @@ public class TrainingService implements ai.kompile.core.staging.TrainingServiceA
 
                 // Save checkpoint at save steps
                 if ((epoch + 1) % Math.max(1, saveSteps / stepsPerEpoch) == 0 || epoch == epochs - 1) {
-                    String checkpointInfo = "Checkpoint saved at epoch " + (epoch + 1);
-                    emitLog(jobId, "INFO", checkpointInfo, globalStep, currentLoss, baseLr, null);
+                    if (usingSameDiff && sameDiffModel != null) {
+                        try {
+                            File checkpointFile = new File(
+                                    new File(trainingJobsDir, jobId),
+                                    "checkpoint-epoch-" + (epoch + 1) + ".fb");
+                            checkpointService.save(sameDiffModel, checkpointFile);
+                            emitLog(jobId, "INFO", "Checkpoint saved (asFlatFile) at epoch " + (epoch + 1) + " → " + checkpointFile.getName(), globalStep, currentLoss, baseLr, null);
+                        } catch (Exception ckptEx) {
+                            emitLog(jobId, "WARN", "Checkpoint save failed: " + ckptEx.getMessage(), globalStep, currentLoss, baseLr, null);
+                        }
+                    } else {
+                        emitLog(jobId, "INFO", "Checkpoint saved (simulation) at epoch " + (epoch + 1), globalStep, currentLoss, baseLr, null);
+                    }
                 }
             }
 

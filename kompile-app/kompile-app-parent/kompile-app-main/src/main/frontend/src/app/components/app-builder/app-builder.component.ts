@@ -89,6 +89,11 @@ export class AppBuilderComponent implements OnInit {
   // Build options
   configName: string = '';
   appTitle: string = 'Kompile RAG Console';
+  // White-label branding (written into the generated app's app-index-config.json)
+  logoUrl: string = 'assets/branding/kompile-logo.svg';
+  logoAlt: string = 'Kompile';
+  showLogo: boolean = true;
+  faviconUrl: string = 'assets/branding/kompile-logo.svg';
   buildNative: boolean = true;
   skipTests: boolean = true;
   backend: string = 'nd4j-cuda-12.9';
@@ -197,6 +202,10 @@ export class AppBuilderComponent implements OnInit {
     const payload = {
       configName: this.configName.trim(),
       appTitle: this.appTitle,
+      logoUrl: this.logoUrl,
+      logoAlt: this.logoAlt,
+      showLogo: this.showLogo,
+      faviconUrl: this.faviconUrl,
       modules: Array.from(this.selectedModules),
       buildNative: this.buildNative,
       skipTests: this.skipTests,

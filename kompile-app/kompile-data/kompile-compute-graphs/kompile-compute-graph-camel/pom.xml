@@ -97,14 +97,6 @@
       <optional>true</optional>
     </dependency>
 
-    <!-- Optional: Drools integration -->
-    <dependency>
-      <groupId>ai.kompile</groupId>
-      <artifactId>kompile-compute-graph-drools</artifactId>
-      <version>${project.version}</version>
-      <optional>true</optional>
-    </dependency>
-
     <dependency>
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>

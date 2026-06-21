@@ -1,0 +1,95 @@
+<section class="store-panel">
+  <div class="panel-header">
+    <div class="title-block">
+      <h2>Project Store</h2>
+      <p class="subtitle">Pull in and clone projects from an external Kompile project store.</p>
+    </div>
+    <button mat-stroked-button (click)="loadConfig()" matTooltip="Refresh">
+      <mat-icon>refresh</mat-icon>
+      Refresh
+    </button>
+  </div>
+
+  <!-- Store pointer config -->
+  <mat-card class="config-card">
+    <div class="config-row">
+      <mat-form-field appearance="outline" class="url-field" subscriptSizing="dynamic">
+        <mat-label>Store URL</mat-label>
+        <mat-icon matPrefix>cloud</mat-icon>
+        <input matInput [(ngModel)]="urlInput" placeholder="http://localhost:8088"
+               (keyup.enter)="saveConfig()">
+      </mat-form-field>
+      <mat-slide-toggle [(ngModel)]="gitXet" matTooltip="Run `git xet install` after cloning">
+        git-xet
+      </mat-slide-toggle>
+      <button mat-flat-button color="primary" (click)="saveConfig()"
+              [disabled]="savingConfig || !urlInput.trim()">
+        <mat-icon>save</mat-icon>
+        Save
+      </button>
+    </div>
+
+    <div class="config-status">
+      <ng-container *ngIf="config.configured; else notConfigured">
+        <mat-icon class="ok">check_circle</mat-icon>
+        <span>Connected to <code>{{ config.url }}</code></span>
+      </ng-container>
+      <ng-template #notConfigured>
+        <mat-icon class="muted">info</mat-icon>
+        <span>No store configured yet. Enter a URL and save to browse and clone its projects.</span>
+      </ng-template>
+    </div>
+  </mat-card>
+
+  <!-- Projects from the configured store -->
+  <ng-container *ngIf="config.configured">
+    <mat-progress-bar *ngIf="loadingProjects" mode="indeterminate"></mat-progress-bar>
+
+    <div class="error-banner" *ngIf="projectsError">
+      <mat-icon>error_outline</mat-icon>
+      <span>{{ projectsError }}</span>
+    </div>
+
+    <div class="projects-grid" *ngIf="projects.length; else emptyProjects">
+      <mat-card class="project-card" *ngFor="let p of projects">
+        <div class="card-top">
+          <mat-icon class="repo-icon">{{ iconFor(p.repoType) }}</mat-icon>
+          <div class="card-heading">
+            <span class="namespace">{{ p.namespace }}</span>
+            <span class="slug">{{ p.slug }}</span>
+          </div>
+        </div>
+
+        <div class="chips">
+          <span class="chip chip-type" *ngIf="p.repoType">{{ p.repoType }}</span>
+          <span class="chip" *ngIf="p.visibility">
+            <mat-icon>{{ p.visibility === 'public' ? 'public' : 'lock' }}</mat-icon>
+            {{ p.visibility }}
+          </span>
+          <span class="chip chip-branch" *ngIf="p.defaultBranch">
+            <mat-icon>account_tree</mat-icon>{{ p.defaultBranch }}
+          </span>
+        </div>
+
+        <p class="description" *ngIf="p.description">{{ p.description }}</p>
+
+        <div class="card-footer">
+          <code class="clone-url" [matTooltip]="p.cloneUrl || ''">{{ p.cloneUrl }}</code>
+          <button mat-flat-button color="primary" (click)="cloneProject(p)"
+                  [disabled]="cloningSlug === p.slug">
+            <mat-icon>{{ cloningSlug === p.slug ? 'hourglass_top' : 'download' }}</mat-icon>
+            {{ cloningSlug === p.slug ? 'Cloning…' : 'Clone' }}
+          </button>
+        </div>
+      </mat-card>
+    </div>
+
+    <ng-template #emptyProjects>
+      <div class="empty-state" *ngIf="!loadingProjects && !projectsError">
+        <mat-icon>inventory_2</mat-icon>
+        <h3>No projects in this store</h3>
+        <p>Push a project to <code>{{ config.url }}</code> and it will appear here.</p>
+      </div>
+    </ng-template>
+  </ng-container>
+</section>

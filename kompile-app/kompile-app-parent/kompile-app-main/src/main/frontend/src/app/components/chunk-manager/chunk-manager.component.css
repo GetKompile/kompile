@@ -61,7 +61,7 @@
   position: relative;
   flex: 1;
   overflow: auto;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -71,7 +71,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(255, 255, 255, 0.8);
+  background: color-mix(in srgb, var(--bg-surface) 80%, transparent);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -88,7 +88,7 @@
 .chunk-id {
   font-family: monospace;
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .content-preview {
@@ -112,7 +112,7 @@ tr.selected {
 }
 
 tr.mat-mdc-row:hover {
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
   cursor: pointer;
 }
 
@@ -122,7 +122,7 @@ tr.mat-mdc-row:hover {
   align-items: center;
   justify-content: center;
   padding: 48px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .no-data mat-icon {
@@ -139,7 +139,7 @@ tr.mat-mdc-row:hover {
   right: 0;
   width: 500px;
   height: 100%;
-  background: white;
+  background: var(--bg-surface);
   box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
   display: flex;
   flex-direction: column;
@@ -152,8 +152,8 @@ tr.mat-mdc-row:hover {
   justify-content: space-between;
   align-items: center;
   padding: 16px;
-  border-bottom: 1px solid #e0e0e0;
-  background: #fafafa;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-body);
 }
 
 .detail-header h3 {
@@ -184,13 +184,13 @@ tr.mat-mdc-row:hover {
 
 .meta-item strong {
   min-width: 80px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .meta-item code {
   font-family: monospace;
   font-size: 12px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 3px;
   word-break: break-all;
@@ -204,14 +204,14 @@ tr.mat-mdc-row:hover {
 .content-section h4,
 .metadata-section h4 {
   margin: 0 0 12px 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 14px;
   text-transform: uppercase;
 }
 
 .chunk-content {
-  background: #f9f9f9;
-  border: 1px solid #e0e0e0;
+  background: var(--bg-body);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 12px;
   max-height: 400px;
@@ -244,7 +244,7 @@ tr.mat-mdc-row:hover {
 
 .metadata-item strong {
   min-width: 120px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .loading-detail {
@@ -270,7 +270,7 @@ tr.mat-mdc-row:hover {
 }
 
 .dedup-dialog {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 8px;
   width: 500px;
   max-width: 90vw;
@@ -285,7 +285,7 @@ tr.mat-mdc-row:hover {
   justify-content: space-between;
   align-items: center;
   padding: 16px 16px 16px 24px;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .dialog-header h3 {
@@ -310,7 +310,7 @@ tr.mat-mdc-row:hover {
 
 .analysis-results h4 {
   margin: 16px 0 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .result-stats {
@@ -332,7 +332,7 @@ tr.mat-mdc-row:hover {
 
 .stat-label {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -341,8 +341,8 @@ tr.mat-mdc-row:hover {
   justify-content: flex-end;
   gap: 12px;
   padding: 16px 24px;
-  border-top: 1px solid #e0e0e0;
-  background: #fafafa;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-body);
 }
 
 .dialog-loading {
@@ -387,11 +387,11 @@ tr.mat-mdc-row:hover {
   align-items: center;
   gap: 4px;
   padding: 4px 12px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 16px;
   font-size: 14px;
   font-weight: 500;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .index-stats .stat-item mat-icon {
@@ -484,7 +484,7 @@ tr.mat-mdc-row:hover {
 
 .edit-section h4 {
   margin: 0 0 12px 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 14px;
   text-transform: uppercase;
 }
@@ -511,8 +511,8 @@ tr.mat-mdc-row:hover {
   align-items: center;
   gap: 4px;
   padding: 4px 8px 4px 12px;
-  background: #f5f5f5;
-  border: 1px solid #e0e0e0;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
   border-radius: 20px;
   font-size: 13px;
 }
@@ -528,7 +528,7 @@ tr.mat-mdc-row:hover {
 }
 
 .entity-name {
-  color: #333;
+  color: var(--text-primary);
 }
 
 .entity-chip button {
@@ -548,10 +548,10 @@ tr.mat-mdc-row:hover {
   align-items: center;
   gap: 8px;
   padding: 16px;
-  background: #f9f9f9;
-  border: 1px dashed #e0e0e0;
+  background: var(--bg-body);
+  border: 1px dashed var(--border-color);
   border-radius: 4px;
-  color: #999;
+  color: var(--text-tertiary);
   margin-bottom: 16px;
 }
 

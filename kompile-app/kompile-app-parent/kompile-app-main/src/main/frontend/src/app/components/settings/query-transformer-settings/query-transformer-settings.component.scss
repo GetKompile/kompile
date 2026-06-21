@@ -25,7 +25,7 @@
 
     p {
       margin: 0;
-      color: rgba(0, 0, 0, 0.6);
+      color: var(--text-secondary);
     }
   }
 }
@@ -36,12 +36,12 @@
   align-items: center;
   gap: 12px;
   padding: 24px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
   margin-bottom: 16px;
 
   mat-icon {
-    color: #666;
+    color: var(--text-secondary);
   }
 }
 
@@ -92,7 +92,7 @@
 
 .preset-card {
   padding: 16px;
-  border: 2px solid #e0e0e0;
+  border: 2px solid var(--border-color);
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
@@ -121,7 +121,7 @@
   .preset-description {
     margin: 0;
     font-size: 0.85rem;
-    color: rgba(0, 0, 0, 0.6);
+    color: var(--text-secondary);
   }
 }
 
@@ -133,12 +133,12 @@
 
 .type-option {
   padding: 12px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   margin: 0;
 
   &:hover {
-    background: #f5f5f5;
+    background: var(--bg-surface-elevated);
   }
 
   .type-info {
@@ -153,7 +153,7 @@
 
     .type-description {
       font-size: 0.85rem;
-      color: rgba(0, 0, 0, 0.6);
+      color: var(--text-secondary);
     }
 
     .llm-badge {
@@ -195,7 +195,7 @@
     .config-description {
       display: block;
       font-size: 0.85rem;
-      color: rgba(0, 0, 0, 0.6);
+      color: var(--text-secondary);
       margin-top: 4px;
     }
   }
@@ -208,7 +208,7 @@
 .section-title {
   margin: 16px 0 8px 0;
   font-size: 0.9rem;
-  color: rgba(0, 0, 0, 0.6);
+  color: var(--text-secondary);
 }
 
 mat-slider {
@@ -234,7 +234,7 @@ mat-slider {
 
     p {
       margin: 4px 0;
-      color: rgba(0, 0, 0, 0.6);
+      color: var(--text-secondary);
 
       &.llm-note {
         display: flex;
@@ -260,5 +260,5 @@ mat-slider {
   gap: 16px;
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid rgba(0, 0, 0, 0.12);
+  border-top: 1px solid var(--border-color);
 }

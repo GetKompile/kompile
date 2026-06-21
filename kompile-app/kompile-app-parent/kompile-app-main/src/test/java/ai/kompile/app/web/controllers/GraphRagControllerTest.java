@@ -275,7 +275,9 @@ class GraphRagControllerTest {
 
             @SuppressWarnings("unchecked")
             List<Map<String, String>> searchTypes = (List<Map<String, String>>) body.get("searchTypes");
-            assertEquals(2, searchTypes.size());
+            assertEquals(3, searchTypes.size());
+            assertTrue(searchTypes.stream().anyMatch(t -> "HYBRID".equals(t.get("id"))),
+                    "info() should advertise the HYBRID search type");
         }
 
         @Test

@@ -9,8 +9,8 @@
  */
 package ai.kompile.event.attribution.algorithm;
 
-import ai.kompile.event.attribution.domain.AttributionEvidence;
-import ai.kompile.event.attribution.domain.EvidenceType;
+import ai.kompile.graph.reasoning.domain.AttributionEvidence;
+import ai.kompile.graph.reasoning.domain.EvidenceType;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;

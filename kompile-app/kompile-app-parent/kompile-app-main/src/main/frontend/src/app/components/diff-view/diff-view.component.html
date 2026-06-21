@@ -1,0 +1,35 @@
+<div class="diff-view">
+  <div *ngIf="isEmpty" class="diff-empty">{{ emptyMessage }}</div>
+
+  <!-- Unified (inline) view -->
+  <table *ngIf="!isEmpty && viewMode === 'unified'" class="diff-table unified">
+    <tbody>
+      <tr *ngFor="let line of parsedDiff" class="diff-row" [ngClass]="'row-' + line.type">
+        <td *ngIf="showLineNumbers" class="ln">{{ line.oldLineNo }}</td>
+        <td *ngIf="showLineNumbers" class="ln">{{ line.newLineNo }}</td>
+        <td class="gutter">{{ line.type === 'add' ? '+' : line.type === 'remove' ? '-' : '' }}</td>
+        <td class="code"><pre>{{ line.text }}</pre></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Side-by-side (split) view -->
+  <table *ngIf="!isEmpty && viewMode === 'split'" class="diff-table split">
+    <tbody>
+      <tr *ngFor="let pair of splitPairs" class="diff-row">
+        <ng-container *ngIf="pair.left === pair.right && pair.left as shared; else sideBySide">
+          <td *ngIf="showLineNumbers" class="ln">{{ shared.oldLineNo }}</td>
+          <td class="code" [ngClass]="'row-' + shared.type"><pre>{{ shared.text }}</pre></td>
+          <td *ngIf="showLineNumbers" class="ln">{{ shared.newLineNo }}</td>
+          <td class="code" [ngClass]="'row-' + shared.type"><pre>{{ shared.text }}</pre></td>
+        </ng-container>
+        <ng-template #sideBySide>
+          <td *ngIf="showLineNumbers" class="ln">{{ pair.left?.oldLineNo }}</td>
+          <td class="code" [ngClass]="pair.left ? 'row-' + pair.left.type : 'row-empty'"><pre>{{ pair.left?.text }}</pre></td>
+          <td *ngIf="showLineNumbers" class="ln">{{ pair.right?.newLineNo }}</td>
+          <td class="code" [ngClass]="pair.right ? 'row-' + pair.right.type : 'row-empty'"><pre>{{ pair.right?.text }}</pre></td>
+        </ng-template>
+      </tr>
+    </tbody>
+  </table>
+</div>

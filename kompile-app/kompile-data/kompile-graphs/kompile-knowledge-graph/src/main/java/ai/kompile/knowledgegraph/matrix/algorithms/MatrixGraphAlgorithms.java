@@ -97,12 +97,44 @@ public class MatrixGraphAlgorithms {
     }
 
     /**
-     * Matrix-primitive PageRank. Takes an [n x n] adjacency matrix and the parallel list of
-     * node IDs (row/col i ↔ nodeIds[i]). Shared by {@code AdjacencyMatrixGraph}-backed and
-     * {@code AdjacencyView}-backed callers so there is a single implementation.
+     * Matrix-primitive PageRank with a uniform teleport distribution. Takes an [n x n] adjacency
+     * matrix and the parallel list of node IDs (row/col i ↔ nodeIds[i]). Shared by
+     * {@code AdjacencyMatrixGraph}-backed and {@code AdjacencyView}-backed callers so there is a
+     * single implementation. Delegates to the personalized variant
+     * {@link #pageRank(INDArray, List, INDArray, double, double, int)} with a uniform restart vector.
      */
     public static Map<String, Double> pageRank(INDArray adj,
                                                 List<String> nodeIds,
+                                                double dampingFactor,
+                                                double convergence,
+                                                int maxIterations) {
+        int n = nodeIds.size();
+        if (n == 0) return Collections.emptyMap();
+        INDArray uniform = Nd4j.ones(DataType.FLOAT, n, 1).div(n);
+        try {
+            return pageRank(adj, nodeIds, uniform, dampingFactor, convergence, maxIterations);
+        } finally {
+            if (!uniform.wasClosed()) uniform.close();
+        }
+    }
+
+    /**
+     * Generalized (personalized) matrix-primitive PageRank. Identical to standard PageRank except
+     * the teleport/restart distribution — used both for random jumps and for redistributing the rank
+     * of dangling nodes — is the supplied {@code personalization} column vector instead of the uniform
+     * distribution. A uniform vector reproduces standard PageRank exactly; a vector with mass
+     * concentrated on a few "seed" nodes yields Personalized PageRank (PPR), biasing importance toward
+     * nodes near the seeds — the structural basis of HippoRAG-style multi-hop retrieval.
+     *
+     * @param adj             [n x n] adjacency matrix; row i = node {@code nodeIds[i]}. Owned by caller.
+     * @param nodeIds         parallel node-id list (position i ↔ matrix row/col i)
+     * @param personalization [n x 1] restart distribution, expected to sum to 1. Owned by the caller;
+     *                        this method neither mutates nor closes it.
+     * @return map of node ID to PPR score
+     */
+    public static Map<String, Double> pageRank(INDArray adj,
+                                                List<String> nodeIds,
+                                                INDArray personalization,
                                                 double dampingFactor,
                                                 double convergence,
                                                 int maxIterations) {
@@ -118,23 +150,22 @@ public class MatrixGraphAlgorithms {
 
         INDArray transitionMatrix = adj.divColumnVector(safeDegrees.reshape(n, 1)).transpose();
 
-        // For dangling nodes (no outgoing edges), spread rank uniformly across all nodes.
-        INDArray uniformCol = Nd4j.ones(DataType.FLOAT, n, 1).div(n);
+        // For dangling nodes (no outgoing edges), spread rank according to the restart distribution
+        // (uniform for standard PageRank, seed-biased for PPR).
         for (int i = 0; i < n; i++) {
             if (isDangling.getDouble(i) > 0) {
-                transitionMatrix.putColumn(i, uniformCol);
+                transitionMatrix.putColumn(i, personalization);
             }
         }
-        uniformCol.close();
         isDangling.close();
         safeDegrees.close();
 
-        INDArray pr = Nd4j.ones(DataType.FLOAT, n, 1).div(n);
-        INDArray teleport = Nd4j.ones(DataType.FLOAT, n, 1).div(n);
+        // Initialize the rank vector at the restart distribution; teleport to the same.
+        INDArray pr = personalization.dup();
 
         for (int iter = 0; iter < maxIterations; iter++) {
             INDArray newPr = transitionMatrix.mmul(pr).mul(dampingFactor)
-                    .add(teleport.mul(1 - dampingFactor));
+                    .add(personalization.mul(1 - dampingFactor));
             double diff = pr.sub(newPr).norm2Number().doubleValue();
             pr.assign(newPr);
             if (diff < convergence) {
@@ -146,6 +177,212 @@ public class MatrixGraphAlgorithms {
         Map<String, Double> result = new HashMap<>(n);
         for (int i = 0; i < n; i++) {
             result.put(nodeIds.get(i), pr.getDouble(i, 0));
+        }
+        return result;
+    }
+
+    /**
+     * Personalized PageRank (PPR) over a graph, seeded by a set of weighted nodes. The seed weights
+     * form the restart distribution: probability mass concentrates near the seeds, so the resulting
+     * scores rank every node by query-biased importance rather than global importance. This is the
+     * structural core of embedding-seeded multi-hop graph retrieval — embed the query, pick the most
+     * similar nodes as seeds (weighted by similarity), then run PPR to pull in multi-hop neighbors.
+     *
+     * @param graph       the graph
+     * @param seedWeights node-id → non-negative seed weight (need not be normalized); entries for
+     *                    unknown/absent nodes are ignored
+     * @return map of node ID to PPR score, or an empty map if the graph is empty or there is no
+     *         positive seed mass
+     */
+    public static Map<String, Double> personalizedPageRank(AdjacencyMatrixGraph graph,
+                                                            Map<String, Double> seedWeights) {
+        return personalizedPageRank(graph, seedWeights,
+                DEFAULT_DAMPING, DEFAULT_CONVERGENCE, DEFAULT_MAX_ITERATIONS);
+    }
+
+    /**
+     * Personalized PageRank with explicit parameters.
+     * See {@link #personalizedPageRank(AdjacencyMatrixGraph, Map)}.
+     */
+    public static Map<String, Double> personalizedPageRank(AdjacencyMatrixGraph graph,
+                                                            Map<String, Double> seedWeights,
+                                                            double dampingFactor,
+                                                            double convergence,
+                                                            int maxIterations) {
+        int n = graph.getNodeCount();
+        if (n == 0 || seedWeights == null || seedWeights.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<String> nodeIds = nodeIdsOf(graph);
+
+        // L1-normalized restart distribution over seeds that actually exist in the graph.
+        double total = 0.0;
+        for (Map.Entry<String, Double> e : seedWeights.entrySet()) {
+            Double w = e.getValue();
+            if (w != null && w > 0 && graph.getNode(e.getKey()).isPresent()) {
+                total += w;
+            }
+        }
+        if (total <= 0.0) {
+            return Collections.emptyMap();
+        }
+        Map<String, Double> restart = new HashMap<>();
+        for (Map.Entry<String, Double> e : seedWeights.entrySet()) {
+            Double w = e.getValue();
+            if (w != null && w > 0 && graph.getNode(e.getKey()).isPresent()) {
+                restart.put(e.getKey(), w / total);
+            }
+        }
+
+        // For large graphs the dense [n x n] transition matrix is too costly; use a sparse,
+        // adjacency-list power iteration that computes the identical result without materializing it.
+        if (n > DENSE_PPR_NODE_CAP) {
+            log.debug("Personalized PageRank: {} nodes exceeds dense cap {}, using sparse implementation",
+                    n, DENSE_PPR_NODE_CAP);
+            return personalizedPageRankSparse(graph, nodeIds, restart, dampingFactor, convergence, maxIterations);
+        }
+
+        // Build the [n x 1] restart vector (0 for non-seed nodes).
+        INDArray personalization = Nd4j.zeros(DataType.FLOAT, n, 1);
+        for (int i = 0; i < n; i++) {
+            Double w = restart.get(nodeIds.get(i));
+            if (w != null) {
+                personalization.putScalar(i, 0, w);
+            }
+        }
+
+        INDArray adj = graph.getCombinedAdjacencyMatrix();
+        try {
+            return pageRank(adj, nodeIds, personalization, dampingFactor, convergence, maxIterations);
+        } finally {
+            if (!adj.wasClosed()) adj.close();
+            if (!personalization.wasClosed()) personalization.close();
+        }
+    }
+
+    /** Node-count threshold above which Personalized PageRank uses the sparse implementation. */
+    public static final int DENSE_PPR_NODE_CAP = 2000;
+
+    /**
+     * Sparse, adjacency-list Personalized PageRank for large graphs. Computes the same stationary
+     * distribution as the dense variant (seed restart distribution, dangling mass redistributed to the
+     * restart distribution) using HashMap rank vectors and O(edges) work per iteration — no
+     * {@code [n x n]} matrix is ever materialized.
+     *
+     * @param restart pre-normalized restart distribution (node id → probability, summing to 1)
+     */
+    static Map<String, Double> personalizedPageRankSparse(AdjacencyMatrixGraph graph,
+                                                          List<String> nodeIds,
+                                                          Map<String, Double> restart,
+                                                          double dampingFactor,
+                                                          double convergence,
+                                                          int maxIterations) {
+        // Cache out-neighbors and out-weight sums once.
+        Map<String, List<Map.Entry<String, Double>>> outNeighbors = new HashMap<>(nodeIds.size() * 2);
+        Map<String, Double> outWeight = new HashMap<>(nodeIds.size() * 2);
+        for (String u : nodeIds) {
+            List<Map.Entry<String, Double>> nbs = graph.getNeighbors(u, null);
+            outNeighbors.put(u, nbs);
+            double s = 0.0;
+            for (Map.Entry<String, Double> e : nbs) {
+                s += e.getValue() != null ? e.getValue() : 0.0;
+            }
+            outWeight.put(u, s);
+        }
+
+        Map<String, Double> pr = new HashMap<>(nodeIds.size() * 2);
+        for (String u : nodeIds) {
+            pr.put(u, restart.getOrDefault(u, 0.0));
+        }
+
+        for (int iter = 0; iter < maxIterations; iter++) {
+            Map<String, Double> next = new HashMap<>(nodeIds.size() * 2);
+            double danglingMass = 0.0;
+            for (String u : nodeIds) {
+                next.put(u, (1 - dampingFactor) * restart.getOrDefault(u, 0.0));
+                if (outWeight.get(u) == 0.0) {
+                    danglingMass += pr.get(u);
+                }
+            }
+            // Distribute each node's rank across its out-edges, weighted.
+            for (String u : nodeIds) {
+                double pu = pr.get(u);
+                double ow = outWeight.get(u);
+                if (ow > 0.0 && pu != 0.0) {
+                    double share = dampingFactor * pu / ow;
+                    for (Map.Entry<String, Double> e : outNeighbors.get(u)) {
+                        double w = e.getValue() != null ? e.getValue() : 0.0;
+                        next.merge(e.getKey(), share * w, Double::sum);
+                    }
+                }
+            }
+            // Dangling nodes redistribute their rank to the restart distribution.
+            if (danglingMass > 0.0) {
+                double dm = dampingFactor * danglingMass;
+                for (Map.Entry<String, Double> e : restart.entrySet()) {
+                    next.merge(e.getKey(), dm * e.getValue(), Double::sum);
+                }
+            }
+            double diff = 0.0;
+            for (String u : nodeIds) {
+                double delta = next.get(u) - pr.get(u);
+                diff += delta * delta;
+            }
+            pr = next;
+            if (Math.sqrt(diff) < convergence) {
+                log.debug("Sparse Personalized PageRank converged after {} iterations", iter + 1);
+                break;
+            }
+        }
+        return pr;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PATH FINDING (PathRAG)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Finds up to {@code maxPaths} simple (no repeated node) directed paths from {@code sourceId} to
+     * {@code targetId}, each at most {@code maxHops} edges long, via bounded breadth-first search.
+     * Shorter paths are discovered first. Each returned path is the ordered list of node ids including
+     * both endpoints. This is the structural primitive behind PathRAG-style relational-path retrieval:
+     * the relations connecting two query-relevant entities are often the most informative context.
+     *
+     * @return list of node-id paths (possibly empty); never null
+     */
+    public static List<List<String>> findPaths(AdjacencyMatrixGraph graph, String sourceId, String targetId,
+                                               int maxHops, int maxPaths) {
+        List<List<String>> result = new ArrayList<>();
+        if (sourceId == null || targetId == null || sourceId.equals(targetId)
+                || graph.getNode(sourceId).isEmpty() || graph.getNode(targetId).isEmpty()) {
+            return result;
+        }
+        Deque<List<String>> queue = new ArrayDeque<>();
+        List<String> start = new ArrayList<>();
+        start.add(sourceId);
+        queue.add(start);
+        while (!queue.isEmpty() && result.size() < maxPaths) {
+            List<String> path = queue.poll();
+            String last = path.get(path.size() - 1);
+            if (path.size() - 1 >= maxHops) {
+                continue;
+            }
+            for (Map.Entry<String, Double> neighbor : graph.getNeighbors(last, null)) {
+                String next = neighbor.getKey();
+                if (path.contains(next)) {
+                    continue; // keep paths simple (no cycles)
+                }
+                List<String> extended = new ArrayList<>(path);
+                extended.add(next);
+                if (next.equals(targetId)) {
+                    result.add(extended);
+                    if (result.size() >= maxPaths) {
+                        break;
+                    }
+                } else {
+                    queue.add(extended);
+                }
+            }
         }
         return result;
     }

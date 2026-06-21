@@ -224,6 +224,32 @@
                   placeholder="Kompile RAG Console">
                 <mat-hint>Displayed in the web UI header</mat-hint>
               </mat-form-field>
+
+              <!-- White-label branding (logo, favicon, name) -->
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Brand Logo URL</mat-label>
+                <input matInput [(ngModel)]="logoUrl" placeholder="assets/branding/kompile-logo.svg">
+                <mat-hint>Header logo (bundled asset path or URL)</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Brand Logo Alt Text</mat-label>
+                <input matInput [(ngModel)]="logoAlt" placeholder="Kompile">
+                <mat-hint>Accessible alt text for the logo</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Favicon URL</mat-label>
+                <input matInput [(ngModel)]="faviconUrl" placeholder="assets/branding/kompile-logo.svg">
+                <mat-hint>Browser-tab icon (bundled asset path or URL)</mat-hint>
+              </mat-form-field>
+
+              <div class="toggle-row">
+                <mat-slide-toggle [(ngModel)]="showLogo" color="primary">
+                  Show brand logo
+                </mat-slide-toggle>
+                <span class="toggle-hint">When off, the header shows the app title only</span>
+              </div>
             </mat-card-content>
           </mat-card>
 

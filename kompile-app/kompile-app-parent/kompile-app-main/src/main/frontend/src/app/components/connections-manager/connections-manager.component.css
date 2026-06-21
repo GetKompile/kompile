@@ -19,7 +19,7 @@
 
 .subtitle {
   margin: 0;
-  color: #666666;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
@@ -30,7 +30,7 @@
   justify-content: center;
   padding: 48px;
   gap: 16px;
-  color: #666666;
+  color: var(--text-secondary);
 }
 
 .connections-grid {
@@ -171,7 +171,7 @@
   flex-direction: column;
   gap: 4px;
   font-size: 11px;
-  color: #757575;
+  color: var(--text-tertiary);
 }
 
 .timestamps .expiring-soon {
@@ -184,9 +184,9 @@
   align-items: center;
   gap: 8px;
   padding: 16px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
-  color: #757575;
+  color: var(--text-tertiary);
 }
 
 .scopes-section {
@@ -197,7 +197,7 @@
 .related-label {
   display: block;
   font-size: 11px;
-  color: #757575;
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 8px;
@@ -300,7 +300,7 @@ mat-card-actions button {
 }
 
 .setup-subtitle {
-  color: #666666;
+  color: var(--text-secondary);
   font-size: 14px;
   margin: 0;
   max-width: 600px;
@@ -318,12 +318,12 @@ mat-card-actions button {
 .step-card {
   display: flex;
   gap: 16px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #ffffff 100%);
+  background: linear-gradient(135deg, var(--bg-surface-elevated) 0%, var(--bg-surface) 100%);
   border-radius: 12px;
   padding: 20px;
   min-width: 200px;
   flex: 1;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
   transition: transform 0.2s, box-shadow 0.2s;
 }
@@ -351,13 +351,13 @@ mat-card-actions button {
   margin: 0 0 6px 0;
   font-size: 14px;
   font-weight: 600;
-  color: #212121;
+  color: var(--text-primary);
 }
 
 .step-content p {
   margin: 0;
   font-size: 12px;
-  color: #666666;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
@@ -375,17 +375,17 @@ mat-card-actions button {
 }
 
 .provider-links {
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 12px;
   padding: 24px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 .provider-links h3 {
   font-size: 16px;
   font-weight: 500;
   margin: 0 0 16px 0;
-  color: #424242;
+  color: var(--text-primary);
 }
 
 .links-grid {
@@ -399,11 +399,11 @@ mat-card-actions button {
   align-items: center;
   gap: 12px;
   padding: 14px 18px;
-  background: #ffffff;
+  background: var(--bg-surface);
   border-radius: 10px;
   text-decoration: none;
-  color: #212121;
-  border: 1px solid #e0e0e0;
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
   transition: all 0.2s;
   font-size: 14px;
   font-weight: 500;
@@ -422,7 +422,7 @@ mat-card-actions button {
 
 .provider-link span {
   flex: 1;
-  color: #212121;
+  color: var(--text-primary);
 }
 
 .provider-link .external-icon {

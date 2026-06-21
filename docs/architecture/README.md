@@ -237,6 +237,8 @@ and works naturally with native image compilation.
 - **[Configuration](../configuration/README.md)** — the JSON config system
 - **[Crawl Jobs](../concepts/crawl-jobs.md)** — the ingestion system
   in detail
+- **[Distributed Crawl Cluster](distributed-crawl-cluster.md)** — running
+  crawls across HTTP-connected CrawlWorker peers with GPU→CPU→remote failover
 - **[Knowledge Graphs](../concepts/knowledge-graphs.md)** — the graph
   system including Bayesian networks
 - **[Information Retrieval](../concepts/information-retrieval.md)** — the

@@ -1,0 +1,141 @@
+.grounding-console {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-primary, #1a1f36);
+}
+
+.console-header {
+  margin-bottom: 16px;
+}
+
+.console-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.console-header .subtitle {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.console-layout {
+  display: flex;
+  gap: 16px;
+}
+
+.console-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-color, #e3e8ee);
+  padding-left: 16px;
+}
+
+.history-sidebar h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary, #6b7280);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.history-empty {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.history-item {
+  border: 1px solid var(--border-color, #e3e8ee);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+
+.history-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.history-type {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.type-verify { color: #2980b9; }
+.type-query { color: #8e44ad; }
+.type-assert { color: #27ae60; }
+.type-explain { color: #e67e22; }
+
+.history-time {
+  color: var(--text-secondary, #6b7280);
+}
+
+.history-atom {
+  font-family: monospace;
+  color: var(--text-primary, #1a1f36);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-summary {
+  color: var(--text-secondary, #6b7280);
+}
+
+.section-body {
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.verify-result, .query-result, .assert-result {
+  margin-top: 8px;
+}
+
+.verdict-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.verdict-label {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.conf {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.verdict-supported { background: rgba(39, 174, 96, 0.1); }
+.verdict-refuted { background: rgba(231, 76, 60, 0.1); }
+.verdict-unknown { background: rgba(127, 140, 141, 0.1); }
+
+.bindings-table {
+  width: 100%;
+}
+
+.success { color: #27ae60; font-weight: 600; }
+.warn { color: #e74c3c; font-weight: 600; }

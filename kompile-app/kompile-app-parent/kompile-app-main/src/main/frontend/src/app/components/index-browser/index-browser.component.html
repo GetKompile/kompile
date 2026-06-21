@@ -1245,9 +1245,9 @@
       </ng-template>
 
       <div class="graph-tab-container">
-        <app-knowledge-graph-hub
+        <app-graphs-hub
           [focusNodeId]="graphFocusNodeId">
-        </app-knowledge-graph-hub>
+        </app-graphs-hub>
       </div>
     </mat-tab>
 
@@ -1266,6 +1266,20 @@
       <app-cross-index-status
         [factSheetId]="activeFactSheet?.id || 1">
       </app-cross-index-status>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 8: DIFFS (git commits + agent changes + compare) -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">difference</mat-icon>
+        Diffs
+      </ng-template>
+
+      <div class="tab-content diffs-tab">
+        <app-code-diff-browser></app-code-diff-browser>
+      </div>
     </mat-tab>
 
   </mat-tab-group>

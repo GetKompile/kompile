@@ -16,7 +16,7 @@
 
 package ai.kompile.process.discovery.mining.causal;
 
-import ai.kompile.event.attribution.domain.CausalEdgeType;
+import ai.kompile.graph.reasoning.domain.CausalEdgeType;
 
 /**
  * A statistically-characterised directly-follows dependency between two activities — the bridge from

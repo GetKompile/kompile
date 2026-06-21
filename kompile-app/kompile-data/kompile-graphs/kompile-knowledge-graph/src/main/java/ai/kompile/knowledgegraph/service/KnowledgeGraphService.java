@@ -17,6 +17,7 @@ package ai.kompile.knowledgegraph.service;
 
 import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.knowledgegraph.domain.*;
+import org.nd4j.linalg.api.ndarray.INDArray;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -251,6 +252,18 @@ public interface KnowledgeGraphService {
                           Double weight, String description);
 
     /**
+     * Create an edge carrying a semantic {@code relationType} (e.g. "WORKS_AT", "FEEDS_INTO") in
+     * addition to the structural {@link EdgeType}. The default ignores {@code relationType} (delegating
+     * to {@link #createEdge(String, String, EdgeType, Double, String)}); implementations that support
+     * it override this — the matrix store persists it as the adjacency key, JPA as a column — so it
+     * round-trips on read and is available for ontology relationship-conformance.
+     */
+    default GraphEdge createEdge(String sourceNodeId, String targetNodeId, EdgeType edgeType,
+                                 String relationType, Double weight, String description) {
+        return createEdge(sourceNodeId, targetNodeId, edgeType, weight, description);
+    }
+
+    /**
      * Get an edge by its UUID
      */
     Optional<GraphEdge> getEdge(String edgeId);
@@ -305,7 +318,9 @@ public interface KnowledgeGraphService {
                                               String label, String description,
                                               String metaJson, EdgeProvenance provenance,
                                               Long factSheetId) {
-        return createEdge(sourceNodeId, targetNodeId, edgeType, weight,
+        // Route the semantic relation label through createEdge's relationType so it is persisted
+        // (matrix: as the adjacency key; JPA: as the relation_type column) instead of dropped.
+        return createEdge(sourceNodeId, targetNodeId, edgeType, label, weight,
                 description != null ? description : label);
     }
 
@@ -542,6 +557,39 @@ public interface KnowledgeGraphService {
      * Get all nodes that mention a specific entity.
      */
     List<GraphNode> getNodesWithEntity(String entityName);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NODE EMBEDDINGS (store-agnostic portability)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Export the embeddings the live store holds for a fact sheet's nodes, keyed by nodeId.
+     *
+     * <p>Store-agnostic seam so {@code GraphEmbeddingSidecar} can serialize whatever the
+     * @Primary store actually holds, rather than only the JPA {@code kgEmbedding} column:
+     * the matrix/vector store returns its per-node vectors (the text embeddings used for
+     * similarity search); a JPA-backed store may return its KGE columns. Only nodes that
+     * have an embedding are included. Default: empty (store has none / not supported).</p>
+     *
+     * @param factSheetId fact-sheet scope; {@code null} means all nodes
+     * @return map of nodeId → embedding (never {@code null})
+     */
+    default Map<String, INDArray> exportNodeEmbeddings(Long factSheetId) {
+        return java.util.Map.of();
+    }
+
+    /**
+     * Bulk-apply node embeddings (keyed by nodeId) to the live store — used on project
+     * rehydrate to reattach a cloned graph's embeddings instead of recomputing them. The
+     * matrix/vector store additionally re-indexes them so similarity search is warm after a
+     * clone. Embeddings for unknown nodeIds are skipped. Default: no-op (returns 0).
+     *
+     * @param embeddingsByNodeId map of nodeId → embedding to apply
+     * @return number of node embeddings actually applied
+     */
+    default int applyNodeEmbeddings(Map<String, INDArray> embeddingsByNodeId) {
+        return 0;
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // COUNT / STATISTICS

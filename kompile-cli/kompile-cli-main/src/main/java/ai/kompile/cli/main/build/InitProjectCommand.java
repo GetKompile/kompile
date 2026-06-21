@@ -182,6 +182,19 @@ public class InitProjectCommand implements Callable<Integer> {
     @Option(names = {"--appTitle"}, description = "Application title for UI banner", defaultValue = "Kompile RAG Console")
     private String appTitle;
 
+    // --- White-label branding (written into the generated app-index-config.json) ---
+    @Option(names = {"--logoUrl"}, description = "Header brand logo URL or bundled asset path", defaultValue = "assets/branding/kompile-logo.svg")
+    private String logoUrl;
+
+    @Option(names = {"--logoAlt"}, description = "Brand logo alt text", defaultValue = "Kompile")
+    private String logoAlt;
+
+    @Option(names = {"--showLogo"}, description = "Show the brand logo (negate with --no-showLogo)", defaultValue = "true", negatable = true)
+    private boolean showLogo;
+
+    @Option(names = {"--faviconUrl"}, description = "Browser-tab favicon URL or bundled asset path", defaultValue = "assets/branding/kompile-logo.svg")
+    private String faviconUrl;
+
     @Option(names = {"--groupId"}, description = "Maven groupId", defaultValue = "ai.kompile.rag.instance")
     private String instanceGroupId;
 
@@ -514,6 +527,11 @@ public class InitProjectCommand implements Callable<Integer> {
         // --- app-index-config.json: vector store type, paths, subprocess, batch sizes ---
         Map<String, Object> appIndexConfig = new LinkedHashMap<>();
         appIndexConfig.put("appTitle", appTitle);
+        // White-label branding (header logo + name + favicon)
+        appIndexConfig.put("logoUrl", logoUrl);
+        appIndexConfig.put("logoAlt", logoAlt);
+        appIndexConfig.put("showLogo", showLogo);
+        appIndexConfig.put("faviconUrl", faviconUrl);
         if (modules.has("vectorstore-anserini") || modules.has("app-anserini")) {
             appIndexConfig.put("vectorStoreType", "ANSERINI");
         } else if (modules.has("vectorstore-pgvector")) {

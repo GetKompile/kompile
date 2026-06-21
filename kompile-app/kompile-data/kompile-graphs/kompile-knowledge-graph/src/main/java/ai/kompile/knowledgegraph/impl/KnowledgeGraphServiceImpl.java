@@ -345,6 +345,19 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
     }
 
     @Override
+    @Transactional
+    public GraphEdge createEdge(String sourceNodeId, String targetNodeId, EdgeType edgeType,
+                                 String relationType, Double weight, String description) {
+        GraphEdge edge = createEdge(sourceNodeId, targetNodeId, edgeType, weight, description);
+        if (relationType != null && !relationType.isBlank()
+                && !relationType.equals(edge.getRelationType())) {
+            edge.setRelationType(relationType);
+            edge = edgeRepository.save(edge);
+        }
+        return edge;
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public Optional<GraphEdge> getEdge(String edgeId) {
         return edgeRepository.findByEdgeId(edgeId);

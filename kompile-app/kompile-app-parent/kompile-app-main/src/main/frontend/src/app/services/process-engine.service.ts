@@ -155,7 +155,7 @@ export interface ProcessStep {
   id: string;
   name: string;
   description?: string;
-  stepType: 'AUTO' | 'APPROVE' | 'HUMAN' | 'CONTROL_GATE' | 'TOOL_CALL' | 'HTTP_CALL' | 'SCRIPT' | 'EXCEL_COMPUTE' | 'PIPELINE' | 'CAMEL_ROUTE' | 'DROOLS_RULE' | 'DROOLS_INFERENCE' | 'DROOLS_DECISION_TABLE' | 'WORKFLOW';
+  stepType: 'AUTO' | 'APPROVE' | 'HUMAN' | 'CONTROL_GATE' | 'TOOL_CALL' | 'HTTP_CALL' | 'SCRIPT' | 'EXCEL_COMPUTE' | 'PIPELINE' | 'CAMEL_ROUTE' | 'DROOLS_RULE' | 'DROOLS_INFERENCE' | 'DROOLS_DECISION_TABLE' | 'WORKFLOW' | 'FOL_RULE' | 'PSL_RULE' | 'TABULAR_RULE';
   inputKeys?: string[];
   outputKeys?: string[];
   agentSpecId?: string;

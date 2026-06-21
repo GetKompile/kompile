@@ -400,6 +400,11 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-graph-reasoning</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-graph-algorithms</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -676,11 +681,6 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-compute-graph-camel</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>ai.kompile</groupId>
-        <artifactId>kompile-compute-graph-drools</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

@@ -16,6 +16,12 @@
 
 package ai.kompile.process.discovery.mining.convert;
 
+import ai.kompile.graph.reasoning.confidence.StrengthBand;
+import ai.kompile.graph.reasoning.fol.grounding.GroundedElement;
+import ai.kompile.graph.reasoning.fol.grounding.PlattCalibrator;
+import ai.kompile.graph.reasoning.fol.grounding.StrengthCalibrator;
+import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
+import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.process.discovery.ProcessSuggestion;
 import ai.kompile.process.discovery.ProcessSuggestion.StructuredEvidence;
 import ai.kompile.process.discovery.ProcessSuggestion.SuggestedPhase;
@@ -45,13 +51,48 @@ import java.util.Map;
  * children as phases (otherwise the whole tree is one phase), and the activity leaves within each
  * block as steps. Each step carries the graph node ids and earliest timestamp of the events that
  * produced its activity, preserving provenance back into the knowledge graph.
+ *
+ * <p>A KB-grounded overload {@link #convertGrounded} is available when a {@link KbGroundingService}
+ * is wired: each step's atom key {@code activity("<name>")} is verified against the KB, calibrated
+ * via {@link PlattCalibrator} with {@link StrengthCalibrator.SignalType#INDUCTIVE_MINER_FM}, and
+ * wrapped in a {@link GroundedElement}. The aggregate calibrated confidence replaces the bare
+ * {@code fitness × precision} score on the suggestion.
  */
 public final class ProcessTreeToSuggestion {
 
     private ProcessTreeToSuggestion() {
     }
 
+    /**
+     * Convert without KB grounding (backward-compatible static entry point).
+     * Confidence = {@code max(0.1, fitness × precision)}.
+     */
     public static ProcessSuggestion convert(ProcessTree tree, EventLog log, String processName) {
+        return convertGrounded(tree, log, processName, null, null, null);
+    }
+
+    /**
+     * Convert with KB grounding: each step's atom is verified against the KB, calibrated, and
+     * wrapped in a {@link GroundedElement}. The aggregate calibrated confidence replaces the
+     * bare {@code fitness × precision} score.
+     *
+     * @param tree        the discovered process tree
+     * @param log         the event log used to mine the tree
+     * @param processName display name
+     * @param kbGrounding the KB grounding service (may be null — falls back to ungrounded)
+     * @param calibrator  the strength calibrator (may be null — a fresh PlattCalibrator is used)
+     * @param factSheetId the fact sheet to verify atoms against (ignored when kbGrounding is null)
+     */
+    public static ProcessSuggestion convertGrounded(
+            ProcessTree tree,
+            EventLog log,
+            String processName,
+            KbGroundingService kbGrounding,
+            StrengthCalibrator calibrator,
+            Long factSheetId) {
+        // Resolve calibrator — use a fresh PlattCalibrator when not provided
+        StrengthCalibrator cal = (calibrator != null) ? calibrator : new PlattCalibrator();
+
         Map<String, List<String>> labelToNodeIds = new LinkedHashMap<>();
         Map<String, LocalDateTime> labelToEarliest = new LinkedHashMap<>();
         List<String> allNodeIds = new ArrayList<>();
@@ -72,6 +113,8 @@ public final class ProcessTreeToSuggestion {
                 (root.operator() == Operator.SEQUENCE) ? root.children() : List.of(root);
 
         List<SuggestedPhase> phases = new ArrayList<>();
+        // Collect all grounded steps across phases for aggregate confidence
+        List<GroundedElement<SuggestedStep>> allGroundedSteps = new ArrayList<>();
         int idx = 1;
         for (ProcessTreeNode phaseRoot : phaseRoots) {
             List<SuggestedStep> steps = new ArrayList<>();
@@ -80,13 +123,31 @@ public final class ProcessTreeToSuggestion {
             for (ProcessTreeNode leaf : orderedActivities(phaseRoot)) {
                 String label = leaf.activity();
                 LocalDateTime when = labelToEarliest.get(label);
-                steps.add(SuggestedStep.builder()
+                SuggestedStep step = SuggestedStep.builder()
                         .name(label)
                         .stepType(inferStepType(label))
                         .description("Discovered activity \"" + label + "\"")
                         .graphNodeIds(new ArrayList<>(labelToNodeIds.getOrDefault(label, List.of())))
                         .occurredAt(when)
-                        .build());
+                        .build();
+                steps.add(step);
+
+                // KB grounding: verify activity("<label>") against the KB
+                if (kbGrounding != null && factSheetId != null) {
+                    String atomKey = "activity(\"" + label + "\")";
+                    VerifyResult vr = kbGrounding.verify(factSheetId, atomKey);
+                    // Raw score: fitness×precision at step level (the conformance is per-tree,
+                    // not per-step, so we use the tree conformance as a proxy)
+                    ConformanceResult stepConf = ConformanceChecker.check(tree, log);
+                    double rawScore = stepConf.fitness() * stepConf.precision();
+                    double calibrated = cal.calibrate(rawScore, StrengthCalibrator.SignalType.INDUCTIVE_MINER_FM, vr);
+                    StrengthBand band = StrengthBand.fromScalar(calibrated);
+                    GroundedElement<SuggestedStep> ge = new GroundedElement<>(
+                            step, vr, calibrated, band, atomKey,
+                            null, null, "INDUCTIVE_MINER");
+                    allGroundedSteps.add(ge);
+                }
+
                 if (when != null) {
                     if (phaseEarliest == null || when.isBefore(phaseEarliest)) {
                         phaseEarliest = when;
@@ -111,9 +172,17 @@ public final class ProcessTreeToSuggestion {
 
         List<String> distinctNodeIds = new ArrayList<>(new LinkedHashSet<>(allNodeIds));
         ConformanceResult conformance = ConformanceChecker.check(tree, log);
-        // Confidence is earned, not guessed: a flower model fits perfectly but is imprecise, so its
-        // fitness × precision is low — which is exactly how much it should be trusted.
-        double confidence = Math.max(0.1, conformance.fitness() * conformance.precision());
+
+        // Confidence: when grounding is active, derive from calibrated steps (geometric mean of
+        // SUPPORTED confidences; 0.0 if any REFUTED). Fall back to fitness × precision otherwise.
+        double confidence;
+        if (!allGroundedSteps.isEmpty()) {
+            confidence = aggregateGroundedConfidence(allGroundedSteps);
+        } else {
+            // Confidence is earned, not guessed: a flower model fits perfectly but is imprecise,
+            // so its fitness × precision is low — which is exactly how much it should be trusted.
+            confidence = Math.max(0.1, conformance.fitness() * conformance.precision());
+        }
 
         StructuredEvidence modelEvidence = StructuredEvidence.builder()
                 .type("STATISTICAL")
@@ -143,7 +212,35 @@ public final class ProcessTreeToSuggestion {
                         "Inductive Miner over the directly-follows graph (sound, block-structured, deterministic)",
                         "Process tree: " + tree))
                 .structuredEvidence(List.of(modelEvidence, conformanceEvidence))
+                .groundedSteps(allGroundedSteps)
                 .build();
+    }
+
+    /**
+     * Geometric mean of calibrated confidences for SUPPORTED steps.
+     * Returns 0.0 if any step is REFUTED. Falls back to 0.1 when no steps are SUPPORTED.
+     */
+    private static double aggregateGroundedConfidence(List<GroundedElement<SuggestedStep>> steps) {
+        if (steps == null || steps.isEmpty()) return 0.1;
+        for (GroundedElement<SuggestedStep> ge : steps) {
+            if (ge.isRefuted()) return 0.0;
+        }
+        double logSum = 0.0;
+        int count = 0;
+        for (GroundedElement<SuggestedStep> ge : steps) {
+            if (ge.isVerified()) {
+                double c = ge.calibratedConfidence();
+                if (c > 0) {
+                    logSum += Math.log(c);
+                    count++;
+                }
+            }
+        }
+        if (count == 0) {
+            // all UNKNOWN — cap at PlattCalibrator's unknown ceiling
+            return 0.1;
+        }
+        return Math.max(0.1, Math.exp(logSum / count));
     }
 
     /** Activity leaves of a subtree in execution order (TAU/silent leaves skipped). */

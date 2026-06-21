@@ -1,0 +1,25 @@
+<header class="app-bar">
+  <div class="app-bar-inner">
+    <div class="brand" (click)="back()" role="button" tabindex="0">
+      <img class="brand-logo" src="assets/kompile-logo.svg" alt="Kompile" />
+      <div class="brand-text">
+        <span class="brand-title">Kompile Project Store</span>
+        <span class="brand-subtitle">Browse &amp; download hosted projects</span>
+      </div>
+    </div>
+    <span class="app-bar-badge">
+      <span class="material-icons">cloud</span>
+      Self-hosted
+    </span>
+  </div>
+</header>
+
+<main class="app-content">
+  <app-project-browser *ngIf="!selected" (open)="open($event)"></app-project-browser>
+  <app-project-detail
+    *ngIf="selected"
+    [namespace]="selected.namespace"
+    [slug]="selected.slug"
+    (back)="back()">
+  </app-project-detail>
+</main>

@@ -30,8 +30,8 @@
 
 /* Override material tab styles for better appearance */
 ::ng-deep .unified-tabs .mat-mdc-tab-header {
-  background-color: #f8f9fa;
-  border-bottom: 1px solid #dee2e6;
+  background-color: var(--bg-body);
+  border-bottom: 1px solid var(--border-color);
 }
 
 ::ng-deep .unified-tabs .mat-mdc-tab {
@@ -40,7 +40,7 @@
 }
 
 ::ng-deep .unified-tabs .mat-mdc-tab.mdc-tab--active {
-  background-color: #fff;
+  background-color: var(--bg-surface);
 }
 
 ::ng-deep .unified-tabs .mat-mdc-tab-body-wrapper {

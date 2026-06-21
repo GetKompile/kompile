@@ -24,6 +24,11 @@ import { backendUrl } from './base.service';
 export interface AppConfig {
   appTitle: string;
   applicationName: string;
+  // White-label branding (optional — a backend that omits these falls back to env defaults).
+  logoUrl?: string;
+  logoAlt?: string;
+  showLogo?: boolean;
+  faviconUrl?: string;
 }
 
 @Injectable({
@@ -32,7 +37,11 @@ export interface AppConfig {
 export class ConfigService {
   private configSubject = new BehaviorSubject<AppConfig>({
     appTitle: environment.appTitle,
-    applicationName: 'kompile-rag-app'
+    applicationName: 'kompile-rag-app',
+    logoUrl: environment.branding.logoUrl,
+    logoAlt: environment.branding.logoAlt,
+    showLogo: environment.branding.showLogo,
+    faviconUrl: environment.branding.faviconUrl
   });
 
   public config$ = this.configSubject.asObservable();
@@ -49,7 +58,9 @@ export class ConfigService {
     this.http.get<AppConfig>(`${environment.apiUrl}/config`)
       .pipe(
         tap(config => {
-          this.configSubject.next(config);
+          // Merge backend values over the current defaults so a backend that
+          // omits branding fields doesn't wipe the bundled white-label defaults.
+          this.configSubject.next({ ...this.configSubject.getValue(), ...config });
         }),
         catchError(error => {
           console.warn('Failed to load app config from backend, using defaults:', error);

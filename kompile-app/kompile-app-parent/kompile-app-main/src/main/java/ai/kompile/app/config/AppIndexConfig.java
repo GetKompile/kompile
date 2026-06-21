@@ -48,6 +48,24 @@ public class AppIndexConfig {
      */
     private String appTitle;
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // White-label branding (top-left header logo + name + browser-tab favicon).
+    // Persisted in app-index-config.json; seeded by the CLI (GlobalBootstrap /
+    // init-project) and served to the frontend by FrontendConfigController.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** URL/path of the header brand logo (default: bundled kompile-logo.svg). */
+    private String logoUrl;
+
+    /** Accessible alt text for the brand logo. */
+    private String logoAlt;
+
+    /** Whether to show the brand logo (false = name only). */
+    private Boolean showLogo;
+
+    /** URL/path of the browser-tab favicon (default: same brand mark). */
+    private String faviconUrl;
+
     /**
      * The type of vector store to use.
      * Default: ANSERINI (embedded)
@@ -180,6 +198,11 @@ public class AppIndexConfig {
         String baseDir = effectiveDataDir + "/data/indices";
         return AppIndexConfig.builder()
                 .appTitle("Kompile")
+                // White-label branding (bundled defaults)
+                .logoUrl("assets/branding/kompile-logo.svg")
+                .logoAlt("Kompile")
+                .showLogo(true)
+                .faviconUrl("assets/branding/kompile-logo.svg")
                 // Default to Anserini (embedded)
                 .vectorStoreType(VectorStoreType.ANSERINI)
                 .vectorStorePath(baseDir + "/vector_index")
@@ -217,6 +240,11 @@ public class AppIndexConfig {
         }
         return AppIndexConfig.builder()
                 .appTitle(other.appTitle != null ? other.appTitle : this.appTitle)
+                // White-label branding
+                .logoUrl(other.logoUrl != null ? other.logoUrl : this.logoUrl)
+                .logoAlt(other.logoAlt != null ? other.logoAlt : this.logoAlt)
+                .showLogo(other.showLogo != null ? other.showLogo : this.showLogo)
+                .faviconUrl(other.faviconUrl != null ? other.faviconUrl : this.faviconUrl)
                 // Core settings
                 .vectorStoreType(other.vectorStoreType != null ? other.vectorStoreType : this.vectorStoreType)
                 .vectorStorePath(other.vectorStorePath != null ? other.vectorStorePath : this.vectorStorePath)

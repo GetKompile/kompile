@@ -16,8 +16,8 @@
 
 <div class="mcp-hub">
   <div class="hub-header">
-    <h2>MCP Hub</h2>
-    <p class="subtitle">Model Context Protocol tools, servers, and debugging</p>
+    <h2><mat-icon class="hub-header-icon">hub</mat-icon> MCP Hub</h2>
+    <p class="subtitle">Model Context Protocol tools, servers, sessions &amp; tool-call telemetry</p>
   </div>
 
   <div class="sub-tabs">
@@ -25,15 +25,22 @@
       class="sub-tab"
       [class.active]="activeSubTab === 'tools'"
       (click)="activeSubTab = 'tools'">
-      <mat-icon class="tab-icon">build</mat-icon>
+      <mat-icon class="tab-icon">extension</mat-icon>
       <span class="tab-label">Tools</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'toolUseLog'"
       (click)="switchToToolUseLog()">
-      <mat-icon class="tab-icon">receipt_long</mat-icon>
+      <mat-icon class="tab-icon">history</mat-icon>
       <span class="tab-label">Tool Use Log</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'usageCatalog'"
+      (click)="activeSubTab = 'usageCatalog'">
+      <mat-icon class="tab-icon">receipt_long</mat-icon>
+      <span class="tab-label">Tool Calls</span>
     </button>
     <button
       class="sub-tab"
@@ -46,7 +53,7 @@
       class="sub-tab"
       [class.active]="activeSubTab === 'externalServers'"
       (click)="activeSubTab = 'externalServers'">
-      <mat-icon class="tab-icon">cloud</mat-icon>
+      <mat-icon class="tab-icon">lan</mat-icon>
       <span class="tab-label">External Servers</span>
     </button>
     <button
@@ -81,22 +88,15 @@
       class="sub-tab"
       [class.active]="activeSubTab === 'promptTemplates'"
       (click)="activeSubTab = 'promptTemplates'">
-      <mat-icon class="tab-icon">description</mat-icon>
+      <mat-icon class="tab-icon">article</mat-icon>
       <span class="tab-label">Prompt Templates</span>
     </button>
     <button
       class="sub-tab"
       [class.active]="activeSubTab === 'clientConnections'"
       (click)="activeSubTab = 'clientConnections'; loadConnections()">
-      <mat-icon class="tab-icon">link</mat-icon>
+      <mat-icon class="tab-icon">hub</mat-icon>
       <span class="tab-label">Client Connections</span>
-    </button>
-    <button
-      class="sub-tab"
-      [class.active]="activeSubTab === 'usageCatalog'"
-      (click)="activeSubTab = 'usageCatalog'">
-      <mat-icon class="tab-icon">bar_chart</mat-icon>
-      <span class="tab-label">Usage &amp; Tokens</span>
     </button>
   </div>
 

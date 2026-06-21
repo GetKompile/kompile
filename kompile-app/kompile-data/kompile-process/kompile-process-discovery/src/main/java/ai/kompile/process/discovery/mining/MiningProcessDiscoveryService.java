@@ -16,6 +16,8 @@
 
 package ai.kompile.process.discovery.mining;
 
+import ai.kompile.graph.reasoning.fol.grounding.PlattCalibrator;
+import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.discovery.ProcessSuggestion;
 import ai.kompile.process.discovery.ProcessSuggestionStore;
@@ -28,17 +30,19 @@ import ai.kompile.process.discovery.mining.convert.ProcessTreeToSuggestion;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import ai.kompile.process.discovery.mining.declare.DeclareMiner;
 import ai.kompile.process.discovery.mining.dfg.DfgBuilder;
-import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
-import ai.kompile.process.discovery.mining.perf.PerformanceMiner;
-import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
+import ai.kompile.process.discovery.mining.export.ProcessBpmnExporter;
 import ai.kompile.process.discovery.mining.export.ProcessMermaidExporter;
 import ai.kompile.process.discovery.mining.extract.ActivityClassifier;
 import ai.kompile.process.discovery.mining.extract.AnchorTypeCorrelation;
 import ai.kompile.process.discovery.mining.extract.EventLogExtractor;
+import ai.kompile.process.discovery.mining.extract.RoleBindingExtractor;
 import ai.kompile.process.discovery.mining.log.EventLog;
 import ai.kompile.process.discovery.mining.miner.HeuristicsMiner;
 import ai.kompile.process.discovery.mining.miner.HeuristicsNet;
 import ai.kompile.process.discovery.mining.miner.InductiveMiner;
+import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
+import ai.kompile.process.discovery.mining.perf.PerformanceMiner;
+import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
 import ai.kompile.process.discovery.mining.tree.ProcessTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,6 +76,9 @@ public class MiningProcessDiscoveryService {
     private ProcessSuggestionStore suggestionStore;
     private EventLogExtractor extractor = new EventLogExtractor();
 
+    /** Optional KB grounding service — wired when kompile-knowledge-graph is present. */
+    private KbGroundingService kbGroundingService;
+
     /** Optional object-centric case notion: when set, each entity of this type anchors a process instance. */
     @org.springframework.beans.factory.annotation.Value("${kompile.process.mining.anchor-type:}")
     private String anchorEntityType;
@@ -99,6 +106,11 @@ public class MiningProcessDiscoveryService {
     @Autowired(required = false)
     public void setSuggestionStore(ProcessSuggestionStore suggestionStore) {
         this.suggestionStore = suggestionStore;
+    }
+
+    @Autowired(required = false)
+    public void setKbGroundingService(KbGroundingService kbGroundingService) {
+        this.kbGroundingService = kbGroundingService;
     }
 
     /**
@@ -130,16 +142,28 @@ public class MiningProcessDiscoveryService {
             return null;
         }
         ProcessTree tree = new InductiveMiner(noiseThreshold).mine(eventLog);
-        ProcessSuggestion suggestion = ProcessTreeToSuggestion.convert(
-                tree, eventLog, "Mined process (fact sheet " + factSheetId + ")");
+
+        // Use grounded conversion when KbGroundingService is wired
+        PlattCalibrator calibrator = new PlattCalibrator();
+        ProcessSuggestion suggestion = ProcessTreeToSuggestion.convertGrounded(
+                tree, eventLog,
+                "Mined process (fact sheet " + factSheetId + ")",
+                kbGroundingService, calibrator, factSheetId);
+
+        // Apply role bindings via ConjunctiveQueryEngine-backed extractor
+        if (kbGroundingService != null) {
+            suggestion.getPhases().forEach(phase ->
+                RoleBindingExtractor.applyRoleBindings(phase.getSteps(), kbGroundingService, factSheetId));
+        }
+
         suggestion.setId("mined-" + UUID.randomUUID());
         suggestion.setFactSheetId(factSheetId);
         suggestion.setDiscoveredAt(Instant.now());
         if (suggestionStore != null) {
             suggestionStore.saveAll(List.of(suggestion));
         }
-        log.info("Process mining discovered a {}-phase process for fact sheet {}: {}",
-                suggestion.getPhases().size(), factSheetId, tree);
+        log.info("Process mining discovered a {}-phase process for fact sheet {} (grounding={}): {}",
+                suggestion.getPhases().size(), factSheetId, kbGroundingService != null, tree);
         return suggestion;
     }
 
@@ -240,5 +264,23 @@ public class MiningProcessDiscoveryService {
      */
     public PerformanceAnalysis performance(Long factSheetId, String anchorType) {
         return PerformanceMiner.analyze(extractLog(factSheetId, anchorType));
+    }
+
+    /**
+     * Export the discovered process for a fact sheet as BPMN 2.0 XML.
+     *
+     * <p>Runs the full discovery pipeline (extract → mine → ground → role-bind) and then
+     * exports the result via {@link ProcessBpmnExporter}. The BPMN XML is returned as a string
+     * so the controller can set the appropriate {@code Content-Type: application/xml} header.
+     *
+     * @param factSheetId    the fact sheet whose graph is the source
+     * @param noiseThreshold 0 for classic Inductive Miner; 0&lt;t≤1 for IMf infrequent filter
+     * @param anchorType     optional object-centric case notion
+     * @return BPMN 2.0 XML string, or {@code null} when the graph yielded no events
+     */
+    public String bpmnExport(Long factSheetId, double noiseThreshold, String anchorType) {
+        ProcessSuggestion suggestion = discoverForFactSheet(factSheetId, noiseThreshold, anchorType);
+        if (suggestion == null) return null;
+        return ProcessBpmnExporter.export(suggestion);
     }
 }

@@ -17,14 +17,18 @@ package ai.kompile.app.ontology;
 
 import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
 import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
+import ai.kompile.knowledgegraph.domain.EdgeType;
+import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NamedGraph;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.service.NamedGraphService;
+import ai.kompile.process.ontology.Cardinality;
 import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.FieldDefinition;
 import ai.kompile.process.ontology.OntologySchema;
+import ai.kompile.process.ontology.RelationshipTypeDefinition;
 import ai.kompile.process.service.ProcessEngineService;
 import ai.kompile.process.workflow.ProcessDefinition;
 import ai.kompile.process.workflow.ProcessStatus;
@@ -89,6 +93,11 @@ class GraphOntologyBindingServiceTest {
         return GraphNode.builder().nodeId(id).nodeType(NodeLevel.ENTITY).title(id).metadataJson(metadataJson).build();
     }
 
+    private GraphEdge edge(String edgeId, GraphNode source, GraphNode target, String relationType) {
+        return GraphEdge.builder().edgeId(edgeId).sourceNode(source).targetNode(target)
+                .relationType(relationType).edgeType(EdgeType.USER_DEFINED).weight(1.0).build();
+    }
+
     @Test
     void resolvesOntologyViaProcessDefinitionLink() {
         when(processEngineService.listProcessDefinitions())
@@ -142,6 +151,61 @@ class GraphOntologyBindingServiceTest {
         assertEquals(2, report.nonConformantCount());
         assertEquals(2, report.violations().size());
         assertEquals(0.3333, report.conformanceScore(), 1e-9, "1 of 3 entities conform");
+    }
+
+    @Test
+    void checkConformanceValidatesRelationshipsAgainstOntology() {
+        OntologySchema schema = OntologySchema.builder().id("ont-1").name("FPnA").version(2)
+                .entityTypes(List.of(EntityTypeDefinition.builder().name("Account").build()))
+                .relationshipTypes(List.of(RelationshipTypeDefinition.builder()
+                        .type("FEEDS_INTO").sourceEntityType("Account").targetEntityType("Account")
+                        .cardinality(Cardinality.ONE_TO_MANY).build()))
+                .build();
+        when(processEngineService.listProcessDefinitions())
+                .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
+        when(processEngineService.getOntology("ont-1", 2)).thenReturn(schema);
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(FS, NodeLevel.ENTITY)).thenReturn(List.of());
+
+        GraphNode a = entity("a", "{\"entity_type\":\"Account\"}");
+        GraphNode b = entity("b", "{\"entity_type\":\"Account\"}");
+        when(knowledgeGraphService.getEdgesInFactSheet(FS)).thenReturn(List.of(
+                edge("e1", a, b, "FEEDS_INTO"),  // defined in ontology → conformant
+                edge("e2", a, b, "MENTORS"),     // not in ontology → violation
+                edge("e3", a, b, null)));         // structural edge → skipped
+
+        GraphConformanceReport report = service.checkConformance(FS);
+
+        assertEquals(2, report.edgesChecked(), "the structural (null relationType) edge is skipped");
+        assertEquals(1, report.nonConformantEdgeCount());
+        assertEquals(1, report.edgeViolations().size());
+        assertEquals("MENTORS", report.edgeViolations().get(0).relationshipType());
+    }
+
+    @Test
+    void checkConformanceFlagsCardinalityBreachOncePerSource() {
+        OntologySchema schema = OntologySchema.builder().id("ont-1").name("FPnA").version(2)
+                .entityTypes(List.of(EntityTypeDefinition.builder().name("Account").build()))
+                .relationshipTypes(List.of(RelationshipTypeDefinition.builder()
+                        .type("REPORTS_TO").sourceEntityType("Account").targetEntityType("Account")
+                        .cardinality(Cardinality.MANY_TO_ONE).build()))  // each source reports to ≤1 target
+                .build();
+        when(processEngineService.listProcessDefinitions())
+                .thenReturn(List.of(def("p1", "ont-1", 2, FS, ProcessStatus.APPROVED)));
+        when(processEngineService.getOntology("ont-1", 2)).thenReturn(schema);
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(FS, NodeLevel.ENTITY)).thenReturn(List.of());
+
+        GraphNode a = entity("a", "{\"entity_type\":\"Account\"}");
+        GraphNode b = entity("b", "{\"entity_type\":\"Account\"}");
+        GraphNode c = entity("c", "{\"entity_type\":\"Account\"}");
+        when(knowledgeGraphService.getEdgesInFactSheet(FS)).thenReturn(List.of(
+                edge("e1", a, b, "REPORTS_TO"),
+                edge("e2", a, c, "REPORTS_TO")));  // source 'a' has 2 outgoing → breaches MANY_TO_ONE
+
+        GraphConformanceReport report = service.checkConformance(FS);
+
+        assertEquals(2, report.edgesChecked());
+        assertEquals(1, report.nonConformantEdgeCount(), "the (source, relation) breach is flagged once");
+        assertTrue(report.edgeViolations().get(0).reason().contains("Cardinality"));
     }
 
     @Test

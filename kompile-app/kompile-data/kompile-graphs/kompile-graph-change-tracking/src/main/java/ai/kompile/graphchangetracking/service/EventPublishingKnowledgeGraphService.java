@@ -5,6 +5,7 @@ import ai.kompile.graphchangetracking.event.EdgeMutationEvent;
 import ai.kompile.graphchangetracking.event.NodeMutationEvent;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import org.nd4j.linalg.api.ndarray.INDArray;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +41,20 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.contextHolder = contextHolder;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NODE EMBEDDINGS — pure delegation (read/index; no graph mutation to publish)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public Map<String, INDArray> exportNodeEmbeddings(Long factSheetId) {
+        return delegate.exportNodeEmbeddings(factSheetId);
+    }
+
+    @Override
+    public int applyNodeEmbeddings(Map<String, INDArray> embeddingsByNodeId) {
+        return delegate.applyNodeEmbeddings(embeddingsByNodeId);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

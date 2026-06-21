@@ -65,7 +65,7 @@
 }
 
 .project-description {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.9rem;
   margin: 8px 0;
 }
@@ -82,7 +82,7 @@
   align-items: center;
   gap: 4px;
   font-size: 0.85rem;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .project-stats .stat mat-icon {
@@ -98,21 +98,21 @@
 .project-footer {
   margin-top: 8px;
   font-size: 0.8rem;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 /* Empty State */
 .empty-state {
   text-align: center;
   padding: 64px 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .empty-state mat-icon {
   font-size: 64px;
   width: 64px;
   height: 64px;
-  color: #ccc;
+  color: var(--border-color);
 }
 
 .empty-state h3 {
@@ -121,7 +121,7 @@
 
 /* Indexing Progress */
 .indexing-progress {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 24px;
@@ -148,7 +148,7 @@
   gap: 16px;
   margin-top: 8px;
   font-size: 0.85rem;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .progress-pct {
@@ -186,7 +186,7 @@
 
 .fact-sheet-header p {
   margin: 4px 0 0;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Stats Grid */
@@ -200,7 +200,7 @@
 .stat-card {
   text-align: center;
   padding: 16px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
 }
 
@@ -212,7 +212,7 @@
 
 .stat-label {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -237,18 +237,18 @@
   display: flex;
   justify-content: space-between;
   padding: 8px 12px;
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 4px;
 }
 
 .entity-type {
   font-size: 0.85rem;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .entity-count {
   font-weight: bold;
-  color: #333;
+  color: var(--text-primary);
 }
 
 /* Directory List */
@@ -263,7 +263,7 @@
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 8px;
 }
 
@@ -279,7 +279,7 @@
 
 .dir-path {
   font-size: 0.8rem;
-  color: #999;
+  color: var(--text-tertiary);
   font-family: monospace;
 }
 
@@ -288,7 +288,7 @@
   align-items: center;
   gap: 12px;
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .small-icon {
@@ -341,14 +341,14 @@
 .session-id {
   font-family: monospace;
   font-size: 0.8rem;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .session-meta {
   display: flex;
   gap: 24px;
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .session-meta span {
@@ -372,7 +372,7 @@
 }
 
 .empty-state code {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.9rem;
@@ -393,7 +393,7 @@
 }
 
 .dialog-content {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   padding: 32px;
   width: 90%;

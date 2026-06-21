@@ -32,12 +32,12 @@
 
 .header .subtitle {
   margin: 5px 0 0 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
 .main-tabs {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
@@ -55,7 +55,7 @@
 
 .toolbar .context-info {
   flex: 1;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .server-list,
@@ -98,7 +98,7 @@
   align-items: center;
   gap: 5px;
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .stat mat-icon {
@@ -115,7 +115,7 @@
 .label {
   font-weight: 500;
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   margin-right: 8px;
 }
 
@@ -127,7 +127,7 @@
 .uri {
   font-family: var(--font-family-monospace);
   font-size: 13px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 5px 10px;
   border-radius: 4px;
   word-break: break-all;
@@ -147,7 +147,7 @@ mat-card-actions {
 .empty-state {
   text-align: center;
   padding: 60px 20px;
-  color: #666;
+  color: var(--text-secondary);
   grid-column: 1 / -1;
 }
 
@@ -155,7 +155,7 @@ mat-card-actions {
   font-size: 64px;
   width: 64px;
   height: 64px;
-  color: #ccc;
+  color: var(--text-tertiary);
 }
 
 .empty-state p {
@@ -178,7 +178,7 @@ mat-card-actions {
 }
 
 .dialog {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 24px;
   min-width: 400px;
@@ -223,10 +223,10 @@ mat-card-actions {
 .params-section,
 .args-section,
 .messages-section {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 15px;
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .config-section h4,
@@ -282,7 +282,7 @@ mat-card-actions {
   gap: 10px;
   margin-top: 20px;
   padding-top: 15px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 /* Material overrides */

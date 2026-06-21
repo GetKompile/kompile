@@ -461,6 +461,20 @@ class VectorStoreMatrixGraphStoreTest {
         assertEquals(1, count);
     }
 
+    @Test
+    void addEdgeWithRelationTypeStoresExplicitFieldOnGraph() {
+        store.createGraph("g-rel", null);
+        store.addNode("g-rel", node("src", "PERSON", "Alice"));
+        store.addNode("g-rel", node("tgt", "ORG", "Acme"));
+
+        // 7-arg overload: structural routing key + explicit semantic relation as a first-class field.
+        store.addEdge("g-rel", "src", "tgt", 0.9, "USER_DEFINED", false, "WORKS_AT");
+
+        AdjacencyMatrixGraph graph = store.loadGraph("g-rel").orElseThrow();
+        assertEquals("WORKS_AT", graph.getEdgeRelationType("USER_DEFINED", "src", "tgt"));
+        graph.close();
+    }
+
     // ─── flush ───────────────────────────────────────────────────────────────
 
     @Test
@@ -475,5 +489,88 @@ class VectorStoreMatrixGraphStoreTest {
         store.flush();
 
         verify(vectorStore, atLeastOnce()).flushAndCommit();
+    }
+
+    // ─── M-7: edge metadata (confidence, bidirectional, description) round-trips ─
+
+    @Test
+    void addEdgeWithMetadata_storesConfidenceAndDescription() {
+        // [M-7] The 9-arg addEdge overload must store confidence and description in edgeMetaData.
+        store.createGraph("g-meta7", null);
+        store.addNode("g-meta7", node("src", "PERSON", "Alice"));
+        store.addNode("g-meta7", node("tgt", "ORG",    "Acme"));
+
+        boolean ok = store.addEdge("g-meta7", "src", "tgt", 0.8, "USER_DEFINED",
+                false, null, 0.72, "Alice works at Acme");
+
+        assertTrue(ok);
+
+        AdjacencyMatrixGraph graph = store.loadGraph("g-meta7").orElseThrow();
+        AdjacencyMatrixGraph.EdgeMeta meta = graph.getEdgeMeta("USER_DEFINED", "src", "tgt");
+        assertNotNull(meta, "EdgeMeta should be stored");
+        assertNotNull(meta.confidence());
+        assertEquals(0.72, meta.confidence(), 0.001);
+        assertEquals("Alice works at Acme", meta.description());
+        assertFalse(Boolean.TRUE.equals(meta.bidirectional()));
+        graph.close();
+    }
+
+    @Test
+    void addEdgeWithMetadata_bidirectionalFlagIsStored() {
+        // [M-7] Bidirectional=true must be stored in EdgeMeta.
+        store.createGraph("g-bidir", null);
+        store.addNode("g-bidir", node("a", "PERSON", "Alice"));
+        store.addNode("g-bidir", node("b", "PERSON", "Bob"));
+
+        store.addEdge("g-bidir", "a", "b", 1.0, "RELATED_TO",
+                true, null, 0.9, null);
+
+        AdjacencyMatrixGraph graph = store.loadGraph("g-bidir").orElseThrow();
+        AdjacencyMatrixGraph.EdgeMeta meta = graph.getEdgeMeta("RELATED_TO", "a", "b");
+        assertNotNull(meta);
+        assertTrue(Boolean.TRUE.equals(meta.bidirectional()));
+        graph.close();
+    }
+
+    @Test
+    void saveAdjacencyMatrix_includesConfidenceAndDescriptionInJson() throws Exception {
+        // [M-7] Verify that the serialized vector-store document JSON contains the
+        // edge quality fields. We capture the Document that is added to the vector store.
+        store.createGraph("g-serial", null);
+        store.addNode("g-serial", node("src", "PERSON", "Alice"));
+        store.addNode("g-serial", node("tgt", "ORG", "Acme"));
+
+        store.addEdge("g-serial", "src", "tgt", 0.6, "USER_DEFINED",
+                false, null, 0.88, "employment relationship");
+
+        // Flush to trigger serialization
+        clearInvocations(vectorStore);
+        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.flushAndCommit()).thenReturn(true);
+
+        store.flush();
+
+        // Capture all Documents that were passed to vectorStore.add()
+        @SuppressWarnings("unchecked")
+        var captor = org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        verify(vectorStore, org.mockito.Mockito.atLeastOnce()).add(captor.capture());
+
+        boolean foundAdjDoc = false;
+        for (Object list : captor.getAllValues()) {
+            for (Object item : (java.util.List<?>) list) {
+                if (item instanceof org.springframework.ai.document.Document doc) {
+                    String content = doc.getText();
+                    if (content != null && content.contains("confidence")) {
+                        foundAdjDoc = true;
+                        assertTrue(content.contains("0.88"),
+                                "adjacency JSON must contain confidence value 0.88");
+                        assertTrue(content.contains("employment relationship"),
+                                "adjacency JSON must contain the description");
+                    }
+                }
+            }
+        }
+        assertTrue(foundAdjDoc,
+                "At least one adjacency matrix document should carry confidence/description");
     }
 }

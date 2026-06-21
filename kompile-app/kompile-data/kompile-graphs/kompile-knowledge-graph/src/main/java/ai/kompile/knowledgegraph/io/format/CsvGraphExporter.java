@@ -39,25 +39,33 @@ public final class CsvGraphExporter {
 
     public String nodesCsv(PortableGraph graph) {
         StringBuilder sb = new StringBuilder();
-        sb.append("externalId,title,description,nodeType\n");
+        sb.append("externalId,title,description,nodeType,factSheetId,namedGraphId,confidence,occurredAt\n");
         for (PortableNode n : graph.nodes()) {
             sb.append(quote(n.externalId())).append(',')
                     .append(quote(n.title())).append(',')
                     .append(quote(n.description())).append(',')
-                    .append(quote(n.nodeType())).append('\n');
+                    .append(quote(n.nodeType())).append(',')
+                    .append(n.factSheetId() == null ? "" : n.factSheetId()).append(',')
+                    .append(quote(n.namedGraphId())).append(',')
+                    .append(n.confidence() == null ? "" : n.confidence()).append(',')
+                    .append(quote(n.occurredAt())).append('\n');
         }
         return sb.toString();
     }
 
     public String edgesCsv(PortableGraph graph) {
         StringBuilder sb = new StringBuilder();
-        sb.append("fromExternalId,toExternalId,edgeType,weight,description\n");
+        sb.append("fromExternalId,toExternalId,edgeType,weight,description,confidence,provenance,relationType,factSheetId\n");
         for (PortableEdge e : graph.edges()) {
             sb.append(quote(e.fromExternalId())).append(',')
                     .append(quote(e.toExternalId())).append(',')
                     .append(quote(e.edgeType())).append(',')
                     .append(e.weight() == null ? "" : e.weight()).append(',')
-                    .append(quote(e.description())).append('\n');
+                    .append(quote(e.description())).append(',')
+                    .append(e.confidence() == null ? "" : e.confidence()).append(',')
+                    .append(quote(e.provenance())).append(',')
+                    .append(quote(e.relationType())).append(',')
+                    .append(e.factSheetId() == null ? "" : e.factSheetId()).append('\n');
         }
         return sb.toString();
     }

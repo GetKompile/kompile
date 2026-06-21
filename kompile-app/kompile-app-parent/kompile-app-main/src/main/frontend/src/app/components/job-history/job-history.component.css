@@ -22,7 +22,7 @@
   gap: 10px;
   margin: 0;
   font-size: 1.5rem;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .header-actions {
@@ -32,7 +32,7 @@
 
 .last-refreshed {
   font-size: 11px;
-  color: #9e9e9e;
+  color: var(--text-tertiary);
   margin-left: auto;
   white-space: nowrap;
 }
@@ -64,7 +64,7 @@
   display: flex;
   gap: 4px;
   margin-bottom: 20px;
-  border-bottom: 2px solid #e5e7eb;
+  border-bottom: 2px solid var(--border-color);
   padding-bottom: 4px;
 }
 
@@ -75,15 +75,15 @@
   padding: 10px 20px;
   border: none;
   background: transparent;
-  color: #6b7280;
+  color: var(--text-secondary);
   cursor: pointer;
   border-radius: 8px 8px 0 0;
   transition: all 0.2s;
 }
 
 .tab:hover {
-  background: #f3f4f6;
-  color: #374151;
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
 }
 
 .tab.active {
@@ -101,10 +101,10 @@
 .stat-card {
   flex: 1;
   padding: 16px;
-  background: #f9fafb;
+  background: var(--bg-body);
   border-radius: 8px;
   text-align: center;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color);
 }
 
 .stat-card.success { border-color: #22c55e; background: #f0fdf4; }
@@ -117,12 +117,12 @@
   display: block;
   font-size: 2rem;
   font-weight: 600;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .stat-label {
   font-size: 0.875rem;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 /* Filters */
@@ -141,13 +141,13 @@
 
 .filter-group label {
   font-weight: 500;
-  color: #374151;
+  color: var(--text-primary);
 }
 
 .filter-group select,
 .filter-group input {
   padding: 8px 12px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   font-size: 0.875rem;
 }
@@ -168,7 +168,7 @@
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  color: #9ca3af;
+  color: var(--text-tertiary);
   font-size: 20px;
 }
 
@@ -179,7 +179,7 @@
   justify-content: center;
   gap: 10px;
   padding: 40px;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .spinning {
@@ -199,7 +199,7 @@
 .jobs-table table {
   width: 100%;
   border-collapse: collapse;
-  background: white;
+  background: var(--bg-surface);
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -209,13 +209,13 @@
 .jobs-table td {
   padding: 12px 16px;
   text-align: left;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .jobs-table th {
-  background: #f9fafb;
+  background: var(--bg-body);
   font-weight: 600;
-  color: #374151;
+  color: var(--text-primary);
   white-space: nowrap;
 }
 
@@ -225,7 +225,7 @@
 }
 
 .jobs-table tr.clickable:hover {
-  background: #f3f4f6;
+  background: var(--bg-surface-elevated);
 }
 
 .file-name {
@@ -241,12 +241,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.85rem;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .no-data {
   text-align: center;
-  color: #9ca3af;
+  color: var(--text-tertiary);
   padding: 40px !important;
 }
 
@@ -285,7 +285,7 @@
   align-items: center;
   gap: 4px;
   font-size: 0.85rem;
-  color: #4b5563;
+  color: var(--text-secondary);
 }
 
 .phase-badge .material-icons.small {
@@ -329,7 +329,7 @@
 .progress-bar-container {
   position: relative;
   height: 20px;
-  background: #e5e7eb;
+  background: var(--border-color);
   border-radius: 10px;
   overflow: hidden;
   min-width: 80px;
@@ -353,7 +353,7 @@
   transform: translate(-50%, -50%);
   font-size: 0.7rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text-primary);
 }
 
 /* Pagination */
@@ -366,7 +366,7 @@
 }
 
 .page-info {
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 /* Buttons */
@@ -389,12 +389,12 @@
 
 .btn-icon {
   padding: 8px;
-  background: #f3f4f6;
+  background: var(--bg-surface-elevated);
   border-radius: 50%;
 }
 
 .btn-icon:hover {
-  background: #e5e7eb;
+  background: var(--border-color);
 }
 
 .btn-icon.active {
@@ -412,28 +412,28 @@
 
 .btn-small {
   padding: 6px 12px;
-  background: #f3f4f6;
+  background: var(--bg-surface-elevated);
 }
 
 .btn-small:hover:not(:disabled) {
-  background: #e5e7eb;
+  background: var(--border-color);
 }
 
 .btn-back {
-  background: #f3f4f6;
+  background: var(--bg-surface-elevated);
   margin-bottom: 20px;
 }
 
 .btn-back:hover {
-  background: #e5e7eb;
+  background: var(--border-color);
 }
 
 .btn-secondary {
-  background: #f3f4f6;
+  background: var(--bg-surface-elevated);
 }
 
 .btn-secondary:hover {
-  background: #e5e7eb;
+  background: var(--border-color);
 }
 
 .btn-danger {
@@ -453,7 +453,7 @@
 }
 
 .stats-card {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -462,8 +462,8 @@
 .stats-card h3 {
   margin: 0 0 16px 0;
   font-size: 1.1rem;
-  color: #374151;
-  border-bottom: 1px solid #e5e7eb;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
   padding-bottom: 10px;
 }
 
@@ -480,12 +480,12 @@
 }
 
 .stat-row .label {
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .stat-row .value {
   font-weight: 500;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .stat-row .value.success { color: #16a34a; }
@@ -500,7 +500,7 @@
 .config-section h4 {
   margin: 0 0 8px 0;
   font-size: 0.85rem;
-  color: #6b7280;
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
@@ -512,10 +512,10 @@
 
 .tag {
   padding: 4px 10px;
-  background: #f3f4f6;
+  background: var(--bg-surface-elevated);
   border-radius: 12px;
   font-size: 0.8rem;
-  color: #4b5563;
+  color: var(--text-secondary);
 }
 
 /* Detail View */
@@ -529,7 +529,7 @@
 .detail-header h3 {
   margin: 0;
   font-size: 1.25rem;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .detail-grid {
@@ -539,7 +539,7 @@
 }
 
 .detail-card {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -548,8 +548,8 @@
 .detail-card h4 {
   margin: 0 0 16px 0;
   font-size: 1rem;
-  color: #374151;
-  border-bottom: 1px solid #e5e7eb;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
   padding-bottom: 8px;
 }
 
@@ -570,7 +570,7 @@
 
 .error-code-block {
   display: block;
-  background: #1f2937;
+  background: var(--bg-surface-elevated);
   color: #f87171;
   padding: 16px;
   border-radius: 6px;
@@ -585,7 +585,7 @@
 /* Task ID Hint */
 .task-id-hint {
   font-size: 0.75rem;
-  color: #6b7280;
+  color: var(--text-secondary);
   font-weight: normal;
   margin-left: auto;
 }
@@ -604,20 +604,20 @@
 }
 
 .detail-row .label {
-  color: #6b7280;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .detail-row .value {
   text-align: right;
   word-break: break-word;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .detail-row .value.code {
   font-family: monospace;
   font-size: 0.85rem;
-  background: #f3f4f6;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -655,7 +655,7 @@
 }
 
 .dialog {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   padding: 24px;
   max-width: 400px;
@@ -668,7 +668,7 @@
 }
 
 .dialog p {
-  color: #6b7280;
+  color: var(--text-secondary);
   margin-bottom: 16px;
 }
 
@@ -682,7 +682,7 @@
 .dialog-input input {
   width: 80px;
   padding: 8px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
@@ -708,17 +708,17 @@
 }
 
 .nd4j-card.empty {
-  background: #f9fafb;
-  border-color: #e5e7eb;
+  background: var(--bg-body);
+  border-color: var(--border-color);
 }
 
 .nd4j-card.empty h4 {
-  color: #9ca3af;
-  border-color: #e5e7eb;
+  color: var(--text-tertiary);
+  border-color: var(--border-color);
 }
 
 .no-data-message {
-  color: #9ca3af;
+  color: var(--text-tertiary);
   font-style: italic;
   margin: 0;
 }
@@ -762,7 +762,7 @@
 }
 
 .nd4j-category {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 16px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
@@ -774,7 +774,7 @@
   gap: 8px;
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .category-header .material-icons {
@@ -784,7 +784,7 @@
 
 .category-name {
   font-weight: 600;
-  color: #374151;
+  color: var(--text-primary);
 }
 
 .category-fields {
@@ -798,12 +798,12 @@
 }
 
 .category-fields .label {
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .category-fields .value {
   font-family: monospace;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .category-fields .value.boolean-true {
@@ -811,20 +811,20 @@
 }
 
 .category-fields .value.boolean-false {
-  color: #9ca3af;
+  color: var(--text-tertiary);
 }
 
 .nd4j-raw {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--border-color);
 }
 
 .json-preview {
   margin-top: 12px;
   padding: 12px;
-  background: #1f2937;
-  color: #d1d5db;
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
   border-radius: 8px;
   font-size: 0.8rem;
   overflow-x: auto;
@@ -847,10 +847,10 @@
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
-  background: white;
+  background: var(--bg-surface);
   border-radius: 16px;
   font-size: 0.8rem;
-  color: #4b5563;
+  color: var(--text-secondary);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
@@ -864,7 +864,7 @@
 
 .summary-hint {
   font-size: 0.75rem;
-  color: #9ca3af;
+  color: var(--text-tertiary);
   font-style: italic;
   margin-left: auto;
 }
@@ -885,7 +885,7 @@
   align-items: center;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .events-card .card-header h4 {
@@ -896,10 +896,10 @@
 
 .events-card .badge {
   padding: 4px 10px;
-  background: #e5e7eb;
+  background: var(--border-color);
   border-radius: 12px;
   font-size: 0.75rem;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .events-table-container {
@@ -917,27 +917,27 @@
 .events-table td {
   padding: 10px 12px;
   text-align: left;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--bg-surface-elevated);
 }
 
 .events-table th {
-  background: #f9fafb;
+  background: var(--bg-body);
   font-weight: 600;
-  color: #374151;
+  color: var(--text-primary);
   position: sticky;
   top: 0;
 }
 
 .events-table .timestamp {
   white-space: nowrap;
-  color: #6b7280;
+  color: var(--text-secondary);
   font-size: 0.8rem;
 }
 
 .events-table .phase-badge.small {
   font-size: 0.75rem;
   padding: 2px 8px;
-  background: #e5e7eb;
+  background: var(--border-color);
   border-radius: 8px;
 }
 
@@ -967,7 +967,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #6b7280;
+  color: var(--text-secondary);
   font-size: 0.8rem;
 }
 
@@ -983,7 +983,7 @@
   align-items: center;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .logs-card .card-header h4 {
@@ -993,7 +993,7 @@
   margin: 0;
   padding: 0;
   border: none;
-  color: #374151;
+  color: var(--text-primary);
 }
 
 .logs-card .card-header h4 .material-icons {
@@ -1140,7 +1140,7 @@
   font-size: 0.7rem;
   background: rgba(0, 0, 0, 0.08);
   border-radius: 4px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Spinning animation for restart icons */
@@ -1156,10 +1156,10 @@
 /* ===================== SUBPROCESS EVENTS TABLE ===================== */
 
 .subprocess-events-table {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color);
 }
 
 .subprocess-events-table table {
@@ -1171,18 +1171,18 @@
 .subprocess-events-table td {
   padding: 12px 16px;
   text-align: left;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .subprocess-events-table th {
-  background: #f9fafb;
+  background: var(--bg-body);
   font-weight: 600;
   font-size: 0.85rem;
-  color: #374151;
+  color: var(--text-primary);
 }
 
 .subprocess-events-table tbody tr:hover {
-  background: #f9fafb;
+  background: var(--bg-body);
 }
 
 .subprocess-events-table tbody tr:last-child td {
@@ -1198,7 +1198,7 @@
 
 .subprocess-stats-summary .stat-card {
   padding: 16px;
-  background: #f9fafb;
+  background: var(--bg-body);
   border-radius: 8px;
   text-align: center;
 }
@@ -1222,12 +1222,12 @@
   display: block;
   font-size: 1.5rem;
   font-weight: 700;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .subprocess-stats-summary .stat-card .stat-label {
   font-size: 0.75rem;
-  color: #6b7280;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
@@ -1245,7 +1245,7 @@
   font-size: 0.7rem;
   background: rgba(0, 0, 0, 0.06);
   border-radius: 4px;
-  color: #4b5563;
+  color: var(--text-secondary);
 }
 
 .event-details .detail-chip.error {
@@ -1265,7 +1265,7 @@
 .task-id {
   font-family: monospace;
   font-size: 0.8rem;
-  color: #6b7280;
+  color: var(--text-secondary);
   max-width: 150px;
   white-space: nowrap;
   overflow: hidden;
@@ -1275,7 +1275,7 @@
 /* Subprocess Event Info (no associated task) */
 .no-task-info {
   padding: 16px;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .no-task-info p {
@@ -1298,7 +1298,7 @@
   display: block;
   margin-top: 8px;
   padding: 12px;
-  background: #1e1e1e;
+  background: var(--bg-surface-elevated);
   color: #f87171;
   border-radius: 4px;
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;

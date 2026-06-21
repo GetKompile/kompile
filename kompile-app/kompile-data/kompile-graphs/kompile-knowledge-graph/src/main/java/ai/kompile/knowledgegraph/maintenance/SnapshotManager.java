@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.maintenance;
 
 import ai.kompile.core.graphrag.maintenance.model.GraphSnapshot;
+import ai.kompile.knowledgegraph.io.GraphEmbeddingSidecar;
 import ai.kompile.knowledgegraph.io.GraphIOService;
 import ai.kompile.knowledgegraph.io.model.ImportResult;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -23,11 +24,13 @@ import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -72,6 +75,13 @@ public class SnapshotManager {
         this.knowledgeGraphService = knowledgeGraphService;
     }
 
+    /**
+     * [M-9] The binary embedding sidecar. Optional — when present, snapshots persist KG embeddings
+     * alongside the structure dump so a restore reattaches them instead of forcing recomputation.
+     */
+    @Autowired(required = false)
+    private GraphEmbeddingSidecar embeddingSidecar;
+
     private Path snapshotBaseDir() {
         if (dataDir != null && !dataDir.isBlank()) {
             return Path.of(dataDir, "data", "graph", "snapshots");
@@ -91,13 +101,19 @@ public class SnapshotManager {
         String snapshotId = UUID.randomUUID().toString();
         Instant now = Instant.now();
 
-        // Collect IDs
-        List<String> nodeIds = nodeRepository.findActiveEntities(factSheetId)
+        // Collect IDs from the @Primary live store (matrix/vector path) via the service layer.
+        // PREVIOUSLY used nodeRepository.findActiveEntities / edgeRepository.countActiveEdges — those
+        // are JPA-only and are always empty on the live matrix path (H-6 fix).
+        List<String> nodeIds = knowledgeGraphService.getNodesInFactSheet(factSheetId)
                 .stream()
-                .map(n -> n.getNodeId())
+                .filter(n -> !Boolean.TRUE.equals(n.getStale()))
+                .map(ai.kompile.knowledgegraph.domain.GraphNode::getNodeId)
                 .toList();
-        long activeEdgeCount = edgeRepository.countActiveEdges(factSheetId);
-        long activeNodeCount = nodeRepository.countActiveNodes(factSheetId);
+        long activeNodeCount = nodeIds.size();
+        long activeEdgeCount = knowledgeGraphService.getEdgesInFactSheet(factSheetId)
+                .stream()
+                .filter(e -> !Boolean.TRUE.equals(e.getStale()))
+                .count();
 
         // Build lightweight manifest
         Map<String, Object> manifest = new LinkedHashMap<>();
@@ -132,11 +148,27 @@ public class SnapshotManager {
         // Full, restorable graph dump alongside the manifest (reuses the portability exporter, so
         // restore is a lossless re-import). Kept in a separate file so listing stays lightweight.
         Path graphFile = dir.resolve(snapshotId + ".graph.json");
-        try {
-            Files.write(graphFile, graphIOService.exportGraph("json", factSheetId).data());
+        try (OutputStream os = Files.newOutputStream(graphFile)) {
+            // [L-7] Stream the dump straight to disk so snapshotting a large fact sheet does not build
+            // the whole PortableGraph + serialized byte[] in memory.
+            graphIOService.exportGraphStreaming("json", factSheetId, os);
         } catch (Exception e) {
             log.error("Failed to write snapshot graph dump {}: {}", graphFile, e.getMessage(), e);
             throw new RuntimeException("Cannot write snapshot graph dump: " + graphFile, e);
+        }
+
+        // [M-9] Persist KG embeddings (binary sidecar) next to the structure dump so a restore
+        // reattaches them rather than silently dropping them — the structure JSON is embedding-free.
+        // Best-effort: a fact sheet with no embeddings simply produces no sidecar file.
+        if (embeddingSidecar != null) {
+            try {
+                byte[] emb = embeddingSidecar.export(factSheetId);
+                if (emb != null && emb.length > 0) {
+                    Files.write(dir.resolve(snapshotId + ".embeddings.bin"), emb);
+                }
+            } catch (Exception e) {
+                log.warn("Failed to write snapshot embeddings for {}: {}", snapshotId, e.getMessage());
+            }
         }
 
         log.info("Created snapshot {} for factSheet={}, nodes={}, edges={}, reason='{}'",
@@ -212,8 +244,9 @@ public class SnapshotManager {
     /**
      * Restore a fact sheet's graph to a prior snapshot: clear the current fact-sheet graph and
      * re-import the snapshot's full dump (the Phase-1 portability importer). Structure + metadata
-     * + provenance are restored; KG embeddings (the binary sidecar) are not, and would be
-     * recomputed. Anything created after the snapshot is discarded — that's the rollback.
+     * + provenance are restored; KG embeddings are reattached from the snapshot's binary sidecar
+     * when present ([M-9], so they no longer need recomputing). Anything created after the snapshot
+     * is discarded — that's the rollback.
      *
      * @return the restored snapshot's metadata, or {@code null} if it couldn't be resolved
      */
@@ -260,6 +293,22 @@ public class SnapshotManager {
                     snapshotId, factSheetId, result.nodesCreated(), result.edgesCreated());
         } catch (Exception e) {
             throw new RuntimeException("Failed to restore snapshot " + snapshotId, e);
+        }
+
+        // [M-9] Reattach KG embeddings from the snapshot's sidecar so the restore preserves them
+        // instead of forcing recomputation. Best-effort: absent file / no live store → skipped.
+        if (embeddingSidecar != null && factSheetId != null) {
+            Path embFile = graphFile.resolveSibling(snapshotId + ".embeddings.bin");
+            if (Files.isRegularFile(embFile)) {
+                try {
+                    int applied = embeddingSidecar.importInto(factSheetId, Files.readAllBytes(embFile));
+                    if (applied > 0) {
+                        log.info("Reattached {} KG embeddings for restored snapshot {}", applied, snapshotId);
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to reattach snapshot embeddings for {}: {}", snapshotId, e.getMessage());
+                }
+            }
         }
 
         final String wantedId = snapshotId;

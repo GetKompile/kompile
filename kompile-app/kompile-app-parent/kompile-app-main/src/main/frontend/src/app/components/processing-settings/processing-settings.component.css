@@ -38,13 +38,13 @@
 .settings-header h2 {
   margin: 0;
   font-size: 24px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .settings-header p {
   margin: 0;
   font-size: 14px;
-  color: #666;
+  color: var(--text-secondary);
   width: 100%;
 }
 
@@ -116,7 +116,7 @@
   justify-content: space-between;
   align-items: center;
   font-size: 0.85em;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .memory-status-badge {
@@ -167,12 +167,12 @@
 
 .job-label {
   font-size: 0.75em;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .job-separator {
   font-size: 1.5em;
-  color: #ccc;
+  color: var(--border-color);
 }
 
 /* Settings Form Fields */
@@ -188,7 +188,7 @@
 .toggle-hint {
   display: block;
   margin-top: 4px;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
@@ -207,11 +207,11 @@
   font-size: 16px;
   width: 16px;
   height: 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .thread-pool-info small {
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Apply Settings Button */
@@ -227,7 +227,7 @@
   justify-content: center;
   gap: 12px;
   padding: 40px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Batch Type Badge */
@@ -414,7 +414,7 @@
 /* Adaptive Metrics Section */
 .adaptive-metrics-section {
   margin-top: 16px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -445,7 +445,7 @@
 .adaptive-header span {
   font-weight: 500;
   font-size: 14px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .adaptive-status-badge {
@@ -464,17 +464,17 @@
 }
 
 .adaptive-status-badge.inactive {
-  background: #e9ecef;
-  color: #6c757d;
+  background: var(--bg-surface-elevated);
+  color: var(--text-secondary);
 }
 
 .expand-icon {
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .adaptive-metrics-content {
   padding: 16px;
-  background: #fafbfc;
+  background: var(--bg-body);
 }
 
 /* Current Batch Sizes Display */
@@ -528,19 +528,19 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .batch-metric-value {
   font-size: 28px;
   font-weight: 700;
-  color: #333;
+  color: var(--text-primary);
   line-height: 1.2;
 }
 
 .batch-metric-label {
   font-size: 10px;
-  color: #666;
+  color: var(--text-secondary);
   margin-top: 2px;
 }
 
@@ -550,9 +550,9 @@
   justify-content: space-around;
   gap: 12px;
   padding: 12px;
-  background: white;
+  background: var(--bg-surface);
   border-radius: 8px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   margin-bottom: 12px;
 }
 
@@ -573,12 +573,12 @@
 .perf-value {
   font-size: 16px;
   font-weight: 700;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .perf-label {
   font-size: 9px;
-  color: #999;
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
@@ -632,18 +632,18 @@
 }
 
 .reason-label {
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .reason-text {
-  color: #333;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 /* Recent Adjustments List */
 .recent-adjustments {
   margin-top: 12px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
   padding-top: 12px;
 }
 
@@ -654,7 +654,7 @@
   margin-bottom: 8px;
   font-size: 12px;
   font-weight: 600;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .adjustments-header mat-icon {
@@ -704,18 +704,18 @@
 }
 
 .adj-time {
-  color: #666;
+  color: var(--text-secondary);
   min-width: 60px;
 }
 
 .adj-change {
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   min-width: 60px;
 }
 
 .adj-reason {
-  color: #555;
+  color: var(--text-secondary);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -726,7 +726,7 @@
 .adaptive-last-updated {
   margin-top: 12px;
   text-align: right;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .adaptive-last-updated small {
@@ -739,8 +739,8 @@
   align-items: center;
   gap: 10px;
   padding: 16px;
-  background: #f8f9fa;
-  color: #6c757d;
+  background: var(--bg-body);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
@@ -748,7 +748,7 @@
   font-size: 20px;
   width: 20px;
   height: 20px;
-  color: #adb5bd;
+  color: var(--border-color);
 }
 
 /* ==================== Subprocess Configuration Section ==================== */
@@ -784,15 +784,15 @@
 }
 
 .subprocess-status-badge.disabled {
-  background: #e9ecef;
-  color: #6c757d;
+  background: var(--bg-surface-elevated);
+  color: var(--text-secondary);
 }
 
 .subprocess-config-content {
   padding: 16px;
   background: linear-gradient(135deg, #f0f4f8 0%, #e6eef6 100%);
   border-radius: 8px;
-  border: 1px solid #d0d8e0;
+  border: 1px solid var(--border-color);
 }
 
 .subprocess-toggle-row {
@@ -846,7 +846,7 @@
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .subprocess-advanced-settings .settings-row {
@@ -867,7 +867,7 @@
   justify-content: center;
   gap: 12px;
   padding: 24px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .subprocess-debug-row {
@@ -884,7 +884,7 @@
 }
 
 .debug-hint {
-  color: #999;
+  color: var(--text-tertiary);
   font-size: 11px;
 }
 
@@ -925,7 +925,7 @@
 
 .pipeline-section .section-description {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   margin: 8px 0 16px 0;
 }
 
@@ -952,13 +952,13 @@
   flex-wrap: wrap;
   margin-bottom: 16px;
   padding: 12px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
 }
 
 .presets-label {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   margin-right: 4px;
 }
 
@@ -995,12 +995,12 @@
 
 .advanced-toggle-row {
   margin: 16px 0;
-  border-top: 1px dashed #e0e0e0;
+  border-top: 1px dashed var(--border-color);
   padding-top: 8px;
 }
 
 .advanced-toggle-btn {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -1011,11 +1011,11 @@
 }
 
 .advanced-settings-panel {
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 16px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 .advanced-settings-panel .advanced-settings-header {
@@ -1024,14 +1024,14 @@
   gap: 8px;
   margin-bottom: 16px;
   font-weight: 500;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .advanced-settings-panel .advanced-settings-header mat-icon {
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .advanced-settings-panel .settings-row {
@@ -1046,7 +1046,7 @@
   gap: 12px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 .pipeline-action-buttons button {
@@ -1066,7 +1066,7 @@
   align-items: center;
   gap: 12px;
   padding: 20px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Mobile responsive for pipeline settings */
@@ -1150,16 +1150,16 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
 .optimization-info-box {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
   padding: 12px 16px;
   margin-bottom: 16px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 .optimization-info-box .info-row {
@@ -1177,12 +1177,12 @@
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .optimization-info-box .info-label {
   font-weight: 500;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .optimization-info-box .info-value {
@@ -1191,7 +1191,7 @@
 }
 
 .optimization-info-box .info-detail {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -1215,7 +1215,7 @@
 }
 
 .optimization-actions .action-hint {
-  color: #888;
+  color: var(--text-tertiary);
   font-size: 12px;
 }
 
@@ -1225,7 +1225,7 @@
   align-items: center;
   gap: 12px;
   padding: 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .optimization-unavailable {

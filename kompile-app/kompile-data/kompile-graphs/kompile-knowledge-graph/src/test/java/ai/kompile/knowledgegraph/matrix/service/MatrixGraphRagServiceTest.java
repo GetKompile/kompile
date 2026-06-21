@@ -23,6 +23,7 @@ import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
+import ai.kompile.knowledgegraph.embedding.adapter.MatrixKgEmbeddingGraphAdapter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -359,6 +360,188 @@ class MatrixGraphRagServiceTest {
         assertNotNull(result);
         // Verify default k=5 was applied (searchNodes called with a limit value)
         verify(graphStore, atLeastOnce()).searchNodes(anyString(), anyString(), intThat(k -> k >= 1));
+    }
+
+    // ─── Hybrid search (embedding-seeded Personalized PageRank) ─────────────────
+
+    @Test
+    void answerQueryHybridSearchSurfacesMultiHopNodeViaPersonalizedPageRank() {
+        // Extend the reusable graph into a 2-hop chain: Alice(n1) → Acme(n2) → Metropolis(n3).
+        MatrixGraphNode n3 = MatrixGraphNode.builder()
+                .nodeId("n3").nodeType("LOCATION").title("Metropolis")
+                .description("A large city").build();
+        realGraph.addNode(n3);
+        realGraph.addEdge("n2", "n3", 0.7, "LOCATED_IN", false);
+
+        when(graphStore.loadGraph(any())).thenReturn(Optional.of(realGraph));
+        when(embeddingModel.embed(anyString())).thenReturn(queryEmbedding);
+        when(queryEmbedding.isEmpty()).thenReturn(false);
+        // Only the entry-point node (n1) matches by vector similarity; n3 is two hops away.
+        when(graphStore.findSimilarNodes(anyString(), any(), anyInt(), anyDouble()))
+                .thenReturn(List.of(Map.entry("n1", 0.9)));
+
+        configureLlmMock("Alice works at Acme, which is located in Metropolis.");
+
+        GraphRagQuery query = GraphRagQuery.builder()
+                .query("Where is Alice's employer located?")
+                .searchType(SearchType.HYBRID)
+                .k(10)
+                .build();
+        GraphRagResult result = service.answerQuery(query);
+
+        assertNotNull(result);
+        String context = result.getFormattedContext();
+        assertNotNull(context);
+        // Personalized PageRank seeded at n1 propagates across the chain, so the 2-hop node
+        // surfaces in the context — something the 1-hop LOCAL expansion from n1 would never reach.
+        assertTrue(context.contains("Metropolis"),
+                "HYBRID (Personalized PageRank) should surface the 2-hop node. Context was:\n" + context);
+        verify(graphStore, atLeastOnce())
+                .findSimilarNodes(anyString(), eq(queryEmbedding), anyInt(), anyDouble());
+    }
+
+    @Test
+    void answerQueryHybridFallsBackToLocalWhenNoEmbeddingModel() {
+        service = new MatrixGraphRagService(graphStore, null, null);
+        when(graphStore.loadGraph(any())).thenReturn(Optional.of(realGraph));
+        when(graphStore.searchNodes(anyString(), anyString(), anyInt()))
+                .thenReturn(List.of(realGraph.getNode("n1").orElseThrow()));
+
+        GraphRagQuery query = GraphRagQuery.builder()
+                .query("Alice")
+                .searchType(SearchType.HYBRID)
+                .k(5)
+                .build();
+        GraphRagResult result = service.answerQuery(query);
+
+        assertNotNull(result);
+        // No embedding model → HYBRID degrades to text-based local retrieval.
+        verify(graphStore).searchNodes(anyString(), eq("Alice"), anyInt());
+    }
+
+    @Test
+    void answerQueryHybridUsesStructuralKgEmbeddingsToSurfaceDisconnectedEntity() {
+        // Add an ISOLATED node (no edges → ~0 PageRank, not a text seed) whose trained KGE vector is
+        // structurally identical to the seed's. Stamp KGE vectors into node metadata as the Matrix
+        // adapter would after training.
+        MatrixGraphNode n4 = MatrixGraphNode.builder()
+                .nodeId("n4").nodeType("PERSON").title("Bob")
+                .description("Another engineer").build();
+        realGraph.addNode(n4);
+        realGraph.getNode("n1").orElseThrow().getMetadata()
+                .put(MatrixKgEmbeddingGraphAdapter.KGE_EMBEDDING_KEY, "1.0,0.0,0.0");
+        realGraph.getNode("n4").orElseThrow().getMetadata()
+                .put(MatrixKgEmbeddingGraphAdapter.KGE_EMBEDDING_KEY, "1.0,0.0,0.0"); // == seed
+        realGraph.getNode("n2").orElseThrow().getMetadata()
+                .put(MatrixKgEmbeddingGraphAdapter.KGE_EMBEDDING_KEY, "0.0,0.0,1.0"); // orthogonal
+
+        when(graphStore.loadGraph(any())).thenReturn(Optional.of(realGraph));
+        when(embeddingModel.embed(anyString())).thenReturn(queryEmbedding);
+        when(queryEmbedding.isEmpty()).thenReturn(false);
+        // Only n1 matches by text vector similarity; n4 is isolated and not a text match.
+        when(graphStore.findSimilarNodes(anyString(), any(), anyInt(), anyDouble()))
+                .thenReturn(List.of(Map.entry("n1", 0.9)));
+        configureLlmMock("answer");
+
+        // k=2: only the seed plus ONE more node fit. The graph-connected n2 has the structure/PageRank
+        // signal; the isolated n4 has only the KGE-similarity signal. If KGE participates in ranking,
+        // n4 (KGE-identical to the seed) beats n2 and takes the second slot.
+        GraphRagQuery query = GraphRagQuery.builder()
+                .query("Who is similar to Alice?")
+                .searchType(SearchType.HYBRID)
+                .k(2)
+                .build();
+        GraphRagResult result = service.answerQuery(query);
+
+        assertNotNull(result);
+        String context = result.getFormattedContext();
+        assertNotNull(context);
+        assertTrue(context.contains("Bob"),
+                "structural KG-embedding similarity should surface the disconnected KGE-similar entity. Context:\n" + context);
+    }
+
+    @Test
+    void answerQueryHybridAppendsConnectingPaths() {
+        // Chain n1 → n2 → n3 so the ranked key entities are connected by relational paths.
+        MatrixGraphNode n3 = MatrixGraphNode.builder()
+                .nodeId("n3").nodeType("LOCATION").title("Metropolis").description("A city").build();
+        realGraph.addNode(n3);
+        realGraph.addEdge("n2", "n3", 0.7, "LOCATED_IN", false);
+
+        when(graphStore.loadGraph(any())).thenReturn(Optional.of(realGraph));
+        when(embeddingModel.embed(anyString())).thenReturn(queryEmbedding);
+        when(queryEmbedding.isEmpty()).thenReturn(false);
+        when(graphStore.findSimilarNodes(anyString(), any(), anyInt(), anyDouble()))
+                .thenReturn(List.of(Map.entry("n1", 0.9)));
+        configureLlmMock("answer");
+
+        GraphRagQuery query = GraphRagQuery.builder()
+                .query("How are these connected?")
+                .searchType(SearchType.HYBRID)
+                .k(10)
+                .build();
+        GraphRagResult result = service.answerQuery(query);
+
+        String context = result.getFormattedContext();
+        assertTrue(context.contains("Connecting relationships"),
+                "HYBRID should append a PathRAG connecting-paths section. Context:\n" + context);
+        assertTrue(context.contains("Alice --> Acme Corp"),
+                "paths between key entities should be rendered with titles. Context:\n" + context);
+    }
+
+    @Test
+    void answerQueryHybridFiltersByEntityType() {
+        // realGraph: n1 = PERSON (Alice), n2 = ORGANIZATION (Acme Corp). Request only PERSON entities.
+        when(graphStore.loadGraph(any())).thenReturn(Optional.of(realGraph));
+        when(embeddingModel.embed(anyString())).thenReturn(queryEmbedding);
+        when(queryEmbedding.isEmpty()).thenReturn(false);
+        when(graphStore.findSimilarNodes(anyString(), any(), anyInt(), anyDouble()))
+                .thenReturn(List.of(Map.entry("n1", 0.9), Map.entry("n2", 0.85)));
+        configureLlmMock("answer");
+
+        GraphRagQuery query = GraphRagQuery.builder()
+                .query("who are the people?")
+                .searchType(SearchType.HYBRID)
+                .k(10)
+                .entityType("PERSON")
+                .build();
+        GraphRagResult result = service.answerQuery(query);
+
+        String context = result.getFormattedContext();
+        // The PERSON node is formatted; the ORGANIZATION node is gated out of the primary results.
+        assertTrue(context.contains("[PERSON]"),
+                "PERSON node should be retrieved. Context:\n" + context);
+        assertFalse(context.contains("[ORGANIZATION]"),
+                "ORGANIZATION node should be filtered out by entityType=PERSON. Context:\n" + context);
+    }
+
+    // ─── Global search via community reports ────────────────────────────────────
+
+    @Test
+    void answerQueryGlobalSearchUsesCommunityReportsWhenAvailable() {
+        CommunitySummaryService communityService = mock(CommunitySummaryService.class);
+        service = new MatrixGraphRagService(graphStore, embeddingModel, llmChat, communityService);
+
+        when(graphStore.loadGraph(any())).thenReturn(Optional.of(realGraph));
+        CommunitySummaryService.CommunityReport report = new CommunitySummaryService.CommunityReport(
+                0, "Alice works at Acme Corp in the technology sector.", List.of("n1", "n2"), null);
+        when(communityService.getOrBuildReports(any())).thenReturn(List.of(report));
+        // Report has no embedding, so relevance ranking is skipped (all reports included).
+        when(embeddingModel.embed(anyString())).thenReturn(queryEmbedding);
+        when(queryEmbedding.isEmpty()).thenReturn(false);
+        configureLlmMock("Global community answer.");
+
+        GraphRagQuery query = GraphRagQuery.builder()
+                .query("What is the overall picture?")
+                .searchType(SearchType.GLOBAL)
+                .k(5)
+                .build();
+        GraphRagResult result = service.answerQuery(query);
+
+        assertNotNull(result);
+        assertTrue(result.getFormattedContext().contains("Alice works at Acme Corp"),
+                "GLOBAL search should surface community report summaries. Context:\n" + result.getFormattedContext());
+        verify(communityService).getOrBuildReports(any());
     }
 
     // ─── Helper ───────────────────────────────────────────────────────────────

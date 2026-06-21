@@ -131,6 +131,40 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
             <span class="legend-label">MFrag region</span>
           </div>
         </ng-container>
+        <ng-container *ngIf="strengthOverlayEnabled">
+          <div class="legend-title">Strength</div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#4CAF50"></span>
+            <span class="legend-label">Established</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#8BC34A"></span>
+            <span class="legend-label">High</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#FFC107"></span>
+            <span class="legend-label">Probable</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#FF9800"></span>
+            <span class="legend-label">Speculative</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#F44336"></span>
+            <span class="legend-label">Suppressed</span>
+          </div>
+        </ng-container>
+        <ng-container *ngIf="provenanceOverlayEnabled">
+          <div class="legend-title">Provenance</div>
+          <div class="legend-item">
+            <span class="legend-circle-swatch"></span>
+            <span class="legend-label">Observed (circle)</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-diamond-swatch"></span>
+            <span class="legend-label">Derived (diamond)</span>
+          </div>
+        </ng-container>
       </div>
     </div>
   `,
@@ -279,6 +313,32 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
       background: rgba(144, 202, 249, 0.1);
       border: 1.5px dashed rgba(144, 202, 249, 0.3);
     }
+
+    .legend-circle-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: transparent;
+      border: 2px solid #888;
+    }
+
+    .legend-diamond-swatch {
+      width: 12px;
+      height: 12px;
+      background: transparent;
+      border: 2px dashed #ce93d8;
+      transform: rotate(45deg);
+    }
+
+    /* Strength overlay tint circles */
+    .strength-tint {
+      pointer-events: none;
+    }
+
+    /* Provenance diamond markers */
+    .provenance-diamond {
+      pointer-events: none;
+    }
   `]
 })
 export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
@@ -293,6 +353,11 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   @Input() priorOverlay: Record<string, number> | null = null;
   @Input() mebnMfragMap: Record<string, string> | null = null;  // nodeId -> mfragName
   @Input() influenceOverlayActive: boolean = false;  // true when posteriorOverlay contains influence scores (not true posteriors)
+
+  // Phase-2 KB overlays
+  @Input() strengthOverlayEnabled: boolean = false;
+  @Input() strengthBandMap: Map<string, string> = new Map();  // nodeId -> StrengthBand name
+  @Input() provenanceOverlayEnabled: boolean = false;
 
   @Output() nodeSelected = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
@@ -363,6 +428,12 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     }
     if (changes['mebnMfragMap'] && this.mfragRegionsGroup) {
       this.updateMfragRegions();
+    }
+    if ((changes['strengthOverlayEnabled'] || changes['strengthBandMap']) && this.nodesGroup) {
+      this.updateStrengthOverlay();
+    }
+    if (changes['provenanceOverlayEnabled'] && this.nodesGroup) {
+      this.updateProvenanceOverlay();
     }
   }
 
@@ -471,6 +542,14 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     this.renderNodes();
     this.renderLabels();
 
+    // Apply KB overlays if enabled
+    if (this.strengthOverlayEnabled) {
+      this.updateStrengthOverlay();
+    }
+    if (this.provenanceOverlayEnabled) {
+      this.updateProvenanceOverlay();
+    }
+
     // Restart simulation
     this.simulation.alpha(1).restart();
   }
@@ -504,6 +583,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
 
     const nodeEnter = nodeSelection.enter()
       .append('circle')
+      .classed('graph-node', true)
       .attr('r', d => NODE_SIZES[d.type] || 10)
       .attr('fill', d => NODE_COLORS[d.type] || '#999')
       .attr('stroke', '#ffffff')
@@ -569,6 +649,21 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       this.cachedLabelSel
         .attr('x', d => d.x)
         .attr('y', d => d.y);
+    }
+
+    // Update strength tint positions
+    if (this.strengthOverlayEnabled) {
+      this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('.strength-tint')
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y);
+    }
+
+    // Update provenance diamond positions
+    if (this.provenanceOverlayEnabled) {
+      this.nodesGroup.selectAll<SVGRectElement, SimulationNode>('.provenance-diamond')
+        .attr('x', d => (d.x || 0) - (NODE_SIZES[d.type] || 10) * 0.85)
+        .attr('y', d => (d.y || 0) - (NODE_SIZES[d.type] || 10) * 0.85)
+        .attr('transform', d => `rotate(45, ${d.x || 0}, ${d.y || 0})`);
     }
 
     // Update MFrag region positions (throttled to every 5th tick for performance)
@@ -802,6 +897,110 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
 
     // Cache selection for ticked()
     this.cachedPriorSel = this.priorRingsGroup.selectAll<SVGCircleElement, SimulationNode>('circle');
+  }
+
+  // ── Strength Overlay ────────────────────────────────────────────────────────
+
+  private readonly STRENGTH_BORDER_COLORS: Record<string, string> = {
+    ESTABLISHED:  '#4CAF50',
+    HIGH:         '#8BC34A',
+    PROBABLE:     '#FFC107',
+    SPECULATIVE:  '#FF9800',
+    SUPPRESSED:   '#F44336',
+  };
+
+  private readonly STRENGTH_TINT_COLORS: Record<string, string> = {
+    ESTABLISHED:  'rgba(76,175,80,0.15)',
+    HIGH:         'rgba(139,195,74,0.15)',
+    PROBABLE:     'rgba(255,193,7,0.15)',
+    SPECULATIVE:  'rgba(255,152,0,0.15)',
+    SUPPRESSED:   'rgba(244,67,54,0.15)',
+  };
+
+  private updateStrengthOverlay(): void {
+    if (!this.nodesGroup) return;
+
+    // Remove existing strength overlay elements
+    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('.strength-tint').remove();
+
+    if (!this.strengthOverlayEnabled || this.strengthBandMap.size === 0) {
+      // Reset stroke back to defaults
+      this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
+        .attr('stroke', d => this.selectedNode?.id === d.id ? '#667eea' : '#ffffff')
+        .attr('stroke-width', d => this.selectedNode?.id === d.id ? 4 : 2.5);
+      return;
+    }
+
+    // Apply border color based on strength band
+    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
+      .attr('stroke', (d: SimulationNode) => {
+        if (this.selectedNode?.id === d.id) return '#667eea';
+        const band = this.strengthBandMap.get(d.id);
+        return band ? (this.STRENGTH_BORDER_COLORS[band] || '#ffffff') : '#ffffff';
+      })
+      .attr('stroke-width', (d: SimulationNode) => {
+        if (this.selectedNode?.id === d.id) return 4;
+        return this.strengthBandMap.has(d.id) ? 3.5 : 2.5;
+      });
+
+    // Add tint circles behind the main circles
+    const nodesWithBand = this.nodes.filter(n => this.strengthBandMap.has(n.id));
+    for (const node of nodesWithBand) {
+      const band = this.strengthBandMap.get(node.id)!;
+      const tint = this.STRENGTH_TINT_COLORS[band];
+      if (!tint) continue;
+      const baseR = NODE_SIZES[node.type] || 10;
+      this.nodesGroup.insert('circle', 'circle')
+        .datum(node)
+        .classed('strength-tint', true)
+        .attr('cx', node.x || 0)
+        .attr('cy', node.y || 0)
+        .attr('r', baseR + 6)
+        .attr('fill', tint)
+        .attr('stroke', 'none')
+        .attr('pointer-events', 'none');
+    }
+  }
+
+  // ── Provenance Overlay ───────────────────────────────────────────────────────
+
+  private updateProvenanceOverlay(): void {
+    if (!this.nodesGroup) return;
+
+    // Remove existing diamond overlays
+    this.nodesGroup.selectAll('.provenance-diamond').remove();
+
+    if (!this.provenanceOverlayEnabled) return;
+
+    // For DERIVED nodes, add a rotated square (diamond) overlay
+    const derivedNodes = this.nodes.filter(n => this.isDerivedNode(n));
+    for (const node of derivedNodes) {
+      const size = (NODE_SIZES[node.type] || 10) * 0.85;
+      this.nodesGroup.append('rect')
+        .datum(node)
+        .classed('provenance-diamond', true)
+        .attr('x', (node.x || 0) - size)
+        .attr('y', (node.y || 0) - size)
+        .attr('width', size * 2)
+        .attr('height', size * 2)
+        .attr('fill', 'none')
+        .attr('stroke', '#ce93d8')
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '3 2')
+        .attr('transform', `rotate(45, ${node.x || 0}, ${node.y || 0})`)
+        .attr('pointer-events', 'none');
+    }
+  }
+
+  private isDerivedNode(node: SimulationNode): boolean {
+    const meta = node.metadata as Record<string, unknown> | undefined;
+    if (!meta) return false;
+    if (meta['_derived'] === true) return true;
+    const src = meta['_source'] as string | undefined;
+    if (src && src.toLowerCase().includes('derived')) return true;
+    const prov = meta['_provenance'] as string | undefined;
+    if (prov && prov.toLowerCase().includes('derived')) return true;
+    return false;
   }
 
   private readonly MFRAG_COLORS = [

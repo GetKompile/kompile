@@ -52,7 +52,8 @@ class CrawlWorkerRegistryTest {
                 id, "http://" + id, "worker",
                 gpu ? List.of("CPU", "CUDA") : List.of("CPU"),
                 gpu ? 1 : 0, gpu ? 8_000_000_000L : 0L, 8,
-                jobs, freeSlots, 0, cpuLoad, 0.1, "NOMINAL", "NOMINAL", true, 0L);
+                jobs, freeSlots, 0, cpuLoad, 0.1, "NOMINAL", "NOMINAL", true, 0L,
+                0.3, "NOMINAL", List.of(), false);
     }
 
     @Test

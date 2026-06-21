@@ -78,7 +78,7 @@
   padding: 8px 10px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 8px;
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .ce-head {

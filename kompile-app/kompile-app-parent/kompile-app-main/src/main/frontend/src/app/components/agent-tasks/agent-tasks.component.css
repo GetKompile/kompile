@@ -112,7 +112,7 @@
   flex: 0 0 auto;
 }
 
-.status-pending { background: #eee; color: #555; }
+.status-pending { background: var(--bg-surface-elevated); color: var(--text-secondary); }
 .status-running { background: #e3f2fd; color: #1565c0; }
 .status-succeeded { background: #e8f5e9; color: #2e7d32; }
 .status-failed { background: #ffebee; color: #c62828; }

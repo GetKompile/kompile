@@ -102,7 +102,7 @@
 }
 
 .header-query {
-  color: #888;
+  color: var(--text-tertiary);
   font-size: 0.9rem;
   font-style: italic;
   max-width: 200px;
@@ -122,9 +122,9 @@
 /* Settings panel */
 .settings-panel {
   padding: 12px 24px;
-  background: #f5f5f5;
-  border-top: 1px solid #e0e0e0;
-  border-bottom: 1px solid #e0e0e0;
+  background: var(--bg-surface-elevated);
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .settings-row {
@@ -136,7 +136,7 @@
 
 .threshold-label {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -175,7 +175,7 @@ mat-dialog-content {
   justify-content: center;
   gap: 12px;
   padding: 48px 0;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .empty-state {
@@ -183,7 +183,7 @@ mat-dialog-content {
   flex-direction: column;
   align-items: center;
   padding: 48px 0;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .empty-icon {
@@ -203,10 +203,10 @@ mat-dialog-content {
 /* Candidate list */
 .candidate-summary {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .merged-count {
@@ -215,16 +215,16 @@ mat-dialog-content {
 }
 
 .candidate-card {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 12px 16px;
   margin-bottom: 8px;
-  background: #fafafa;
+  background: var(--bg-body);
   transition: border-color 0.2s;
 }
 
 .candidate-card:hover {
-  border-color: #b0b0b0;
+  border-color: var(--text-tertiary);
 }
 
 .candidate-entities {
@@ -300,7 +300,7 @@ mat-dialog-content {
   gap: 6px;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--border-color);
 }
 
 .reason-icon {
@@ -314,7 +314,7 @@ mat-dialog-content {
 
 .reason-text {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-tertiary);
   line-height: 1.4;
 }
 
@@ -323,7 +323,7 @@ mat-dialog-content {
   gap: 8px;
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--border-color);
 }
 
 .candidate-actions button {
@@ -400,7 +400,7 @@ mat-dialog-content {
 
 .explanation-label {
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 

@@ -12,7 +12,7 @@ package ai.kompile.event.attribution.service;
 import ai.kompile.event.attribution.algorithm.CausalTraversal;
 import ai.kompile.event.attribution.algorithm.InfluencePropagation;
 import ai.kompile.event.attribution.algorithm.TemporalChainExtractor;
-import ai.kompile.event.attribution.domain.*;
+import ai.kompile.graph.reasoning.domain.*;
 import ai.kompile.event.attribution.llm.AttributionLlmService;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;

@@ -257,7 +257,8 @@ class JsonLdRoundtripTest {
 
         assertTrue(json.contains("@context"));
         assertTrue(json.contains("@graph"));
-        assertTrue(json.contains("schema.org"));
+        // L-5 fix: @context uses kompile IRIs (https://kompile.ai/kg/), not schema.org
+        assertTrue(json.contains("https://kompile.ai/kg/"), "kompile IRI must appear in @context");
     }
 
     // ─── edge for unknown source creates stub node ────────────────────

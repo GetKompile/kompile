@@ -13,7 +13,7 @@
   justify-content: center;
   padding: 48px;
   gap: 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Error Banner */
@@ -63,17 +63,17 @@
 
 .summary-card .card-label {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
 .summary-card .card-sublabel {
   font-size: 11px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .summary-card.total {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
 }
 
 .summary-card.synced {
@@ -143,7 +143,7 @@
 
 .sync-status {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -198,7 +198,7 @@
 
 .source-id {
   font-size: 11px;
-  color: #999;
+  color: var(--text-tertiary);
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -225,7 +225,7 @@
 
 .passage-count {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Status Colors */
@@ -258,12 +258,12 @@ mat-icon.status-blue {
 
 .status-gray,
 mat-icon.status-gray {
-  color: #9e9e9e;
+  color: var(--text-tertiary);
 }
 
 /* Expanded Row */
 .expanded-row {
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .detail-row {
@@ -293,7 +293,7 @@ mat-icon.status-gray {
   align-items: center;
   gap: 12px;
   padding: 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .passages-list h4 {
@@ -312,12 +312,12 @@ mat-icon.status-gray {
 .passages-table td {
   padding: 8px;
   text-align: left;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .passages-table th {
   font-weight: 500;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
 }
 
 .preview-cell {
@@ -325,7 +325,7 @@ mat-icon.status-gray {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Pagination */
@@ -339,7 +339,7 @@ mat-icon.status-gray {
 
 .pagination-info {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Empty State */
@@ -350,7 +350,7 @@ mat-icon.status-gray {
   justify-content: center;
   padding: 48px;
   text-align: center;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .empty-state mat-icon {
@@ -362,7 +362,7 @@ mat-icon.status-gray {
 
 .empty-state h3 {
   margin: 0 0 8px 0;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .empty-state p {
@@ -391,8 +391,8 @@ mat-chip.status-blue {
 }
 
 mat-chip.status-gray {
-  background-color: #f5f5f5 !important;
-  color: #616161 !important;
+  background-color: var(--bg-surface-elevated) !important;
+  color: var(--text-secondary) !important;
 }
 
 /* Responsive */

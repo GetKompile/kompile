@@ -834,7 +834,8 @@ class MatrixGraphConstructorTest {
                     contains("e2"),     // target (prefixed with doc ID)
                     eq(0.85),           // weight
                     eq("WORKS_AT"),     // edge type
-                    eq(false)           // not bidirectional
+                    eq(false),          // not bidirectional
+                    eq("WORKS_AT")      // semantic relation (first-class field)
             );
         }
 
@@ -864,7 +865,7 @@ class MatrixGraphConstructorTest {
             verify(graphStore).addEdge(
                     anyString(), anyString(), anyString(),
                     eq(1.0),  // default weight
-                    eq("LINKED"), eq(false)
+                    eq("LINKED"), eq(false), eq("LINKED")
             );
         }
     }

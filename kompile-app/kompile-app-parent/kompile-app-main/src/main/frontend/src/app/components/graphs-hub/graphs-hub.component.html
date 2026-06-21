@@ -10,6 +10,30 @@
   </div>
 
   <div class="sub-tabs">
+    <button class="sub-tab" [class.active]="activeSubTab === 'visualizer'" (click)="selectSubTab('visualizer')">
+      <mat-icon class="tab-icon">scatter_plot</mat-icon>
+      <span class="tab-label">Visualizer</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'entityBrowser'" (click)="selectSubTab('entityBrowser')">
+      <mat-icon class="tab-icon">list_alt</mat-icon>
+      <span class="tab-label">Entity Browser</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'hierarchy'" (click)="selectSubTab('hierarchy')">
+      <mat-icon class="tab-icon">lan</mat-icon>
+      <span class="tab-label">Hierarchy</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'builder'" (click)="selectSubTab('builder')">
+      <mat-icon class="tab-icon">construction</mat-icon>
+      <span class="tab-label">Builder</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'eventObservation'" (click)="selectSubTab('eventObservation')">
+      <mat-icon class="tab-icon">query_stats</mat-icon>
+      <span class="tab-label">Event Observation</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'causalAttribution'" (click)="selectSubTab('causalAttribution')">
+      <mat-icon class="tab-icon">psychology</mat-icon>
+      <span class="tab-label">Causal Attribution</span>
+    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'overview'" (click)="selectSubTab('overview')">
       <mat-icon class="tab-icon">account_tree</mat-icon>
       <span class="tab-label">Overview</span>
@@ -58,9 +82,55 @@
       <mat-icon class="tab-icon">import_export</mat-icon>
       <span class="tab-label">Import / Export</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'grounding'" (click)="selectSubTab('grounding')">
+      <mat-icon class="tab-icon">hub</mat-icon>
+      <span class="tab-label">Grounding</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'processes'" (click)="selectSubTab('processes')">
+      <mat-icon class="tab-icon">timeline</mat-icon>
+      <span class="tab-label">Processes</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'audit'" (click)="selectSubTab('audit')">
+      <mat-icon class="tab-icon">history</mat-icon>
+      <span class="tab-label">Audit</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'hydration'" (click)="selectSubTab('hydration')">
+      <mat-icon class="tab-icon">water</mat-icon>
+      <span class="tab-label">Hydration</span>
+    </button>
   </div>
 
   <div class="sub-tab-content">
+    <div *ngIf="activeSubTab === 'visualizer'" class="graph-explore-panel">
+      <app-graph-visualizer
+        [factSheetId]="activeFactSheet?.id || null"
+        [factSheetName]="activeFactSheet?.name || ''"
+        [focusNodeId]="focusNodeId">
+      </app-graph-visualizer>
+    </div>
+    <div *ngIf="activeSubTab === 'entityBrowser'" class="graph-explore-panel">
+      <app-entity-browser
+        [factSheetId]="activeFactSheetId"
+        (entitySelected)="onEntitySelected($event)"
+        (navigateToGraph)="onNavigateToGraph($event)">
+      </app-entity-browser>
+    </div>
+    <div *ngIf="activeSubTab === 'hierarchy'" class="graph-explore-panel">
+      <app-graph-hierarchy
+        [factSheetId]="activeFactSheetId"
+        (navigateToGraph)="onNavigateToGraph($event)"
+        (viewSubGraph)="onNavigateToGraph($event)">
+      </app-graph-hierarchy>
+    </div>
+    <div *ngIf="activeSubTab === 'builder'">
+      <app-knowledge-graph-builder></app-knowledge-graph-builder>
+    </div>
+    <div *ngIf="activeSubTab === 'eventObservation'">
+      <app-event-observation-dashboard (openInAttribution)="onAttributeNode($event)"></app-event-observation-dashboard>
+    </div>
+    <div *ngIf="activeSubTab === 'causalAttribution'">
+      <app-causal-attribution-panel [seedNodeId]="attributionSeedNodeId"></app-causal-attribution-panel>
+    </div>
     <div *ngIf="activeSubTab === 'overview'">
       <app-graph-overview></app-graph-overview>
     </div>
@@ -96,6 +166,18 @@
     </div>
     <div *ngIf="activeSubTab === 'io'">
       <app-graph-io-panel [factSheetId]="activeFactSheetId"></app-graph-io-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'grounding'">
+      <app-grounding-console-panel></app-grounding-console-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'processes'">
+      <app-process-mining-panel [factSheetIdInput]="activeFactSheetId"></app-process-mining-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'audit'">
+      <app-audit-timeline [factSheetId]="activeFactSheetId"></app-audit-timeline>
+    </div>
+    <div *ngIf="activeSubTab === 'hydration'">
+      <app-hydration-progress-panel></app-hydration-progress-panel>
     </div>
   </div>
 </div>

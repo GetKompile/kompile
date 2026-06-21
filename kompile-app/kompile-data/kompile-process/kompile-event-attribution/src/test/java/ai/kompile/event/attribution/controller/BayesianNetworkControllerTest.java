@@ -9,13 +9,13 @@
  */
 package ai.kompile.event.attribution.controller;
 
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNetwork;
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNode;
-import ai.kompile.event.attribution.algorithm.bayesian.NoisyOrCpt;
-import ai.kompile.event.attribution.domain.BayesianInferenceResult;
-import ai.kompile.event.attribution.domain.InferenceStep;
-import ai.kompile.event.attribution.domain.MpeResult;
-import ai.kompile.event.attribution.domain.SensitivityResult;
+import ai.kompile.graph.reasoning.bayesian.BayesianNetwork;
+import ai.kompile.graph.reasoning.bayesian.BayesianNode;
+import ai.kompile.graph.reasoning.bayesian.NoisyOrCpt;
+import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
+import ai.kompile.graph.reasoning.domain.InferenceStep;
+import ai.kompile.graph.reasoning.domain.MpeResult;
+import ai.kompile.graph.reasoning.domain.SensitivityResult;
 import ai.kompile.event.attribution.service.BayesianNetworkService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.BeforeEach;

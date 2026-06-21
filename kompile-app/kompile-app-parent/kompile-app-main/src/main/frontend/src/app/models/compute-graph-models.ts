@@ -20,7 +20,8 @@ export interface ComputeGraphStatus {
   droolsInferenceEnabled: boolean;
 }
 
-export type NodeExecutionType = 'JAVASCRIPT' | 'PYTHON' | 'DROOLS_RULE' | 'DROOLS_INFERENCE' | 'EXPRESSION' | 'PASSTHROUGH';
+export type NodeExecutionType = 'JAVASCRIPT' | 'PYTHON' | 'DROOLS_RULE' | 'DROOLS_INFERENCE' | 'EXPRESSION' | 'PASSTHROUGH'
+  | 'FOL_RULE' | 'PSL_RULE' | 'TABULAR_RULE';
 
 export type ExecutionStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKIPPED' | 'TIMED_OUT' | 'CANCELLED';
 

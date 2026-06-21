@@ -91,6 +91,8 @@ export class DiffBrowserComponent implements OnInit, OnDestroy, OnChanges {
   // ── Filter / search ──────────────────────────────────────────────
   searchQuery = '';
   fileFilter = '';
+  sinceFilter = '';
+  untilFilter = '';
   diffTypeFilter: string | null = null;
 
   // ── View options ─────────────────────────────────────────────────
@@ -170,6 +172,8 @@ export class DiffBrowserComponent implements OnInit, OnDestroy, OnChanges {
     if (this.selectedAgent) params.agent = this.selectedAgent;
     if (this.searchQuery) params.contentQuery = this.searchQuery;
     if (this.fileFilter) params.filePath = this.fileFilter;
+    if (this.sinceFilter) params.since = this.sinceFilter;
+    if (this.untilFilter) params.until = this.untilFilter;
 
     // Use external project directory or manual selection
     if (this.externalProject) {
@@ -377,6 +381,8 @@ export class DiffBrowserComponent implements OnInit, OnDestroy, OnChanges {
     this.selectedAgent = null;
     this.searchQuery = '';
     this.fileFilter = '';
+    this.sinceFilter = '';
+    this.untilFilter = '';
     this.diffTypeFilter = null;
     this.clearSelection();
     this.loadEntries();
@@ -608,6 +614,8 @@ export class DiffBrowserComponent implements OnInit, OnDestroy, OnChanges {
     if (this.selectedAgent) c++;
     if (this.searchQuery) c++;
     if (this.fileFilter) c++;
+    if (this.sinceFilter) c++;
+    if (this.untilFilter) c++;
     if (this.diffTypeFilter) c++;
     return c;
   }

@@ -2,8 +2,8 @@
   display: flex;
   flex-direction: column;
   max-height: 90vh;
-  background: #ffffff;
-  color: #000000;
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
 .dialog-header {
@@ -56,8 +56,8 @@ mat-dialog-content {
   padding: 24px;
   overflow-y: auto;
   max-height: 60vh;
-  background: #ffffff;
-  color: #000000;
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
 .settings-form {
@@ -79,24 +79,24 @@ mat-dialog-content {
   gap: 8px;
   font-size: 14px;
   font-weight: 500;
-  color: #333333;
+  color: var(--text-primary);
 }
 
 .section-label mat-icon {
   font-size: 20px;
   width: 20px;
   height: 20px;
-  color: #666666;
+  color: var(--text-secondary);
 }
 
 .callback-url {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
   padding: 12px 16px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 .callback-url code {
@@ -110,7 +110,7 @@ mat-dialog-content {
 .helper-text {
   margin: 0;
   font-size: 12px;
-  color: #666666;
+  color: var(--text-secondary);
 }
 
 .full-width {
@@ -139,13 +139,13 @@ mat-dialog-content {
 .default-scopes {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 .scopes-label {
   display: block;
   font-size: 12px;
-  color: #666666;
+  color: var(--text-secondary);
   margin-bottom: 8px;
 }
 
@@ -158,16 +158,16 @@ mat-dialog-content {
 .scope-chip {
   display: inline-block;
   padding: 4px 10px;
-  background: #f0f0f0;
+  background: var(--bg-surface-elevated);
   border-radius: 16px;
   font-size: 11px;
   font-family: 'Roboto Mono', monospace;
-  color: #333333;
+  color: var(--text-primary);
 }
 
 .instructions-content {
   padding: 8px 0;
-  color: #333333;
+  color: var(--text-primary);
 }
 
 .setup-steps {
@@ -175,12 +175,12 @@ mat-dialog-content {
   padding-left: 20px;
   line-height: 1.8;
   font-size: 14px;
-  color: #333333;
+  color: var(--text-primary);
 }
 
 .setup-steps li {
   margin-bottom: 8px;
-  color: #333333;
+  color: var(--text-primary);
 }
 
 .console-link {
@@ -198,9 +198,9 @@ mat-dialog-actions {
   display: flex;
   justify-content: space-between;
   padding: 16px 24px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
   margin: 0 -24px -24px -24px;
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .action-left,

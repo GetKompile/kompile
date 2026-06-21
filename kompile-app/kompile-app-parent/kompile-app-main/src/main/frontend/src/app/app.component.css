@@ -162,6 +162,16 @@ header {
   align-items: center;
 }
 
+/* Light/Dark theme toggle button */
+.theme-toggle-btn {
+  color: var(--text-secondary);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.theme-toggle-btn:hover {
+  color: var(--color-primary);
+}
+
 .fact-sheet-button {
   display: flex;
   align-items: center;
@@ -191,7 +201,7 @@ header {
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
-  color: #666;
+  color: var(--text-secondary);
   letter-spacing: 0.5px;
 }
 
@@ -204,7 +214,7 @@ header {
 ::ng-deep .fact-sheet-menu .fact-count {
   margin-left: auto;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 ::ng-deep .fact-sheet-menu .check-icon {
@@ -236,7 +246,7 @@ header {
 }
 
 .dialog-content {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   padding: 24px;
   width: 90%;

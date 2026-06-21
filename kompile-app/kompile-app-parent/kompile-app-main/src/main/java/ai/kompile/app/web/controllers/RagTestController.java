@@ -155,7 +155,7 @@ public class RagTestController {
         graphRagStatus.put("available", graphRagService != null);
         if (graphRagService != null) {
             graphRagStatus.put("class", graphRagService.getClass().getSimpleName());
-            graphRagStatus.put("searchTypes", Arrays.asList("LOCAL", "GLOBAL"));
+            graphRagStatus.put("searchTypes", Arrays.asList("LOCAL", "HYBRID", "GLOBAL"));
         } else {
             graphRagStatus.put("class", "N/A");
             graphRagStatus.put("searchTypes", Collections.emptyList());
@@ -1154,6 +1154,12 @@ public class RagTestController {
             localType.put("name", "Local Search");
             localType.put("description", "Vector similarity search for query-relevant nodes, expands with immediate neighbors");
             searchTypes.add(localType);
+
+            Map<String, String> hybridType = new LinkedHashMap<>();
+            hybridType.put("id", "HYBRID");
+            hybridType.put("name", "Hybrid (Personalized PageRank)");
+            hybridType.put("description", "Embedding-seeded Personalized PageRank: multi-hop, blends vector similarity, graph structure, KG embeddings and connecting paths");
+            searchTypes.add(hybridType);
 
             Map<String, String> globalType = new LinkedHashMap<>();
             globalType.put("id", "GLOBAL");

@@ -9,7 +9,7 @@
  */
 package ai.kompile.event.attribution.algorithm.bayesian.mebn.logic;
 
-import ai.kompile.knowledgegraph.domain.EdgeType;
+import ai.kompile.graph.reasoning.mebn.logic.KnowledgeBase;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -94,10 +94,10 @@ public class GraphKnowledgeBase implements KnowledgeBase {
     }
 
     @Override
-    public boolean edgeExistsOfType(String sourceId, String targetId, EdgeType edgeType) {
+    public boolean edgeExistsOfType(String sourceId, String targetId, String edgeType) {
         List<GraphEdge> edges = graphService.getEdgesForNode(sourceId);
         return edges.stream().anyMatch(e ->
-                e.getEdgeType() == edgeType &&
+                e.getEdgeType() != null && e.getEdgeType().name().equals(edgeType) &&
                         e.getSourceNode() != null && e.getSourceNode().getNodeId().equals(sourceId) &&
                         e.getTargetNode() != null && e.getTargetNode().getNodeId().equals(targetId));
     }

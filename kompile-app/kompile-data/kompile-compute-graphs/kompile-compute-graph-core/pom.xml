@@ -58,5 +58,18 @@
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- Native reasoning stack — replaces KIE/Drools runtime -->
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-graph-reasoning</artifactId>
+    </dependency>
+
+    <!-- ND4J API only: tensor-backed PSL inference is optional (runtime supplies backend) -->
+    <dependency>
+      <groupId>org.eclipse.deeplearning4j</groupId>
+      <artifactId>nd4j-api</artifactId>
+      <optional>true</optional>
+    </dependency>
   </dependencies>
 </project>

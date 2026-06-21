@@ -46,14 +46,14 @@
   padding: 6px 10px;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 6px;
-  background: #fff;
+  background: var(--bg-surface);
   cursor: pointer;
   font: inherit;
   text-align: left;
 }
 
 .result:hover {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
 }
 
 .result mat-icon {

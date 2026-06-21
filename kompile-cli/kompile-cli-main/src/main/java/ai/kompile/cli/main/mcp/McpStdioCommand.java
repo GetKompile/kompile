@@ -1198,6 +1198,13 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.RagSearchTool(baseUrl, om), om, wd);
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.GraphRagSearchTool(baseUrl, om), om, wd);
 
+        // ── KB Grounding tools (LLM→MCP→KB path, require kompile-app backend) ──
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool(om), om, wd);
+
         // ── Process management ─────────────────────────────────────────────
         var procTool = new ai.kompile.cli.main.chat.tools.ProcessManagementTool(processManager);
         tools.put(procTool.id(), new ToolDef(procTool.id(), procTool.description(), procTool.parameterSchema(),

@@ -13,12 +13,12 @@
 .header h3 {
   margin: 0;
   font-size: 1.3em;
-  color: #e0e0e0;
+  color: var(--text-primary);
 }
 
 .header .subtitle {
   margin: 0;
-  color: #999;
+  color: var(--text-secondary);
   font-size: 0.9em;
   flex: 1;
 }
@@ -28,7 +28,7 @@
   align-items: center;
   gap: 12px;
   padding: 24px;
-  color: #999;
+  color: var(--text-secondary);
 }
 
 .agents-grid {
@@ -38,8 +38,8 @@
 }
 
 .agent-card {
-  background: #1e1e1e;
-  border: 1px solid #333;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
 }
 
@@ -55,7 +55,7 @@
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: #2a2a2a;
+  background: var(--bg-surface-elevated);
 }
 
 .agent-icon.available {
@@ -63,12 +63,12 @@
 }
 
 .agent-icon.unavailable {
-  color: #666;
+  color: var(--text-tertiary);
 }
 
 .model-source {
   font-size: 0.8em;
-  color: #666;
+  color: var(--text-tertiary);
 }
 
 .current-model {
@@ -77,13 +77,13 @@
   gap: 8px;
   margin-bottom: 12px;
   padding: 6px 10px;
-  background: #252525;
+  background: var(--bg-surface-elevated);
   border-radius: 4px;
   font-size: 0.9em;
 }
 
 .current-model .label {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .current-model .model-name {
@@ -93,7 +93,7 @@
 }
 
 .current-model.default .model-name {
-  color: #888;
+  color: var(--text-secondary);
   font-style: italic;
 }
 
@@ -128,7 +128,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #999;
+  color: var(--text-secondary);
   font-size: 0.85em;
   margin-top: 4px;
 }
@@ -136,10 +136,10 @@
 .model-count {
   margin-top: 8px;
   font-size: 0.8em;
-  color: #666;
+  color: var(--text-tertiary);
 }
 
 .model-count.empty {
-  color: #888;
+  color: var(--text-secondary);
   font-style: italic;
 }

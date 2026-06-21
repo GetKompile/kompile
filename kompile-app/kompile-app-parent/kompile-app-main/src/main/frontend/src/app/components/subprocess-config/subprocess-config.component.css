@@ -2,7 +2,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
 }
 
 .header-toolbar {
@@ -106,7 +106,7 @@
   justify-content: center;
   gap: 16px;
   padding: 48px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Cards */
@@ -157,7 +157,7 @@ mat-card-actions {
 
 .config-item > label {
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .java-path-row {
@@ -258,7 +258,7 @@ mat-card-actions {
   align-items: center;
   gap: 8px;
   padding: 32px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .no-processes mat-icon {
@@ -305,7 +305,7 @@ mat-card-actions {
 .phase-indexing { background-color: #e8f5e9; color: #2e7d32; }
 .phase-completed { background-color: #c8e6c9; color: #1b5e20; }
 .phase-failed { background-color: #ffcdd2; color: #b71c1c; }
-.phase-starting { background-color: #f5f5f5; color: #666; }
+.phase-starting { background-color: var(--bg-surface-elevated); color: var(--text-secondary); }
 
 .progress-cell {
   display: flex;
@@ -320,7 +320,7 @@ mat-card-actions {
 
 .progress-text {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   min-width: 40px;
   text-align: right;
 }
@@ -342,7 +342,7 @@ mat-card-actions {
 
 .memory-bar-row .memory-label {
   font-size: 10px;
-  color: #888;
+  color: var(--text-tertiary);
   min-width: 36px;
   text-align: right;
 }
@@ -354,7 +354,7 @@ mat-card-actions {
 
 .memory-bar-row .memory-pct {
   font-size: 10px;
-  color: #666;
+  color: var(--text-secondary);
   min-width: 30px;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -362,26 +362,26 @@ mat-card-actions {
 
 .memory-summary-only {
   font-size: 11px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Section description */
 .section-description {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   margin: 4px 0 12px 0;
 }
 
 .section-subtitle {
   font-size: 14px;
   font-weight: 500;
-  color: #555;
+  color: var(--text-secondary);
   margin: 12px 0 8px 0;
 }
 
 .cancelled-row {
   opacity: 0.5;
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
 }
 
 .oom-row {
@@ -410,17 +410,17 @@ mat-card-actions {
   display: flex;
   gap: 12px;
   padding: 4px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .detail-row .label {
   font-weight: 500;
-  color: #666;
+  color: var(--text-secondary);
   min-width: 120px;
 }
 
 .detail-row .value {
-  color: #333;
+  color: var(--text-primary);
   font-family: 'Roboto Mono', monospace;
   font-size: 12px;
   word-break: break-all;
@@ -481,10 +481,10 @@ mat-card-actions {
   gap: 8px;
   margin: 16px 0 12px 0;
   padding-bottom: 8px;
-  border-bottom: 2px solid #e0e0e0;
+  border-bottom: 2px solid var(--border-color);
   font-size: 16px;
   font-weight: 500;
-  color: #424242;
+  color: var(--text-primary);
 }
 
 .section-title mat-icon {
@@ -495,7 +495,7 @@ mat-card-actions {
 .toggle-hint {
   display: block;
   font-size: 11px;
-  color: #666;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
@@ -574,9 +574,9 @@ mat-card-actions {
 /* Separate executables expansion panel */
 .separate-executables-panel {
   margin-top: 16px;
-  background-color: #fafafa;
+  background-color: var(--bg-body);
   border-radius: 8px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 }
 
 .separate-executables-panel mat-expansion-panel-header {
@@ -803,7 +803,7 @@ mat-card-actions {
   align-items: center;
   gap: 12px;
   padding: 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Environment Variables Panel */
@@ -872,10 +872,10 @@ mat-card-actions {
 .nd4j-env-content h4 {
   margin: 0 0 12px 0;
   padding-bottom: 8px;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--border-color);
   font-size: 14px;
   font-weight: 500;
-  color: #424242;
+  color: var(--text-primary);
 }
 
 .nd4j-env-content h4:not(:first-child) {
@@ -883,8 +883,8 @@ mat-card-actions {
 }
 
 .env-properties {
-  background-color: #fafafa;
-  border: 1px solid #e0e0e0;
+  background-color: var(--bg-body);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -892,7 +892,7 @@ mat-card-actions {
 .env-properties .property-row {
   display: flex;
   padding: 8px 12px;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .env-properties .property-row:last-child {
@@ -900,7 +900,7 @@ mat-card-actions {
 }
 
 .env-properties .property-row:nth-child(odd) {
-  background-color: #fff;
+  background-color: var(--bg-surface);
 }
 
 .env-properties .prop-key {
@@ -917,14 +917,14 @@ mat-card-actions {
   flex: 1;
   font-family: 'Roboto Mono', monospace;
   font-size: 12px;
-  color: #333;
+  color: var(--text-primary);
   word-break: break-word;
 }
 
 .env-properties .no-props {
   padding: 16px;
   text-align: center;
-  color: #999;
+  color: var(--text-tertiary);
   font-style: italic;
 }
 
@@ -944,8 +944,8 @@ mat-card-actions {
 /* Restart Result */
 .restart-result {
   padding: 12px 16px;
-  border-top: 1px solid #e0e0e0;
-  background-color: #fafafa;
+  border-top: 1px solid var(--border-color);
+  background-color: var(--bg-body);
 }
 
 .restart-result .result-header {
@@ -1083,7 +1083,7 @@ mat-card-actions {
 
 .debug-config-item > label {
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
   font-size: 13px;
 }
 
@@ -1121,7 +1121,7 @@ mat-card-actions {
   margin: 0 0 12px 0;
   font-size: 14px;
   font-weight: 500;
-  color: #424242;
+  color: var(--text-primary);
 }
 
 .jvm-arg-list {
@@ -1177,7 +1177,7 @@ mat-card-actions {
   margin: 0 0 12px 0;
   font-size: 14px;
   font-weight: 500;
-  color: #424242;
+  color: var(--text-primary);
 }
 
 /* Debug Actions */
@@ -1186,7 +1186,7 @@ mat-card-actions {
   align-items: center;
   gap: 8px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 .debug-actions .spacer {
@@ -1197,8 +1197,8 @@ mat-card-actions {
 .debug-restart-result {
   margin-top: 16px;
   padding: 12px;
-  background-color: #fafafa;
-  border: 1px solid #e0e0e0;
+  background-color: var(--bg-body);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 }
 
@@ -1249,14 +1249,14 @@ mat-card-actions {
 .command-details .detail-row .label {
   font-size: 12px;
   font-weight: 500;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .command-details .detail-row .value,
 .command-details .detail-row code {
   font-family: 'Roboto Mono', monospace;
   font-size: 11px;
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
   padding: 8px 12px;
   border-radius: 4px;
   word-break: break-all;
@@ -1273,7 +1273,7 @@ mat-card-actions {
   font-family: 'Roboto Mono', monospace;
   font-size: 11px;
   padding: 4px 8px;
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
   border-radius: 4px;
 }
 
@@ -1283,7 +1283,7 @@ mat-card-actions {
 }
 
 .command-details .env-value {
-  color: #333;
+  color: var(--text-primary);
 }
 
 /* Debug Sections */
@@ -1306,7 +1306,7 @@ mat-card-actions {
   margin: 0 0 16px 0;
   font-size: 14px;
   font-weight: 500;
-  color: #424242;
+  color: var(--text-primary);
 }
 
 .debug-section h4 mat-icon {
@@ -1333,24 +1333,24 @@ mat-card-actions {
   flex-direction: column;
   gap: 4px;
   padding: 12px;
-  background-color: #fafafa;
-  border: 1px solid #e0e0e0;
+  background-color: var(--bg-body);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   transition: background-color 0.2s ease;
 }
 
 .additive-option:hover {
-  background-color: #f5f5f5;
+  background-color: var(--bg-surface-elevated);
 }
 
 .additive-option mat-slide-toggle {
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .additive-option .option-hint {
   font-size: 11px;
-  color: #666;
+  color: var(--text-secondary);
   font-family: 'Roboto Mono', monospace;
   padding-left: 44px; /* Align with toggle label */
 }
@@ -1566,8 +1566,8 @@ mat-card-actions {
 }
 
 .config-tab-group ::ng-deep .mat-mdc-tab-labels {
-  background-color: white;
-  border-bottom: 1px solid #e0e0e0;
+  background-color: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .config-tab-group ::ng-deep .mat-mdc-tab {
@@ -1636,7 +1636,7 @@ mat-card-actions {
   margin: 0 0 12px 0;
   font-size: 14px;
   font-weight: 500;
-  color: #424242;
+  color: var(--text-primary);
 }
 
 .section-subtitle mat-icon {

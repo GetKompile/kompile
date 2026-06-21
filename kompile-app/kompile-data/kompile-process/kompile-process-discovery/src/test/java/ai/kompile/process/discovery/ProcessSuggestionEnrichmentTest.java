@@ -10,8 +10,8 @@
 
 package ai.kompile.process.discovery;
 
-import ai.kompile.event.attribution.domain.BayesianInferenceResult;
-import ai.kompile.event.attribution.domain.InferenceStep;
+import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
+import ai.kompile.graph.reasoning.domain.InferenceStep;
 import ai.kompile.event.attribution.service.BayesianNetworkService;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;

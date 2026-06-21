@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.app.config.DeviceRoutingConfig;
 import ai.kompile.app.config.ResourceSchedulerConfig;
 import ai.kompile.app.services.ResourceSnapshot.PressureLevel;
 import ai.kompile.app.services.scheduler.JobResourceProfile;
@@ -60,6 +61,14 @@ public class ResourceGovernor implements ResourceGovernorAdapter {
 
     @Autowired
     private ResourceSchedulerConfigService configService;
+
+    /** Optional: lets the GPU-headroom gate recognise stages already migrated to CPU. */
+    @Autowired(required = false)
+    private DeviceRoutingConfigService deviceRoutingConfigService;
+
+    /** Optional: surfaces sustained-load GPU→CPU migration state on the status endpoint. */
+    @Autowired(required = false)
+    private GpuToCpuMigrationService gpuToCpuMigrationService;
 
     /** Result of an admission decision. {@code admit()} is the record accessor (was it admitted?). */
     public record AdmissionResult(boolean admit, String blockReason) {
@@ -138,7 +147,36 @@ public class ResourceGovernor implements ResourceGovernorAdapter {
         if (!s.gpuBackendAvailable()) {
             return true;
         }
+        // If this workload's stage has been migrated to CPU, GPU pressure is irrelevant — it no longer
+        // needs GPU headroom to proceed (it runs on the multi-backend's CPU side).
+        if (deviceRoutingConfigService != null
+                && deviceRoutingConfigService.isRoutedToCpu(serviceForWorkload(workloadKind))) {
+            return true;
+        }
         return !s.worstGpuPressure().atLeast(PressureLevel.HIGH);
+    }
+
+    /**
+     * True when the local host has no spare CPU/RAM headroom to absorb more work. This is the signal for the
+     * remote-peer failover tier: once local CPU is saturated (so the GPU&rarr;CPU migration can no longer
+     * help), offload to a cluster worker rather than pile onto a full host.
+     */
+    public boolean isLocalSaturated() {
+        ResourceSnapshot s = telemetry.latest();
+        return s.cpuPressure().atLeast(PressureLevel.HIGH) || s.ramPressure().atLeast(PressureLevel.HIGH);
+    }
+
+    /** Map a governor workloadKind to its {@link DeviceRoutingConfig} {@code SERVICE_*} route name. */
+    private static String serviceForWorkload(String workloadKind) {
+        if (workloadKind == null) {
+            return "";
+        }
+        return switch (workloadKind.toUpperCase(Locale.ROOT)) {
+            case "EMBEDDING" -> DeviceRoutingConfig.SERVICE_EMBEDDING;
+            case "VECTOR_INDEXING", "VECTOR_POPULATION" -> DeviceRoutingConfig.SERVICE_VECTOR_POPULATION;
+            case "INGEST" -> DeviceRoutingConfig.SERVICE_INGEST;
+            default -> workloadKind.toLowerCase(Locale.ROOT);
+        };
     }
 
     /**
@@ -172,7 +210,11 @@ public class ResourceGovernor implements ResourceGovernorAdapter {
         out.put("worstGpuUsedFraction", s.worstGpuUsedFraction());
         out.put("worstGpuPressure", s.worstGpuPressure().name());
         out.put("schedulerPoolConcurrency", concurrencyForSchedulerPool());
+        out.put("localSaturated", isLocalSaturated());
         out.put("gpus", s.gpus());
+        if (gpuToCpuMigrationService != null) {
+            out.put("gpuToCpuMigration", gpuToCpuMigrationService.status());
+        }
         return out;
     }
 

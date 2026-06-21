@@ -11,7 +11,7 @@
   align-items: center;
   margin-bottom: 24px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #e0e0e0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .header-left {
@@ -46,14 +46,14 @@
   min-width: 180px;
   padding: 16px;
   border-radius: 8px;
-  background: #fafafa;
-  border: 1px solid #e0e0e0;
+  background: var(--bg-body);
+  border: 1px solid var(--border-color);
 }
 
 .status-label {
   font-size: 12px;
   text-transform: uppercase;
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -68,7 +68,7 @@
 
 .status-detail {
   font-size: 12px;
-  color: #999;
+  color: var(--text-tertiary);
   margin-top: 4px;
   word-break: break-all;
 }
@@ -84,7 +84,7 @@
 }
 
 .upload-area {
-  border: 2px dashed #ccc;
+  border: 2px dashed var(--border-color);
   border-radius: 8px;
   padding: 32px;
   text-align: center;
@@ -101,12 +101,12 @@
   font-size: 48px;
   width: 48px;
   height: 48px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .upload-area p {
   margin: 8px 0 0;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .test-options {
@@ -145,7 +145,7 @@
 
 .trace-step {
   padding: 8px 12px;
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 4px;
   border-left: 3px solid #1976d2;
 }
@@ -161,7 +161,7 @@
   font-weight: 500;
   font-size: 13px;
   text-transform: uppercase;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .step-duration {
@@ -172,7 +172,7 @@
 
 .step-bar {
   height: 4px;
-  background: #e0e0e0;
+  background: var(--border-color);
   border-radius: 2px;
   overflow: hidden;
   margin-bottom: 4px;
@@ -191,7 +191,7 @@
 
 .step-detail {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Stats Row */
@@ -204,9 +204,9 @@
 
 .stat {
   padding: 12px 16px;
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 6px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   min-width: 100px;
 }
 
@@ -218,7 +218,7 @@
   display: block;
   font-size: 11px;
   text-transform: uppercase;
-  color: #999;
+  color: var(--text-tertiary);
   margin-bottom: 2px;
 }
 
@@ -226,7 +226,7 @@
   display: block;
   font-size: 16px;
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
 }
 
 /* Comparison */
@@ -242,7 +242,7 @@
 }
 
 .comparison-pane {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -285,7 +285,7 @@
 }
 
 .output-panel {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -295,8 +295,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  background: #fafafa;
-  border-bottom: 1px solid #e0e0e0;
+  background: var(--bg-body);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .panel-header h4 {
@@ -333,7 +333,7 @@
 .vlm-control-section {
   margin-bottom: 32px;
   padding: 16px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
 }
 
@@ -368,7 +368,7 @@
   gap: 8px;
   font-size: 15px;
   margin: 0 0 12px;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .models-grid {
@@ -378,7 +378,7 @@
 }
 
 .model-card {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -388,8 +388,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
-  background: #fafafa;
-  border-bottom: 1px solid #eee;
+  background: var(--bg-body);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .model-id {
@@ -409,13 +409,13 @@
 
 .model-description {
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
 .model-framework {
   font-size: 12px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .model-path {
@@ -431,13 +431,13 @@
   align-items: center;
   gap: 12px;
   padding: 24px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .empty-state {
   text-align: center;
   padding: 48px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .empty-state mat-icon {
@@ -469,19 +469,19 @@
 .iteration-table td {
   padding: 8px 12px;
   text-align: left;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .iteration-table th {
-  background: #fafafa;
+  background: var(--bg-body);
   font-weight: 500;
   font-size: 13px;
   text-transform: uppercase;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .iteration-table tr:hover td {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
 }
 
 /* Error Banner */

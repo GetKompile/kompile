@@ -217,6 +217,29 @@ public class PomModelBuilder {
             deps.add(nd4jClassified);
         }
 
+        // Multi-backend: also ship nd4j-native (CPU) alongside the primary backend so the app can
+        // route some services to CPU and others to CUDA at runtime. ND4J auto-activates
+        // multi-backend when both backends are on one classpath (org.nd4j.backend.multi.auto=true
+        // by default); the CUDA backend self-skips when no GPU/libcudart is present, so this is
+        // safe on CPU-only hosts. Skipped when the primary backend is already nd4j-native (i.e. an
+        // explicit CPU-only build via --backend nd4j-native).
+        if (!"nd4j-native".equals(config.getBackend())) {
+            Dependency nd4jNative = new Dependency();
+            nd4jNative.setGroupId("org.eclipse.deeplearning4j");
+            nd4jNative.setArtifactId("nd4j-native");
+            nd4jNative.setVersion("${nd4j.version}");
+            deps.add(nd4jNative);
+
+            if (config.getJavacppPlatform() != null && !config.getJavacppPlatform().isBlank()) {
+                Dependency nd4jNativeClassified = new Dependency();
+                nd4jNativeClassified.setGroupId("org.eclipse.deeplearning4j");
+                nd4jNativeClassified.setArtifactId("nd4j-native");
+                nd4jNativeClassified.setVersion("${nd4j.version}");
+                nd4jNativeClassified.setClassifier(config.getJavacppPlatform());
+                deps.add(nd4jNativeClassified);
+            }
+        }
+
         // ByteBuddy — required at runtime by Hibernate 6.x bytecode enhancement.
         // kompile-app BOM excludes it from JPA for native-image compat, so we add it
         // explicitly. Version is managed by spring-boot-starter-parent.

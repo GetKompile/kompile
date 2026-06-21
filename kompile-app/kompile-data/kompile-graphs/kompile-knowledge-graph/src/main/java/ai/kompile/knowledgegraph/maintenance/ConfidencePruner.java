@@ -19,6 +19,11 @@ import ai.kompile.core.graphrag.maintenance.model.ConfidencePrunePolicy;
 import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceTask;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
+import ai.kompile.graph.reasoning.maintenance.ConfidencePruningPolicy;
+import ai.kompile.graph.reasoning.maintenance.PruneResult;
+import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
+import ai.kompile.graph.reasoning.model.SimpleGraphEntity;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -26,6 +31,7 @@ import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -33,12 +39,21 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Prunes knowledge-graph entities and edges whose confidence scores fall below
  * the thresholds defined in a {@link ConfidencePrunePolicy}.
  *
- * <p>Additional heuristics:</p>
+ * <p>The pruning <em>decision</em> is delegated to the generic
+ * {@link ConfidencePruningPolicy} from {@code kompile-graph-maintenance}: a
+ * store-agnostic {@link ai.kompile.graph.reasoning.model.ReasoningGraph} is
+ * built from the fact sheet's nodes and edges, the policy identifies the
+ * low-confidence ids, and then the deletions are applied here via
+ * {@link KnowledgeGraphService} (the store-specific step that stays in this
+ * module).</p>
+ *
+ * <p>Additional heuristics that remain in this module:</p>
  * <ul>
  *   <li>Entities corroborated by fewer than {@code policy.minCorroboratingMentions()}
  *       distinct text chunks are considered weakly evidenced and are eligible for pruning.</li>
@@ -59,6 +74,7 @@ public class ConfidencePruner {
     private final KnowledgeGraphService knowledgeGraphService;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public ConfidencePruner(KnowledgeGraphService knowledgeGraphService,
                             ObjectMapper objectMapper) {
         this.knowledgeGraphService = knowledgeGraphService;
@@ -86,30 +102,41 @@ public class ConfidencePruner {
         int skipped = 0;
         List<String> warnings = new ArrayList<>();
 
-        // ── 1. Prune low-confidence entities ────────────────────────────────────
-        List<String> lowConfidenceNodeIds =
-                knowledgeGraphService.findLowConfidenceNodeIds(factSheetId, policy.minEntityConfidence());
-        scanned += lowConfidenceNodeIds.size();
-        log.debug("ConfidencePruner: {} low-confidence entities (below {}) for factSheet={}",
-                lowConfidenceNodeIds.size(), policy.minEntityConfidence(), factSheetId);
+        // ── 1. Build ReasoningGraph and delegate DECISION to generic policy ───────
+        List<GraphNode> allNodes = knowledgeGraphService.getNodesInFactSheet(factSheetId).stream()
+                .filter(n -> !Boolean.TRUE.equals(n.getStale()))
+                .collect(Collectors.toList());
+        List<GraphEdge> allEdges = knowledgeGraphService.getEdgesInFactSheet(factSheetId).stream()
+                .filter(e -> !Boolean.TRUE.equals(e.getStale()))
+                .collect(Collectors.toList());
 
-        // Apply corroborating-mentions heuristic when needed
+        MutableReasoningGraph graph = buildReasoningGraph(allNodes, allEdges);
+        scanned += allNodes.size();
+
+        ConfidencePruningPolicy genericPolicy =
+                new ConfidencePruningPolicy(policy.minEntityConfidence(), policy.minRelationshipConfidence());
+        PruneResult decision = genericPolicy.evaluate(graph);
+
+        log.debug("ConfidencePruner: {} low-confidence entities (below {}) for factSheet={}",
+                decision.entityIds().size(), policy.minEntityConfidence(), factSheetId);
+
+        // ── 2. Apply corroborating-mentions heuristic (KG-specific, stays here) ──
         List<String> entityIdsToMark = new ArrayList<>();
         if (policy.minCorroboratingMentions() > 1) {
-            for (String nodeId : lowConfidenceNodeIds) {
+            for (String nodeId : decision.entityIds()) {
                 knowledgeGraphService.getNode(nodeId).ifPresent(node -> {
                     if (isCorroborated(node, policy.minCorroboratingMentions())) {
                         log.debug("Skipping corroborated low-confidence entity {} for factSheet={}",
                                 nodeId, factSheetId);
-                        // do not add to mark list — node stays
+                        // node stays — do not add to mark list
                     } else {
                         entityIdsToMark.add(nodeId);
                     }
                 });
             }
-            skipped += lowConfidenceNodeIds.size() - entityIdsToMark.size();
+            skipped += decision.entityIds().size() - entityIdsToMark.size();
         } else {
-            entityIdsToMark.addAll(lowConfidenceNodeIds);
+            entityIdsToMark.addAll(decision.entityIds());
         }
         affected += entityIdsToMark.size();
 
@@ -122,29 +149,24 @@ public class ConfidencePruner {
             }
         }
 
-        // ── 2. Prune low-confidence edges ────────────────────────────────────────
-        List<String> lowConfidenceEdgeIds =
-                knowledgeGraphService.findLowConfidenceEdgeIds(factSheetId, policy.minRelationshipConfidence());
-        scanned += lowConfidenceEdgeIds.size();
-        log.debug("ConfidencePruner: {} low-confidence edges (below {}) for factSheet={}",
-                lowConfidenceEdgeIds.size(), policy.minRelationshipConfidence(), factSheetId);
-
-        List<String> edgeIdsToMark = new ArrayList<>(lowConfidenceEdgeIds);
+        // ── 3. Prune low-confidence edges (from policy decision) ─────────────────
+        scanned += allEdges.size();
+        List<String> edgeIdsToMark = new ArrayList<>(decision.relationIds());
         affected += edgeIdsToMark.size();
 
-        // ── 3. Prune AMBIGUOUS provenance edges (if requireExtractedProvenance) ───
+        log.debug("ConfidencePruner: {} low-confidence edges (below {}) for factSheet={}",
+                edgeIdsToMark.size(), policy.minRelationshipConfidence(), factSheetId);
+
+        // ── 4. Prune AMBIGUOUS provenance edges (if requireExtractedProvenance) ───
         if (policy.requireExtractedProvenance()) {
-            List<String> activeEdgeIds = knowledgeGraphService.findActiveEdgeIds(factSheetId);
-            scanned += activeEdgeIds.size();
-            for (String edgeId : activeEdgeIds) {
+            for (GraphEdge edge : allEdges) {
+                String edgeId = edge.getEdgeId();
                 if (edgeIdsToMark.contains(edgeId)) continue; // already queued
-                knowledgeGraphService.getEdge(edgeId).ifPresent(edge -> {
-                    String prov = edge.getProvenance();
-                    if (EdgeProvenance.AMBIGUOUS.name().equalsIgnoreCase(prov)) {
-                        log.debug("Flagging AMBIGUOUS provenance edge {} for pruning", edgeId);
-                        edgeIdsToMark.add(edgeId);
-                    }
-                });
+                String prov = edge.getProvenance();
+                if (EdgeProvenance.AMBIGUOUS.name().equalsIgnoreCase(prov)) {
+                    log.debug("Flagging AMBIGUOUS provenance edge {} for pruning", edgeId);
+                    edgeIdsToMark.add(edgeId);
+                }
             }
             // Recalculate affected count after AMBIGUOUS scan
             affected = entityIdsToMark.size() + edgeIdsToMark.size();
@@ -175,6 +197,33 @@ public class ConfidencePruner {
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /** Build a minimal ReasoningGraph from pre-loaded active nodes and edges. */
+    private static MutableReasoningGraph buildReasoningGraph(List<GraphNode> nodes, List<GraphEdge> edges) {
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        for (GraphNode n : nodes) {
+            double conf = n.getConfidence() != null ? n.getConfidence() : 1.0;
+            graph.addEntity(SimpleGraphEntity.of(
+                    n.getNodeId(),
+                    n.getNodeType() != null ? n.getNodeType().name() : "",
+                    n.getTitle() != null ? n.getTitle() : n.getNodeId(),
+                    conf));
+        }
+        for (GraphEdge e : edges) {
+            if (e.getSourceNode() == null || e.getTargetNode() == null) continue;
+            String src = e.getSourceNode().getNodeId();
+            String tgt = e.getTargetNode().getNodeId();
+            String relId = e.getEdgeId() != null ? e.getEdgeId() : (src + "->" + tgt);
+            double conf = e.getConfidence() != null ? e.getConfidence() : 1.0;
+            graph.addRelation(GraphRelation.builder(relId, src, tgt)
+                    .type(e.getEdgeType() != null ? e.getEdgeType().name() : "")
+                    .weight(e.getWeight() != null ? e.getWeight() : 1.0)
+                    .confidence(conf)
+                    .directed(true)
+                    .build());
+        }
+        return graph;
+    }
 
     /**
      * Returns {@code true} if the entity's metadata contains corroborating chunk evidence

@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, Inject } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
 import { Subscription } from 'rxjs';
 import { environment } from '../environments/environment';
 import { ConfigService } from './services/config.service';
@@ -22,10 +23,11 @@ import { FactSheetService } from './services/fact-sheet.service';
 import { DocumentService } from './services/document.service';
 import { WebSocketService } from './services/websocket.service';
 import { MainPanelNavigationService } from './services/main-panel-navigation.service';
+import { ThemeService } from './services/theme.service';
 import { FactSheet, CreateFactSheetRequest, IngestProgressUpdate, IngestStatus } from './models/api-models';
 
 // Define a type for the possible tab values
-export type ActiveTabType = 'unifiedChat' | 'project' | 'sources' | 'graphs' | 'tools' | 'developer' | 'kclaw';
+export type ActiveTabType = 'unifiedChat' | 'project' | 'projectStore' | 'sources' | 'tools' | 'developer' | 'kclaw' | 'enforcer';
 
 @Component({
   standalone: false,
@@ -55,13 +57,16 @@ export class AppComponent implements OnInit, OnDestroy {
     private factSheetService: FactSheetService,
     private documentService: DocumentService,
     private webSocketService: WebSocketService,
-    private mainPanelNavigationService: MainPanelNavigationService
+    private mainPanelNavigationService: MainPanelNavigationService,
+    private themeService: ThemeService,
+    @Inject(DOCUMENT) private document: Document
   ) { }
 
   ngOnInit(): void {
     // Subscribe to config updates from the backend
     const configSub = this.configService.config$.subscribe(config => {
       this.title = config.appTitle;
+      this.updateFavicon(config.faviconUrl);
     });
     this.subscriptions.push(configSub);
 
@@ -88,6 +93,28 @@ export class AppComponent implements OnInit, OnDestroy {
     // Load initial active jobs and subscribe to updates
     this.loadActiveJobs();
     this.subscribeToJobUpdates();
+  }
+
+  /**
+   * Apply the (white-labelable) branding favicon at runtime. Updates the SVG
+   * favicon <link> in <head> so a faviconUrl set in the kompile app config
+   * (app-index-config.json, served via /api/config) takes effect without
+   * rebuilding the frontend. The static <link>s in index.html provide the
+   * default before Angular bootstraps; the .ico fallback is left intact.
+   */
+  private updateFavicon(url?: string): void {
+    if (!url) { return; }
+    const head = this.document.head;
+    let link = head.querySelector<HTMLLinkElement>("link[rel='icon'][type='image/svg+xml']");
+    if (!link) {
+      link = this.document.createElement('link');
+      link.setAttribute('rel', 'icon');
+      link.setAttribute('type', 'image/svg+xml');
+      head.appendChild(link);
+    }
+    if (link.getAttribute('href') !== url) {
+      link.setAttribute('href', url);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -206,7 +233,7 @@ export class AppComponent implements OnInit, OnDestroy {
    * Safely casts the tab name to the ActiveTabType.
    */
   handleBannerNavigation(tabName: string): void {
-    const validTabs: ActiveTabType[] = ['unifiedChat', 'project', 'sources', 'graphs', 'tools', 'developer', 'kclaw'];
+    const validTabs: ActiveTabType[] = ['unifiedChat', 'project', 'sources', 'tools', 'developer', 'kclaw'];
     if (validTabs.includes(tabName as ActiveTabType)) {
       this.activeTab = tabName as ActiveTabType;
     }
@@ -219,5 +246,19 @@ export class AppComponent implements OnInit, OnDestroy {
    */
   openModelStaging(): void {
     this.activeTab = 'developer';
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // THEME
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /** Whether the dark theme is currently active (drives the toggle icon). */
+  get isDark(): boolean {
+    return this.themeService.isDark;
+  }
+
+  /** Toggle between the light and dark themes; persisted to localStorage. */
+  toggleTheme(): void {
+    this.themeService.toggle();
   }
 }

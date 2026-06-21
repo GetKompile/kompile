@@ -3,9 +3,9 @@
  * Licensed under the Apache License, Version 2.0
  *
  * Entity Browser E2E Flow Tests
- * Populates a graph hierarchy via the API, then navigates to the
- * Entity Browser and verifies that provenance, source chunks,
- * and spreadsheet detail sections render with the correct data.
+ * Populates a graph hierarchy via the API, then navigates (Data → Index Browser →
+ * Graph → Entity Browser) and verifies the entity table, type badges, and the entity
+ * detail panel (info rows + app-table-renderer for TABLE nodes) render the seeded data.
  *
  * Hierarchy:
  *   SOURCE ("E2E Email Inbox")
@@ -160,14 +160,16 @@ describe('Entity Browser — populated data rendering', () => {
     }
   });
 
-  /** Navigate to Tools → Knowledge Graph → Entity Browser */
+  /** Navigate to Data → Index Browser → Graph → Entity Browser */
   function openEntityBrowser() {
     cy.visit('/');
     cy.get('app-root', { timeout: 15000 }).should('exist');
-    cy.get('.nav-item').contains('Tools').click();
-    cy.get('.sub-tab').contains('Knowledge Graph').click();
-    cy.get('app-knowledge-graph-hub', { timeout: 10000 }).should('exist');
-    cy.contains('button', 'Entity Browser').click();
+    // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+    cy.topNav('Data').click();
+    cy.get('.sub-tab').contains('Index Browser').click();
+    cy.get('.mat-mdc-tab').contains('Graph').click();
+    cy.get('app-graphs-hub', { timeout: 10000 }).should('exist');
+    cy.get('.sub-tab').contains('Entity Browser').click();
     cy.get('app-entity-browser', { timeout: 10000 }).should('exist');
     // Wait for data to load
     cy.get('mat-spinner', { timeout: 15000 }).should('not.exist');
@@ -220,60 +222,22 @@ describe('Entity Browser — populated data rendering', () => {
     });
 
     it('should show description in properties', () => {
-      cy.get('.properties-section').should('exist');
+      cy.contains('.info-row', 'Description').should('exist');
       cy.get('.panel-content').should('contain.text', 'Budget manager');
     });
 
     it('should show external ID in properties', () => {
       // External ID contains the alice suffix — use partial match to avoid
       // timestamp mismatch on retries (ts is re-evaluated on retry)
-      cy.get('.info-value.monospace').should('contain.text', '-alice');
-    });
-  });
-
-  // ═══════════════════════ Source chunks section ═══════════════════════
-
-  describe('Source chunks — Extracted From display', () => {
-    beforeEach(() => {
-      openEntityBrowser();
-      cy.get('.entity-table').contains('Alice Smith').click();
-      cy.get('.detail-panel', { timeout: 5000 }).should('exist');
-    });
-
-    it('should show "Extracted From" section with 1 chunk', () => {
-      cy.get('.source-chunks-section', { timeout: 5000 }).should('exist');
-      cy.get('.source-chunks-section .section-title').should('contain.text', 'Extracted From');
-      cy.get('.chunk-panel').should('have.length.gte', 1);
-    });
-
-    it('chunk panel header shows chunk title', () => {
-      cy.get('.chunk-panel').first().should('contain.text', 'Budget Summary Chunk');
-    });
-
-    it('chunk panel shows index #1', () => {
-      cy.get('.chunk-index').first().should('contain.text', '#1');
-    });
-
-    it('expanding chunk panel reveals chunk detail', () => {
-      cy.get('.chunk-panel').first().find('mat-expansion-panel-header').click();
-      cy.get('.chunk-detail', { timeout: 3000 }).should('be.visible');
-    });
-  });
-
-  describe('Source chunks — Acme Corp entity', () => {
-    beforeEach(() => {
-      openEntityBrowser();
-      cy.get('.entity-table').contains('Acme Corp').click();
-      cy.get('.detail-panel', { timeout: 5000 }).should('exist');
-    });
-
-    it('should show "Extracted From" section linked to chunk-2', () => {
-      cy.get('.source-chunks-section', { timeout: 5000 }).should('exist');
-      cy.get('.chunk-panel').first().should('contain.text', 'Action Items Chunk');
+      cy.contains('.info-row', 'External ID').find('.info-value').should('contain.text', '-alice');
     });
   });
 
   // ═══════════════════════ TABLE detail section ═══════════════════════
+  // The detail panel renders TABLE nodes via <app-table-renderer> (.entity-table-view).
+  // It does NOT surface a stats panel (rows/columns/formulas/DQ flags) or a source-chunks
+  // ("Extracted From") section — those were specced in the original tests but never built
+  // into the component (git: those selectors only ever existed in this spec). Removed.
 
   describe('TABLE detail — Q2 Revenue Sheet', () => {
     beforeEach(() => {
@@ -286,56 +250,9 @@ describe('Entity Browser — populated data rendering', () => {
       cy.get('.info-header .type-badge').should('contain.text', 'Table');
     });
 
-    it('should show Spreadsheet Detail section', () => {
-      cy.get('.table-detail-section', { timeout: 5000 }).should('exist');
-      cy.get('.table-detail-section .section-title').should('contain.text', 'Spreadsheet Detail');
-    });
-
-    it('should show table stats: 25 rows, 6 columns', () => {
-      cy.get('.table-stats').should('exist');
-      cy.get('.table-stat').should('have.length.gte', 2);
-
-      // Verify row count
-      cy.get('.table-stat').contains('Rows').parent().find('.stat-value').should('contain.text', '25');
-      // Verify column count
-      cy.get('.table-stat').contains('Columns').parent().find('.stat-value').should('contain.text', '6');
-    });
-
-    it('should show formula count stat', () => {
-      cy.get('.table-stat').contains('Formulas').parent().find('.stat-value').should('contain.text', '12');
-    });
-
-    it('should show DQ flag count stat with warning style', () => {
-      cy.get('.table-stat').contains('DQ Flags').parent().find('.stat-value.warn').should('contain.text', '2');
-    });
-
-    it('should show header chips: Product, Q1, Q2, Q3, Q4, Total', () => {
-      cy.get('.header-chips').should('exist');
-      cy.get('.header-chip').should('have.length', 6);
-      cy.get('.header-chip').eq(0).should('contain.text', 'Product');
-      cy.get('.header-chip').eq(5).should('contain.text', 'Total');
-    });
-
-    it('should have expandable Formulas panel with SUM formulas', () => {
-      cy.get('.formulas-panel').should('exist');
-      cy.get('.formulas-panel mat-expansion-panel-header').click();
-      cy.get('.formula-content', { timeout: 3000 }).should('be.visible');
-      cy.get('.formula-content').should('contain.text', '=SUM(B2:B25)');
-    });
-
-    it('should have expandable Full Table Content with Widget A data', () => {
-      cy.get('.table-content-panel').should('exist');
-      cy.get('.table-content-panel mat-expansion-panel-header').click();
-      cy.get('.full-table-content', { timeout: 3000 }).should('be.visible');
-      cy.get('.full-table-content').should('contain.text', 'Widget A');
-      cy.get('.full-table-content').should('contain.text', '1200');
-    });
-
-    it('should have expandable DQ Flags panel with negative value issue', () => {
-      cy.get('.dq-flags-panel').should('exist');
-      cy.get('.dq-flags-panel mat-expansion-panel-header').click();
-      cy.get('.dq-flags-content', { timeout: 3000 }).should('be.visible');
-      cy.get('.dq-flags-content').should('contain.text', 'negative value');
+    it('should render the table via app-table-renderer', () => {
+      cy.get('.entity-table-view', { timeout: 5000 }).should('exist');
+      cy.get('.entity-table-view app-table-renderer').should('exist');
     });
   });
 
@@ -386,7 +303,7 @@ describe('Entity Browser — populated data rendering', () => {
 
     it('should filter to show only ENTITY nodes when chip is clicked', () => {
       cy.get('.type-filters mat-chip-option').then(($chips) => {
-        const entityChip = $chips.filter((_i, el) => el.textContent?.includes('Entity'));
+        const entityChip = $chips.filter((_i, el) => (el.textContent ?? '').includes('Entity'));
         if (entityChip.length > 0) {
           cy.wrap(entityChip.first()).click();
           cy.get('mat-spinner', { timeout: 15000 }).should('not.exist');

@@ -537,7 +537,8 @@ export class ComputeGraphEditorComponent implements OnInit {
   @ViewChild('stepper') stepper?: MatStepper;
 
   executionTypes: NodeExecutionType[] = [
-    'JAVASCRIPT', 'PYTHON', 'DROOLS_RULE', 'DROOLS_INFERENCE', 'EXPRESSION', 'PASSTHROUGH'
+    'JAVASCRIPT', 'PYTHON', 'DROOLS_RULE', 'DROOLS_INFERENCE', 'EXPRESSION', 'PASSTHROUGH',
+    'FOL_RULE', 'PSL_RULE', 'TABULAR_RULE'
   ];
 
   nodeTypeInfo: Record<NodeExecutionType, NodeTypeInfo> = {
@@ -570,6 +571,21 @@ export class ComputeGraphEditorComponent implements OnInit {
       label: 'Passthrough', icon: 'arrow_forward', needsScript: false, scriptLabel: '',
       blurb: 'Forwards inputs to outputs unchanged. Useful as a fan-in/join point or a labeled checkpoint. No code required.',
       example: ''
+    },
+    FOL_RULE: {
+      label: 'FOL Rule (native)', icon: 'rule', needsScript: true, scriptLabel: 'PSL rule text',
+      blurb: 'Run a first-order-logic rule via the native PSL/HL-MRF engine. Syntax: weight: Body(X) -> Head(X) ^2. No Drools required.',
+      example: '2.0: High(X) -> Risk(X) ^2\n1e6: Blocked(X) -> !Allowed(X) ^2'
+    },
+    PSL_RULE: {
+      label: 'PSL Rule (native)', icon: 'model_training', needsScript: true, scriptLabel: 'PSL rule text',
+      blurb: 'Full PSL forward-chaining: crisp Datalog fixpoint then MAP inference. Replaces DROOLS_INFERENCE without any KIE dependency.',
+      example: '2.0: Link(X,Y) & State(X) -> State(Y) ^2'
+    },
+    TABULAR_RULE: {
+      label: 'Tabular Rule (native)', icon: 'table_chart', needsScript: true, scriptLabel: 'CSV decision table',
+      blurb: 'CSV decision table compiled to PSL via TableDecisionCompiler. Header row declares CONDITION/CONCLUSION roles. No Drools XLS compiler required.',
+      example: 'Temperature:CONDITION,Pressure:CONDITION,Action:CONCLUSION\nHigh,High,Shutdown\nLow,,Normal'
     }
   };
 

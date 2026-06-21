@@ -66,4 +66,13 @@ public class CamelComputeGraphAutoConfiguration {
             @Autowired(required = false) @Qualifier("droolsNodeExecutor") Object droolsNodeExecutor) {
         return new DroolsCamelProcessor(droolsNodeExecutor, null, null);
     }
+
+    /** Native FOL/PSL Camel processor — always available, no KIE dependency. */
+    @Bean
+    @ConditionalOnMissingBean(FolCamelProcessor.class)
+    public FolCamelProcessor folCamelProcessor() {
+        // Seed bean; inject at route build time via new FolCamelProcessor(type, script, group).
+        return new FolCamelProcessor(
+                ai.kompile.compute.graph.model.NodeExecutionType.FOL_RULE, "# no-op", null);
+    }
 }

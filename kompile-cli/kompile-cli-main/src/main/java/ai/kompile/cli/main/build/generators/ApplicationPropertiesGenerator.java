@@ -66,6 +66,7 @@ public class ApplicationPropertiesGenerator {
 
             writeAutoConfigurationExclusions(writer);
             writeProviderEnablementFlags(writer);
+            writeFeatureEnablementFlags(writer);
             writeStructuralConfiguration(writer);
             writeModelCacheConfiguration(writer);
             writeConfigurationTemplate(writer);
@@ -126,6 +127,11 @@ public class ApplicationPropertiesGenerator {
     private void writeAutoConfigurationExclusions(FileWriter writer) throws IOException {
         writer.write("# Hibernate: disable ByteBuddy bytecode provider (kompile-app excludes it for native-image compat)\n");
         writer.write("spring.jpa.properties.hibernate.bytecode.provider=none\n\n");
+        // With the full module set, some beans are defined by both a @Service class and an
+        // auto-configuration @Bean (e.g. agentTaskService from kclaw + AgentTaskService). Allow
+        // overriding so the generated app boots instead of failing with BeanDefinitionOverrideException.
+        writer.write("# Allow auto-config beans to override same-named @Service beans (multi-module assembly)\n");
+        writer.write("spring.main.allow-bean-definition-overriding=true\n\n");
         writer.write("# Auto-configuration exclusions: prevent ambiguous bean errors\n");
         writer.write("spring.autoconfigure.exclude=\\\n");
         writer.write("    org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration,\\\n");
@@ -151,6 +157,41 @@ public class ApplicationPropertiesGenerator {
         writer.write("# Vector Stores\n");
         writer.write("spring.ai.vectorstore.pgvector.enabled=" + modules.has("vectorstore-pgvector") + "\n");
         writer.write("spring.ai.vectorstore.chroma.enabled=" + modules.has("vectorstore-chroma") + "\n\n");
+    }
+
+    /**
+     * Turn ON the graph / RAG feature set that kompile-app ships OFF by default. Without this a
+     * generated app boots but graph extraction, graph-RAG reasoning, query transformation,
+     * evaluation, guardrails and the filter chain are all silently dark (their
+     * {@code @ConditionalOnProperty} beans never register). We enable the graph-dependent flags
+     * only when a graph module is on the classpath, and the self-contained RAG middleware
+     * unconditionally (those properties are inert if their module is absent).
+     */
+    private void writeFeatureEnablementFlags(FileWriter writer) throws IOException {
+        ModuleSelection modules = config.getModules();
+        boolean hasGraph = modules.has("knowledge-graph") || modules.has("crawl-graph")
+                || modules.has("graph-algorithms");
+
+        writer.write("# =============================================================================\n");
+        writer.write("# FEATURE ENABLEMENT (kompile-app defaults these OFF; the generator turns the\n");
+        writer.write("# graph/RAG feature set ON so a generated app is fully functional out of the box)\n");
+        writer.write("# =============================================================================\n");
+
+        if (hasGraph) {
+            writer.write("# Graph extraction during indexing/crawl + graph-RAG reasoning in the ReAct agent.\n");
+            writer.write("kompile.graph.extraction.enabled=true\n");
+            writer.write("kompile.react.graph-rag-enabled=true\n");
+        }
+
+        writer.write("# RAG middleware (off by default in kompile-app; enabled here for a complete experience).\n");
+        writer.write("kompile.query-transform.enabled=true\n");
+        writer.write("kompile.evaluation.enabled=true\n");
+        writer.write("kompile.guardrails.enabled=true\n");
+        writer.write("kompile.filterchain.enabled=true\n");
+        if (modules.has("kvcache")) {
+            writer.write("kompile.kvcache.enabled=true\n");
+        }
+        writer.write("\n");
     }
 
     private void writeStructuralConfiguration(FileWriter writer) throws IOException {

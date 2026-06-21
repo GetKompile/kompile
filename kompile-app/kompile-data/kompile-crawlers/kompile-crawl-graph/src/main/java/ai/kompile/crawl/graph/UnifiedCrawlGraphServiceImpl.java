@@ -233,6 +233,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     @Autowired(required = false)
     private PreprocessingPipelineRunner preprocessingPipelineRunner;
 
+    // Optional graph hydration pipeline (ENRICHMENT step: MAP derivation + prune/compact + health).
+    @Autowired(required = false)
+    private GraphHydrationOrchestrator graphHydrationOrchestrator;
+
     // CrawlBatchPlanner is used by CrawlDocumentChunkingService; no direct use here.
 
     @PostConstruct
@@ -330,7 +334,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         executorQueueCapacity = runtimeConfigManager.applyRuntimeConfig(
                 config, this, memoryMonitor, graphExtractionOrchestrator, vectorIndexingHelper,
                 llmDispatcher, executor, executorQueueCapacity);
-        runtimeConfigManager.applyRequestOverrides(request.getRuntimeConfig(), this);
+        runtimeConfigManager.applyRequestOverrides(request.getRuntimeConfig(), this, graphExtractionOrchestrator);
         if (request.getSources() == null || request.getSources().isEmpty()) {
             throw new IllegalArgumentException("At least one source is required");
         }
@@ -404,7 +408,37 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 executorQueueCapacity = newCapacity;
             }
         }
+        // Apply the current parallelism config to the already-running shared stage pools so a runtime
+        // change (e.g. crawlGraphExtractionParallelism via the kompile JSON config) takes effect on the
+        // next crawl WITHOUT an app restart. The pools are created once at startup size; without this
+        // they silently keep it — the cause of serial graph extraction despite a higher configured N.
+        resizeSharedPoolsToConfig();
         return executor;
+    }
+
+    /** Resize the shared stage pools in place to match the current runtime parallelism config. */
+    private void resizeSharedPoolsToConfig() {
+        resizePool(sharedGraphExtractionPool, Math.max(1, graphExtractionParallelism), "graph-extraction");
+        resizePool(sharedChunkingPool, Math.max(1, chunkingParallelism), "chunking");
+        resizePool(sharedSourceLoadPool, Math.max(1, sourceLoadParallelism), "source-load");
+    }
+
+    private void resizePool(ExecutorService pool, int target, String name) {
+        if (!(pool instanceof ThreadPoolExecutor tpe) || tpe.isShutdown()) {
+            return;
+        }
+        if (tpe.getCorePoolSize() == target && tpe.getMaximumPoolSize() == target) {
+            return;
+        }
+        // ThreadPoolExecutor requires max >= core at all times; order the two setters for grow vs shrink.
+        if (target >= tpe.getCorePoolSize()) {
+            tpe.setMaximumPoolSize(target);
+            tpe.setCorePoolSize(target);
+        } else {
+            tpe.setCorePoolSize(target);
+            tpe.setMaximumPoolSize(target);
+        }
+        log.info("Resized shared {} pool to {} threads (runtime config change)", name, target);
     }
 
     private void runQueuedJob(UnifiedCrawlJob job) {
@@ -1615,6 +1649,68 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 skipPipelineStep(job, "EDGE_COMPUTATION", "Graph edge computation disabled or unavailable");
             }
 
+            // ── Phase 9: Post-crawl enrichment (MAP derivation + prune/compact + health) ──────
+            if (stepPlan.isRun("ENRICHMENT")) {
+                if (graphHydrationOrchestrator != null && knowledgeGraphService != null) {
+                    Long factSheetId = jobFactSheetId(job);
+                    if (factSheetId != null) {
+                        try {
+                            updateProgress(job, "ENRICHMENT", 83, "Starting graph hydration enrichment", null);
+                            updatePipelineStep(job, "ENRICHMENT",
+                                    UnifiedCrawlJob.PipelineStepStatus.RUNNING,
+                                    0, GraphHydrationOrchestrator.TOTAL_STAGES,
+                                    0, 0, 0, 0,
+                                    GraphHydrationOrchestrator.STAGE_DERIVATION,
+                                    "Hydration starting: MAP derivation → prune/compact → health");
+                            final int[] stagesDone = {0};
+                            HydrationResult hr = graphHydrationOrchestrator.run(
+                                    factSheetId,
+                                    HydrationConfig.defaults(),
+                                    (stageId, message) -> recordHydrationSubStageProgress(
+                                            job, stageId, message, ++stagesDone[0],
+                                            GraphHydrationOrchestrator.TOTAL_STAGES));
+                            if (isCancelled(job) || Thread.currentThread().isInterrupted()) {
+                                updatePipelineStep(job, "ENRICHMENT",
+                                        UnifiedCrawlJob.PipelineStepStatus.CANCELLED,
+                                        stagesDone[0], GraphHydrationOrchestrator.TOTAL_STAGES,
+                                        0, 0, 0, 0, null, "Enrichment cancelled");
+                                return;
+                            }
+                            String summary = "Enrichment complete: stages=" + hr.stagesRun()
+                                    + " derived=" + hr.relationsDerived()
+                                    + " retracted=" + hr.retractedAtomCount()
+                                    + " prunedRetracted=" + hr.factsRetractedPruned()
+                                    + " prunedConfidence=" + hr.factsConfidencePruned()
+                                    + " merges=" + hr.mergesPerformed()
+                                    + " orphans=" + hr.orphansRemoved()
+                                    + " components=" + hr.componentNodesRemoved();
+                            completePipelineStep(job, "ENRICHMENT",
+                                    GraphHydrationOrchestrator.TOTAL_STAGES, summary);
+                            recordEvent(job, "ENRICHMENT", "INFO", "Graph hydration enrichment complete", summary);
+                            log.info("[Job {}] {}", job.getJobId(), summary);
+                        } catch (Exception e) {
+                            log.warn("[Job {}] ENRICHMENT step failed (non-fatal): {}",
+                                    job.getJobId(), e.getMessage(), e);
+                            recordEvent(job, "ENRICHMENT", "WARN", "Enrichment failed (non-fatal)", e.getMessage());
+                            skipPipelineStep(job, "ENRICHMENT", "Enrichment failed: " + e.getMessage());
+                        } finally {
+                            trimNativeMemory(job, "ENRICHMENT", "after graph hydration enrichment");
+                        }
+                    } else {
+                        skipPipelineStep(job, "ENRICHMENT", "ENRICHMENT skipped: no fact sheet ID for job");
+                    }
+                } else {
+                    skipPipelineStep(job, "ENRICHMENT",
+                            "ENRICHMENT skipped: graph hydration orchestrator not available");
+                }
+            } else if (stepPlan.isArchive("ENRICHMENT")) {
+                archiveCrawlStep(job, "ENRICHMENT", new ArrayList<>(), null, "Enrichment archived");
+            } else if (stepPlan.isSkip("ENRICHMENT")) {
+                skipPipelineStep(job, "ENRICHMENT", "Enrichment skipped by step plan");
+            } else {
+                skipPipelineStep(job, "ENRICHMENT", "Enrichment disabled or step plan excludes it");
+            }
+
             int finalChunkCount = chunkedDocuments.size();
             if (retainResultGraph) {
                 job.setResultGraph(unifiedGraph);
@@ -1965,6 +2061,45 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 message, details);
     }
 
+    /**
+     * Per-sub-stage progress callback for the ENRICHMENT step.
+     *
+     * <p>Called by {@link GraphHydrationOrchestrator} after each of the three top-level
+     * hydration stages (DERIVATION / PRUNE_COMPACT / HEALTH). Updates the pipeline step
+     * tracker with the completed sub-stage count and publishes a progress event through the
+     * same 250 ms throttle used by all other pipeline steps.</p>
+     *
+     * @param job           the running crawl job
+     * @param stageId       hydration stage ID ({@code DERIVATION}, {@code PRUNE_COMPACT}, {@code HEALTH})
+     * @param message       human-readable sub-stage summary from the orchestrator
+     * @param stagesCompleted number of stages completed so far (1-based)
+     * @param totalStages   total number of stages (from {@link GraphHydrationOrchestrator#TOTAL_STAGES})
+     */
+    private void recordHydrationSubStageProgress(UnifiedCrawlJob job, String stageId,
+                                                  String message, int stagesCompleted,
+                                                  int totalStages) {
+        if (job == null || isCancelled(job)) return;
+        job.getCurrentPhase().set("ENRICHMENT");
+        updateMemorySnapshot(job);
+
+        int boundedDone = Math.max(0, Math.min(totalStages, stagesCompleted));
+        int total = Math.max(1, totalStages);
+        int phaseProgress = 83 + (int) Math.min(16, (boundedDone * 16L) / total);
+        job.getProgressPercent().accumulateAndGet(phaseProgress, Math::max);
+
+        String fullMessage = "[" + stageId + "] " + (message != null ? message : "Hydration sub-stage");
+
+        updatePipelineStep(job, "ENRICHMENT", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
+                boundedDone, total, 0, 0, 0, 0, stageId, fullMessage);
+        recordEvent(job, "ENRICHMENT", "INFO", fullMessage, null);
+
+        long now = System.nanoTime();
+        if ((now - lastProgressEventNanos) >= PROGRESS_EVENT_INTERVAL_NANOS) {
+            lastProgressEventNanos = now;
+            publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, fullMessage);
+        }
+    }
+
     private static final long PROGRESS_EVENT_INTERVAL_NANOS = 250_000_000L;
     private volatile long lastProgressEventNanos = 0L;
 
@@ -2028,7 +2163,13 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             int done = Math.max(job.getChunksEmbedded().get(), job.getDocumentsIndexed().get());
             return total > 0 ? 85 + (int) Math.min(14, (done * 14L) / total) : 85;
         }
-        if (phase.equals("ENRICHMENT")) return 99;
+        if (phase.equals("ENRICHMENT")) {
+            UnifiedCrawlJob.PipelineStepProgress step = ensurePipelineStep(job, phase);
+            int total = step.getTotalItems().get();
+            int done = step.getCompletedItems().get();
+            // Progress band 83–99: 16 points over TOTAL_STAGES sub-stages
+            return total > 0 ? 83 + (int) Math.min(16, (done * 16L) / total) : 83;
+        }
         return Math.max(1, job.getProgressPercent().get());
     }
 

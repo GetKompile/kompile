@@ -128,6 +128,42 @@ public class ProjectBackendService {
         return new ProjectResponse(store.load(root), store.status(root));
     }
 
+    /**
+     * Clone an external project (already resolved to a git {@code cloneUrl}) into the local
+     * workspace and register it as a Kompile project. This is the "pull in" half of the
+     * meta multi-project store integration: the active project stays as-is; the cloned project
+     * lands on disk ready to be opened.
+     *
+     * @param cloneUrl           git URL to clone (from the store's project metadata)
+     * @param slug               project slug, used as the default clone directory name
+     * @param branch             branch to check out (may be null for the remote default)
+     * @param gitXet             whether to run {@code git xet install} after cloning
+     * @param targetPathOverride explicit clone destination; when blank the project is cloned
+     *                           next to the current project (a sibling directory named after the slug)
+     * @return the directory the project was cloned into
+     */
+    public Path cloneFromStore(String cloneUrl, String slug, String branch, boolean gitXet,
+                               String targetPathOverride) {
+        if (cloneUrl == null || cloneUrl.isBlank()) {
+            throw new IllegalArgumentException("cloneUrl is required");
+        }
+        Path target;
+        if (targetPathOverride != null && !targetPathOverride.isBlank()) {
+            target = Path.of(targetPathOverride.trim()).toAbsolutePath().normalize();
+        } else {
+            Path current = resolveRoot();
+            Path workspace = current.getParent() != null ? current.getParent() : current;
+            String dirName = (slug == null || slug.isBlank()) ? "kompile-project" : slug.trim();
+            target = workspace.resolve(dirName).toAbsolutePath().normalize();
+        }
+        if (Files.exists(target)) {
+            throw new IllegalStateException("Target directory already exists: " + target
+                    + " — remove it or specify a different targetPath.");
+        }
+        log.info("Cloning project from store: {} -> {}", cloneUrl, target);
+        return store.cloneRepository(cloneUrl, target, branch, gitXet);
+    }
+
     public ProjectResponse addComponent(KompileProjectComponent component) {
         Path root = requireProjectRoot();
         KompileProjectManifest manifest = store.addComponent(root, component);

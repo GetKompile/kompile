@@ -35,6 +35,14 @@ import java.util.Map;
  * title has been persisted, falls back to the Spring property
  * {@code kompile.app.title} (set by {@code RagPomGenerator} during
  * {@code init-project}).</p>
+ *
+ * <p>Also serves white-label branding fields ({@code logoUrl}, {@code logoAlt},
+ * {@code showLogo}, {@code faviconUrl}) from the same persisted
+ * {@code app-index-config.json} (via {@link AppIndexConfigService}). Operators
+ * rebrand the console's logo, name, and favicon through the kompile app config
+ * (CLI {@code init-project} / app UI) — not Spring properties — with no frontend
+ * rebuild. The default logo is bundled with kompile-app-main at
+ * {@code src/assets/branding/kompile-logo.svg}.</p>
  */
 @RestController
 @RequestMapping("/api/config")
@@ -47,6 +55,13 @@ public class FrontendConfigController {
 
     @Value("${spring.application.name:kompile-rag-app}")
     private String applicationName;
+
+    // Fallback branding defaults — used only when app-index-config.json has no
+    // branding set. The canonical source is the kompile app JSON config
+    // (AppIndexConfig), seeded by the CLI and editable via the app UI.
+    private static final String DEFAULT_LOGO_URL = "assets/branding/kompile-logo.svg";
+    private static final String DEFAULT_LOGO_ALT = "Kompile";
+    private static final String DEFAULT_FAVICON_URL = "assets/branding/kompile-logo.svg";
 
     @Autowired
     public FrontendConfigController(
@@ -61,16 +76,39 @@ public class FrontendConfigController {
     @GetMapping
     public ResponseEntity<Map<String, Object>> getConfig() {
         String appTitle = fallbackAppTitle;
+        String logoUrl = DEFAULT_LOGO_URL;
+        String logoAlt = DEFAULT_LOGO_ALT;
+        boolean showLogo = true;
+        String faviconUrl = DEFAULT_FAVICON_URL;
+
         if (configService != null) {
             AppIndexConfig config = configService.getActualConfiguration();
-            if (config != null && config.getAppTitle() != null && !config.getAppTitle().isBlank()) {
-                appTitle = config.getAppTitle();
+            if (config != null) {
+                if (config.getAppTitle() != null && !config.getAppTitle().isBlank()) {
+                    appTitle = config.getAppTitle();
+                }
+                if (config.getLogoUrl() != null && !config.getLogoUrl().isBlank()) {
+                    logoUrl = config.getLogoUrl();
+                }
+                if (config.getLogoAlt() != null && !config.getLogoAlt().isBlank()) {
+                    logoAlt = config.getLogoAlt();
+                }
+                if (config.getShowLogo() != null) {
+                    showLogo = config.getShowLogo();
+                }
+                if (config.getFaviconUrl() != null && !config.getFaviconUrl().isBlank()) {
+                    faviconUrl = config.getFaviconUrl();
+                }
             }
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("appTitle", appTitle);
         response.put("applicationName", applicationName);
+        response.put("logoUrl", logoUrl);
+        response.put("logoAlt", logoAlt);
+        response.put("showLogo", showLogo);
+        response.put("faviconUrl", faviconUrl);
         return ResponseEntity.ok(response);
     }
 }

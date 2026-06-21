@@ -31,6 +31,55 @@ export enum WebSocketConnectionState {
   ERROR = 'ERROR'
 }
 
+/** A CrawlWorker's advertised capabilities + live load (mirrors backend WorkerCapabilities). */
+export interface WorkerCapabilities {
+  workerId: string;
+  baseUrl: string;
+  role: string;
+  backends: string[];
+  gpuDeviceCount: number;
+  totalGpuMemoryBytes: number;
+  cpuCores: number;
+  supportedJobTypes: string[];
+  maxConcurrentJobs: number;
+  activeJobs: number;
+  cpuLoad: number;
+  worstGpuUsedFraction: number;
+  cpuPressure: string;
+  gpuPressure: string;
+  acceptingWork: boolean;
+  advertisedAtEpochMs: number;
+  ramUsedFraction: number;
+  ramPressure: string;
+  gpus: GpuInfo[];
+  draining: boolean;
+}
+
+/** Per-GPU device detail. */
+export interface GpuInfo {
+  index: number;
+  usedFraction: number;
+  totalBytes: number;
+  pressure: string;
+}
+
+/** GPU→CPU migration state from the resource governor. */
+export interface ClusterMigrationState {
+  migrated: boolean;
+  migratedServices: string[];
+  reason: string;
+}
+
+/** Payload pushed on /topic/cluster/workers. */
+export interface ClusterWorkersUpdate {
+  workers: WorkerCapabilities[];
+  workerCount: number;
+  localSaturated?: boolean;
+  workerTimeoutSeconds?: number;
+  migration?: ClusterMigrationState;
+  timestamp: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -47,6 +96,10 @@ export class WebSocketService extends BaseService implements OnDestroy {
   // System resources WebSocket updates
   private systemResourceUpdates = new Subject<SystemResourcesResponse>();
   public systemResourceUpdates$ = this.systemResourceUpdates.asObservable();
+
+  // Cluster worker updates (real-time worker management)
+  private clusterWorkerUpdates = new Subject<ClusterWorkersUpdate>();
+  public clusterWorkerUpdates$ = this.clusterWorkerUpdates.asObservable();
 
   // Vector population WebSocket updates
   private vectorPopulationUpdates = new Subject<any>();
@@ -451,6 +504,57 @@ export class WebSocketService extends BaseService implements OnDestroy {
       });
     });
 
+    this.subscriptions.set(topic, subscription);
+  }
+
+  // ==================== Cluster Workers WebSocket ====================
+
+  private static readonly CLUSTER_WORKERS_TOPIC = '/topic/cluster/workers';
+
+  /**
+   * Subscribe to real-time cluster worker updates (capabilities + live load). The backend broadcaster is
+   * always-on, so there's no broadcast-trigger POST (unlike system resources).
+   */
+  subscribeToClusterWorkers(): Observable<ClusterWorkersUpdate> {
+    this.subscribeToClusterWorkersTopic(WebSocketService.CLUSTER_WORKERS_TOPIC);
+    return this.clusterWorkerUpdates$;
+  }
+
+  unsubscribeFromClusterWorkers(): void {
+    this.unsubscribeFromTopic(WebSocketService.CLUSTER_WORKERS_TOPIC);
+  }
+
+  private subscribeToClusterWorkersTopic(topic: string): void {
+    if (!this.client || this.connectionState.value !== WebSocketConnectionState.CONNECTED) {
+      const sub = this.connectionState$.pipe(
+        filter(state => state === WebSocketConnectionState.CONNECTED)
+      ).subscribe(() => {
+        this.doSubscribeClusterWorkers(topic);
+        sub.unsubscribe();
+      });
+      return;
+    }
+    this.doSubscribeClusterWorkers(topic);
+  }
+
+  private doSubscribeClusterWorkers(topic: string): void {
+    if (this.subscriptions.has(topic)) {
+      return;
+    }
+    if (!this.client) {
+      console.error('Cannot subscribe: client is null');
+      return;
+    }
+    const subscription = this.client.subscribe(topic, (message: IMessage) => {
+      this.ngZone.run(() => {
+        try {
+          const update: ClusterWorkersUpdate = JSON.parse(message.body);
+          this.clusterWorkerUpdates.next(update);
+        } catch (error) {
+          console.error('Failed to parse cluster workers update:', error);
+        }
+      });
+    });
     this.subscriptions.set(topic, subscription);
   }
 

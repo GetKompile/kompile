@@ -101,6 +101,92 @@ public class CrawlClusterController {
         return ResponseEntity.ok(capabilityService.localCapabilities());
     }
 
+    // ==================== Lifecycle management ====================
+
+    private final java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofSeconds(10)).build();
+
+    /** Worker side: drain ({@code on=true}) / resume ({@code on=false}) this node — stops accepting new work. */
+    @PostMapping("/local/drain")
+    public ResponseEntity<Map<String, Object>> localDrain(
+            @org.springframework.web.bind.annotation.RequestParam(value = "on", defaultValue = "true") boolean on,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
+        capabilityService.setDraining(on);
+        log.info("Worker draining set to {}", on);
+        return ResponseEntity.ok(Map.of("ok", true, "draining", on));
+    }
+
+    /** Orchestrator side: drain/resume a worker by id (proxies to its {@code /local/drain}). */
+    @PostMapping("/workers/{workerId}/drain")
+    public ResponseEntity<Map<String, Object>> drainWorker(
+            @PathVariable String workerId,
+            @org.springframework.web.bind.annotation.RequestParam(value = "on", defaultValue = "true") boolean on,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
+        return proxy(workerId, "POST", "/api/cluster/local/drain?on=" + on);
+    }
+
+    /** Orchestrator side: a worker's delegated-job statuses (proxies to its {@code /local/jobs}). */
+    @GetMapping("/workers/{workerId}/jobs")
+    public ResponseEntity<Map<String, Object>> workerJobs(@PathVariable String workerId) {
+        return proxy(workerId, "GET", "/api/cluster/local/jobs");
+    }
+
+    /** Orchestrator side: cancel a delegated job on a worker (proxies to its job cancel). */
+    @DeleteMapping("/workers/{workerId}/jobs/{jobId}")
+    public ResponseEntity<Map<String, Object>> cancelWorkerJob(
+            @PathVariable String workerId, @PathVariable String jobId,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
+        return proxy(workerId, "DELETE", "/api/cluster/jobs/" + jobId + "/cancel");
+    }
+
+    private ResponseEntity<Map<String, Object>> proxy(String workerId, String method, String path) {
+        java.util.Optional<WorkerCapabilities> w = registry.find(workerId, System.currentTimeMillis());
+        if (w.isEmpty()) {
+            return ResponseEntity.status(404).body(Map.of("ok", false, "error", "no live worker '" + workerId + "'"));
+        }
+        String url = normalize(w.get().baseUrl()) + path;
+        try {
+            java.net.http.HttpRequest.Builder rb = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(url)).timeout(java.time.Duration.ofSeconds(20));
+            switch (method) {
+                case "POST" -> rb.POST(java.net.http.HttpRequest.BodyPublishers.noBody());
+                case "DELETE" -> rb.DELETE();
+                default -> rb.GET();
+            }
+            String token = configService.getConfiguration().getExternalAuthToken();
+            if (token != null && !token.isBlank()) {
+                rb.header("Authorization", "Bearer " + token);
+            }
+            java.net.http.HttpResponse<String> resp =
+                    httpClient.send(rb.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("ok", resp.statusCode() / 100 == 2);
+            out.put("worker", workerId);
+            out.put("status", resp.statusCode());
+            out.put("body", resp.body() == null ? "" : resp.body());
+            return ResponseEntity.status(resp.statusCode()).body(out);
+        } catch (Exception e) {
+            log.warn("Proxy {} {} to worker '{}' failed: {}", method, path, workerId, e.getMessage());
+            return ResponseEntity.status(502).body(Map.of("ok", false, "error", e.getMessage()));
+        }
+    }
+
+    private static String normalize(String url) {
+        if (url == null) {
+            return "";
+        }
+        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
+
     private boolean authorized(String authHeader) {
         String token = configService.getConfiguration().getExternalAuthToken();
         if (token == null || token.isBlank()) {

@@ -81,8 +81,8 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
     /** NodeExecutor that handles CAMEL_ROUTE — resolved at init from Spring context. */
     private NodeExecutor camelExecutor;
 
-    /** NodeExecutor that handles Drools rule and decision table execution. */
-    private NodeExecutor droolsExecutor;
+    /** NodeExecutor for native FOL/PSL/Tabular rules (FolNodeExecutor). */
+    private NodeExecutor folNodeExecutor;
 
     /** NodeExecutor that handles XIRCUITS workflows. */
     private NodeExecutor xircuitsExecutor;
@@ -120,7 +120,7 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
         resolvePythonExecutor();
         resolveExcelExecutor();
         resolveCamelExecutor();
-        resolveDroolsExecutor();
+        resolveFolExecutor();
         resolveWorkflowExecutors();
     }
 
@@ -188,22 +188,28 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
         }
     }
 
-    private void resolveDroolsExecutor() {
+    private void resolveFolExecutor() {
         try {
             Map<String, NodeExecutor> executors = applicationContext.getBeansOfType(NodeExecutor.class);
             for (NodeExecutor executor : executors.values()) {
                 Set<NodeExecutionType> types = executor.supportedTypes();
-                if (types.contains(NodeExecutionType.DROOLS_RULE)
-                        || types.contains(NodeExecutionType.DROOLS_INFERENCE)
-                        || types.contains(NodeExecutionType.DROOLS_DECISION_TABLE)) {
-                    this.droolsExecutor = executor;
-                    log.info("Resolved Drools executor: {}", executor.getClass().getSimpleName());
+                if (types.contains(NodeExecutionType.FOL_RULE)
+                        || types.contains(NodeExecutionType.PSL_RULE)
+                        || types.contains(NodeExecutionType.TABULAR_RULE)) {
+                    this.folNodeExecutor = executor;
+                    log.info("Resolved native FOL/PSL executor: {}", executor.getClass().getSimpleName());
                     return;
                 }
             }
-            log.info("No NodeExecutor found for Drools — DROOLS_* steps require kompile-compute-graph-drools");
+            // FolNodeExecutor is bundled in kompile-compute-graph-core — always available; construct directly
+            try {
+                this.folNodeExecutor = new ai.kompile.compute.graph.engine.FolNodeExecutor();
+                log.info("Native FOL/PSL executor auto-constructed (FolNodeExecutor)");
+            } catch (Exception ex) {
+                log.warn("Could not auto-construct FolNodeExecutor: {}", ex.getMessage());
+            }
         } catch (Exception e) {
-            log.warn("Failed to resolve Drools executor: {}", e.getMessage());
+            log.warn("Failed to resolve FOL executor: {}", e.getMessage());
         }
     }
 
@@ -588,58 +594,91 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
         return unwrapToolExecution("camel_execute_route", invokeTool("camel_execute_route", args));
     }
 
+    /**
+     * @deprecated KIE/Drools backend removed. Delegates to the native FOL/PSL executor.
+     *             Call {@link #executeFolRules} or {@link #executePslRules} instead.
+     */
     @Override
+    @Deprecated(since = "2026-06-21")
     public Map<String, Object> executeDroolsRules(String drl,
                                                    Map<String, Object> facts,
                                                    String agendaGroup,
                                                    Integer maxFirings,
                                                    boolean inference) {
-        if (droolsExecutor == null) {
-            throw new IllegalStateException(
-                    "Drools rule execution requires a Drools NodeExecutor but none is available. "
-                    + "Ensure kompile-compute-graph-drools is on the classpath.");
+        log.warn("executeDroolsRules() is deprecated — routing to native {} executor",
+                inference ? "PSL_RULE" : "FOL_RULE");
+        if (inference) {
+            return executePslRules(drl, facts);
         }
-        if (drl == null || drl.isBlank()) {
-            throw new IllegalArgumentException("Drools DRL source must not be null or blank");
-        }
-
-        Map<String, Object> params = new LinkedHashMap<>();
-        if (agendaGroup != null && !agendaGroup.isBlank()) {
-            params.put("agendaGroup", agendaGroup);
-        }
-        if (maxFirings != null) {
-            params.put("maxFirings", maxFirings);
-        }
-
-        return executeComputeNode(droolsExecutor,
-                inference ? NodeExecutionType.DROOLS_INFERENCE : NodeExecutionType.DROOLS_RULE,
-                "workflow-drools-rules", drl, params, facts);
+        return executeFolRules(drl, facts, agendaGroup, maxFirings);
     }
 
+    /**
+     * @deprecated KIE/Drools backend removed. Delegates to the native TABULAR_RULE executor.
+     *             Call {@link #executeTabularRule} instead.
+     */
     @Override
+    @Deprecated(since = "2026-06-21")
     public Map<String, Object> executeDroolsDecisionTable(String decisionTable,
                                                            String inputType,
                                                            Map<String, Object> facts,
                                                            String worksheetName) {
-        if (droolsExecutor == null) {
+        log.warn("executeDroolsDecisionTable() is deprecated — routing to native TABULAR_RULE executor");
+        return executeTabularRule(decisionTable, inputType, null, facts);
+    }
+
+    // ─── Native FOL/PSL/Tabular dispatch ─────────────────────────────────────
+
+    @Override
+    public Map<String, Object> executeFolRules(String ruleScript,
+                                               Map<String, Object> facts,
+                                               String agendaGroup,
+                                               Integer maxFirings) {
+        if (folNodeExecutor == null) {
             throw new IllegalStateException(
-                    "Drools decision table execution requires a Drools NodeExecutor but none is available. "
-                    + "Ensure kompile-compute-graph-drools is on the classpath.");
+                    "FOL rule execution requires a FolNodeExecutor. Check kompile-compute-graph-core is on the classpath.");
         }
-        if (decisionTable == null || decisionTable.isBlank()) {
-            throw new IllegalArgumentException("Drools decision table content must not be null or blank");
+        if (ruleScript == null || ruleScript.isBlank()) {
+            throw new IllegalArgumentException("FOL rule script must not be null or blank");
         }
-
         Map<String, Object> params = new LinkedHashMap<>();
-        if (inputType != null && !inputType.isBlank()) {
-            params.put("inputType", inputType);
-        }
-        if (worksheetName != null && !worksheetName.isBlank()) {
-            params.put("worksheetName", worksheetName);
-        }
+        if (agendaGroup != null && !agendaGroup.isBlank()) params.put("agendaGroup", agendaGroup);
+        if (maxFirings != null) params.put("maxFirings", maxFirings);
+        return executeComputeNode(folNodeExecutor, NodeExecutionType.FOL_RULE,
+                "workflow-fol-rules", ruleScript, params, facts);
+    }
 
-        return executeComputeNode(droolsExecutor, NodeExecutionType.DROOLS_DECISION_TABLE,
-                "workflow-drools-decision-table", decisionTable, params, facts);
+    @Override
+    public Map<String, Object> executePslRules(String ruleScript,
+                                               Map<String, Object> facts) {
+        if (folNodeExecutor == null) {
+            throw new IllegalStateException(
+                    "PSL rule execution requires a FolNodeExecutor. Check kompile-compute-graph-core is on the classpath.");
+        }
+        if (ruleScript == null || ruleScript.isBlank()) {
+            throw new IllegalArgumentException("PSL rule script must not be null or blank");
+        }
+        return executeComputeNode(folNodeExecutor, NodeExecutionType.PSL_RULE,
+                "workflow-psl-rules", ruleScript, Map.of(), facts);
+    }
+
+    @Override
+    public Map<String, Object> executeTabularRule(String tableScript,
+                                                  String hitPolicy,
+                                                  Double weight,
+                                                  Map<String, Object> facts) {
+        if (folNodeExecutor == null) {
+            throw new IllegalStateException(
+                    "Tabular rule execution requires a FolNodeExecutor. Check kompile-compute-graph-core is on the classpath.");
+        }
+        if (tableScript == null || tableScript.isBlank()) {
+            throw new IllegalArgumentException("Tabular rule CSV script must not be null or blank");
+        }
+        Map<String, Object> params = new LinkedHashMap<>();
+        if (hitPolicy != null && !hitPolicy.isBlank()) params.put("hitPolicy", hitPolicy);
+        if (weight != null) params.put("weight", String.valueOf(weight));
+        return executeComputeNode(folNodeExecutor, NodeExecutionType.TABULAR_RULE,
+                "workflow-tabular-rule", tableScript, params, facts);
     }
 
     @Override

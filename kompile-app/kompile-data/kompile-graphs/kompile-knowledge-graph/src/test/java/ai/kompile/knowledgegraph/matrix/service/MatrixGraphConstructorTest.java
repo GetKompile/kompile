@@ -221,7 +221,7 @@ class MatrixGraphConstructorTest {
             // Entity IDs are used as-is from the LLM response (no doc prefix added)
             verify(graphStore).addEdge(anyString(),
                     eq("e1"), eq("e2"),
-                    eq(0.9), eq("WORKS_AT"), eq(false));
+                    eq(0.9), eq("WORKS_AT"), eq(false), eq("WORKS_AT"));
         }
 
         @Test
@@ -385,7 +385,7 @@ class MatrixGraphConstructorTest {
             RetrievedDoc doc = new RetrievedDoc("doc1", "text", Map.of());
             constructor.constructGraphFromDocs(List.of(doc), null, null);
 
-            verify(graphStore).addEdge(anyString(), anyString(), anyString(), eq(1.0), eq("REL"), eq(false));
+            verify(graphStore).addEdge(anyString(), anyString(), anyString(), eq(1.0), eq("REL"), eq(false), eq("REL"));
         }
 
         @Test
@@ -407,7 +407,7 @@ class MatrixGraphConstructorTest {
             RetrievedDoc doc = new RetrievedDoc("doc1", "text", Map.of());
             constructor.constructGraphFromDocs(List.of(doc), null, null);
 
-            verify(graphStore).addEdge(anyString(), anyString(), anyString(), eq(1.0), eq("RELATED_TO"), eq(false));
+            verify(graphStore).addEdge(anyString(), anyString(), anyString(), eq(1.0), eq("RELATED_TO"), eq(false), isNull());
         }
     }
 

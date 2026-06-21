@@ -147,7 +147,8 @@ public class MatrixGraphConstructor implements GraphConstructor {
             double weight = rel.getWeight() != null ? rel.getWeight() : 1.0;
             String edgeType = rel.getRelationshipType() != null ? rel.getRelationshipType() : ENTITY_EDGE_TYPE;
 
-            graphStore.addEdge(graphId, rel.getSource(), rel.getTarget(), weight, edgeType, false);
+            graphStore.addEdge(graphId, rel.getSource(), rel.getTarget(), weight, edgeType, false,
+                    rel.getRelationshipType());
         }
 
         // Save the graph
@@ -219,7 +220,8 @@ public class MatrixGraphConstructor implements GraphConstructor {
         for (ExtractedGraphDTO.ExtractedRelationship rel : allRelationships) {
             double weight = rel.getWeight() != null ? rel.getWeight() : 1.0;
             String edgeType = rel.getRelationshipType() != null ? rel.getRelationshipType() : ENTITY_EDGE_TYPE;
-            graphStore.addEdge(graphId, rel.getSource(), rel.getTarget(), weight, edgeType, false);
+            graphStore.addEdge(graphId, rel.getSource(), rel.getTarget(), weight, edgeType, false,
+                    rel.getRelationshipType());
         }
 
         // Save
@@ -241,10 +243,16 @@ public class MatrixGraphConstructor implements GraphConstructor {
     public record GraphConstructionResult(String graphId, Graph graph) {}
 
     /**
-     * Maximum characters per batched LLM prompt. LLMs easily handle 100k+ tokens,
-     * so we batch aggressively to minimize API round-trips.
+     * Maximum characters per batched LLM prompt. LLMs easily handle 100k+ tokens, so we batch
+     * aggressively to minimize API round-trips.
+     *
+     * <p>This is an upper safety bound on the constructor's <em>internal</em> re-batching only. The
+     * caller (e.g. {@code GraphExtractionOrchestrator}) is the real sizing authority — it now hands
+     * us output-token-safe, adaptively-sized batches — so this ceiling is raised well above the
+     * orchestrator's max char budget to ensure we never re-split a batch the caller deliberately
+     * sized. Keep it ≥ the orchestrator's remote {@code maxChars} cap.</p>
      */
-    private static final int BATCH_PROMPT_MAX_CHARS = 120_000;
+    private static final int BATCH_PROMPT_MAX_CHARS = 300_000;
 
     /**
      * Extracts entities and relationships from docs by batching multiple documents
@@ -455,7 +463,8 @@ public class MatrixGraphConstructor implements GraphConstructor {
             for (ExtractedGraphDTO.ExtractedRelationship rel : allRelationships) {
                 double weight = rel.getWeight() != null ? rel.getWeight() : 1.0;
                 String edgeType = rel.getRelationshipType() != null ? rel.getRelationshipType() : ENTITY_EDGE_TYPE;
-                graphStore.addEdge(graphId, rel.getSource(), rel.getTarget(), weight, edgeType, false);
+                graphStore.addEdge(graphId, rel.getSource(), rel.getTarget(), weight, edgeType, false,
+                    rel.getRelationshipType());
             }
 
             try {

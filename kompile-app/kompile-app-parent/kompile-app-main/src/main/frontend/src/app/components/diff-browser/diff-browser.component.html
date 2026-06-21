@@ -97,8 +97,16 @@
         </mat-form-field>
         <mat-form-field appearance="outline" class="compact-field">
           <mat-icon matPrefix>insert_drive_file</mat-icon>
-          <input matInput [(ngModel)]="fileFilter" placeholder="Filter by file path..."
+          <input matInput [(ngModel)]="fileFilter" placeholder="File path or glob (e.g. **/*.env, secrets/**)"
                  (keyup.enter)="applySearch()">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="compact-field">
+          <mat-label>Since</mat-label>
+          <input matInput type="datetime-local" [(ngModel)]="sinceFilter" (change)="applySearch()">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="compact-field">
+          <mat-label>Until</mat-label>
+          <input matInput type="datetime-local" [(ngModel)]="untilFilter" (change)="applySearch()">
         </mat-form-field>
       </div>
 

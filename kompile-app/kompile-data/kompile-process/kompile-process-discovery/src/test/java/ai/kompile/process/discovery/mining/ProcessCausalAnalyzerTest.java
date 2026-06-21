@@ -16,8 +16,8 @@
 
 package ai.kompile.process.discovery.mining;
 
-import ai.kompile.event.attribution.algorithm.psl.PslRule;
-import ai.kompile.event.attribution.domain.CausalEdgeType;
+import ai.kompile.graph.reasoning.psl.PslRule;
+import ai.kompile.graph.reasoning.domain.CausalEdgeType;
 import ai.kompile.process.discovery.mining.causal.CausalDependency;
 import ai.kompile.process.discovery.mining.causal.DependencyMeasures;
 import ai.kompile.process.discovery.mining.causal.ProcessCausalAnalyzer;

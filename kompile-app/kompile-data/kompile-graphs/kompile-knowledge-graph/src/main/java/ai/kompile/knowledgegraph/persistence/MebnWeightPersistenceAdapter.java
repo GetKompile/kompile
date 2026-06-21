@@ -1,0 +1,91 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package ai.kompile.knowledgegraph.persistence;
+
+import ai.kompile.graph.reasoning.learning.MebnWeightSerializer;
+import ai.kompile.graph.reasoning.mebn.MTheory;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+/**
+ * Persists and restores MEBN edge strengths for a given fact sheet.
+ *
+ * <p>Serialization delegates to the infra-free {@link MebnWeightSerializer}. Files land
+ * at {@code <dataDir>/data/graph/reasoning/<factSheetId>/mebn-weights.json}.</p>
+ */
+@Slf4j
+@Component
+public class MebnWeightPersistenceAdapter {
+
+    @Value("${kompile.data.dir:}")
+    private String dataDir;
+
+    /**
+     * Serialize the edge strengths of {@code theory} and write them to
+     * {@code <reasoningDir>/<factSheetId>/mebn-weights.json}.
+     *
+     * @param factSheetId the fact sheet identifier
+     * @param theory      the MTheory whose edge strengths to persist
+     * @throws IOException if the file cannot be written
+     */
+    public void persist(long factSheetId, MTheory theory) throws IOException {
+        String json = MebnWeightSerializer.strengthsToJson(theory);
+        Path target = reasoningDir(factSheetId).resolve("mebn-weights.json");
+        Files.createDirectories(target.getParent());
+        Files.writeString(target, json, StandardCharsets.UTF_8);
+        log.debug("MebnWeightPersistenceAdapter: persisted weights for factSheet {} → {}", factSheetId, target);
+    }
+
+    /**
+     * Load persisted edge strengths for {@code factSheetId} and apply them to {@code theory}
+     * via {@link MebnWeightSerializer#applyStrengths}.
+     *
+     * @param factSheetId the fact sheet identifier
+     * @param theory      the MTheory to update in place
+     * @return {@code true} if a weights file was found and applied; {@code false} otherwise
+     * @throws IOException if the file exists but cannot be read
+     */
+    public boolean load(long factSheetId, MTheory theory) throws IOException {
+        Path source = reasoningDir(factSheetId).resolve("mebn-weights.json");
+        if (!Files.exists(source)) {
+            log.debug("MebnWeightPersistenceAdapter: no weights file for factSheet {}", factSheetId);
+            return false;
+        }
+        String json = Files.readString(source, StandardCharsets.UTF_8);
+        MebnWeightSerializer.applyStrengths(theory, json);
+        log.debug("MebnWeightPersistenceAdapter: loaded weights for factSheet {} from {}", factSheetId, source);
+        return true;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private Path resolveBase() {
+        return (dataDir == null || dataDir.isBlank())
+                ? Path.of(System.getProperty("user.home"), ".kompile")
+                : Path.of(dataDir);
+    }
+
+    private Path reasoningDir(long factSheetId) {
+        return resolveBase().resolve("data").resolve("graph").resolve("reasoning")
+                .resolve(String.valueOf(factSheetId));
+    }
+}

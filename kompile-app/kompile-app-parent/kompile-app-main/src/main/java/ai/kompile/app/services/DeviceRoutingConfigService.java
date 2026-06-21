@@ -190,6 +190,19 @@ public class DeviceRoutingConfigService {
         return Boolean.TRUE.equals(currentConfig.enabled());
     }
 
+    /**
+     * True when routing is enabled and {@code serviceType} is explicitly pinned to CPU
+     * ({@code deviceType="cpu"}). Lets GPU-headroom gates stop waiting on the GPU once a stage has
+     * been migrated to the multi-backend's CPU side.
+     */
+    public boolean isRoutedToCpu(String serviceType) {
+        if (!currentConfig.hasRouteFor(serviceType)) {
+            return false;
+        }
+        ServiceDeviceConfig route = currentConfig.serviceRoutes().get(serviceType);
+        return route != null && "cpu".equalsIgnoreCase(route.deviceType());
+    }
+
     private void persistToDisk() throws IOException {
         Path configDir = configFilePath.getParent();
         if (!Files.exists(configDir)) {

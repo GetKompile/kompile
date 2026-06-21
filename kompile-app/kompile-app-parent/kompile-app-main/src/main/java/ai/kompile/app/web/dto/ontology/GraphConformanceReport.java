@@ -39,6 +39,9 @@ public record GraphConformanceReport(
         // Fraction (0..1) of checked ENTITY nodes that conform; null when nothing is bound/checked.
         Double conformanceScore,
         List<NodeViolation> violations,
+        int edgesChecked,
+        int nonConformantEdgeCount,
+        List<EdgeViolation> edgeViolations,
         String message
 ) {
     /** A single non-conforming node and the reasons it failed. */
@@ -46,9 +49,15 @@ public record GraphConformanceReport(
     public record NodeViolation(String nodeId, String title, String entityType,
                                 boolean unknownType, List<String> messages) {}
 
+    /** A single non-conforming relationship/edge (relation not in the ontology, or cardinality breach). */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record EdgeViolation(String edgeId, String relationshipType, String sourceType,
+                                String targetType, String reason) {}
+
     /** No ontology is bound to the fact sheet; nothing was validated. */
     public static GraphConformanceReport notBound(Long factSheetId) {
         return new GraphConformanceReport(factSheetId, false, null, null, null, 0, 0, 0, null, List.of(),
+                0, 0, List.of(),
                 "No ontology is bound to this fact sheet (no explicit graph binding and no process "
                         + "definition with an ontology). Bind one to enable conformance checking.");
     }

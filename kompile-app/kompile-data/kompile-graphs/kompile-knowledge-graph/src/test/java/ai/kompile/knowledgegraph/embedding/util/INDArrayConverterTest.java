@@ -22,6 +22,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 
@@ -220,5 +221,63 @@ class INDArrayConverterTest {
         for (int i = 0; i < original.length(); i++) {
             assertEquals(original.getDouble(i), restored.getDouble(i), 1e-5);
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // M-5 audit gap: dtype correctness
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * M-5(a): fromDoubleArray must return a FLOAT32 (DataType.FLOAT) INDArray, not FLOAT64.
+     * Ensures that embeddings reconstituted from the double[] interop path match the dtype
+     * expected by FLOAT32-trained models.
+     */
+    @Test
+    void fromDoubleArray_returnsFloat32INDArray() {
+        double[] data = {1.0, 2.0, 3.0, 4.0};
+        INDArray result = INDArrayConverter.fromDoubleArray(data);
+
+        assertNotNull(result);
+        assertEquals(DataType.FLOAT, result.dataType(),
+                "fromDoubleArray must return a FLOAT32 (DataType.FLOAT) INDArray, not " + result.dataType());
+    }
+
+    /**
+     * M-5(a) — shape overload: fromDoubleArray(double[], long...) must also return FLOAT32.
+     */
+    @Test
+    void fromDoubleArray_withShape_returnsFloat32INDArray() {
+        double[] data = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+        INDArray result = INDArrayConverter.fromDoubleArray(data, 2, 3);
+
+        assertNotNull(result);
+        assertEquals(DataType.FLOAT, result.dataType(),
+                "fromDoubleArray(double[], shape) must return FLOAT32, not " + result.dataType());
+        assertArrayEquals(new long[]{2, 3}, result.shape());
+    }
+
+    /**
+     * M-5(b): The float-accurate JPA path (convertToDatabaseColumn→convertToEntityAttribute)
+     * must preserve both the numeric values AND the FLOAT32 dtype end-to-end.
+     */
+    @Test
+    void jpaRoundtrip_preservesFloat32DtypeAndValues() {
+        float[] originalData = {0.1f, -0.5f, 0.9f, 1.0f, -1.0f, 0.0f};
+        INDArray original = Nd4j.create(originalData);
+
+        // Primary JPA path: float[] → binary → float[]
+        byte[] bytes = converter.convertToDatabaseColumn(original);
+        INDArray restored = converter.convertToEntityAttribute(bytes);
+
+        assertNotNull(restored);
+
+        // Dtype must be FLOAT32 (not FLOAT64)
+        assertEquals(DataType.FLOAT, restored.dataType(),
+                "convertToEntityAttribute must return a FLOAT32 INDArray, not " + restored.dataType());
+
+        // Values must be bit-identical within float32 tolerance
+        float[] restoredData = restored.data().asFloat();
+        assertArrayEquals(originalData, restoredData, 1e-6f,
+                "JPA round-trip must preserve float32 values exactly");
     }
 }

@@ -1,0 +1,188 @@
+:host { display: block; width: 100%; }
+
+.cdb {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 4px;
+}
+
+/* ── Header ──────────────────────────────────────────────────────── */
+.cdb-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.cdb-header .spacer { flex: 1 1 auto; }
+.mode-toggle mat-icon { margin-right: 4px; vertical-align: middle; }
+.view-options { display: flex; align-items: center; gap: 4px; }
+.view-options button.active { color: var(--primary, #3f51b5); }
+
+/* ── Filter bar ──────────────────────────────────────────────────── */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.filter-bar mat-form-field { margin-bottom: -1.25em; } /* trim Material's hint gutter */
+.ff-sm { width: 150px; }
+.ff-md { width: 200px; }
+.ff-lg { width: 340px; }
+.ff-time { width: 200px; }
+
+/* ── Git body: commit list + detail ──────────────────────────────── */
+.git-body {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  gap: 12px;
+  min-height: 420px;
+}
+.commit-list {
+  border: 1px solid var(--border-subtle, #e3e6ea);
+  border-radius: 8px;
+  overflow-y: auto;
+  max-height: 70vh;
+  background: var(--surface-card, #fff);
+}
+.list-header {
+  position: sticky; top: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #57606a);
+  background: var(--surface-muted, #f6f8fa);
+  border-bottom: 1px solid var(--border-subtle, #e3e6ea);
+  z-index: 1;
+}
+.commit-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle, #eceef1);
+  background: transparent;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.commit-row:hover { background: var(--surface-hover, #f3f5f7); }
+.commit-row.selected { background: var(--primary-50, #e8eaf6); border-left: 3px solid var(--primary, #3f51b5); }
+.commit-subject {
+  font-size: 13px; font-weight: 600; color: var(--text-primary, #1f2328);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.commit-meta { display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--text-secondary, #6b7280); margin-top: 3px; }
+.commit-meta .author { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+.commit-stats { display: flex; gap: 10px; align-items: center; font-size: 11.5px; margin-top: 4px; }
+.commit-stats .files { display: inline-flex; align-items: center; gap: 2px; color: var(--text-secondary, #6b7280); }
+.commit-stats .files mat-icon { font-size: 14px; width: 14px; height: 14px; }
+
+code.hash { font-family: monospace; font-size: 11px; background: var(--surface-muted, #eef1f4); padding: 1px 5px; border-radius: 4px; color: var(--text-secondary, #57606a); }
+.added { color: #1a7f37; font-weight: 600; }
+.removed { color: #cf222e; font-weight: 600; }
+
+/* ── Commit detail ───────────────────────────────────────────────── */
+.commit-detail {
+  border: 1px solid var(--border-subtle, #e3e6ea);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-card, #fff);
+}
+.detail-head { padding: 10px 14px; border-bottom: 1px solid var(--border-subtle, #e3e6ea); background: var(--surface-muted, #f6f8fa); }
+.detail-subject { font-weight: 600; font-size: 14px; color: var(--text-primary, #1f2328); }
+.detail-meta { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--text-secondary, #6b7280); margin-top: 4px; }
+
+.file-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border-subtle, #eceef1); max-height: 140px; overflow-y: auto; }
+.file-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border-subtle, #d8dce0);
+  border-radius: 16px;
+  background: var(--surface-card, #fff);
+  padding: 3px 10px 3px 6px;
+  cursor: pointer; font-size: 12px;
+  transition: background .12s, border-color .12s;
+}
+.file-chip:hover { background: var(--surface-hover, #f3f5f7); }
+.file-chip.selected { border-color: var(--primary, #3f51b5); background: var(--primary-50, #e8eaf6); }
+.file-chip mat-icon { font-size: 16px; width: 16px; height: 16px; }
+.file-chip .fname { font-family: monospace; }
+.file-chip .chip-stats { font-size: 11px; }
+
+.diff-host { flex: 1; overflow: auto; padding: 0; }
+.diff-path {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px; font-family: monospace; font-size: 12.5px;
+  color: var(--text-secondary, #57606a);
+  background: var(--surface-muted, #f6f8fa);
+  border-bottom: 1px solid var(--border-subtle, #eceef1);
+  position: sticky; top: 0; z-index: 1;
+  word-break: break-all;
+}
+.diff-path mat-icon { font-size: 18px; width: 18px; height: 18px; }
+
+/* ── Empty states ────────────────────────────────────────────────── */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 40px 20px; color: var(--text-secondary, #6b7280); text-align: center;
+}
+.empty-state.small { padding: 28px 16px; }
+.empty-state mat-icon { font-size: 36px; width: 36px; height: 36px; opacity: .6; }
+.empty-state p { margin: 0; font-size: 13px; }
+.empty-state .muted { font-size: 11.5px; opacity: .7; font-family: monospace; }
+
+/* ── Compare mode ────────────────────────────────────────────────── */
+.compare-intro {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: 8px;
+  background: var(--surface-muted, #f1f4f8);
+  color: var(--text-secondary, #4b5563); font-size: 13px;
+}
+.compare-intro mat-icon { color: var(--primary, #3f51b5); }
+
+.compare-timelines { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.timeline {
+  border: 1px solid var(--border-subtle, #e3e6ea); border-radius: 8px;
+  max-height: 320px; overflow-y: auto; background: var(--surface-card, #fff);
+}
+.timeline-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; font-size: 12.5px; font-weight: 600;
+  background: var(--surface-muted, #f6f8fa); color: var(--text-secondary, #57606a);
+  border-bottom: 1px solid var(--border-subtle, #e3e6ea);
+}
+.timeline-head .count { margin-left: auto; background: var(--surface-card, #fff); border: 1px solid var(--border-subtle, #d8dce0); border-radius: 10px; padding: 0 7px; font-size: 11px; }
+.tl-row {
+  display: block; width: 100%; text-align: left; border: none;
+  border-bottom: 1px solid var(--border-subtle, #eceef1); background: transparent;
+  padding: 8px 12px; cursor: pointer; transition: background .12s;
+}
+.tl-row:hover { background: var(--surface-hover, #f3f5f7); }
+.tl-row.selected.git { background: #eef6ff; border-left: 3px solid #0969da; }
+.tl-row.selected.agent { background: #f3eefe; border-left: 3px solid #6f42c1; }
+.tl-top { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-secondary, #6b7280); }
+.tl-top .date { margin-left: auto; }
+.tl-subject { font-size: 12.5px; color: var(--text-primary, #1f2328); margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-stats { display: flex; gap: 8px; align-items: center; font-size: 11px; }
+.agent-badge { display: inline-flex; align-items: center; gap: 3px; }
+.agent-badge mat-icon { font-size: 14px; width: 14px; height: 14px; }
+.tl-stats .tool, .tl-stats .author { font-family: monospace; color: var(--text-secondary, #6b7280); }
+
+.compare-diffs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.compare-diff-col {
+  border: 1px solid var(--border-subtle, #e3e6ea); border-radius: 8px; overflow: hidden;
+  display: flex; flex-direction: column; min-width: 0;
+}
+.compare-diff-col .diff-path.git-side { color: #0969da; }
+.compare-diff-col .diff-path.agent-side { color: #6f42c1; }
+
+@media (max-width: 1100px) {
+  .git-body { grid-template-columns: 1fr; }
+  .compare-timelines, .compare-diffs { grid-template-columns: 1fr; }
+}
+
+.agent-panel { padding: 0; }

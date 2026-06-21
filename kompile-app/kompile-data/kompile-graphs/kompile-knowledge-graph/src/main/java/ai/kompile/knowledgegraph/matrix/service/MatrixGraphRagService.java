@@ -27,6 +27,7 @@ import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.knowledgegraph.matrix.algorithms.MatrixGraphAlgorithms;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
+import ai.kompile.knowledgegraph.embedding.adapter.MatrixKgEmbeddingGraphAdapter;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.resolution.SessionEntityState;
 import lombok.extern.slf4j.Slf4j;
@@ -65,14 +66,23 @@ public class MatrixGraphRagService implements GraphRagService {
     private EmbeddingModel embeddingModel;
     @Autowired(required = false)
     private LLMChat llmChat;
+    @Autowired(required = false)
+    private CommunitySummaryService communitySummaryService;
 
     public MatrixGraphRagService() {}
 
     /** Test constructor. */
     public MatrixGraphRagService(MatrixGraphStore graphStore, EmbeddingModel embeddingModel, LLMChat llmChat) {
+        this(graphStore, embeddingModel, llmChat, null);
+    }
+
+    /** Test constructor with community summarization for GLOBAL search. */
+    public MatrixGraphRagService(MatrixGraphStore graphStore, EmbeddingModel embeddingModel, LLMChat llmChat,
+                                 CommunitySummaryService communitySummaryService) {
         this.graphStore = graphStore;
         this.embeddingModel = embeddingModel;
         this.llmChat = llmChat;
+        this.communitySummaryService = communitySummaryService;
     }
 
     // Per-conversation entity tracking for resolving ambiguous references
@@ -121,12 +131,16 @@ public class MatrixGraphRagService implements GraphRagService {
                 .searchType(query.getSearchType())
                 .k(query.getK())
                 .conversationId(conversationId)
+                .vectorWeight(query.getVectorWeight())
+                .entityType(query.getEntityType())
                 .build();
 
         // Retrieve relevant context based on search type
         String context;
         if (query.getSearchType() == SearchType.GLOBAL) {
             context = retrieveGlobalContext(matrixGraph, resolvedRagQuery);
+        } else if (query.getSearchType() == SearchType.HYBRID) {
+            context = retrieveHybridContext(matrixGraph, resolvedRagQuery);
         } else {
             context = retrieveLocalContextWithTracking(matrixGraph, resolvedRagQuery, entityState);
         }
@@ -269,10 +283,279 @@ public class MatrixGraphRagService implements GraphRagService {
     }
 
     /**
+     * Retrieves context via embedding-seeded Personalized PageRank ("HYBRID" search).
+     * <p>
+     * Embeds the query, finds the most similar nodes (vector ANN over node embeddings) and uses them
+     * as PPR seeds weighted by similarity, then runs Personalized PageRank over the graph structure.
+     * The final ranking blends the structural PPR score with the seed vector similarity
+     * ({@code vectorWeight} controls the mix), so results include multi-hop nodes reachable from the
+     * query's entry points — going beyond the 1-hop expansion of {@link #retrieveLocalContext}.
+     * Falls back to local/text retrieval when no embedding model is available or no seeds are found.
+     * </p>
+     */
+    private String retrieveHybridContext(AdjacencyMatrixGraph graph, GraphRagQuery query) {
+        int k = query.getK() > 0 ? query.getK() : 5;
+
+        // Without an embedding model we cannot seed PPR; degrade to text-based local retrieval.
+        if (embeddingModel == null) {
+            log.debug("No EmbeddingModel available for HYBRID search, falling back to local context");
+            return retrieveLocalContext(graph, query);
+        }
+
+        INDArray queryEmbedding = embeddingModel.embed(query.getQuery());
+        if (queryEmbedding == null || queryEmbedding.isEmpty()) {
+            return retrieveLocalContext(graph, query);
+        }
+
+        // Seed set: most similar nodes by vector similarity. Pull a few more than k so PPR has
+        // enough entry points to propagate from.
+        int seedCount = Math.max(k, 10);
+        List<Map.Entry<String, Double>> similarNodes = graphStore.findSimilarNodes(
+                graph.getGraphId(), queryEmbedding, seedCount, 0.0);
+
+        if (similarNodes.isEmpty()) {
+            return retrieveLocalContext(graph, query);
+        }
+
+        // Seed weights from (non-negative) similarity; remember raw similarity for the blend.
+        Map<String, Double> seedWeights = new HashMap<>();
+        Map<String, Double> seedSimilarity = new HashMap<>();
+        for (Map.Entry<String, Double> entry : similarNodes) {
+            seedSimilarity.put(entry.getKey(), entry.getValue());
+            double sim = Math.max(0.0, entry.getValue());
+            if (sim > 0) {
+                seedWeights.put(entry.getKey(), sim);
+            }
+        }
+        if (seedWeights.isEmpty()) {
+            // All similarities non-positive; seed uniformly over the returned nodes.
+            for (Map.Entry<String, Double> entry : similarNodes) {
+                seedWeights.put(entry.getKey(), 1.0);
+            }
+        }
+
+        // Personalized PageRank over the graph structure, seeded by the embedding matches.
+        Map<String, Double> ppr = MatrixGraphAlgorithms.personalizedPageRank(graph, seedWeights);
+        if (ppr.isEmpty()) {
+            return retrieveLocalContext(graph, query);
+        }
+
+        // Blend structural PPR importance with direct vector similarity (different scales, so
+        // normalize each to [0,1] first). vectorWeight=1 -> pure similarity; 0 -> pure structure.
+        double maxPpr = ppr.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
+        double maxSim = seedSimilarity.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
+        if (maxPpr <= 0) maxPpr = 1.0;
+        if (maxSim <= 0) maxSim = 1.0;
+        double alpha = Math.min(1.0, Math.max(0.0, query.getVectorWeight()));
+
+        Map<String, Double> blended = new HashMap<>();
+        for (Map.Entry<String, Double> e : ppr.entrySet()) {
+            double structural = e.getValue() / maxPpr;
+            double sim = seedSimilarity.getOrDefault(e.getKey(), 0.0) / maxSim;
+            blended.put(e.getKey(), (1 - alpha) * structural + alpha * sim);
+        }
+
+        // Structural KG-embedding (TransE/RotatE) signal: when nodes carry trained KGE vectors, pull in
+        // / boost entities that are structurally similar (in KGE space) to the seeds — even if they are
+        // far in the text-embedding + PageRank views. This is the trained KG embeddings actually
+        // participating in retrieval, not just hybrid vector search. Empty (no-op) until embeddings exist.
+        Map<String, Double> kgeSim = kgeStructuralSimilarity(graph, seedSimilarity.keySet());
+        Set<String> candidateIds = new HashSet<>(blended.keySet());
+        candidateIds.addAll(kgeSim.keySet());
+
+        Map<String, Double> finalScores = new HashMap<>();
+        for (String id : candidateIds) {
+            double base = blended.getOrDefault(id, 0.0);
+            double kge = kgeSim.getOrDefault(id, 0.0);
+            finalScores.put(id, base + KGE_RETRIEVAL_WEIGHT * kge);
+        }
+
+        List<MatrixGraphNode> rankedNodes = finalScores.entrySet().stream()
+                .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
+                .map(e -> graph.getNode(e.getKey()))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .filter(node -> matchesEntityType(node, query.getEntityType()))
+                .limit(k)
+                .collect(Collectors.toList());
+
+        // PathRAG augmentation: append the most reliable relational paths connecting the key entities.
+        String baseContext = formatNodesAsContext(rankedNodes, graph);
+        List<String> keyEntityIds = rankedNodes.stream()
+                .map(MatrixGraphNode::getNodeId)
+                .collect(Collectors.toList());
+        return baseContext + retrievePathContext(graph, keyEntityIds);
+    }
+
+    /** Blend weight for the structural KG-embedding similarity term in HYBRID retrieval. */
+    private static final double KGE_RETRIEVAL_WEIGHT = 0.5;
+
+    /**
+     * Computes, for every node carrying a structural KG embedding, its best cosine similarity (in KGE
+     * space) to any seed node that also has one. Returns an empty map when no KGE vectors are present
+     * (i.e. embeddings have not been trained for this graph), so HYBRID degrades cleanly to PPR +
+     * vector similarity.
+     */
+    private Map<String, Double> kgeStructuralSimilarity(AdjacencyMatrixGraph graph, Set<String> seedNodeIds) {
+        List<INDArray> seedVectors = new ArrayList<>();
+        for (String id : seedNodeIds) {
+            INDArray v = kgeVectorOf(graph, id);
+            if (v != null) {
+                seedVectors.add(v);
+            }
+        }
+        if (seedVectors.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, Double> sims = new HashMap<>();
+        for (String nodeId : graph.getNodeById().keySet()) {
+            INDArray v = kgeVectorOf(graph, nodeId);
+            if (v == null) {
+                continue;
+            }
+            double best = 0.0;
+            for (INDArray seed : seedVectors) {
+                best = Math.max(best, cosineSimilarity(v, seed));
+            }
+            if (best > 0) {
+                sims.put(nodeId, best);
+            }
+        }
+        return sims;
+    }
+
+    private INDArray kgeVectorOf(AdjacencyMatrixGraph graph, String nodeId) {
+        MatrixGraphNode node = graph.getNode(nodeId).orElse(null);
+        if (node == null || node.getMetadata() == null) {
+            return null;
+        }
+        return MatrixKgEmbeddingGraphAdapter.decode(
+                node.getMetadata().get(MatrixKgEmbeddingGraphAdapter.KGE_EMBEDDING_KEY));
+    }
+
+    private static double cosineSimilarity(INDArray a, INDArray b) {
+        if (a.length() != b.length()) {
+            return 0.0;
+        }
+        double dot = a.mul(b).sumNumber().doubleValue();
+        double na = a.norm2Number().doubleValue();
+        double nb = b.norm2Number().doubleValue();
+        if (na == 0.0 || nb == 0.0) {
+            return 0.0;
+        }
+        return dot / (na * nb);
+    }
+
+    /** Max distinct key entities to connect with paths (bounds the O(n^2) pair search). */
+    private static final int PATH_MAX_KEY_ENTITIES = 6;
+    private static final int PATH_MAX_HOPS = 4;
+    private static final int PATH_MAX_PER_PAIR = 3;
+    private static final int PATH_MAX_RESULTS = 5;
+
+    private record ScoredPath(List<String> path, double reliability) {}
+
+    /**
+     * PathRAG-style augmentation: surfaces the most reliable relational paths connecting the top key
+     * entities, so the context explains HOW the query-relevant entities relate, not just that they are
+     * relevant. Paths are scored by reliability (product of edge weights), pruned to the strongest few,
+     * and rendered as readable chains. Returns "" when there are fewer than two key entities or no paths.
+     */
+    private String retrievePathContext(AdjacencyMatrixGraph graph, List<String> keyEntityIds) {
+        if (keyEntityIds == null || keyEntityIds.size() < 2) {
+            return "";
+        }
+        List<String> tops = keyEntityIds.size() > PATH_MAX_KEY_ENTITIES
+                ? keyEntityIds.subList(0, PATH_MAX_KEY_ENTITIES)
+                : keyEntityIds;
+
+        List<ScoredPath> scored = new ArrayList<>();
+        for (int i = 0; i < tops.size(); i++) {
+            for (int j = 0; j < tops.size(); j++) {
+                if (i == j) {
+                    continue;
+                }
+                for (List<String> path : MatrixGraphAlgorithms.findPaths(
+                        graph, tops.get(i), tops.get(j), PATH_MAX_HOPS, PATH_MAX_PER_PAIR)) {
+                    scored.add(new ScoredPath(path, pathReliability(graph, path)));
+                }
+            }
+        }
+        if (scored.isEmpty()) {
+            return "";
+        }
+        scored.sort((a, b) -> Double.compare(b.reliability(), a.reliability()));
+
+        StringBuilder sb = new StringBuilder("\nConnecting relationships (paths between key entities):\n");
+        int count = 0;
+        Set<String> seen = new HashSet<>();
+        for (ScoredPath sp : scored) {
+            if (count >= PATH_MAX_RESULTS) {
+                break;
+            }
+            String rendered = renderPath(graph, sp.path());
+            if (seen.add(rendered)) {
+                sb.append("- ").append(rendered).append("\n");
+                count++;
+            }
+        }
+        return sb.toString();
+    }
+
+    /** Path reliability = product of edge weights along the path (weaker links lower the score). */
+    private double pathReliability(AdjacencyMatrixGraph graph, List<String> path) {
+        double reliability = 1.0;
+        for (int i = 0; i < path.size() - 1; i++) {
+            double weight = 1.0;
+            for (Map.Entry<String, Double> nb : graph.getNeighbors(path.get(i), null)) {
+                if (nb.getKey().equals(path.get(i + 1))) {
+                    weight = nb.getValue() != null ? nb.getValue() : 1.0;
+                    break;
+                }
+            }
+            reliability *= weight;
+        }
+        return reliability;
+    }
+
+    private String renderPath(AdjacencyMatrixGraph graph, List<String> path) {
+        return path.stream()
+                .map(id -> graph.getNode(id).map(MatrixGraphNode::getTitle).orElse(id))
+                .collect(Collectors.joining(" --> "));
+    }
+
+    /**
+     * Ontology-typed (schema-aware) gate: true if there is no type constraint, or the node's semantic
+     * type matches it. The semantic type is taken from the structural node type or, preferentially,
+     * the free-form {@code entity_type} in node metadata (set by the extractor / ontology).
+     */
+    private static boolean matchesEntityType(MatrixGraphNode node, String entityType) {
+        if (entityType == null || entityType.isBlank()) {
+            return true;
+        }
+        if (node.getMetadata() != null) {
+            Object et = node.getMetadata().get("entity_type");
+            if (et != null && entityType.equalsIgnoreCase(et.toString())) {
+                return true;
+            }
+        }
+        return node.getNodeType() != null && entityType.equalsIgnoreCase(node.getNodeType());
+    }
+
+    /**
      * Retrieves global context using PageRank to identify important nodes.
      */
     private String retrieveGlobalContext(AdjacencyMatrixGraph graph, GraphRagQuery query) {
         int k = query.getK() > 0 ? query.getK() : 10;
+
+        // Microsoft-GraphRAG-style global search: when community reports exist, answer from the
+        // query-relevant ones (sensemaking over summarized communities) instead of the query-agnostic
+        // top-PageRank-nodes + stats fallback below.
+        if (communitySummaryService != null) {
+            List<CommunitySummaryService.CommunityReport> reports = communitySummaryService.getOrBuildReports(graph);
+            if (reports != null && !reports.isEmpty()) {
+                return buildCommunityContext(reports, query);
+            }
+        }
 
         // Compute PageRank to find important nodes
         Map<String, Double> pageRankScores = MatrixGraphAlgorithms.pageRank(graph);
@@ -322,6 +605,49 @@ public class MatrixGraphRagService implements GraphRagService {
             }
         }
 
+        return contextBuilder.toString();
+    }
+
+    /**
+     * Builds GLOBAL-search context from community reports, ordered by relevance to the query. When the
+     * query and reports both have embeddings, reports are ranked by cosine similarity; otherwise all
+     * reports are included in detection order. The top reports' summaries are concatenated as context
+     * for the final LLM synthesis (map-reduce: per-community summaries are the "map", selection +
+     * concatenation the "reduce").
+     */
+    private String buildCommunityContext(List<CommunitySummaryService.CommunityReport> reports, GraphRagQuery query) {
+        int topN = query.getK() > 0 ? query.getK() : 5;
+
+        INDArray queryEmbedding = embeddingModel != null ? embeddingModel.embed(query.getQuery()) : null;
+        boolean haveEmbeddings = queryEmbedding != null && !queryEmbedding.isEmpty()
+                && reports.stream().anyMatch(r -> r.summaryEmbedding() != null);
+
+        List<CommunitySummaryService.CommunityReport> ranked;
+        if (haveEmbeddings) {
+            Map<Integer, Double> score = new HashMap<>();
+            for (CommunitySummaryService.CommunityReport r : reports) {
+                score.put(r.communityId(),
+                        r.summaryEmbedding() != null ? cosineSimilarity(queryEmbedding, r.summaryEmbedding()) : -1.0);
+            }
+            ranked = reports.stream()
+                    .sorted((a, b) -> Double.compare(score.get(b.communityId()), score.get(a.communityId())))
+                    .collect(Collectors.toList());
+        } else {
+            ranked = reports;
+        }
+
+        StringBuilder contextBuilder = new StringBuilder();
+        contextBuilder.append("Knowledge Graph Community Reports (most relevant first):\n\n");
+        int count = 0;
+        for (CommunitySummaryService.CommunityReport r : ranked) {
+            if (count >= topN) {
+                break;
+            }
+            contextBuilder.append(String.format("Community %d (%d entities):\n",
+                    r.communityId(), r.memberNodeIds().size()));
+            contextBuilder.append(r.summary() == null ? "" : r.summary().trim()).append("\n\n");
+            count++;
+        }
         return contextBuilder.toString();
     }
 

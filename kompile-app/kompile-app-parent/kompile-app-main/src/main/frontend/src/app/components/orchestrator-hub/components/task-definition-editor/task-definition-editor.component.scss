@@ -7,7 +7,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .editor-header {
@@ -15,8 +15,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 16px 24px;
-  background: white;
-  border-bottom: 1px solid #e0e0e0;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
 
   h2 {
     margin: 0;
@@ -60,8 +60,8 @@
   flex-wrap: wrap;
   gap: 4px;
   padding: 12px 24px;
-  background: white;
-  border-bottom: 1px solid #e0e0e0;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
 
   button {
     display: flex;
@@ -97,14 +97,14 @@
     margin: 0 0 8px 0;
     font-size: 1.1rem;
     font-weight: 500;
-    color: #424242;
+    color: var(--text-primary);
   }
 
   h4 {
     margin: 16px 0 8px 0;
     font-size: 1rem;
     font-weight: 500;
-    color: #616161;
+    color: var(--text-secondary);
   }
 
   mat-divider {
@@ -124,7 +124,7 @@ mat-form-field {
 
 .agent-capabilities {
   font-size: 0.8rem;
-  color: #757575;
+  color: var(--text-secondary);
   margin-left: 4px;
 }
 
@@ -135,7 +135,7 @@ mat-form-field {
   gap: 16px;
   padding-left: 24px;
   margin-top: 16px;
-  border-left: 3px solid #e0e0e0;
+  border-left: 3px solid var(--border-color);
 }
 
 .search-options {
@@ -164,9 +164,9 @@ mat-form-field {
 .pattern-test-result {
   margin-top: 16px;
   padding: 16px;
-  background: white;
+  background: var(--bg-surface);
   border-radius: 4px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 
   .result-header {
     display: flex;
@@ -192,7 +192,7 @@ mat-form-field {
 
   .result-matches {
     margin-top: 8px;
-    color: #424242;
+    color: var(--text-primary);
   }
 
   .matches-list {
@@ -216,7 +216,7 @@ mat-form-field {
 
       .match-position {
         font-size: 0.8rem;
-        color: #757575;
+        color: var(--text-secondary);
       }
     }
   }
@@ -243,7 +243,7 @@ mat-form-field {
 }
 
 .hint {
-  color: #757575;
+  color: var(--text-secondary);
   font-size: 0.9rem;
   margin: 8px 0;
 }
@@ -259,7 +259,7 @@ mat-form-field {
       font-size: 0.9rem;
 
       code {
-        background: #f5f5f5;
+        background: var(--bg-surface-elevated);
         padding: 2px 6px;
         border-radius: 3px;
         font-family: monospace;
@@ -271,16 +271,16 @@ mat-form-field {
 
 // Actions Panel - Pass/Fail Triggers
 .panel-description {
-  color: #616161;
+  color: var(--text-secondary);
   font-size: 0.9rem;
   margin-bottom: 16px;
 }
 
 .action-section {
   padding: 20px;
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
 
   &.success-section {
     border-left: 4px solid #4caf50;
@@ -318,7 +318,7 @@ mat-form-field {
   }
 
   .section-hint {
-    color: #757575;
+    color: var(--text-secondary);
     font-size: 0.85rem;
     margin: 0 0 16px 34px;
   }
@@ -330,13 +330,13 @@ mat-form-field {
 
 .action-reference {
   padding: 20px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
 
   h4 {
     margin: 0 0 16px 0;
     font-size: 1rem;
-    color: #424242;
+    color: var(--text-primary);
   }
 
   .reference-grid {
@@ -349,9 +349,9 @@ mat-form-field {
       flex-direction: column;
       gap: 4px;
       padding: 12px;
-      background: #fff;
+      background: var(--bg-surface);
       border-radius: 6px;
-      border: 1px solid #e0e0e0;
+      border: 1px solid var(--border-color);
 
       strong {
         font-size: 0.85rem;
@@ -361,7 +361,7 @@ mat-form-field {
 
       span {
         font-size: 0.8rem;
-        color: #616161;
+        color: var(--text-secondary);
       }
     }
   }

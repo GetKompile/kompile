@@ -19,6 +19,7 @@ import ai.kompile.app.web.dto.ontology.GraphConformanceReport;
 import ai.kompile.core.graphrag.conformance.GraphConformanceChecker;
 import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.core.graphrag.typing.GraphNodeTypes;
+import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NamedGraph;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
@@ -52,9 +53,9 @@ import java.util.Optional;
  * {@link ProcessDefinition} for the fact sheet that carries an {@code ontologySchemaId}
  * (APPROVED/LIVE preferred).
  *
- * <p>Scope: entity conformance (unknown type + field constraints). Relationship/cardinality
- * conformance is intentionally deferred — graph edges carry structural {@code EdgeType}s, not the
- * ontology's semantic relationship names, so wiring it now would be noisy.
+     * <p>Scope: entity conformance (unknown type + field constraints) and relationship conformance
+     * (relations not defined in the ontology + source-side cardinality) for edges that carry a semantic
+     * {@code relationType}; purely structural edges (no relationType) are skipped.
  */
 @Slf4j
 @Service
@@ -124,15 +125,73 @@ public class GraphOntologyBindingService implements GraphConformanceChecker {
             }
         }
 
+        // Relationship/edge conformance: validate edges carrying a semantic relationType against the
+        // ontology's RelationshipTypeDefinitions (source/target entity types + the relation) plus
+        // source-side cardinality. Structural edges (null relationType) are skipped. When the ontology
+        // declares no relationship types, validateRelationship treats every edge as allowed.
+        List<GraphEdge> edges = knowledgeGraphService.getEdgesInFactSheet(factSheetId);
+        if (edges == null) {
+            edges = List.of();
+        }
+        int edgesChecked = 0;
+        int nonConformantEdges = 0;
+        List<GraphConformanceReport.EdgeViolation> edgeViolations = new java.util.ArrayList<>();
+        java.util.Map<String, java.util.Map<String, Long>> outgoing = new java.util.HashMap<>();
+        for (GraphEdge edge : edges) {
+            if (isSemanticEdge(edge)) {
+                outgoing.computeIfAbsent(edge.getSourceNode().getNodeId(), k -> new java.util.HashMap<>())
+                        .merge(edge.getRelationType(), 1L, Long::sum);
+            }
+        }
+        java.util.Set<String> cardinalityFlagged = new java.util.HashSet<>();
+        for (GraphEdge edge : edges) {
+            if (!isSemanticEdge(edge)) {
+                continue;
+            }
+            edgesChecked++;
+            String relType = edge.getRelationType();
+            String sourceType = extractEntityType(edge.getSourceNode());
+            String targetType = extractEntityType(edge.getTargetNode());
+            OntologyConformanceValidator.RelationshipConformance rc =
+                    OntologyConformanceValidator.validateRelationship(schema, sourceType, relType, targetType);
+            if (!rc.allowed()) {
+                nonConformantEdges++;
+                if (edgeViolations.size() < MAX_VIOLATIONS) {
+                    edgeViolations.add(new GraphConformanceReport.EdgeViolation(
+                            edge.getEdgeId(), relType, sourceType, targetType, rc.reason()));
+                }
+            } else if (rc.cardinality() != null) {
+                String srcId = edge.getSourceNode().getNodeId();
+                long count = outgoing.getOrDefault(srcId, java.util.Map.of()).getOrDefault(relType, 0L);
+                if (!OntologyConformanceValidator.withinSourceCardinality(rc.cardinality(), count)
+                        && cardinalityFlagged.add(srcId + "::" + relType)) {
+                    nonConformantEdges++;
+                    if (edgeViolations.size() < MAX_VIOLATIONS) {
+                        edgeViolations.add(new GraphConformanceReport.EdgeViolation(
+                                edge.getEdgeId(), relType, sourceType, targetType,
+                                "Cardinality " + rc.cardinality() + " violated: source has " + count
+                                        + " outgoing '" + relType + "' edges"));
+                    }
+                }
+            }
+        }
+
         Double score = conformanceScore(entities.size(), nonConformant);
         String message = String.format(
                 "Checked %d ENTITY node(s) against ontology '%s' v%d: %d non-conformant (%d unknown type); "
-                        + "conformance %.1f%%.",
+                        + "conformance %.1f%%. Checked %d relationship(s): %d non-conformant.",
                 entities.size(), schema.getName(), schema.getVersion(), nonConformant, unknown,
-                (score == null ? 1.0 : score) * 100.0);
+                (score == null ? 1.0 : score) * 100.0, edgesChecked, nonConformantEdges);
         log.info("Graph conformance factSheet={}: {}", factSheetId, message);
         return new GraphConformanceReport(factSheetId, true, schema.getId(), schema.getVersion(),
-                schema.getName(), entities.size(), unknown, nonConformant, score, violations, message);
+                schema.getName(), entities.size(), unknown, nonConformant, score, violations,
+                edgesChecked, nonConformantEdges, edgeViolations, message);
+    }
+
+    /** True if the edge carries a semantic relationType and has both endpoints (so it can be validated). */
+    private static boolean isSemanticEdge(GraphEdge edge) {
+        return edge.getRelationType() != null && !edge.getRelationType().isBlank()
+                && edge.getSourceNode() != null && edge.getTargetNode() != null;
     }
 
     /**

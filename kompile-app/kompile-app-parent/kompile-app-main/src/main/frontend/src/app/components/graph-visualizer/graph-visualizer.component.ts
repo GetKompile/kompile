@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, Input } from '@angular/core';
+import { Component, OnInit, OnDestroy, OnChanges, SimpleChanges, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -35,16 +35,21 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
-import { Subject, Subscription, takeUntil, debounceTime, interval, filter } from 'rxjs';
+import { MatRadioModule } from '@angular/material/radio';
+import { Subject, Subscription, takeUntil, debounceTime, interval, filter, of } from 'rxjs';
+import { catchError } from 'rxjs/operators';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import { BayesianPanelComponent } from './bayesian-panel.component';
 import { MarkdownRendererComponent } from '../markdown-renderer/markdown-renderer.component';
 import { TableRendererComponent } from '../table-renderer/table-renderer.component';
+import { KbContextPanelComponent } from '../kb-context-panel/kb-context-panel.component';
+import { SourceLinkingPanelComponent } from './source-linking-panel.component';
 
 import { GraphCanvasComponent } from './graph-canvas.component';
 import { GraphService, GraphBuildStatus, FactSheetGraphStatistics } from '../../services/graph.service';
 import { SourceWeightService } from '../../services/source-weight.service';
 import { AttributionService } from '../../services/attribution.service';
+import { KbGroundingService, StrengthBand, confidenceToStrengthBand } from '../../services/kb-grounding.service';
 import { AttributionResult, PredictionResult } from '../../models/attribution-models';
 import {
   D3VisualizationData,
@@ -87,11 +92,14 @@ import {
     MatMenuModule,
     MatDividerModule,
     MatDialogModule,
+    MatRadioModule,
     GraphCanvasComponent,
     ConfirmDialogComponent,
     BayesianPanelComponent,
     MarkdownRendererComponent,
-    TableRendererComponent
+    TableRendererComponent,
+    KbContextPanelComponent,
+    SourceLinkingPanelComponent
   ],
   template: `
     <div class="graph-visualizer">
@@ -183,6 +191,18 @@ import {
           </mat-form-field>
         </div>
         <div class="toolbar-right">
+          <button mat-icon-button
+                  [color]="strengthOverlayEnabled ? 'accent' : ''"
+                  (click)="toggleStrengthOverlay()"
+                  matTooltip="Toggle Strength Band Overlay">
+            <mat-icon>verified</mat-icon>
+          </button>
+          <button mat-icon-button
+                  [color]="provenanceOverlayEnabled ? 'accent' : ''"
+                  (click)="toggleProvenanceOverlay()"
+                  matTooltip="Toggle Provenance Overlay (circle=observed, diamond=derived)">
+            <mat-icon>account_tree</mat-icon>
+          </button>
           <button mat-icon-button (click)="toggleSidePanel()" matTooltip="Toggle Side Panel">
             <mat-icon>{{showSidePanel ? 'chevron_right' : 'chevron_left'}}</mat-icon>
           </button>
@@ -204,6 +224,9 @@ import {
             [priorOverlay]="priorOverlay"
             [mebnMfragMap]="mebnMfragMap"
             [influenceOverlayActive]="influenceOverlayActive"
+            [strengthOverlayEnabled]="strengthOverlayEnabled"
+            [strengthBandMap]="strengthBandMap"
+            [provenanceOverlayEnabled]="provenanceOverlayEnabled"
             (nodeSelected)="onNodeSelected($event)"
             (nodeDoubleClicked)="onNodeDoubleClicked($event)"
             (edgeCreated)="onEdgeCreated($event)"
@@ -215,6 +238,16 @@ import {
         <!-- Side Panel -->
         <div class="side-panel" *ngIf="showSidePanel">
           <mat-tab-group [(selectedIndex)]="selectedTabIndex">
+            <!-- KB Context Tab (FIRST) -->
+            <mat-tab label="KB Context">
+              <div class="panel-content">
+                <app-kb-context-panel
+                  [node]="selectedNode"
+                  [factSheetId]="factSheetId"
+                  (onGround)="selectedTabIndex = 6">
+                </app-kb-context-panel>
+              </div>
+            </mat-tab>
             <!-- Node Details Tab -->
             <mat-tab label="Details">
               <div class="panel-content">
@@ -732,6 +765,49 @@ import {
                   </div>
                 </div>
 
+                <!-- Phase-2: Strength Band Filter -->
+                <h4>
+                  <mat-icon class="section-icon-sm">verified</mat-icon>
+                  Strength Band
+                </h4>
+                <div class="filter-chips">
+                  <mat-checkbox
+                    *ngFor="let band of allStrengthBands"
+                    [checked]="strengthBandFilter.has(band)"
+                    (change)="toggleStrengthBandFilter(band)">
+                    {{ band | titlecase }}
+                  </mat-checkbox>
+                </div>
+
+                <!-- Phase-2: Creation Time Window -->
+                <h4>
+                  <mat-icon class="section-icon-sm">schedule</mat-icon>
+                  Creation Window
+                </h4>
+                <div class="temporal-filter-row">
+                  <mat-form-field appearance="outline" style="width: 48%; margin-right: 4%;">
+                    <mat-label>Created From</mat-label>
+                    <input matInput type="date" [(ngModel)]="creationTimeFrom"
+                           (ngModelChange)="onCreationTimeChange()">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline" style="width: 48%;">
+                    <mat-label>Created To</mat-label>
+                    <input matInput type="date" [(ngModel)]="creationTimeTo"
+                           (ngModelChange)="onCreationTimeChange()">
+                  </mat-form-field>
+                </div>
+
+                <!-- Phase-2: Provenance Type Filter -->
+                <h4>
+                  <mat-icon class="section-icon-sm">account_tree</mat-icon>
+                  Provenance Type
+                </h4>
+                <mat-radio-group [(ngModel)]="provenanceFilter" (ngModelChange)="onProvenanceFilterChange()">
+                  <mat-radio-button value="ALL">All</mat-radio-button>
+                  <mat-radio-button value="OBSERVED_ONLY">Observed only</mat-radio-button>
+                  <mat-radio-button value="DERIVED_ONLY">Derived only</mat-radio-button>
+                </mat-radio-group>
+
                 <button mat-stroked-button (click)="resetFilters()">
                   <mat-icon>filter_alt_off</mat-icon>
                   Reset Filters
@@ -832,6 +908,14 @@ import {
                   (priorOverlayChanged)="onPriorOverlayChanged($event)"
                   (mebnMfragMapChanged)="onMebnMfragMapChanged($event)">
                 </app-bayesian-panel>
+              </div>
+            </mat-tab>
+            <!-- Source Links Tab -->
+            <mat-tab label="Source Links">
+              <div class="panel-content">
+                <app-source-linking-panel
+                  [factSheetId]="factSheetId">
+                </app-source-linking-panel>
               </div>
             </mat-tab>
           </mat-tab-group>
@@ -1850,7 +1934,7 @@ import {
     }
   `]
 })
-export class GraphVisualizerComponent implements OnInit, OnDestroy {
+export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   private destroy$ = new Subject<void>();
   private searchSubject = new Subject<string>();
   private buildPollSubscription: Subscription | null = null;
@@ -1858,6 +1942,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   // Fact sheet inputs
   @Input() factSheetId: number | null = null;
   @Input() factSheetName: string = '';
+  @Input() focusNodeId: string | null = null;
 
   // State
   loading = false;
@@ -1873,6 +1958,20 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
   priorOverlay: Record<string, number> | null = null;
   mebnMfragMap: Record<string, string> | null = null;  // nodeId -> mfragName
   influenceOverlayActive = false;  // true when posteriorOverlay contains influence scores
+
+  // Phase-2 KB overlay state
+  strengthOverlayEnabled = false;
+  provenanceOverlayEnabled = false;
+  strengthBandMap = new Map<string, string>();
+  private verifiedNodeIds = new Set<string>();
+  private overlayDebounceTimer: any = null;
+
+  // Phase-2 filter state
+  allStrengthBands: StrengthBand[] = ['ESTABLISHED', 'HIGH', 'PROBABLE', 'SPECULATIVE', 'SUPPRESSED'];
+  strengthBandFilter: Set<StrengthBand> = new Set(this.allStrengthBands);
+  provenanceFilter: 'ALL' | 'OBSERVED_ONLY' | 'DERIVED_ONLY' = 'ALL';
+  creationTimeFrom: string = '';
+  creationTimeTo: string = '';
 
   // Attribution & prediction state
   attributionResult: AttributionResult | null = null;
@@ -1959,6 +2058,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     private graphService: GraphService,
     private weightService: SourceWeightService,
     private attributionService: AttributionService,
+    private kbGrounding: KbGroundingService,
     private snackBar: MatSnackBar,
     private dialog: MatDialog
   ) {}
@@ -1979,8 +2079,17 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stopTimelineTimer();
+    if (this.overlayDebounceTimer) {
+      clearTimeout(this.overlayDebounceTimer);
+    }
     this.destroy$.next();
     this.destroy$.complete();
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['focusNodeId'] && this.focusNodeId) {
+      this.expandNodeById(this.focusNodeId);
+    }
   }
 
   loadGraph(query?: string): void {
@@ -2000,6 +2109,10 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
           // Apply filters (snapshot filter handled inside applyFilters)
           this.graphData = this.applyFilters(data, query);
           this.loading = false;
+          // If strength overlay is active, verify newly visible nodes
+          if (this.strengthOverlayEnabled) {
+            this.scheduleVisibleNodeVerify();
+          }
         },
         error: (err) => {
           console.error('Failed to load graph:', err);
@@ -2252,6 +2365,43 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
       );
     }
 
+    // Phase-2: strength-band filter (only exclude nodes that have a KNOWN band that's unchecked)
+    if (this.strengthBandFilter.size < this.allStrengthBands.length && this.strengthBandMap.size > 0) {
+      nodes = nodes.filter(n => {
+        const band = this.strengthBandMap.get(n.id) as StrengthBand | undefined;
+        if (!band) return true; // unknown band — keep
+        return this.strengthBandFilter.has(band);
+      });
+    }
+
+    // Phase-2: creation-time window filter on _extractedAt or createdAt metadata
+    if (this.creationTimeFrom || this.creationTimeTo) {
+      const fromDate = this.creationTimeFrom ? this.creationTimeFrom + 'T00:00:00' : null;
+      const toDate = this.creationTimeTo ? this.creationTimeTo + 'T23:59:59' : null;
+      nodes = nodes.filter(n => {
+        const meta = n.metadata as Record<string, string> | undefined;
+        const ts = meta?.['_extractedAt'] || meta?.['createdAt'] || n.occurredAt;
+        if (!ts) return true; // no timestamp — keep
+        if (fromDate && ts < fromDate) return false;
+        if (toDate && ts > toDate) return false;
+        return true;
+      });
+    }
+
+    // Phase-2: provenance type filter
+    if (this.provenanceFilter !== 'ALL') {
+      nodes = nodes.filter(n => {
+        const meta = n.metadata as Record<string, unknown> | undefined;
+        const isDerived =
+          meta?.['_derived'] === true ||
+          (typeof meta?.['_source'] === 'string' && (meta['_source'] as string).toLowerCase().includes('derived')) ||
+          (typeof meta?.['_provenance'] === 'string' && (meta['_provenance'] as string).toLowerCase().includes('derived'));
+        if (this.provenanceFilter === 'DERIVED_ONLY') return isDerived;
+        if (this.provenanceFilter === 'OBSERVED_ONLY') return !isDerived;
+        return true;
+      });
+    }
+
     // Keep only links where both nodes are in filtered set
     const nodeIds = new Set(nodes.map(n => n.id));
     links = links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
@@ -2468,6 +2618,11 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
     this.timeFrom = '';
     this.timeTo = '';
     this.timelineStop();
+    // Phase-2 filter reset
+    this.strengthBandFilter = new Set(this.allStrengthBands);
+    this.provenanceFilter = 'ALL';
+    this.creationTimeFrom = '';
+    this.creationTimeTo = '';
     this.loadGraph();
   }
 
@@ -2845,6 +3000,85 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy {
               this.snackBar.open('Failed to delete relation', 'Dismiss', { duration: 3000 });
             }
           });
+      });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE-2: STRENGTH & PROVENANCE OVERLAYS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  toggleStrengthOverlay(): void {
+    this.strengthOverlayEnabled = !this.strengthOverlayEnabled;
+    if (this.strengthOverlayEnabled && this.graphData) {
+      this.scheduleVisibleNodeVerify();
+    }
+  }
+
+  toggleProvenanceOverlay(): void {
+    this.provenanceOverlayEnabled = !this.provenanceOverlayEnabled;
+  }
+
+  toggleStrengthBandFilter(band: StrengthBand): void {
+    if (this.strengthBandFilter.has(band)) {
+      this.strengthBandFilter.delete(band);
+    } else {
+      this.strengthBandFilter.add(band);
+    }
+    // Trigger re-filter
+    if (this.fullGraphData) {
+      this.graphData = this.applyFilters(this.fullGraphData, this.searchQuery || undefined);
+    } else if (this.graphData) {
+      this.loadGraph();
+    }
+  }
+
+  onCreationTimeChange(): void {
+    if (this.fullGraphData) {
+      this.graphData = this.applyFilters(this.fullGraphData, this.searchQuery || undefined);
+    }
+  }
+
+  onProvenanceFilterChange(): void {
+    if (this.fullGraphData) {
+      this.graphData = this.applyFilters(this.fullGraphData, this.searchQuery || undefined);
+    }
+  }
+
+  /**
+   * Schedule a debounced batch-verify of visible nodes.
+   * Called when strength overlay is toggled on or when graph data changes while overlay is active.
+   */
+  private scheduleVisibleNodeVerify(): void {
+    if (this.overlayDebounceTimer) {
+      clearTimeout(this.overlayDebounceTimer);
+    }
+    this.overlayDebounceTimer = setTimeout(() => {
+      this.batchVerifyVisibleNodes();
+    }, 500);
+  }
+
+  /**
+   * Batch-verify all visible (graphData) nodes that have not yet been verified.
+   * Uses the batch endpoint to avoid per-node HTTP fan-out.
+   */
+  private batchVerifyVisibleNodes(): void {
+    if (!this.graphData || !this.strengthOverlayEnabled) return;
+    const newIds = this.graphData.nodes.map(n => n.id).filter(id => !this.verifiedNodeIds.has(id));
+    if (newIds.length === 0) return;
+    const BATCH_MAX = 50;
+    const batch = newIds.slice(0, BATCH_MAX);
+    this.kbGrounding.batchVerify({ factSheetId: this.factSheetId, atomKeys: batch })
+      .pipe(catchError(() => of(null)), takeUntil(this.destroy$))
+      .subscribe(resp => {
+        if (resp?.results) {
+          Object.entries(resp.results).forEach(([atomKey, summary]) => {
+            this.verifiedNodeIds.add(atomKey);
+            this.strengthBandMap = new Map(this.strengthBandMap).set(atomKey, confidenceToStrengthBand(summary.confidence));
+          });
+          if (newIds.length > BATCH_MAX) {
+            this.scheduleVisibleNodeVerify();
+          }
+        }
       });
   }
 

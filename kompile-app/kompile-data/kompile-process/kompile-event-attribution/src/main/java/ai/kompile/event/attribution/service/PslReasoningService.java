@@ -9,12 +9,12 @@
  */
 package ai.kompile.event.attribution.service;
 
-import ai.kompile.event.attribution.algorithm.psl.GroundRule;
-import ai.kompile.event.attribution.algorithm.psl.HlMrfMapInference;
 import ai.kompile.event.attribution.algorithm.psl.KgPslProgramBuilder;
-import ai.kompile.event.attribution.algorithm.psl.PslProgram;
-import ai.kompile.event.attribution.algorithm.psl.PslRule;
-import ai.kompile.event.attribution.domain.PslInferenceResult;
+import ai.kompile.graph.reasoning.psl.GroundRule;
+import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
+import ai.kompile.graph.reasoning.psl.PslProgram;
+import ai.kompile.graph.reasoning.psl.PslRule;
+import ai.kompile.graph.reasoning.domain.PslInferenceResult;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

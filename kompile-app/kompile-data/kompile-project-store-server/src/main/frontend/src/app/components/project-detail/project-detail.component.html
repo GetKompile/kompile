@@ -1,0 +1,147 @@
+<section class="detail">
+  <button mat-button class="back-link" (click)="back.emit()">
+    <mat-icon>arrow_back</mat-icon>
+    All projects
+  </button>
+
+  <mat-progress-bar *ngIf="loading" mode="indeterminate"></mat-progress-bar>
+
+  <div class="error-banner" *ngIf="error">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+  </div>
+
+  <ng-container *ngIf="project as p">
+    <!-- Project header -->
+    <header class="project-head">
+      <mat-icon class="repo-icon">folder_special</mat-icon>
+      <div class="head-text">
+        <div class="head-title">
+          <span class="namespace">{{ p.namespace }} /</span>
+          <span class="slug">{{ p.slug }}</span>
+        </div>
+        <div class="chips">
+          <span class="chip chip-type">{{ p.repoType }}</span>
+          <span class="chip" [class.chip-public]="p.visibility === 'public'"
+                [class.chip-private]="p.visibility !== 'public'">
+            <mat-icon>{{ p.visibility === 'public' ? 'public' : 'lock' }}</mat-icon>
+            {{ p.visibility }}
+          </span>
+          <span class="chip chip-branch">
+            <mat-icon>account_tree</mat-icon>
+            {{ p.defaultBranch }}
+          </span>
+        </div>
+        <p class="description" *ngIf="p.description">{{ p.description }}</p>
+      </div>
+    </header>
+
+    <div class="panels">
+      <!-- Download / clone panel -->
+      <div class="panel download-panel">
+        <h3><mat-icon>download</mat-icon> Get this project</h3>
+
+        <a mat-flat-button color="primary" class="zip-btn"
+           [href]="archiveHref" [attr.download]="p.slug + '.zip'">
+          <mat-icon>folder_zip</mat-icon>
+          Download ZIP ({{ ref }})
+        </a>
+
+        <div class="clone-block">
+          <label>Clone with Git</label>
+          <div class="cmd">
+            <code>{{ gitCloneCommand }}</code>
+            <button mat-icon-button matTooltip="Copy" (click)="copy(gitCloneCommand, 'Git clone command')">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <div class="clone-block">
+          <label>Clone with the Kompile CLI</label>
+          <div class="cmd">
+            <code>{{ p.cliCloneCommand }}</code>
+            <button mat-icon-button matTooltip="Copy" (click)="copy(p.cliCloneCommand, 'CLI command')">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Manifest panel -->
+      <div class="panel manifest-panel">
+        <h3><mat-icon>description</mat-icon> Manifest</h3>
+
+        <ng-container *ngIf="manifestRaw; else noManifest">
+          <dl class="manifest-summary" *ngIf="manifestObj">
+            <ng-container *ngIf="manifestField('name') as name">
+              <dt>Name</dt><dd>{{ name }}</dd>
+            </ng-container>
+            <ng-container *ngIf="manifestField('version') as version">
+              <dt>Version</dt><dd>{{ version }}</dd>
+            </ng-container>
+            <ng-container *ngIf="manifestField('description') as desc">
+              <dt>Description</dt><dd>{{ desc }}</dd>
+            </ng-container>
+          </dl>
+
+          <details class="raw-manifest">
+            <summary>kompile.project.json</summary>
+            <pre>{{ manifestRaw }}</pre>
+          </details>
+        </ng-container>
+
+        <ng-template #noManifest>
+          <p class="muted">This project has no <code>kompile.project.json</code> manifest.</p>
+        </ng-template>
+      </div>
+    </div>
+
+    <!-- File browser -->
+    <div class="panel files-panel">
+      <div class="files-head">
+        <h3><mat-icon>folder_open</mat-icon> Files</h3>
+        <nav class="breadcrumb">
+          <ng-container *ngFor="let crumb of breadcrumbs; let last = last; let first = first">
+            <button class="crumb" [class.active]="last" [disabled]="last"
+                    (click)="loadTree(crumb.path)">
+              <mat-icon *ngIf="first">home</mat-icon>
+              <span>{{ crumb.name }}</span>
+            </button>
+            <mat-icon *ngIf="!last" class="crumb-sep">chevron_right</mat-icon>
+          </ng-container>
+        </nav>
+      </div>
+
+      <mat-progress-bar *ngIf="treeLoading" mode="indeterminate"></mat-progress-bar>
+
+      <div class="tree-error" *ngIf="treeError">{{ treeError }}</div>
+
+      <ul class="tree" *ngIf="entries.length; else emptyTree">
+        <li class="tree-row" *ngFor="let entry of entries"
+            [class.is-dir]="entry.type === 'tree'"
+            (click)="openEntry(entry)">
+          <mat-icon class="entry-icon" [class.dir-icon]="entry.type === 'tree'">
+            {{ iconForEntry(entry) }}
+          </mat-icon>
+          <span class="entry-name">{{ entry.name }}</span>
+          <span class="entry-size" *ngIf="entry.type === 'blob'">{{ formatSize(entry.size) }}</span>
+          <span class="entry-spacer"></span>
+          <a *ngIf="entry.type === 'blob'" mat-icon-button matTooltip="Download file"
+             [href]="blobHref(entry)" [attr.download]="entry.name"
+             (click)="$event.stopPropagation()">
+            <mat-icon>download</mat-icon>
+          </a>
+          <mat-icon *ngIf="entry.type === 'tree'" class="chevron">chevron_right</mat-icon>
+        </li>
+      </ul>
+
+      <ng-template #emptyTree>
+        <div class="empty-tree" *ngIf="!treeLoading && !treeError">
+          <mat-icon>folder_off</mat-icon>
+          <span>{{ currentPath ? 'This folder is empty.' : 'This repository has no files yet.' }}</span>
+        </div>
+      </ng-template>
+    </div>
+  </ng-container>
+</section>

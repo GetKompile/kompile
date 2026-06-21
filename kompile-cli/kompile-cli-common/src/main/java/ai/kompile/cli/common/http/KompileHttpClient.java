@@ -202,9 +202,16 @@ public class KompileHttpClient {
      * Checks if the service is reachable by hitting the health endpoint.
      */
     public boolean isHealthy() {
+        // Generated kompile apps do not ship Spring Boot Actuator, so /actuator/health 404s.
+        // Probe it first (for instances that DO expose it), then fall back to a lightweight,
+        // always-present backend endpoint so `kompile app ...` works against any running instance.
+        return probeOk("/actuator/health") || probeOk("/api/setup/status");
+    }
+
+    private boolean probeOk(String path) {
         try {
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(baseUrl + "/actuator/health"))
+                    .uri(URI.create(baseUrl + path))
                     .header("Accept", "application/json")
                     .timeout(Duration.ofSeconds(5))
                     .GET()

@@ -1,0 +1,96 @@
+<section class="browser">
+  <div class="browser-header">
+    <div class="title-block">
+      <h2>Projects</h2>
+      <span class="count-badge" *ngIf="!loading">{{ projects.length }}</span>
+    </div>
+
+    <div class="actions">
+      <mat-form-field appearance="outline" class="search-field" subscriptSizing="dynamic">
+        <mat-icon matPrefix>search</mat-icon>
+        <input matInput placeholder="Search projects" [(ngModel)]="search">
+      </mat-form-field>
+      <button mat-stroked-button (click)="load()" matTooltip="Refresh" [disabled]="loading">
+        <mat-icon>refresh</mat-icon>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <mat-progress-bar *ngIf="loading" mode="indeterminate"></mat-progress-bar>
+
+  <div class="error-banner" *ngIf="error">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+  </div>
+
+  <!-- Project grid -->
+  <div class="projects-grid" *ngIf="filtered.length; else emptyState">
+    <mat-card
+      *ngFor="let p of filtered; trackBy: trackByFullName"
+      class="project-card"
+      (click)="open.emit(p)">
+      <div class="card-top">
+        <mat-icon class="repo-icon">{{ iconFor(p.repoType) }}</mat-icon>
+        <div class="card-heading">
+          <span class="namespace">{{ p.namespace }}</span>
+          <span class="slug">{{ p.slug }}</span>
+        </div>
+      </div>
+
+      <div class="chips">
+        <span class="chip chip-type">{{ p.repoType }}</span>
+        <span class="chip" [class.chip-public]="p.visibility === 'public'"
+              [class.chip-private]="p.visibility !== 'public'">
+          <mat-icon>{{ p.visibility === 'public' ? 'public' : 'lock' }}</mat-icon>
+          {{ p.visibility }}
+        </span>
+      </div>
+
+      <p class="description" *ngIf="p.description">{{ p.description }}</p>
+      <p class="description muted" *ngIf="!p.description">No description provided.</p>
+
+      <div class="card-footer">
+        <span class="branch">
+          <mat-icon>account_tree</mat-icon>
+          {{ p.defaultBranch }}
+        </span>
+        <button mat-button color="primary" (click)="$event.stopPropagation(); open.emit(p)">
+          Browse
+          <mat-icon iconPositionEnd>chevron_right</mat-icon>
+        </button>
+      </div>
+    </mat-card>
+  </div>
+
+  <ng-template #emptyState>
+    <div class="empty-state" *ngIf="!loading">
+      <mat-icon>{{ search ? 'search_off' : 'inventory_2' }}</mat-icon>
+      <h3>{{ search ? 'No matching projects' : 'No projects yet' }}</h3>
+      <p *ngIf="search">No projects match &ldquo;{{ search }}&rdquo;.</p>
+      <ng-container *ngIf="!search">
+        <p>Host a project by pushing it over Git — it appears here automatically.</p>
+        <div class="empty-instructions">
+          <div class="instr-step">
+            <span class="step-num">1</span>
+            <div class="step-body">
+              <span class="step-label">Create the project (provisions its Git repo)</span>
+              <pre class="cmd"><code>{{ createExample }}</code></pre>
+            </div>
+          </div>
+          <div class="instr-step">
+            <span class="step-num">2</span>
+            <div class="step-body">
+              <span class="step-label">Add the remote and push your repository</span>
+              <pre class="cmd"><code>{{ pushExample }}</code></pre>
+            </div>
+          </div>
+        </div>
+        <p class="hint">
+          Git URL format: <code>{{ gitBase }}/&lt;namespace&gt;/&lt;slug&gt;.git</code>
+          &mdash; the same URL works for <code>git clone</code>, <code>fetch</code> and <code>push</code>.
+        </p>
+      </ng-container>
+    </div>
+  </ng-template>
+</section>

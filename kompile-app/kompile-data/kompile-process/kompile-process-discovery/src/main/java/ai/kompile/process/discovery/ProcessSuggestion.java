@@ -16,6 +16,7 @@
 
 package ai.kompile.process.discovery;
 
+import ai.kompile.graph.reasoning.fol.grounding.GroundedElement;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -111,6 +112,14 @@ public class ProcessSuggestion {
     /** ID of the ProcessDefinition created from this suggestion */
     private String acceptedProcessDefinitionId;
 
+    /**
+     * KB-grounded steps produced by {@code ProcessTreeToSuggestion.convertGrounded(...)}.
+     * Each element wraps a {@link SuggestedStep} with its KB verify result, calibrated
+     * confidence, and StrengthBand. Populated only when grounding is active; null otherwise.
+     */
+    @Builder.Default
+    private List<GroundedElement<SuggestedStep>> groundedSteps = new ArrayList<>();
+
     @Data
     @Builder
     @NoArgsConstructor
@@ -149,6 +158,12 @@ public class ProcessSuggestion {
         private String suggestedAssignee;
         /** When this step occurred in the real world */
         private LocalDateTime occurredAt;
+        /**
+         * Role binding derived from the knowledge graph via {@code RoleBindingExtractor}.
+         * Contains the entity type (e.g. "PERSON", "DEPARTMENT") nearest to this step's
+         * graph nodes, or null when no role could be derived.
+         */
+        private String roleBinding;
     }
 
     @Data

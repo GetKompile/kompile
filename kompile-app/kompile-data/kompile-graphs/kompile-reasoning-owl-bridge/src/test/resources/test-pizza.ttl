@@ -1,0 +1,29 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <https://kompile.ai/kg/test/pizza#> .
+
+<https://kompile.ai/kg/test/pizza>
+    a owl:Ontology .
+
+ex:Food a owl:Class .
+ex:Pizza a owl:Class ;
+    rdfs:subClassOf ex:Food .
+ex:VegetarianPizza a owl:Class ;
+    rdfs:subClassOf ex:Pizza .
+ex:MeatPizza a owl:Class ;
+    rdfs:subClassOf ex:Pizza ;
+    owl:disjointWith ex:VegetarianPizza .
+
+ex:hasTopping a owl:ObjectProperty ;
+    rdfs:domain ex:Pizza ;
+    rdfs:range ex:Topping .
+ex:Topping a owl:Class .
+ex:MeatTopping a owl:Class ;
+    rdfs:subClassOf ex:Topping .
+ex:VeggieTopping a owl:Class ;
+    rdfs:subClassOf ex:Topping .
+
+ex:MargheritaPizza a owl:Class ;
+    rdfs:subClassOf ex:VegetarianPizza .

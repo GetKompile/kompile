@@ -32,12 +32,12 @@
 
 .header .subtitle {
   margin: 5px 0 0 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
 .main-tabs {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
@@ -55,7 +55,7 @@
 
 .toolbar .context-info {
   flex: 1;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .bridge-list,
@@ -111,13 +111,13 @@
 }
 
 .info-label {
-  color: #666;
+  color: var(--text-secondary);
   min-width: 70px;
 }
 
 .info-item code {
   font-family: var(--font-family-monospace);
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 12px;
@@ -134,7 +134,7 @@
   align-items: center;
   gap: 5px;
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .stat mat-icon {
@@ -156,13 +156,13 @@
 }
 
 .detail-label {
-  color: #666;
+  color: var(--text-secondary);
   min-width: 100px;
 }
 
 .detail-row code {
   font-family: var(--font-family-monospace);
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 12px;
@@ -186,7 +186,7 @@ mat-card-actions {
 .empty-state {
   text-align: center;
   padding: 60px 20px;
-  color: #666;
+  color: var(--text-secondary);
   grid-column: 1 / -1;
 }
 
@@ -194,7 +194,7 @@ mat-card-actions {
   font-size: 64px;
   width: 64px;
   height: 64px;
-  color: #ccc;
+  color: var(--text-tertiary);
 }
 
 .empty-state p {
@@ -204,7 +204,7 @@ mat-card-actions {
 
 .empty-state .hint {
   font-size: 14px;
-  color: #999;
+  color: var(--text-tertiary);
   margin: 0 0 20px 0;
 }
 
@@ -219,7 +219,7 @@ mat-card-actions {
 }
 
 .discover-section .hint {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 14px;
   margin-bottom: 20px;
 }
@@ -326,13 +326,13 @@ mat-card-actions {
 }
 
 .tool-details .detail-label {
-  color: #666;
+  color: var(--text-secondary);
   min-width: 100px;
 }
 
 .tool-details code {
   font-family: var(--font-family-monospace);
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 12px;
@@ -371,7 +371,7 @@ mat-card-actions {
 }
 
 .dialog {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 24px;
   min-width: 400px;
@@ -424,10 +424,10 @@ mat-card-actions {
 }
 
 .config-section {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 15px;
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .config-section h4 {
@@ -451,7 +451,7 @@ mat-card-actions {
 .auth-summary {
   margin: 0;
   font-size: 14px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .params-section {
@@ -477,12 +477,12 @@ mat-card-actions {
   gap: 10px;
   margin-top: 20px;
   padding-top: 15px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 /* Test Dialog */
 .test-info {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 10px 15px;
   border-radius: 4px;
   margin-bottom: 15px;
@@ -495,7 +495,7 @@ mat-card-actions {
 
 .test-result {
   margin-top: 20px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -527,13 +527,13 @@ mat-card-actions {
 .result-header .duration {
   font-size: 13px;
   font-weight: normal;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .result-body,
 .result-error {
   padding: 15px;
-  background: #fafafa;
+  background: var(--bg-body);
 }
 
 .result-body h5,
@@ -549,10 +549,10 @@ mat-card-actions {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
-  background: #fff;
+  background: var(--bg-surface);
   padding: 10px;
   border-radius: 4px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   max-height: 200px;
   overflow-y: auto;
 }

@@ -216,6 +216,25 @@ public class SetupStatusService {
             }
         }
 
+        // No explicit staging-service config, but if the staging server is running the generated
+        // app loads models straight from it (kompile.staging.url), so the model source IS available.
+        if (stagingServerLifecycleService != null) {
+            try {
+                StagingServerLifecycleService.StagingServerStatus ss = stagingServerLifecycleService.getStatus();
+                if (ss != null && "running".equals(ss.getStatus())) {
+                    return step.status(StepState.WARNING)
+                            .complete(true)
+                            .message("Using the running staging server for models")
+                            .detail(ss.getUrl() != null ? ss.getUrl() : ("Port " + ss.getPort()))
+                            .action("Models load on demand from the staging server. Connect/verify a named "
+                                    + "source in Developer > Model Staging for a managed registry.")
+                            .build();
+                }
+            } catch (Exception e) {
+                log.debug("Could not read staging server status for model source step: {}", e.getMessage());
+            }
+        }
+
         return step.status(StepState.NOT_STARTED)
                 .complete(false)
                 .message("No model source configured")
@@ -245,6 +264,35 @@ public class SetupStatusService {
                         .message("Model loaded: " + anserini.getActiveModelId())
                         .detail(anserini.dimensions() + " dimensions")
                         .build();
+            }
+
+            // Embedding auto-start can be globally suppressed via the restart governor
+            // (embedding-restart-config.json). When OFF the model will NEVER load on its own, so
+            // don't mislead the user with "loading..." — surface the real state and how to fix it.
+            try {
+                if (!anserini.getRestartGovernorStatus().isAutoRestartEnabled()) {
+                    return step.status(StepState.WARNING)
+                            .complete(false)
+                            .message("Embedding auto-start is OFF — model will not load")
+                            .action("Enable embedding auto-restart (Developer > Embedding, or the "
+                                    + "embedding-restart config API), then the model auto-loads.")
+                            .build();
+                }
+                // Restart governor tripped (circuit breaker / restarts exhausted): the model was tried
+                // and DEFERRED so it can't block startup or other steps. Surface the real, actionable
+                // state instead of a permanent "loading...".
+                if (anserini.isRestartDeferred()) {
+                    return step.status(StepState.WARNING)
+                            .complete(false)
+                            .message("Embeddings deferred — model could not load after repeated attempts")
+                            .detail(anserini.getRestartDeferredReason())
+                            .action("Embeddings are paused so they don't block startup or other steps. "
+                                    + "Resume via Developer > Embedding or POST /api/embedding-restart/resume "
+                                    + "(or run on GPU). Graph extraction is unaffected.")
+                            .build();
+                }
+            } catch (Exception e) {
+                log.debug("Could not read embedding restart governor status: {}", e.getMessage());
             }
 
             // Check if auto-init is in progress

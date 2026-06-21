@@ -1,0 +1,98 @@
+:host { display: block; width: 100%; }
+.dpp { display: flex; flex-direction: column; gap: 10px; padding: 8px 4px; }
+
+.dpp-intro {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-radius: 8px; background: var(--surface-muted, #f1f4f8);
+  color: var(--text-secondary, #4b5563); font-size: 13px;
+}
+.dpp-intro mat-icon { color: #b1001c; }
+
+.stat-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.stat-strip .spacer { flex: 1 1 auto; }
+.stat {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+  border: 1px solid var(--border-subtle, #e3e6ea); border-radius: 8px;
+  background: var(--surface-card, #fff);
+}
+.stat.total .num { font-size: 20px; font-weight: 700; }
+.stat.sev { border-left-width: 3px; }
+.stat .num { font-weight: 700; }
+.stat .lbl { font-size: 11.5px; color: var(--text-secondary, #6b7280); text-transform: capitalize; }
+.stat mat-icon { font-size: 18px; width: 18px; height: 18px; }
+
+.scan-bar, .filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.scan-bar mat-form-field, .filter-bar mat-form-field { margin-bottom: -1.25em; }
+.ff-sm { width: 140px; }
+.ff-md { width: 230px; }
+.ff-time { width: 190px; }
+.scan-note { font-size: 12px; color: var(--text-secondary, #6b7280); }
+
+/* Rules editor */
+.rules-editor {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  border: 1px solid var(--border-subtle, #e3e6ea); border-radius: 8px; padding: 12px;
+  background: var(--surface-muted, #f9fafb);
+}
+.rules-head { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+.rules-head mat-icon { font-size: 18px; width: 18px; height: 18px; }
+.path-rule { display: flex; gap: 6px; align-items: center; margin-bottom: -4px; }
+.path-rule mat-form-field { margin-bottom: -1.25em; }
+.pr-glob { width: 150px; } .pr-sev { width: 110px; } .pr-desc { flex: 1; min-width: 120px; }
+.content-rules {
+  width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12.5px;
+  border: 1px solid var(--border-subtle, #d8dce0); border-radius: 6px; padding: 8px; resize: vertical;
+}
+.rules-actions { margin-top: 8px; }
+
+/* Violations list + detail */
+.viol-body { display: grid; grid-template-columns: minmax(300px, 400px) 1fr; gap: 12px; min-height: 420px; }
+.viol-list {
+  border: 1px solid var(--border-subtle, #e3e6ea); border-radius: 8px;
+  overflow-y: auto; max-height: 70vh; background: var(--surface-card, #fff);
+}
+.list-header {
+  position: sticky; top: 0; z-index: 1; padding: 8px 12px; font-size: 12px; font-weight: 600;
+  color: var(--text-secondary, #57606a); background: var(--surface-muted, #f6f8fa);
+  border-bottom: 1px solid var(--border-subtle, #e3e6ea);
+}
+.viol-row {
+  display: block; width: 100%; text-align: left; border: none; border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--border-subtle, #eceef1); background: transparent;
+  padding: 9px 12px; cursor: pointer; transition: background .12s;
+}
+.viol-row:hover { background: var(--surface-hover, #f3f5f7); }
+.viol-row.selected { background: var(--primary-50, #fdeef0); }
+.viol-top { display: flex; align-items: center; gap: 6px; }
+.sev-icon { font-size: 18px; width: 18px; height: 18px; }
+.viol-top .fname { font-weight: 600; font-size: 13px; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.detector { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; font-size: 11px; color: var(--text-secondary, #6b7280); }
+.detector mat-icon { font-size: 14px; width: 14px; height: 14px; }
+.viol-msg { font-size: 12.5px; color: var(--text-primary, #1f2328); margin: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viol-meta { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-secondary, #6b7280); }
+.viol-meta .agent { display: inline-flex; align-items: center; gap: 3px; }
+.viol-meta .agent mat-icon, .dh-top .detector mat-icon { font-size: 14px; width: 14px; height: 14px; }
+.viol-meta .date { margin-left: auto; }
+
+.viol-detail {
+  border: 1px solid var(--border-subtle, #e3e6ea); border-radius: 8px; overflow: hidden;
+  display: flex; flex-direction: column; background: var(--surface-card, #fff);
+}
+.detail-head { padding: 10px 14px; border-bottom: 1px solid var(--border-subtle, #eceef1); border-left: 4px solid #ccc; background: var(--surface-muted, #f6f8fa); }
+.dh-top { display: flex; align-items: center; gap: 8px; }
+.sev-badge { color: #fff; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 10px; text-transform: uppercase; }
+.dh-top .detector { margin-left: 0; }
+.rule-id { font-family: monospace; font-size: 11.5px; color: var(--text-secondary, #57606a); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+.dh-msg { font-size: 13.5px; font-weight: 600; margin: 6px 0 2px; }
+.dh-path { font-family: monospace; font-size: 12px; color: var(--text-secondary, #6b7280); word-break: break-all; }
+.matched { margin: 8px 0 0; padding: 6px 10px; background: #fff5f5; border: 1px solid #ffd7d7; border-radius: 4px; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.diff-host { flex: 1; overflow: auto; }
+
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 40px 20px; color: var(--text-secondary, #6b7280); text-align: center; }
+.empty-state.small { padding: 24px; }
+.empty-state mat-icon { font-size: 34px; width: 34px; height: 34px; opacity: .6; }
+.empty-state p { margin: 0; font-size: 13px; }
+
+@media (max-width: 1100px) {
+  .viol-body, .rules-editor { grid-template-columns: 1fr; }
+}

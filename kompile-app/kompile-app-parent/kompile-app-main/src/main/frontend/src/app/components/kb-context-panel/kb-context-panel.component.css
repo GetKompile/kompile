@@ -1,0 +1,186 @@
+.kb-context-panel {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--text-primary, #1a1f36);
+}
+
+.no-selection {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 16px;
+  color: var(--text-secondary, #6b7280);
+  text-align: center;
+}
+
+.no-selection mat-icon {
+  font-size: 36px;
+  width: 36px;
+  height: 36px;
+  color: var(--border-color, #e3e8ee);
+}
+
+.no-selection p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.context-header {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color, #e3e8ee);
+}
+
+.node-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.node-label {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text-primary, #1a1f36);
+  word-break: break-word;
+}
+
+.verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.verdict-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+.verdict-supported {
+  color: #27ae60;
+  background: rgba(39, 174, 96, 0.1);
+}
+
+.verdict-refuted {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.1);
+}
+
+.verdict-unknown {
+  color: #7f8c8d;
+  background: rgba(127, 140, 141, 0.1);
+}
+
+.confidence {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.verify-loading, .verify-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.verify-error {
+  color: #e74c3c;
+}
+
+.section-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-secondary, #6b7280);
+  margin-bottom: 6px;
+}
+
+.evidence-section, .provenance-section {
+  margin-bottom: 12px;
+}
+
+.evidence-chip {
+  font-size: 11px;
+  height: 22px;
+}
+
+.prov-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.prov-type {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.prov-observed {
+  color: #2980b9;
+  background: rgba(41, 128, 185, 0.1);
+}
+
+.prov-derived {
+  color: #8e44ad;
+  background: rgba(142, 68, 173, 0.1);
+}
+
+.prov-inferred {
+  color: #16a085;
+  background: rgba(22, 160, 133, 0.1);
+}
+
+.prov-meta {
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.action-buttons button {
+  font-size: 12px;
+  line-height: 28px;
+  padding: 0 10px;
+}
+
+.correction-form {
+  background: var(--bg-card, #f8f9fa);
+  border: 1px solid var(--border-color, #e3e8ee);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.trail-section {
+  border-top: 1px solid var(--border-color, #e3e8ee);
+  padding-top: 8px;
+}

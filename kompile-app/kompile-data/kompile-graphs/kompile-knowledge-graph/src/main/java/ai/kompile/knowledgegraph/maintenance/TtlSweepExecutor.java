@@ -18,19 +18,27 @@ package ai.kompile.knowledgegraph.maintenance;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceTask;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
 import ai.kompile.core.graphrag.maintenance.model.TtlPolicy;
+import ai.kompile.graph.reasoning.maintenance.PruneResult;
+import ai.kompile.graph.reasoning.maintenance.StalenessPruningPolicy;
+import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
+import ai.kompile.graph.reasoning.model.SimpleGraphEntity;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.repository.GraphEdgeRepository;
 import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Executes TTL-based expiry sweeps against a knowledge graph fact sheet.
@@ -39,6 +47,21 @@ import java.util.List;
  * can be soft-deleted (marked stale) or hard-deleted immediately.  High-confidence
  * items can be exempt via {@code policy.minConfidenceToKeep()}.
  * Previously soft-deleted items that have passed the grace period are hard-deleted.</p>
+ *
+ * <p>The expiry <em>decision</em> for nodes is now delegated to the generic
+ * {@link StalenessPruningPolicy} from {@code kompile-graph-maintenance}: the
+ * JPA nodes' {@code validUntil} fields are projected as {@link java.time.Instant}
+ * timestamps in a {@link ai.kompile.graph.reasoning.model.ReasoningGraph}, and
+ * the policy is evaluated with {@code Instant.now()} as the cutoff (so the
+ * caller supplies the time, keeping the policy pure). Deletions are applied here
+ * via the JPA repositories — the live-store migration remains an open task.</p>
+ *
+ * <p><strong>Live-store limitation:</strong> this executor still reads JPA ({@code GraphNodeRepository}),
+ * which is unpopulated on the live {@code @Primary} matrix/vector store, so TTL expiry finds nothing
+ * there. A live-store migration is blocked because {@code MatrixGraphNode} has no {@code validUntil}
+ * expiry field to scan — that field must be added (and populated at node creation) before TTL expiry
+ * can run against the live graph. The grace-period purge of already-stale nodes is, however, available
+ * on the live store via {@link ai.kompile.knowledgegraph.service.KnowledgeGraphService#hardDeleteStaleNodes}.</p>
  */
 @Slf4j
 @Component
@@ -50,6 +73,7 @@ public class TtlSweepExecutor {
     private  GraphNodeRepository nodeRepository;
     private  GraphEdgeRepository edgeRepository;
 
+    @Autowired
     public TtlSweepExecutor(GraphNodeRepository nodeRepository,
                             GraphEdgeRepository edgeRepository) {
         this.nodeRepository = nodeRepository;
@@ -72,18 +96,30 @@ public class TtlSweepExecutor {
     public TaskReport execute(Long factSheetId, TtlPolicy policy, boolean dryRun) {
         Instant start = Instant.now();
         LocalDateTime now = LocalDateTime.now();
+        // The cutoff for StalenessPruningPolicy: treat validUntil < now as expired
+        Instant cutoff = now.toInstant(ZoneOffset.UTC);
         int scanned = 0;
         int affected = 0;
         int skipped = 0;
         List<String> warnings = new ArrayList<>();
 
-        // ── 1. Find expired nodes ────────────────────────────────────────────────
+        // ── 1. Find expired nodes via StalenessPruningPolicy ────────────────────
         List<GraphNode> expiredNodes = nodeRepository.findExpiredNodes(factSheetId, now);
         scanned += expiredNodes.size();
         log.debug("TTL sweep: {} expired nodes found for factSheet={}", expiredNodes.size(), factSheetId);
 
+        // Build a minimal ReasoningGraph projecting validUntil as timestamp
+        MutableReasoningGraph nodeGraph = buildNodeGraph(expiredNodes);
+        // The policy uses the cutoff = now; validUntil < now means stale
+        PruneResult nodeDecision = new StalenessPruningPolicy(cutoff).evaluate(nodeGraph);
+
         List<Long> nodeIdsToMark = new ArrayList<>();
         for (GraphNode node : expiredNodes) {
+            // Filter by policy decision: only act if the generic policy selected this node
+            if (!nodeDecision.entityIds().contains(node.getNodeId())) {
+                skipped++;
+                continue;
+            }
             Double confidence = node.getConfidence();
             if (policy.minConfidenceToKeep() != null
                     && confidence != null
@@ -173,5 +209,34 @@ public class TtlSweepExecutor {
                 warnings,
                 Duration.between(start, Instant.now())
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Build a minimal ReasoningGraph from the given expired nodes, projecting
+     * {@code validUntil} as each entity's {@link ai.kompile.graph.reasoning.model.GraphEntity#timestamp()}.
+     * This lets {@link StalenessPruningPolicy} evaluate whether each entity's
+     * "expiry timestamp" is before the supplied cutoff.
+     */
+    private static MutableReasoningGraph buildNodeGraph(List<GraphNode> nodes) {
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        for (GraphNode n : nodes) {
+            Instant ts = n.getValidUntil() != null ? n.getValidUntil().toInstant(ZoneOffset.UTC) : null;
+            graph.addEntity(new SimpleGraphEntity(
+                    n.getNodeId(),
+                    n.getNodeType() != null ? n.getNodeType().name() : "",
+                    n.getTitle() != null ? n.getTitle() : n.getNodeId(),
+                    n.getConfidence() != null ? n.getConfidence() : 1.0,
+                    n.getConfidence() != null ? n.getConfidence() : 1.0,
+                    Set.of(),
+                    null,
+                    ts,
+                    Map.of()
+            ));
+        }
+        return graph;
     }
 }

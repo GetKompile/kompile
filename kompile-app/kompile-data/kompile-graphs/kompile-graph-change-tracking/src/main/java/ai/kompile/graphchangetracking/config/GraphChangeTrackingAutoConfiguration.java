@@ -8,8 +8,21 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.scheduling.annotation.EnableAsync;
 
+/**
+ * Auto-configuration for graph change tracking.
+ *
+ * <p>The {@code @ComponentScan} picks up {@code ai.kompile.graphchangetracking} (all hooks,
+ * services, controllers, etc.) and {@code ai.kompile.knowledgegraph} which contributes
+ * {@link ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator} and
+ * {@link ai.kompile.knowledgegraph.grounding.KbGroundingService} — required by the L3
+ * {@link ai.kompile.graphchangetracking.hook.GroundingCascadeHook} (also picked up via scan
+ * as a {@code @Component}).</p>
+ */
 @AutoConfiguration
-@ComponentScan(basePackages = "ai.kompile.graphchangetracking")
+@ComponentScan(basePackages = {
+        "ai.kompile.graphchangetracking",
+        "ai.kompile.knowledgegraph"  // brings in IncrementalReasoningOrchestrator + KbGroundingService
+})
 @EnableAsync
 public class GraphChangeTrackingAutoConfiguration {
 

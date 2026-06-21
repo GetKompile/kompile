@@ -48,11 +48,11 @@
       display: flex;
       gap: 16px;
       font-size: 13px;
-      color: #666;
+      color: var(--text-secondary);
 
       span {
         strong {
-          color: #333;
+          color: var(--text-primary);
         }
       }
     }
@@ -76,12 +76,12 @@
       .metric-value {
         font-size: 28px;
         font-weight: 600;
-        color: #333;
+        color: var(--text-primary);
       }
 
       .metric-label {
         font-size: 12px;
-        color: #666;
+        color: var(--text-secondary);
         text-transform: uppercase;
         letter-spacing: 0.5px;
       }
@@ -165,7 +165,7 @@
 
   .cell-subtitle {
     font-size: 12px;
-    color: #666;
+    color: var(--text-secondary);
     margin-top: 2px;
   }
 }
@@ -176,7 +176,7 @@
   align-items: center;
   justify-content: center;
   padding: 48px;
-  color: #999;
+  color: var(--text-tertiary);
 
   mat-icon {
     font-size: 48px;
@@ -205,7 +205,7 @@
       margin: 0 0 12px 0;
       font-size: 14px;
       font-weight: 500;
-      color: #666;
+      color: var(--text-secondary);
     }
 
     mat-chip-set {
@@ -219,7 +219,7 @@
 // Evaluation type description in select
 .eval-type-desc {
   font-size: 11px;
-  color: #999;
+  color: var(--text-tertiary);
   display: block;
   margin-top: 2px;
 }
@@ -254,7 +254,7 @@ mat-expansion-panel {
 }
 
 mat-tab-group {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 4px;
 }
 

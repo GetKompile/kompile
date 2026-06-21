@@ -58,6 +58,22 @@ export interface DiffAgent {
   totalLinesRemoved: number;
 }
 
+export interface DiffSession {
+  sessionId: string;
+  sessionFingerprint?: string;
+  entryCount: number;
+  agents: string[];
+  /** The agent that produced the most recent edit in the session. */
+  agent: string | null;
+  sources: string[];
+  projects: string[];
+  fileCount: number;
+  totalLinesAdded: number;
+  totalLinesRemoved: number;
+  firstTimestamp: string | null;
+  lastTimestamp: string | null;
+}
+
 export interface DiffIndexStats {
   totalEntries: number;
   indexing: boolean;
@@ -82,6 +98,10 @@ export interface DiffSearchParams {
   filePath?: string;
   contentQuery?: string;
   source?: string;
+  /** ISO instant or datetime-local lower bound (inclusive). */
+  since?: string;
+  /** ISO instant or datetime-local upper bound (inclusive). */
+  until?: string;
   limit?: number;
 }
 
@@ -99,6 +119,8 @@ export class DiffIndexService {
     if (params.filePath) httpParams = httpParams.set('filePath', params.filePath);
     if (params.contentQuery) httpParams = httpParams.set('contentQuery', params.contentQuery);
     if (params.source) httpParams = httpParams.set('source', params.source);
+    if (params.since) httpParams = httpParams.set('since', params.since);
+    if (params.until) httpParams = httpParams.set('until', params.until);
     if (params.limit) httpParams = httpParams.set('limit', params.limit.toString());
     return this.http.get<DiffIndexEntry[]>(`${this.apiUrl}/search`, { params: httpParams });
   }
@@ -113,6 +135,16 @@ export class DiffIndexService {
 
   listAgents(): Observable<DiffAgent[]> {
     return this.http.get<DiffAgent[]>(`${this.apiUrl}/agents`);
+  }
+
+  /** Per-session aggregates for browsing mined diffs across transcript sessions. */
+  listSessions(): Observable<DiffSession[]> {
+    return this.http.get<DiffSession[]>(`${this.apiUrl}/sessions`);
+  }
+
+  /** All diff entries for a single transcript session. */
+  sessionEntries(sessionId: string): Observable<DiffIndexEntry[]> {
+    return this.http.get<DiffIndexEntry[]>(`${this.apiUrl}/sessions/${encodeURIComponent(sessionId)}`);
   }
 
   getStats(): Observable<DiffIndexStats> {

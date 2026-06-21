@@ -15,8 +15,10 @@
 
     <modules>
         <module>kompile-knowledge-graph</module>
+        <module>kompile-graph-reasoning</module>
         <module>kompile-graph-algorithms</module>
         <module>kompile-graph-neo4j</module>
         <module>kompile-graph-change-tracking</module>
+        <module>kompile-reasoning-owl-bridge</module>
     </modules>
 </project>

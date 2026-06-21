@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.harness.PerformanceHarness;
 import ai.kompile.cli.main.chat.permission.PermissionService;
@@ -847,6 +848,15 @@ public class AgenticChatLoop {
                     if (sessionMetrics != null) {
                         sessionMetrics.recordToolCall(call.name, toolResult.isError(), toolDurationMs);
                     }
+
+                    // Index the tool call so kompile-managed local/headless agent sessions surface
+                    // in the MCP Hub tool-call catalog alongside passthrough + MCP server calls.
+                    ToolCallIndex.getInstance().record(
+                            toolContext.getSessionId(), call.name, argsStr,
+                            toolContext.getAgent() != null ? toolContext.getAgent().getName() : "kompile-agent",
+                            "local-chat", toolResult.isError(), toolDurationMs,
+                            toolContext.getWorkingDirectory() != null
+                                    ? toolContext.getWorkingDirectory().toString() : null);
 
                     // Track in conversation history (include file path for compaction)
                     conversationHistory.add(CompactionService.ConversationEntry.toolResult(

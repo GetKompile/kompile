@@ -1,0 +1,365 @@
+<div class="cdb">
+
+  <!-- ── Header: mode + view options ─────────────────────────────── -->
+  <div class="cdb-header">
+    <mat-button-toggle-group [value]="mode" class="mode-toggle">
+      <mat-button-toggle value="git" (click)="setMode('git')">
+        <mat-icon>commit</mat-icon> Git Commits
+      </mat-button-toggle>
+      <mat-button-toggle value="agent" (click)="setMode('agent')">
+        <mat-icon>smart_toy</mat-icon> Agent Changes
+      </mat-button-toggle>
+      <mat-button-toggle value="compare" (click)="setMode('compare')">
+        <mat-icon>compare_arrows</mat-icon> Compare
+      </mat-button-toggle>
+      <mat-button-toggle value="sessions" (click)="setMode('sessions')">
+        <mat-icon>history</mat-icon> Sessions
+      </mat-button-toggle>
+      <mat-button-toggle value="policy" (click)="setMode('policy')">
+        <mat-icon>policy</mat-icon> Violations
+      </mat-button-toggle>
+    </mat-button-toggle-group>
+
+    <span class="spacer"></span>
+
+    <div class="view-options" *ngIf="mode !== 'agent' && mode !== 'policy'">
+      <mat-button-toggle-group [(ngModel)]="viewMode" class="view-toggle">
+        <mat-button-toggle value="split" matTooltip="Side-by-side"><mat-icon>vertical_split</mat-icon></mat-button-toggle>
+        <mat-button-toggle value="unified" matTooltip="Unified"><mat-icon>notes</mat-icon></mat-button-toggle>
+      </mat-button-toggle-group>
+      <button mat-icon-button (click)="showLineNumbers = !showLineNumbers"
+              [matTooltip]="showLineNumbers ? 'Hide line numbers' : 'Show line numbers'"
+              [class.active]="showLineNumbers">
+        <mat-icon>format_list_numbered</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ GIT COMMITS MODE ═══════════════════════ -->
+  <div class="mode-panel" *ngIf="mode === 'git'">
+
+    <!-- Not a git repo -->
+    <div class="empty-state" *ngIf="gitStatusLoaded && gitStatus && !gitStatus.repo">
+      <mat-icon>source</mat-icon>
+      <p>The current project is not a git repository.</p>
+      <span class="muted">{{ gitStatus.root }}</span>
+    </div>
+
+    <ng-container *ngIf="gitStatus?.repo">
+      <!-- Filters -->
+      <div class="filter-bar">
+        <mat-form-field appearance="outline" class="ff-sm" *ngIf="branches.length">
+          <mat-label>Branch</mat-label>
+          <mat-select [(ngModel)]="branchFilter">
+            <mat-option [value]="''">Current ({{ gitStatus?.branch }})</mat-option>
+            <mat-option *ngFor="let b of branches" [value]="b">{{ b }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="ff-time">
+          <mat-label>Since</mat-label>
+          <input matInput type="datetime-local" [(ngModel)]="sinceFilter">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="ff-time">
+          <mat-label>Until</mat-label>
+          <input matInput type="datetime-local" [(ngModel)]="untilFilter">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="ff-md">
+          <mat-label>File path contains</mat-label>
+          <input matInput [(ngModel)]="pathFilter" (keyup.enter)="loadCommits()" placeholder="e.g. GitDiffService.java">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="ff-md">
+          <mat-label>Message contains</mat-label>
+          <input matInput [(ngModel)]="messageFilter" (keyup.enter)="loadCommits()" placeholder="e.g. diff browser">
+        </mat-form-field>
+
+        <button mat-flat-button color="primary" (click)="loadCommits()">
+          <mat-icon>search</mat-icon> Apply
+        </button>
+        <button mat-stroked-button (click)="clearGitFilters()" *ngIf="gitFilterCount > 0">
+          <mat-icon>clear</mat-icon> Clear ({{ gitFilterCount }})
+        </button>
+      </div>
+
+      <mat-progress-bar mode="indeterminate" *ngIf="loadingCommits"></mat-progress-bar>
+
+      <!-- Commit list + detail -->
+      <div class="git-body">
+        <div class="commit-list">
+          <div class="list-header">{{ commits.length }} commit{{ commits.length === 1 ? '' : 's' }}</div>
+          <div *ngIf="!loadingCommits && commits.length === 0" class="empty-state small">
+            <mat-icon>search_off</mat-icon><p>No commits match.</p>
+          </div>
+          <button class="commit-row" *ngFor="let c of commits"
+                  [class.selected]="selectedCommit?.hash === c.hash"
+                  (click)="selectCommit(c)">
+            <div class="commit-subject">{{ c.subject }}</div>
+            <div class="commit-meta">
+              <code class="hash">{{ c.shortHash }}</code>
+              <span class="author">{{ c.author }}</span>
+              <span class="date">{{ formatDate(c.dateIso) }}</span>
+            </div>
+            <div class="commit-stats">
+              <span class="files" matTooltip="files changed"><mat-icon>description</mat-icon>{{ c.filesChanged }}</span>
+              <span class="added">+{{ formatNumber(c.linesAdded) }}</span>
+              <span class="removed">−{{ formatNumber(c.linesRemoved) }}</span>
+            </div>
+          </button>
+        </div>
+
+        <div class="commit-detail">
+          <div *ngIf="!selectedCommit" class="empty-state small">
+            <mat-icon>touch_app</mat-icon><p>Select a commit to view its diff.</p>
+          </div>
+
+          <ng-container *ngIf="selectedCommit">
+            <div class="detail-head">
+              <div class="detail-subject">{{ selectedCommit.subject }}</div>
+              <div class="detail-meta">
+                <code class="hash">{{ selectedCommit.shortHash }}</code>
+                <span>{{ selectedCommit.author }}</span>
+                <span>{{ formatDate(selectedCommit.dateIso) }}</span>
+              </div>
+            </div>
+
+            <mat-progress-bar mode="indeterminate" *ngIf="loadingCommitDiff"></mat-progress-bar>
+
+            <div class="file-chips" *ngIf="commitFiles.length">
+              <button class="file-chip" *ngFor="let f of commitFiles"
+                      [class.selected]="selectedCommitFile?.path === f.path"
+                      (click)="selectCommitFile(f)"
+                      [matTooltip]="f.path">
+                <mat-icon [style.color]="changeTypeColor(f.changeType)">{{ changeTypeIcon(f.changeType) }}</mat-icon>
+                <span class="fname">{{ getFileName(f.path) }}</span>
+                <span class="chip-stats"><span class="added">+{{ f.linesAdded }}</span> <span class="removed">−{{ f.linesRemoved }}</span></span>
+              </button>
+            </div>
+
+            <div *ngIf="!loadingCommitDiff && commitFiles.length === 0" class="empty-state small">
+              <mat-icon>info</mat-icon><p>No textual file changes in this commit.</p>
+            </div>
+
+            <div class="diff-host" *ngIf="selectedCommitFile">
+              <div class="diff-path">
+                <mat-icon [style.color]="changeTypeColor(selectedCommitFile.changeType)">{{ changeTypeIcon(selectedCommitFile.changeType) }}</mat-icon>
+                <span>{{ selectedCommitFile.oldPath && selectedCommitFile.oldPath !== selectedCommitFile.path ? selectedCommitFile.oldPath + '  →  ' : '' }}{{ selectedCommitFile.path }}</span>
+              </div>
+              <app-diff-view
+                [unifiedDiff]="selectedCommitFile.unifiedDiff"
+                [filePath]="selectedCommitFile.path"
+                [viewMode]="viewMode"
+                [showLineNumbers]="showLineNumbers"
+                [emptyMessage]="selectedCommitFile.binary ? 'Binary file — no textual diff.' : 'No textual changes.'">
+              </app-diff-view>
+            </div>
+          </ng-container>
+        </div>
+      </div>
+    </ng-container>
+  </div>
+
+  <!-- ═══════════════════════ AGENT CHANGES MODE ═════════════════════ -->
+  <div class="mode-panel agent-panel" *ngIf="mode === 'agent'">
+    <app-diff-browser></app-diff-browser>
+  </div>
+
+  <!-- ═══════════════════════ COMPARE MODE ═══════════════════════════ -->
+  <div class="mode-panel" *ngIf="mode === 'compare'">
+    <div class="compare-intro">
+      <mat-icon>compare_arrows</mat-icon>
+      <span>Line up a file's <b>git-committed history</b> against the <b>agent changes</b> mined from transcript tool calls. Enter a file path (or name) and optional time window.</span>
+    </div>
+
+    <div class="filter-bar">
+      <mat-form-field appearance="outline" class="ff-lg">
+        <mat-label>File path or name</mat-label>
+        <input matInput [(ngModel)]="comparePath" (keyup.enter)="runCompare()" placeholder="e.g. GitDiffService.java or full path">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="ff-time">
+        <mat-label>Since</mat-label>
+        <input matInput type="datetime-local" [(ngModel)]="compareSince">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="ff-time">
+        <mat-label>Until</mat-label>
+        <input matInput type="datetime-local" [(ngModel)]="compareUntil">
+      </mat-form-field>
+      <button mat-flat-button color="primary" (click)="runCompare()" [disabled]="!comparePath.trim()">
+        <mat-icon>compare</mat-icon> Compare
+      </button>
+    </div>
+
+    <mat-progress-bar mode="indeterminate" *ngIf="loadingCompare"></mat-progress-bar>
+
+    <!-- Two timelines -->
+    <div class="compare-timelines" *ngIf="compareRan">
+      <div class="timeline">
+        <div class="timeline-head"><mat-icon>commit</mat-icon> Git history <span class="count">{{ gitHistory.length }}</span></div>
+        <div *ngIf="!loadingCompare && gitHistory.length === 0" class="empty-state small">
+          <mat-icon>search_off</mat-icon><p>No git history for this path.</p>
+        </div>
+        <button class="tl-row git" *ngFor="let d of gitHistory"
+                [class.selected]="selectedGitChange === d" (click)="selectGitChange(d)">
+          <div class="tl-top"><code class="hash">{{ d.commitShortHash }}</code><span class="date">{{ formatDate(d.dateIso) }}</span></div>
+          <div class="tl-subject">{{ d.subject }}</div>
+          <div class="tl-stats"><span class="author">{{ d.author }}</span><span class="added">+{{ d.linesAdded }}</span><span class="removed">−{{ d.linesRemoved }}</span></div>
+        </button>
+      </div>
+
+      <div class="timeline">
+        <div class="timeline-head"><mat-icon>smart_toy</mat-icon> Agent changes <span class="count">{{ agentChanges.length }}</span></div>
+        <div *ngIf="!loadingCompare && agentChanges.length === 0" class="empty-state small">
+          <mat-icon>search_off</mat-icon><p>No agent changes for this path.</p>
+        </div>
+        <button class="tl-row agent" *ngFor="let e of agentChanges"
+                [class.selected]="selectedAgentChange === e" (click)="selectAgentChange(e)">
+          <div class="tl-top">
+            <span class="agent-badge"><mat-icon>{{ getAgentIcon(e.agent) }}</mat-icon>{{ e.agent }}</span>
+            <span class="date">{{ formatDate(e.timestamp) }}</span>
+          </div>
+          <div class="tl-subject">{{ e.diffType }} · {{ e.source }}</div>
+          <div class="tl-stats"><span class="tool">{{ e.toolName }}</span><span class="added">+{{ e.linesAdded }}</span><span class="removed">−{{ e.linesRemoved }}</span></div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Selected diffs, side by side -->
+    <div class="compare-diffs" *ngIf="compareRan && (selectedGitChange || selectedAgentChange)">
+      <div class="compare-diff-col" *ngIf="selectedGitChange">
+        <div class="diff-path git-side"><mat-icon>commit</mat-icon> Git · {{ selectedGitChange.commitShortHash }} · {{ getFileName(selectedGitChange.path) }}</div>
+        <app-diff-view
+          [unifiedDiff]="selectedGitChange.unifiedDiff"
+          [filePath]="selectedGitChange.path"
+          [viewMode]="viewMode"
+          [showLineNumbers]="showLineNumbers"
+          [emptyMessage]="selectedGitChange.binary ? 'Binary file — no textual diff.' : 'No textual changes.'">
+        </app-diff-view>
+      </div>
+      <div class="compare-diff-col" *ngIf="selectedAgentChange">
+        <div class="diff-path agent-side"><mat-icon>smart_toy</mat-icon> {{ selectedAgentChange.agent }} · {{ selectedAgentChange.toolName }} · {{ getFileName(selectedAgentChange.filePath) }}</div>
+        <app-diff-view
+          [unifiedDiff]="selectedAgentChange.unifiedDiff"
+          [oldString]="selectedAgentChange.oldString"
+          [newString]="selectedAgentChange.newString"
+          [filePath]="selectedAgentChange.filePath"
+          [viewMode]="viewMode"
+          [showLineNumbers]="showLineNumbers">
+        </app-diff-view>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ SESSIONS MODE ══════════════════════════ -->
+  <div class="mode-panel" *ngIf="mode === 'sessions'">
+    <div class="compare-intro">
+      <mat-icon>history</mat-icon>
+      <span>Browse the diffs mined from transcript tool calls <b>grouped by session</b>, across all agents. Select a session to see what it changed.</span>
+    </div>
+
+    <div class="filter-bar">
+      <mat-form-field appearance="outline" class="ff-sm" *ngIf="sessionAgentOptions.length">
+        <mat-label>Agent</mat-label>
+        <mat-select [(ngModel)]="sessionAgentFilter">
+          <mat-option [value]="''">All agents</mat-option>
+          <mat-option *ngFor="let a of sessionAgentOptions" [value]="a">{{ a }}</mat-option>
+        </mat-select>
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="ff-md">
+        <mat-label>Filter by session / project</mat-label>
+        <input matInput [(ngModel)]="sessionQuery" placeholder="id or project path">
+      </mat-form-field>
+      <button mat-stroked-button (click)="loadSessions()">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+    </div>
+
+    <mat-progress-bar mode="indeterminate" *ngIf="loadingSessions"></mat-progress-bar>
+
+    <div class="git-body">
+      <div class="commit-list">
+        <div class="list-header">{{ filteredSessions.length }} session{{ filteredSessions.length === 1 ? '' : 's' }}</div>
+        <div *ngIf="!loadingSessions && filteredSessions.length === 0" class="empty-state small">
+          <mat-icon>history_toggle_off</mat-icon><p>No sessions with mined diffs.</p>
+        </div>
+        <button class="commit-row" *ngFor="let s of filteredSessions"
+                [class.selected]="selectedSession?.sessionId === s.sessionId"
+                (click)="selectSession(s)">
+          <div class="commit-subject">
+            <span class="agent-badge"><mat-icon>{{ getAgentIcon(s.agent || '') }}</mat-icon>{{ s.agent || 'unknown' }}</span>
+            <code class="hash">{{ shortSession(s.sessionId) }}</code>
+          </div>
+          <div class="commit-meta">
+            <span class="author" *ngIf="s.projects?.length" [matTooltip]="s.projects.join(', ')">{{ getFileName(s.projects[0]) || s.projects[0] }}</span>
+            <span class="date">{{ formatDate(s.lastTimestamp) }}</span>
+          </div>
+          <div class="commit-stats">
+            <span class="files" matTooltip="files changed"><mat-icon>description</mat-icon>{{ s.fileCount }}</span>
+            <span class="files" matTooltip="diffs"><mat-icon>difference</mat-icon>{{ s.entryCount }}</span>
+            <span class="added">+{{ formatNumber(s.totalLinesAdded) }}</span>
+            <span class="removed">−{{ formatNumber(s.totalLinesRemoved) }}</span>
+          </div>
+        </button>
+      </div>
+
+      <div class="commit-detail">
+        <div *ngIf="!selectedSession" class="empty-state small">
+          <mat-icon>touch_app</mat-icon><p>Select a session to view its diffs.</p>
+        </div>
+
+        <ng-container *ngIf="selectedSession">
+          <div class="detail-head">
+            <div class="detail-subject">
+              <span class="agent-badge"><mat-icon>{{ getAgentIcon(selectedSession.agent || '') }}</mat-icon>{{ selectedSession.agent || 'unknown' }}</span>
+              session
+            </div>
+            <div class="detail-meta">
+              <code class="hash">{{ selectedSession.sessionId }}</code>
+              <span>{{ selectedSession.fileCount }} files · {{ selectedSession.entryCount }} diffs</span>
+              <span>{{ formatDate(selectedSession.firstTimestamp) }} → {{ formatDate(selectedSession.lastTimestamp) }}</span>
+            </div>
+          </div>
+
+          <mat-progress-bar mode="indeterminate" *ngIf="loadingSessionDiffs"></mat-progress-bar>
+
+          <div class="file-chips" *ngIf="sessionDiffs.length">
+            <button class="file-chip" *ngFor="let d of sessionDiffs"
+                    [class.selected]="selectedSessionDiff === d"
+                    (click)="selectSessionDiff(d)"
+                    [matTooltip]="d.filePath + '  ·  ' + d.toolName">
+              <mat-icon>{{ d.diffType === 'write' ? 'note_add' : d.diffType === 'patch' ? 'difference' : 'edit' }}</mat-icon>
+              <span class="fname">{{ getFileName(d.filePath) }}</span>
+              <span class="chip-stats"><span class="added">+{{ d.linesAdded }}</span> <span class="removed">−{{ d.linesRemoved }}</span></span>
+            </button>
+          </div>
+
+          <div *ngIf="!loadingSessionDiffs && sessionDiffs.length === 0" class="empty-state small">
+            <mat-icon>info</mat-icon><p>No diffs recorded for this session.</p>
+          </div>
+
+          <div class="diff-host" *ngIf="selectedSessionDiff">
+            <div class="diff-path">
+              <mat-icon>{{ getAgentIcon(selectedSessionDiff.agent) }}</mat-icon>
+              <span>{{ selectedSessionDiff.filePath }}</span>
+            </div>
+            <app-diff-view
+              [unifiedDiff]="selectedSessionDiff.unifiedDiff"
+              [oldString]="selectedSessionDiff.oldString"
+              [newString]="selectedSessionDiff.newString"
+              [filePath]="selectedSessionDiff.filePath"
+              [viewMode]="viewMode"
+              [showLineNumbers]="showLineNumbers">
+            </app-diff-view>
+          </div>
+        </ng-container>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ VIOLATIONS / POLICY MODE ═══════════════ -->
+  <div class="mode-panel" *ngIf="mode === 'policy'">
+    <app-diff-policy-panel></app-diff-policy-panel>
+  </div>
+
+</div>

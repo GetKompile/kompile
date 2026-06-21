@@ -15,7 +15,7 @@
   align-items: flex-start;
   padding: 16px 24px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.12);
-  background: linear-gradient(135deg, #f5f5f5 0%, #ffffff 100%);
+  background: linear-gradient(135deg, var(--bg-surface-elevated) 0%, var(--bg-surface) 100%);
 }
 
 .header-left {
@@ -45,7 +45,7 @@
   margin: 0;
   font-size: 1.25rem;
   font-weight: 500;
-  color: #333;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -56,7 +56,7 @@
   align-items: center;
   gap: 12px;
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .extension-badge {
@@ -69,11 +69,11 @@
 }
 
 .file-size {
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .view-mode-label {
-  color: #888;
+  color: var(--text-tertiary);
   font-style: italic;
 }
 
@@ -99,7 +99,7 @@
   justify-content: center;
   padding: 48px;
   gap: 16px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Error State */
@@ -120,7 +120,7 @@
 }
 
 .error-container p {
-  color: #666;
+  color: var(--text-secondary);
   max-width: 400px;
 }
 
@@ -136,10 +136,10 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px 16px;
-  background: #f5f5f5;
-  border-bottom: 1px solid #e0e0e0;
+  background: var(--bg-surface-elevated);
+  border-bottom: 1px solid var(--border-color);
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .truncated-warning {
@@ -161,7 +161,7 @@
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
-  background: #fafafa;
+  background: var(--bg-body);
   overflow: auto;
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -171,7 +171,7 @@
 
 .text-content code {
   font-family: inherit;
-  color: #333;
+  color: var(--text-primary);
 }
 
 /* Image Viewer */
@@ -180,7 +180,7 @@
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: #f0f0f0;
+  background: var(--bg-surface-elevated);
   min-height: 300px;
 }
 
@@ -221,17 +221,17 @@
   font-size: 64px;
   width: 64px;
   height: 64px;
-  color: #9e9e9e;
+  color: var(--text-tertiary);
 }
 
 .download-only-container h3 {
   margin: 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .download-only-container p {
   margin: 0;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .markdown-conversion-status {
@@ -305,21 +305,21 @@
 
 .info-label {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .info-value {
   font-size: 0.9rem;
-  color: #333;
+  color: var(--text-primary);
   word-break: break-all;
 }
 
 .path-value {
   font-family: monospace;
   font-size: 0.8rem;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 4px 8px;
   border-radius: 4px;
 }
@@ -327,7 +327,7 @@
 .checksum-value {
   font-family: monospace;
   font-size: 0.75rem;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 4px 8px;
   border-radius: 4px;
   word-break: break-all;

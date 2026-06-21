@@ -132,6 +132,141 @@ class MatrixGraphAlgorithmsTest {
         pr2.values().forEach(v -> assertTrue(v >= 0));
     }
 
+    // ─── Personalized PageRank ────────────────────────────────────────────────
+
+    @Test
+    void personalizedPageRankOnEmptyGraphReturnsEmptyMap() {
+        Map<String, Double> ppr = MatrixGraphAlgorithms.personalizedPageRank(graph, Map.of("x", 1.0));
+        assertTrue(ppr.isEmpty());
+    }
+
+    @Test
+    void personalizedPageRankWithNoValidSeedsReturnsEmptyMap() {
+        addLinearChain("a", "b", "c");
+        // Seeds reference nodes that do not exist in the graph → no positive seed mass.
+        Map<String, Double> ppr = MatrixGraphAlgorithms.personalizedPageRank(graph, Map.of("zzz", 1.0));
+        assertTrue(ppr.isEmpty());
+    }
+
+    @Test
+    void personalizedPageRankConcentratesMassNearSeed() {
+        // Chain a→b→c→d, plus an isolated node e unreachable from the seed.
+        addLinearChain("a", "b", "c", "d");
+        graph.addNode(node("e"));
+
+        Map<String, Double> ppr = MatrixGraphAlgorithms.personalizedPageRank(graph, Map.of("a", 1.0));
+
+        // Mass decreases with distance from the seed along the chain.
+        assertTrue(ppr.get("a") > ppr.get("b"), "seed should outrank its 1-hop neighbor");
+        assertTrue(ppr.get("b") > ppr.get("c"), "closer nodes should outrank farther ones");
+        assertTrue(ppr.get("c") > ppr.get("d"), "closer nodes should outrank farther ones");
+        // The isolated node, unreachable from the seed, gets essentially no mass — the key
+        // difference from global PageRank, where a dangling node would receive a uniform share.
+        assertTrue(ppr.get("e") < 1e-4, "node unreachable from the seed should get ~no PPR mass");
+        assertTrue(ppr.get("e") < ppr.get("d"));
+    }
+
+    @Test
+    void personalizedPageRankWithUniformSeedsApproximatesStandardPageRank() {
+        addLinearChain("a", "b", "c");
+        Map<String, Double> standard = MatrixGraphAlgorithms.pageRank(graph);
+        // Equal weight on every node == the uniform restart distribution == standard PageRank.
+        Map<String, Double> ppr = MatrixGraphAlgorithms.personalizedPageRank(
+                graph, Map.of("a", 1.0, "b", 1.0, "c", 1.0));
+
+        assertEquals(standard.size(), ppr.size());
+        for (String id : standard.keySet()) {
+            assertEquals(standard.get(id), ppr.get(id), 1e-3,
+                    "uniform-seed PPR should match standard PageRank for node " + id);
+        }
+    }
+
+    @Test
+    void personalizedPageRankSumsToApproximatelyOne() {
+        addLinearChain("a", "b", "c");
+        Map<String, Double> ppr = MatrixGraphAlgorithms.personalizedPageRank(graph, Map.of("a", 1.0));
+        double sum = ppr.values().stream().mapToDouble(Double::doubleValue).sum();
+        assertEquals(1.0, sum, 0.01, "PPR values should sum to approximately 1");
+    }
+
+    @Test
+    void sparsePersonalizedPageRankMatchesDense() {
+        addLinearChain("a", "b", "c", "d");
+        graph.addNode(node("e")); // isolated node
+
+        Map<String, Double> dense = MatrixGraphAlgorithms.personalizedPageRank(graph, Map.of("a", 1.0));
+        Map<String, Double> sparse = MatrixGraphAlgorithms.personalizedPageRankSparse(
+                graph, MatrixGraphAlgorithms.nodeIdsOf(graph), Map.of("a", 1.0), 0.85, 1e-6, 100);
+
+        assertEquals(dense.keySet(), sparse.keySet());
+        for (String id : dense.keySet()) {
+            assertEquals(dense.get(id), sparse.get(id), 1e-4, "sparse PPR should match dense for node " + id);
+        }
+    }
+
+    @Test
+    void personalizedPageRankUsesSparsePathForLargeGraphsAndSumsToOne() {
+        // > DENSE_PPR_NODE_CAP nodes → dispatches to the sparse implementation (no dense [n x n] matrix).
+        int n = MatrixGraphAlgorithms.DENSE_PPR_NODE_CAP + 100;
+        for (int i = 0; i < n; i++) {
+            graph.addNode(node("n" + i));
+        }
+        for (int i = 0; i < n - 1; i++) {
+            graph.addEdge("n" + i, "n" + (i + 1), 1.0, "RELATED_TO", false);
+        }
+
+        Map<String, Double> ppr = MatrixGraphAlgorithms.personalizedPageRank(graph, Map.of("n0", 1.0));
+
+        assertEquals(n, ppr.size());
+        double sum = ppr.values().stream().mapToDouble(Double::doubleValue).sum();
+        assertEquals(1.0, sum, 0.01, "PPR values should sum to approximately 1");
+        assertTrue(ppr.get("n0") > ppr.get("n100"), "the seed should outrank far-away nodes");
+    }
+
+    // ─── Path finding (PathRAG) ────────────────────────────────────────────────
+
+    @Test
+    void findPathsReturnsSinglePathAlongChain() {
+        addLinearChain("a", "b", "c", "d");
+        List<List<String>> paths = MatrixGraphAlgorithms.findPaths(graph, "a", "d", 5, 10);
+        assertEquals(1, paths.size());
+        assertEquals(List.of("a", "b", "c", "d"), paths.get(0));
+    }
+
+    @Test
+    void findPathsRespectsHopLimit() {
+        addLinearChain("a", "b", "c", "d");
+        // a→d needs 3 hops; cap at 2 → no path.
+        assertTrue(MatrixGraphAlgorithms.findPaths(graph, "a", "d", 2, 10).isEmpty());
+    }
+
+    @Test
+    void findPathsFindsMultipleDistinctPaths() {
+        // Diamond: a→b→d and a→c→d
+        graph.addNode(node("a"));
+        graph.addNode(node("b"));
+        graph.addNode(node("c"));
+        graph.addNode(node("d"));
+        graph.addEdge("a", "b", 1.0, "RELATED_TO", false);
+        graph.addEdge("a", "c", 1.0, "RELATED_TO", false);
+        graph.addEdge("b", "d", 1.0, "RELATED_TO", false);
+        graph.addEdge("c", "d", 1.0, "RELATED_TO", false);
+
+        List<List<String>> paths = MatrixGraphAlgorithms.findPaths(graph, "a", "d", 4, 10);
+        assertEquals(2, paths.size());
+        Set<String> rendered = paths.stream()
+                .map(p -> String.join(">", p))
+                .collect(java.util.stream.Collectors.toSet());
+        assertTrue(rendered.contains("a>b>d"));
+        assertTrue(rendered.contains("a>c>d"));
+    }
+
+    @Test
+    void findPathsSameSourceTargetReturnsEmpty() {
+        addLinearChain("a", "b");
+        assertTrue(MatrixGraphAlgorithms.findPaths(graph, "a", "a", 5, 10).isEmpty());
+    }
+
     // ─── Connected Components ─────────────────────────────────────────────────
 
     @Test

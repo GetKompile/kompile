@@ -27,8 +27,15 @@ public final class GraphMLExporter {
         sb.append("  <key id=\"title\" for=\"node\" attr.name=\"title\" attr.type=\"string\"/>\n");
         sb.append("  <key id=\"description\" for=\"node\" attr.name=\"description\" attr.type=\"string\"/>\n");
         sb.append("  <key id=\"nodeType\" for=\"node\" attr.name=\"nodeType\" attr.type=\"string\"/>\n");
+        sb.append("  <key id=\"confidence\" for=\"node\" attr.name=\"confidence\" attr.type=\"double\"/>\n");
+        sb.append("  <key id=\"factSheetId\" for=\"node\" attr.name=\"factSheetId\" attr.type=\"string\"/>\n");
+        sb.append("  <key id=\"namedGraphId\" for=\"node\" attr.name=\"namedGraphId\" attr.type=\"string\"/>\n");
+        sb.append("  <key id=\"occurredAt\" for=\"node\" attr.name=\"occurredAt\" attr.type=\"string\"/>\n");
         sb.append("  <key id=\"weight\" for=\"edge\" attr.name=\"weight\" attr.type=\"double\"/>\n");
         sb.append("  <key id=\"edgeType\" for=\"edge\" attr.name=\"edgeType\" attr.type=\"string\"/>\n");
+        sb.append("  <key id=\"edgeConfidence\" for=\"edge\" attr.name=\"confidence\" attr.type=\"double\"/>\n");
+        sb.append("  <key id=\"relationType\" for=\"edge\" attr.name=\"relationType\" attr.type=\"string\"/>\n");
+        sb.append("  <key id=\"provenance\" for=\"edge\" attr.name=\"provenance\" attr.type=\"string\"/>\n");
         sb.append("  <graph id=\"G\" edgedefault=\"directed\">\n");
         for (PortableNode n : graph.nodes()) {
             sb.append("    <node id=\"").append(escape(n.externalId())).append("\">\n");
@@ -40,6 +47,18 @@ public final class GraphMLExporter {
             }
             if (n.nodeType() != null) {
                 sb.append("      <data key=\"nodeType\">").append(escape(n.nodeType())).append("</data>\n");
+            }
+            if (n.confidence() != null) {
+                sb.append("      <data key=\"confidence\">").append(n.confidence()).append("</data>\n");
+            }
+            if (n.factSheetId() != null) {
+                sb.append("      <data key=\"factSheetId\">").append(n.factSheetId()).append("</data>\n");
+            }
+            if (n.namedGraphId() != null) {
+                sb.append("      <data key=\"namedGraphId\">").append(escape(n.namedGraphId())).append("</data>\n");
+            }
+            if (n.occurredAt() != null) {
+                sb.append("      <data key=\"occurredAt\">").append(escape(n.occurredAt())).append("</data>\n");
             }
             sb.append("    </node>\n");
         }
@@ -53,6 +72,15 @@ public final class GraphMLExporter {
             }
             if (e.edgeType() != null) {
                 sb.append("      <data key=\"edgeType\">").append(escape(e.edgeType())).append("</data>\n");
+            }
+            if (e.confidence() != null) {
+                sb.append("      <data key=\"edgeConfidence\">").append(e.confidence()).append("</data>\n");
+            }
+            if (e.relationType() != null) {
+                sb.append("      <data key=\"relationType\">").append(escape(e.relationType())).append("</data>\n");
+            }
+            if (e.provenance() != null) {
+                sb.append("      <data key=\"provenance\">").append(escape(e.provenance())).append("</data>\n");
             }
             sb.append("    </edge>\n");
         }

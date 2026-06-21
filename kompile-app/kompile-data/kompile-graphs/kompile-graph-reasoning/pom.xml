@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-graphs</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-graph-reasoning</artifactId>
+    <name>Kompile Graph Reasoning</name>
+    <description>
+        A generic, infrastructure-free reasoning library over a unified graph of entities and
+        relations. Provides probabilistic and logical inference engines — Probabilistic Soft Logic
+        (HL-MRF), Bayesian networks (exact variable elimination, noisy-OR), Multi-Entity Bayesian
+        Networks (MEBN / MTheory + SSBN), and causal attribution — plus an explanation SPI.
+
+        The library has NO dependency on Spring, JPA, the knowledge-graph store, or app-core: it
+        operates purely on the generic ai.kompile.graph.reasoning.model abstraction. The JPA-backed
+        store, the vector/matrix store, the Spring services, and process-mining are all CLIENTS that
+        adapt their own world onto the unified graph and call into these engines.
+    </description>
+
+    <dependencies>
+        <!-- ND4J for vectorized, GPU-capable HL-MRF tensor inference (TensorHlMrfInference).
+             API only: the runtime backend (CPU/CUDA) is supplied by the host application. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-api</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+
+        <!-- Jackson annotations for the result/value types (serialization is the client's choice;
+             only the annotations are needed at compile time, not the full databind runtime). -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ND4J native CPU backend so the tensor-based PSL inference tests can execute ops -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-native</artifactId>
+            <version>${nd4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-native</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}</classifier>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

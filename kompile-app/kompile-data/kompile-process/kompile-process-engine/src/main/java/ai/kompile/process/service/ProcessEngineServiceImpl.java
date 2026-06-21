@@ -148,8 +148,9 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     /** Optional dispatcher for TOOL_CALL and HTTP_CALL steps. Null if not wired. */
     private StepExecutionDispatcher stepExecutionDispatcher;
 
-    /** Optional callback for writing execution results to the knowledge graph. */
-    private ProcessGraphCallback processGraphCallback;
+    /** Optional callbacks for writing execution results to the knowledge graph. Multiple
+     * {@link ProcessGraphCallback} beans (e.g. KG writeback + step-event observation) coexist. */
+    private java.util.List<ProcessGraphCallback> processGraphCallbacks = java.util.Collections.emptyList();
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setStepExecutionDispatcher(StepExecutionDispatcher dispatcher) {
@@ -160,11 +161,19 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
-    public void setProcessGraphCallback(ProcessGraphCallback callback) {
-        this.processGraphCallback = callback;
-        if (callback != null) {
-            log.info("ProcessGraphCallback wired — execution results will be written to KG");
+    public void setProcessGraphCallbacks(java.util.List<ProcessGraphCallback> callbacks) {
+        this.processGraphCallbacks = (callbacks == null)
+                ? java.util.Collections.emptyList() : java.util.List.copyOf(callbacks);
+        if (!this.processGraphCallbacks.isEmpty()) {
+            log.info("ProcessGraphCallback wired ({} callback(s)) — execution results will be written to KG",
+                    this.processGraphCallbacks.size());
         }
+    }
+
+    /** Backward-compatible single-callback setter (used by tests / programmatic wiring). */
+    public void setProcessGraphCallback(ProcessGraphCallback callback) {
+        this.processGraphCallbacks = (callback == null)
+                ? java.util.Collections.emptyList() : java.util.List.of(callback);
     }
 
     public ProcessEngineServiceImpl() {
@@ -503,9 +512,9 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         persistRun(cancelled);
 
         // Fire graph callback for cancelled run
-        if (processGraphCallback != null) {
+        if (!processGraphCallbacks.isEmpty()) {
             try {
-                processGraphCallback.onRunCompleted(cancelled);
+                for (ProcessGraphCallback cb : processGraphCallbacks) cb.onRunCompleted(cancelled);
             } catch (Exception e) {
                 log.debug("Graph callback onRunCompleted failed for cancelled run {}: {}",
                         cancelled.getId(), e.getMessage());
@@ -1593,6 +1602,8 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                     break;
                 }
 
+                // Deprecated DROOLS_* types forward transparently to the native FOL/PSL executor
+                // via the @Deprecated bridge in StepExecutionDispatcher (no KIE at runtime).
                 case DROOLS_RULE:
                 case DROOLS_INFERENCE: {
                     if (stepExecutionDispatcher == null) {
@@ -1622,6 +1633,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                     String inputHash = sha256(facts);
 
                     try {
+                        @SuppressWarnings("deprecation")
                         Map<String, Object> droolsOutputs = stepExecutionDispatcher.executeDroolsRules(
                                 stepDef.getDroolsRuleDrl(), facts, stepDef.getDroolsAgendaGroup(),
                                 stepDef.getDroolsMaxFirings(), stepType == StepType.DROOLS_INFERENCE);
@@ -1632,7 +1644,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                                 .stepId(se.getStepId()).stepName(se.getStepName())
                                 .status(StepExecutionStatus.COMPLETED)
                                 .startedAt(now).completedAt(Instant.now())
-                                .executedBy("drools:" + stepType.name().toLowerCase())
+                                .executedBy("native:" + stepType.name().toLowerCase())
                                 .inputs(facts).outputs(outputs)
                                 .inputHash(inputHash).outputHash(sha256(outputs))
                                 .graphNodeIds(stepDef.getGraphNodeIds())
@@ -1683,6 +1695,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                     String inputHash = sha256(facts);
 
                     try {
+                        @SuppressWarnings("deprecation")
                         Map<String, Object> tableOutputs = stepExecutionDispatcher.executeDroolsDecisionTable(
                                 stepDef.getDroolsDecisionTable(), stepDef.getDroolsInputType(),
                                 facts, stepDef.getDroolsWorksheetName());
@@ -1693,7 +1706,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                                 .stepId(se.getStepId()).stepName(se.getStepName())
                                 .status(StepExecutionStatus.COMPLETED)
                                 .startedAt(now).completedAt(Instant.now())
-                                .executedBy("drools:decision-table")
+                                .executedBy("native:tabular_rule")
                                 .inputs(facts).outputs(outputs)
                                 .inputHash(inputHash).outputHash(sha256(outputs))
                                 .graphNodeIds(stepDef.getGraphNodeIds())
@@ -1706,7 +1719,138 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                                 .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(Instant.now())
                                 .inputs(facts).inputHash(inputHash)
                                 .graphNodeIds(stepDef.getGraphNodeIds())
-                                .error("Drools decision table execution failed: " + e.getMessage())
+                                .error("DROOLS_DECISION_TABLE (native) execution failed: " + e.getMessage())
+                                .build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
+                    }
+                    controlResults.addAll(evaluateStepControls(stepDef, run.getId(), runData));
+                    break;
+                }
+
+                // ─── Native FOL/PSL/Tabular — parallel to DROOLS_* (Step 2) ────────
+                case FOL_RULE:
+                case PSL_RULE: {
+                    if (stepExecutionDispatcher == null) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(now)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error(stepType + " step requires StepExecutionDispatcher but none is wired")
+                                .build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
+                    }
+                    if (stepDef.getDroolsRuleDrl() == null || stepDef.getDroolsRuleDrl().isBlank()) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(now)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error(stepType + " step requires droolsRuleDrl (PSL rule script) but none is provided")
+                                .build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
+                    }
+
+                    Map<String, Object> folFacts = enrichDroolsFacts(stepDef, extractInputsOrAllRunData(stepDef, runData), runData);
+                    String folInputHash = sha256(folFacts);
+
+                    try {
+                        Map<String, Object> folOutputs;
+                        if (stepType == StepType.PSL_RULE) {
+                            folOutputs = stepExecutionDispatcher.executePslRules(
+                                    stepDef.getDroolsRuleDrl(), folFacts);
+                        } else {
+                            folOutputs = stepExecutionDispatcher.executeFolRules(
+                                    stepDef.getDroolsRuleDrl(), folFacts,
+                                    stepDef.getDroolsAgendaGroup(), stepDef.getDroolsMaxFirings());
+                        }
+                        Map<String, Object> outputs = applyDroolsOutputs(stepDef, folOutputs);
+                        runData.putAll(outputs);
+
+                        StepExecution completed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.COMPLETED)
+                                .startedAt(now).completedAt(Instant.now())
+                                .executedBy("native:" + stepType.name().toLowerCase())
+                                .inputs(folFacts).outputs(outputs)
+                                .inputHash(folInputHash).outputHash(sha256(outputs))
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .build();
+                        stepExecutions.set(i, completed);
+                        completedStepIds.add(se.getStepId());
+                    } catch (Exception e) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(Instant.now())
+                                .inputs(folFacts).inputHash(folInputHash)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error(stepType + " execution failed: " + e.getMessage())
+                                .build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
+                    }
+                    controlResults.addAll(evaluateStepControls(stepDef, run.getId(), runData));
+                    break;
+                }
+
+                case TABULAR_RULE: {
+                    if (stepExecutionDispatcher == null) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(now)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error("TABULAR_RULE step requires StepExecutionDispatcher but none is wired")
+                                .build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
+                    }
+                    if (stepDef.getDroolsDecisionTable() == null || stepDef.getDroolsDecisionTable().isBlank()) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(now)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error("TABULAR_RULE step requires droolsDecisionTable (CSV) but none is provided")
+                                .build();
+                        stepExecutions.set(i, failed);
+                        runStatus = RunStatus.FAILED;
+                        return buildRun(run, stepExecutions, pendingApprovals, controlResults, runData, runStatus);
+                    }
+
+                    Map<String, Object> tabFacts = enrichDroolsFacts(stepDef, extractInputsOrAllRunData(stepDef, runData), runData);
+                    String tabInputHash = sha256(tabFacts);
+
+                    try {
+                        Double tabWeight = stepDef.getDroolsInputType() != null ? null : null; // future: dedicated field
+                        Map<String, Object> tabOutputs = stepExecutionDispatcher.executeTabularRule(
+                                stepDef.getDroolsDecisionTable(), stepDef.getDroolsInputType(),
+                                tabWeight, tabFacts);
+                        Map<String, Object> outputs = applyDroolsOutputs(stepDef, tabOutputs);
+                        runData.putAll(outputs);
+
+                        StepExecution completed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.COMPLETED)
+                                .startedAt(now).completedAt(Instant.now())
+                                .executedBy("native:tabular-rule")
+                                .inputs(tabFacts).outputs(outputs)
+                                .inputHash(tabInputHash).outputHash(sha256(outputs))
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .build();
+                        stepExecutions.set(i, completed);
+                        completedStepIds.add(se.getStepId());
+                    } catch (Exception e) {
+                        StepExecution failed = StepExecution.builder()
+                                .stepId(se.getStepId()).stepName(se.getStepName())
+                                .status(StepExecutionStatus.FAILED).startedAt(now).completedAt(Instant.now())
+                                .inputs(tabFacts).inputHash(tabInputHash)
+                                .graphNodeIds(stepDef.getGraphNodeIds())
+                                .error("TABULAR_RULE execution failed: " + e.getMessage())
                                 .build();
                         stepExecutions.set(i, failed);
                         runStatus = RunStatus.FAILED;
@@ -1930,7 +2074,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                 .build();
 
         // Fire graph callbacks for newly completed/failed steps
-        if (processGraphCallback != null) {
+        if (!processGraphCallbacks.isEmpty()) {
             // Build a set of previously-terminal step IDs to avoid re-notifying
             Set<String> previouslyTerminal = new HashSet<>();
             if (original.getStepExecutions() != null) {
@@ -1946,7 +2090,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                         || se.getStatus() == StepExecutionStatus.FAILED)
                         && !previouslyTerminal.contains(se.getStepId())) {
                     try {
-                        processGraphCallback.onStepCompleted(run, se);
+                        for (ProcessGraphCallback cb : processGraphCallbacks) cb.onStepCompleted(run, se);
                     } catch (Exception e) {
                         log.debug("Graph callback onStepCompleted failed for step {}: {}",
                                 se.getStepId(), e.getMessage());
@@ -1958,7 +2102,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
             if (status == RunStatus.COMPLETED || status == RunStatus.FAILED
                     || status == RunStatus.CANCELLED) {
                 try {
-                    processGraphCallback.onRunCompleted(run);
+                    for (ProcessGraphCallback cb : processGraphCallbacks) cb.onRunCompleted(run);
                 } catch (Exception e) {
                     log.debug("Graph callback onRunCompleted failed for run {}: {}",
                             run.getId(), e.getMessage());

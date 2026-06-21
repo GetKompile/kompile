@@ -33,7 +33,7 @@
       gap: 8px;
       margin: 0 0 8px 0;
       font-size: 1.25rem;
-      color: #374151;
+      color: var(--text-primary);
 
       mat-icon {
         color: #3b82f6;
@@ -42,7 +42,7 @@
 
     p {
       margin: 0;
-      color: #6b7280;
+      color: var(--text-secondary);
       font-size: 0.9rem;
     }
   }
@@ -56,7 +56,7 @@
   justify-content: center;
   gap: 16px;
   padding: 48px;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 // Messages
@@ -136,20 +136,20 @@ mat-card {
     flex-direction: column;
     gap: 4px;
     padding: 12px;
-    background: #f9fafb;
+    background: var(--bg-body);
     border-radius: 8px;
 
     .status-label {
       font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      color: #6b7280;
+      color: var(--text-secondary);
     }
 
     .status-value {
       font-size: 1.25rem;
       font-weight: 600;
-      color: #111827;
+      color: var(--text-primary);
     }
   }
 
@@ -175,14 +175,14 @@ mat-card {
     justify-content: space-between;
     align-items: center;
     padding: 16px 0;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--border-color);
 
     &:last-child {
       border-bottom: none;
     }
 
     &.toggle-row {
-      background: #f9fafb;
+      background: var(--bg-body);
       margin: 0 -16px;
       padding: 16px;
       border-radius: 8px;
@@ -195,14 +195,14 @@ mat-card {
       .config-label {
         display: block;
         font-weight: 500;
-        color: #374151;
+        color: var(--text-primary);
         margin-bottom: 4px;
       }
 
       .config-description {
         display: block;
         font-size: 0.875rem;
-        color: #6b7280;
+        color: var(--text-secondary);
       }
     }
 
@@ -230,14 +230,14 @@ mat-card {
     justify-content: space-between;
     align-items: center;
     padding: 16px 0;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--border-color);
 
     &:last-child {
       border-bottom: none;
     }
 
     &.toggle-row {
-      background: #f9fafb;
+      background: var(--bg-body);
       margin: 0 -16px;
       padding: 16px;
       border-radius: 8px;
@@ -250,14 +250,14 @@ mat-card {
       .config-label {
         display: block;
         font-weight: 500;
-        color: #374151;
+        color: var(--text-primary);
         margin-bottom: 4px;
       }
 
       .config-description {
         display: block;
         font-size: 0.875rem;
-        color: #6b7280;
+        color: var(--text-secondary);
       }
     }
 
@@ -299,7 +299,7 @@ mat-card {
     align-items: center;
     gap: 12px;
     padding: 32px;
-    color: #9ca3af;
+    color: var(--text-tertiary);
 
     mat-icon {
       font-size: 48px;
@@ -319,12 +319,12 @@ mat-card {
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    background: #f9fafb;
+    background: var(--bg-body);
     border-radius: 8px;
     transition: background 0.2s;
 
     &:hover {
-      background: #f3f4f6;
+      background: var(--bg-surface-elevated);
     }
 
     .archive-info {
@@ -343,13 +343,13 @@ mat-card {
 
         .archive-name {
           font-weight: 500;
-          color: #374151;
+          color: var(--text-primary);
           font-size: 0.9rem;
         }
 
         .archive-meta {
           font-size: 0.8rem;
-          color: #6b7280;
+          color: var(--text-secondary);
         }
       }
     }
@@ -367,7 +367,7 @@ mat-card {
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: #f9fafb;
+  background: var(--bg-body);
   border-radius: 8px;
   margin-bottom: 16px;
 
@@ -378,13 +378,13 @@ mat-card {
   .archive-name {
     display: block;
     font-weight: 500;
-    color: #374151;
+    color: var(--text-primary);
   }
 
   .archive-meta {
     display: block;
     font-size: 0.8rem;
-    color: #6b7280;
+    color: var(--text-secondary);
   }
 }
 
@@ -402,17 +402,17 @@ mat-card {
     align-items: flex-start;
     gap: 12px;
     padding: 16px;
-    background: #f9fafb;
+    background: var(--bg-body);
     border-radius: 8px;
 
     mat-icon {
-      color: #6b7280;
+      color: var(--text-secondary);
     }
 
     p {
       margin: 0;
       font-size: 0.9rem;
-      color: #6b7280;
+      color: var(--text-secondary);
     }
   }
 }
@@ -432,7 +432,7 @@ mat-card {
 }
 
 .dialog {
-  background: white;
+  background: var(--bg-surface);
   border-radius: 12px;
   padding: 24px;
   max-width: 400px;
@@ -452,7 +452,7 @@ mat-card {
   }
 
   p {
-    color: #6b7280;
+    color: var(--text-secondary);
     margin-bottom: 16px;
   }
 
@@ -472,7 +472,7 @@ mat-card {
 
     .hint {
       font-size: 0.8rem;
-      color: #9ca3af;
+      color: var(--text-tertiary);
     }
   }
 

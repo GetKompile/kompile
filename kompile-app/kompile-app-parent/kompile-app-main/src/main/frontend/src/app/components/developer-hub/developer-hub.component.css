@@ -95,7 +95,7 @@
 }
 
 .inner-tabs {
-  background: #fafafa;
+  background: var(--bg-body);
   border-radius: 8px;
 }
 
@@ -104,7 +104,7 @@
 }
 
 ::ng-deep .inner-tabs .mat-mdc-tab-header {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px 8px 0 0;
 }
 
@@ -136,12 +136,12 @@
 
 .debug-header h2 {
   margin: 8px 0;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .debug-header p {
   margin: 0;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 ::ng-deep .developer-hub-container .mat-mdc-tab-group {

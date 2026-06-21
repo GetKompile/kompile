@@ -9,13 +9,13 @@
  */
 package ai.kompile.event.attribution.service;
 
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNetwork;
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNode;
-import ai.kompile.event.attribution.algorithm.bayesian.NoisyOrCpt;
-import ai.kompile.event.attribution.algorithm.bayesian.VariableElimination;
-import ai.kompile.event.attribution.domain.BayesianInferenceResult;
-import ai.kompile.event.attribution.domain.InferenceStep;
-import ai.kompile.event.attribution.domain.MpeResult;
+import ai.kompile.graph.reasoning.bayesian.BayesianNetwork;
+import ai.kompile.graph.reasoning.bayesian.BayesianNode;
+import ai.kompile.graph.reasoning.bayesian.NoisyOrCpt;
+import ai.kompile.graph.reasoning.bayesian.VariableElimination;
+import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
+import ai.kompile.graph.reasoning.domain.InferenceStep;
+import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;

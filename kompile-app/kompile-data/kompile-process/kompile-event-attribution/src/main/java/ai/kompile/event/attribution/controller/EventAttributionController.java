@@ -9,7 +9,7 @@
  */
 package ai.kompile.event.attribution.controller;
 
-import ai.kompile.event.attribution.domain.*;
+import ai.kompile.graph.reasoning.domain.*;
 import ai.kompile.event.attribution.service.EventAttributionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;

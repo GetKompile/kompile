@@ -92,12 +92,12 @@
 }
 
 .muted {
-  color: #777;
+  color: var(--text-tertiary);
   font-size: 0.85em;
 }
 
 .session-id {
-  color: #888;
+  color: var(--text-tertiary);
   font-family: monospace;
   font-size: 0.85em;
 }
@@ -124,7 +124,7 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
 .empty-state {
   text-align: center;
   padding: 48px 16px;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .empty-state mat-icon {
@@ -140,7 +140,7 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
 }
 
 .empty-state code {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 0.9em;
@@ -148,7 +148,7 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
 
 /* Session detail */
 .session-detail {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
 }
@@ -194,7 +194,7 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
   gap: 24px;
   margin-top: 8px;
   font-size: 0.9em;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 /* Rules */
@@ -204,7 +204,7 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
   white-space: pre-wrap;
   font-family: monospace;
   font-size: 0.9em;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 12px;
   border-radius: 4px;
   margin: 0;
@@ -218,7 +218,7 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
 .violations-section h4 { margin: 0 0 8px; }
 
 .violation-card {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 10px 14px;
   margin-bottom: 8px;
@@ -232,7 +232,7 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
 }
 
 .violation-type { font-weight: 600; flex: 1; }
-.violation-time { color: #888; font-size: 0.85em; }
+.violation-time { color: var(--text-tertiary); font-size: 0.85em; }
 .violation-score { font-weight: 500; }
 
 .violation-body {
@@ -250,7 +250,7 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
   margin-top: 4px;
   padding-left: 32px;
   font-size: 0.85em;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .severity-critical { color: #b71c1c; }
@@ -268,9 +268,9 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
 .event-stream {
   max-height: 300px;
   overflow-y: auto;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  background: #fafafa;
+  background: var(--bg-body);
   font-family: monospace;
   font-size: 0.85em;
 }
@@ -279,14 +279,14 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
   display: flex;
   gap: 8px;
   padding: 4px 10px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .event-entry:last-child { border-bottom: none; }
 
-.event-time { color: #888; min-width: 60px; }
+.event-time { color: var(--text-tertiary); min-width: 60px; }
 .event-name { color: #1565c0; font-weight: 500; min-width: 140px; }
-.event-data { color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-data { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .event-interrupt_event { background: #fff3e0; }
 .event-session_ended { background: #ffebee; }
@@ -295,5 +295,5 @@ tr.mat-mdc-row:hover { background: rgba(0, 0, 0, 0.04); cursor: pointer; }
 .event-empty {
   padding: 24px;
   text-align: center;
-  color: #999;
+  color: var(--text-tertiary);
 }

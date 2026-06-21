@@ -42,12 +42,30 @@ public enum StepType {
     PIPELINE,
     /** Executes an Apache Camel route using a saved route ID or inline XML/YAML/Simple route definition. */
     CAMEL_ROUTE,
-    /** Executes a Drools DRL rule set against facts derived from runData. */
+    /**
+     * Executes a Drools DRL rule set against facts derived from runData.
+     * @deprecated Use {@link #FOL_RULE} instead — routed to the native FOL/PSL engine.
+     */
+    @Deprecated(since = "2026-06-21")
     DROOLS_RULE,
-    /** Executes Drools forward-chaining inference against facts derived from runData. */
+    /**
+     * Executes Drools forward-chaining inference against facts derived from runData.
+     * @deprecated Use {@link #PSL_RULE} instead — routed to the native PSL engine.
+     */
+    @Deprecated(since = "2026-06-21")
     DROOLS_INFERENCE,
-    /** Executes a Drools spreadsheet decision table against facts derived from runData. */
+    /**
+     * Executes a Drools spreadsheet decision table against facts derived from runData.
+     * @deprecated Use {@link #TABULAR_RULE} instead — routed to the native TableDecisionCompiler.
+     */
+    @Deprecated(since = "2026-06-21")
     DROOLS_DECISION_TABLE,
     /** Executes a saved or inline workflow through a workflow engine such as Xircuits or n8n. */
-    WORKFLOW
+    WORKFLOW,
+    /** Executes a native FOL rule set via FolInferenceService + HlMrfMapInference (replaces DROOLS_RULE). */
+    FOL_RULE,
+    /** Executes a native PSL program with full forward-chaining inference (replaces DROOLS_INFERENCE). */
+    PSL_RULE,
+    /** Executes a CSV/tabular decision table through TableDecisionCompiler → PSL (replaces DROOLS_DECISION_TABLE). */
+    TABULAR_RULE
 }

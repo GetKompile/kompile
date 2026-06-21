@@ -16,7 +16,7 @@
 
 package ai.kompile.process.discovery.mining;
 
-import ai.kompile.event.attribution.algorithm.psl.PslRule;
+import ai.kompile.graph.reasoning.psl.PslRule;
 import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import ai.kompile.process.discovery.mining.declare.DeclareMiner;
 import ai.kompile.process.discovery.mining.declare.DeclareTemplate;

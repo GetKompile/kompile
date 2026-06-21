@@ -42,6 +42,13 @@ public class ClaudeCodeDecoder extends AbstractTuiDecoder {
     }
 
     @Override
+    public boolean supportsNativeBackgrounding() {
+        // Claude Code backgrounds a running command itself; Kompile forwards the
+        // backgrounding key (Ctrl+B) rather than running its own backgrounding.
+        return true;
+    }
+
+    @Override
     protected boolean answersKittyKeyboard() {
         // Claude Code launches nano when it receives ESC[?0u.
         return false;

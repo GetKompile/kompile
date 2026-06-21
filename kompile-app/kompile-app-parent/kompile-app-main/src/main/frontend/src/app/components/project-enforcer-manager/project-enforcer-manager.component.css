@@ -38,7 +38,7 @@
 .empty-state {
   text-align: center;
   padding: 48px 16px;
-  color: #888;
+  color: var(--text-tertiary);
 }
 
 .empty-state mat-icon {
@@ -54,7 +54,7 @@
 }
 
 .empty-state code {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 0.9em;
@@ -95,7 +95,7 @@
 .project-path {
   font-family: monospace;
   font-size: 0.8em;
-  color: #888;
+  color: var(--text-tertiary);
   margin-top: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -118,7 +118,7 @@
 
 /* Config editor */
 .config-detail {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
   margin-top: 16px;
@@ -147,7 +147,7 @@
 .config-section h4 {
   margin: 0 0 8px;
   font-size: 1em;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .config-grid {
@@ -192,16 +192,16 @@
   gap: 8px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border-color);
 }
 
 /* Start session form */
 .session-form {
   margin-top: 16px;
   padding: 16px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
 }
 
 .session-form h4 {
@@ -269,7 +269,7 @@
 
 /* Metrics detail */
 .metrics-detail {
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 16px;
 }
@@ -298,7 +298,7 @@
   min-width: 100px;
   text-align: center;
   padding: 16px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
 }
 
@@ -309,7 +309,7 @@
 
 .stat-label {
   font-size: 0.85em;
-  color: #888;
+  color: var(--text-tertiary);
   margin-top: 4px;
 }
 
@@ -323,7 +323,7 @@
   display: flex;
   gap: 12px;
   padding: 10px 12px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .history-item:last-child {
@@ -339,7 +339,7 @@
 }
 
 .history-session {
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
 }
 
 .history-icon {
@@ -368,7 +368,7 @@
 
 .history-event-type {
   font-size: 0.85em;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .history-score {
@@ -378,13 +378,13 @@
 
 .history-time {
   font-size: 0.8em;
-  color: #999;
+  color: var(--text-tertiary);
   margin-left: auto;
 }
 
 .history-reason {
   font-size: 0.9em;
-  color: #555;
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 

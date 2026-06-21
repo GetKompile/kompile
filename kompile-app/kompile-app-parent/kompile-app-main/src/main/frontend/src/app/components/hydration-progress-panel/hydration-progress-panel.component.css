@@ -1,0 +1,148 @@
+.hydration-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+.progress-card mat-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.phase-label {
+  font-size: 13px;
+  color: var(--color-text-secondary, #666);
+}
+
+.percent-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-primary, #3f51b5);
+}
+
+.progress-bar {
+  margin-bottom: 10px;
+}
+
+.detail-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #666);
+  margin-bottom: 6px;
+}
+
+.detail-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.stat-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--color-surface-secondary, #f0f0f0);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.stat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+.pipeline-steps {
+  margin: 10px 0;
+}
+
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.step-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-secondary, #999);
+}
+
+.step-icon.done {
+  color: #4caf50;
+}
+
+.step-icon.running {
+  color: #2196f3;
+}
+
+.step-icon.failed {
+  color: #f44336;
+}
+
+.step-name {
+  flex: 1;
+}
+
+.step-pct {
+  font-size: 11px;
+  color: var(--color-text-secondary, #666);
+}
+
+.timestamp {
+  font-size: 11px;
+  color: var(--color-text-secondary, #aaa);
+  margin-top: 8px;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary, #999);
+  font-size: 13px;
+  padding: 12px 0;
+}
+
+.sse-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--color-text-secondary, #888);
+  margin-top: 12px;
+}
+
+.sse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f44336;
+  flex-shrink: 0;
+}
+
+.sse-dot.connected {
+  background: #4caf50;
+}

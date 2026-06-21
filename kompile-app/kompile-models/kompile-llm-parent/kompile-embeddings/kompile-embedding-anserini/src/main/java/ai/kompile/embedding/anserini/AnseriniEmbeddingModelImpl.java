@@ -141,6 +141,10 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     // hours-long embedding crash loop.
     private final java.util.concurrent.atomic.AtomicInteger consecutiveNativeCrashes =
             new java.util.concurrent.atomic.AtomicInteger(0);
+    // Hard cross-session ceiling on ALL restartable embedding failures (stall / native crash / exit-crash).
+    // Lives on the @Service so resume()/poll spawning fresh launchers can't reset it and loop forever.
+    private final java.util.concurrent.atomic.AtomicInteger consecutiveFailures =
+            new java.util.concurrent.atomic.AtomicInteger(0);
     private volatile boolean restartsPaused = false;
     private volatile String restartsPausedReason = null;
     private volatile String lastObservedCrashReason = null;
@@ -384,8 +388,9 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 this.modelSource = ModelSource.REGISTRY;
                 this.initialized = true;
                 this.initializationError = null;
-                // Healthy load — reset the native-crash circuit-breaker counter.
+                // Healthy load — reset the restart circuit-breaker counters.
                 consecutiveNativeCrashes.set(0);
+                consecutiveFailures.set(0);
 
                 loadingPhase = LoadingPhase.COMPLETE;
                 loadingMessage = "Model loaded successfully in subprocess";
@@ -549,6 +554,31 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
                 String reason = categorizeFailureReason(exitCode, crashReason);
 
+                // Stall circuit breaker: a heartbeat-timeout / no-heartbeat exit means the model could not
+                // initialize within the heartbeat window. On a slow CPU this is PERSISTENT — retrying just
+                // churns the subprocess (start -> stall -> kill), and that churn wedges the shared H2 DB.
+                // Defer on the FIRST stall (not after the full native-crash budget) so the loop never gets
+                // going. GPU loads fast and never stalls, so this only trips when the model genuinely
+                // cannot load in time.
+                if ((crashReason != null && crashReason.toLowerCase().contains("heartbeat"))
+                        || "STALLED_NO_HEARTBEAT".equals(reason)) {
+                    pauseRestarts("Circuit breaker: embedding stalled (heartbeat timeout) — deferred after "
+                            + "1 attempt; model load is too slow to initialize within the heartbeat window "
+                            + "(e.g. CPU). Resume via the UI / POST /api/embedding-restart/resume, or run on GPU.");
+                    return null;
+                }
+
+                // General churn ceiling: ANY restartable failure (incl. clean-ish exits that are neither
+                // native crashes nor stalls) counts toward a hard cap across launcher respawns, so
+                // resume()/poll spawning fresh launchers can't loop forever on a box where the model never
+                // settles. Defer once exceeded.
+                if (consecutiveFailures.incrementAndGet() >= Math.max(2, nativeCrashThreshold())) {
+                    pauseRestarts("Circuit breaker: " + consecutiveFailures.get() + " consecutive embedding "
+                            + "restart failures (" + reason + ") — deferred. Resume via the UI / "
+                            + "POST /api/embedding-restart/resume, or run on GPU.");
+                    return null;
+                }
+
                 // Native-crash circuit breaker: count CONSECUTIVE native crashes (SIGABRT/SIGSEGV).
                 // After the configured threshold, trip the breaker and stop respawning until resumed.
                 // The counter lives on the @Service so it survives the fresh launcher built by each
@@ -602,6 +632,12 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             public void onRestartExhausted(String taskId, int totalAttempts, String lastReason) {
                 log.warn("Publishing restart exhausted event: {} attempts for model {} (last reason: {})",
                         totalAttempts, modelIdentifier, lastReason);
+                // Make the give-up STICKY at the @Service level. Stalls / heartbeat-timeouts are not
+                // native crashes, so they never hit the consecutive-native-crash breaker above and would
+                // otherwise be respawned forever by the auto-init poll / reloadModel(). Tripping the
+                // restart governor here defers the model (visible in the UI) instead of crash-looping and
+                // wedging the shared DB. Resume is explicit (UI / POST /api/embedding-restart/resume / a job).
+                pauseRestarts("Restarts exhausted after " + totalAttempts + " attempt(s): " + lastReason);
                 publishEvent(EmbeddingSubprocessEvent.subprocessRestartExhausted(
                         AnseriniEmbeddingModelImpl.this, modelIdentifier, totalAttempts, lastReason));
             }
@@ -1024,6 +1060,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             this.restartsPaused = false;
             this.restartsPausedReason = null;
             this.consecutiveNativeCrashes.set(0);
+            this.consecutiveFailures.set(0);
             this.initializationError = null;
             if (modelSource == ModelSource.FAILED) {
                 this.modelSource = ModelSource.NOT_INITIALIZED;
@@ -1048,6 +1085,20 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 .subprocessRunning(running)
                 .modelAvailable(true)
                 .build();
+    }
+
+    /**
+     * True when the restart governor has tripped (consecutive-native-crash breaker OR restarts
+     * exhausted) and the embedding subprocess is DEFERRED until explicitly resumed. Callers (e.g. the
+     * auto-init poll) must consult this and stop respawning instead of looping.
+     */
+    public boolean isRestartDeferred() {
+        return restartsPaused;
+    }
+
+    /** Human-readable reason the restart governor deferred the model, or {@code null} if not deferred. */
+    public String getRestartDeferredReason() {
+        return restartsPausedReason;
     }
 
     /**

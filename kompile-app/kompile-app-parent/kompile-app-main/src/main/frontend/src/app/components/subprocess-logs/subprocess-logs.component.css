@@ -17,9 +17,9 @@
 .subprocess-logs-container {
   display: flex;
   flex-direction: column;
-  border: 1px solid #3a3a3a;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  background: #1a1a1a;
+  background: var(--bg-surface);
   overflow: hidden;
 }
 
@@ -29,8 +29,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: #252525;
-  border-bottom: 1px solid #3a3a3a;
+  background: var(--bg-surface-elevated);
+  border-bottom: 1px solid var(--border-color);
   gap: 12px;
   flex-wrap: wrap;
 }
@@ -54,11 +54,11 @@
   align-items: center;
   gap: 12px;
   font-size: 12px;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .stat-total {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .stat-error,
@@ -98,7 +98,7 @@
 }
 
 .filter-icon.debug {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .filter-icon.info {
@@ -116,34 +116,34 @@
 /* Search Input */
 .search-input {
   padding: 6px 12px;
-  border: 1px solid #3a3a3a;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  background: #1a1a1a;
-  color: #e0e0e0;
+  background: var(--bg-surface);
+  color: var(--text-primary);
   font-size: 12px;
   width: 200px;
 }
 
 .search-input:focus {
   outline: none;
-  border-color: #4a90d9;
+  border-color: var(--color-primary);
 }
 
 .search-input::placeholder {
-  color: #666;
+  color: var(--text-tertiary);
 }
 
 /* Action Buttons */
 .toolbar-right button {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .toolbar-right button:hover {
-  color: #e0e0e0;
+  color: var(--text-primary);
 }
 
 .toolbar-right button.active {
-  color: #4a90d9;
+  color: var(--color-primary);
 }
 
 /* Log Content - optimized for rendering performance */
@@ -153,7 +153,7 @@
   font-size: 12px;
   line-height: 1.4;
   padding: 8px;
-  background: #0d0d0d;
+  background: var(--bg-surface-elevated);
   contain: content;  /* CSS containment for better rendering performance */
 }
 
@@ -163,16 +163,16 @@
 }
 
 .logs-content::-webkit-scrollbar-track {
-  background: #1a1a1a;
+  background: var(--bg-surface);
 }
 
 .logs-content::-webkit-scrollbar-thumb {
-  background: #3a3a3a;
+  background: var(--border-color);
   border-radius: 4px;
 }
 
 .logs-content::-webkit-scrollbar-thumb:hover {
-  background: #4a4a4a;
+  background: var(--text-tertiary);
 }
 
 /* No Logs Message */
@@ -182,7 +182,7 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #666;
+  color: var(--text-tertiary);
   gap: 8px;
 }
 
@@ -207,7 +207,7 @@
 
 /* Log Time */
 .log-time {
-  color: #666;
+  color: var(--text-tertiary);
   margin-right: 8px;
   flex-shrink: 0;
   font-size: 11px;
@@ -224,7 +224,7 @@
 
 /* Log Source */
 .log-source {
-  color: #888;
+  color: var(--text-secondary);
   margin-right: 8px;
   flex-shrink: 0;
   font-size: 11px;
@@ -233,7 +233,7 @@
 /* Log Message */
 .log-message {
   flex: 1;
-  color: #ccc;
+  color: var(--text-primary);
 }
 
 /* Level-specific styles */
@@ -242,11 +242,11 @@
 }
 
 .log-debug .log-level-icon {
-  color: #888;
+  color: var(--text-secondary);
 }
 
 .log-debug .log-message {
-  color: #999;
+  color: var(--text-secondary);
 }
 
 .log-info .log-level-icon {
@@ -254,7 +254,7 @@
 }
 
 .log-info .log-message {
-  color: #e0e0e0;
+  color: var(--text-primary);
 }
 
 .log-warn {

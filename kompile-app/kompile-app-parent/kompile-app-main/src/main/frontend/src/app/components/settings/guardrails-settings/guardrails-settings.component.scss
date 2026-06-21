@@ -25,7 +25,7 @@
 
     p {
       margin: 0;
-      color: rgba(0, 0, 0, 0.6);
+      color: var(--text-secondary);
     }
   }
 }
@@ -36,12 +36,12 @@
   align-items: center;
   gap: 12px;
   padding: 24px;
-  background: #f5f5f5;
+  background: var(--bg-surface-elevated);
   border-radius: 8px;
   margin-bottom: 16px;
 
   mat-icon {
-    color: #666;
+    color: var(--text-secondary);
   }
 }
 
@@ -121,7 +121,7 @@ mat-expansion-panel {
     .config-description {
       display: block;
       font-size: 0.85rem;
-      color: rgba(0, 0, 0, 0.6);
+      color: var(--text-secondary);
       margin-top: 4px;
     }
   }
@@ -145,7 +145,7 @@ mat-expansion-panel {
   h4 {
     margin: 0 0 12px 0;
     font-size: 0.9rem;
-    color: rgba(0, 0, 0, 0.6);
+    color: var(--text-secondary);
   }
 
   .add-topic {
@@ -174,5 +174,5 @@ mat-slider {
   gap: 16px;
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid rgba(0, 0, 0, 0.12);
+  border-top: 1px solid var(--border-color);
 }

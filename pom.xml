@@ -34,6 +34,8 @@
   </modules>
 
   <properties>
+    <!-- Stable reference to the repo root, usable from any sub-module -->
+    <kompile.root.dir>${maven.multiModuleProjectDirectory}</kompile.root.dir>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <maven.compiler.source>17</maven.compiler.source>

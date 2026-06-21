@@ -85,6 +85,11 @@ public final class GlobalBootstrap {
         if (!configExists(AppConfigWizard.APP_INDEX_CONFIG)) {
             Map<String, Object> appIndexConfig = new LinkedHashMap<>();
             appIndexConfig.put("appTitle", "Kompile RAG Console");
+            // White-label branding (header logo + name + favicon)
+            appIndexConfig.put("logoUrl", "assets/branding/kompile-logo.svg");
+            appIndexConfig.put("logoAlt", "Kompile");
+            appIndexConfig.put("showLogo", true);
+            appIndexConfig.put("faviconUrl", "assets/branding/kompile-logo.svg");
             appIndexConfig.put("vectorStoreType", "ANSERINI");
             appIndexConfig.put("vectorStorePath", dataDir + "/anserini/indexes/vector_index");
             appIndexConfig.put("keywordIndexPath", dataDir + "/anserini/indexes/default_index");

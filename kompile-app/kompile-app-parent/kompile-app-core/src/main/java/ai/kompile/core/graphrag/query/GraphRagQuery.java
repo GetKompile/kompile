@@ -79,4 +79,11 @@ public class GraphRagQuery {
      */
     @Builder.Default
     private boolean includeCommunities = true;
+
+    /**
+     * Optional semantic entity-type filter (e.g. "PERSON", "VENDOR"). When set, retrieval restricts
+     * results to graph nodes whose semantic type (node type or metadata {@code entity_type}) matches,
+     * enabling ontology-typed / schema-aware graph queries.
+     */
+    private String entityType;
 }

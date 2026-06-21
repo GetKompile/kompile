@@ -14,6 +14,7 @@ declare global {
       apiGet(path: string): Chainable<Response<any>>;
       apiPost(path: string, body?: object): Chainable<Response<any>>;
       apiDelete(path: string): Chainable<Response<any>>;
+      topNav(label: string): Chainable<JQuery<HTMLElement>>;
     }
   }
 }
@@ -68,4 +69,9 @@ Cypress.Commands.add('apiDelete', (path: string) => {
     url: `${Cypress.env('apiUrl')}${path}`,
     failOnStatusCode: false
   });
+});
+
+// Custom command: click/select a top-level Material nav tab by visible label
+Cypress.Commands.add('topNav', (label: string) => {
+  return cy.contains('nav[mat-tab-nav-bar] a', label);
 });

@@ -36,7 +36,7 @@
 }
 
 .status-label {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -75,7 +75,7 @@
   gap: 8px;
   margin: 16px 0 12px;
   font-size: 16px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .version-chip {
@@ -131,15 +131,15 @@
 
 .artifact-category {
   display: block;
-  color: #888;
+  color: var(--text-tertiary);
   font-size: 12px;
 }
 
 .artifact-file {
   font-family: monospace;
   font-size: 11px;
-  color: #666;
-  background: #f5f5f5;
+  color: var(--text-secondary);
+  background: var(--bg-surface-elevated);
   padding: 4px 8px;
   border-radius: 4px;
   margin-bottom: 10px;
@@ -204,7 +204,7 @@
 }
 
 .meta-label {
-  color: #888;
+  color: var(--text-tertiary);
   font-size: 13px;
   min-width: 60px;
 }
@@ -293,7 +293,7 @@
 }
 
 .req-label {
-  color: #888;
+  color: var(--text-tertiary);
   min-width: 100px;
 }
 
@@ -303,8 +303,8 @@
 
 /* Command Block */
 .command-card pre.command-block {
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
   padding: 16px;
   border-radius: 8px;
   font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
@@ -324,7 +324,7 @@
 }
 
 .no-results {
-  color: #888;
+  color: var(--text-tertiary);
   text-align: center;
   padding: 24px;
   font-style: italic;
@@ -379,7 +379,7 @@
 
 .cli-command-panel mat-panel-title mat-icon {
   font-size: 20px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .cli-actions {

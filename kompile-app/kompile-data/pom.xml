@@ -16,6 +16,7 @@
     <modules>
         <module>kompile-pipelines-framework</module>
         <module>kompile-project-store</module>
+        <module>kompile-project-store-server</module>
         <module>kompile-data-enrichment</module>
         <module>kompile-langdetect</module>
         <module>kompile-loaders</module>

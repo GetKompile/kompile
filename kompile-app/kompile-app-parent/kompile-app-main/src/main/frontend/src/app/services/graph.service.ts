@@ -619,10 +619,16 @@ export class GraphService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Patch node metadata in bulk using rules
+   * Patch node metadata in bulk using rules.
+   *
+   * Backend: POST /api/graph/maintenance/patch (GraphMaintenanceController). The endpoint honors
+   * request.dryRun, so this single call serves both preview (dryRun=true) and apply (dryRun=false)
+   * — no separate /patch/preview call is needed. The request/result DTOs already match the backend
+   * PatchRequest/PatchResult records.
+   * (Was previously POST /api/knowledge-graph/nodes/patch-metadata, which no controller serves → 404.)
    */
   patchNodeMetadata(request: GraphMetadataPatchRequest): Observable<GraphMetadataPatchResult> {
-    return this.http.post<GraphMetadataPatchResult>(`${this.backendUrl}${this.apiPath}/nodes/patch-metadata`, request)
+    return this.http.post<GraphMetadataPatchResult>(`${this.backendUrl}/graph/maintenance/patch`, request)
       .pipe(catchError(this.handleError));
   }
 

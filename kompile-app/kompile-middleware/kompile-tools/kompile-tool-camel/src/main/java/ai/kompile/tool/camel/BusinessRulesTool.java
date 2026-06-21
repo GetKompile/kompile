@@ -1,6 +1,7 @@
 package ai.kompile.tool.camel;
 
 import ai.kompile.compute.graph.engine.ExecutionContext;
+import ai.kompile.compute.graph.engine.FolNodeExecutor;
 import ai.kompile.compute.graph.model.*;
 import ai.kompile.compute.graph.store.InMemoryArtifactStore;
 import org.slf4j.Logger;
@@ -26,6 +27,7 @@ public class BusinessRulesTool {
 
     private final Object droolsNodeExecutor;
     private final Object droolsDecisionTableCompiler;
+    private final FolNodeExecutor folNodeExecutor;
 
     public BusinessRulesTool(
             @Autowired(required = false) @Qualifier("droolsNodeExecutor") Object droolsNodeExecutor,
@@ -33,6 +35,8 @@ public class BusinessRulesTool {
         // Filter to only accept actual Drools types
         this.droolsNodeExecutor = isDroolsExecutor(droolsNodeExecutor) ? droolsNodeExecutor : null;
         this.droolsDecisionTableCompiler = isDroolsDecisionTableCompiler(droolsDecisionTableCompiler) ? droolsDecisionTableCompiler : null;
+        // Native executor is always available — bundled in kompile-compute-graph-core
+        this.folNodeExecutor = new FolNodeExecutor();
     }
 
     // ---- Input Records ----
@@ -199,6 +203,94 @@ public class BusinessRulesTool {
             return Map.of("error", "Inspection failed: " + e.getMessage());
         }
     }
+
+    // ─── Native FOL/PSL/Tabular tools (no Drools dependency) ─────────────────
+
+    public record EvaluateFolRulesInput(String ruleScript, Map<String, Object> facts, String agendaGroup) {}
+    public record EvaluatePslRulesInput(String ruleScript, Map<String, Object> facts) {}
+    public record EvaluateTabularRuleInput(String tableScript, Map<String, Object> facts, String hitPolicy, Double weight) {}
+
+    @Tool(name = "rules_evaluate_fol",
+          description = "Evaluate FOL/PSL rules using the native probabilistic soft-logic engine (no Drools). " +
+                  "Syntax: 'weight: Body(X) -> Head(X) ^2' per line. " +
+                  "Returns inferred atom truth values and _inferredFacts list.")
+    public Map<String, Object> evaluateFolRules(EvaluateFolRulesInput input) {
+        try {
+            ComputeNode node = ComputeNode.builder()
+                    .id("tool-fol-" + UUID.randomUUID())
+                    .name("FOL Rule Evaluation")
+                    .executionType(NodeExecutionType.FOL_RULE)
+                    .script(input.ruleScript())
+                    .parameters(input.agendaGroup() != null ? Map.of("agendaGroup", input.agendaGroup()) : Map.of())
+                    .build();
+            ComputeGraph graph = ComputeGraph.builder().id("tool-graph").name("FOL Eval")
+                    .nodes(List.of(node)).edges(List.of()).build();
+            ExecutionContext context = new ExecutionContext(
+                    UUID.randomUUID().toString(), graph, new InMemoryArtifactStore());
+            ExecutionResult result = folNodeExecutor.execute(node, input.facts() != null ? input.facts() : Map.of(), context);
+            return Map.of("status", result.getStatus().name(), "outputs", result.getOutputs(),
+                    "error", result.getError() != null ? result.getError() : "");
+        } catch (Exception e) {
+            log.error("FOL rule evaluation failed", e);
+            return Map.of("error", "FOL rule evaluation failed: " + e.getMessage());
+        }
+    }
+
+    @Tool(name = "rules_evaluate_psl",
+          description = "Evaluate PSL rules with full forward-chaining inference (crisp Datalog fixpoint + MAP). " +
+                  "Replaces DROOLS_INFERENCE without any KIE dependency. " +
+                  "Syntax same as rules_evaluate_fol.")
+    public Map<String, Object> evaluatePslRules(EvaluatePslRulesInput input) {
+        try {
+            ComputeNode node = ComputeNode.builder()
+                    .id("tool-psl-" + UUID.randomUUID())
+                    .name("PSL Rule Evaluation")
+                    .executionType(NodeExecutionType.PSL_RULE)
+                    .script(input.ruleScript())
+                    .build();
+            ComputeGraph graph = ComputeGraph.builder().id("tool-graph").name("PSL Eval")
+                    .nodes(List.of(node)).edges(List.of()).build();
+            ExecutionContext context = new ExecutionContext(
+                    UUID.randomUUID().toString(), graph, new InMemoryArtifactStore());
+            ExecutionResult result = folNodeExecutor.execute(node, input.facts() != null ? input.facts() : Map.of(), context);
+            return Map.of("status", result.getStatus().name(), "outputs", result.getOutputs(),
+                    "error", result.getError() != null ? result.getError() : "");
+        } catch (Exception e) {
+            log.error("PSL rule evaluation failed", e);
+            return Map.of("error", "PSL rule evaluation failed: " + e.getMessage());
+        }
+    }
+
+    @Tool(name = "rules_evaluate_tabular",
+          description = "Evaluate a CSV decision table via the native TableDecisionCompiler → PSL pipeline. " +
+                  "Header row declares CONDITION/CONCLUSION roles (e.g. 'Age:CONDITION,Risk:CONCLUSION'). " +
+                  "Returns inferred atom truth values. hitPolicy: FIRST (default), ALL, PRIORITY.")
+    public Map<String, Object> evaluateTabularRule(EvaluateTabularRuleInput input) {
+        try {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (input.hitPolicy() != null) params.put("hitPolicy", input.hitPolicy());
+            if (input.weight() != null) params.put("weight", String.valueOf(input.weight()));
+            ComputeNode node = ComputeNode.builder()
+                    .id("tool-tabular-" + UUID.randomUUID())
+                    .name("Tabular Rule Evaluation")
+                    .executionType(NodeExecutionType.TABULAR_RULE)
+                    .script(input.tableScript())
+                    .parameters(params)
+                    .build();
+            ComputeGraph graph = ComputeGraph.builder().id("tool-graph").name("Tabular Eval")
+                    .nodes(List.of(node)).edges(List.of()).build();
+            ExecutionContext context = new ExecutionContext(
+                    UUID.randomUUID().toString(), graph, new InMemoryArtifactStore());
+            ExecutionResult result = folNodeExecutor.execute(node, input.facts() != null ? input.facts() : Map.of(), context);
+            return Map.of("status", result.getStatus().name(), "outputs", result.getOutputs(),
+                    "error", result.getError() != null ? result.getError() : "");
+        } catch (Exception e) {
+            log.error("Tabular rule evaluation failed", e);
+            return Map.of("error", "Tabular rule evaluation failed: " + e.getMessage());
+        }
+    }
+
+    // ─── Private helpers ──────────────────────────────────────────────────────
 
     private ExecutionResult invokeExecutor(ComputeNode node, Map<String, Object> facts, ExecutionContext context) throws Exception {
         Method executeMethod = droolsNodeExecutor.getClass().getMethod("execute",

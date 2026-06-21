@@ -44,6 +44,12 @@
             <artifactId>kompile-utils</artifactId>
         </dependency>
 
+        <!-- Generic reasoning library: the store adapts itself onto the unified ReasoningGraph -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+        </dependency>
+
         <!-- Spring Boot Starter -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

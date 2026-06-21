@@ -9,14 +9,11 @@
  */
 package ai.kompile.event.attribution.algorithm.bayesian.mebn.resolution;
 
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNetwork;
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNode;
-import ai.kompile.event.attribution.algorithm.bayesian.Factor;
-import ai.kompile.event.attribution.algorithm.bayesian.VariableElimination;
+import ai.kompile.graph.reasoning.bayesian.*;
 import ai.kompile.event.attribution.algorithm.bayesian.mebn.*;
-import ai.kompile.event.attribution.algorithm.bayesian.mebn.logic.Constraints;
+import ai.kompile.graph.reasoning.mebn.*;
+import ai.kompile.graph.reasoning.mebn.logic.*;
 import ai.kompile.event.attribution.algorithm.bayesian.mebn.logic.GraphKnowledgeBase;
-import ai.kompile.event.attribution.algorithm.bayesian.mebn.logic.LogicalConstraint;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;

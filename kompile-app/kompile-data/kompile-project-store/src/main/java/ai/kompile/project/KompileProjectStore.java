@@ -1389,16 +1389,26 @@ public class KompileProjectStore {
                 """);
         writeExecutableIfMissing(root.resolve("scripts/start-staging.sh"), serviceScript("staging",
                 "KOMPILE_STAGING_COMMAND",
-                "Set KOMPILE_STAGING_COMMAND to start model staging for this project."));
+                "Set KOMPILE_STAGING_COMMAND to start model staging for this project.",
+                "kompile manage start staging"));
         writeExecutableIfMissing(root.resolve("scripts/start-serving.sh"), serviceScript("serving",
                 "KOMPILE_SERVING_COMMAND",
-                "Set KOMPILE_SERVING_COMMAND to start model serving for this project."));
+                "Set KOMPILE_SERVING_COMMAND to start model serving for this project.",
+                "kompile manage start serving"));
         writeExecutableIfMissing(root.resolve("scripts/start-app.sh"), serviceScript("app",
                 "KOMPILE_APP_COMMAND",
-                "Set KOMPILE_APP_COMMAND to start the Kompile app for this project."));
+                "Set KOMPILE_APP_COMMAND to start the Kompile app for this project.",
+                "kompile project service start"));
     }
 
-    private String serviceScript(String service, String commandVariable, String missingMessage) {
+    /**
+     * Build a lifecycle start script. Prefers an explicit {@code commandVariable} env override; when
+     * unset it falls back to {@code cliFallback} (a kompile CLI command run from the project root,
+     * which discovers the installed component) so the script works out of the box instead of erroring
+     * on a missing env var. Only if neither the override nor the {@code kompile} CLI is available does
+     * it print {@code missingMessage} and exit.
+     */
+    private String serviceScript(String service, String commandVariable, String missingMessage, String cliFallback) {
         return """
                 #!/usr/bin/env bash
                 set -euo pipefail
@@ -1408,13 +1418,20 @@ public class KompileProjectStore {
                 mkdir -p "$LOG_DIR" "$PID_DIR"
                 COMMAND="${%s:-}"
                 if [ -z "$COMMAND" ]; then
-                  echo "%s" >&2
-                  exit 2
+                  # No explicit command set — fall back to the kompile CLI (discovers the installed component).
+                  if command -v kompile >/dev/null 2>&1; then
+                    cd "$ROOT"
+                    COMMAND="%s"
+                  else
+                    echo "%s" >&2
+                    echo "  (or install the kompile CLI so this script can auto-discover and start it)" >&2
+                    exit 2
+                  fi
                 fi
                 nohup bash -lc "$COMMAND" > "$LOG_DIR/%s.log" 2>&1 &
                 echo $! > "$PID_DIR/%s.pid"
                 echo "Started %s with PID $(cat "$PID_DIR/%s.pid")"
-                """.formatted(commandVariable, missingMessage, service, service, service, service);
+                """.formatted(commandVariable, cliFallback, missingMessage, service, service, service, service);
     }
 
     private void writeExecutableIfMissing(Path script, String content) throws IOException {

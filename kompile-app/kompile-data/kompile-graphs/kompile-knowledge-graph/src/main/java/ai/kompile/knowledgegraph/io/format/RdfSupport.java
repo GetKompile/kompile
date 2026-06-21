@@ -37,12 +37,43 @@ final class RdfSupport {
     private RdfSupport() {}
 
     static final String BASE = "https://kompile.ai/kg/";
-    static final String RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
-    static final String RDFS_LABEL = "http://www.w3.org/2000/01/rdf-schema#label";
+    static final String RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+    static final String RDF_TYPE      = RDF + "type";
+    static final String RDF_STATEMENT = RDF + "Statement";
+    static final String RDF_SUBJECT   = RDF + "subject";
+    static final String RDF_PREDICATE = RDF + "predicate";
+    static final String RDF_OBJECT    = RDF + "object";
+    static final String RDFS_LABEL   = "http://www.w3.org/2000/01/rdf-schema#label";
     static final String RDFS_COMMENT = "http://www.w3.org/2000/01/rdf-schema#comment";
     static final String RDFS = "http://www.w3.org/2000/01/rdf-schema#";
     static final String XSD = "http://www.w3.org/2001/XMLSchema#";
     static final String XSD_DOUBLE = XSD + "double";
+
+    /**
+     * Predicate IRI for the edge weight attribute, used in RDF reification.
+     * Resolvable under the kompile namespace: {@code https://kompile.ai/kg/weight}.
+     */
+    static final String WEIGHT_IRI     = BASE + "weight";
+
+    /**
+     * Predicate IRI for the edge confidence attribute, used in RDF reification.
+     * Resolvable under the kompile namespace: {@code https://kompile.ai/kg/confidence}.
+     */
+    static final String CONFIDENCE_IRI = BASE + "confidence";
+
+    /**
+     * Mints a blank-node-style IRI for an rdf:Statement that reifies the edge
+     * {@code from → via predicate → to}.  The IRI is deterministic so the same edge
+     * always gets the same reification subject across export calls.
+     *
+     * <p>Form: {@code https://kompile.ai/kg/stmt/<enc(from)>/<enc(edgeType)>/<enc(to)>}
+     */
+    static String stmtIri(String fromExternalId, String edgeType, String toExternalId) {
+        return BASE + "stmt/"
+                + enc(fromExternalId == null ? "_" : fromExternalId) + "/"
+                + enc(edgeType       == null ? "relatedTo" : edgeType) + "/"
+                + enc(toExternalId   == null ? "_" : toExternalId);
+    }
 
     static String nodeIri(String externalId) {
         return BASE + "node/" + enc(externalId == null ? "_blank" : externalId);

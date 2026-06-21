@@ -80,7 +80,7 @@ public final class CrawlPipelineStepRegistry {
             new StepDescriptor("VECTOR_INDEXING", "Embedding & Vector Index", "EMBEDDING",
                     Set.of("CHUNKING"), true, false, false, true),
             new StepDescriptor("ENRICHMENT", "Post-Crawl Enrichment", "ENRICHMENT",
-                    Set.of(), false, false, false, false)
+                    Set.of("ENTITY_RESOLUTION", "EDGE_COMPUTATION"), false, false, false, false)
     );
 
     private static final Map<String, StepDescriptor> BY_ID = index();

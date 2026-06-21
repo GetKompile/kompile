@@ -9,8 +9,8 @@
  */
 package ai.kompile.process.attribution.domain;
 
-import ai.kompile.event.attribution.domain.AttributionResult;
-import ai.kompile.event.attribution.domain.PredictionResult;
+import ai.kompile.graph.reasoning.domain.AttributionResult;
+import ai.kompile.graph.reasoning.domain.PredictionResult;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;

@@ -16,10 +16,10 @@
 
 package ai.kompile.process.discovery.mining.causal;
 
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNetwork;
-import ai.kompile.event.attribution.algorithm.bayesian.BayesianNode;
-import ai.kompile.event.attribution.algorithm.bayesian.NoisyOrCpt;
-import ai.kompile.event.attribution.algorithm.bayesian.VariableElimination;
+import ai.kompile.graph.reasoning.bayesian.BayesianNetwork;
+import ai.kompile.graph.reasoning.bayesian.BayesianNode;
+import ai.kompile.graph.reasoning.bayesian.NoisyOrCpt;
+import ai.kompile.graph.reasoning.bayesian.VariableElimination;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph;
 import ai.kompile.process.discovery.mining.dfg.DirectlyFollowsGraph.Arc;
 

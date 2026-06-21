@@ -682,7 +682,7 @@
   top: -2px;
   width: 2px;
   height: 10px;
-  background: #1a1f36;
+  background: var(--text-primary);
   border-radius: 1px;
   pointer-events: auto;
   cursor: default;
@@ -784,7 +784,7 @@
   top: -2px;
   width: 2px;
   height: 8px;
-  background: #1a1f36;
+  background: var(--text-primary);
   border-radius: 1px;
   pointer-events: auto;
   cursor: default;

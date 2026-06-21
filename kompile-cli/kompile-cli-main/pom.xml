@@ -329,7 +329,7 @@
             </resource>
             <!-- Bundle build-scripts/ as classpath resources for extraction at runtime -->
             <resource>
-                <directory>${project.basedir}/../../build-scripts</directory>
+                <directory>${kompile.root.dir}/build-scripts</directory>
                 <targetPath>build-scripts</targetPath>
                 <filtering>false</filtering>
                 <includes>

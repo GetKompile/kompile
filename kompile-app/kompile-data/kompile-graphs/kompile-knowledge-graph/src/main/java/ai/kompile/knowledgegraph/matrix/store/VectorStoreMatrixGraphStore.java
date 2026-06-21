@@ -299,6 +299,23 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     }
 
     @Override
+    public boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
+                          double weight, String edgeType, boolean bidirectional, String relationType) {
+        AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
+        return graph.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional, relationType);
+    }
+
+    /** [M-7] Full-metadata override — persists confidence and description alongside weight/relationType. */
+    @Override
+    public boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
+                           double weight, String edgeType, boolean bidirectional,
+                           String relationType, Double confidence, String description) {
+        AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
+        return graph.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional,
+                relationType, confidence, description);
+    }
+
+    @Override
     public boolean removeEdge(String graphId, String sourceNodeId, String targetNodeId, String edgeType) {
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
         if (graph != null) {
@@ -422,7 +439,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
 
         for (EdgeDefinition edge : edges) {
             if (graph.addEdge(edge.sourceNodeId(), edge.targetNodeId(),
-                    edge.weight(), edge.edgeType(), edge.bidirectional())) {
+                    edge.weight(), edge.edgeType(), edge.bidirectional(), edge.relationType())) {
                 count++;
             }
         }
@@ -548,9 +565,14 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
             throws IOException {
         String docId = GRAPH_PREFIX + graphId + ADJ_PREFIX + edgeType;
 
-        // Build the same JSON format as before (list of {source, target, weight} objects)
-        // so that restoreAdjacencyMatrix() requires no changes.
+        // Build the same JSON format as before (list of {source, target, weight} objects),
+        // now extended with confidence, bidirectional, and description (M-7) so they survive
+        // vector-store round-trips on the @Primary live path. restoreAdjacencyMatrix() reads
+        // these fields via the same map-key names — old files without these fields are safe
+        // (missing keys are treated as null/absent, preserving backward compatibility).
         List<Map<String, Object>> edges = new ArrayList<>(sparseData.size());
+        boolean hasRelationTypes = !sparseData.relationTypes.isEmpty();
+        boolean hasEdgeMetas = !sparseData.edgeMetas.isEmpty();  // [M-7]
         for (int i = 0; i < sparseData.size(); i++) {
             int[] pair = sparseData.indices.get(i);
             float weight = sparseData.weights.get(i);
@@ -558,6 +580,21 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
             edge.put("source", pair[0]);
             edge.put("target", pair[1]);
             edge.put("weight", weight);
+            // Persist the explicit semantic relation as a first-class field alongside the weight.
+            String relationType = hasRelationTypes ? sparseData.relationTypes.get(i) : null;
+            if (relationType != null) {
+                edge.put("relationType", relationType);
+            }
+            // [M-7] Persist confidence, bidirectional, description when present.
+            if (hasEdgeMetas) {
+                AdjacencyMatrixGraph.EdgeMeta meta = sparseData.edgeMetas.get(i);
+                if (meta != null) {
+                    if (meta.confidence() != null)   edge.put("confidence",   meta.confidence());
+                    if (Boolean.TRUE.equals(meta.bidirectional())) edge.put("bidirectional", true);
+                    if (meta.description() != null && !meta.description().isBlank())
+                        edge.put("description", meta.description());
+                }
+            }
             edges.add(edge);
         }
 
@@ -699,13 +736,22 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                     int source = srcNum.intValue();
                     int target = tgtNum.intValue();
                     double weight = wgtNum.doubleValue();
+                    Object rtObj = edge.get("relationType");
+                    String relationType = rtObj instanceof String s ? s : null;
+
+                    // [M-7] Read confidence, bidirectional, description from the stored JSON.
+                    Double confidence = edge.get("confidence") instanceof Number cn ? cn.doubleValue() : null;
+                    boolean bidirectional = Boolean.TRUE.equals(edge.get("bidirectional"));
+                    Object descObj = edge.get("description");
+                    String description = descObj instanceof String ds ? ds : null;
 
                     // Find node IDs by matrix index
                     String sourceId = graph.getIndexToNodeId().get(source);
                     String targetId = graph.getIndexToNodeId().get(target);
 
                     if (sourceId != null && targetId != null) {
-                        graph.addEdge(sourceId, targetId, weight, edgeType, false);
+                        graph.addEdge(sourceId, targetId, weight, edgeType, bidirectional, relationType,
+                                confidence, description);  // [M-7]
                     }
                 }
             }

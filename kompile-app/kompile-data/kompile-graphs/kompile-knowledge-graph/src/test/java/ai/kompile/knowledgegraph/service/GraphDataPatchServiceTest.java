@@ -17,30 +17,33 @@ package ai.kompile.knowledgegraph.service;
 
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
+/**
+ * Patch service now reads/writes the live graph through {@link KnowledgeGraphService}
+ * (the @Primary matrix/vector store) rather than JPA — these tests mock that seam and
+ * assert the metadata the service hands back to {@code updateNode}.
+ */
 @ExtendWith(MockitoExtension.class)
 class GraphDataPatchServiceTest {
 
-    private static final TypeReference<LinkedHashMap<String, Object>> MAP_TYPE = new TypeReference<>() {};
-
     @Mock
-    private GraphNodeRepository nodeRepository;
+    private KnowledgeGraphService knowledgeGraphService;
 
     private ObjectMapper objectMapper;
     private GraphDataPatchService service;
@@ -48,7 +51,7 @@ class GraphDataPatchServiceTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        service = new GraphDataPatchService(nodeRepository, objectMapper);
+        service = new GraphDataPatchService(knowledgeGraphService, objectMapper);
     }
 
     @Test
@@ -57,7 +60,7 @@ class GraphDataPatchServiceTest {
                 Map.of("entity_type", "APPROVAL_ROLE", "legacy", true));
         GraphNode unrelated = node("n2", "Revenue", NodeLevel.ENTITY, 1L,
                 Map.of("entity_type", "APPROVAL_ROLE"));
-        when(nodeRepository.findByFactSheetIdAndNodeType(1L, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
                 .thenReturn(List.of(matching, unrelated));
 
         GraphDataPatchService.PatchResult result = service.patchNodeMetadata(new GraphDataPatchService.PatchRequest(
@@ -87,17 +90,15 @@ class GraphDataPatchServiceTest {
         assertFalse(result.samples().get(0).afterMetadata().containsKey("legacy"));
         assertEquals("FREE_CASH_FLOW_MARGIN",
                 result.samples().get(0).afterMetadata().get("entity_category"));
-        assertTrue(readMetadata(matching).containsKey("legacy"));
-        verify(nodeRepository, never()).save(any());
+        verify(knowledgeGraphService, never()).updateNode(any(), any(), any(), any());
     }
 
     @Test
     void patchNodeMetadata_appliesScopedMetadataPatch() throws Exception {
         GraphNode matching = node("n1", "Gross Margin", NodeLevel.ENTITY, 1L,
                 Map.of("entity_type", "APPROVAL_ROLE"));
-        when(nodeRepository.findByFactSheetIdAndNodeType(1L, NodeLevel.ENTITY))
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(1L, NodeLevel.ENTITY))
                 .thenReturn(List.of(matching));
-        when(nodeRepository.save(any(GraphNode.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         GraphDataPatchService.PatchResult result = service.patchNodeMetadata(new GraphDataPatchService.PatchRequest(
                 1L,
@@ -118,8 +119,7 @@ class GraphDataPatchServiceTest {
         assertEquals(1, result.matchedCount());
         assertEquals(1, result.changedCount());
         assertEquals(1, result.updatedCount());
-        assertEquals("FREE_CASH_FLOW_MARGIN", readMetadata(matching).get("custom_category"));
-        verify(nodeRepository).save(matching);
+        assertEquals("FREE_CASH_FLOW_MARGIN", captureUpdatedMetadata("n1").get("custom_category"));
     }
 
     @Test
@@ -141,7 +141,7 @@ class GraphDataPatchServiceTest {
                         List.of())));
 
         assertThrows(IllegalArgumentException.class, () -> service.patchNodeMetadata(request));
-        verifyNoInteractions(nodeRepository);
+        verifyNoInteractions(knowledgeGraphService);
     }
 
     @Test
@@ -150,8 +150,7 @@ class GraphDataPatchServiceTest {
                 Map.of("properties", Map.of(
                         "entity_subtype", "formula_cell",
                         "stale", true)));
-        when(nodeRepository.findByNodeType(NodeLevel.ENTITY)).thenReturn(List.of(formulaCell));
-        when(nodeRepository.save(any(GraphNode.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(knowledgeGraphService.getNodesByType(NodeLevel.ENTITY)).thenReturn(List.of(formulaCell));
 
         GraphDataPatchService.PatchResult result = service.patchNodeMetadata(new GraphDataPatchService.PatchRequest(
                 null,
@@ -173,9 +172,17 @@ class GraphDataPatchServiceTest {
         assertEquals(1, result.scannedCount());
         assertEquals(1, result.updatedCount());
         @SuppressWarnings("unchecked")
-        Map<String, Object> properties = (Map<String, Object>) readMetadata(formulaCell).get("properties");
+        Map<String, Object> properties = (Map<String, Object>) captureUpdatedMetadata("n1").get("properties");
         assertEquals("FPNA_FORMULA_CELL", properties.get("custom_category"));
         assertFalse(properties.containsKey("stale"));
+    }
+
+    /** Capture the metadata map the service passed to the live-store updateNode for {@code nodeId}. */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> captureUpdatedMetadata(String nodeId) {
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(knowledgeGraphService).updateNode(eq(nodeId), isNull(), isNull(), captor.capture());
+        return captor.getValue();
     }
 
     private GraphNode node(String nodeId, String title, NodeLevel nodeLevel, Long factSheetId,
@@ -188,9 +195,5 @@ class GraphDataPatchServiceTest {
         node.setFactSheetId(factSheetId);
         node.setMetadataJson(objectMapper.writeValueAsString(metadata));
         return node;
-    }
-
-    private LinkedHashMap<String, Object> readMetadata(GraphNode node) throws Exception {
-        return objectMapper.readValue(node.getMetadataJson(), MAP_TYPE);
     }
 }

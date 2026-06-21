@@ -14,7 +14,7 @@
   height: 100%;
   min-height: 500px;
   max-height: 80vh;
-  background: #1e1e2e;
+  background: var(--bg-surface);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -24,8 +24,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: #2a2a3e;
-  border-bottom: 1px solid #3a3a5e;
+  background: var(--bg-surface-elevated);
+  border-bottom: 1px solid var(--border-color);
   flex-wrap: wrap;
   gap: 8px;
 }
@@ -78,7 +78,7 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #888;
+  color: var(--text-secondary);
   text-align: center;
 }
 
@@ -86,13 +86,13 @@
   font-size: 48px;
   width: 48px;
   height: 48px;
-  color: #555;
+  color: var(--text-tertiary);
   margin-bottom: 16px;
 }
 
 .empty-hint {
   font-size: 0.85em;
-  color: #666;
+  color: var(--text-tertiary);
 }
 
 .message {
@@ -103,19 +103,19 @@
 
 .user-message {
   align-self: flex-end;
-  background: #3a3a6e;
-  color: #e0e0ff;
+  background: var(--color-primary-light);
+  color: var(--text-primary);
 }
 
 .assistant-message {
   align-self: flex-start;
-  background: #2a2a3e;
-  color: #d0d0e0;
-  border: 1px solid #3a3a5e;
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
 }
 
 .assistant-message.streaming {
-  border-color: #6366f1;
+  border-color: var(--color-primary);
 }
 
 .message-header {
@@ -151,8 +151,8 @@
   align-items: flex-end;
   gap: 8px;
   padding: 12px 16px;
-  background: #2a2a3e;
-  border-top: 1px solid #3a3a5e;
+  background: var(--bg-surface-elevated);
+  border-top: 1px solid var(--border-color);
 }
 
 .input-field {
@@ -160,7 +160,7 @@
 }
 
 .input-area textarea {
-  color: #e0e0ff;
+  color: var(--text-primary);
 }
 
 .waiting-indicator {
@@ -169,6 +169,6 @@
   justify-content: center;
   gap: 8px;
   padding: 8px;
-  color: #888;
+  color: var(--text-secondary);
   font-size: 0.85em;
 }

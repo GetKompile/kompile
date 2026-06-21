@@ -25,6 +25,7 @@ import ai.kompile.process.discovery.mining.declare.DeclareConstraint;
 import ai.kompile.process.discovery.mining.miner.HeuristicsNet;
 import ai.kompile.process.discovery.mining.perf.PerformanceAnalysis;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -161,5 +162,27 @@ public class MiningDiscoveryController {
             @RequestParam Long factSheetId,
             @RequestParam(required = false) String anchorType) {
         return miningService.performance(factSheetId, anchorType);
+    }
+
+    /**
+     * Export the discovered process as BPMN 2.0 XML.
+     *
+     * <p>Runs the full pipeline (event-log extraction → Inductive Miner → KB grounding →
+     * role-binding → BPMN 2.0 serialisation) and returns well-formed XML consumable by
+     * Camunda, Flowable, or any BPMN 2.0 modeller.</p>
+     *
+     * @param factSheetId    the fact sheet whose knowledge graph is the source
+     * @param noise          0 = classic Inductive Miner; 0&lt;t≤1 = IMf infrequent-behaviour filter
+     * @param anchorType     optional object-centric case notion
+     * @return BPMN 2.0 XML with swim lanes keyed by role binding
+     */
+    @GetMapping(value = "/bpmn", produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> bpmn(
+            @RequestParam Long factSheetId,
+            @RequestParam(defaultValue = "0.0") double noise,
+            @RequestParam(required = false) String anchorType) {
+        String xml = miningService.bpmnExport(factSheetId, noise, anchorType);
+        return xml == null ? ResponseEntity.noContent().build()
+                : ResponseEntity.ok().contentType(MediaType.APPLICATION_XML).body(xml);
     }
 }

@@ -121,6 +121,18 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-change-tracking</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-event-attribution</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-reasoning</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-graph-algorithms</artifactId>
         </dependency>
         <dependency>

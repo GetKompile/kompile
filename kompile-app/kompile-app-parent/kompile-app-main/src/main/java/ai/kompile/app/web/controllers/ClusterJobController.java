@@ -203,6 +203,12 @@ public class ClusterJobController {
         return ResponseEntity.ok(Map.of("jobId", jobId, "status", s));
     }
 
+    /** All delegated-job statuses on this worker (for the orchestrator's per-worker job view). */
+    @GetMapping("/local/jobs")
+    public ResponseEntity<Map<String, Object>> localJobs() {
+        return ResponseEntity.ok(Map.of("jobs", new java.util.LinkedHashMap<>(jobStatus)));
+    }
+
     /** Cancel a running delegated job on this worker. */
     @DeleteMapping("/jobs/{jobId}/cancel")
     public ResponseEntity<Map<String, Object>> cancelJob(

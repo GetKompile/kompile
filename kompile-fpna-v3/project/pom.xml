@@ -820,10 +820,8 @@
                 <buildArg>--initialize-at-run-time=sun.rmi</buildArg>
                 <buildArg>--initialize-at-run-time=java.rmi.server</buildArg>
                 <buildArg>--initialize-at-run-time=sun.java.rmi</buildArg>
-                <!-- Camel/Drools runtime init -->
+                <!-- Camel runtime init -->
                 <buildArg>--initialize-at-run-time=org.apache.camel</buildArg>
-                <buildArg>--initialize-at-run-time=org.drools</buildArg>
-                <buildArg>--initialize-at-run-time=org.kie</buildArg>
                 <!-- Resource includes -->
                 <buildArg>-H:IncludeResources=log4j2.xml</buildArg>
                 <buildArg>-H:IncludeResources=log4j2-spring.xml</buildArg>
@@ -850,8 +848,6 @@
                 <buildArg>-H:IncludeResources=META-INF/services/org\.apache\.camel\..*</buildArg>
                 <buildArg>-H:IncludeResources=org/apache/camel/.*\.json</buildArg>
                 <buildArg>-H:IncludeResources=META-INF/org/apache/camel/.*</buildArg>
-                <buildArg>-H:IncludeResources=META-INF/services/org\.kie\..*</buildArg>
-                <buildArg>-H:IncludeResources=META-INF/services/org\.drools\..*</buildArg>
                 <buildArg>-H:IncludeResources=static/.*</buildArg>
                 <buildArg>-H:IncludeResources=application\.properties</buildArg>
                 <buildArg>-H:IncludeResources=application-.*\.properties</buildArg>

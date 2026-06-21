@@ -39,6 +39,9 @@ public class GraphRagController {
 
     private final GraphRagService graphRagService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ai.kompile.app.rag.GraphReasoningRetriever graphReasoningRetriever;
+
     @Autowired
     public GraphRagController(@Autowired(required = false) GraphRagService graphRagService) {
         this.graphRagService = graphRagService;
@@ -69,6 +72,19 @@ public class GraphRagController {
         int maxResults = request.containsKey("maxResults")
                 ? ((Number) request.get("maxResults")).intValue() : 5;
         String conversationId = (String) request.getOrDefault("conversationId", "default");
+
+        // Reasoning strategies (causal / probabilistic) route to the reasoning retriever, which
+        // returns causal chains or MEBN posteriors as the answer/context.
+        if (graphReasoningRetriever != null && graphReasoningRetriever.supports(searchTypeStr)) {
+            String reasoning = graphReasoningRetriever.retrieve(query, searchTypeStr, maxResults);
+            if (reasoning != null && !reasoning.isBlank()) {
+                Map<String, Object> reasoningResponse = new LinkedHashMap<>();
+                reasoningResponse.put("answer", reasoning);
+                reasoningResponse.put("context", reasoning);
+                reasoningResponse.put("searchType", searchTypeStr.toUpperCase());
+                return ResponseEntity.ok(reasoningResponse);
+            }
+        }
 
         SearchType searchType;
         try {
@@ -133,9 +149,11 @@ public class GraphRagController {
 
             result.put("searchTypes", List.of(
                     Map.of("id", "LOCAL", "name", "Local Search",
-                            "description", "Vector similarity search for query-relevant nodes, expands with neighbors and KG link prediction"),
+                            "description", "Vector similarity search for query-relevant nodes, expands with immediate neighbors"),
+                    Map.of("id", "HYBRID", "name", "Hybrid (Personalized PageRank)",
+                            "description", "Embedding-seeded Personalized PageRank: multi-hop, blends vector similarity, graph structure, KG embeddings and connecting paths"),
                     Map.of("id", "GLOBAL", "name", "Global Search",
-                            "description", "PageRank-based importance scoring with community detection")
+                            "description", "Community detection + LLM community reports for whole-graph sensemaking (PageRank fallback)")
             ));
         } else {
             result.put("type", "none");

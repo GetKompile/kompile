@@ -39,6 +39,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import ai.kompile.knowledgegraph.embedding.adapter.KgEmbeddingGraphAdapter;
+
 /**
  * Service for managing KG embedding training jobs.
  */
@@ -54,6 +56,14 @@ public class KGEmbeddingJobService {
     private KGEmbeddingJobRepository jobRepository;
     private KGEmbeddingStorageService storageService;
     private SimpMessagingTemplate messagingTemplate;
+
+    /**
+     * Store-agnostic graph adapters (JPA + live matrix store). Field-injected and optional so the
+     * existing constructor signature is unchanged; when no adapters are wired (e.g. plain unit tests)
+     * the job falls back to the JPA {@link KGEmbeddingStorageService} directly.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private List<KgEmbeddingGraphAdapter> graphAdapters;
 
     // Track running models for cancellation
     private final Map<String, KGEmbeddingModel> runningModels = new ConcurrentHashMap<>();
@@ -122,8 +132,17 @@ public class KGEmbeddingJobService {
             job.setStartedAt(Instant.now());
             jobRepository.save(job);
 
+            // Resolve which store actually holds the graph (prefer the live/matrix store), then extract
+            // triples from it. Falls back to the JPA storage service when no adapters are wired.
+            KgEmbeddingGraphAdapter adapter = resolveGraphAdapter(factSheetId);
+            if (adapter != null) {
+                log.info("Training KG embeddings for fact sheet {} from the '{}' store", factSheetId, adapter.storeType());
+            }
+
             // Extract triples
-            List<Triple> triples = storageService.extractTriples(factSheetId);
+            List<Triple> triples = adapter != null
+                    ? adapter.extractTriples(factSheetId)
+                    : storageService.extractTriples(factSheetId);
             job.setTotalTriples(triples.size());
             jobRepository.save(job);
 
@@ -154,9 +173,13 @@ public class KGEmbeddingJobService {
             TrainingResult result = model.train(triples, configWithCallback);
 
             if (result.success()) {
-                // Store embeddings
+                // Store embeddings back into the same store the triples came from.
                 Long version = System.currentTimeMillis();
-                storageService.storeEmbeddings(model, factSheetId, version);
+                if (adapter != null) {
+                    adapter.storeEmbeddings(model, factSheetId, version);
+                } else {
+                    storageService.storeEmbeddings(model, factSheetId, version);
+                }
 
                 job.setStatus(JobStatus.COMPLETED);
                 job.setEmbeddingVersion(version);
@@ -256,6 +279,32 @@ public class KGEmbeddingJobService {
             case TRANSE -> new TransEModel();
             case ROTATE -> new RotatEModel();
         };
+    }
+
+    /**
+     * Picks the graph adapter for a fact sheet: the highest-priority adapter that actually has graph
+     * data (so the live matrix store wins when populated), else the highest-priority adapter as a
+     * best-effort fallback. Returns {@code null} when no adapters are wired (unit-test / minimal
+     * context), in which case the caller uses the JPA storage service directly.
+     */
+    private KgEmbeddingGraphAdapter resolveGraphAdapter(Long factSheetId) {
+        if (graphAdapters == null || graphAdapters.isEmpty()) {
+            return null;
+        }
+        List<KgEmbeddingGraphAdapter> byPriority = graphAdapters.stream()
+                .sorted(java.util.Comparator.comparingInt(KgEmbeddingGraphAdapter::priority).reversed())
+                .toList();
+        for (KgEmbeddingGraphAdapter adapter : byPriority) {
+            try {
+                if (adapter.hasGraphData(factSheetId)) {
+                    return adapter;
+                }
+            } catch (Exception e) {
+                log.warn("Adapter '{}' failed hasGraphData check for fact sheet {}: {}",
+                        adapter.storeType(), factSheetId, e.getMessage());
+            }
+        }
+        return byPriority.get(0);
     }
 
     private void sendProgressUpdate(String jobId, TrainingProgress progress) {

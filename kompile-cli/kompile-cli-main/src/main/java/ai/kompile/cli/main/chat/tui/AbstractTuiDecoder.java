@@ -84,6 +84,7 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         if (!containsContentCharacter(row)) return false;
         if (isSeparatorOrBorder(row)) return false;
         if (containsMostlyDecorative(row)) return false;
+        if (hasInternalBoxRule(row)) return false;   // mid-redraw jumble: a rule bled into text
         if (isProgressLine(row)) return false;   // transient spinners are never content
         return !isChrome(row);
     }
@@ -165,36 +166,55 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
             history.addAll(visible);
             return;
         }
+        // The visible window is the agent's CURRENT screen — a re-rendered view of the
+        // conversation tail. Find the anchor: the most-recent position p where history's
+        // tail history[p..end] is FULLY reproduced by the head of the visible window (the
+        // live region the agent re-rendered; the boundary line may have grown). Requiring
+        // the WHOLE tail to match — not just the longest coincidental run — prevents
+        // chopping committed history on a stray early match (which dropped text).
         int hSize = history.size();
         int low = Math.max(0, hSize - ALIGN_LOOKBACK);
-        for (int s = hSize - 1; s >= low; s--) {
-            int n = hSize - s;                // history lines to match against visible head
-            if (n > visible.size()) continue;
-            boolean match = true;
+        int anchor = -1;
+        for (int p = hSize - 1; p >= low; p--) {
+            int n = hSize - p;
+            if (n > visible.size()) continue;          // tail longer than the screen — not a full match
+            boolean full = true;
             for (int i = 0; i < n; i++) {
-                String h = history.get(s + i).text();
+                String h = history.get(p + i).text();
                 String v = visible.get(i).text();
-                boolean last = (i == n - 1);
                 if (h.equals(v)) continue;
-                if (last && !h.isBlank() && v.startsWith(h)) continue; // last line grew
-                match = false;
+                if (i == n - 1 && !h.isBlank() && v.startsWith(h)) continue;  // boundary line grew
+                full = false;
                 break;
             }
-            if (match) {
-                // The last matched line may have grown — adopt the visible version.
-                history.set(hSize - 1, visible.get(n - 1));
-                for (int i = n; i < visible.size(); i++) history.add(visible.get(i));
-                return;
-            }
+            if (full) { anchor = p; break; }           // smallest n = most-recent anchor
         }
-        // No alignment found. For full-repaint TUIs this almost always means the
-        // visible text was re-laid-out (streaming output rewrapped as it grew),
-        // NOT that a fresh screen of content scrolled in. Appending here would
-        // duplicate the rewrapped lines every frame — making history grow without
-        // bound and the turn never settle. Treat the current screen as
-        // authoritative instead.
-        history.clear();
-        history.addAll(visible);
+        if (anchor >= 0) {
+            // The live tail re-rendered (grew / scrolled / expanded). Replace it with the
+            // current screen; committed history above the anchor is preserved.
+            while (history.size() > anchor) history.remove(history.size() - 1);
+            history.addAll(visible);
+            return;
+        }
+        // No full-tail anchor — a collapsed or re-laid-out screen (e.g. a global
+        // detailed-transcript toggle). NEVER clear committed history (that loses the
+        // user's text). Append only lines the screen adds that aren't already in the
+        // recent tail: a collapse adds nothing, a detail toggle adds only its new lines.
+        appendNovelTail(visible);
+    }
+
+    /**
+     * Append only the entries of {@code visible} whose text isn't already present in the
+     * recent tail of history — so a re-laid-out / collapsed screen neither duplicates the
+     * transcript nor drops committed lines.
+     */
+    private void appendNovelTail(List<HistoryEntry> visible) {
+        int from = Math.max(0, history.size() - ALIGN_LOOKBACK);
+        java.util.Set<String> recent = new java.util.HashSet<>();
+        for (int i = from; i < history.size(); i++) recent.add(history.get(i).text());
+        for (HistoryEntry e : visible) {
+            if (recent.add(e.text())) history.add(e);   // add() is false when already present
+        }
     }
 
     /**
@@ -218,7 +238,12 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
                 }
                 int j = i;
                 List<String> group = new ArrayList<>();
-                while (j < history.size() && history.get(j).kind() == TuiLineKind.TOOL) {
+                group.add(history.get(j).text());   // the tool-call header
+                j++;
+                // Only following DETAIL lines (tree branches, results) join this call; a NEW tool
+                // HEADER (● Name(...)) starts its OWN panel instead of merging into this one.
+                while (j < history.size() && history.get(j).kind() == TuiLineKind.TOOL
+                        && !isToolHeader(history.get(j).text())) {
                     group.add(history.get(j).text());
                     j++;
                 }
@@ -294,7 +319,7 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         if (row == null) return TuiLineKind.CHROME;
         String r = row.strip();
         if (r.length() < MIN_CONTENT_LENGTH || !containsContentCharacter(r)) return TuiLineKind.CHROME;
-        if (isSeparatorOrBorder(r) || containsMostlyDecorative(r)) return TuiLineKind.CHROME;
+        if (isSeparatorOrBorder(r) || containsMostlyDecorative(r) || hasInternalBoxRule(r)) return TuiLineKind.CHROME;
         if (isProgressLine(r)) return TuiLineKind.PROGRESS;
         if (isChrome(r)) return TuiLineKind.CHROME;
         if (isToolLine(r)) return TuiLineKind.TOOL;
@@ -305,7 +330,8 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
     protected boolean isProgressLine(String row) {
         String lower = row.toLowerCase(Locale.ROOT);
         if (lower.contains("esc to interrupt") || lower.contains("esc to cancel")
-                || lower.contains("esc interrupt") || lower.contains("ctrl+c to interrupt")) {
+                || lower.contains("esc interrupt") || lower.contains("ctrl+c to interrupt")
+                || lower.contains("thinking with max effort")) {
             return true;
         }
         String text = stripLeadingChromeGlyphs(lower);
@@ -315,7 +341,198 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
                 && (text.contains("(") || hasBrailleSpinner(row))) {
             return true;
         }
-        return hasBrailleSpinner(row) && row.strip().length() <= 24;
+        if (hasBrailleSpinner(row) && row.strip().length() <= 24) return true;
+        // Claude's thinking spinner leads with a rotating star/asterisk dingbat (✻ ✶ ✦ ✤),
+        // and mid-redraw frames merge it with a horizontal rule and a cycling word fragment
+        // ("✻─Flam─", "·─Flambéing…─"). A star-dingbat lead is ALWAYS the spinner; a middle-dot/
+        // bullet lead combined with a box rule is the jumbled spinner. Treat both — plus any
+        // "(Ns" elapsed timer — as transient progress so the cycling words never leak.
+        // Claude's spinner cycles asterisk/star glyphs across several Unicode blocks and,
+        // mid-redraw, merges with box rules + a token counter ("✶─Mustering…──3──↑─450──").
+        // Detect it MULTI-SIGNAL so it survives the exact glyph: a star/asterisk lead, an
+        // elapsed "(Ns" timer, a "↑N" token counter (which the jumbled frames carry), or —
+        // after stripping leading symbols/rules — a lone whimsical word ending in an ellipsis.
+        char lead = firstVisibleChar(row);
+        // True star/asterisk dingbats (U+2720–U+274F, ∗, ⁕) are NEVER prose leads —
+        // treat them as spinner unconditionally.  The middle dot (·) is ambiguous: it
+        // is also used as a bullet prefix in content ("· item").  Guard it with the
+        // same short-length threshold used for braille spinners, or allow it only when
+        // it is immediately followed by a box rule (mid-redraw merged frame).
+        if (lead != '·' && isStarAsteriskGlyph(lead)) return true;
+        if (lead == '·' && (row.strip().length() <= 24 || containsRuleChar(row))) return true;
+        if (hasElapsedTimer(text) || hasTokenCounter(row)) return true;
+        // A lone whimsical gerund word optionally wrapped in box rules/symbols
+        // ("─Flambéing…─", "✻─Mustering…──", "Herding...", "Sautéing…").
+        // Strip leading non-alphanumeric chars from the whole row, isolate the
+        // first space-delimited token, then strip trailing non-letter chars
+        // (box rules, dashes, dots — everything except the "…"/"..." marker)
+        // from that token.  Match when the bare word consists entirely of
+        // Unicode letters (handles accented: é, ö, …) and an ellipsis is
+        // present anywhere in the original token.
+        String core = stripLeadingSymbolsAndRules(row).strip();
+        int sp = core.indexOf(' ');
+        String firstToken = sp < 0 ? core : core.substring(0, sp);
+        // Check for ellipsis in the raw token BEFORE stripping trailing symbols.
+        boolean hasEllipsis = firstToken.contains("…") || firstToken.contains("...");
+        // Strip trailing non-letter chars to get the bare word.
+        String bareWord = stripTrailingNonLetters(firstToken);
+        if (hasEllipsis && !bareWord.isEmpty() && isAllLetters(bareWord)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Claude's spinner glyph family.
+     *
+     * Covers every glyph observed in Claude Code's cycling spinner and their
+     * common mid-redraw aliases:
+     *   · U+00B7  MIDDLE DOT         — appears as the "·" frame in the cycle
+     *   ∗ U+2217  ASTERISK OPERATOR  — Math-Operators asterisk (explicit)
+     *   ⁕ U+2055  FLOWER PUNCTUATION
+     *   ✱ U+2731  HEAVY ASTERISK     — explicit, also falls in the range below
+     *   U+2720–U+274F Dingbats stars/asterisks (✠ ✢ ✣ ✤ ✥ ✦ ✧ ✩ ✪ ✫ ✬ ✭ ✮ ✯
+     *             ✰ ✱ ✲ ✳ ✴ ✵ ✶ ✷ ✸ ✹ ✺ ✻ ✼ ✽ ✾ ✿ ❀ ❁ ❂ ❃ ❄ ❅ ❆ ❇ ❈ ❉ ❊ ❋ ❏)
+     *
+     * Deliberately excluded: ✅ (U+2705), ⚠ (U+26A0), → (U+2192) and other
+     * indicator/arrow symbols outside the star/asterisk blocks.
+     */
+    private boolean isStarAsteriskGlyph(char c) {
+        return c == '·'                // · MIDDLE DOT (spinner frame)
+                || c == '∗'           // ∗ ASTERISK OPERATOR
+                || c == '⁕'           // ⁕ FLOWER PUNCTUATION MARK
+                || (c >= '✠' && c <= '❏');  // Dingbats star/asterisk block
+    }
+
+    /**
+     * A token-counter annotation as shown in Claude's spinner footer.
+     *
+     * Handles three observed variants:
+     *  1. "↑N" / "↓N"   — arrow immediately followed (possibly through box rules)
+     *                       by one or more digits; also catches jumbled frames like
+     *                       "↑─450──" where box rules separate arrow from digits.
+     *  2. "N tokens"     — a plain digit run followed by the word "tokens" (case-insensitive).
+     *  3. "N.Nk tokens"  — same with a decimal+k suffix (e.g. "1.4k tokens").
+     */
+    private boolean hasTokenCounter(String row) {
+        // Variant 1: ↑/↓ arrow present anywhere + at least one digit in the row.
+        if ((row.indexOf('↑') >= 0 || row.indexOf('↓') >= 0)) {
+            for (int i = 0; i < row.length(); i++) {
+                if (Character.isDigit(row.charAt(i))) return true;
+            }
+        }
+        // Variants 2 & 3: "N tokens" or "N.Nk tokens".
+        String lower = row.toLowerCase(Locale.ROOT);
+        int idx = lower.indexOf("tokens");
+        if (idx > 0) {
+            // Walk backward past spaces/box rules to find digit(s).
+            int j = idx - 1;
+            while (j >= 0 && (row.charAt(j) == ' ' || isBoxHorizontalRule(row.charAt(j))
+                    || row.charAt(j) == 'k' || row.charAt(j) == '.')) j--;
+            if (j >= 0 && Character.isDigit(row.charAt(j))) return true;
+        }
+        return false;
+    }
+
+    private boolean isAllLetters(String w) {
+        if (w.isEmpty()) return false;
+        for (int i = 0; i < w.length(); i++) if (!Character.isLetter(w.charAt(i))) return false;
+        return true;
+    }
+
+    /** Drop leading non-alphanumeric glyphs (spinner stars, box rules, spaces). */
+    private String stripLeadingSymbolsAndRules(String row) {
+        int i = 0;
+        while (i < row.length() && !Character.isLetterOrDigit(row.charAt(i))) i++;
+        return row.substring(i);
+    }
+
+    /**
+     * Drop trailing non-letter chars (box rules, dashes, digits, punctuation)
+     * from a token, returning just the leading letter run.  Used to recover a
+     * bare word from a spinner token like "Flambéing…──3──".
+     */
+    private String stripTrailingNonLetters(String token) {
+        int end = token.length();
+        while (end > 0 && !Character.isLetter(token.charAt(end - 1))) end--;
+        return token.substring(0, end);
+    }
+
+    /**
+     * A horizontal-line glyph jammed against a letter (no separating space) means the frame
+     * was captured mid-redraw — Claude's rule/dash bled into a text line ("l─st", "──read──read").
+     * Two glyph classes, two thresholds, so prose is spared:
+     *  - BOX-drawing rules (─ ━ ═ …) never occur inside prose → a single jammed one is a jumble.
+     *  - LONG dashes (— – ―) are Claude's own separator ("read — read files", SPACED → fine);
+     *    only when ≥2 are jammed against letters (the mid-redraw duplication) is it a jumble,
+     *    so legit spaced dashes and a lone "word—word" are NOT matched.
+     * Tree/tool markers ("└─ List" — a space follows the rule) are spared either way.
+     */
+    private boolean hasInternalBoxRule(String row) {
+        int jammedDashes = 0;
+        for (int i = 0; i < row.length(); i++) {
+            char c = row.charAt(i);
+            boolean box = isBoxHorizontalRule(c);
+            boolean dash = isLongDash(c);
+            if (!box && !dash) continue;
+            boolean letterBefore = i > 0 && Character.isLetter(row.charAt(i - 1));
+            boolean letterAfter = i + 1 < row.length() && Character.isLetter(row.charAt(i + 1));
+            if (!letterBefore && !letterAfter) continue;   // spaced = prose, not a jumble
+            if (box) return true;                          // box rule jammed in text = definite jumble
+            jammedDashes++;
+        }
+        return jammedDashes >= 2;                           // ≥2 jammed long-dashes = mid-redraw jumble
+    }
+
+    /** Box-drawing horizontal rules — never appear inside prose. */
+    private boolean isBoxHorizontalRule(char c) {
+        return c == '─' || c == '━' || c == '═' || c == '┄' || c == '┅'
+                || c == '┈' || c == '┉' || c == '╌' || c == '╍';
+    }
+
+    /** Long dashes (figure/en/em/horizontal-bar/minus) — Claude's separator; ASCII hyphen excluded. */
+    private boolean isLongDash(char c) {
+        return c == '‒' || c == '–' || c == '—' || c == '―' || c == '−';
+    }
+
+    private char firstVisibleChar(String row) {
+        for (int i = 0; i < row.length(); i++) {
+            char c = row.charAt(i);
+            if (!Character.isWhitespace(c)) return c;
+        }
+        return ' ';
+    }
+
+    private boolean containsRuleChar(String row) {
+        for (int i = 0; i < row.length(); i++) {
+            char c = row.charAt(i);
+            if (c >= '─' && c <= '╿') return true;
+        }
+        return false;
+    }
+
+    /** First visible glyph is a Dingbats star/asterisk (U+2720–U+274F) — Claude's spinner family. */
+    private boolean leadsWithStarSpinner(String row) {
+        for (int i = 0; i < row.length(); i++) {
+            char c = row.charAt(i);
+            if (Character.isWhitespace(c)) continue;
+            return c >= '✠' && c <= '❏';
+        }
+        return false;
+    }
+
+    /** True when the text carries an elapsed-time counter like "(2s", "(13s", "(1m". */
+    private boolean hasElapsedTimer(String text) {
+        int p = text.indexOf('(');
+        while (p >= 0 && p + 1 < text.length()) {
+            int q = p + 1;
+            while (q < text.length() && Character.isDigit(text.charAt(q))) q++;
+            if (q > p + 1 && q < text.length() && (text.charAt(q) == 's' || text.charAt(q) == 'm')) {
+                return true;
+            }
+            p = text.indexOf('(', p + 1);
+        }
+        return false;
     }
 
     private boolean hasBrailleSpinner(String row) {
@@ -338,14 +555,46 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         }
         // kompile-injected MCP tool result lines.
         if (trimmed.startsWith("[kompile]")) return true;
-        // Bullet/marker followed by a tool verb (e.g. "• Explored", "• Ran ...").
-        String text = stripLeadingChromeGlyphs(trimmed.toLowerCase(Locale.ROOT));
-        return startsWithToolVerb(text);
+        // A TOOL bullet (● ⏺ •) followed by a tool verb — e.g. "● Read(...)", "• Explored …".
+        // A BARE verb, a markdown bullet ("- read — desc"), a table cell ("│ read │ …", whose
+        // leading │ is stripped upstream to "read │ …"), or plain prose ("read the file") is
+        // CONTENT — matching those produced false/mangled tool panels. Require the tool bullet so
+        // only genuine tool-call lines become panels.
+        if (c0 == '●' || c0 == '⏺' || c0 == '•') {
+            String text = stripLeadingChromeGlyphs(trimmed.toLowerCase(Locale.ROOT));
+            // A tool invocation is "Name(args)" — ANY tool name (Bash, Grep, Read …), not just the
+            // past-tense verbs in TOOL_VERBS — or a bare past-tense verb ("• Explored …").
+            return looksLikeToolInvocation(text) || startsWithToolVerb(text);
+        }
+        return false;
+    }
+
+    /** "name(" — a word immediately followed by '(', i.e. a tool invocation like {@code Bash(...)}. */
+    private boolean looksLikeToolInvocation(String text) {
+        int i = 0;
+        while (i < text.length() && Character.isLetterOrDigit(text.charAt(i))) i++;
+        return i > 0 && i < text.length() && text.charAt(i) == '(';
+    }
+
+    /** A tool-call HEADER ("● Name(...)", "• Explored …", "[kompile] …") — starts a NEW tool
+     *  panel. Detail lines (tree branches └ ├) continue the current call's panel. */
+    private boolean isToolHeader(String row) {
+        String t = row.strip();
+        if (t.isEmpty()) return false;
+        char c0 = t.charAt(0);
+        return c0 == '●' || c0 == '⏺' || c0 == '•' || t.startsWith("[kompile]");
     }
 
     private boolean startsWithToolVerb(String text) {
         for (String verb : TOOL_VERBS) {
             if (text.equals(verb) || text.startsWith(verb + " ") || text.startsWith(verb + "(")) {
+                // "verb — description" (an em-dash list separator) is a CONTENT description, e.g.
+                // Claude's MCP tools list "read — read files" — NOT a tool call. A real tool line
+                // is "verb <path/args>", so a following em-dash means this is prose, not a call.
+                String rest = text.length() > verb.length() ? text.substring(verb.length()).strip() : "";
+                if (rest.startsWith("—") || rest.startsWith("–")) {
+                    return false;
+                }
                 return true;
             }
         }

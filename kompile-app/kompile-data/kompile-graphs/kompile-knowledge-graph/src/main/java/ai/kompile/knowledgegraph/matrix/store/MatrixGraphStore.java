@@ -161,6 +161,37 @@ public interface MatrixGraphStore {
                    double weight, String edgeType, boolean bidirectional);
 
     /**
+     * Adds an edge carrying an explicit semantic {@code relationType} (stored as a first-class
+     * per-edge field) in addition to the structural {@code edgeType} routing key. The default
+     * delegates to {@link #addEdge(String, String, String, double, String, boolean)} (ignoring
+     * relationType); the matrix store overrides it to persist the relation.
+     *
+     * @param relationType semantic relation, or {@code null} for a purely structural edge
+     * @return true if successful
+     */
+    default boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
+                   double weight, String edgeType, boolean bidirectional, String relationType) {
+        return addEdge(graphId, sourceNodeId, targetNodeId, weight, edgeType, bidirectional);
+    }
+
+    /**
+     * [M-7] Adds an edge with full quality/provenance metadata: relationType, confidence, and
+     * description are persisted as first-class per-edge fields so they survive vector-store
+     * round-trips. The default delegates to the 7-arg overload (ignoring confidence/description);
+     * the {@link VectorStoreMatrixGraphStore} overrides it to persist all fields.
+     *
+     * @param relationType  semantic relation, or {@code null}
+     * @param confidence    edge confidence [0,1], or {@code null}
+     * @param description   human-readable description, or {@code null}
+     * @return true if successful
+     */
+    default boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
+                            double weight, String edgeType, boolean bidirectional,
+                            String relationType, Double confidence, String description) {
+        return addEdge(graphId, sourceNodeId, targetNodeId, weight, edgeType, bidirectional, relationType);
+    }
+
+    /**
      * Removes an edge between two nodes.
      *
      * @param graphId      The graph ID
@@ -273,6 +304,13 @@ public interface MatrixGraphStore {
             String targetNodeId,
             double weight,
             String edgeType,
-            boolean bidirectional
-    ) {}
+            boolean bidirectional,
+            String relationType
+    ) {
+        /** Backward-compatible constructor for structural edges (no explicit semantic relation). */
+        public EdgeDefinition(String sourceNodeId, String targetNodeId, double weight,
+                              String edgeType, boolean bidirectional) {
+            this(sourceNodeId, targetNodeId, weight, edgeType, bidirectional, null);
+        }
+    }
 }

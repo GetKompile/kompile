@@ -18,13 +18,18 @@ public enum NodeExecutionType {
 
     /**
      * Execute using Drools rule engine — single rule or rule group.
+     * @deprecated Replaced by {@link #FOL_RULE}. Enum value retained for JSON backward compatibility
+     *             during data migration; dispatch to new FOL_RULE backend.
      */
+    @Deprecated(since = "2026-06-21", forRemoval = false)
     DROOLS_RULE,
 
     /**
      * Execute using Drools with full inference chaining.
-     * All rules fire based on working memory state.
+     * @deprecated Replaced by {@link #PSL_RULE}. Enum value retained for JSON backward compatibility
+     *             during data migration; dispatch to new PSL_RULE backend.
      */
+    @Deprecated(since = "2026-06-21", forRemoval = false)
     DROOLS_INFERENCE,
 
     /**
@@ -71,8 +76,31 @@ public enum NodeExecutionType {
 
     /**
      * Execute using Drools decision tables (XLS/CSV spreadsheet-based rules).
-     * The node script contains Base64-encoded spreadsheet content or a path to the table.
-     * Parameters can override cell values before compilation.
+     * @deprecated Replaced by {@link #TABULAR_RULE}. Enum value retained for JSON backward compatibility
+     *             during data migration; dispatch to new TABULAR_RULE backend.
      */
-    DROOLS_DECISION_TABLE
+    @Deprecated(since = "2026-06-21", forRemoval = false)
+    DROOLS_DECISION_TABLE,
+
+    /**
+     * Execute using the native FOL/PSL inference engine (FolInferenceService + HlMrfMapInference).
+     * The node script contains DRL-style rule text parsed to FolRule objects, or raw PSL rule text.
+     * Replaces DROOLS_RULE for new nodes.
+     */
+    FOL_RULE,
+
+    /**
+     * Execute using the native PSL (Probabilistic Soft Logic) HL-MRF inference engine.
+     * Full forward-chaining over the PSL program with soft-truth weights.
+     * Replaces DROOLS_INFERENCE for new nodes.
+     */
+    PSL_RULE,
+
+    /**
+     * Execute a tabular decision table through the native TableDecisionCompiler → PSL pipeline.
+     * The node script contains a CSV-format decision table (header row = column names with
+     * CONDITION/CONCLUSION role hints).  Parameters: hitPolicy (FIRST|ALL|PRIORITY), weight.
+     * Replaces DROOLS_DECISION_TABLE for new nodes.
+     */
+    TABULAR_RULE
 }

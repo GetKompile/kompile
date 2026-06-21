@@ -21,17 +21,17 @@ describe('Process Engine UI Flows', () => {
 
   describe('Navigation to Process Engine', () => {
     it('should navigate to Tools and show Process Engine sub-tab', () => {
-      // Click the Tools nav item
-      cy.get('.nav-items').contains('Tools').click();
-      cy.url().should('include', '#/tools');
+      // Click the Data nav tab (TODO(e2e): was 'Tools' top-level tab, now 'Data')
+      cy.topNav('Data').click();
 
-      // Look for the Process Engine sub-tab button
-      cy.get('.sub-tab, button').contains('Process Engine').should('exist');
+      // Look for the Business Processes (process engine) sub-tab button
+      cy.get('.sub-tab').contains('Business Processes').should('exist');
     });
 
     it('should show the Process Engine dashboard when sub-tab is clicked', () => {
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
 
       // Verify dashboard header renders
       cy.get('app-process-engine-dashboard').should('exist');
@@ -43,8 +43,9 @@ describe('Process Engine UI Flows', () => {
 
   describe('Dashboard Tab Navigation', () => {
     beforeEach(() => {
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
     });
 
     it('should show Ontologies tab content by default', () => {
@@ -79,8 +80,9 @@ describe('Process Engine UI Flows', () => {
     const testName = `e2e-ui-ontology-${Date.now()}`;
 
     beforeEach(() => {
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
     });
 
     it('should open create form and submit an ontology', () => {
@@ -118,8 +120,9 @@ describe('Process Engine UI Flows', () => {
 
   describe('Runs Tab Functionality', () => {
     beforeEach(() => {
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
       cy.get('.mat-mdc-tab').contains('Runs').click();
     });
 
@@ -177,8 +180,9 @@ describe('Process Engine UI Flows', () => {
 
   describe('Controls Tab Functionality', () => {
     beforeEach(() => {
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
       cy.get('.mat-mdc-tab').contains('Controls').click();
     });
 
@@ -228,8 +232,9 @@ describe('Process Engine UI Flows', () => {
 
   describe('Discovery Tab', () => {
     beforeEach(() => {
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
       cy.get('.mat-mdc-tab').contains('Discovery').click();
     });
 
@@ -273,8 +278,9 @@ describe('Process Engine UI Flows', () => {
 
     it('should open detail view when View Details is clicked', () => {
       cy.visit('/');
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
       cy.get('.mat-mdc-tab').contains('Runs').click();
 
       // Switch to All to see completed runs
@@ -290,8 +296,9 @@ describe('Process Engine UI Flows', () => {
 
     it('should show step pipeline in detail view', () => {
       cy.visit('/');
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
       cy.get('.mat-mdc-tab').contains('Runs').click();
       cy.get('mat-button-toggle').contains('All').click();
       cy.wait(1000);
@@ -306,8 +313,9 @@ describe('Process Engine UI Flows', () => {
 
     it('should show Assess Risk and Explain Step buttons in detail view', () => {
       cy.visit('/');
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
       cy.get('.mat-mdc-tab').contains('Runs').click();
       cy.get('mat-button-toggle').contains('All').click();
       cy.wait(1000);
@@ -325,8 +333,9 @@ describe('Process Engine UI Flows', () => {
 
     it('should show back button to return to list', () => {
       cy.visit('/');
-      cy.get('.nav-items').contains('Tools').click();
-      cy.get('.sub-tab, button').contains('Process Engine').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
+      cy.get('.sub-tab').contains('Business Processes').click();
       cy.get('.mat-mdc-tab').contains('Runs').click();
       cy.get('mat-button-toggle').contains('All').click();
       cy.wait(1000);

@@ -31,21 +31,21 @@ describe('Dark Mode', () => {
   // ═══════════════════════════ Theme Toggle Button ═══════════════════════════
 
   describe('Theme Toggle Button', () => {
-    it('should display a theme toggle button in the nav footer', () => {
-      cy.get('.nav-footer .nav-action').contains(/Light|Dark/).should('exist');
+    it('should display a theme toggle button in the header', () => {
+      cy.get('.theme-toggle-btn').should('exist');
     });
 
     it('should show dark_mode icon when in light theme', () => {
       // Force light theme
       cy.window().then(win => win.localStorage.setItem('kompile-theme', 'light'));
       cy.reload();
-      cy.get('.nav-footer .nav-action mat-icon').contains('dark_mode').should('exist');
+      cy.get('.theme-toggle-btn mat-icon').contains('dark_mode').should('exist');
     });
 
     it('should show light_mode icon when in dark theme', () => {
       cy.window().then(win => win.localStorage.setItem('kompile-theme', 'dark'));
       cy.reload();
-      cy.get('.nav-footer .nav-action mat-icon').contains('light_mode').should('exist');
+      cy.get('.theme-toggle-btn mat-icon').contains('light_mode').should('exist');
     });
   });
 
@@ -61,7 +61,7 @@ describe('Dark Mode', () => {
       cy.get('body').should('not.have.class', 'dark-theme');
 
       // Toggle to dark
-      cy.get('.nav-footer .nav-action').contains(/Dark/).click();
+      cy.get('.theme-toggle-btn').click();
 
       cy.get('body').should('have.class', 'dark-theme');
       cy.get('body').should('not.have.class', 'light-theme');
@@ -75,7 +75,7 @@ describe('Dark Mode', () => {
       cy.get('body').should('have.class', 'dark-theme');
 
       // Toggle to light
-      cy.get('.nav-footer .nav-action').contains(/Light/).click();
+      cy.get('.theme-toggle-btn').click();
 
       cy.get('body').should('have.class', 'light-theme');
       cy.get('body').should('not.have.class', 'dark-theme');
@@ -86,15 +86,15 @@ describe('Dark Mode', () => {
       cy.reload();
 
       // Light → Dark
-      cy.get('.nav-footer .nav-action').contains(/Dark/).click();
+      cy.get('.theme-toggle-btn').click();
       cy.get('body').should('have.class', 'dark-theme');
 
       // Dark → Light
-      cy.get('.nav-footer .nav-action').contains(/Light/).click();
+      cy.get('.theme-toggle-btn').click();
       cy.get('body').should('have.class', 'light-theme');
 
       // Light → Dark again
-      cy.get('.nav-footer .nav-action').contains(/Dark/).click();
+      cy.get('.theme-toggle-btn').click();
       cy.get('body').should('have.class', 'dark-theme');
     });
   });
@@ -108,7 +108,7 @@ describe('Dark Mode', () => {
 
       // The body background should use the dark CSS variable
       cy.get('body').should('have.class', 'dark-theme');
-      cy.get('.app-shell').should('exist');
+      cy.get('.app-container').should('exist');
     });
 
     it('should have light background-color when in light mode', () => {
@@ -116,7 +116,7 @@ describe('Dark Mode', () => {
       cy.reload();
 
       cy.get('body').should('have.class', 'light-theme');
-      cy.get('.app-shell').should('exist');
+      cy.get('.app-container').should('exist');
     });
   });
 
@@ -128,7 +128,7 @@ describe('Dark Mode', () => {
       cy.reload();
 
       // Toggle to dark
-      cy.get('.nav-footer .nav-action').contains(/Dark/).click();
+      cy.get('.theme-toggle-btn').click();
       cy.get('body').should('have.class', 'dark-theme');
 
       // Verify localStorage was set
@@ -146,7 +146,7 @@ describe('Dark Mode', () => {
       cy.reload();
 
       // Toggle to light
-      cy.get('.nav-footer .nav-action').contains(/Light/).click();
+      cy.get('.theme-toggle-btn').click();
 
       // Reload and verify
       cy.reload();
@@ -158,40 +158,41 @@ describe('Dark Mode', () => {
       cy.reload();
 
       // Toggle to dark
-      cy.get('.nav-footer .nav-action').contains(/Dark/).click();
+      cy.get('.theme-toggle-btn').click();
       cy.get('body').should('have.class', 'dark-theme');
 
       // Navigate to different pages
-      cy.get('.nav-item').contains('Knowledge').click();
+      // TODO(e2e): was 'Knowledge' top-level tab, now 'Fact Sheets'
+      cy.topNav('Fact Sheets').click();
       cy.get('body').should('have.class', 'dark-theme');
 
-      cy.get('.nav-item').contains('Tools').click();
+      // TODO(e2e): was 'Tools' top-level tab, now 'Data'
+      cy.topNav('Data').click();
       cy.get('body').should('have.class', 'dark-theme');
 
-      cy.get('.nav-item').contains('Chat').click();
+      cy.topNav('Chat').click();
       cy.get('body').should('have.class', 'dark-theme');
     });
   });
 
-  // ═══════════════════════════ Nav Rail in Dark Mode ═══════════════════════════
+  // ═══════════════════════════ Header & Nav Appearance in Dark Mode ═══════════════════════════
 
-  describe('Nav Rail Appearance in Dark Mode', () => {
-    it('should render nav rail elements correctly in dark mode', () => {
+  describe('Header & Nav Appearance in Dark Mode', () => {
+    it('should render header + nav chrome correctly in dark mode', () => {
       cy.window().then(win => win.localStorage.setItem('kompile-theme', 'dark'));
       cy.reload();
 
-      cy.get('.nav-rail').should('be.visible');
-      cy.get('.nav-brand').should('be.visible');
-      cy.get('.nav-items .nav-item').should('have.length.gte', 4);
-      cy.get('.nav-footer').should('be.visible');
+      cy.get('header').should('be.visible');
+      cy.get('app-branding').should('be.visible');
+      cy.get('nav[mat-tab-nav-bar] a').should('have.length.gte', 6);
+      cy.get('.theme-toggle-btn').should('be.visible');
     });
 
-    it('should render top bar correctly in dark mode', () => {
+    it('should render the fact sheet selector correctly in dark mode', () => {
       cy.window().then(win => win.localStorage.setItem('kompile-theme', 'dark'));
       cy.reload();
 
-      cy.get('.top-bar').should('be.visible');
-      cy.get('.kb-selector').should('be.visible');
+      cy.get('.fact-sheet-selector').should('be.visible');
     });
   });
 
