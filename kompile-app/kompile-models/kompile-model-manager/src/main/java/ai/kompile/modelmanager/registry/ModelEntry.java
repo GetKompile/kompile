@@ -106,6 +106,22 @@ public class ModelEntry {
     private ImagePreprocessorConfig preprocessor;
 
     /**
+     * Project this model belongs to (null = global / not project-scoped).
+     * When set, the active-model selection is scoped to this project+graph pair
+     * rather than the global type-wide active.
+     */
+    @JsonProperty("project_id")
+    private String projectId;
+
+    /**
+     * Named graph (fact-sheet) this model belongs to (null = not graph-scoped).
+     * Together with {@link #projectId} this forms the scope key for per-graph
+     * active-version resolution.
+     */
+    @JsonProperty("graph_id")
+    private String graphId;
+
+    /**
      * Check if the model is active and usable.
      */
     @JsonIgnore
@@ -138,6 +154,38 @@ public class ModelEntry {
     @JsonIgnore
     public String getVocabFilePath() {
         return path + "/" + vocabFile;
+    }
+
+    /**
+     * Return true when this entry is scoped to a specific (project, graph) pair.
+     */
+    @JsonIgnore
+    public boolean isGraphScoped() {
+        return projectId != null && graphId != null;
+    }
+
+    /**
+     * Create a graph-scoped KGE (knowledge-graph embedding) model entry.
+     * Used by {@code GraphScopedDeployService} when staging PSL/MEBN/KGE artifacts
+     * for a specific named graph.
+     *
+     * @param modelId    unique model identifier (e.g. "rotate-e-myproject-v20260622")
+     * @param type       model type (e.g. {@code ModelType.KGE})
+     * @param projectId  owning project
+     * @param graphId    target named-graph / fact-sheet id
+     * @param artifactPath relative path under the models root
+     */
+    public static ModelEntry graphScoped(String modelId, ModelType type,
+                                         String projectId, String graphId,
+                                         String artifactPath) {
+        return ModelEntry.builder()
+                .modelId(modelId)
+                .type(type)
+                .path(artifactPath)
+                .projectId(projectId)
+                .graphId(graphId)
+                .status(ModelStatus.STAGED)
+                .build();
     }
 
     /**

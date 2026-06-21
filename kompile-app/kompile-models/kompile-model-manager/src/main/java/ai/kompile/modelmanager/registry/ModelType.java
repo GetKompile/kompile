@@ -34,6 +34,12 @@ public enum ModelType {
     DOCUMENT_CLASSIFIER("document_classifier"),
     VLM_PIPELINE("vlm_pipeline"),
     LLM_GGML("llm_ggml"),
+    /** Knowledge-Graph Embedding model (RotatE, TransE, SGNS, etc.) */
+    KGE("kge"),
+    /** Probabilistic Soft Logic weight set */
+    PSL("psl"),
+    /** MEBN/Multi-Entity Bayesian Network parameters */
+    MEBN("mebn"),
     @Deprecated
     ENCODER("encoder");
 
@@ -127,6 +133,12 @@ public enum ModelType {
                 return "VLM Pipeline";
             case LLM_GGML:
                 return "LLM (GGML)";
+            case KGE:
+                return "Knowledge-Graph Embedding";
+            case PSL:
+                return "PSL Weights";
+            case MEBN:
+                return "MEBN Parameters";
             case ENCODER:
                 return "Encoder (Legacy)";
             default:

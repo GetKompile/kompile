@@ -229,6 +229,93 @@ public class RegistryService {
                 .findFirst();
     }
 
+    // ==================== Per-graph active-model resolution ====================
+
+    /**
+     * Find the ACTIVE model for a specific (projectId, graphId) pair, optionally
+     * filtered by model type.  Only entries that carry both {@code project_id} and
+     * {@code graph_id} are considered; purely global entries are excluded.
+     *
+     * @param projectId  project identifier
+     * @param graphId    named-graph / fact-sheet identifier
+     * @param type       model type to filter by, or {@code null} for any type
+     * @return the active graph-scoped entry if one exists
+     */
+    public Optional<ModelEntry> findActiveByProjectAndGraph(String projectId, String graphId, ModelType type) {
+        return loadRegistry().getAllModels().values().stream()
+                .filter(e -> projectId.equals(e.getProjectId()) && graphId.equals(e.getGraphId()))
+                .filter(e -> type == null || e.getType() == type)
+                .filter(ModelEntry::isActive)
+                .findFirst();
+    }
+
+    /**
+     * List all models (any status) that are scoped to the given (projectId, graphId).
+     */
+    public List<ModelEntry> getModelsByProjectAndGraph(String projectId, String graphId) {
+        return loadRegistry().getAllModels().values().stream()
+                .filter(e -> projectId.equals(e.getProjectId()) && graphId.equals(e.getGraphId()))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Activate a model for its (projectId, graphId) scope.
+     * <p>
+     * Only models sharing the same project+graph+type are affected; global models
+     * (no projectId/graphId) are left untouched.
+     * <p>
+     * The previously ACTIVE model for that scope+type, if any, is demoted to STAGED.
+     *
+     * @param modelId  the model to promote to ACTIVE
+     * @return {@code true} if the model existed and was activated
+     */
+    public boolean activateForGraph(String modelId) {
+        lock.writeLock().lock();
+        try {
+            ModelRegistry registry = loadRegistryInternal();
+            ModelEntry target = registry.getModel(modelId);
+            if (target == null) {
+                log.warn("activateForGraph: model not found: {}", modelId);
+                return false;
+            }
+            if (!target.isGraphScoped()) {
+                log.warn("activateForGraph: model {} has no projectId/graphId — use activateModel instead", modelId);
+                return false;
+            }
+
+            String pid = target.getProjectId();
+            String gid = target.getGraphId();
+            ModelType type = target.getType();
+
+            // Demote the current active for this scope+type
+            registry.getAllModels().values().stream()
+                    .filter(e -> pid.equals(e.getProjectId()) && gid.equals(e.getGraphId()))
+                    .filter(e -> e.getType() == type && e.isActive())
+                    .filter(e -> !e.getModelId().equals(modelId))
+                    .forEach(e -> e.setStatus(ModelStatus.STAGED));
+
+            target.setStatus(ModelStatus.ACTIVE);
+            target.setPromotedAt(java.time.Instant.now().toString());
+            saveRegistry(registry);
+            log.info("Activated model {} for project={} graph={}", modelId, pid, gid);
+            return true;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Roll back the active model for a (project, graph, type) scope to a prior version.
+     * <p>
+     * Deactivates the currently ACTIVE entry and activates {@code targetModelId}.
+     *
+     * @param targetModelId  the model to restore as ACTIVE
+     * @return {@code true} if rollback succeeded
+     */
+    public boolean rollbackForGraph(String targetModelId) {
+        return activateForGraph(targetModelId);
+    }
+
     public List<ModelEntry> getAllOcrModels() {
         return loadRegistry().getActiveModels().stream()
                 .filter(entry -> entry.getType().isOcr())
