@@ -133,4 +133,26 @@ public final class GraphProvenanceKeys {
         }
         return m;
     }
+
+    /**
+     * Build a provenance metadata map for a document uploaded via the standard sources interface.
+     * The {@code taskId} is used as the source-document identifier (it is the async upload task
+     * UUID). The {@code fileName} is stored in {@link #SOURCE_CHUNK_ID} (file-level granularity,
+     * analogous to a chunk key for single-file uploads). Null fields are omitted.
+     *
+     * <p>Merge the result into a graph node's metadata so the cascade and multi-source fusion
+     * pipeline can distinguish upload-derived facts from crawl-extracted or channel-inferred ones
+     * via {@code _source = "upload"}.</p>
+     */
+    public static Map<String, Object> upload(String taskId, String fileName) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put(SOURCE, "upload");
+        if (taskId != null) {
+            m.put(SOURCE_DOCUMENT_ID, taskId);
+        }
+        if (fileName != null) {
+            m.put(SOURCE_CHUNK_ID, fileName);
+        }
+        return m;
+    }
 }

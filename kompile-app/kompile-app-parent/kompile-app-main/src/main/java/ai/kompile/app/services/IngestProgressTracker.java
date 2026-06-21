@@ -25,10 +25,12 @@ import ai.kompile.app.web.dto.IngestProgressUpdate.IngestLogEntry;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestStats;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestStatus;
+import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
@@ -53,6 +55,7 @@ public class IngestProgressTracker implements DisposableBean {
 
     private final SimpMessagingTemplate messagingTemplate;
     private final JobLogService jobLogService;
+    private final ApplicationEventPublisher eventPublisher;
     private final Map<String, IngestProgressUpdate> activeTasks = new ConcurrentHashMap<>();
     private final Map<String, Long> taskStartTimes = new ConcurrentHashMap<>();
     private final Map<String, Long> taskFactSheetIds = new ConcurrentHashMap<>();
@@ -65,8 +68,16 @@ public class IngestProgressTracker implements DisposableBean {
     public IngestProgressTracker(
             @org.springframework.beans.factory.annotation.Autowired(required = false) SimpMessagingTemplate messagingTemplate,
             @org.springframework.beans.factory.annotation.Autowired(required = false) JobLogService jobLogService) {
+        this(messagingTemplate, jobLogService, null);
+    }
+
+    public IngestProgressTracker(
+            @org.springframework.beans.factory.annotation.Autowired(required = false) SimpMessagingTemplate messagingTemplate,
+            @org.springframework.beans.factory.annotation.Autowired(required = false) JobLogService jobLogService,
+            @org.springframework.beans.factory.annotation.Autowired(required = false) ApplicationEventPublisher eventPublisher) {
         this.messagingTemplate = messagingTemplate; // May be null if WebSocket not configured
         this.jobLogService = jobLogService; // May be null if job logging not configured
+        this.eventPublisher = eventPublisher; // May be null in minimal test contexts
 
         // Schedule periodic cleanup of old completed tasks
         cleanupScheduler.scheduleAtFixedRate(this::cleanupOldTasks, 1, 1, TimeUnit.MINUTES);
@@ -224,6 +235,11 @@ public class IngestProgressTracker implements DisposableBean {
 
     /**
      * Marks a task as completed.
+     *
+     * <p>After sending the WebSocket progress update this method publishes a
+     * {@link GraphBuildCompletedEvent} so that the grounding-cascade (enrichment,
+     * MAP inference, etc.) fires for documents uploaded via the standard sources
+     * interface — exactly as it does for crawl-graph completions.</p>
      */
     public void completeTask(String taskId, String fileName, IngestStats finalStats) {
         Long factSheetId = taskFactSheetIds.get(taskId);
@@ -233,6 +249,25 @@ public class IngestProgressTracker implements DisposableBean {
                 taskId, fileName, finalStats.documentsLoaded(), finalStats.chunksCreated(),
                 finalStats.totalProcessingTimeMs(), factSheetId);
         scheduleTaskCleanup(taskId);
+        // Trigger the same cascade that fires after a crawl-graph build so that
+        // GraphEnrichmentService / GroundingCascadeHook run for uploaded documents.
+        if (eventPublisher != null) {
+            try {
+                int docsProcessed = finalStats != null && finalStats.documentsLoaded() > 0
+                        ? finalStats.documentsLoaded() : 0;
+                eventPublisher.publishEvent(new GraphBuildCompletedEvent(
+                        this,
+                        "upload:" + taskId,
+                        docsProcessed,
+                        0,
+                        factSheetId,
+                        null));
+                logger.info("[Task {}] Published GraphBuildCompletedEvent (factSheetId={}, docs={})",
+                        taskId, factSheetId, docsProcessed);
+            } catch (Exception ex) {
+                logger.warn("[Task {}] Failed to publish GraphBuildCompletedEvent: {}", taskId, ex.getMessage());
+            }
+        }
     }
 
     /**

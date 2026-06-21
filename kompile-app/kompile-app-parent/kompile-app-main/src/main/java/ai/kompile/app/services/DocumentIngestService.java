@@ -37,6 +37,7 @@ import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestStats;
 import ai.kompile.app.web.dto.IngestProgressUpdate.OcrProcessingMetrics;
+import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.indexers.NoOpIndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
@@ -48,7 +49,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
-
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Async;
@@ -110,6 +111,14 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     private SubprocessIngestLauncher subprocessIngestLauncher;
     @Autowired(required = false)
     private ResourceAwareJobScheduler resourceScheduler;
+
+    /** May be null in lightweight/native contexts; guarded at every call site. */
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
+
+    /** Optional: used to look up the factSheetId associated with an async upload task. */
+    @Autowired(required = false)
+    private IngestProgressTracker ingestProgressTracker;
 
     // Track active tasks for status queries - use bounded map to prevent memory
     // leaks
@@ -1226,6 +1235,29 @@ public class DocumentIngestService implements org.springframework.beans.factory.
 
             sendProgress(IngestProgressUpdate.completed(taskId, fileName, finalStats));
 
+            // Trigger the grounding-cascade / enrichment pipeline for uploaded documents.
+            // This mirrors UnifiedCrawlGraphServiceImpl.publishGraphBuildCompletedEvent() so
+            // that GroundingCascadeHook (→ GraphEnrichmentService) fires after every upload,
+            // not just after crawl-graph completions.
+            if (eventPublisher != null) {
+                try {
+                    Long factSheetId = ingestProgressTracker != null
+                            ? ingestProgressTracker.getTaskFactSheetId(taskId)
+                            : null;
+                    eventPublisher.publishEvent(new GraphBuildCompletedEvent(
+                            this,
+                            "upload:" + taskId,
+                            pipelineResult.documentsProcessed(),
+                            0,
+                            factSheetId,
+                            null));
+                    logger.info("[Task {}] Published GraphBuildCompletedEvent after async upload (factSheetId={}, docs={})",
+                            taskId, factSheetId, pipelineResult.documentsProcessed());
+                } catch (Exception ex) {
+                    logger.warn("[Task {}] Failed to publish GraphBuildCompletedEvent: {}", taskId, ex.getMessage());
+                }
+            }
+
         } catch (TaskCancelledException e) {
             // Task was cancelled by user - progress and event already sent via cancelTask()
             // Note: cancelTask() already logged the cancellation event, so we skip logging
@@ -2032,6 +2064,27 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                     .build();
 
             sendProgress(IngestProgressUpdate.completed(taskId, fileName, finalStats));
+
+            // Trigger grounding-cascade for large-document streaming uploads too.
+            if (eventPublisher != null) {
+                try {
+                    Long factSheetId = ingestProgressTracker != null
+                            ? ingestProgressTracker.getTaskFactSheetId(taskId)
+                            : null;
+                    eventPublisher.publishEvent(new GraphBuildCompletedEvent(
+                            this,
+                            "upload:" + taskId,
+                            pipelineResult.documentsProcessed(),
+                            0,
+                            factSheetId,
+                            null));
+                    logger.info("[Task {}] Published GraphBuildCompletedEvent after streaming upload (factSheetId={}, docs={})",
+                            taskId, factSheetId, pipelineResult.documentsProcessed());
+                } catch (Exception ex) {
+                    logger.warn("[Task {}] Failed to publish GraphBuildCompletedEvent (streaming): {}", taskId,
+                            ex.getMessage());
+                }
+            }
 
         } finally {
             activePipelines.remove(taskId);

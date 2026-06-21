@@ -72,4 +72,40 @@ class GraphProvenanceKeysTest {
         assertFalse(m.containsKey(GraphProvenanceKeys.SOURCE_DOCUMENT_ID));
         assertFalse(m.containsKey(GraphProvenanceKeys.EXTRACTION_MODEL));
     }
+
+    @Test
+    void upload_buildsProvenanceMapWithSourceUpload() {
+        Map<String, Object> m = GraphProvenanceKeys.upload("task-abc-123", "report.pdf");
+        assertEquals("upload", m.get(GraphProvenanceKeys.SOURCE));
+        assertEquals("task-abc-123", m.get(GraphProvenanceKeys.SOURCE_DOCUMENT_ID));
+        assertEquals("report.pdf", m.get(GraphProvenanceKeys.SOURCE_CHUNK_ID));
+        // CRAWL_RUN_ID must not be set for uploads — wrong provenance origin
+        assertFalse(m.containsKey(GraphProvenanceKeys.CRAWL_RUN_ID));
+        assertFalse(m.containsKey(GraphProvenanceKeys.EXTRACTION_MODEL));
+    }
+
+    @Test
+    void upload_omitsNullFileName() {
+        Map<String, Object> m = GraphProvenanceKeys.upload("task-xyz", null);
+        assertEquals("upload", m.get(GraphProvenanceKeys.SOURCE));
+        assertEquals("task-xyz", m.get(GraphProvenanceKeys.SOURCE_DOCUMENT_ID));
+        assertFalse(m.containsKey(GraphProvenanceKeys.SOURCE_CHUNK_ID));
+    }
+
+    @Test
+    void upload_omitsNullTaskId() {
+        Map<String, Object> m = GraphProvenanceKeys.upload(null, "file.csv");
+        assertEquals("upload", m.get(GraphProvenanceKeys.SOURCE));
+        assertFalse(m.containsKey(GraphProvenanceKeys.SOURCE_DOCUMENT_ID));
+        assertEquals("file.csv", m.get(GraphProvenanceKeys.SOURCE_CHUNK_ID));
+    }
+
+    @Test
+    void upload_sourceDistinctFromCrawl() {
+        Map<String, Object> crawlMap = GraphProvenanceKeys.crawl("run-1", "doc.pdf", "chunk-0");
+        Map<String, Object> uploadMap = GraphProvenanceKeys.upload("task-1", "doc.pdf");
+        assertNotEquals(crawlMap.get(GraphProvenanceKeys.SOURCE), uploadMap.get(GraphProvenanceKeys.SOURCE));
+        assertEquals("crawl", crawlMap.get(GraphProvenanceKeys.SOURCE));
+        assertEquals("upload", uploadMap.get(GraphProvenanceKeys.SOURCE));
+    }
 }
