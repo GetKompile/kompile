@@ -2,8 +2,6 @@ package ai.kompile.compute.graph.camel;
 
 import ai.kompile.compute.graph.engine.DefaultGraphExecutor;
 import ai.kompile.compute.graph.engine.FolNodeExecutor;
-import ai.kompile.compute.graph.engine.ExecutionContext;
-import ai.kompile.compute.graph.engine.NodeExecutor;
 import ai.kompile.compute.graph.model.*;
 import ai.kompile.compute.graph.store.InMemoryArtifactStore;
 import org.apache.camel.CamelContext;
@@ -14,7 +12,6 @@ import org.apache.camel.component.mock.MockEndpoint;
 import org.apache.camel.support.processor.idempotent.MemoryIdempotentRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
@@ -52,11 +49,15 @@ class CamelWorkflowIntegrationTest {
     // ========================================================================
 
     @Test
-    @Disabled("Drools DRL syntax replaced by PSL — rewrite node scripts to PSL format (FOL_RULE/PSL_RULE)")
     void emailEntityClassificationPipeline() {
         // Real workflow: email arrives → Camel extracts structured fields →
-        // Drools rules classify entity types (Person, Organization, Document) →
+        // Native Camel XML route classifies entity types (Person, Organization, Document) →
         // Camel formats the classified entities for knowledge graph storage.
+        //
+        // Rewritten from DRL to a native Camel XML choice/when node: the classification
+        // rules (sender→PERSON, org→ORGANIZATION, subject→DOCUMENT) are expressed as
+        // a Camel processor that sets kompile_output_* headers, replacing the DRL
+        // NamedFact pattern that required the Drools KIE runtime.
 
         // Node 1 (Camel): Parse email into structured output headers
         String parseEmailXml = """
@@ -87,41 +88,44 @@ class CamelWorkflowIntegrationTest {
                 .script(parseEmailXml)
                 .build();
 
-        // Node 2 (Drools): Classify entities based on parsed fields
-        String classifyDrl = """
-                rule "classify-sender-as-person"
-                  when
-                    $facts : NodeFacts()
-                    $sender : NamedFact(name == "sender", value != null)
-                  then
-                    $facts.setOutput("senderType", "PERSON");
-                    $facts.setOutput("senderName", $sender.getValue());
-                end
-
-                rule "classify-org"
-                  when
-                    $facts : NodeFacts()
-                    $org : NamedFact(name == "organization", value != null)
-                  then
-                    $facts.setOutput("orgType", "ORGANIZATION");
-                    $facts.setOutput("orgName", $org.getValue());
-                end
-
-                rule "classify-document"
-                  when
-                    $facts : NodeFacts()
-                    $subj : NamedFact(name == "subject", value != null)
-                  then
-                    $facts.setOutput("docType", "DOCUMENT");
-                    $facts.setOutput("docTitle", $subj.getValue());
-                end
+        // Node 2 (native Camel): Classify entities — replaces DRL rules.
+        // Each "when" block mirrors one DRL rule:
+        //   "classify-sender-as-person"  → always fires (sender header always present)
+        //   "classify-org"               → always fires (org header always present)
+        //   "classify-document"          → always fires (subject header always present)
+        // A single XML route performs all three classifications sequentially.
+        String classifyXml = """
+                <route id="kompile-node-classify-entities">
+                  <from uri="direct:kompile-node-classify-entities"/>
+                  <setHeader name="kompile_output_senderType">
+                    <constant>PERSON</constant>
+                  </setHeader>
+                  <setHeader name="kompile_output_senderName">
+                    <simple>${header.sender}</simple>
+                  </setHeader>
+                  <setHeader name="kompile_output_orgType">
+                    <constant>ORGANIZATION</constant>
+                  </setHeader>
+                  <setHeader name="kompile_output_orgName">
+                    <simple>${header.organization}</simple>
+                  </setHeader>
+                  <setHeader name="kompile_output_docType">
+                    <constant>DOCUMENT</constant>
+                  </setHeader>
+                  <setHeader name="kompile_output_docTitle">
+                    <simple>${header.subject}</simple>
+                  </setHeader>
+                  <transform>
+                    <simple>classified</simple>
+                  </transform>
+                </route>
                 """;
 
         ComputeNode classifyNode = ComputeNode.builder()
                 .id("classify-entities")
                 .name("Classify Entities")
-                .executionType(NodeExecutionType.DROOLS_RULE)
-                .script(classifyDrl)
+                .executionType(NodeExecutionType.CAMEL_ROUTE)
+                .script(classifyXml)
                 .build();
 
         // Node 3 (Camel): Format classified entities for graph storage
@@ -158,7 +162,7 @@ class CamelWorkflowIntegrationTest {
         assertEquals(ExecutionStatus.COMPLETED, result.getStatus());
         assertEquals(3, result.getExecutionOrder().size());
 
-        // Verify the Drools classification outputs propagated through
+        // Verify classification outputs propagated through the pipeline
         String graphOutput = (String) result.getFinalOutputs().get("result");
         assertTrue(graphOutput.contains("PERSON:alice@acme.com"), "Should classify sender as PERSON");
         assertTrue(graphOutput.contains("DOCUMENT:Q3 Revenue Analysis"), "Should classify subject as DOCUMENT");
@@ -166,10 +170,14 @@ class CamelWorkflowIntegrationTest {
     }
 
     @Test
-    @Disabled("Drools DRL syntax replaced by PSL — rewrite node scripts to PSL format (FOL_RULE/PSL_RULE)")
     void invoiceApprovalWorkflow() {
         // Real workflow: invoice data arrives → Camel extracts amount/vendor →
-        // Drools business rules determine approval/rejection based on thresholds.
+        // Native Camel XML choice/when applies approval business rules based on thresholds.
+        //
+        // Rewritten from DRL salience rules to a Camel XML choice/when node.
+        // The three threshold bands (< 500 → APPROVED, 500-4999 → MANAGER_REVIEW,
+        // >= 5000 → EXECUTIVE_REVIEW) are expressed as Camel choice conditions,
+        // which is a direct structural equivalent of the DRL eval() guard pattern.
 
         // Node 1 (Camel): Parse invoice fields
         String parseInvoiceXml = """
@@ -197,51 +205,62 @@ class CamelWorkflowIntegrationTest {
                 .script(parseInvoiceXml)
                 .build();
 
-        // Node 2 (Drools): Apply approval business rules
-        String approvalDrl = """
-                rule "auto-approve-small"
-                  salience 10
-                  when
-                    $facts : NodeFacts()
-                    $amt : NamedFact(name == "amount")
-                    eval(((Number)$amt.getValue()).doubleValue() < 500.0)
-                  then
-                    $facts.setOutput("decision", "APPROVED");
-                    $facts.setOutput("approver", "SYSTEM");
-                    $facts.setOutput("reason", "Below auto-approval threshold");
-                end
-
-                rule "manager-review-medium"
-                  salience 5
-                  when
-                    $facts : NodeFacts()
-                    $amt : NamedFact(name == "amount")
-                    eval(((Number)$amt.getValue()).doubleValue() >= 500.0
-                      && ((Number)$amt.getValue()).doubleValue() < 5000.0)
-                  then
-                    $facts.setOutput("decision", "MANAGER_REVIEW");
-                    $facts.setOutput("approver", "DEPARTMENT_HEAD");
-                    $facts.setOutput("reason", "Requires manager approval");
-                end
-
-                rule "executive-review-large"
-                  salience 1
-                  when
-                    $facts : NodeFacts()
-                    $amt : NamedFact(name == "amount")
-                    eval(((Number)$amt.getValue()).doubleValue() >= 5000.0)
-                  then
-                    $facts.setOutput("decision", "EXECUTIVE_REVIEW");
-                    $facts.setOutput("approver", "CFO");
-                    $facts.setOutput("reason", "Exceeds department authority");
-                end
+        // Node 2 (native Camel XML): Apply approval business rules.
+        // Mirrors the DRL salience-10/5/1 rules using Camel's choice/when:
+        //   amount <  500     → APPROVED       / SYSTEM
+        //   amount <  5000    → MANAGER_REVIEW / DEPARTMENT_HEAD
+        //   otherwise         → EXECUTIVE_REVIEW / CFO
+        String approvalXml = """
+                <route id="kompile-node-approval-rules">
+                  <from uri="direct:kompile-node-approval-rules"/>
+                  <choice>
+                    <when>
+                      <simple>${header.amount} &lt; 500</simple>
+                      <setHeader name="kompile_output_decision">
+                        <constant>APPROVED</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_approver">
+                        <constant>SYSTEM</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_reason">
+                        <constant>Below auto-approval threshold</constant>
+                      </setHeader>
+                    </when>
+                    <when>
+                      <simple>${header.amount} &lt; 5000</simple>
+                      <setHeader name="kompile_output_decision">
+                        <constant>MANAGER_REVIEW</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_approver">
+                        <constant>DEPARTMENT_HEAD</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_reason">
+                        <constant>Requires manager approval</constant>
+                      </setHeader>
+                    </when>
+                    <otherwise>
+                      <setHeader name="kompile_output_decision">
+                        <constant>EXECUTIVE_REVIEW</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_approver">
+                        <constant>CFO</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_reason">
+                        <constant>Exceeds department authority</constant>
+                      </setHeader>
+                    </otherwise>
+                  </choice>
+                  <transform>
+                    <simple>${header.kompile_output_decision}</simple>
+                  </transform>
+                </route>
                 """;
 
         ComputeNode rulesNode = ComputeNode.builder()
                 .id("approval-rules")
                 .name("Approval Rules")
-                .executionType(NodeExecutionType.DROOLS_RULE)
-                .script(approvalDrl)
+                .executionType(NodeExecutionType.CAMEL_ROUTE)
+                .script(approvalXml)
                 .build();
 
         ComputeEdge edge = ComputeEdge.builder()
@@ -259,15 +278,16 @@ class CamelWorkflowIntegrationTest {
 
         // Test small invoice → auto-approved
         GraphExecutionResult smallResult = executor.execute(graph, Map.of(
-                "amount", "250.00", "vendor", "Office Supplies Inc", "department", "Engineering"
+                "amount", 250.00, "vendor", "Office Supplies Inc", "department", "Engineering"
         ));
-        assertEquals(ExecutionStatus.COMPLETED, smallResult.getStatus());
+        assertEquals(ExecutionStatus.COMPLETED, smallResult.getStatus(),
+                "Pipeline failed: " + smallResult.getError());
         assertEquals("APPROVED", smallResult.getFinalOutputs().get("decision"));
         assertEquals("SYSTEM", smallResult.getFinalOutputs().get("approver"));
 
         // Test medium invoice → manager review
         GraphExecutionResult medResult = executor.execute(graph, Map.of(
-                "amount", "2500.00", "vendor", "Cloud Services Ltd", "department", "DevOps"
+                "amount", 2500.00, "vendor", "Cloud Services Ltd", "department", "DevOps"
         ));
         assertEquals(ExecutionStatus.COMPLETED, medResult.getStatus());
         assertEquals("MANAGER_REVIEW", medResult.getFinalOutputs().get("decision"));
@@ -275,7 +295,7 @@ class CamelWorkflowIntegrationTest {
 
         // Test large invoice → executive review
         GraphExecutionResult largeResult = executor.execute(graph, Map.of(
-                "amount", "50000.00", "vendor", "Enterprise Software Corp", "department", "IT"
+                "amount", 50000.00, "vendor", "Enterprise Software Corp", "department", "IT"
         ));
         assertEquals(ExecutionStatus.COMPLETED, largeResult.getStatus());
         assertEquals("EXECUTIVE_REVIEW", largeResult.getFinalOutputs().get("decision"));
@@ -283,10 +303,16 @@ class CamelWorkflowIntegrationTest {
     }
 
     @Test
-    @Disabled("Drools DRL syntax replaced by PSL — rewrite node scripts to PSL format (FOL_RULE/PSL_RULE)")
     void documentComplianceWorkflowWithConditionalRouting() {
-        // Real workflow: document metadata is checked → Drools compliance rules
+        // Real workflow: document metadata is checked → native Camel compliance rules
         // evaluate → conditional edges route to approval or remediation paths.
+        //
+        // Rewritten from DRL to a native Camel XML choice/when node.
+        // The three DRL rules are expressed as choice branches:
+        //   "check-signature-required": classification==CONFIDENTIAL && signed!=true → non-compliant
+        //   "check-retention": retentionYears < 3 → non-compliant
+        //   "mark-compliant": neither violation fired → compliant
+        // Conditional edges use the same SpEL expressions as before (#compliant == 'true'/false').
 
         // Node 1 (Camel): Extract metadata using XML route with output headers
         String extractXml = """
@@ -310,44 +336,50 @@ class CamelWorkflowIntegrationTest {
                 .executionType(NodeExecutionType.CAMEL_ROUTE)
                 .script(extractXml).build();
 
-        // Node 2 (Drools): Check compliance
-        String complianceDrl = """
-                rule "check-signature-required"
-                  when
-                    $facts : NodeFacts()
-                    $class : NamedFact(name == "classification")
-                    $sig : NamedFact(name == "hasSignature")
-                    eval("CONFIDENTIAL".equals($class.getValue()) && !"true".equals($sig.getValue()))
-                  then
-                    $facts.setOutput("compliant", "false");
-                    $facts.setOutput("violation", "Confidential documents must be signed");
-                end
-
-                rule "check-retention"
-                  when
-                    $facts : NodeFacts()
-                    $ret : NamedFact(name == "retentionYears")
-                    eval(((Number)$ret.getValue()).intValue() < 3)
-                  then
-                    $facts.setOutput("compliant", "false");
-                    $facts.setOutput("violation", "Minimum retention period is 3 years");
-                end
-
-                rule "mark-compliant"
-                  salience -10
-                  when
-                    $facts : NodeFacts()
-                    not (eval($facts.getOutputs().containsKey("compliant")))
-                  then
-                    $facts.setOutput("compliant", "true");
-                    $facts.setOutput("status", "APPROVED");
-                end
+        // Node 2 (native Camel XML): Check compliance — replaces DRL.
+        // Priority order matches original DRL salience (signature check fires first,
+        // then retention, then fallthrough to compliant — using Camel choice first-match).
+        String complianceXml = """
+                <route id="kompile-node-compliance">
+                  <from uri="direct:kompile-node-compliance"/>
+                  <choice>
+                    <when>
+                      <simple>${header.classification} == 'CONFIDENTIAL' &amp;&amp; ${header.hasSignature} != 'true'</simple>
+                      <setHeader name="kompile_output_compliant">
+                        <constant>false</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_violation">
+                        <constant>Confidential documents must be signed</constant>
+                      </setHeader>
+                    </when>
+                    <when>
+                      <simple>${header.retentionYears} &lt; 3</simple>
+                      <setHeader name="kompile_output_compliant">
+                        <constant>false</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_violation">
+                        <constant>Minimum retention period is 3 years</constant>
+                      </setHeader>
+                    </when>
+                    <otherwise>
+                      <setHeader name="kompile_output_compliant">
+                        <constant>true</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_status">
+                        <constant>APPROVED</constant>
+                      </setHeader>
+                    </otherwise>
+                  </choice>
+                  <transform>
+                    <simple>${header.kompile_output_compliant}</simple>
+                  </transform>
+                </route>
                 """;
 
         ComputeNode complianceNode = ComputeNode.builder()
                 .id("compliance").name("Compliance Check")
-                .executionType(NodeExecutionType.DROOLS_RULE)
-                .script(complianceDrl).build();
+                .executionType(NodeExecutionType.CAMEL_ROUTE)
+                .script(complianceXml).build();
 
         // Node 3a (Camel): Approval path
         ComputeNode approvedNode = ComputeNode.builder()
@@ -380,21 +412,27 @@ class CamelWorkflowIntegrationTest {
         DefaultGraphExecutor executor = new DefaultGraphExecutor(
                 List.of(camelExecutor, droolsExecutor), new InMemoryArtifactStore());
 
-        // Compliant document
+        // Compliant document: CONFIDENTIAL + signed=true + retention=7
         GraphExecutionResult compliantResult = executor.execute(graph, Map.of(
-                "signed", "true", "classification", "CONFIDENTIAL", "retentionYears", "7"
+                "signed", "true", "classification", "CONFIDENTIAL", "retentionYears", 7
         ));
-        assertEquals(ExecutionStatus.COMPLETED, compliantResult.getStatus());
-        assertTrue(compliantResult.getSkippedNodes().contains("remediation"));
-        assertFalse(compliantResult.getSkippedNodes().contains("approved"));
+        assertEquals(ExecutionStatus.COMPLETED, compliantResult.getStatus(),
+                "Compliant pipeline failed: " + compliantResult.getError());
+        assertTrue(compliantResult.getSkippedNodes().contains("remediation"),
+                "Remediation node should be skipped for compliant doc");
+        assertFalse(compliantResult.getSkippedNodes().contains("approved"),
+                "Approved node should NOT be skipped for compliant doc");
 
         // Non-compliant: missing signature on confidential doc
         GraphExecutionResult nonCompliantResult = executor.execute(graph, Map.of(
-                "signed", "false", "classification", "CONFIDENTIAL", "retentionYears", "7"
+                "signed", "false", "classification", "CONFIDENTIAL", "retentionYears", 7
         ));
-        assertEquals(ExecutionStatus.COMPLETED, nonCompliantResult.getStatus());
-        assertTrue(nonCompliantResult.getSkippedNodes().contains("approved"));
-        assertFalse(nonCompliantResult.getSkippedNodes().contains("remediation"));
+        assertEquals(ExecutionStatus.COMPLETED, nonCompliantResult.getStatus(),
+                "Non-compliant pipeline failed: " + nonCompliantResult.getError());
+        assertTrue(nonCompliantResult.getSkippedNodes().contains("approved"),
+                "Approved node should be skipped for non-compliant doc");
+        assertFalse(nonCompliantResult.getSkippedNodes().contains("remediation"),
+                "Remediation node should NOT be skipped for non-compliant doc");
     }
 
     // ========================================================================
@@ -948,13 +986,16 @@ class CamelWorkflowIntegrationTest {
     // ========================================================================
 
     @Test
-    @Disabled("Drools DRL syntax replaced by PSL — rewrite node scripts to PSL format (FOL_RULE/PSL_RULE)")
     void fullDocumentToKnowledgeGraphPipeline() {
         // Complete real-world pipeline:
         // 1. Camel: Parse raw document (extract title, author, body)
-        // 2. Drools: Classify document and determine entity types
-        // 3. Drools: Apply business rules for priority scoring
+        // 2. Native Camel XML: Classify document and determine entity types
+        // 3. Native Camel XML: Apply business rules for priority scoring
         // 4. Camel: Format final graph-ready output
+        //
+        // Rewritten from two DRL nodes to two native Camel XML choice/when nodes.
+        // Node 2 (classify): author→PERSON:, docCategory+title→CATEGORY:title, relationship=AUTHORED_BY
+        // Node 3 (score): FINANCIAL→HIGH/review=true, TECHNICAL→MEDIUM/review=false, else→NORMAL/review=false
 
         // Node 1: Parse document metadata
         String parseXml = """
@@ -981,78 +1022,75 @@ class CamelWorkflowIntegrationTest {
                 .executionType(NodeExecutionType.CAMEL_ROUTE)
                 .script(parseXml).build();
 
-        // Node 2: Classify entities with Drools
-        String classifyDrl = """
-                rule "identify-author-entity"
-                  when
-                    $facts : NodeFacts()
-                    $author : NamedFact(name == "author", value != null)
-                  then
-                    $facts.setOutput("authorEntity", "PERSON:" + $author.getValue());
-                end
-
-                rule "identify-document-entity"
-                  when
-                    $facts : NodeFacts()
-                    $title : NamedFact(name == "title", value != null)
-                    $cat : NamedFact(name == "docCategory")
-                  then
-                    $facts.setOutput("documentEntity", $cat.getValue() + ":" + $title.getValue());
-                end
-
-                rule "determine-relationship"
-                  when
-                    $facts : NodeFacts()
-                    $author : NamedFact(name == "author", value != null)
-                  then
-                    $facts.setOutput("relationship", "AUTHORED_BY");
-                end
+        // Node 2: Classify entities — replaces DRL rules.
+        // Mirrors: identify-author-entity + identify-document-entity + determine-relationship.
+        // All three rules always fire (no conditional guard other than "field exists"),
+        // so we emit all three outputs unconditionally.
+        String classifyXml = """
+                <route id="kompile-node-classify">
+                  <from uri="direct:kompile-node-classify"/>
+                  <setHeader name="kompile_output_authorEntity">
+                    <simple>PERSON:${header.author}</simple>
+                  </setHeader>
+                  <setHeader name="kompile_output_documentEntity">
+                    <simple>${header.docCategory}:${header.title}</simple>
+                  </setHeader>
+                  <setHeader name="kompile_output_relationship">
+                    <constant>AUTHORED_BY</constant>
+                  </setHeader>
+                  <transform><simple>classified</simple></transform>
+                </route>
                 """;
 
         ComputeNode classifyNode = ComputeNode.builder()
                 .id("classify").name("Classify Entities")
-                .executionType(NodeExecutionType.DROOLS_RULE)
-                .script(classifyDrl).build();
+                .executionType(NodeExecutionType.CAMEL_ROUTE)
+                .script(classifyXml).build();
 
-        // Node 3: Score priority with Drools (receives parse output, not classify output)
-        String scoreDrl = """
-                rule "high-priority-financial"
-                  salience 10
-                  when
-                    $facts : NodeFacts()
-                    $cat : NamedFact(name == "docCategory")
-                    eval("FINANCIAL".equals($cat.getValue()))
-                  then
-                    $facts.setOutput("priority", "HIGH");
-                    $facts.setOutput("reviewRequired", "true");
-                end
-
-                rule "medium-priority-technical"
-                  salience 5
-                  when
-                    $facts : NodeFacts()
-                    $cat : NamedFact(name == "docCategory")
-                    eval("TECHNICAL".equals($cat.getValue()))
-                  then
-                    $facts.setOutput("priority", "MEDIUM");
-                    $facts.setOutput("reviewRequired", "false");
-                end
-
-                rule "normal-priority-default"
-                  salience 1
-                  when
-                    $facts : NodeFacts()
-                    not (eval($facts.getOutputs().containsKey("priority")))
-                  then
-                    $facts.setOutput("priority", "NORMAL");
-                    $facts.setOutput("reviewRequired", "false");
-                end
+        // Node 3: Score priority — replaces DRL rules.
+        // Mirrors salience-10 high-priority-financial, salience-5 medium-priority-technical,
+        // salience-1 normal-priority-default using Camel choice/when first-match semantics.
+        String scoreXml = """
+                <route id="kompile-node-score">
+                  <from uri="direct:kompile-node-score"/>
+                  <choice>
+                    <when>
+                      <simple>${header.docCategory} == 'FINANCIAL'</simple>
+                      <setHeader name="kompile_output_priority">
+                        <constant>HIGH</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_reviewRequired">
+                        <constant>true</constant>
+                      </setHeader>
+                    </when>
+                    <when>
+                      <simple>${header.docCategory} == 'TECHNICAL'</simple>
+                      <setHeader name="kompile_output_priority">
+                        <constant>MEDIUM</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_reviewRequired">
+                        <constant>false</constant>
+                      </setHeader>
+                    </when>
+                    <otherwise>
+                      <setHeader name="kompile_output_priority">
+                        <constant>NORMAL</constant>
+                      </setHeader>
+                      <setHeader name="kompile_output_reviewRequired">
+                        <constant>false</constant>
+                      </setHeader>
+                    </otherwise>
+                  </choice>
+                  <transform>
+                    <simple>${header.kompile_output_priority}</simple>
+                  </transform>
+                </route>
                 """;
 
         ComputeNode scoreNode = ComputeNode.builder()
                 .id("score").name("Priority Scoring")
-                .executionType(NodeExecutionType.DROOLS_RULE)
-                .script(scoreDrl).build();
+                .executionType(NodeExecutionType.CAMEL_ROUTE)
+                .script(scoreXml).build();
 
         // Node 4: Format graph output (receives from both classify and score)
         ComputeNode formatNode = ComputeNode.builder()

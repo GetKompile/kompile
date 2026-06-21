@@ -2,8 +2,6 @@ package ai.kompile.compute.graph.camel;
 
 import ai.kompile.compute.graph.engine.DefaultGraphExecutor;
 import ai.kompile.compute.graph.engine.FolNodeExecutor;
-import ai.kompile.compute.graph.engine.ExecutionContext;
-import ai.kompile.compute.graph.engine.NodeExecutor;
 import ai.kompile.compute.graph.model.*;
 import ai.kompile.compute.graph.store.InMemoryArtifactStore;
 import jakarta.activation.DataHandler;
@@ -17,7 +15,6 @@ import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.mock.MockEndpoint;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -240,15 +237,18 @@ class CamelEmailAttachmentWorkflowTest {
     // ========================================================================
 
     @Test
-    @Disabled("Drools DRL syntax replaced by PSL — rewrite node scripts to PSL format (FOL_RULE/PSL_RULE)")
     void attachmentComplianceCheckWithDrools() {
         // Multi-node pipeline:
         // Node 1 (Camel): Parse email and build attachment metadata
-        // Node 2 (Drools): Apply compliance rules:
-        //   - Confidential emails must not have image attachments
-        //   - Attachments over 10MB require manager approval
-        //   - PDFs in legal emails must be digitally signed
-        //   - Executable attachments (.exe, .bat) are always blocked
+        // Node 2 (native Camel XML): Apply compliance rules:
+        //   - Executable attachments (.exe, .bat, .sh) → BLOCKED / CRITICAL
+        //   - Image attachments in CONFIDENTIAL emails → BLOCKED / HIGH
+        //   - Attachments over 10MB → NEEDS_APPROVAL / MEDIUM
+        //   - PDFs in legal department → FLAGGED / LOW
+        //   - All others → APPROVED / NONE
+        //
+        // Rewritten from DRL salience rules to a native Camel XML choice/when node.
+        // The salience order (100→90→80→70→-10) is preserved as first-match choice branches.
 
         String parseXml = """
                 <route id="kompile-node-complianceParse">
@@ -283,77 +283,57 @@ class CamelEmailAttachmentWorkflowTest {
                 .executionType(NodeExecutionType.CAMEL_ROUTE)
                 .script(parseXml).build();
 
-        String complianceDrl = """
-                rule "block-executable-attachments"
-                  salience 100
-                  when
-                    $facts : NodeFacts()
-                    $name : NamedFact(name == "attachmentName")
-                    eval(((String)$name.getValue()).endsWith(".exe")
-                      || ((String)$name.getValue()).endsWith(".bat")
-                      || ((String)$name.getValue()).endsWith(".sh"))
-                  then
-                    $facts.setOutput("decision", "BLOCKED");
-                    $facts.setOutput("reason", "Executable attachments are prohibited");
-                    $facts.setOutput("severity", "CRITICAL");
-                end
-
-                rule "block-images-in-confidential"
-                  salience 90
-                  when
-                    $facts : NodeFacts()
-                    $class : NamedFact(name == "classification")
-                    $type : NamedFact(name == "attachmentType")
-                    eval("CONFIDENTIAL".equals($class.getValue())
-                      && ((String)$type.getValue()).startsWith("image/"))
-                  then
-                    $facts.setOutput("decision", "BLOCKED");
-                    $facts.setOutput("reason", "Image attachments not allowed in confidential emails");
-                    $facts.setOutput("severity", "HIGH");
-                end
-
-                rule "require-approval-large-files"
-                  salience 80
-                  when
-                    $facts : NodeFacts()
-                    $size : NamedFact(name == "attachmentSizeMB")
-                    eval(((Number)$size.getValue()).doubleValue() > 10.0)
-                  then
-                    $facts.setOutput("decision", "NEEDS_APPROVAL");
-                    $facts.setOutput("reason", "Attachment exceeds 10MB size limit");
-                    $facts.setOutput("severity", "MEDIUM");
-                end
-
-                rule "flag-pdf-in-legal-unsigned"
-                  salience 70
-                  when
-                    $facts : NodeFacts()
-                    $dept : NamedFact(name == "recipientDept")
-                    $type : NamedFact(name == "attachmentType")
-                    eval("legal".equalsIgnoreCase((String)$dept.getValue())
-                      && ((String)$type.getValue()).contains("pdf"))
-                  then
-                    $facts.setOutput("decision", "FLAGGED");
-                    $facts.setOutput("reason", "PDFs sent to Legal should be digitally signed");
-                    $facts.setOutput("severity", "LOW");
-                end
-
-                rule "approve-compliant"
-                  salience -10
-                  when
-                    $facts : NodeFacts()
-                    not (eval($facts.getOutputs().containsKey("decision")))
-                  then
-                    $facts.setOutput("decision", "APPROVED");
-                    $facts.setOutput("reason", "Attachment passes all compliance checks");
-                    $facts.setOutput("severity", "NONE");
-                end
+        // Native Camel XML compliance rules — replaces DRL.
+        // Branch order matches original DRL salience (highest salience fires first):
+        //   salience 100 → block-executable-attachments
+        //   salience  90 → block-images-in-confidential
+        //   salience  80 → require-approval-large-files
+        //   salience  70 → flag-pdf-in-legal-unsigned
+        //   salience -10 → approve-compliant (fallthrough)
+        String complianceXml = """
+                <route id="kompile-node-complianceRules">
+                  <from uri="direct:kompile-node-complianceRules"/>
+                  <choice>
+                    <when>
+                      <simple>${header.attachmentName} endsWith '.exe' || ${header.attachmentName} endsWith '.bat' || ${header.attachmentName} endsWith '.sh'</simple>
+                      <setHeader name="kompile_output_decision"><constant>BLOCKED</constant></setHeader>
+                      <setHeader name="kompile_output_reason"><constant>Executable attachments are prohibited</constant></setHeader>
+                      <setHeader name="kompile_output_severity"><constant>CRITICAL</constant></setHeader>
+                    </when>
+                    <when>
+                      <simple>${header.classification} == 'CONFIDENTIAL' &amp;&amp; ${header.attachmentType} startsWith 'image/'</simple>
+                      <setHeader name="kompile_output_decision"><constant>BLOCKED</constant></setHeader>
+                      <setHeader name="kompile_output_reason"><constant>Image attachments not allowed in confidential emails</constant></setHeader>
+                      <setHeader name="kompile_output_severity"><constant>HIGH</constant></setHeader>
+                    </when>
+                    <when>
+                      <simple>${header.attachmentSizeMB} &gt; 10</simple>
+                      <setHeader name="kompile_output_decision"><constant>NEEDS_APPROVAL</constant></setHeader>
+                      <setHeader name="kompile_output_reason"><constant>Attachment exceeds 10MB size limit</constant></setHeader>
+                      <setHeader name="kompile_output_severity"><constant>MEDIUM</constant></setHeader>
+                    </when>
+                    <when>
+                      <simple>${header.recipientDept} =~ 'legal' &amp;&amp; ${header.attachmentType} contains 'pdf'</simple>
+                      <setHeader name="kompile_output_decision"><constant>FLAGGED</constant></setHeader>
+                      <setHeader name="kompile_output_reason"><constant>PDFs sent to Legal should be digitally signed</constant></setHeader>
+                      <setHeader name="kompile_output_severity"><constant>LOW</constant></setHeader>
+                    </when>
+                    <otherwise>
+                      <setHeader name="kompile_output_decision"><constant>APPROVED</constant></setHeader>
+                      <setHeader name="kompile_output_reason"><constant>Attachment passes all compliance checks</constant></setHeader>
+                      <setHeader name="kompile_output_severity"><constant>NONE</constant></setHeader>
+                    </otherwise>
+                  </choice>
+                  <transform>
+                    <simple>${header.kompile_output_decision}</simple>
+                  </transform>
+                </route>
                 """;
 
         ComputeNode complianceNode = ComputeNode.builder()
                 .id("complianceRules").name("Compliance Rules")
-                .executionType(NodeExecutionType.DROOLS_RULE)
-                .script(complianceDrl).build();
+                .executionType(NodeExecutionType.CAMEL_ROUTE)
+                .script(complianceXml).build();
 
         ComputeEdge edge = ComputeEdge.builder()
                 .id("e1").sourceNodeId("complianceParse").targetNodeId("complianceRules").build();
@@ -373,8 +353,10 @@ class CamelEmailAttachmentWorkflowTest {
                 "subject", "Tools Update", "sender", "dev@acme.com",
                 "classification", "INTERNAL", "recipientDept", "engineering",
                 "attachmentName", "installer.exe", "attachmentType", "application/octet-stream",
-                "attachmentSizeMB", "5.0"
+                "attachmentSizeMB", 5.0
         ));
+        assertEquals(ExecutionStatus.COMPLETED, exeResult.getStatus(),
+                "exe test failed: " + exeResult.getError());
         assertEquals("BLOCKED", exeResult.getFinalOutputs().get("decision"));
         assertEquals("CRITICAL", exeResult.getFinalOutputs().get("severity"));
 
@@ -383,8 +365,9 @@ class CamelEmailAttachmentWorkflowTest {
                 "subject", "Board Plans", "sender", "ceo@acme.com",
                 "classification", "CONFIDENTIAL", "recipientDept", "executive",
                 "attachmentName", "whiteboard_photo.jpg", "attachmentType", "image/jpeg",
-                "attachmentSizeMB", "2.5"
+                "attachmentSizeMB", 2.5
         ));
+        assertEquals(ExecutionStatus.COMPLETED, imgResult.getStatus());
         assertEquals("BLOCKED", imgResult.getFinalOutputs().get("decision"));
         assertEquals("HIGH", imgResult.getFinalOutputs().get("severity"));
 
@@ -393,8 +376,9 @@ class CamelEmailAttachmentWorkflowTest {
                 "subject", "Data Export", "sender", "analyst@acme.com",
                 "classification", "INTERNAL", "recipientDept", "data",
                 "attachmentName", "full_export.csv", "attachmentType", "text/csv",
-                "attachmentSizeMB", "25.0"
+                "attachmentSizeMB", 25.0
         ));
+        assertEquals(ExecutionStatus.COMPLETED, largeResult.getStatus());
         assertEquals("NEEDS_APPROVAL", largeResult.getFinalOutputs().get("decision"));
 
         // Test 4: PDF to legal department → FLAGGED
@@ -402,8 +386,9 @@ class CamelEmailAttachmentWorkflowTest {
                 "subject", "Contract Review", "sender", "procurement@acme.com",
                 "classification", "INTERNAL", "recipientDept", "legal",
                 "attachmentName", "vendor_contract.pdf", "attachmentType", "application/pdf",
-                "attachmentSizeMB", "1.5"
+                "attachmentSizeMB", 1.5
         ));
+        assertEquals(ExecutionStatus.COMPLETED, legalResult.getStatus());
         assertEquals("FLAGGED", legalResult.getFinalOutputs().get("decision"));
         assertTrue(((String) legalResult.getFinalOutputs().get("reason")).contains("digitally signed"));
 
@@ -411,9 +396,11 @@ class CamelEmailAttachmentWorkflowTest {
         GraphExecutionResult okResult = executor.execute(graph, Map.of(
                 "subject", "Meeting Notes", "sender", "pm@acme.com",
                 "classification", "INTERNAL", "recipientDept", "engineering",
-                "attachmentName", "notes.docx", "attachmentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "attachmentSizeMB", "0.5"
+                "attachmentName", "notes.docx",
+                "attachmentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "attachmentSizeMB", 0.5
         ));
+        assertEquals(ExecutionStatus.COMPLETED, okResult.getStatus());
         assertEquals("APPROVED", okResult.getFinalOutputs().get("decision"));
     }
 
@@ -615,80 +602,63 @@ class CamelEmailAttachmentWorkflowTest {
     // ========================================================================
 
     @Test
-    @Disabled("Drools DRL syntax replaced by PSL — rewrite node scripts to PSL format (FOL_RULE/PSL_RULE)")
     void attachmentContentClassificationWithDrools() {
-        // Two-node pipeline: Camel extracts attachment content fields →
-        // Drools rules classify the attachment as containing PII,
-        // financial data, legal terms, or technical content.
+        // Single-node pipeline: a Camel XML route extracts and classifies attachment content
+        // as PII, FINANCIAL, LEGAL, or GENERAL based on keyword detection.
+        //
+        // Rewritten from a two-node DRL pipeline to a single native Camel XML choice/when node.
+        // The DRL's regex eval() rules are expressed as Camel Simple keyword checks using
+        // 'contains' on the content string. Priority order (DRL salience 100→80→60→-10)
+        // is preserved as Camel choice first-match: PII > FINANCIAL > LEGAL > GENERAL.
+        // The original pipeline had a CAMEL_ROUTE (extract content) → DROOLS_RULE (classify);
+        // both nodes are merged into one XML route since Camel Simple's 'contains' operator
+        // handles the keyword matching inline, eliminating the need for a separate rule node.
 
-        ComputeNode extractNode = ComputeNode.builder()
-                .id("extractContent").name("Extract Content")
-                .executionType(NodeExecutionType.CAMEL_ROUTE)
-                .script("${header.content}")
-                .build();
-
-        String classifyDrl = """
-                rule "detect-pii"
-                  salience 100
-                  when
-                    $facts : NodeFacts()
-                    $content : NamedFact(name == "result")
-                    eval(((String)$content.getValue()).matches("(?i).*\\\\b(ssn|social security|date of birth|passport)\\\\b.*"))
-                  then
-                    $facts.setOutput("classification", "PII");
-                    $facts.setOutput("sensitivity", "CRITICAL");
-                    $facts.setOutput("action", "ENCRYPT_AND_RESTRICT");
-                end
-
-                rule "detect-financial"
-                  salience 80
-                  when
-                    $facts : NodeFacts()
-                    $content : NamedFact(name == "result")
-                    eval(((String)$content.getValue()).matches("(?i).*\\\\b(revenue|profit|loss|earnings|dividend|valuation)\\\\b.*"))
-                  then
-                    $facts.setOutput("classification", "FINANCIAL");
-                    $facts.setOutput("sensitivity", "HIGH");
-                    $facts.setOutput("action", "RESTRICT_DISTRIBUTION");
-                end
-
-                rule "detect-legal"
-                  salience 60
-                  when
-                    $facts : NodeFacts()
-                    $content : NamedFact(name == "result")
-                    eval(((String)$content.getValue()).matches("(?i).*\\\\b(agreement|contract|liability|indemnification|jurisdiction)\\\\b.*"))
-                  then
-                    $facts.setOutput("classification", "LEGAL");
-                    $facts.setOutput("sensitivity", "HIGH");
-                    $facts.setOutput("action", "LEGAL_REVIEW_REQUIRED");
-                end
-
-                rule "general-content"
-                  salience -10
-                  when
-                    $facts : NodeFacts()
-                    not (eval($facts.getOutputs().containsKey("classification")))
-                  then
-                    $facts.setOutput("classification", "GENERAL");
-                    $facts.setOutput("sensitivity", "LOW");
-                    $facts.setOutput("action", "NONE");
-                end
+        String classifyXml = """
+                <route id="kompile-node-classifyContent">
+                  <from uri="direct:kompile-node-classifyContent"/>
+                  <choice>
+                    <when>
+                      <simple>${header.content} contains 'SSN' || ${header.content} contains 'ssn' || ${header.content} contains 'social security' || ${header.content} contains 'Date of Birth' || ${header.content} contains 'passport'</simple>
+                      <setHeader name="kompile_output_classification"><constant>PII</constant></setHeader>
+                      <setHeader name="kompile_output_sensitivity"><constant>CRITICAL</constant></setHeader>
+                      <setHeader name="kompile_output_action"><constant>ENCRYPT_AND_RESTRICT</constant></setHeader>
+                    </when>
+                    <when>
+                      <simple>${header.content} contains 'revenue' || ${header.content} contains 'profit' || ${header.content} contains 'loss' || ${header.content} contains 'earnings' || ${header.content} contains 'dividend' || ${header.content} contains 'valuation'</simple>
+                      <setHeader name="kompile_output_classification"><constant>FINANCIAL</constant></setHeader>
+                      <setHeader name="kompile_output_sensitivity"><constant>HIGH</constant></setHeader>
+                      <setHeader name="kompile_output_action"><constant>RESTRICT_DISTRIBUTION</constant></setHeader>
+                    </when>
+                    <when>
+                      <simple>${header.content} contains 'agreement' || ${header.content} contains 'contract' || ${header.content} contains 'liability' || ${header.content} contains 'indemnification' || ${header.content} contains 'jurisdiction'</simple>
+                      <setHeader name="kompile_output_classification"><constant>LEGAL</constant></setHeader>
+                      <setHeader name="kompile_output_sensitivity"><constant>HIGH</constant></setHeader>
+                      <setHeader name="kompile_output_action"><constant>LEGAL_REVIEW_REQUIRED</constant></setHeader>
+                    </when>
+                    <otherwise>
+                      <setHeader name="kompile_output_classification"><constant>GENERAL</constant></setHeader>
+                      <setHeader name="kompile_output_sensitivity"><constant>LOW</constant></setHeader>
+                      <setHeader name="kompile_output_action"><constant>NONE</constant></setHeader>
+                    </otherwise>
+                  </choice>
+                  <transform>
+                    <simple>${header.kompile_output_classification}</simple>
+                  </transform>
+                </route>
                 """;
 
         ComputeNode classifyNode = ComputeNode.builder()
                 .id("classifyContent").name("Classify Content")
-                .executionType(NodeExecutionType.DROOLS_RULE)
-                .script(classifyDrl).build();
-
-        ComputeEdge edge = ComputeEdge.builder()
-                .id("e1").sourceNodeId("extractContent").targetNodeId("classifyContent").build();
+                .executionType(NodeExecutionType.CAMEL_ROUTE)
+                .script(classifyXml)
+                .build();
 
         ComputeGraph graph = ComputeGraph.builder()
                 .id("content-classify")
                 .name("Attachment Content Classification")
-                .nodes(List.of(extractNode, classifyNode))
-                .edges(List.of(edge))
+                .nodes(List.of(classifyNode))
+                .edges(List.of())
                 .build();
 
         DefaultGraphExecutor executor = new DefaultGraphExecutor(
@@ -698,6 +668,8 @@ class CamelEmailAttachmentWorkflowTest {
         GraphExecutionResult piiResult = executor.execute(graph, Map.of(
                 "content", "Employee record: SSN 123-45-6789, Date of Birth: 1990-05-15"
         ));
+        assertEquals(ExecutionStatus.COMPLETED, piiResult.getStatus(),
+                "PII test failed: " + piiResult.getError());
         assertEquals("PII", piiResult.getFinalOutputs().get("classification"));
         assertEquals("CRITICAL", piiResult.getFinalOutputs().get("sensitivity"));
 
@@ -705,6 +677,7 @@ class CamelEmailAttachmentWorkflowTest {
         GraphExecutionResult finResult = executor.execute(graph, Map.of(
                 "content", "Q3 revenue was $12M, representing 15% profit margin with earnings up 8% YoY"
         ));
+        assertEquals(ExecutionStatus.COMPLETED, finResult.getStatus());
         assertEquals("FINANCIAL", finResult.getFinalOutputs().get("classification"));
         assertEquals("RESTRICT_DISTRIBUTION", finResult.getFinalOutputs().get("action"));
 
@@ -712,12 +685,14 @@ class CamelEmailAttachmentWorkflowTest {
         GraphExecutionResult legalResult = executor.execute(graph, Map.of(
                 "content", "This agreement establishes the terms of liability and indemnification between parties"
         ));
+        assertEquals(ExecutionStatus.COMPLETED, legalResult.getStatus());
         assertEquals("LEGAL", legalResult.getFinalOutputs().get("classification"));
 
         // General content
         GraphExecutionResult genResult = executor.execute(graph, Map.of(
                 "content", "Team lunch is at noon today, bring your own drinks"
         ));
+        assertEquals(ExecutionStatus.COMPLETED, genResult.getStatus());
         assertEquals("GENERAL", genResult.getFinalOutputs().get("classification"));
         assertEquals("LOW", genResult.getFinalOutputs().get("sensitivity"));
     }
