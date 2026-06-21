@@ -66,6 +66,11 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-model-manager</artifactId>
         </dependency>
+        <!-- Model staging: GraphScopedDeployService used by ModelDeploymentHook -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-staging</artifactId>
+        </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-project-store</artifactId>

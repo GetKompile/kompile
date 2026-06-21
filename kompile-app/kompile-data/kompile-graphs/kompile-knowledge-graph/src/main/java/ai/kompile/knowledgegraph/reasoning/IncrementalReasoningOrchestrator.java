@@ -39,6 +39,7 @@ import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.persistence.FileBackedWeightStore;
 import ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter;
 import ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory;
+import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -530,9 +531,27 @@ public class IncrementalReasoningOrchestrator {
                 trainedProgram = pslWeightLearner.updateOnBatch(program, softTargets, 1);
 
                 // Persist the updated weights via whichever store was resolved above
-                cascadeWeightStore.save(factSheetId + ":cascade", trainedProgram.rules());
-                log.debug("Grounding cascade factSheet={}: PSL weight training done ({} rules persisted)",
-                        factSheetId, trainedProgram.rules().size());
+                String programKey = factSheetId + ":cascade";
+                int savedVersion = cascadeWeightStore.save(programKey, trainedProgram.rules());
+                log.debug("Grounding cascade factSheet={}: PSL weight training done ({} rules persisted, v{})",
+                        factSheetId, trainedProgram.rules().size(), savedVersion);
+
+                // STEP 5b-event: publish ModelTrainedEvent so app-main can stage the artifact.
+                // Only when file-backed store is the active store (dualStoreFactory path does not
+                // expose a file artifact path here; KGE covers that separately).
+                if (fileBackedWeightStore != null && dualStoreFactory == null) {
+                    try {
+                        java.nio.file.Path artifactPath = fileBackedWeightStore.pslArtifactPath(
+                                String.valueOf(factSheetId), programKey, savedVersion);
+                        eventPublisher.publishEvent(
+                                new ModelTrainedEvent(this, "psl", factSheetId, artifactPath, "psl-cascade"));
+                        log.debug("Grounding cascade factSheet={}: published ModelTrainedEvent(psl, v{})",
+                                factSheetId, savedVersion);
+                    } catch (Exception e) {
+                        log.warn("Grounding cascade factSheet={}: could not publish PSL ModelTrainedEvent — {}",
+                                factSheetId, e.getMessage());
+                    }
+                }
 
                 // STEP 5b audit: emit WEIGHT_TUNED event for each changed rule
                 if (correctionService != null) {
@@ -637,6 +656,18 @@ public class IncrementalReasoningOrchestrator {
                     mebnWeightAdapter.persist(factSheetId, theory);
                     log.debug("Grounding cascade factSheet={}: MEBN weight training done (cascade {})",
                             factSheetId, cascadeCount);
+
+                    // STEP 9-event: publish ModelTrainedEvent so app-main can stage the artifact.
+                    try {
+                        java.nio.file.Path mebnArtifact = mebnWeightAdapter.mebnArtifactPath(factSheetId);
+                        eventPublisher.publishEvent(
+                                new ModelTrainedEvent(this, "mebn", factSheetId, mebnArtifact, "mebn-grounding"));
+                        log.debug("Grounding cascade factSheet={}: published ModelTrainedEvent(mebn, cascade {})",
+                                factSheetId, cascadeCount);
+                    } catch (Exception e) {
+                        log.warn("Grounding cascade factSheet={}: could not publish MEBN ModelTrainedEvent — {}",
+                                factSheetId, e.getMessage());
+                    }
                 } catch (Exception e) {
                     log.warn("Grounding cascade factSheet={}: MEBN weight training failed — {}",
                             factSheetId, e.getMessage());

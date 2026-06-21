@@ -76,6 +76,21 @@ public class MebnWeightPersistenceAdapter {
         return true;
     }
 
+    /**
+     * Returns the absolute {@link Path} of the MEBN weights file for a given fact sheet.
+     * The path is {@code <dataDir>/data/graph/reasoning/<factSheetId>/mebn-weights.json}.
+     *
+     * <p>Used by {@link ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator}
+     * to supply an artifact path in {@link ai.kompile.knowledgegraph.staging.ModelTrainedEvent}
+     * without requiring the caller to reconstruct the directory convention.</p>
+     *
+     * @param factSheetId the fact sheet identifier
+     * @return absolute path to the MEBN weights JSON file (may not yet exist)
+     */
+    public Path mebnArtifactPath(long factSheetId) {
+        return reasoningDir(factSheetId).resolve("mebn-weights.json");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private Path resolveBase() {

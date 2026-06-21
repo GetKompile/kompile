@@ -105,6 +105,26 @@ public class FileBackedWeightStore implements WeightStore {
         return new FileWeightStore(dir);
     }
 
+    /**
+     * Returns the artifact {@link Path} for the given fact sheet, PSL program key, and version.
+     * Mirrors the naming convention used by {@link FileWeightStore#save}: the programId is
+     * sanitized (non-alphanumeric/dash/dot chars → underscore) and the file is placed under
+     * {@code <reasoningBase>/<factSheetId>/psl-weights/}.
+     *
+     * <p>Used by {@link ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator}
+     * to locate the artifact file for {@link ai.kompile.knowledgegraph.staging.ModelTrainedEvent}.</p>
+     *
+     * @param factSheetId fact sheet identifier
+     * @param programKey  PSL program key (e.g. {@code "42:cascade"})
+     * @param version     version number returned by {@link FileWeightStore#save}
+     * @return absolute path to the weight artifact JSON file
+     */
+    public Path pslArtifactPath(String factSheetId, String programKey, int version) {
+        String sanitized = programKey.replaceAll("[^A-Za-z0-9._-]", "_");
+        return reasoningBase.resolve(factSheetId).resolve("psl-weights")
+                .resolve(sanitized + ".v" + version + ".json");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static Path resolveBase(String dataDirValue) {

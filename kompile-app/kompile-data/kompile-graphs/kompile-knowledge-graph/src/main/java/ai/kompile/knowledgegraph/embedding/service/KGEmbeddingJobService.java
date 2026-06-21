@@ -22,9 +22,12 @@ import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob.JobStatus;
 import ai.kompile.knowledgegraph.embedding.impl.RotatEModel;
 import ai.kompile.knowledgegraph.embedding.impl.TransEModel;
 import ai.kompile.knowledgegraph.embedding.repository.KGEmbeddingJobRepository;
+import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -33,6 +36,11 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +64,21 @@ public class KGEmbeddingJobService {
     private KGEmbeddingJobRepository jobRepository;
     private KGEmbeddingStorageService storageService;
     private SimpMessagingTemplate messagingTemplate;
+
+    /**
+     * Data directory root for writing KGE checkpoint stubs.
+     * Defaults to {@code ~/.kompile} when not configured.
+     */
+    @Value("${kompile.data.dir:}")
+    private String dataDir;
+
+    /**
+     * Spring event publisher for {@link ModelTrainedEvent}.
+     * Optional (field-injected) so the existing constructor signature is unchanged and
+     * contexts without a publisher (plain unit tests) still compile cleanly.
+     */
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
 
     /**
      * Store-agnostic graph adapters (JPA + live matrix store). Field-injected and optional so the
@@ -186,6 +209,23 @@ public class KGEmbeddingJobService {
                 job.setEntitiesEmbedded(result.entitiesCount());
                 job.setRelationsEmbedded(result.relationsCount());
                 job.setCurrentLoss(result.finalLoss());
+
+                // Publish ModelTrainedEvent so app-main can stage the KGE artifact.
+                // Write a JSON stub file that carries embedding metadata (version, entity/relation
+                // counts, loss) and serves as the staged artifact in the model registry.
+                if (eventPublisher != null) {
+                    try {
+                        Path kgeArtifact = writeKgeCheckpointStub(factSheetId, version,
+                                result.entitiesCount(), result.relationsCount(), result.finalLoss());
+                        eventPublisher.publishEvent(
+                                new ModelTrainedEvent(this, "kge", factSheetId, kgeArtifact, "kge-embedding"));
+                        log.info("KGE training factSheet={}: published ModelTrainedEvent(kge, v{})", factSheetId, version);
+                    } catch (Exception e) {
+                        log.warn("KGE training factSheet={}: could not publish KGE ModelTrainedEvent — {}",
+                                factSheetId, e.getMessage());
+                        // Non-fatal: embeddings already stored in the graph store
+                    }
+                }
             } else {
                 job.setStatus(result.errorMessage() != null && result.errorMessage().contains("cancelled")
                         ? JobStatus.CANCELLED : JobStatus.FAILED);
@@ -325,6 +365,52 @@ public class KGEmbeddingJobService {
                 log.debug("Failed to send progress update: {}", e.getMessage());
             }
         }
+    }
+
+    /**
+     * Write a lightweight JSON checkpoint stub for a completed KGE training run.
+     * The file records the embedding version, entity/relation counts, and final loss so
+     * that the model registry has a concrete artifact to stage without needing to
+     * serialise the full embedding tensors.
+     *
+     * <p>Path: {@code <dataDir>/models/kge/<factSheetId>-v<version>.json}</p>
+     *
+     * @param factSheetId     fact sheet identifier
+     * @param version         embedding version (Unix epoch millis)
+     * @param entitiesCount   number of entity embeddings produced
+     * @param relationsCount  number of relation embeddings produced
+     * @param finalLoss       final training loss
+     * @return absolute path to the written stub file
+     */
+    private Path writeKgeCheckpointStub(Long factSheetId, Long version,
+                                        int entitiesCount, int relationsCount, double finalLoss) {
+        Path kgeDir = resolveKgeDir();
+        try {
+            Files.createDirectories(kgeDir);
+        } catch (IOException e) {
+            throw new UncheckedIOException("KGEmbeddingJobService: cannot create KGE dir " + kgeDir, e);
+        }
+        Path stub = kgeDir.resolve(factSheetId + "-v" + version + ".json");
+        String json = "{\"factSheetId\":" + factSheetId
+                + ",\"version\":" + version
+                + ",\"entitiesCount\":" + entitiesCount
+                + ",\"relationsCount\":" + relationsCount
+                + ",\"finalLoss\":" + String.format(java.util.Locale.ROOT, "%.17g", finalLoss)
+                + "}";
+        try {
+            Files.writeString(stub, json, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("KGEmbeddingJobService: cannot write KGE stub " + stub, e);
+        }
+        log.debug("KGE checkpoint stub written: {}", stub);
+        return stub;
+    }
+
+    private Path resolveKgeDir() {
+        Path base = (dataDir == null || dataDir.isBlank())
+                ? Path.of(System.getProperty("user.home"), ".kompile")
+                : Path.of(dataDir);
+        return base.resolve("models").resolve("kge");
     }
 
     private void sendCompletionUpdate(String jobId, KGEmbeddingJob job) {
