@@ -88,6 +88,10 @@ public class MiningProcessDiscoveryService {
     @org.springframework.beans.factory.annotation.Value("${kompile.process.mining.anchor-type:}")
     private String anchorEntityType;
 
+    /** Optional project data directory: used to emit PROCESS_CREATED audit events. */
+    @org.springframework.beans.factory.annotation.Value("${kompile.data.dir:#{null}}")
+    private String dataDir;
+
     /** Switches the extractor to anchor-based correlation when an anchor type is configured. */
     @jakarta.annotation.PostConstruct
     void configureCaseNotion() {
@@ -202,9 +206,85 @@ public class MiningProcessDiscoveryService {
             }
         }
 
+        // D3-C: Inline Bayesian posteriors — call ProcessBayesianInference.infer on the event log
+        // and populate bayesianPosteriors / bayesianPriors on the suggestion
+        try {
+            DirectlyFollowsGraph dfg = DfgBuilder.build(eventLog);
+            ProcessBayesianInference.Result bayesResult = ProcessBayesianInference.infer(dfg, List.of());
+            if (!bayesResult.posteriors().isEmpty()) {
+                suggestion.setBayesianPosteriors(new java.util.LinkedHashMap<>(bayesResult.posteriors()));
+                suggestion.setBayesianPriors(new java.util.LinkedHashMap<>(bayesResult.priors()));
+                // Also add a BAYESIAN structured evidence entry
+                suggestion.getStructuredEvidence().add(
+                        ProcessSuggestion.StructuredEvidence.builder()
+                                .type("BAYESIAN")
+                                .description(String.format(
+                                        "Bayesian inference: %d activities, %d edges (noisy-OR DAG)",
+                                        bayesResult.nodes(), bayesResult.edges()))
+                                .score(bayesResult.posteriors().values().stream()
+                                        .mapToDouble(Double::doubleValue).average().orElse(0.0))
+                                .build());
+            }
+        } catch (Exception e) {
+            log.warn("Process mining: inline Bayesian inference failed for fact sheet {} — {}",
+                    factSheetId, e.getMessage());
+        }
+
+        // D3-D / D3-E: Build process-level lineage tracing back to facts, rules, and causal arcs
+        {
+            List<String> ruleTexts = causalModel.pslRules();
+            List<String> causalPairs = new java.util.ArrayList<>();
+            for (CausalDependency dep : causalModel.dependencies()) {
+                causalPairs.add(dep.from() + " -> " + dep.to() +
+                        " [" + dep.type().name() + " dep=" + String.format("%.3f", dep.dependency()) + "]");
+            }
+            ProcessSuggestion.ProcessLineage lineage = ProcessSuggestion.ProcessLineage.builder()
+                    .basisNodeIds(new java.util.ArrayList<>(suggestion.getSourceGraphNodeIds()))
+                    .supportingRuleTexts(new java.util.ArrayList<>(ruleTexts))
+                    .causalActivityPairs(causalPairs)
+                    .derivationMethod("PROCESS_MINING")
+                    .build();
+            suggestion.setLineageRef(lineage);
+        }
+
         suggestion.setId("mined-" + UUID.randomUUID());
         suggestion.setFactSheetId(factSheetId);
         suggestion.setDiscoveredAt(Instant.now());
+
+        // Emit PROCESS_CREATED audit event — so process creation is a tracked, traceable decision
+        if (rulePersistenceService != null && dataDir != null && !dataDir.isBlank()) {
+            try {
+                ai.kompile.knowledgegraph.audit.FileBackedAuditLog auditLog =
+                        new ai.kompile.knowledgegraph.audit.FileBackedAuditLog(
+                                java.nio.file.Path.of(dataDir), factSheetId);
+                ai.kompile.knowledgegraph.audit.FactAuditEvent event =
+                        new ai.kompile.knowledgegraph.audit.FactAuditEvent(
+                                java.util.UUID.randomUUID().toString(),
+                                "PROCESS_CREATED",
+                                "process:factSheet:" + factSheetId,
+                                java.time.Instant.now(),
+                                "PROCESS_MINER",
+                                suggestion.getId(),
+                                Double.NaN,
+                                suggestion.getConfidence(),
+                                Double.NaN,
+                                Double.NaN,
+                                null,
+                                null,
+                                suggestion.getId(),
+                                "causal-mining:factSheet:" + factSheetId,
+                                false,
+                                suggestion.getId(),
+                                Double.NaN,
+                                Double.NaN,
+                                "process_mining from fact sheet " + factSheetId
+                        );
+                auditLog.append(event);
+            } catch (Exception e) {
+                log.warn("Process mining: could not emit PROCESS_CREATED audit for fact sheet {} — {}",
+                        factSheetId, e.getMessage());
+            }
+        }
         if (suggestionStore != null) {
             suggestionStore.saveAll(List.of(suggestion));
         }

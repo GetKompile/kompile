@@ -39,6 +39,7 @@ import org.springframework.stereotype.Service;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
+import java.util.OptionalDouble;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -188,6 +189,27 @@ public class KbGroundingService {
                     state.factStore(),
                     threshold);
             return verifier.verify(atomKey);
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Return the soft-truth value (0..1) for the given atom key from the inferred fact store,
+     * or empty if no inference has been run for this atom yet.
+     *
+     * @param factSheetId the fact sheet to query
+     * @param atomKey     the canonical atom key
+     * @return an OptionalDouble containing the latest inferred soft-truth value, or empty
+     */
+    public OptionalDouble latestValue(long factSheetId, String atomKey) {
+        FactSheetKbState state = getState(factSheetId);
+        ReadWriteLock lock = state.lock();
+        lock.readLock().lock();
+        try {
+            return state.inferredFactStore().latest(atomKey)
+                    .map(fact -> OptionalDouble.of(fact.value()))
+                    .orElse(OptionalDouble.empty());
         } finally {
             lock.readLock().unlock();
         }

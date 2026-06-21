@@ -120,6 +120,13 @@ public class ProcessSuggestion {
     @Builder.Default
     private List<GroundedElement<SuggestedStep>> groundedSteps = new ArrayList<>();
 
+    /**
+     * Lineage reference for this process candidate, tracing it back to the graph facts,
+     * mined rules, and derivation evidence that produced it.
+     * Populated by {@code MiningProcessDiscoveryService.discoverForFactSheet}.
+     */
+    private ProcessLineage lineageRef;
+
     @Data
     @Builder
     @NoArgsConstructor
@@ -164,6 +171,10 @@ public class ProcessSuggestion {
          * graph nodes, or null when no role could be derived.
          */
         private String roleBinding;
+        /**
+         * Per-step lineage: traces this step back to its basis facts and supporting rules.
+         */
+        private ProcessLineage lineageRef;
     }
 
     @Data
@@ -180,5 +191,31 @@ public class ProcessSuggestion {
         /** KG node IDs that support this evidence */
         @Builder.Default
         private List<String> supportingNodeIds = new ArrayList<>();
+    }
+
+    /**
+     * Lineage reference for a process or step, tracing its derivation back to basis facts and rules.
+     * Populated by {@code discoverForFactSheet} so that every candidate has traceability.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ProcessLineage {
+        /** Graph node IDs that are the factual basis for this process/step. */
+        @Builder.Default
+        private List<String> basisNodeIds = new ArrayList<>();
+        /** PSL rule texts (from MinedRuleLineage) that support this process/step. */
+        @Builder.Default
+        private List<String> supportingRuleTexts = new ArrayList<>();
+        /** Activities from the causal arcs that back this process/step. */
+        @Builder.Default
+        private List<String> causalActivityPairs = new ArrayList<>();
+        /** The derivation method: e.g. "INDUCTIVE_MINER", "BAYESIAN", "CAUSAL_ANALYSIS". */
+        private String derivationMethod;
+        /** Soft-truth value from the inferred fact store for the key activity, or null if not available. */
+        private Double softTruthValue;
+        /** The atom key that was queried in the KB for this step's activity. */
+        private String atomKey;
     }
 }

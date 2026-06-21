@@ -140,12 +140,25 @@ public final class ProcessTreeToSuggestion {
                     // not per-step, so we use the tree conformance as a proxy)
                     ConformanceResult stepConf = ConformanceChecker.check(tree, log);
                     double rawScore = stepConf.fitness() * stepConf.precision();
-                    double calibrated = cal.calibrate(rawScore, StrengthCalibrator.SignalType.INDUCTIVE_MINER_FM, vr);
+                    // D3-A: blend soft-truth value from InferredFactStore into calibrated score
+                    java.util.OptionalDouble softTruth = kbGrounding.latestValue(factSheetId, atomKey);
+                    double blendedRaw = softTruth.isPresent()
+                            ? 0.6 * rawScore + 0.4 * softTruth.getAsDouble()
+                            : rawScore;
+                    double calibrated = cal.calibrate(blendedRaw, StrengthCalibrator.SignalType.INDUCTIVE_MINER_FM, vr);
                     StrengthBand band = StrengthBand.fromScalar(calibrated);
                     GroundedElement<SuggestedStep> ge = new GroundedElement<>(
                             step, vr, calibrated, band, atomKey,
                             null, null, "INDUCTIVE_MINER");
                     allGroundedSteps.add(ge);
+                    // Build per-step lineage tracing back to the KB basis
+                    ProcessSuggestion.ProcessLineage stepLineage = ProcessSuggestion.ProcessLineage.builder()
+                            .basisNodeIds(new ArrayList<>(labelToNodeIds.getOrDefault(label, List.of())))
+                            .derivationMethod("INDUCTIVE_MINER")
+                            .softTruthValue(softTruth.isPresent() ? softTruth.getAsDouble() : null)
+                            .atomKey(atomKey)
+                            .build();
+                    step.setLineageRef(stepLineage);
                 }
 
                 if (when != null) {
