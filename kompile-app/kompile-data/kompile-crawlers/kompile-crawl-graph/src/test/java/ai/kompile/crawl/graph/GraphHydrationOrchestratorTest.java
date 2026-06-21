@@ -336,4 +336,58 @@ class GraphHydrationOrchestratorTest {
         assertEquals(0, e.stagesRun());
         assertThat(e.runId()).isNull();
     }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // 10. GraphEnrichmentService.enrich() (Follow-up 2: CASCADE path shares orchestrator)
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void enrich_delegatesToRun_allStagesExecuted() {
+        when(reasoningOrchestrator.runFullReground(10L))
+                .thenReturn(new RegroundResult(1, "run-enrich", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(new PruneCompactResult(0, 0, 0, 0, 0, null, false));
+
+        // enrich() must not throw and must invoke the full pipeline (DERIVATION + PRUNE_COMPACT)
+        assertDoesNotThrow(() -> orchestrator.enrich(10L));
+
+        verify(reasoningOrchestrator).runFullReground(10L);
+        verify(pruneCompactOrchestrator).run(anyLong(), anySet(), anyString(), anyBoolean(), any());
+    }
+
+    @Test
+    void enrich_noBeans_doesNotThrow() {
+        // No beans wired — enrich() must silently succeed (non-fatal)
+        GraphHydrationOrchestrator bare = new GraphHydrationOrchestrator();
+        assertDoesNotThrow(() -> bare.enrich(99L));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // 11. UnifiedCrawlRequest.HydrationConfig (Follow-up 3: hydration request field)
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void crawlRequest_hydrationFieldRoundTrip() {
+        UnifiedCrawlRequest.HydrationConfig h = UnifiedCrawlRequest.HydrationConfig.builder()
+                .enabledStageIds(Set.of("DERIVATION"))
+                .confidencePruneThreshold(0.6)
+                .dryRun(true)
+                .build();
+
+        UnifiedCrawlRequest req = UnifiedCrawlRequest.builder()
+                .name("test-hydration")
+                .hydration(h)
+                .build();
+
+        assertThat(req.getHydration()).isNotNull();
+        assertThat(req.getHydration().getEnabledStageIds()).containsExactly("DERIVATION");
+        assertThat(req.getHydration().getConfidencePruneThreshold()).isEqualTo(0.6);
+        assertThat(req.getHydration().isDryRun()).isTrue();
+    }
+
+    @Test
+    void crawlRequest_nullHydration_defaults() {
+        UnifiedCrawlRequest req = UnifiedCrawlRequest.builder().name("no-hydration").build();
+        assertThat(req.getHydration()).isNull();
+    }
 }

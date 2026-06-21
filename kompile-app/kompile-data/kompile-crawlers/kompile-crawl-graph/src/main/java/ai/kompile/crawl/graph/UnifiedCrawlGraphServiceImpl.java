@@ -1665,7 +1665,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                             final int[] stagesDone = {0};
                             HydrationResult hr = graphHydrationOrchestrator.run(
                                     factSheetId,
-                                    HydrationConfig.defaults(),
+                                    resolveHydrationConfig(job.getRequest()),
                                     (stageId, message) -> recordHydrationSubStageProgress(
                                             job, stageId, message, ++stagesDone[0],
                                             GraphHydrationOrchestrator.TOTAL_STAGES));
@@ -2305,5 +2305,25 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     private String humanizePhase(String phase) {
         return PipelineStepTracker.humanizePhase(phase);
+    }
+
+    /**
+     * Converts the optional {@link UnifiedCrawlRequest.HydrationConfig} from the crawl request
+     * into the orchestrator's {@link HydrationConfig}. When the request carries no hydration
+     * config (null), {@link HydrationConfig#defaults()} is returned so the ENRICHMENT step
+     * is unaffected for crawls that do not specify hydration settings.
+     *
+     * @param request the crawl request (may be null)
+     * @return the resolved HydrationConfig to pass to the orchestrator
+     */
+    private HydrationConfig resolveHydrationConfig(UnifiedCrawlRequest request) {
+        if (request == null || request.getHydration() == null) {
+            return HydrationConfig.defaults();
+        }
+        UnifiedCrawlRequest.HydrationConfig h = request.getHydration();
+        return new HydrationConfig(
+                h.getEnabledStageIds() != null ? h.getEnabledStageIds() : Set.of(),
+                h.getConfidencePruneThreshold() > 0 ? h.getConfidencePruneThreshold() : 0.4,
+                h.isDryRun());
     }
 }

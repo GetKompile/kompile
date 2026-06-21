@@ -447,7 +447,9 @@ class GraphExtractionOrchestrator {
         int minChars = Math.max(1, Math.min(modelCap.minInputChars(), initChars));
         // Item count is only a safety cap — the char budget is the real control. Configurable via
         // crawlGraphExtractionMaxItemsPerBatch (project/global .kompile config) and per job.
-        int maxItems = Math.max(resolveGraphExtractionBatchSize(config), Math.max(1, graphExtractionMaxItemsPerBatch));
+        // graphExtractionMaxItemsPerBatch is an upper-bound cap, so we take the MIN of the
+        // configured batch size and the cap (not MAX, which would ignore the batch size setting).
+        int maxItems = Math.min(resolveGraphExtractionBatchSize(config), Math.max(1, graphExtractionMaxItemsPerBatch));
         // Ramp step = one starting budget per healthy wave (init → max in a few waves). Memory
         // shrink thresholds reuse the crawl's configured memory ceiling instead of new constants.
         double criticalFrac = Math.min(0.99, Math.max(0.5, memoryCriticalThresholdPercent / 100.0));
@@ -931,7 +933,8 @@ class GraphExtractionOrchestrator {
         boolean targetOverridden = graphExtractionTargetCharsPerBatch != DEFAULT_GRAPH_EXTRACTION_TARGET_CHARS;
         int charBudget = targetOverridden
                 ? Math.max(1, graphExtractionTargetCharsPerBatch) : modelCap.initInputChars();
-        int maxItems = Math.max(resolveGraphExtractionBatchSize(config), Math.max(1, graphExtractionMaxItemsPerBatch));
+        // graphExtractionMaxItemsPerBatch is an upper-bound cap on the configured batch size.
+        int maxItems = Math.min(resolveGraphExtractionBatchSize(config), Math.max(1, graphExtractionMaxItemsPerBatch));
 
         List<CostBatch<Document>> batches = planCostBatches(
                 documents,
@@ -960,7 +963,9 @@ class GraphExtractionOrchestrator {
         Long factSheetId = jobFactSheetId(job);
 
         if (parallelism <= 1 || batches.size() <= 1) {
-            final int serialChunksPerPrompt = Math.max(1, maxItems);
+            // Use graphExtractionChunksPerPrompt (the dedicated per-prompt grouping field) rather
+            // than maxItems (batch-planning size) — they control different dimensions.
+            final int serialChunksPerPrompt = Math.max(1, graphExtractionChunksPerPrompt);
             if (serialChunksPerPrompt <= 1) {
                 // Legacy serial path: one call per chunk.
                 for (int docIndex = 0; docIndex < documents.size(); docIndex++) {
@@ -1009,7 +1014,8 @@ class GraphExtractionOrchestrator {
 
         // Use shared graph extraction pool — avoids per-job thread creation/teardown overhead
         // Snapshot chunksPerPrompt so the lambda captures a stable value.
-        final int chunksPerPrompt = Math.max(1, maxItems);
+        // Use graphExtractionChunksPerPrompt (per-prompt grouping) not maxItems (batch-planning size).
+        final int chunksPerPrompt = Math.max(1, graphExtractionChunksPerPrompt);
         try {
             List<Future<?>> futures = new ArrayList<>(batches.size());
             AtomicInteger offset = new AtomicInteger(0);

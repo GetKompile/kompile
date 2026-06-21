@@ -16,6 +16,7 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.crawl.graph.GraphEnrichmentService;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactResult;
@@ -62,7 +63,7 @@ import java.util.function.BiConsumer;
  * reused from the existing library + KG module. No lib modification.</p>
  */
 @Component
-public class GraphHydrationOrchestrator {
+public class GraphHydrationOrchestrator implements GraphEnrichmentService {
 
     private static final Logger log = LoggerFactory.getLogger(GraphHydrationOrchestrator.class);
 
@@ -203,6 +204,26 @@ public class GraphHydrationOrchestrator {
                 componentNodesRemoved,
                 stagesRun,
                 runId);
+    }
+
+    /**
+     * {@link GraphEnrichmentService} implementation — runs the full hydration pipeline with
+     * {@link HydrationConfig#defaults()} and a no-op progress callback.
+     *
+     * <p>Called from {@code GroundingCascadeHook} (in {@code kompile-graph-change-tracking})
+     * so that the CASCADE incremental path reuses the same orchestrated pipeline as the BATCH
+     * crawl ENRICHMENT step. The cascade runs asynchronously after the SSE has closed, so the
+     * no-op callback is the correct choice here (there is no live progress listener).</p>
+     *
+     * @param factSheetId the fact sheet to enrich
+     */
+    @Override
+    public void enrich(long factSheetId) {
+        try {
+            run(factSheetId, HydrationConfig.defaults(), (stage, msg) -> {});
+        } catch (Exception e) {
+            log.warn("[Hydration] enrich() failed for factSheet={}: {}", factSheetId, e.getMessage(), e);
+        }
     }
 
     /** Invoke callback without letting it throw back into the hydration pipeline. */

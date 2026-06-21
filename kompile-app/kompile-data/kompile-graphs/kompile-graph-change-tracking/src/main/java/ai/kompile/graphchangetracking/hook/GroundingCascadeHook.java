@@ -15,11 +15,10 @@
  */
 package ai.kompile.graphchangetracking.hook;
 
+import ai.kompile.core.crawl.graph.GraphEnrichmentService;
 import ai.kompile.gateway.core.gateway.channel.ChannelMessageReceivedEvent;
 import ai.kompile.graphchangetracking.event.GraphChangesetCompletedEvent;
 import ai.kompile.knowledgegraph.grounding.AgentFactAssertedEvent;
-import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
-import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
 import lombok.extern.slf4j.Slf4j;
@@ -80,23 +79,30 @@ public class GroundingCascadeHook {
     private final IncrementalReasoningOrchestrator orchestrator;
 
     /**
-     * Optional prune/compact orchestrator. Injected only when {@code kompile-knowledge-graph}
-     * is on the classpath and the bean is available. When null, the P1–P5 cascade is skipped.
+     * Optional {@link GraphEnrichmentService} — when present (i.e., {@code kompile-crawl-graph}
+     * is on the classpath and the {@code GraphHydrationOrchestrator} bean is wired), the full
+     * orchestrated DERIVATION → PRUNE_COMPACT → HEALTH pipeline is used for the cascade instead
+     * of calling the reasoning orchestrator and pruner directly. This ensures BATCH and CASCADE
+     * paths share the same enrichment logic.
+     *
+     * <p>When absent the hook falls back to the direct {@link IncrementalReasoningOrchestrator}
+     * call so that the hook continues to work in lightweight deployments that do not include the
+     * crawl-graph module.</p>
      */
     @Nullable
-    private final PruneCompactOrchestrator pruneCompactOrchestrator;
+    private final GraphEnrichmentService graphEnrichmentService;
 
     /** Per-factSheet single-threaded executors — serializes cascade runs per fact sheet. */
     private final ConcurrentHashMap<Long, ExecutorService> executors = new ConcurrentHashMap<>();
 
     @Autowired
     public GroundingCascadeHook(IncrementalReasoningOrchestrator orchestrator,
-                                @Nullable PruneCompactOrchestrator pruneCompactOrchestrator) {
+                                @Nullable GraphEnrichmentService graphEnrichmentService) {
         this.orchestrator = orchestrator;
-        this.pruneCompactOrchestrator = pruneCompactOrchestrator;
+        this.graphEnrichmentService = graphEnrichmentService;
     }
 
-    /** Backward-compatible constructor for tests that do not wire the pruner. */
+    /** Backward-compatible constructor for tests that do not wire the enrichment service. */
     public GroundingCascadeHook(IncrementalReasoningOrchestrator orchestrator) {
         this(orchestrator, null);
     }
@@ -201,20 +207,22 @@ public class GroundingCascadeHook {
             try {
                 log.debug("GroundingCascadeHook: starting cascade for factSheet={} trigger={}",
                         factSheetId, trigger);
-                RegroundResult rg = orchestrator.runFullReground(factSheetId);
-                log.debug("GroundingCascadeHook: cascade done for factSheet={} trigger={} "
-                                + "versionsWritten={}",
-                        factSheetId, trigger, rg.versionsWritten());
-
-                // Run P1–P5 prune/compact cascade after derivation (if wired)
-                if (pruneCompactOrchestrator != null) {
-                    try {
-                        pruneCompactOrchestrator.run(factSheetId, rg.retractedAtomKeys(),
-                                rg.runId(), false, HealthSetpoints.defaults());
-                    } catch (Exception pruneEx) {
-                        log.warn("GroundingCascadeHook: prune/compact cascade failed for "
-                                + "factSheet={}: {}", factSheetId, pruneEx.getMessage());
-                    }
+                if (graphEnrichmentService != null) {
+                    // Preferred path: delegate to GraphHydrationOrchestrator via the SPI so that
+                    // CASCADE (incremental) and BATCH (crawl ENRICHMENT) share the same pipeline.
+                    // The no-op callback is correct here — the cascade runs async after the SSE
+                    // has already closed, so there is no live progress listener.
+                    graphEnrichmentService.enrich(factSheetId);
+                    log.debug("GroundingCascadeHook: cascade done for factSheet={} trigger={} "
+                                    + "(via GraphEnrichmentService)",
+                            factSheetId, trigger);
+                } else {
+                    // Fallback path: direct orchestrator call for lightweight deployments that
+                    // do not include kompile-crawl-graph on the classpath.
+                    RegroundResult rg = orchestrator.runFullReground(factSheetId);
+                    log.debug("GroundingCascadeHook: cascade done for factSheet={} trigger={} "
+                                    + "versionsWritten={}",
+                            factSheetId, trigger, rg.versionsWritten());
                 }
             } catch (Exception e) {
                 log.error("GroundingCascadeHook: cascade failed for factSheet={} trigger={}: {}",

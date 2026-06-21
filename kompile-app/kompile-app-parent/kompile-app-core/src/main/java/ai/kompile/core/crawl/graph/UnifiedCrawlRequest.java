@@ -27,6 +27,7 @@ import lombok.NoArgsConstructor;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Request to start a unified crawl-to-graph job.
@@ -65,6 +66,16 @@ public class UnifiedCrawlRequest {
 
     /** Pre-processing configuration (null = use defaults) */
     private Object preprocessing;
+
+    /**
+     * ENRICHMENT step configuration for the graph hydration pipeline
+     * (DERIVATION → PRUNE_COMPACT → HEALTH). When null, defaults are used
+     * (all stages enabled, confidencePruneThreshold=0.4, dryRun=false).
+     *
+     * <p>The matching {@code ai.kompile.crawl.graph.HydrationConfig} used internally
+     * by the orchestrator is constructed from this request field.</p>
+     */
+    private HydrationConfig hydration;
 
     /** Named ingest pipeline definitions (empty list = use defaults) */
     @Builder.Default
@@ -152,6 +163,41 @@ public class UnifiedCrawlRequest {
 
         /** Additional metadata to pass to each worker */
         private Map<String, Object> workerMetadata;
+    }
+
+    /**
+     * Configuration for the ENRICHMENT step graph hydration pipeline.
+     *
+     * <p>Mirrors {@code ai.kompile.crawl.graph.HydrationConfig} so the request
+     * can be serialized/deserialized independently of the crawl-graph module.
+     *
+     * <p>Stage IDs: {@code DERIVATION}, {@code PRUNE_COMPACT}, {@code HEALTH}.
+     * Empty {@code enabledStageIds} means run all stages (default behaviour).
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class HydrationConfig {
+        /**
+         * Stage IDs to execute. Empty/null = run all stages.
+         * Valid values: {@code DERIVATION}, {@code PRUNE_COMPACT}, {@code HEALTH}.
+         */
+        private Set<String> enabledStageIds;
+
+        /**
+         * Confidence threshold for pruning low-confidence inferred edges.
+         * Default: 0.4. Values outside [0.0, 1.0] fall back to 0.4.
+         */
+        @Builder.Default
+        private double confidencePruneThreshold = 0.4;
+
+        /**
+         * When true no writes are performed — stages execute in dry-run mode.
+         */
+        @Builder.Default
+        private boolean dryRun = false;
     }
 
     /**
