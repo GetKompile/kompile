@@ -59,6 +59,7 @@
 ## Architecture
 
 * [Architecture Overview](architecture/README.md)
+  * [Distributed Crawl Cluster](architecture/distributed-crawl-cluster.md)
 
 ## Development
 

@@ -176,6 +176,15 @@ export interface UnifiedCrawlRequest {
   preprocessing?: PreprocessingConfig;
   enabledSteps?: string[];
   archivedSteps?: string[];
+  /** Present only for distributed crawls (POST /distributed-crawl/start): the coordinator partitions sources. */
+  distribution?: DistributionConfig;
+}
+
+/** Distribution config for a distributed crawl — mirrors the backend UnifiedCrawlRequest.DistributionConfig. */
+export interface DistributionConfig {
+  partitionStrategy?: string;   // PER_SOURCE | ROUND_ROBIN (default PER_SOURCE)
+  timeoutMinutes?: number;
+  mergeResults?: boolean;
 }
 
 export interface PipelineStepCatalogEntry {

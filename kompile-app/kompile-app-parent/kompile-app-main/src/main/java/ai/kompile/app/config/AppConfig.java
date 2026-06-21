@@ -127,6 +127,49 @@ public class AppConfig {
             // These need reflection for getRecordComponents() in McpToolRegistry.buildInputSchema()
             registerToolRecordClasses(hints, classLoader);
 
+            // GraalVM native image: cluster DTO records serialized over WebSocket/HTTP — Jackson needs
+            // record constructor + accessor reflection (these never get a @Tool scan).
+            for (String clusterRecord : new String[]{
+                    "ai.kompile.app.services.cluster.WorkerCapabilities",
+                    "ai.kompile.app.services.cluster.WorkerCapabilities$GpuInfo",
+                    "ai.kompile.app.services.cluster.ClusterJobSubmission"
+            }) {
+                registerIfPresent(hints, classLoader, clusterRecord,
+                        MemberCategory.DECLARED_FIELDS,
+                        MemberCategory.INVOKE_DECLARED_METHODS,
+                        MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+            }
+
+            // GraalVM native image: distributed-crawl wire types. The controller request records are @RequestBody
+            // (AOT covers those), but the ProgressSnapshot graph is serialized OUT over SSE via a generic Object
+            // field on CrawlProgressEvent (CrawlProgressSseController), AND deserialized IN as a worker progress
+            // report — neither path is visible to the controller-signature AOT scan, so register them explicitly
+            // (same reason WorkerCapabilities/ClusterJobSubmission above need it).
+            for (String crawlWireType : new String[]{
+                    "ai.kompile.app.web.controllers.DistributedCrawlController$WorkerCallbackRequest",
+                    "ai.kompile.app.web.controllers.DistributedCrawlController$WorkerProgressRequest",
+                    "ai.kompile.app.web.controllers.DistributedCrawlController$WorkerTranscriptsRequest",
+                    "ai.kompile.app.web.controllers.DistributedCrawlController$TranscriptEntry",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$ProgressSnapshot",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$SourceProgress",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$DiscoveredItem",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$StageEvent",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$DocumentProgress",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$BackendRoutingStats",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$RerouteEvent",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$RetryEvent",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$TuningDecision",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$LlmCallRecord",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$PipelineStepSnapshot",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$Status",
+                    "ai.kompile.core.crawl.graph.UnifiedCrawlJob$PipelineStepStatus"
+            }) {
+                registerIfPresent(hints, classLoader, crawlWireType,
+                        MemberCategory.DECLARED_FIELDS,
+                        MemberCategory.INVOKE_DECLARED_METHODS,
+                        MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+            }
+
             // Include native library resources
             hints.resources().registerPattern("org/bytedeco/**");
             hints.resources().registerPattern("org/nd4j/**");

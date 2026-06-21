@@ -365,11 +365,19 @@
 
               </mat-card-content>
               <mat-card-actions align="end">
+                <mat-slide-toggle *ngIf="clusterWorkerCount > 0"
+                                  [(ngModel)]="distributeAcrossWorkers" color="primary"
+                                  style="margin-right: 16px;"
+                                  matTooltip="Fan the sources across the {{ clusterWorkerCount }} live cluster worker(s); progress merges into one job in the Crawlers panel.">
+                  Distribute across {{ clusterWorkerCount }} worker{{ clusterWorkerCount === 1 ? '' : 's' }}
+                </mat-slide-toggle>
                 <button mat-raised-button color="primary"
                         [disabled]="sources.length === 0 || isStarting"
                         (click)="startJob()">
-                  <mat-icon>play_arrow</mat-icon>
-                  {{ isStarting ? 'Starting...' : 'Start Crawl' }}
+                  <mat-icon>{{ distributeAcrossWorkers && clusterWorkerCount > 0 ? 'hub' : 'play_arrow' }}</mat-icon>
+                  {{ isStarting
+                       ? 'Starting...'
+                       : (distributeAcrossWorkers && clusterWorkerCount > 0 ? 'Start Distributed Crawl' : 'Start Crawl') }}
                 </button>
               </mat-card-actions>
             </mat-card>

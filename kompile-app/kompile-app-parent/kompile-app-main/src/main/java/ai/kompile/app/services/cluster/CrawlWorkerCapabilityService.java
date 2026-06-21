@@ -84,6 +84,7 @@ public class CrawlWorkerCapabilityService {
     @PostConstruct
     public void start() {
         ResourceSchedulerConfig cfg = configService.getConfiguration();
+        warnIfClusterEndpointsOpen(cfg);
         if (!cfg.isClusterWorker()) {
             log.info("Crawl cluster: node role '{}' — not advertising as a worker", cfg.getClusterRole());
             return;
@@ -101,6 +102,24 @@ public class CrawlWorkerCapabilityService {
         heartbeat.scheduleWithFixedDelay(this::advertiseSafe, 2, periodSec, TimeUnit.SECONDS);
         log.info("Crawl cluster: advertising as CrawlWorker '{}' to orchestrator {} every {}s",
                 workerId(), cfg.getClusterOrchestratorUrl(), periodSec);
+    }
+
+    /**
+     * Warn loudly when this node participates in a cluster (role != none) but no {@code externalAuthToken} is set.
+     * The cluster callback/progress/transcript endpoints then accept unauthenticated POSTs from anyone who can
+     * reach the port (the controllers treat a blank token as "open"). Fine for a trusted LAN/dev box; dangerous
+     * if the port is publicly exposed.
+     */
+    private void warnIfClusterEndpointsOpen(ResourceSchedulerConfig cfg) {
+        String role = cfg.getClusterRole() == null ? "none" : cfg.getClusterRole().trim();
+        boolean inCluster = !role.isEmpty() && !"none".equalsIgnoreCase(role);
+        String token = cfg.getExternalAuthToken();
+        if (inCluster && (token == null || token.isBlank())) {
+            log.warn("Crawl cluster: role '{}' is active but externalAuthToken is blank — cluster endpoints "
+                    + "(/api/distributed-crawl/progress, /transcripts, /callback and /api/cluster/**) accept "
+                    + "UNAUTHENTICATED requests. Set externalAuthToken (or bind only to a trusted network) "
+                    + "before exposing this node.", role);
+        }
     }
 
     @PreDestroy

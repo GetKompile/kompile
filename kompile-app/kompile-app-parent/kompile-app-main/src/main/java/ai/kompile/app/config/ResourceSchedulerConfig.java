@@ -205,10 +205,12 @@ public class ResourceSchedulerConfig {
     @JsonProperty("clusterWorkerTimeoutSeconds")
     private int clusterWorkerTimeoutSeconds = 45;
 
-    /** Job types this worker advertises it can run (subset of the crawl pipeline stages). */
+    /** Job types this worker advertises it can run. Includes "crawl" so a worker can take distributed-crawl
+     *  partitions out of the box (the only ClusterJobRunner is the crawl runner — without this the advertised
+     *  set would be empty after intersecting with the runnable types). */
     @JsonProperty("clusterSupportedJobTypes")
     private List<String> clusterSupportedJobTypes = new ArrayList<>(List.of(
-            "ingest", "vectorPopulation", "graph", "embedding"));
+            "crawl", "ingest", "vectorPopulation", "graph", "embedding"));
 
     /** Max concurrent delegated jobs this worker will accept. */
     @JsonProperty("clusterMaxConcurrentJobs")

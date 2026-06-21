@@ -58,6 +58,16 @@ export class DistributedCrawlService extends BaseService {
     return this.http.get<DistributedCrawlSessionSummary[]>(`${this.backendUrl}/distributed-crawl/sessions`);
   }
 
+  /**
+   * Start a distributed crawl. {@code request} is a UnifiedCrawlRequest (the same shape the normal crawler
+   * sends) plus a {@code distribution} config; the coordinator partitions the sources across cluster workers
+   * and returns the new session summary. Requires a cluster (>=1 live worker) on the orchestrator.
+   */
+  startDistributed(request: any): Observable<DistributedCrawlSessionSummary> {
+    return this.http.post<DistributedCrawlSessionSummary>(
+      `${this.backendUrl}/distributed-crawl/start`, request);
+  }
+
   /** The merged per-worker ProgressSnapshot (shape matches a unified JobDetail) for the step monitor. */
   getAggregate(sessionId: string): Observable<JobDetail> {
     return this.http.get<JobDetail>(`${this.backendUrl}/distributed-crawl/sessions/${sessionId}`,
@@ -66,6 +76,11 @@ export class DistributedCrawlService extends BaseService {
 
   cancelSession(sessionId: string): Observable<any> {
     return this.http.post<any>(`${this.backendUrl}/distributed-crawl/sessions/${sessionId}/cancel`, {});
+  }
+
+  /** Live cluster workers (GET /cluster/workers); the UI uses the count to gate the "distribute" affordance. */
+  liveWorkers(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.backendUrl}/cluster/workers`);
   }
 
   /** Per-session SSE stream id (the coordinator republishes aggregate progress under this job id). */

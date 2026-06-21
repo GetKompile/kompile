@@ -21,7 +21,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { RouterModule } from '@angular/router';
-import { Subscription } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 
 // Angular Material
 import { MatCardModule } from '@angular/material/card';
@@ -67,6 +67,7 @@ import { FactSheetService } from '../../services/fact-sheet.service';
 import { FactSheet } from '../../models/api-models';
 import { GraphExtractionService, ModelProvider, GraphExtractionConfig } from '../../services/graph-extraction.service';
 import { WebSocketService } from '../../services/websocket.service';
+import { DistributedCrawlService } from '../../services/distributed-crawl.service';
 
 type EditableUnifiedCrawlSource = UnifiedCrawlSource & { propertiesJson?: string };
 
@@ -101,6 +102,11 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   sources: EditableUnifiedCrawlSource[] = [];
   availableSourceTypes: AvailableSourceType[] = [];
   isStarting = false;
+
+  // Distributed crawl — when a cluster has live workers, the start form offers to fan the sources
+  // across them (POST /distributed-crawl/start) instead of running locally.
+  distributeAcrossWorkers = false;
+  clusterWorkerCount = 0;
 
   // Graph extraction
   graphEnabled = true;
@@ -189,6 +195,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     private graphExtractionService: GraphExtractionService,
     private jobLogService: JobLogService,
     private wsService: WebSocketService,
+    private distributedCrawlService: DistributedCrawlService,
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef,
     private router: Router,
@@ -209,6 +216,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.loadStepCatalog();
     this.refreshJobs();
     this.refreshResumableJobs();
+    this.loadClusterWorkers();
     // Subscribe to scheduler events for real-time notifications
     this.wsService.connect();
     this.subscriptions.add(
@@ -447,6 +455,26 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.backends.splice(index, 1);
   }
 
+  /** Count live cluster workers so the form can offer to distribute the crawl. Best-effort; failure = local-only. */
+  loadClusterWorkers() {
+    this.subscriptions.add(
+      this.distributedCrawlService.liveWorkers().subscribe({
+        next: (workers) => {
+          this.clusterWorkerCount = Array.isArray(workers) ? workers.length : 0;
+          if (this.clusterWorkerCount === 0) {
+            this.distributeAcrossWorkers = false;
+          }
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.clusterWorkerCount = 0;
+          this.distributeAcrossWorkers = false;
+          this.cdr.markForCheck();
+        }
+      })
+    );
+  }
+
   startJob() {
     if (this.sources.length === 0) return;
     this.isStarting = true;
@@ -510,13 +538,29 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
       } : undefined
     };
 
+    // Distribute across cluster workers when requested + a cluster is live; otherwise run locally.
+    const distributed = this.distributeAcrossWorkers && this.clusterWorkerCount > 0;
+    if (distributed) {
+      request.distribution = { partitionStrategy: 'PER_SOURCE', mergeResults: true };
+    }
+    const start$: Observable<any> = distributed
+      ? this.distributedCrawlService.startDistributed(request)
+      : this.crawlService.startJob(request);
+
     this.subscriptions.add(
-      this.crawlService.startJob(request).subscribe({
-        next: (resp) => {
+      start$.subscribe({
+        next: (resp: any) => {
           this.isStarting = false;
-          this.snackBar.open(`Job started: ${resp.jobId.substring(0, 8)}...`, 'OK', { duration: 3000 });
+          if (distributed) {
+            const sid = (resp?.sessionId || '').toString();
+            this.snackBar.open(
+              `Distributed crawl started across ${this.clusterWorkerCount} worker(s) (${sid.substring(0, 8)}...) — `
+              + `track it in the Crawlers panel`, 'OK', { duration: 5000 });
+          } else {
+            this.snackBar.open(`Job started: ${resp.jobId.substring(0, 8)}...`, 'OK', { duration: 3000 });
+            this.activeTab = 1; // Switch to jobs tab (local jobs only; distributed sessions live in Crawlers)
+          }
           this.refreshJobs();
-          this.activeTab = 1; // Switch to jobs tab
           this.cdr.markForCheck();
         },
         error: (err) => {
