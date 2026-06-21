@@ -36,6 +36,7 @@ import ai.kompile.knowledgegraph.grounding.KbCorrectionService;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.persistence.FileBackedWeightStore;
 import ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter;
+import ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -170,6 +171,15 @@ public class IncrementalReasoningOrchestrator {
     private final FileBackedWeightStore fileBackedWeightStore;
 
     /**
+     * Optional dual-store factory. When non-null, STEP 3c and STEP 5b use a
+     * {@link ai.kompile.knowledgegraph.persistence.dual.DualStoreWeightStore} (JPA-backed)
+     * instead of the file-backed store.
+     * Null in plain-Java test contexts.
+     */
+    @Nullable
+    private final DualStoreGroundingFactory dualStoreFactory;
+
+    /**
      * PSL weight learner — reused across cascades (stateless, cheap to construct).
      * Uses 1 mini-batch step per cascade (cheap; won't destabilize inference).
      */
@@ -215,7 +225,7 @@ public class IncrementalReasoningOrchestrator {
     static final int MEBN_LEARNING_INTERVAL = 10;
 
     /**
-     * Full Spring constructor: all 7 collaborators injected by Spring.
+     * Full Spring constructor: all 8 collaborators injected by Spring.
      * {@code @Autowired} marks this as the primary injection point when Spring
      * sees multiple constructors.
      */
@@ -226,7 +236,8 @@ public class IncrementalReasoningOrchestrator {
                                              @Nullable PinGuard pinGuard,
                                              @Nullable KbCorrectionService correctionService,
                                              @Nullable FileBackedWeightStore fileBackedWeightStore,
-                                             @Nullable MebnWeightPersistenceAdapter mebnWeightAdapter) {
+                                             @Nullable MebnWeightPersistenceAdapter mebnWeightAdapter,
+                                             @Nullable DualStoreGroundingFactory dualStoreFactory) {
         this.kbGroundingService = kbGroundingService;
         this.eventPublisher = eventPublisher;
         this.graphProjector = graphProjector;
@@ -234,10 +245,26 @@ public class IncrementalReasoningOrchestrator {
         this.correctionService = correctionService;
         this.fileBackedWeightStore = fileBackedWeightStore;
         this.mebnWeightAdapter = mebnWeightAdapter;
+        this.dualStoreFactory = dualStoreFactory;
     }
 
     /**
-     * 6-arg Spring constructor (no MebnWeightPersistenceAdapter).
+     * 7-arg Spring constructor (no DualStoreGroundingFactory).
+     * Retained for backward compatibility.
+     */
+    public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
+                                             ApplicationEventPublisher eventPublisher,
+                                             @Nullable GraphToFactStoreProjector graphProjector,
+                                             @Nullable PinGuard pinGuard,
+                                             @Nullable KbCorrectionService correctionService,
+                                             @Nullable FileBackedWeightStore fileBackedWeightStore,
+                                             @Nullable MebnWeightPersistenceAdapter mebnWeightAdapter) {
+        this(kbGroundingService, eventPublisher, graphProjector, pinGuard, correctionService,
+                fileBackedWeightStore, mebnWeightAdapter, null);
+    }
+
+    /**
+     * 6-arg Spring constructor (no MebnWeightPersistenceAdapter / DualStoreGroundingFactory).
      * Retained for backward compatibility.
      */
     public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
@@ -247,11 +274,11 @@ public class IncrementalReasoningOrchestrator {
                                              @Nullable KbCorrectionService correctionService,
                                              @Nullable FileBackedWeightStore fileBackedWeightStore) {
         this(kbGroundingService, eventPublisher, graphProjector, pinGuard, correctionService,
-                fileBackedWeightStore, null);
+                fileBackedWeightStore, null, null);
     }
 
     /**
-     * 5-arg Spring constructor (no FileBackedWeightStore / MebnWeightPersistenceAdapter).
+     * 5-arg Spring constructor (no FileBackedWeightStore / MebnWeightPersistenceAdapter / DualStoreGroundingFactory).
      * Retained for backward compatibility.
      */
     public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
@@ -259,7 +286,7 @@ public class IncrementalReasoningOrchestrator {
                                              @Nullable GraphToFactStoreProjector graphProjector,
                                              @Nullable PinGuard pinGuard,
                                              @Nullable KbCorrectionService correctionService) {
-        this(kbGroundingService, eventPublisher, graphProjector, pinGuard, correctionService, null, null);
+        this(kbGroundingService, eventPublisher, graphProjector, pinGuard, correctionService, null, null, null);
     }
 
     /**
@@ -270,7 +297,7 @@ public class IncrementalReasoningOrchestrator {
     public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
                                              ApplicationEventPublisher eventPublisher,
                                              @Nullable GraphToFactStoreProjector graphProjector) {
-        this(kbGroundingService, eventPublisher, graphProjector, null, null, null, null);
+        this(kbGroundingService, eventPublisher, graphProjector, null, null, null, null, null);
     }
 
     /**
@@ -279,7 +306,7 @@ public class IncrementalReasoningOrchestrator {
      */
     public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
                                              ApplicationEventPublisher eventPublisher) {
-        this(kbGroundingService, eventPublisher, null, null, null, null, null);
+        this(kbGroundingService, eventPublisher, null, null, null, null, null, null);
     }
 
     /**
@@ -368,14 +395,21 @@ public class IncrementalReasoningOrchestrator {
         loadProjectPslRules(program);
 
         // ── STEP 3c (L0 FIX): Reload persisted learned weights into the program ──────
-        // Before the MAP solve, load the last-persisted PSL weights from FileBackedWeightStore
-        // and apply them onto the program (so the solve uses LEARNED weights, not 0.8 defaults).
-        // If no persisted weights exist yet (first run), falls back to defaults silently.
-        if (learningEnabled && fileBackedWeightStore != null && !program.rules().isEmpty()) {
+        // Before the MAP solve, load the last-persisted PSL weights and apply them onto the
+        // program (so the solve uses LEARNED weights, not 0.8 defaults).
+        // Prefers DualStoreGroundingFactory (JPA-backed) when available; falls back to
+        // FileBackedWeightStore. If no persisted weights exist yet (first run), falls back
+        // to defaults silently.
+        WeightStore cascadeWeightStore = null;
+        if (dualStoreFactory != null) {
+            cascadeWeightStore = dualStoreFactory.weightStoreFor(factSheetId);
+        } else if (fileBackedWeightStore != null) {
+            cascadeWeightStore = fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
+        }
+        if (learningEnabled && cascadeWeightStore != null && !program.rules().isEmpty()) {
             try {
-                WeightStore ws = fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
                 String programKey = factSheetId + "-cascade";
-                Optional<Map<String, Double>> persistedWeights = ws.latest(programKey);
+                Optional<Map<String, Double>> persistedWeights = cascadeWeightStore.latest(programKey);
                 if (persistedWeights.isPresent()) {
                     program = PslWeightLearningService.applyWeights(program, persistedWeights.get());
                     log.debug("Grounding cascade factSheet={}: applied {} learned PSL weights from store",
@@ -469,8 +503,9 @@ public class IncrementalReasoningOrchestrator {
         // Run 1 mini-batch step (cheap; accumulates across cascades via warm-start from
         // persisted weights; 1 step keeps wall-time overhead below 10 ms for typical fact
         // sheets of ≤5000 atoms).
+        // Uses cascadeWeightStore resolved above (DualStore preferred; falls back to file-backed).
         final PslProgram programForSnapshot;
-        if (learningEnabled && fileBackedWeightStore != null && !program.rules().isEmpty()
+        if (learningEnabled && cascadeWeightStore != null && !program.rules().isEmpty()
                 && !result.values().isEmpty()) {
             PslProgram trainedProgram = program;
             try {
@@ -479,9 +514,8 @@ public class IncrementalReasoningOrchestrator {
                 // 1 update step: cheap warm-start accumulation, no convergence risk
                 trainedProgram = pslWeightLearner.updateOnBatch(program, softTargets, 1);
 
-                // Persist the updated weights
-                WeightStore ws = fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
-                ws.save(factSheetId + ":cascade", trainedProgram.rules());
+                // Persist the updated weights via whichever store was resolved above
+                cascadeWeightStore.save(factSheetId + ":cascade", trainedProgram.rules());
                 log.debug("Grounding cascade factSheet={}: PSL weight training done ({} rules persisted)",
                         factSheetId, trainedProgram.rules().size());
             } catch (Exception e) {

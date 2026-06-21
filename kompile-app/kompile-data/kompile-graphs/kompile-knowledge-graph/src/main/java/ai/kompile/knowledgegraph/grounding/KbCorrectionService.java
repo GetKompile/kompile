@@ -20,6 +20,7 @@ import ai.kompile.knowledgegraph.audit.FileBackedAuditLog;
 import ai.kompile.knowledgegraph.audit.PinGuard;
 import ai.kompile.knowledgegraph.audit.PinRecord;
 import ai.kompile.knowledgegraph.persistence.FileBackedWeightStore;
+import ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -81,15 +82,24 @@ public class KbCorrectionService {
     @Nullable
     private final FileBackedWeightStore fileBackedWeightStore;
 
+    /**
+     * Optional dual-store factory. When non-null, {@link #getWeightStore(long)} returns a
+     * {@link ai.kompile.knowledgegraph.persistence.dual.DualStoreWeightStore} (JPA-backed)
+     * instead of a {@link FileWeightStore}, providing durable persistence via JPA.
+     * Null in plain-Java test contexts.
+     */
+    @Nullable
+    private final DualStoreGroundingFactory dualStoreFactory;
+
     /** Per-factSheet audit logs (lazy). */
     private final ConcurrentHashMap<Long, FileBackedAuditLog> auditLogs = new ConcurrentHashMap<>();
 
     /**
      * Per-factSheet weight stores (lazy).
-     * In production (Spring), each entry is a fact-sheet-scoped {@link FileWeightStore}
-     * obtained from {@link FileBackedWeightStore#fileWeightStoreFor}.
-     * In plain-Java test contexts (no {@code fileBackedWeightStore}), entries remain null
-     * and weight persistence is skipped.
+     * In production (Spring), each entry is a fact-sheet-scoped weight store obtained from
+     * {@link DualStoreGroundingFactory#weightStoreFor(Long)} when the factory is wired,
+     * or from {@link FileBackedWeightStore#fileWeightStoreFor} otherwise.
+     * In plain-Java test contexts (no stores), entries remain null and weight persistence is skipped.
      */
     private final ConcurrentHashMap<Long, WeightStore> weightStores = new ConcurrentHashMap<>();
 
@@ -97,7 +107,7 @@ public class KbCorrectionService {
     private final ConcurrentHashMap<Long, PslProgram> programSnapshots = new ConcurrentHashMap<>();
 
     /**
-     * Full Spring constructor (FileBackedWeightStore injected).
+     * Full Spring constructor (FileBackedWeightStore and optional DualStoreGroundingFactory injected).
      * {@code @Autowired} marks this as the primary injection point when Spring
      * sees multiple constructors.
      */
@@ -105,12 +115,25 @@ public class KbCorrectionService {
     public KbCorrectionService(KbGroundingService kbGroundingService,
                                 PinGuard pinGuard,
                                 @Nullable ApplicationEventPublisher eventPublisher,
-                                @Nullable FileBackedWeightStore fileBackedWeightStore) {
+                                @Nullable FileBackedWeightStore fileBackedWeightStore,
+                                @Nullable DualStoreGroundingFactory dualStoreFactory) {
         this.kbGroundingService = kbGroundingService;
         this.pinGuard = pinGuard;
         this.eventPublisher = eventPublisher;
         this.fileBackedWeightStore = fileBackedWeightStore;
+        this.dualStoreFactory = dualStoreFactory;
         this.weightLearner = new PslWeightLearningService();
+    }
+
+    /**
+     * Backward-compatible 4-arg constructor (no DualStoreGroundingFactory).
+     * Weight persistence uses the file-backed store in this mode.
+     */
+    public KbCorrectionService(KbGroundingService kbGroundingService,
+                                PinGuard pinGuard,
+                                @Nullable ApplicationEventPublisher eventPublisher,
+                                @Nullable FileBackedWeightStore fileBackedWeightStore) {
+        this(kbGroundingService, pinGuard, eventPublisher, fileBackedWeightStore, null);
     }
 
     /**
@@ -121,7 +144,7 @@ public class KbCorrectionService {
     public KbCorrectionService(KbGroundingService kbGroundingService,
                                 PinGuard pinGuard,
                                 @Nullable ApplicationEventPublisher eventPublisher) {
-        this(kbGroundingService, pinGuard, eventPublisher, null);
+        this(kbGroundingService, pinGuard, eventPublisher, null, null);
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────────
@@ -314,19 +337,24 @@ public class KbCorrectionService {
     /**
      * Return a {@link WeightStore} for the given fact sheet.
      *
-     * <p>When the Spring-injected {@link FileBackedWeightStore} is available (production path),
-     * returns a fact-sheet-scoped {@link FileWeightStore} backed by
-     * {@code <dataDir>/data/graph/reasoning/<factSheetId>/psl-weights/} — durable across
-     * restarts. In plain-Java test contexts (no injected store), returns {@code null} and the
-     * caller must null-check before calling save.</p>
-     *
-     * <p>This fixes the B3 bug: previously this always returned {@code new InMemoryWeightStore()},
-     * causing learned weights to be discarded on restart.</p>
+     * <p>Priority:
+     * <ol>
+     *   <li>If a {@link DualStoreGroundingFactory} is wired (JPA path), use it — returns a
+     *       fact-sheet-scoped {@link ai.kompile.knowledgegraph.persistence.dual.DualStoreWeightStore}.</li>
+     *   <li>Else if the Spring-injected {@link FileBackedWeightStore} is available, returns a
+     *       fact-sheet-scoped {@link FileWeightStore} backed by
+     *       {@code <dataDir>/data/graph/reasoning/<factSheetId>/psl-weights/}.</li>
+     *   <li>Otherwise returns {@code null} — callers must null-check before calling save.</li>
+     * </ol>
      */
     @Nullable
     WeightStore getWeightStore(long factSheetId) {
+        if (dualStoreFactory != null) {
+            return weightStores.computeIfAbsent(factSheetId,
+                    id -> dualStoreFactory.weightStoreFor(id));
+        }
         if (fileBackedWeightStore == null) {
-            return null; // plain-Java test context — no file store available
+            return null; // plain-Java test context — no store available
         }
         return weightStores.computeIfAbsent(factSheetId,
                 id -> fileBackedWeightStore.fileWeightStoreFor(String.valueOf(id)));

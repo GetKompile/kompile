@@ -28,7 +28,9 @@ import ai.kompile.graph.reasoning.fol.grounding.QueryBinding;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.graph.reasoning.tms.ContradictionDetector;
 import ai.kompile.graph.reasoning.tms.JustificationIndex;
+import ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.lang.Nullable;
@@ -100,14 +102,36 @@ public class KbGroundingService {
     private String dataDir;
 
     /**
-     * Primary constructor: Spring injects the event publisher via this constructor.
-     * Tests that instantiate {@code KbGroundingService} directly may pass {@code null}
-     * to disable event publishing (the no-op path in {@link #publishAgentAssertEvent}).
+     * Optional dual-store factory. When non-null, lazily-created {@link FactSheetKbState}
+     * instances use a {@link ai.kompile.knowledgegraph.persistence.dual.DualStoreInferredFactStore}
+     * (JPA-backed) as their inferred-fact store, taking precedence over the file-backed store.
+     * Null in plain-Java test contexts.
+     */
+    @Nullable
+    private final DualStoreGroundingFactory dualStoreFactory;
+
+    /**
+     * Full constructor: Spring injects the event publisher and optional dual-store factory.
+     *
+     * @param eventPublisher   the publisher to use; may be {@code null} in test contexts
+     * @param dualStoreFactory the dual-store factory; may be {@code null} to fall back to
+     *                         file-backed or in-memory storage
+     */
+    @Autowired
+    public KbGroundingService(@Nullable ApplicationEventPublisher eventPublisher,
+                               @Nullable DualStoreGroundingFactory dualStoreFactory) {
+        this.eventPublisher = eventPublisher;
+        this.dualStoreFactory = dualStoreFactory;
+    }
+
+    /**
+     * Backward-compatible single-arg constructor for contexts that do not provide the
+     * dual-store factory. Delegates to the full constructor with {@code dualStoreFactory=null}.
      *
      * @param eventPublisher the publisher to use; may be {@code null} in test contexts
      */
     public KbGroundingService(@Nullable ApplicationEventPublisher eventPublisher) {
-        this.eventPublisher = eventPublisher;
+        this(eventPublisher, null);
     }
 
     /**
@@ -116,7 +140,7 @@ public class KbGroundingService {
      * {@link ApplicationEventPublisher} is available in the context.
      */
     public KbGroundingService() {
-        this(null);
+        this(null, null);
     }
 
     // ── Public API ───────────────────────────────────────────────────────────────
@@ -343,10 +367,22 @@ public class KbGroundingService {
     /**
      * Create the appropriate {@link InferredFactStore} for the given fact sheet id.
      *
-     * <p>Uses {@link FileBackedInferredFactStore} when a data directory is configured,
-     * falling back to {@link InMemoryInferredFactStore} otherwise.</p>
+     * <p>Priority order:
+     * <ol>
+     *   <li>If a {@link DualStoreGroundingFactory} is wired (production JPA path), use it.</li>
+     *   <li>Else if {@code kompile.data.dir} is configured, use {@link FileBackedInferredFactStore}.</li>
+     *   <li>Otherwise fall back to {@link InMemoryInferredFactStore}.</li>
+     * </ol>
      */
     private InferredFactStore createInferredFactStore(long factSheetId) {
+        if (dualStoreFactory != null) {
+            try {
+                return dualStoreFactory.factStoreFor(factSheetId);
+            } catch (Exception e) {
+                log.warn("KbGroundingService: could not create DualStoreInferredFactStore for factSheet={} — " +
+                         "falling back to file-backed or in-memory store. Cause: {}", factSheetId, e.getMessage());
+            }
+        }
         if (dataDir != null && !dataDir.isBlank()) {
             try {
                 return new FileBackedInferredFactStore(Path.of(dataDir), factSheetId);
