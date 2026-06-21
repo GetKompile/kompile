@@ -11,7 +11,7 @@ package ai.kompile.knowledgegraph.grounding;
 
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
-import ai.kompile.graph.reasoning.learning.InMemoryWeightStore;
+import ai.kompile.graph.reasoning.learning.FileWeightStore;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
 import ai.kompile.graph.reasoning.learning.WeightStore;
 import ai.kompile.graph.reasoning.psl.PslProgram;
@@ -19,7 +19,9 @@ import ai.kompile.knowledgegraph.audit.FactAuditEvent;
 import ai.kompile.knowledgegraph.audit.FileBackedAuditLog;
 import ai.kompile.knowledgegraph.audit.PinGuard;
 import ai.kompile.knowledgegraph.audit.PinRecord;
+import ai.kompile.knowledgegraph.persistence.FileBackedWeightStore;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.lang.Nullable;
@@ -62,25 +64,64 @@ public class KbCorrectionService {
     @Value("${kompile.data.dir:#{null}}")
     private String dataDir;
 
+    /**
+     * When true (default), PSL weight training is run on each human correction.
+     * Set {@code kompile.kb.learning.enabled=false} to disable.
+     */
+    @Value("${kompile.kb.learning.enabled:true}")
+    private boolean learningEnabled;
+
     private final PinGuard pinGuard;
     private final PslWeightLearningService weightLearner;
+
+    /**
+     * Spring-injected file-backed weight store (project-scoped, durable across restarts).
+     * Null in plain-Java test contexts — falls back to per-fact-sheet in-memory stores.
+     */
+    @Nullable
+    private final FileBackedWeightStore fileBackedWeightStore;
 
     /** Per-factSheet audit logs (lazy). */
     private final ConcurrentHashMap<Long, FileBackedAuditLog> auditLogs = new ConcurrentHashMap<>();
 
-    /** In-memory weight stores per factSheet (production would use FileWeightStore). */
+    /**
+     * Per-factSheet weight stores (lazy).
+     * In production (Spring), each entry is a fact-sheet-scoped {@link FileWeightStore}
+     * obtained from {@link FileBackedWeightStore#fileWeightStoreFor}.
+     * In plain-Java test contexts (no {@code fileBackedWeightStore}), entries remain null
+     * and weight persistence is skipped.
+     */
     private final ConcurrentHashMap<Long, WeightStore> weightStores = new ConcurrentHashMap<>();
 
     /** Latest PSL program snapshot per factSheet (used for mini-batch weight update). */
     private final ConcurrentHashMap<Long, PslProgram> programSnapshots = new ConcurrentHashMap<>();
 
+    /**
+     * Full Spring constructor (FileBackedWeightStore injected).
+     * {@code @Autowired} marks this as the primary injection point when Spring
+     * sees multiple constructors.
+     */
+    @Autowired
     public KbCorrectionService(KbGroundingService kbGroundingService,
                                 PinGuard pinGuard,
-                                @Nullable ApplicationEventPublisher eventPublisher) {
+                                @Nullable ApplicationEventPublisher eventPublisher,
+                                @Nullable FileBackedWeightStore fileBackedWeightStore) {
         this.kbGroundingService = kbGroundingService;
         this.pinGuard = pinGuard;
         this.eventPublisher = eventPublisher;
+        this.fileBackedWeightStore = fileBackedWeightStore;
         this.weightLearner = new PslWeightLearningService();
+    }
+
+    /**
+     * Backward-compatible 3-arg constructor for plain-Java test contexts
+     * that do not have a {@link FileBackedWeightStore} available.
+     * Weight persistence is disabled in this mode (no file-backed store).
+     */
+    public KbCorrectionService(KbGroundingService kbGroundingService,
+                                PinGuard pinGuard,
+                                @Nullable ApplicationEventPublisher eventPublisher) {
+        this(kbGroundingService, pinGuard, eventPublisher, null);
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────────
@@ -133,23 +174,27 @@ public class KbCorrectionService {
 
             // 4. Feed training signal to weight learner (mini-batch, 3 steps)
             boolean trainingApplied = false;
-            try {
-                PslProgram program = programSnapshots.get(factSheetId);
-                if (program != null && !program.rules().isEmpty()) {
-                    PslProgram updated = weightLearner.updateOnBatch(
-                            program, Map.of(atomKey, effectiveValue), 3);
-                    programSnapshots.put(factSheetId, updated);
-                    // Save updated weights
-                    WeightStore ws = getWeightStore(factSheetId);
-                    ws.save(factSheetId + ":program", updated.rules());
+            if (learningEnabled) {
+                try {
+                    PslProgram program = programSnapshots.get(factSheetId);
+                    if (program != null && !program.rules().isEmpty()) {
+                        PslProgram updated = weightLearner.updateOnBatch(
+                                program, Map.of(atomKey, effectiveValue), 3);
+                        programSnapshots.put(factSheetId, updated);
+                        // Persist updated weights to the file-backed store (durable across restarts)
+                        WeightStore ws = getWeightStore(factSheetId);
+                        if (ws != null) {
+                            ws.save(factSheetId + "-program", updated.rules());
+                        }
 
-                    // Emit WEIGHT_TUNED audit events for rules that changed
-                    emitWeightTunedEvents(factSheetId, program, updated, actor, sessionId);
-                    trainingApplied = true;
+                        // Emit WEIGHT_TUNED audit events for rules that changed
+                        emitWeightTunedEvents(factSheetId, program, updated, actor, sessionId);
+                        trainingApplied = true;
+                    }
+                } catch (Exception e) {
+                    log.warn("KbCorrectionService: weight update failed for factSheet={} atomKey={} — {}",
+                            factSheetId, atomKey, e.getMessage());
                 }
-            } catch (Exception e) {
-                log.warn("KbCorrectionService: weight update failed for factSheet={} atomKey={} — {}",
-                        factSheetId, atomKey, e.getMessage());
             }
 
             log.info("KbCorrectionService: corrected atomKey='{}' in factSheet={} → value={}  pin=true  trainingApplied={}",
@@ -266,8 +311,25 @@ public class KbCorrectionService {
         });
     }
 
-    private WeightStore getWeightStore(long factSheetId) {
-        return weightStores.computeIfAbsent(factSheetId, id -> new InMemoryWeightStore());
+    /**
+     * Return a {@link WeightStore} for the given fact sheet.
+     *
+     * <p>When the Spring-injected {@link FileBackedWeightStore} is available (production path),
+     * returns a fact-sheet-scoped {@link FileWeightStore} backed by
+     * {@code <dataDir>/data/graph/reasoning/<factSheetId>/psl-weights/} — durable across
+     * restarts. In plain-Java test contexts (no injected store), returns {@code null} and the
+     * caller must null-check before calling save.</p>
+     *
+     * <p>This fixes the B3 bug: previously this always returned {@code new InMemoryWeightStore()},
+     * causing learned weights to be discarded on restart.</p>
+     */
+    @Nullable
+    WeightStore getWeightStore(long factSheetId) {
+        if (fileBackedWeightStore == null) {
+            return null; // plain-Java test context — no file store available
+        }
+        return weightStores.computeIfAbsent(factSheetId,
+                id -> fileBackedWeightStore.fileWeightStoreFor(String.valueOf(id)));
     }
 
     private void publishCorrectedEvent(long factSheetId, String atomKey,

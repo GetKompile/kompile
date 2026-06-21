@@ -21,6 +21,11 @@ import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
+import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
+import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
+import ai.kompile.graph.reasoning.learning.WeightStore;
+import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
 import ai.kompile.graph.reasoning.psl.PslProgram;
 import ai.kompile.graph.reasoning.tms.ContradictionDetector;
@@ -29,7 +34,10 @@ import ai.kompile.knowledgegraph.audit.PinGuard;
 import ai.kompile.knowledgegraph.grounding.FactSheetKbState;
 import ai.kompile.knowledgegraph.grounding.KbCorrectionService;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
+import ai.kompile.knowledgegraph.persistence.FileBackedWeightStore;
+import ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.lang.Nullable;
@@ -40,12 +48,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.stream.Collectors;
 
@@ -144,18 +156,110 @@ public class IncrementalReasoningOrchestrator {
     String dataDir;
 
     /**
-     * Full Spring constructor: all 5 collaborators injected by Spring.
+     * When true (default), PSL weight learning is run after each MAP solve.
+     * Set {@code kompile.kb.learning.enabled=false} to disable.
+     */
+    @Value("${kompile.kb.learning.enabled:true}")
+    boolean learningEnabled;
+
+    /**
+     * Spring-injected file-backed weight store for PSL weight persistence.
+     * Null in plain-Java test contexts — PSL training step is skipped.
+     */
+    @Nullable
+    private final FileBackedWeightStore fileBackedWeightStore;
+
+    /**
+     * PSL weight learner — reused across cascades (stateless, cheap to construct).
+     * Uses 1 mini-batch step per cascade (cheap; won't destabilize inference).
+     */
+    private final PslWeightLearningService pslWeightLearner = new PslWeightLearningService();
+
+    /**
+     * Per-factSheet cascade counters — used to throttle MEBN learning (which runs
+     * finite-difference over every edge, O(edges × epochs), so we gate it to every
+     * {@link #MEBN_LEARNING_INTERVAL} cascades rather than every cascade).
+     */
+    private final ConcurrentHashMap<Long, AtomicLong> cascadeCounters = new ConcurrentHashMap<>();
+
+    /**
+     * Per-factSheet MEBN theories, registered by callers via {@link #registerMTheory}.
+     * Null for a factSheet = MEBN training skipped for that sheet.
+     */
+    private final ConcurrentHashMap<Long, MTheory> mebnTheories = new ConcurrentHashMap<>();
+
+    /**
+     * Per-factSheet MEBN ReasoningGraphs registered by callers alongside the MTheory.
+     */
+    private final ConcurrentHashMap<Long, ReasoningGraph> mebnGraphs = new ConcurrentHashMap<>();
+
+    /**
+     * Optional: MEBN weight persistence adapter (Spring-injected; null in plain-Java tests).
+     */
+    @Nullable
+    private final MebnWeightPersistenceAdapter mebnWeightAdapter;
+
+    /**
+     * MEBN weight learner (stateless; finite-difference gradient descent).
+     * Reused across cascades.
+     */
+    private final MebnWeightLearner mebnWeightLearner = new MebnWeightLearner();
+
+    /**
+     * How many cascades between MEBN weight-learning runs.
+     * Finite-difference costs O(|edges| × maxEpochs) per cascade — expensive for large
+     * MTheories. Every 10 cascades is a safe default: responsive enough for human-visible
+     * feedback (a few seconds) without dominating the cascade wall time.
+     * Override by extending this class if a finer cadence is needed.
+     */
+    static final int MEBN_LEARNING_INTERVAL = 10;
+
+    /**
+     * Full Spring constructor: all 7 collaborators injected by Spring.
+     * {@code @Autowired} marks this as the primary injection point when Spring
+     * sees multiple constructors.
+     */
+    @Autowired
+    public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
+                                             ApplicationEventPublisher eventPublisher,
+                                             @Nullable GraphToFactStoreProjector graphProjector,
+                                             @Nullable PinGuard pinGuard,
+                                             @Nullable KbCorrectionService correctionService,
+                                             @Nullable FileBackedWeightStore fileBackedWeightStore,
+                                             @Nullable MebnWeightPersistenceAdapter mebnWeightAdapter) {
+        this.kbGroundingService = kbGroundingService;
+        this.eventPublisher = eventPublisher;
+        this.graphProjector = graphProjector;
+        this.pinGuard = pinGuard;
+        this.correctionService = correctionService;
+        this.fileBackedWeightStore = fileBackedWeightStore;
+        this.mebnWeightAdapter = mebnWeightAdapter;
+    }
+
+    /**
+     * 6-arg Spring constructor (no MebnWeightPersistenceAdapter).
+     * Retained for backward compatibility.
+     */
+    public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
+                                             ApplicationEventPublisher eventPublisher,
+                                             @Nullable GraphToFactStoreProjector graphProjector,
+                                             @Nullable PinGuard pinGuard,
+                                             @Nullable KbCorrectionService correctionService,
+                                             @Nullable FileBackedWeightStore fileBackedWeightStore) {
+        this(kbGroundingService, eventPublisher, graphProjector, pinGuard, correctionService,
+                fileBackedWeightStore, null);
+    }
+
+    /**
+     * 5-arg Spring constructor (no FileBackedWeightStore / MebnWeightPersistenceAdapter).
+     * Retained for backward compatibility.
      */
     public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
                                              ApplicationEventPublisher eventPublisher,
                                              @Nullable GraphToFactStoreProjector graphProjector,
                                              @Nullable PinGuard pinGuard,
                                              @Nullable KbCorrectionService correctionService) {
-        this.kbGroundingService = kbGroundingService;
-        this.eventPublisher = eventPublisher;
-        this.graphProjector = graphProjector;
-        this.pinGuard = pinGuard;
-        this.correctionService = correctionService;
+        this(kbGroundingService, eventPublisher, graphProjector, pinGuard, correctionService, null, null);
     }
 
     /**
@@ -166,7 +270,7 @@ public class IncrementalReasoningOrchestrator {
     public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
                                              ApplicationEventPublisher eventPublisher,
                                              @Nullable GraphToFactStoreProjector graphProjector) {
-        this(kbGroundingService, eventPublisher, graphProjector, null, null);
+        this(kbGroundingService, eventPublisher, graphProjector, null, null, null, null);
     }
 
     /**
@@ -175,7 +279,7 @@ public class IncrementalReasoningOrchestrator {
      */
     public IncrementalReasoningOrchestrator(KbGroundingService kbGroundingService,
                                              ApplicationEventPublisher eventPublisher) {
-        this(kbGroundingService, eventPublisher, null, null, null);
+        this(kbGroundingService, eventPublisher, null, null, null, null, null);
     }
 
     /**
@@ -196,6 +300,31 @@ public class IncrementalReasoningOrchestrator {
             return doReground(factSheetId, state);
         } finally {
             lock.writeLock().unlock();
+        }
+    }
+
+    // ─── MEBN registration API ────────────────────────────────────────────────────
+
+    /**
+     * Register a per-fact-sheet MEBN theory and its grounding graph so that the next cascade
+     * (at a {@link #MEBN_LEARNING_INTERVAL} cadence) will run MEBN weight learning.
+     *
+     * <p>Callers (e.g. the grounding controller or KbGroundingService) should call this once
+     * after building or loading an {@link MTheory} for a fact sheet. The orchestrator holds a
+     * reference to the theory and mutates its edge strengths in place during the throttled
+     * learning step, then persists them via {@link MebnWeightPersistenceAdapter}.</p>
+     *
+     * <p>Thread-safe: the map is a {@link ConcurrentHashMap}.</p>
+     *
+     * @param factSheetId the fact sheet to associate the theory with
+     * @param theory      the MEBN theory to learn edge strengths for; must not be null
+     * @param graph       the reasoning graph the theory grounds over; must not be null
+     */
+    public void registerMTheory(long factSheetId, MTheory theory, ReasoningGraph graph) {
+        if (theory != null && graph != null) {
+            mebnTheories.put(factSheetId, theory);
+            mebnGraphs.put(factSheetId, graph);
+            log.debug("IncrementalReasoningOrchestrator: registered MTheory for factSheet={}", factSheetId);
         }
     }
 
@@ -237,6 +366,27 @@ public class IncrementalReasoningOrchestrator {
         // propagation rules added by buildProgramFromFactStore. This is the pluggable
         // rule seam described in design spec §7 (P0 build plan item 4).
         loadProjectPslRules(program);
+
+        // ── STEP 3c (L0 FIX): Reload persisted learned weights into the program ──────
+        // Before the MAP solve, load the last-persisted PSL weights from FileBackedWeightStore
+        // and apply them onto the program (so the solve uses LEARNED weights, not 0.8 defaults).
+        // If no persisted weights exist yet (first run), falls back to defaults silently.
+        if (learningEnabled && fileBackedWeightStore != null && !program.rules().isEmpty()) {
+            try {
+                WeightStore ws = fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
+                String programKey = factSheetId + "-cascade";
+                Optional<Map<String, Double>> persistedWeights = ws.latest(programKey);
+                if (persistedWeights.isPresent()) {
+                    program = PslWeightLearningService.applyWeights(program, persistedWeights.get());
+                    log.debug("Grounding cascade factSheet={}: applied {} learned PSL weights from store",
+                            factSheetId, persistedWeights.get().size());
+                }
+            } catch (Exception e) {
+                log.warn("Grounding cascade factSheet={}: could not reload learned weights — {}",
+                        factSheetId, e.getMessage());
+                // Non-fatal: continue with current (default or prior) weights
+            }
+        }
 
         if (program.targetKeys().isEmpty()) {
             log.debug("Grounding cascade for factSheet={}: no target atoms in program — skipping",
@@ -314,10 +464,41 @@ public class IncrementalReasoningOrchestrator {
             }
         }
 
-        // Register the PSL program snapshot with the correction service so that subsequent
-        // human corrections have a fresh program for mini-batch weight updates.
+        // ── STEP 5b (L1 NEW): PSL weight learning — train on materialized soft targets ──
+        // Use the MAP posteriors as soft training targets (atomKey → posterior value).
+        // Run 1 mini-batch step (cheap; accumulates across cascades via warm-start from
+        // persisted weights; 1 step keeps wall-time overhead below 10 ms for typical fact
+        // sheets of ≤5000 atoms).
+        final PslProgram programForSnapshot;
+        if (learningEnabled && fileBackedWeightStore != null && !program.rules().isEmpty()
+                && !result.values().isEmpty()) {
+            PslProgram trainedProgram = program;
+            try {
+                // Build soft targets: use MAP atom values (posteriors) as labels
+                Map<String, Double> softTargets = new HashMap<>(result.values());
+                // 1 update step: cheap warm-start accumulation, no convergence risk
+                trainedProgram = pslWeightLearner.updateOnBatch(program, softTargets, 1);
+
+                // Persist the updated weights
+                WeightStore ws = fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
+                ws.save(factSheetId + ":cascade", trainedProgram.rules());
+                log.debug("Grounding cascade factSheet={}: PSL weight training done ({} rules persisted)",
+                        factSheetId, trainedProgram.rules().size());
+            } catch (Exception e) {
+                log.warn("Grounding cascade factSheet={}: PSL weight training failed — {}",
+                        factSheetId, e.getMessage());
+                // Non-fatal: inference result already materialized; keep un-trained program
+            }
+            programForSnapshot = trainedProgram;
+        } else {
+            programForSnapshot = program;
+        }
+
+        // Register the PSL program snapshot (trained if learning ran) with the correction
+        // service so that subsequent human corrections have a fresh program for mini-batch
+        // weight updates.
         if (correctionService != null) {
-            correctionService.registerProgram(factSheetId, program);
+            correctionService.registerProgram(factSheetId, programForSnapshot);
         }
 
         // Compute implicitly retracted atom keys: atoms that were in the inferred store
@@ -341,6 +522,39 @@ public class IncrementalReasoningOrchestrator {
 
         // ── STEP 8: Epoch bump ────────────────────────────────────────────────────────
         kbGroundingService.markEpoch(factSheetId, runId, newIndex);
+
+        // ── STEP 9 (L1 NEW): Throttled MEBN weight learning ──────────────────────────
+        // MEBN finite-difference gradient descent is O(|edges| × maxEpochs) — too expensive
+        // to run every cascade. We run it every MEBN_LEARNING_INTERVAL cascades (default: 10)
+        // to balance learning responsiveness vs. per-cascade wall time.
+        // Uses MAP posteriors as training observations (same soft-target signal as PSL).
+        long cascadeCount = cascadeCounters
+                .computeIfAbsent(factSheetId, id -> new AtomicLong(0L))
+                .incrementAndGet();
+        if (learningEnabled && mebnWeightAdapter != null
+                && cascadeCount % MEBN_LEARNING_INTERVAL == 0) {
+            MTheory theory = mebnTheories.get(factSheetId);
+            ReasoningGraph mebnGraph = mebnGraphs.get(factSheetId);
+            if (theory != null && mebnGraph != null && !result.values().isEmpty()) {
+                try {
+                    // Load previously persisted weights to warm-start learning
+                    mebnWeightAdapter.load(factSheetId, theory);
+                    // Use MAP posteriors as observations (same label signal as PSL training)
+                    Map<String, Double> observations = new HashMap<>(result.values());
+                    // 5 epochs per throttled run — finite-diff is inherently slow but 5 steps
+                    // is sufficient for incremental online updates
+                    mebnWeightLearner.learn(theory, mebnGraph, observations, 5);
+                    // Persist updated strengths
+                    mebnWeightAdapter.persist(factSheetId, theory);
+                    log.debug("Grounding cascade factSheet={}: MEBN weight training done (cascade {})",
+                            factSheetId, cascadeCount);
+                } catch (Exception e) {
+                    log.warn("Grounding cascade factSheet={}: MEBN weight training failed — {}",
+                            factSheetId, e.getMessage());
+                    // Non-fatal: inference already complete
+                }
+            }
+        }
 
         log.info("Grounding cascade factSheet={}: {} InferredFact version(s) written, {} retracted, runId={}",
                 factSheetId, versionsWritten, retractedAtomKeys.size(), runId);
