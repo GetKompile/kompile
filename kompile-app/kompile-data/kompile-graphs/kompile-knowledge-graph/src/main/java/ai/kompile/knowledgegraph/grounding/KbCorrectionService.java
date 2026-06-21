@@ -323,6 +323,48 @@ public class KbCorrectionService {
         getAuditLog(factSheetId).append(event);
     }
 
+    /**
+     * Append a CONTRADICTION_RESOLVED audit event for a fact that was retracted by the TMS
+     * because a higher-confidence contradicting fact was retained.
+     *
+     * <p>Called by {@link ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator}
+     * after STEP 7 TMS retraction to record which atom was dropped and which was retained.</p>
+     *
+     * @param factSheetId   the fact sheet where the contradiction was detected
+     * @param retractedAtomKey the atom key that was retracted (lower confidence)
+     * @param retainedValue    the value of the retained (higher confidence) side
+     * @param retainedAtomKey  the atom key of the retained side
+     * @param runId            the cascade run ID for traceability
+     */
+    public void appendContradictionResolvedEvent(long factSheetId, String retractedAtomKey,
+                                                  double retainedValue, String retainedAtomKey,
+                                                  String runId) {
+        FactAuditEvent event = FactAuditEvent.contradictionResolved(
+                retractedAtomKey, retainedValue, retainedAtomKey, retractedAtomKey, runId);
+        getAuditLog(factSheetId).append(event);
+    }
+
+    /**
+     * Append a single WEIGHT_TUNED audit event for a PSL rule whose weight changed
+     * during the cascade weight-learning step.
+     *
+     * <p>Called by {@link ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator}
+     * after each successful PSL mini-batch update in STEP 5b to close the gap where cascade
+     * weight training never emitted audit events.</p>
+     *
+     * @param factSheetId the fact sheet whose program was updated
+     * @param ruleId      the rule identifier (typically the rule's string representation)
+     * @param weightBefore the rule weight before the update
+     * @param weightAfter  the rule weight after the update
+     * @param runId        the cascade run ID (used as sessionId for traceability)
+     */
+    public void appendWeightTunedEvent(long factSheetId, String ruleId,
+                                        double weightBefore, double weightAfter, String runId) {
+        FactAuditEvent event = FactAuditEvent.weightTuned(ruleId, weightBefore, weightAfter,
+                "CASCADE", runId);
+        getAuditLog(factSheetId).append(event);
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────────────
 
     FileBackedAuditLog getAuditLog(long factSheetId) {

@@ -15,12 +15,15 @@
  */
 package ai.kompile.knowledgegraph.reasoning;
 
+import ai.kompile.graph.reasoning.confidence.Opinion;
+import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactMaterializer;
 import ai.kompile.graph.reasoning.fol.InferredFactMaterializer.InferredGraphSink;
 import ai.kompile.graph.reasoning.fol.InferredFactMaterializer.ParsedAtom;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
+import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.io.model.EdgeMetadata;
@@ -28,10 +31,12 @@ import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -99,19 +104,66 @@ public class InferredFactGraphMaterializer {
                 return false; // can't anchor the inference to existing entities
             }
             try {
-                graphService.createEdgeWithMetadata(
-                        from.getNodeId(), to.getNodeId(),
-                        EdgeType.USER_DEFINED,
-                        fact.value(),                  // weight = soft-truth value
-                        atom.predicate(),              // label → relationType
-                        "Inferred: " + fact.atomKey(),
-                        buildMetaJson(fact),
-                        EdgeProvenance.INFERRED,
-                        factSheetId);
+                // Check for an existing INFERRED edge with the same predicate for fusion
+                Optional<GraphEdge> existing = findInferredEdge(
+                        atom.predicate(), from.getNodeId(), to.getNodeId());
+
+                if (existing.isPresent()) {
+                    // Multi-source fusion: cumulative Jøsang fusion of prior + new opinion
+                    double priorConfidence = existing.get().getConfidence() != null
+                            ? existing.get().getConfidence()
+                            : (existing.get().getWeight() != null ? existing.get().getWeight() : 0.5);
+                    Opinion prior = Opinion.fromSoftTruth(priorConfidence, 1L);
+                    Opinion newOp = Opinion.fromSoftTruth(fact.value(), 1L);
+                    Opinion fused = prior.cumulativeFuse(newOp);
+                    log.debug("InferredFactGraphMaterializer: fusing edge '{}': prior={} + new={} → fused={}",
+                            fact.atomKey(), priorConfidence, fact.value(), fused.expectation());
+
+                    graphService.createEdgeWithMetadata(
+                            from.getNodeId(), to.getNodeId(),
+                            EdgeType.USER_DEFINED,
+                            fused.expectation(),           // fused weight
+                            atom.predicate(),
+                            "Inferred (fused): " + fact.atomKey(),
+                            buildMetaJson(fact, fused),
+                            EdgeProvenance.INFERRED,
+                            factSheetId);
+                } else {
+                    graphService.createEdgeWithMetadata(
+                            from.getNodeId(), to.getNodeId(),
+                            EdgeType.USER_DEFINED,
+                            fact.value(),                  // weight = soft-truth value
+                            atom.predicate(),              // label → relationType
+                            "Inferred: " + fact.atomKey(),
+                            buildMetaJson(fact, null),
+                            EdgeProvenance.INFERRED,
+                            factSheetId);
+                }
                 return true;
             } catch (Exception e) {
                 log.warn("Failed to persist inferred edge for '{}': {}", fact.atomKey(), e.getMessage());
                 return false;
+            }
+        }
+
+        /**
+         * Find an existing INFERRED edge between two nodes with the given predicate (relationType).
+         * Searches in-memory from the fact-sheet edge list to avoid an extra DB round-trip per fact.
+         */
+        private Optional<GraphEdge> findInferredEdge(String predicate, String fromNodeId, String toNodeId) {
+            try {
+                List<GraphEdge> edges = graphService.getEdgesInFactSheet(factSheetId);
+                return edges.stream()
+                        .filter(e -> EdgeProvenance.INFERRED.equals(e.getProvenanceType()))
+                        .filter(e -> predicate.equals(e.getRelationType()))
+                        .filter(e -> e.getSourceNode() != null
+                                && fromNodeId.equals(e.getSourceNode().getNodeId()))
+                        .filter(e -> e.getTargetNode() != null
+                                && toNodeId.equals(e.getTargetNode().getNodeId()))
+                        .findFirst();
+            } catch (Exception e) {
+                log.debug("findInferredEdge: could not query edges for factSheet={}: {}", factSheetId, e.getMessage());
+                return Optional.empty();
             }
         }
 
@@ -148,16 +200,30 @@ public class InferredFactGraphMaterializer {
         }
     }
 
-    /** Build the edge metaJson carrying the inference's confidence, source run, and support. */
-    private String buildMetaJson(InferredFact fact) throws Exception {
+    /**
+     * Build the edge metaJson carrying the inference's confidence, source run, and support.
+     *
+     * @param fact         the inferred fact
+     * @param fusedOpinion when non-null, overrides the confidence with the fused expectation
+     *                     and adds opinion components + fusion marker to metadata
+     */
+    private String buildMetaJson(InferredFact fact, @Nullable Opinion fusedOpinion) throws Exception {
+        double effectiveConfidence = fusedOpinion != null ? fusedOpinion.expectation() : fact.confidence();
         Map<String, Object> support = new LinkedHashMap<>();
         support.put("inferenceRunId", fact.runId());
         support.put("inferenceVersion", fact.version());
+        support.put("strengthBand", StrengthBand.fromScalar(effectiveConfidence).name());
         if (fact.supportingRuleIds() != null && !fact.supportingRuleIds().isEmpty()) {
             support.put("supportingRuleIds", fact.supportingRuleIds());
         }
+        if (fusedOpinion != null) {
+            support.put("fused", true);
+            support.put("fusedBelief", fusedOpinion.belief());
+            support.put("fusedDisbelief", fusedOpinion.disbelief());
+            support.put("fusedUncertainty", fusedOpinion.uncertainty());
+        }
         EdgeMetadata meta = EdgeMetadata.builder()
-                .confidence(fact.confidence())
+                .confidence(effectiveConfidence)
                 .provenance("inference:" + fact.runId())   // the run is the source
                 .occurredAt(fact.inferredAt().toString())
                 .metadata(support)                          // supporting rules + version

@@ -28,9 +28,11 @@ import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
 import ai.kompile.graph.reasoning.psl.PslProgram;
+import ai.kompile.graph.reasoning.tms.BeliefReviser;
 import ai.kompile.graph.reasoning.tms.ContradictionDetector;
 import ai.kompile.graph.reasoning.tms.JustificationIndex;
 import ai.kompile.knowledgegraph.audit.PinGuard;
+import ai.kompile.knowledgegraph.grounding.ContradictionDetectedEvent;
 import ai.kompile.knowledgegraph.grounding.FactSheetKbState;
 import ai.kompile.knowledgegraph.grounding.KbCorrectionService;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
@@ -118,9 +120,17 @@ public class IncrementalReasoningOrchestrator {
     static final double VERSION_EPSILON = 0.001;
 
     private final KbGroundingService kbGroundingService;
-    // eventPublisher retained for future ContradictionDetectedEvent (§3.2 STEP 7)
-    @SuppressWarnings("unused")
     private final ApplicationEventPublisher eventPublisher;
+
+    /**
+     * Optional: fact promotion tracker. When non-null, {@link #doReground} calls
+     * {@link FactPromotionTracker#checkPromotion} after each {@code inferredStore.store()} to
+     * detect and persist band promotions. Injected via field injection so existing multi-arg
+     * constructors are not cascaded.
+     */
+    @Nullable
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    FactPromotionTracker promotionTracker;
 
     /**
      * Optional: graph→FactStore projector. When non-null, {@link #doReground} projects
@@ -496,6 +506,11 @@ public class IncrementalReasoningOrchestrator {
                 correctionService.appendDerivedAuditEvent(
                         factSheetId, atomKey, vBefore, newValue, cBefore, newValue, runId);
             }
+
+            // STEP 5c: Fact promotion tracking
+            if (promotionTracker != null) {
+                promotionTracker.checkPromotion(factSheetId, atomKey, vBefore, newValue, runId);
+            }
         }
 
         // ── STEP 5b (L1 NEW): PSL weight learning — train on materialized soft targets ──
@@ -518,6 +533,11 @@ public class IncrementalReasoningOrchestrator {
                 cascadeWeightStore.save(factSheetId + ":cascade", trainedProgram.rules());
                 log.debug("Grounding cascade factSheet={}: PSL weight training done ({} rules persisted)",
                         factSheetId, trainedProgram.rules().size());
+
+                // STEP 5b audit: emit WEIGHT_TUNED event for each changed rule
+                if (correctionService != null) {
+                    emitWeightTunedAuditEvents(factSheetId, program, trainedProgram, runId);
+                }
             } catch (Exception e) {
                 log.warn("Grounding cascade factSheet={}: PSL weight training failed — {}",
                         factSheetId, e.getMessage());
@@ -545,13 +565,48 @@ public class IncrementalReasoningOrchestrator {
         // Full rebuild (O(|ground rules|)); incremental merge is a TODO per design §9.1.
         JustificationIndex newIndex = JustificationIndex.build(result, factStore);
 
-        // ── STEP 7: Contradiction scan ────────────────────────────────────────────────
+        // ── STEP 7: Contradiction scan + TMS retraction ───────────────────────────────
         List<ContradictionDetector.Pair<Fact, Fact>> contradictions =
                 ContradictionDetector.findFactContradictions(factStore);
         if (!contradictions.isEmpty()) {
-            log.warn("Grounding cascade factSheet={}: {} contradiction pair(s) — not halting cascade",
+            log.warn("Grounding cascade factSheet={}: {} contradiction pair(s) — running TMS retraction",
                     factSheetId, contradictions.size());
-            // Does not halt cascade — contradictions flagged per design §3.2 STEP 7
+
+            // Publish ContradictionDetectedEvent for external listeners
+            try {
+                eventPublisher.publishEvent(
+                        new ContradictionDetectedEvent(this, factSheetId, runId, contradictions));
+            } catch (Exception e) {
+                log.warn("Grounding cascade factSheet={}: failed to publish ContradictionDetectedEvent — {}",
+                        factSheetId, e.getMessage());
+            }
+
+            // TMS: retract lower-confidence side for significant contradictions (|diff| > 0.2)
+            for (ContradictionDetector.Pair<Fact, Fact> pair : contradictions) {
+                Fact a = pair.first();
+                Fact b = pair.second();
+                double diff = Math.abs(a.value() - b.value());
+                if (diff > 0.2) {
+                    Fact lower = a.value() <= b.value() ? a : b;
+                    Fact higher = a.value() > b.value() ? a : b;
+                    try {
+                        BeliefReviser.retract(lower.atomKey(), factStore, newIndex);
+                        log.debug("Grounding cascade factSheet={}: TMS retracted '{}' (value={}) in favour of '{}' (value={})",
+                                factSheetId, lower.atomKey(), lower.value(),
+                                higher.atomKey(), higher.value());
+
+                        // Emit CONTRADICTION_RESOLVED audit event
+                        if (correctionService != null) {
+                            correctionService.appendContradictionResolvedEvent(
+                                    factSheetId, lower.atomKey(), higher.value(),
+                                    higher.atomKey(), runId);
+                        }
+                    } catch (Exception e) {
+                        log.warn("Grounding cascade factSheet={}: TMS retraction failed for '{}' — {}",
+                                factSheetId, lower.atomKey(), e.getMessage());
+                    }
+                }
+            }
         }
 
         // ── STEP 8: Epoch bump ────────────────────────────────────────────────────────
@@ -593,6 +648,28 @@ public class IncrementalReasoningOrchestrator {
         log.info("Grounding cascade factSheet={}: {} InferredFact version(s) written, {} retracted, runId={}",
                 factSheetId, versionsWritten, retractedAtomKeys.size(), runId);
         return new RegroundResult(versionsWritten, runId, Set.copyOf(retractedAtomKeys));
+    }
+
+    /**
+     * Emit WEIGHT_TUNED audit events for PSL rules whose weights changed in the cascade
+     * mini-batch training step. Compares {@code before} and {@code after} programs rule-by-rule;
+     * rules whose weight changed by more than 0.001 get an audit event.
+     *
+     * <p>Called by {@link #doReground} after a successful {@link PslWeightLearningService#updateOnBatch}
+     * to close the gap where cascade weight training was silently discarded.</p>
+     */
+    private void emitWeightTunedAuditEvents(long factSheetId, PslProgram before, PslProgram after, String runId) {
+        if (correctionService == null) return;
+        if (before.rules().size() != after.rules().size()) return;
+        double epsilon = 0.001;
+        for (int i = 0; i < before.rules().size(); i++) {
+            double wb = before.rules().get(i).weight();
+            double wa = after.rules().get(i).weight();
+            if (Math.abs(wb - wa) > epsilon) {
+                correctionService.appendWeightTunedEvent(
+                        factSheetId, before.rules().get(i).toString(), wb, wa, runId);
+            }
+        }
     }
 
     /**

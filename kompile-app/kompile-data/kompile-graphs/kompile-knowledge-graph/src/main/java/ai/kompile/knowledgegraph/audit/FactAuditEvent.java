@@ -138,6 +138,83 @@ public record FactAuditEvent(
         );
     }
 
+    /**
+     * Factory for PROMOTED events emitted when a fact's StrengthBand increases
+     * across corroboration runs.
+     */
+    public static FactAuditEvent promoted(String atomKey, double valueBefore, double valueAfter,
+                                           String bandBefore, String bandAfter,
+                                           String runId, String sessionId) {
+        return new FactAuditEvent(
+                UUID.randomUUID().toString(),
+                "PROMOTED",
+                atomKey,
+                Instant.now(),
+                "CASCADE",
+                sessionId != null ? sessionId : "cascade",
+                valueBefore, valueAfter,
+                valueBefore, valueAfter,
+                bandBefore, bandAfter,
+                runId,
+                runId != null ? "runId:" + runId : null,
+                false,
+                null,
+                Double.NaN, Double.NaN,
+                null
+        );
+    }
+
+    /**
+     * Factory for FUSED events emitted when two inferred facts for the same atom
+     * are merged via Subjective Logic cumulative fusion.
+     */
+    public static FactAuditEvent fused(String atomKey, double valueBefore, double valueAfter,
+                                        String source, String sessionId) {
+        return new FactAuditEvent(
+                UUID.randomUUID().toString(),
+                "FUSED",
+                atomKey,
+                Instant.now(),
+                source != null ? source : "FUSION",
+                sessionId != null ? sessionId : "cascade",
+                valueBefore, valueAfter,
+                valueBefore, valueAfter,
+                null, null,
+                null,
+                source != null ? "source:" + source : null,
+                false,
+                null,
+                Double.NaN, Double.NaN,
+                null
+        );
+    }
+
+    /**
+     * Factory for CONTRADICTION_RESOLVED events emitted by the TMS when a contradicting
+     * lower-confidence fact is retracted in favour of the higher-confidence one.
+     */
+    public static FactAuditEvent contradictionResolved(String atomKey, double retainedValue,
+                                                         String retainedSource, String droppedSource,
+                                                         String sessionId) {
+        return new FactAuditEvent(
+                UUID.randomUUID().toString(),
+                "CONTRADICTION_RESOLVED",
+                atomKey,
+                Instant.now(),
+                "TMS",
+                sessionId != null ? sessionId : "cascade",
+                Double.NaN, retainedValue,
+                Double.NaN, retainedValue,
+                null, null,
+                null,
+                droppedSource != null ? "dropped:" + droppedSource : null,
+                false,
+                null,
+                Double.NaN, Double.NaN,
+                retainedSource != null ? "retained:" + retainedSource : null
+        );
+    }
+
     // ── Hand-rolled JSON serialization (no jackson-databind) ──────────────────────
 
     public String toJson() {
