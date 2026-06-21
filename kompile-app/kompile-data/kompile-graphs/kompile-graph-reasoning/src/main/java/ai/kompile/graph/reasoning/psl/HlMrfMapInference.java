@@ -84,6 +84,50 @@ public final class HlMrfMapInference {
             }
             return violations;
         }
+
+        /**
+         * Per-ground-rule satisfaction detail at the MAP solution.
+         *
+         * <p>For every logical ground rule in {@link #groundRules} this computes the
+         * Łukasiewicz {@link GroundRule#distanceToSatisfaction distance to satisfaction}
+         * and its weighted energy contribution {@link GroundRule#potential potential} at the
+         * final atom assignment {@link #values}. The results are ordered identically to
+         * {@link #groundRules}.</p>
+         *
+         * <p>This is the primary hook for PSL "why" explanations: a downstream reasoning
+         * trail can rank rules by {@link GroundRuleResult#distanceToSatisfaction()} to surface
+         * the most violated constraints, or filter by {@link GroundRuleResult#satisfied()} to
+         * identify exactly which constraints hold at the MAP solution.</p>
+         *
+         * <p>The computation is purely post-hoc — it reads the final {@link #values} map
+         * and calls the existing {@link GroundRule} methods; no solver state is consulted.</p>
+         *
+         * @param hardWeight the penalty weight for hard constraints, used to compute
+         *                   {@link GroundRuleResult#weightedPotential()}; pass
+         *                   {@link HlMrfMapInference#DEFAULT_HARD_WEIGHT} if unsure
+         * @return immutable list of per-rule results, one per entry in {@link #groundRules}
+         */
+        public List<GroundRuleResult> groundRuleResults(double hardWeight) {
+            List<GroundRuleResult> results = new ArrayList<>(groundRules.size());
+            for (GroundRule gr : groundRules) {
+                double d = gr.distanceToSatisfaction(values);
+                double pot = gr.potential(values, hardWeight);
+                boolean satisfied = d <= HARD_VIOLATION_TOLERANCE;
+                results.add(new GroundRuleResult(gr, d, pot, satisfied));
+            }
+            return results;
+        }
+
+        /**
+         * Convenience overload that uses {@link HlMrfMapInference#DEFAULT_HARD_WEIGHT} for
+         * the hard-constraint penalty when computing {@link GroundRuleResult#weightedPotential()}.
+         *
+         * @return immutable list of per-rule results
+         * @see #groundRuleResults(double)
+         */
+        public List<GroundRuleResult> groundRuleResults() {
+            return groundRuleResults(DEFAULT_HARD_WEIGHT);
+        }
     }
 
     public static Result solve(PslProgram program) {
