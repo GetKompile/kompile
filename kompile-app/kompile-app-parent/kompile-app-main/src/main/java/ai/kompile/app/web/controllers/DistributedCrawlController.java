@@ -18,14 +18,17 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.ingest.domain.JobLogEntry;
 import ai.kompile.app.ingest.service.JobLogService;
+import ai.kompile.app.services.crawl.ClusterBackendHealthAdapter;
 import ai.kompile.app.services.crawl.DistributedCrawlAggregator;
 import ai.kompile.app.services.crawl.DistributedCrawlCoordinator;
 import ai.kompile.app.services.crawl.DistributedCrawlSession;
 import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
+import ai.kompile.crawl.graph.ClusterBackendHealth;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -58,6 +61,10 @@ public class DistributedCrawlController {
     private final DistributedCrawlAggregator aggregator;
     private final ResourceSchedulerConfigService configService;
     private final JobLogService jobLogService;
+
+    /** Optional cluster-wide backend breaker (Phase 4); field-injected so the constructor (and its tests) are unchanged. */
+    @Autowired(required = false)
+    private ClusterBackendHealthAdapter backendHealth;
 
     /**
      * Start a distributed crawl. The request must include a distribution config.
@@ -230,6 +237,35 @@ public class DistributedCrawlController {
     }
 
     /**
+     * Worker backend-health report (Phase 4). A worker POSTs a single LLM-backend failure event; the orchestrator
+     * folds it into the cluster-wide breaker and returns the current open-set, so the worker can avoid that backend
+     * without having to independently trip its own per-JVM breaker.
+     */
+    @PostMapping("/backend-health")
+    public ResponseEntity<Map<String, Object>> backendHealth(
+            @RequestBody BackendHealthRequest req,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
+        java.util.Set<String> open = (backendHealth != null && req.backendId() != null)
+                ? backendHealth.applyRemoteEvent(req.backendId(), parseBackendEvent(req.event()))
+                : java.util.Set.of();
+        return ResponseEntity.ok(Map.of("openBackends", open));
+    }
+
+    private static ClusterBackendHealth.Event parseBackendEvent(String event) {
+        if (event == null) {
+            return ClusterBackendHealth.Event.FAILURE;
+        }
+        try {
+            return ClusterBackendHealth.Event.valueOf(event.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return ClusterBackendHealth.Event.FAILURE;
+        }
+    }
+
+    /**
      * Remove completed/failed/cancelled sessions.
      */
     @PostMapping("/cleanup")
@@ -272,5 +308,10 @@ public class DistributedCrawlController {
             String timestamp,
             String level,
             String message
+    ) {}
+
+    public record BackendHealthRequest(
+            String backendId,
+            String event
     ) {}
 }

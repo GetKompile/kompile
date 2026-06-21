@@ -288,6 +288,22 @@ public class ResourceSchedulerConfig {
     @JsonProperty("clusterSessionPersistenceEnabled")
     private boolean clusterSessionPersistenceEnabled = true;
 
+    /**
+     * When true, workers report LLM-backend failures to the orchestrator, which maintains a cluster-wide circuit
+     * breaker so a flaky/rate-limited shared backend trips once for the whole cluster (advisory, fail-open) rather
+     * than once per worker. Default-off.
+     */
+    @JsonProperty("clusterSharedBackendBreakerEnabled")
+    private boolean clusterSharedBackendBreakerEnabled = false;
+
+    /** Aggregate backend failures (across the cluster) before the shared breaker opens. */
+    @JsonProperty("clusterBackendFailureThreshold")
+    private int clusterBackendFailureThreshold = 8;
+
+    /** Seconds the shared backend breaker stays open before it half-opens (auto-reset). */
+    @JsonProperty("clusterBackendCooldownSeconds")
+    private int clusterBackendCooldownSeconds = 60;
+
     // --- Computed / non-trivial methods ---
 
     public int getMaxConcurrentForType(String type) {

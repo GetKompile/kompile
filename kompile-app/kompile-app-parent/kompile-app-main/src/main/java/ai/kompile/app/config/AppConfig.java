@@ -167,7 +167,8 @@ public class AppConfig {
                     "ai.kompile.app.services.crawl.DistributedCrawlSession$Manifest",
                     "ai.kompile.app.services.crawl.DistributedCrawlSession$WorkerManifest",
                     "ai.kompile.app.services.crawl.DistributedCrawlSession$Status",
-                    "ai.kompile.app.services.crawl.DistributedCrawlSession$WorkerStatus"
+                    "ai.kompile.app.services.crawl.DistributedCrawlSession$WorkerStatus",
+                    "ai.kompile.app.web.controllers.DistributedCrawlController$BackendHealthRequest"
             }) {
                 registerIfPresent(hints, classLoader, crawlWireType,
                         MemberCategory.DECLARED_FIELDS,

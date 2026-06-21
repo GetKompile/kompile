@@ -1,6 +1,6 @@
 # Distributed Crawl — Resilience Hardening Plan
 
-Status: **Phases 1–3 delivered**; Phase 4 proposed. The current distributed-crawl coordinator (see
+Status: **All 4 phases delivered** (Phase 4 = the 4a shared breaker; 4b concurrency leases deferred). The current distributed-crawl coordinator (see
 [distributed-crawl-cluster.md](distributed-crawl-cluster.md)) is a solid **v1 data-partition coordinator**:
 strong live aggregation/observability, idempotent worker lifecycle, assignment-time capacity routing
 (`WorkerWeightFunction`), per-worker LLM circuit breakers, and in-worker OOM avoidance (AIMD batch sizing +
@@ -93,7 +93,16 @@ worker on `clusterFastStallSeconds` (60s) instead of the full 300s timeout when 
 - **Tests:** weight down-weight/zero on GC overhead; reaper fast-stall path; capability advertises the fraction.
 - **Risk:** GC-fraction noise (smooth over a window; conservative thresholds; advisory until sustained).
 
-## Phase 4 — Cluster-shared backend breaker / budget  *(largest lift)*
+## Phase 4 — Cluster-shared backend breaker / budget  *(largest lift)* — ✅ 4a DONE (4b deferred)
+
+4a shipped: a `ClusterBackendHealth` SPI in crawl-graph (NOOP default → single-node behavior unchanged) lets
+`CrawlLlmDispatcher` treat a backend as open when the cluster has tripped it (OR'd with its local breaker) and mirror
+its failures via `record`. The app-main `ClusterBackendHealthAdapter` implements it role-aware: the orchestrator holds
+the authoritative per-backend breaker (opens after `clusterBackendFailureThreshold` aggregate failures, half-opens
+after `clusterBackendCooldownSeconds`); workers POST failures to `/api/distributed-crawl/backend-health` and cache the
+returned open-set. Gated by `clusterSharedBackendBreakerEnabled` (default off), advisory + fail-open. 4b (coordinator-issued
+concurrency leases replacing static cap-scaling) remains deferred.
+
 
 **Goal:** a flaky/rate-limited shared LLM backend trips **once for the cluster**, not once per worker.
 

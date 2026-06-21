@@ -19,6 +19,7 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.app.config.ResourceSchedulerConfig;
 import ai.kompile.app.ingest.domain.JobLogEntry;
 import ai.kompile.app.ingest.service.JobLogService;
+import ai.kompile.app.services.crawl.ClusterBackendHealthAdapter;
 import ai.kompile.app.services.crawl.DistributedCrawlAggregator;
 import ai.kompile.app.services.crawl.DistributedCrawlCoordinator;
 import ai.kompile.app.services.scheduler.ExternalJobSchedulerDelegate;
@@ -181,6 +182,35 @@ class DistributedCrawlControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.stored").value(0));
         verify(jobLogService, times(0)).logEntry(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void backendHealthFoldsWorkerEventsIntoClusterBreaker() throws Exception {
+        ResourceSchedulerConfig cfg = new ResourceSchedulerConfig();
+        cfg.setClusterSharedBackendBreakerEnabled(true);
+        cfg.setClusterRole("orchestrator");
+        cfg.setClusterBackendFailureThreshold(2);
+        ResourceSchedulerConfigService svc = mock(ResourceSchedulerConfigService.class);
+        when(svc.getConfiguration()).thenReturn(cfg);
+        ClusterBackendHealthAdapter adapter = new ClusterBackendHealthAdapter(svc, om);
+
+        DistributedCrawlController controller = new DistributedCrawlController(
+                coordinator, new DistributedCrawlAggregator(), svc, jobLogService);
+        ReflectionTestUtils.setField(controller, "backendHealth", adapter);
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(controller)
+                .setMessageConverters(new MappingJackson2HttpMessageConverter(om)).build();
+
+        // First failure is under the threshold of 2 → empty open-set.
+        mvc.perform(post("/api/distributed-crawl/backend-health").contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("backendId", "openai", "event", "FAILURE"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.openBackends.length()").value(0));
+
+        // Second failure hits the threshold → the cluster breaker opens for "openai".
+        mvc.perform(post("/api/distributed-crawl/backend-health").contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("backendId", "openai", "event", "RATE_LIMITED"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.openBackends[0]").value("openai"));
     }
 
     /** Minimal in-test external delegate that "accepts" every submission. */

@@ -78,6 +78,10 @@ class CrawlLlmDispatcher {
     @Autowired(required = false)
     private CliAgentRunner cliAgentRunner;
 
+    /** Optional cluster-wide backend breaker (Phase 4); null on a single node → {@link ClusterBackendHealth#NOOP}. */
+    @Autowired(required = false)
+    private ClusterBackendHealth clusterBackendHealth;
+
     // ---- Configurable timeouts (synced from CrawlRuntimeConfigManager) ----
 
     volatile int llmCallTimeoutSeconds = 300;
@@ -186,7 +190,7 @@ class CrawlLlmDispatcher {
                 recordLlmCall(job, backendId, taskType, latencyMs, prompt, response,
                         true, false, false, false, null, null);
             } else {
-                getCircuitBreaker(backendId).recordFailure();
+                breakerFailure(backendId);
                 recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
                         false, false, false, false, "BAD_RESPONSE", "Backend returned null");
             }
@@ -195,7 +199,7 @@ class CrawlLlmDispatcher {
         } catch (TimeoutException te) {
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             processingCapacityTracker.recordCompletion(backendId, taskType, false);
-            getCircuitBreaker(backendId).recordFailure();
+            breakerFailure(backendId);
             log.warn("[Job {}] Backend '{}' timed out after {}s",
                     job.getJobId(), backendId, llmCallTimeoutSeconds);
             recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
@@ -216,22 +220,22 @@ class CrawlLlmDispatcher {
                     // permanent per-job kill switch. Open the breaker on the expiring (rate-limited)
                     // path so this job also reroutes immediately and resumes when the window resets.
                     cliAgentQuotaLedger.recordQuotaSignal(backend.getAgentName(), backend);
-                    getCircuitBreaker(backendId).recordRateLimited();
+                    breakerRateLimited(backendId);
                     log.error("[Job {}] CLI agent '{}' quota exhausted — rerouting (recovers in ~{}ms)",
                             job.getJobId(), backend.getAgentName(),
                             cliAgentQuotaLedger.remainingExhaustionMs(backend.getAgentName()));
                 } else {
-                    getCircuitBreaker(backendId).recordQuotaExhausted();
+                    breakerQuotaExhausted(backendId);
                     log.error("[Job {}] Backend '{}' quota exhausted — permanently disabled for this job",
                             job.getJobId(), backendId);
                 }
             } else if (rateLimited) {
-                getCircuitBreaker(backendId).recordRateLimited();
+                breakerRateLimited(backendId);
                 // Brief backoff before trying fallback to avoid cascading rate limits
                 try { Thread.sleep(Math.min(2000, 500 + (long)(Math.random() * 1000))); }
                 catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
             } else {
-                getCircuitBreaker(backendId).recordFailure();
+                breakerFailure(backendId);
             }
 
             log.warn("[Job {}] Backend '{}' failed ({}): {}, trying fallback",
@@ -245,7 +249,7 @@ class CrawlLlmDispatcher {
             ProcessingRouteConfig.ProcessingBackend backup = routeConfig.getBackends().stream()
                     .filter(b -> b.getId().equals(backend.getBackupBackendId()) && b.isEnabled())
                     .findFirst().orElse(null);
-            if (backup != null && !getCircuitBreaker(backup.getId()).isOpen()) {
+            if (backup != null && !isBackendOpen(backup.getId())) {
                 String backupResponse = tryFallbackBackend(backup, prompt, taskType, job, backendId);
                 if (backupResponse != null) return backupResponse;
             }
@@ -256,7 +260,7 @@ class CrawlLlmDispatcher {
             if (fallback.getId().equals(backendId) || !fallback.isEnabled()) continue;
             // Skip the explicit backup — already tried above
             if (backend.getBackupBackendId() != null && fallback.getId().equals(backend.getBackupBackendId())) continue;
-            if (getCircuitBreaker(fallback.getId()).isOpen()) {
+            if (isBackendOpen(fallback.getId())) {
                 log.debug("[Job {}] Skipping circuit-broken backend '{}'", job.getJobId(), fallback.getId());
                 continue;
             }
@@ -612,6 +616,36 @@ class CrawlLlmDispatcher {
                 id -> new CircuitBreaker(circuitBreakerFailureThreshold, circuitBreakerCooldownSeconds));
     }
 
+    private ClusterBackendHealth clusterHealth() {
+        return clusterBackendHealth != null ? clusterBackendHealth : ClusterBackendHealth.NOOP;
+    }
+
+    /** Wiring/test seam for the optional cluster backend breaker. */
+    void setClusterBackendHealth(ClusterBackendHealth clusterBackendHealth) {
+        this.clusterBackendHealth = clusterBackendHealth;
+    }
+
+    /** A backend is unavailable if its local breaker is open OR the cluster has tripped it (Phase 4, advisory). */
+    boolean isBackendOpen(String backendId) {
+        return getCircuitBreaker(backendId).isOpen() || clusterHealth().isOpen(backendId);
+    }
+
+    /** Record a local backend failure on both the per-JVM breaker and (when wired) the cluster-wide breaker. */
+    private void breakerFailure(String backendId) {
+        getCircuitBreaker(backendId).recordFailure();
+        clusterHealth().record(backendId, ClusterBackendHealth.Event.FAILURE);
+    }
+
+    private void breakerRateLimited(String backendId) {
+        getCircuitBreaker(backendId).recordRateLimited();
+        clusterHealth().record(backendId, ClusterBackendHealth.Event.RATE_LIMITED);
+    }
+
+    private void breakerQuotaExhausted(String backendId) {
+        getCircuitBreaker(backendId).recordQuotaExhausted();
+        clusterHealth().record(backendId, ClusterBackendHealth.Event.QUOTA_EXHAUSTED);
+    }
+
     private Optional<ProcessingRouteConfig.ProcessingBackend> selectBackendWithCircuitBreaker(
             String taskType, ProcessingRouteConfig routeConfig) {
         // First try normal selection
@@ -619,20 +653,21 @@ class CrawlLlmDispatcher {
                 processingCapacityTracker.selectBackend(taskType, routeConfig);
         if (selected.isPresent()) {
             CircuitBreaker cb = getCircuitBreaker(selected.get().getId());
-            if (!cb.isOpen() && !cliQuotaExhausted(selected.get())) {
+            boolean open = isBackendOpen(selected.get().getId()); // local OR cluster-wide (Phase 4)
+            if (!open && !cliQuotaExhausted(selected.get())) {
                 return selected;
             }
-            // Selected backend is circuit-broken or CLI-quota-exhausted, try others
+            // Selected backend is circuit-broken (local or cluster) or CLI-quota-exhausted, try others
             log.debug("Selected backend '{}' unavailable ({}), trying alternatives",
                     selected.get().getId(),
-                    cb.isOpen() ? cb.getStateDescription() : "cli quota exhausted");
+                    open ? cb.getStateDescription() : "cli quota exhausted");
         }
 
         // Try each backend in priority order, skipping circuit-broken and quota-exhausted ones
         if (routeConfig.getBackends() != null) {
             for (ProcessingRouteConfig.ProcessingBackend backend : routeConfig.getBackends()) {
                 if (!backend.isEnabled()) continue;
-                if (getCircuitBreaker(backend.getId()).isOpen()) continue;
+                if (isBackendOpen(backend.getId())) continue;
                 if (cliQuotaExhausted(backend)) continue;
                 if (processingCapacityTracker.canAccept(backend.getId(), taskType)) {
                     return Optional.of(backend);
