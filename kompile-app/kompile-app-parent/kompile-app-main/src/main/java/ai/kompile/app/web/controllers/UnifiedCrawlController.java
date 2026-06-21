@@ -1682,6 +1682,10 @@ public class UnifiedCrawlController {
         if (snap.getRecentRetryEvents() != null && !snap.getRecentRetryEvents().isEmpty()) {
             m.put("recentRetryEvents", snap.getRecentRetryEvents());
         }
+        // Adaptive tuning decisions
+        if (snap.getRecentTuningDecisions() != null && !snap.getRecentTuningDecisions().isEmpty()) {
+            m.put("recentTuningDecisions", snap.getRecentTuningDecisions());
+        }
         // LLM call observability
         m.put("llmCallsTotal", snap.getLlmCallsTotal());
         m.put("llmCallsSucceeded", snap.getLlmCallsSucceeded());

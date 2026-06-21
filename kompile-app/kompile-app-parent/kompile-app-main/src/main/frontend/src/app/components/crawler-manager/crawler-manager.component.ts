@@ -28,6 +28,8 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { JobLogViewerComponent } from '../job-history/job-log-viewer/job-log-viewer.component';
+import { ResourceStripComponent } from '../resource-strip/resource-strip.component';
+import { CrawlStepMonitorComponent } from '../crawl-step-monitor/crawl-step-monitor.component';
 
 import {
   CrawlerService,
@@ -37,9 +39,10 @@ import {
   CrawlStepInfo,
   StartCrawlRequest
 } from '../../services/crawler.service';
-import { UnifiedCrawlService } from '../../services/unified-crawl.service';
+import { UnifiedCrawlService, JobDetail } from '../../services/unified-crawl.service';
+import { DistributedCrawlService } from '../../services/distributed-crawl.service';
 import { WebSocketService } from '../../services/websocket.service';
-import { JobLogService, JobLogEntry } from '../../services/job-log.service';
+import { GraphExtractionService, GraphExtractionConfig } from '../../services/graph-extraction.service';
 import { Subscription, forkJoin, of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 
@@ -59,7 +62,9 @@ import { catchError } from 'rxjs/operators';
     MatChipsModule,
     MatTooltipModule,
     MatSlideToggleModule,
-    JobLogViewerComponent
+    JobLogViewerComponent,
+    ResourceStripComponent,
+    CrawlStepMonitorComponent
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './crawler-manager.component.html',
@@ -86,32 +91,31 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
   expandedTranscriptsJobId: string | null = null;
   expandedStepsJobId: string | null = null;
 
-  /** Per-step accordion state: key is `${jobId}::${stepId}` */
-  expandedCmSteps: Set<string> = new Set<string>();
-
-  /**
-   * Persisted log cache: keyed by taskId ('crawl-<internalJobId>').
-   * Stores the fetched log entries so we don't refetch on every change-detection cycle.
-   * Value is null while the fetch is in-flight (shows loading indicator).
-   */
-  cmStepLogCache: Map<string, JobLogEntry[] | null> = new Map();
+  /** Full rich job detail for the currently-expanded steps panel (lazy-fetched on open, refreshed
+   *  each loadJobs tick) — supplies retries / tuning decisions / transcripts / activity to the monitor. */
+  cmRichJob: JobDetail | null = null;
+  cmRichJobId: string | null = null;
 
   // Live crawl progress from WebSocket
   liveCrawlProgress: Record<string, any> = {};
+  /** LLM / CLI-agent model that performs entity & graph extraction, e.g. "opencode-cli / default". */
+  extractionAgentLabel: string | null = null;
   private wsSubs: Subscription[] = [];
 
   constructor(
     private crawlerService: CrawlerService,
     private unifiedCrawlService: UnifiedCrawlService,
+    private distributedCrawlService: DistributedCrawlService,
     private cdr: ChangeDetectorRef,
     private wsService: WebSocketService,
-    private jobLogService: JobLogService,
+    private graphExtractionService: GraphExtractionService,
     private zone: NgZone
   ) {}
 
   ngOnInit(): void {
     this.loadCrawlers();
     this.loadJobs();
+    this.loadExtractionAgent();
     this.refreshInterval = setInterval(() => this.loadJobs(), 5000);
     this.wsSubs.push(
       this.wsService.subscribeToCrawlProgress().subscribe((update: any) => {
@@ -128,6 +132,19 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
       })
     );
     this.connectGlobalStream();
+  }
+
+  /** Load which LLM / CLI-agent model performs entity & graph extraction, so it is visible during a crawl. */
+  private loadExtractionAgent(): void {
+    this.graphExtractionService.getConfig().subscribe({
+      next: (cfg: GraphExtractionConfig) => {
+        const provider = (cfg?.extractionModelProvider || '').trim() || 'default';
+        const model = (cfg?.extractionModelName || '').trim() || 'default';
+        this.extractionAgentLabel = `${provider} / ${model}`;
+        this.cdr.markForCheck();
+      },
+      error: () => { /* non-fatal: leave the label hidden */ }
+    });
   }
 
   ngOnDestroy(): void {
@@ -197,9 +214,10 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     // Merge old crawler jobs and unified crawl jobs into one list
     forkJoin({
       crawlerJobs: this.crawlerService.listJobs().pipe(catchError(() => of([] as CrawlJobSummary[]))),
-      unifiedJobs: this.unifiedCrawlService.listJobs(true).pipe(catchError(() => of([] as any[])))
+      unifiedJobs: this.unifiedCrawlService.listJobs(true).pipe(catchError(() => of([] as any[]))),
+      distributedSessions: this.distributedCrawlService.listSessions().pipe(catchError(() => of([] as any[])))
     }).subscribe({
-      next: ({ crawlerJobs, unifiedJobs }) => {
+      next: ({ crawlerJobs, unifiedJobs, distributedSessions }) => {
         // Map unified crawl jobs to the same CrawlJobSummary shape
         const mappedUnified: CrawlJobSummary[] = (unifiedJobs || []).map((uj: any) => ({
           jobId: uj.jobId,
@@ -232,7 +250,35 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
           relationshipsExtracted: uj.relationshipsExtracted,
           isUnifiedCrawl: true
         } as any));
-        this.jobs = [...mappedUnified, ...crawlerJobs];
+        // Map distributed crawl sessions to the same row shape (a 3rd source alongside crawler + unified).
+        const mappedDistributed: CrawlJobSummary[] = (distributedSessions || []).map((s: any) => ({
+          jobId: 'distributed-' + s.sessionId,
+          crawlerId: 'distributed',
+          seed: s.name || 'Distributed Crawl',
+          status: this.mapDistributedStatus(s.status),
+          // Coordinator stores forwarded per-worker transcripts under this task id; the monitor's
+          // transcript viewer reads them via getCrawlerHistoryTaskId(job).
+          historyTaskId: 'crawl-distributed-' + s.sessionId,
+          progress: {
+            discovered: 0,
+            processed: s.completedWorkers || 0,
+            failed: s.failedWorkers || 0,
+            queued: 0,
+            currentItem: (s.completedWorkers || 0) + '/' + (s.totalWorkers || 0) + ' workers',
+            estimatedPercent: 0
+          },
+          startedAt: s.startedAt,
+          completedAt: s.completedAt,
+          pipelineSteps: [], // filled from the aggregate snapshot when the Steps panel is opened
+          isDistributedCrawl: true,
+          sessionId: s.sessionId,
+          totalWorkers: s.totalWorkers,
+          completedWorkers: s.completedWorkers
+        } as any));
+        this.jobs = [...mappedDistributed, ...mappedUnified, ...crawlerJobs];
+        // Keep the open steps panel's rich detail (retries/tuning/transcripts) fresh — this runs on
+        // both the 5s poll and the SSE-triggered refresh, so the monitor updates in near real time.
+        this.refreshRichJob();
         this.cdr.markForCheck();
       },
       error: (err) => {
@@ -378,6 +424,11 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
 
   toggleSteps(jobId: string): void {
     this.expandedStepsJobId = this.expandedStepsJobId === jobId ? null : jobId;
+    this.cmRichJob = null;
+    this.cmRichJobId = null;
+    if (this.expandedStepsJobId) {
+      this.refreshRichJob();
+    }
   }
 
   getJobSteps(job: CrawlJobSummary): CrawlStepInfo[] {
@@ -385,22 +436,20 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
   }
 
   hasSteps(job: CrawlJobSummary): boolean {
-    return (job.pipelineSteps?.length || 0) > 0;
+    return (job.pipelineSteps?.length || 0) > 0 || (job as any).isDistributedCrawl === true;
   }
 
-  /** Per-step status class. SKIPPED/ARCHIVED are styled neutral (not failures) in CSS. */
-  getStepStatusClass(status: string | undefined): string {
-    return 'cs-' + (status || 'pending').toLowerCase();
-  }
-
-  getStepIcon(stepType: string | undefined): string {
-    const t = (stepType || '').toUpperCase();
-    if (t.includes('IO')) return 'folder_open';
-    if (t.includes('LLM')) return 'psychology';
-    if (t.includes('EMBEDDING')) return 'memory';
-    if (t.includes('GRAPH')) return 'hub';
-    if (t.includes('CPU')) return 'settings_suggest';
-    return 'schema';
+  /** Map a DistributedCrawlSession.Status to the crawler-row status vocabulary (for the chip + colours). */
+  private mapDistributedStatus(status: string): string {
+    switch ((status || '').toUpperCase()) {
+      case 'DISPATCHING':
+      case 'RUNNING': return 'RUNNING';
+      case 'COMPLETED':
+      case 'PARTIALLY_COMPLETED': return 'COMPLETED';
+      case 'FAILED': return 'FAILED';
+      case 'CANCELLED': return 'CANCELLED';
+      default: return status || 'PENDING';
+    }
   }
 
   /** True when a job COMPLETED but some steps were intentionally skipped/archived (not a failure). */
@@ -434,118 +483,43 @@ export class CrawlerManagerComponent implements OnInit, OnDestroy {
     });
   }
 
-  // ─── Per-step accordion (crawler-manager) ────────────────────────────────
-
-  /** Toggle expand/collapse for a specific step within a job.
-   *  On first open, lazily fetches the persisted logs for the parent job. */
-  toggleCmStepExpanded(job: CrawlJobSummary, stepId: string): void {
-    const key = `${job.jobId}::${stepId}`;
-    if (this.expandedCmSteps.has(key)) {
-      this.expandedCmSteps.delete(key);
-    } else {
-      this.expandedCmSteps.add(key);
-      // Trigger a persisted-log fetch for this job if not already cached/in-flight
-      this.fetchCmStepLogs(job);
-    }
-    this.cdr.markForCheck();
-  }
-
-  /** Derive the persisted-log taskId for a crawler-manager job. */
-  private cmTaskId(job: CrawlJobSummary): string {
-    return (job as any).historyTaskId || `crawl-${job.jobId}`;
-  }
+  // ─── Rich detail for the expanded steps panel (drives the shared monitor) ────
 
   /**
-   * Fetch persisted logs for the job once and cache them.
-   * Subsequent calls for the same taskId are no-ops (cache hit or in-flight).
+   * Lazy-fetch the full job detail for the open steps panel so the shared monitor can show the
+   * per-step retries, tuning decisions, LLM transcripts and activity log (the list/summary
+   * endpoint omits these). Refreshed on every loadJobs() tick (poll + SSE) so it stays live.
    */
-  private fetchCmStepLogs(job: CrawlJobSummary): void {
-    const taskId = this.cmTaskId(job);
-    if (this.cmStepLogCache.has(taskId)) return; // already fetched or in-flight
-    this.cmStepLogCache.set(taskId, null); // null = loading
-    this.jobLogService.getLogsForJob(taskId, { page: 0, size: 500 }).subscribe({
-      next: (resp) => {
-        this.cmStepLogCache.set(taskId, resp.logs || []);
-        this.cdr.markForCheck();
+  private refreshRichJob(): void {
+    const jobId = this.expandedStepsJobId;
+    if (!jobId) return;
+    // Distributed sessions fetch the merged aggregate; unified jobs fetch their full detail.
+    const row = this.jobs.find(j => j.jobId === jobId) as any;
+    const obs = (row?.isDistributedCrawl && row.sessionId)
+        ? this.distributedCrawlService.getAggregate(row.sessionId)
+        : this.unifiedCrawlService.getJob(jobId);
+    obs.subscribe({
+      next: (detail: JobDetail) => {
+        // Ignore a stale response if the user collapsed/switched panels meanwhile.
+        if (this.expandedStepsJobId === jobId) {
+          this.cmRichJob = detail;
+          this.cmRichJobId = jobId;
+          this.cdr.markForCheck();
+        }
       },
-      error: () => {
-        // On error store empty array so the empty-state renders instead of a spinner
-        this.cmStepLogCache.set(taskId, []);
-        this.cdr.markForCheck();
-      }
+      error: () => { /* non-fatal: the monitor falls back to the summary step list */ }
     });
   }
 
-  /** True while persisted logs are being fetched for a job (spinner). */
-  isCmStepLogLoading(job: CrawlJobSummary): boolean {
-    return this.cmStepLogCache.get(this.cmTaskId(job)) === null;
+  /** The rich job object for a row — only once its steps panel is open and detail has loaded. */
+  getRichJob(job: CrawlJobSummary): JobDetail | null {
+    return this.cmRichJobId === job.jobId ? this.cmRichJob : null;
   }
 
-  /** Returns true when the given step accordion is open. */
-  isCmStepExpanded(jobId: string, stepId: string): boolean {
-    return this.expandedCmSteps.has(`${jobId}::${stepId}`);
-  }
-
-  /**
-   * Map a crawl stepId to the phase strings that appear in liveCrawlProgress
-   * recentEvents for this step.  Falls back to the stepId itself.
-   */
-  cmStepIdToPhases(stepId: string): string[] {
-    const upper = (stepId || '').toUpperCase();
-    const phaseMap: { [key: string]: string[] } = {
-      'SOURCE_LOADING':         ['LOADING'],
-      'SOURCE_DISCOVERY':       ['DISCOVERING'],
-      'TEXT_CONVERSION':        ['CONVERTING'],
-      'DOCUMENT_PREPROCESSING': ['OCR_PROCESSING', 'CONVERTING'],
-      'CONTENT_ROUTING':        ['ROUTING'],
-      'RULE_GRAPH_PREP':        ['GRAPH_PREP'],
-      'CHUNKING':               ['CHUNKING'],
-      'GRAPH_EXTRACTION':       ['GRAPH_EXTRACTION'],
-      'CRAWL_SURFACE':          ['CRAWL_SURFACE'],
-      'ENTITY_RESOLUTION':      ['ENTITY_RESOLUTION'],
-      'GRAPH_EDGE_CLEANUP':     ['EDGE_COMPUTATION'],
-      'EMBEDDING':              ['EMBEDDING', 'VECTOR_INDEXING', 'INDEXING'],
-    };
-    return phaseMap[upper] || [upper];
-  }
-
-  /**
-   * Return log entries for the given step, filtered by phase.
-   *
-   * Priority:
-   *  1. Persisted logs from the durable API (available during AND after a crawl).
-   *  2. Fallback to live recentEvents from the WebSocket progress update while the
-   *     persisted fetch is still in-flight or returned nothing.
-   *
-   * Calling this method does NOT trigger a fetch — that happens inside
-   * toggleCmStepExpanded so we only fetch once per job expand, not once per
-   * change-detection cycle.
-   */
-  getCmStepEvents(job: CrawlJobSummary, step: CrawlStepInfo): any[] {
-    const taskId = this.cmTaskId(job);
-    const cached = this.cmStepLogCache.get(taskId);
-    const phases = this.cmStepIdToPhases(step.stepId);
-    const phaseSet = new Set(phases);
-
-    if (cached !== null && cached !== undefined) {
-      // Cache is populated (even if empty) — filter and return persisted entries.
-      const persisted = cached.filter((e: JobLogEntry) =>
-        phaseSet.has((e.source || '').toUpperCase()) ||
-        phaseSet.has((e.message || '').substring(0, 30).toUpperCase()) ||
-        // Primary filter: match the phase embedded in the message prefix '[PHASE]'
-        phases.some(ph => (e.message || '').toUpperCase().startsWith('[' + ph + ']')) ||
-        // Secondary: JobLogEntry has no phase field — use source as proxy for step type
-        phaseSet.has((e.level || '').toUpperCase())
-      );
-      // If persisted logs exist for this job, return them (may be empty for this step).
-      if (cached.length > 0) return persisted;
-      // Persisted returned empty (job may be live or log storage not yet enabled) —
-      // fall through to live events below.
-    }
-
-    // Fallback: live recentEvents from WebSocket progress
-    const live = this.liveCrawlProgress[job.jobId];
-    const events: any[] = live?.recentEvents || (job as any).recentEvents || [];
-    return events.filter((e: any) => phaseSet.has((e.phase || '').toUpperCase()));
+  /** Prefer the full rich pipelineSteps (batch/timing fields) once loaded; else the summary list. */
+  getMonitorSteps(job: CrawlJobSummary): any[] {
+    const rich = this.getRichJob(job);
+    if (rich?.pipelineSteps?.length) return rich.pipelineSteps;
+    return this.getJobSteps(job);
   }
 }

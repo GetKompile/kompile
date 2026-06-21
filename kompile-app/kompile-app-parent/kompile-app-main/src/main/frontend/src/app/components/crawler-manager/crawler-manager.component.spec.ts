@@ -24,7 +24,7 @@ import {
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
-import { of, throwError } from 'rxjs';
+import { EMPTY, of, throwError } from 'rxjs';
 
 import { CrawlerManagerComponent } from './crawler-manager.component';
 import {
@@ -34,6 +34,10 @@ import {
   StartCrawlResponse,
   SimpleResponse
 } from '../../services/crawler.service';
+import { UnifiedCrawlService } from '../../services/unified-crawl.service';
+import { DistributedCrawlService } from '../../services/distributed-crawl.service';
+import { WebSocketService } from '../../services/websocket.service';
+import { GraphExtractionService } from '../../services/graph-extraction.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -93,6 +97,10 @@ describe('CrawlerManagerComponent', () => {
   let component: CrawlerManagerComponent;
   let fixture: ComponentFixture<CrawlerManagerComponent>;
   let crawlerServiceSpy: jasmine.SpyObj<CrawlerService>;
+  let unifiedSpy: jasmine.SpyObj<UnifiedCrawlService>;
+  let distributedSpy: jasmine.SpyObj<DistributedCrawlService>;
+  let wsSpy: jasmine.SpyObj<WebSocketService>;
+  let graphSpy: jasmine.SpyObj<GraphExtractionService>;
 
   beforeEach(async () => {
     crawlerServiceSpy = createCrawlerServiceSpy();
@@ -106,6 +114,29 @@ describe('CrawlerManagerComponent', () => {
     crawlerServiceSpy.cancelJob.and.returnValue(of({ message: 'Job cancelled' }));
     crawlerServiceSpy.cleanupJobs.and.returnValue(of({ removed: 1 }));
 
+    // The component now merges 3 job sources + live streams; mock them all so ngOnInit is inert.
+    unifiedSpy = jasmine.createSpyObj('UnifiedCrawlService',
+      ['listJobs', 'getJob', 'runStep', 'crawlEventsStreamUrl']);
+    unifiedSpy.listJobs.and.returnValue(of([]));
+    unifiedSpy.getJob.and.returnValue(of({} as any));
+    unifiedSpy.runStep.and.returnValue(of({}));
+    unifiedSpy.crawlEventsStreamUrl.and.returnValue('http://localhost/api/crawl-events/stream');
+
+    distributedSpy = jasmine.createSpyObj('DistributedCrawlService',
+      ['listSessions', 'getAggregate', 'cancelSession']);
+    distributedSpy.listSessions.and.returnValue(of([]));
+    distributedSpy.getAggregate.and.returnValue(of({} as any));
+
+    wsSpy = jasmine.createSpyObj('WebSocketService',
+      ['subscribeToCrawlProgress', 'subscribeToCrawlComplete', 'unsubscribeFromCrawlProgress',
+       'subscribeToSystemResources']);
+    wsSpy.subscribeToCrawlProgress.and.returnValue(EMPTY);
+    wsSpy.subscribeToCrawlComplete.and.returnValue(EMPTY);
+    wsSpy.subscribeToSystemResources.and.returnValue(EMPTY); // used by the embedded <app-resource-strip>
+
+    graphSpy = jasmine.createSpyObj('GraphExtractionService', ['getConfig']);
+    graphSpy.getConfig.and.returnValue(of({} as any));
+
     await TestBed.configureTestingModule({
       imports: [
         CrawlerManagerComponent,
@@ -113,7 +144,11 @@ describe('CrawlerManagerComponent', () => {
         NoopAnimationsModule
       ],
       providers: [
-        { provide: CrawlerService, useValue: crawlerServiceSpy }
+        { provide: CrawlerService, useValue: crawlerServiceSpy },
+        { provide: UnifiedCrawlService, useValue: unifiedSpy },
+        { provide: DistributedCrawlService, useValue: distributedSpy },
+        { provide: WebSocketService, useValue: wsSpy },
+        { provide: GraphExtractionService, useValue: graphSpy }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).compileComponents();
@@ -158,12 +193,15 @@ describe('CrawlerManagerComponent', () => {
       expect(component.errorMessage).toContain('Failed to load crawlers');
     });
 
-    it('should set error message when listJobs fails', () => {
+    it('degrades gracefully when a job source fails (per-source catchError)', () => {
+      // loadJobs merges crawler + unified + distributed sources, each wrapped in catchError(of([])),
+      // so one failing source must not crash the view or surface an error banner — the others still load.
       crawlerServiceSpy.listJobs.and.returnValue(
         throwError(() => ({ message: 'Server down', statusText: 'Service Unavailable' }))
       );
       fixture.detectChanges();
-      expect(component.errorMessage).toContain('Failed to load jobs');
+      expect(component.errorMessage).toBeNull();
+      expect(component.jobs).toEqual([]);
     });
   });
 
@@ -437,6 +475,52 @@ describe('CrawlerManagerComponent', () => {
       expect(component.sameDomainOnly).toBeTrue();
       expect(component.isLoading).toBeFalse();
       expect(component.errorMessage).toBeNull();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 7. Distributed crawl sessions (Phase D)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  describe('Distributed crawl sessions', () => {
+    function withSession() {
+      distributedSpy.listSessions.and.returnValue(of([{
+        sessionId: 'sess-1', status: 'RUNNING', name: 'Dist Crawl',
+        totalWorkers: 2, completedWorkers: 0, failedWorkers: 0
+      }]));
+    }
+
+    it('maps a distributed session into the jobs list as one row', () => {
+      withSession();
+      fixture.detectChanges(); // ngOnInit → loadJobs (forkJoin of crawler + unified + distributed)
+      const distRow = component.jobs.find(j => (j as any).isDistributedCrawl);
+      expect(distRow).toBeTruthy();
+      expect(distRow!.jobId).toBe('distributed-sess-1');
+      expect(distRow!.status).toBe('RUNNING');
+    });
+
+    it('shows the Steps panel for a distributed session even before steps load', () => {
+      withSession();
+      fixture.detectChanges();
+      const distRow = component.jobs.find(j => (j as any).isDistributedCrawl)!;
+      expect(component.hasSteps(distRow)).toBeTrue();
+    });
+
+    it('lazily fetches the aggregate snapshot when the Steps panel opens', () => {
+      withSession();
+      distributedSpy.getAggregate.and.returnValue(of({
+        jobId: 'distributed-sess-1',
+        pipelineSteps: [{ stepId: 'w0:GRAPH_EXTRACTION', displayName: '[W0] Graph Extraction' }],
+        entitiesExtracted: 9
+      } as any));
+      fixture.detectChanges();
+
+      component.toggleSteps('distributed-sess-1');
+
+      expect(distributedSpy.getAggregate).toHaveBeenCalledWith('sess-1');
+      const rich = component.getRichJob({ jobId: 'distributed-sess-1' } as any);
+      expect(rich).toBeTruthy();
+      expect(component.getMonitorSteps({ jobId: 'distributed-sess-1' } as any).length).toBe(1);
     });
   });
 });

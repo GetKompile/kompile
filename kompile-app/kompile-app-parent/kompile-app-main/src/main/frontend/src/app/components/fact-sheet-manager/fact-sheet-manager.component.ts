@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, ViewChild, ElementRef, ChangeDetectorRef, Output, EventEmitter } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef, ChangeDetectorRef, Output, EventEmitter, NgZone } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
@@ -53,9 +53,8 @@ import { SourceViewerService } from '../../services/source-viewer.service';
 import { ArchiveService } from '../../services/archive.service';
 import { LocalRegistryService, EmbeddingModelStatus } from '../../services/local-registry.service';
 import { ModelRegistryService } from '../../services/model-registry.service';
-import { UnifiedCrawlService, JobSummary as CrawlJobSummary, PipelineStepProgress, CrawlStageEvent } from '../../services/unified-crawl.service';
+import { UnifiedCrawlService, JobSummary as CrawlJobSummary } from '../../services/unified-crawl.service';
 import { CrossIndexService } from '../../services/cross-index.service';
-import { JobLogService, JobLogEntry } from '../../services/job-log.service';
 import { SourceViewerDialogComponent, SourceViewerDialogData } from '../source-viewer-dialog/source-viewer-dialog.component';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import {
@@ -129,6 +128,7 @@ import { DocumentCrawlDialogComponent, DocumentCrawlDialogData } from '../docume
 import { PipelineSettingsPanelComponent } from '../document-manager/pipeline-settings-panel/pipeline-settings-panel.component';
 import { SubprocessLogsComponent } from '../subprocess-logs/subprocess-logs.component';
 import { ConnectionsManagerComponent } from '../connections-manager/connections-manager.component';
+import { CrawlStepMonitorComponent } from '../crawl-step-monitor/crawl-step-monitor.component';
 
 @Component({
   selector: 'app-fact-sheet-manager',
@@ -161,7 +161,8 @@ import { ConnectionsManagerComponent } from '../connections-manager/connections-
     PipelineSettingsPanelComponent,
     SubprocessLogsComponent,
     ConnectionsManagerComponent,
-    ConfirmDialogComponent
+    ConfirmDialogComponent,
+    CrawlStepMonitorComponent
   ],
   templateUrl: './fact-sheet-manager.component.html',
   styleUrls: ['./fact-sheet-manager.component.css']
@@ -205,17 +206,10 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   activeCrawlJobs: CrawlJobSummary[] = [];
   expandedCrawlJobs: Set<string> = new Set();
   expandedCrawlErrors: Set<string> = new Set();
-  /** Per-stage accordion state: key is `${jobId}::${stageId}` */
-  expandedFsStages: Set<string> = new Set<string>();
-
-  /**
-   * Persisted log cache for fact-sheet crawl jobs.
-   * Keyed by taskId ('crawl-<internalJobId>').
-   * null = fetch in-flight; JobLogEntry[] = resolved (may be empty).
-   */
-  fsStageLogCache: Map<string, JobLogEntry[] | null> = new Map();
 
   private crawlPollSubscription: Subscription | null = null;
+  /** Global crawl SSE stream — drives live per-step updates in the inline monitor (not just the poll). */
+  private crawlGlobalEventSource: EventSource | null = null;
 
   // Completed jobs notification pane - shows recently completed jobs until dismissed
   completedJobs: IngestProgressUpdate[] = [];
@@ -405,12 +399,12 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     private modelRegistryService: ModelRegistryService,
     private unifiedCrawlService: UnifiedCrawlService,
     private crossIndexService: CrossIndexService,
-    private jobLogService: JobLogService,
     private http: HttpClient,
     private fb: FormBuilder,
     private snackBar: MatSnackBar,
     private dialog: MatDialog,
     private cdr: ChangeDetectorRef,
+    private zone: NgZone,
     private router: Router
   ) {
     // Initialize backend URL
@@ -512,11 +506,13 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     // Subscribe to WebSocket model status updates for real-time UI updates
     this.subscribeToModelStatusUpdates();
 
-    // Start crawl job polling
+    // Start crawl job polling (discovery + fallback) and connect the live SSE stream so the inline
+    // step monitor updates in real time without waiting for the next poll.
     this.loadActiveCrawlJobs();
     this.crawlPollSubscription = interval(5000).pipe(
       takeUntil(this.destroy$)
     ).subscribe(() => this.loadActiveCrawlJobs());
+    this.connectCrawlStream();
   }
 
   /**
@@ -656,6 +652,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.destroy$.next();
     this.destroy$.complete();
+    this.disconnectCrawlStream();
     this.wsSubscription?.unsubscribe();
     this.logsSubscription?.unsubscribe();
     this.connectionSubscription?.unsubscribe();
@@ -1012,14 +1009,86 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       next: (jobs) => {
         // Filter to jobs matching the active fact sheet (or with no factSheetId)
         const activeSheetId = this.activeSheet?.id;
-        this.activeCrawlJobs = jobs.filter(j => {
+        const filtered = jobs.filter(j => {
           if (!activeSheetId) return true;
           return !j.factSheetId || j.factSheetId === activeSheetId;
+        });
+        // Merge into the existing job objects so the live SSE-only fields (tuning decisions, retries,
+        // LLM calls) survive the poll — jobSummary omits those keys, and Object.assign only copies
+        // present keys, so the richer SSE snapshot is preserved while counters stay fresh.
+        const byId = new Map(this.activeCrawlJobs.map(j => [j.jobId, j]));
+        this.activeCrawlJobs = filtered.map(pj => {
+          const existing = byId.get(pj.jobId);
+          if (existing) { Object.assign(existing, pj); return existing; }
+          return pj;
         });
         this.cdr.markForCheck();
       },
       error: () => {
         // Endpoint may not exist yet - silently ignore
+      }
+    });
+  }
+
+  /**
+   * Subscribe to the global crawl SSE stream so the inline step monitor updates in real time
+   * (per-step state, batch sizes, tuning decisions, retries, transcripts) — not only on the poll.
+   * Each event carries the full ProgressSnapshot; we merge it into the matching active job.
+   */
+  private connectCrawlStream(): void {
+    this.disconnectCrawlStream();
+    if (typeof EventSource === 'undefined') return;
+    let es: EventSource;
+    try {
+      es = new EventSource(this.unifiedCrawlService.crawlEventsStreamUrl());
+    } catch {
+      return; // SSE unavailable — the 5s poll still drives basic updates
+    }
+    this.crawlGlobalEventSource = es;
+    const onSnapshot = (e: MessageEvent) => this.zone.run(() => this.mergeCrawlSnapshot(e));
+    es.addEventListener('progress', onSnapshot as EventListener);
+    es.addEventListener('started', onSnapshot as EventListener);
+    es.addEventListener('completed', ((e: MessageEvent) => this.zone.run(() => {
+      this.mergeCrawlSnapshot(e);
+      this.loadActiveCrawlJobs(); // completed jobs drop out of the active list
+    })) as EventListener);
+    es.addEventListener('error', (e: any) => {
+      // Browser transport hiccups fire 'error' with no data (auto-reconnect); our server ERROR
+      // event carries data — only refresh on the latter.
+      if (e && e.data) this.zone.run(() => this.loadActiveCrawlJobs());
+    });
+  }
+
+  private disconnectCrawlStream(): void {
+    if (this.crawlGlobalEventSource) {
+      this.crawlGlobalEventSource.close();
+      this.crawlGlobalEventSource = null;
+    }
+  }
+
+  /** Merge a crawl SSE snapshot into the matching active job so the inline monitor stays live. */
+  private mergeCrawlSnapshot(e: MessageEvent): void {
+    if (!e?.data) return;
+    let payload: any;
+    try { payload = JSON.parse(e.data); } catch { return; }
+    const snapshot = payload?.snapshot;
+    const jobId = payload?.jobId;
+    if (!snapshot || !jobId) return;
+    const job = this.activeCrawlJobs.find(j => j.jobId === jobId || j.internalJobId === jobId);
+    if (job) {
+      Object.assign(job, snapshot);
+      this.cdr.markForCheck();
+    }
+  }
+
+  /** The shared step monitor asks the host to run an archived/deferred step. */
+  onRunStepRequested(event: { jobId: string; stepId: string }): void {
+    this.unifiedCrawlService.runStep(event.jobId, event.stepId).subscribe({
+      next: () => this.loadActiveCrawlJobs(),
+      error: (err: any) => {
+        this.snackBar.open(
+          'Failed to run step ' + event.stepId + ': ' + (err.error?.error || err.message || err.statusText),
+          'Dismiss', { duration: 5000 });
       }
     });
   }
@@ -1034,115 +1103,6 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   isCrawlJobExpanded(jobId: string): boolean {
     return this.expandedCrawlJobs.has(jobId);
-  }
-
-  // ─── Per-stage accordion (fact-sheet-manager) ────────────────────────────
-
-  /** Toggle expand/collapse for a specific stage within a job.
-   *  On first open, lazily fetches the persisted logs for this job. */
-  toggleFsStageExpanded(jobId: string, stageId: string): void {
-    const key = `${jobId}::${stageId}`;
-    if (this.expandedFsStages.has(key)) {
-      this.expandedFsStages.delete(key);
-    } else {
-      this.expandedFsStages.add(key);
-      // Find the job and trigger a persisted-log fetch if not already cached/in-flight
-      const job = this.activeCrawlJobs.find(j => j.jobId === jobId);
-      if (job) this.fetchFsJobLogs(job);
-    }
-    this.cdr.markForCheck();
-  }
-
-  /** Returns true when the given stage accordion is open. */
-  isFsStageExpanded(jobId: string, stageId: string): boolean {
-    return this.expandedFsStages.has(`${jobId}::${stageId}`);
-  }
-
-  /** Derive the persisted-log taskId for a fact-sheet crawl job.
-   *  Backend stores logs under 'crawl-<internalJobId>' (the UUID). */
-  private fsTaskId(job: CrawlJobSummary): string {
-    return 'crawl-' + (job.internalJobId || job.jobId);
-  }
-
-  /**
-   * Fetch persisted logs for the job once and cache them.
-   * Subsequent calls for the same taskId are no-ops.
-   */
-  private fetchFsJobLogs(job: CrawlJobSummary): void {
-    const taskId = this.fsTaskId(job);
-    if (this.fsStageLogCache.has(taskId)) return; // already cached or in-flight
-    this.fsStageLogCache.set(taskId, null); // null = loading
-    this.jobLogService.getLogsForJob(taskId, { page: 0, size: 500 }).subscribe({
-      next: (resp) => {
-        this.fsStageLogCache.set(taskId, resp.logs || []);
-        this.cdr.markForCheck();
-      },
-      error: () => {
-        this.fsStageLogCache.set(taskId, []); // empty on error — show empty state
-        this.cdr.markForCheck();
-      }
-    });
-  }
-
-  /** True while persisted logs for a job are being fetched (spinner). */
-  isFsStageLogLoading(job: CrawlJobSummary): boolean {
-    return this.fsStageLogCache.get(this.fsTaskId(job)) === null;
-  }
-
-  /**
-   * Map a stage name to the phase strings that appear in recentEvents for that stage.
-   */
-  fsStageToPhases(stageId: string): string[] {
-    const upper = (stageId || '').toUpperCase();
-    const phaseMap: { [key: string]: string[] } = {
-      'DISCOVERY':        ['CRAWLING', 'DISCOVERING'],
-      'LOADING':          ['LOADING'],
-      'CHUNKING':         ['CHUNKING'],
-      'GRAPH_EXTRACTION': ['GRAPH_EXTRACTION', 'ENTITY_RESOLUTION', 'EDGE_COMPUTATION'],
-      'EMBEDDING':        ['EMBEDDING', 'VECTOR_INDEXING'],
-      'INDEXING':         ['INDEXING', 'VECTOR_INDEXING'],
-    };
-    return phaseMap[upper] || [upper];
-  }
-
-  /**
-   * Return log entries for the given stage, filtered by phase.
-   *
-   * Priority:
-   *  1. Persisted logs from the durable API (available during AND after a crawl).
-   *  2. Fallback to live recentEvents from the job object while the fetch is
-   *     in-flight or the persisted store returned nothing.
-   */
-  getFsStageEvents(job: CrawlJobSummary, stageId: string): CrawlStageEvent[] {
-    const taskId = this.fsTaskId(job);
-    const cached = this.fsStageLogCache.get(taskId);
-    const phases = this.fsStageToPhases(stageId);
-    const phaseSet = new Set(phases);
-
-    if (cached !== null && cached !== undefined) {
-      // Cache populated — filter persisted entries to those matching this stage's phases.
-      // JobLogEntry has no dedicated phase field; we match against source strings and
-      // message prefixes in the format '[PHASE] ...' written by the crawl subsystem.
-      const persisted: CrawlStageEvent[] = cached
-        .filter((e: JobLogEntry) =>
-          phases.some(ph => (e.source || '').toUpperCase().includes(ph)) ||
-          phases.some(ph => (e.message || '').toUpperCase().startsWith('[' + ph + ']'))
-        )
-        .map((e: JobLogEntry): CrawlStageEvent => ({
-          timestamp: e.timestamp,
-          phase: stageId,
-          level: e.level,
-          message: e.message
-        }));
-
-      if (cached.length > 0) return persisted;
-      // Persisted returned empty (log storage not yet enabled or job too old) —
-      // fall through to live recentEvents.
-    }
-
-    // Fallback: live recentEvents from the job object (populated by WebSocket during a run)
-    if (!job.recentEvents?.length) return [];
-    return job.recentEvents.filter(e => phaseSet.has((e.phase || '').toUpperCase()));
   }
 
   toggleCrawlErrors(jobId: string): void {
@@ -1199,101 +1159,6 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     const hours = Math.floor(minutes / 60);
     const remainingMinutes = minutes % 60;
     return `${hours}h ${remainingMinutes}m`;
-  }
-
-  getCrawlStepIcon(stepType: string): string {
-    switch (stepType?.toUpperCase()) {
-      case 'EMBEDDING': return 'memory';
-      case 'GRAPH': case 'GRAPH_CONSTRUCTOR': return 'hub';
-      case 'LLM': return 'psychology';
-      case 'CHUNKING': return 'content_cut';
-      case 'LOADING': case 'IO': return 'folder_open';
-      case 'INDEXING': return 'storage';
-      default: return 'settings';
-    }
-  }
-
-  getVisibleCrawlPipelineSteps(steps: PipelineStepProgress[] | undefined): PipelineStepProgress[] {
-    if (!steps) return [];
-    // Show all steps including SKIPPED and FAILED — user must see what was NOT done
-    return steps.slice(0, 12);
-  }
-
-  /** Compute per-stage progress percent from actual counters (not the global hardcoded %) */
-  getStageProgress(job: CrawlJobSummary, stage: string): number {
-    switch (stage) {
-      case 'DISCOVERY': {
-        // No denominator for discovery — show indeterminate if active
-        return job.documentsDiscovered > 0 ? 100 : 0;
-      }
-      case 'LOADING': {
-        const total = job.documentsDiscovered || 0;
-        const done = job.documentsLoaded || 0;
-        return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
-      }
-      case 'CHUNKING': {
-        const loaded = job.documentsLoaded || 0;
-        const chunked = (job.chunksCreated || job.chunksProcessed || 0) > 0 ? 1 : 0;
-        // Chunking doesn't have a clean item-by-item counter on the summary,
-        // so treat as binary (started vs not) or use pipeline step if available
-        const step = this.findPipelineStep(job, 'CHUNKING');
-        if (step && step.totalItems > 0) {
-          return Math.min(100, Math.round((step.completedItems / step.totalItems) * 100));
-        }
-        return loaded > 0 && chunked > 0 ? 100 : 0;
-      }
-      case 'GRAPH_EXTRACTION': {
-        const total = job.graphChunksTotal || 0;
-        const done = job.graphChunksProcessed || 0;
-        return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
-      }
-      case 'EMBEDDING': {
-        const total = job.chunksQueuedForEmbedding || job.chunksCreated || job.chunksProcessed || 0;
-        const done = job.chunksEmbedded || 0;
-        return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
-      }
-      case 'INDEXING': {
-        const total = job.chunksEmbedded || job.chunksCreated || job.chunksProcessed || 0;
-        const done = job.documentsIndexed || 0;
-        return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
-      }
-      default:
-        return 0;
-    }
-  }
-
-  /** Check if a stage is the currently active one */
-  isStageActive(job: CrawlJobSummary, stage: string): boolean {
-    const phase = job.currentPhase?.toUpperCase();
-    if (!phase) return false;
-    switch (stage) {
-      case 'DISCOVERY': return phase === 'CRAWLING' || phase === 'DISCOVERING';
-      case 'LOADING': return phase === 'LOADING';
-      case 'CHUNKING': return phase === 'CHUNKING';
-      case 'GRAPH_EXTRACTION': return phase === 'GRAPH_EXTRACTION' || phase === 'ENTITY_RESOLUTION';
-      case 'EMBEDDING': return phase === 'EMBEDDING';
-      case 'INDEXING': return phase === 'INDEXING' || phase === 'VECTOR_INDEXING';
-      default: return false;
-    }
-  }
-
-  /** Check if a stage has completed */
-  isStageComplete(job: CrawlJobSummary, stage: string): boolean {
-    return this.getStageProgress(job, stage) >= 100 && !this.isStageActive(job, stage);
-  }
-
-  /** Find a pipeline step by type */
-  findPipelineStep(job: CrawlJobSummary, stepType: string): PipelineStepProgress | undefined {
-    return job.pipelineSteps?.find(s => s.stepType?.toUpperCase() === stepType.toUpperCase());
-  }
-
-  /** Get throughput for a pipeline step as items/sec */
-  getStepThroughput(step: PipelineStepProgress): string {
-    if (!step.elapsedMs || step.elapsedMs < 1000 || step.completedItems <= 0) return '';
-    const rate = step.completedItems / (step.elapsedMs / 1000);
-    if (rate >= 1) return `${rate.toFixed(1)}/s`;
-    const perMin = rate * 60;
-    return `${perMin.toFixed(1)}/min`;
   }
 
   /** Format event timestamp as relative time */

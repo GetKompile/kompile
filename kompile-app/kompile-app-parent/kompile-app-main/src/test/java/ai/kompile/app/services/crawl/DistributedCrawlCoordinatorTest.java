@@ -25,6 +25,9 @@ import ai.kompile.app.services.scheduler.ExternalJobSchedulerDelegate;
 import ai.kompile.app.services.scheduler.ExternalJobSchedulerDelegate.ExternalJobRef;
 import ai.kompile.app.services.scheduler.JobResourceProfile;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ai.kompile.app.services.cluster.CrawlWorkerRegistry;
+import ai.kompile.app.services.cluster.WorkerCapabilities;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +35,9 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class DistributedCrawlCoordinatorTest {
 
@@ -43,7 +49,8 @@ class DistributedCrawlCoordinatorTest {
     void setUp() {
         mockDelegate = new MockExternalDelegate();
         objectMapper = new ObjectMapper();
-        coordinator = new DistributedCrawlCoordinator(List.of(mockDelegate), objectMapper);
+        // null config service → no mode preference → falls back to the single mock delegate (prior behavior).
+        coordinator = new DistributedCrawlCoordinator(List.of(mockDelegate), null, objectMapper);
     }
 
     @Test
@@ -66,6 +73,52 @@ class DistributedCrawlCoordinatorTest {
         assertEquals("S3", partitions.get(0).get(0).getLabel());
         assertEquals("SFTP", partitions.get(1).get(0).getLabel());
         assertEquals("Local", partitions.get(2).get(0).getLabel());
+    }
+
+    @Test
+    void testPartition_defaultsToLiveWorkerCount() {
+        // A registry with 2 live, crawl-capable workers → unconfigured round-robin spreads into 2 partitions
+        // (the live cluster size) rather than the min(sources, 4) = 4 fallback.
+        CrawlWorkerRegistry registry = mock(CrawlWorkerRegistry.class);
+        when(registry.liveWorkers(anyLong())).thenReturn(List.of(crawlWorker("w1"), crawlWorker("w2")));
+        ReflectionTestUtils.setField(coordinator, "workerRegistry", registry);
+
+        List<UnifiedCrawlSource> sources = List.of(
+                UnifiedCrawlSource.builder().label("A").pathOrUrl("a").build(),
+                UnifiedCrawlSource.builder().label("B").pathOrUrl("b").build(),
+                UnifiedCrawlSource.builder().label("C").pathOrUrl("c").build(),
+                UnifiedCrawlSource.builder().label("D").pathOrUrl("d").build());
+        DistributionConfig config = DistributionConfig.builder()
+                .partitionStrategy(PartitionStrategy.ROUND_ROBIN)
+                .workerCount(0) // 0 = auto: size to the live cluster
+                .build();
+
+        List<List<UnifiedCrawlSource>> partitions = coordinator.partitionSources(sources, config);
+        assertEquals(2, partitions.size(), "auto worker count tracks the live cluster size");
+    }
+
+    @Test
+    void weightedPartitions_sizesByCapacity() {
+        List<UnifiedCrawlSource> sources = List.of(
+                UnifiedCrawlSource.builder().label("a").pathOrUrl("a").build(),
+                UnifiedCrawlSource.builder().label("b").pathOrUrl("b").build(),
+                UnifiedCrawlSource.builder().label("c").pathOrUrl("c").build(),
+                UnifiedCrawlSource.builder().label("d").pathOrUrl("d").build());
+        // 3:1 capacity → the big worker should get 3 of 4 sources, the small one 1.
+        List<List<UnifiedCrawlSource>> parts = coordinator.weightedPartitions(
+                sources, List.of(crawlWorker("big", 3), crawlWorker("small", 1)));
+        assertEquals(2, parts.size());
+        assertEquals(3, parts.get(0).size(), "big worker (3 slots) gets 3 of 4");
+        assertEquals(1, parts.get(1).size(), "small worker (1 slot) gets 1 of 4");
+    }
+
+    private WorkerCapabilities crawlWorker(String id) {
+        return crawlWorker(id, 4);
+    }
+
+    private WorkerCapabilities crawlWorker(String id, int freeSlots) {
+        return new WorkerCapabilities(id, "http://" + id, "worker", List.of("CPU"),
+                0, 0L, 4, List.of("crawl"), freeSlots, 0, 0.1, 0.0, "NOMINAL", "NOMINAL", true, 0L);
     }
 
     @Test

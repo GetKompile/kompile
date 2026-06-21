@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services.crawl;
 
+import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
 import lombok.AllArgsConstructor;
@@ -86,6 +87,26 @@ public class DistributedCrawlSession {
             w.setExternalRef(externalRef);
             w.setStatus(WorkerStatus.RUNNING);
             w.setStartedAt(Instant.now());
+            w.setLastProgressAt(Instant.now());
+        }
+    }
+
+    private static boolean isTerminal(WorkerStatus s) {
+        return s == WorkerStatus.COMPLETED || s == WorkerStatus.FAILED || s == WorkerStatus.CANCELLED;
+    }
+
+    /**
+     * Store the latest progress snapshot a worker reported (Phase C). The first snapshot also confirms the
+     * worker is actually running (flips DISPATCHING → RUNNING).
+     */
+    public void updateWorkerSnapshot(String workerId, UnifiedCrawlJob.ProgressSnapshot snapshot) {
+        WorkerInfo w = workers.get(workerId);
+        if (w != null && snapshot != null) {
+            w.setLatestSnapshot(snapshot);
+            w.setLastProgressAt(Instant.now());
+            if (w.getStatus() == WorkerStatus.DISPATCHING) {
+                w.setStatus(WorkerStatus.RUNNING);
+            }
         }
     }
 
@@ -94,9 +115,10 @@ public class DistributedCrawlSession {
      */
     public void workerCompleted(String workerId, Map<String, Object> resultData) {
         WorkerInfo w = workers.get(workerId);
-        if (w != null) {
+        if (w != null && !isTerminal(w.getStatus())) { // idempotent: a revived/reassigned twin can't double-count
             w.setStatus(WorkerStatus.COMPLETED);
             w.setCompletedAt(Instant.now());
+            w.setLastProgressAt(Instant.now());
             w.setResultData(resultData);
             completedWorkers.incrementAndGet();
         }
@@ -107,13 +129,13 @@ public class DistributedCrawlSession {
      */
     public void workerFailed(String workerId, String errorMessage) {
         WorkerInfo w = workers.get(workerId);
-        if (w != null) {
+        if (w != null && !isTerminal(w.getStatus())) { // idempotent: only the first terminal outcome counts
             w.setStatus(WorkerStatus.FAILED);
             w.setCompletedAt(Instant.now());
             w.setErrorMessage(errorMessage);
             failedWorkers.incrementAndGet();
+            errors.add("[" + workerId + "] " + errorMessage);
         }
-        errors.add("[" + workerId + "] " + errorMessage);
     }
 
     /**
@@ -183,5 +205,11 @@ public class DistributedCrawlSession {
         private Instant completedAt;
         private String errorMessage;
         private Map<String, Object> resultData;
+        /** Latest live progress snapshot reported by the worker (Phase C); null until first report. */
+        private volatile UnifiedCrawlJob.ProgressSnapshot latestSnapshot;
+        /** Wall-clock of the last progress/callback from this worker; drives loss detection (Phase E). */
+        private volatile Instant lastProgressAt;
+        /** How many times this partition has been re-dispatched after a worker loss (Phase E). */
+        private volatile int reassignmentCount;
     }
 }

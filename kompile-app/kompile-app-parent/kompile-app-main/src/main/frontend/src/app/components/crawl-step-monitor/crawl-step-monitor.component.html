@@ -1,0 +1,268 @@
+<!--
+  Shared real-time crawl-step monitor. Every step is expandable; expanding reveals ALL detail in
+  real time: log id, timings, counts/batches, graph-extractor batch sizes, tuning-decision history,
+  retries, failure points, LLM transcripts, and the activity log.
+-->
+<div class="csm-root">
+
+  <div class="csm-empty" *ngIf="!steps || steps.length === 0">
+    <mat-icon inline>hourglass_empty</mat-icon>
+    No pipeline steps reported yet.
+  </div>
+
+  <div class="csm-accordion">
+    <div *ngFor="let step of steps; trackBy: trackByStepId"
+         class="csm-item"
+         [ngClass]="getStepStatusClass(step.status)">
+
+      <!-- ── Clickable header ───────────────────────────────────────────────── -->
+      <div class="csm-header"
+           (click)="toggleStepExpanded(step.stepId)"
+           role="button"
+           [attr.aria-expanded]="isStepExpanded(step.stepId)">
+        <mat-icon class="csm-chevron" [class.csm-chevron-open]="isStepExpanded(step.stepId)">chevron_right</mat-icon>
+        <mat-icon class="csm-type-icon">{{ getStepTypeIcon(step.stepType) }}</mat-icon>
+        <div class="csm-title">
+          <strong>{{ step.displayName || step.stepId }}</strong>
+          <span class="csm-subtitle">{{ step.stepType }} &bull; {{ step.status }}</span>
+        </div>
+
+        <!-- Header hint badges so users know what's inside before expanding -->
+        <div class="csm-badges">
+          <span class="csm-badge csm-badge-fail" *ngIf="step.failedItems"
+                matTooltip="Failed items">
+            <mat-icon inline>error_outline</mat-icon>{{ step.failedItems }}
+          </span>
+          <span class="csm-badge csm-badge-retry" *ngIf="getStepRetries(step).length"
+                matTooltip="Retries">
+            <mat-icon inline>replay</mat-icon>{{ getStepRetries(step).length }}
+          </span>
+          <span class="csm-badge csm-badge-tune" *ngIf="getStepTuningDecisions(step).length"
+                matTooltip="Tuning decisions">
+            <mat-icon inline>tune</mat-icon>{{ getStepTuningDecisions(step).length }}
+          </span>
+        </div>
+
+        <div class="csm-summary">
+          <span>{{ step.completedItems || 0 }}/{{ step.totalItems || 0 }}</span>
+          <span class="csm-throughput" *ngIf="getStepThroughput(step)">{{ getStepThroughput(step) }}</span>
+          <span class="csm-elapsed" *ngIf="step.elapsedMs">{{ formatElapsed(step.elapsedMs) }}</span>
+        </div>
+        <span class="csm-percent">{{ step.progressPercent || 0 }}%</span>
+      </div>
+
+      <mat-progress-bar mode="determinate" [value]="step.progressPercent || 0"></mat-progress-bar>
+
+      <!-- Current item / message always shown -->
+      <div class="csm-message" *ngIf="step.message || step.currentItem">
+        <mat-icon inline class="csm-spin" *ngIf="step.status === 'RUNNING'">sync</mat-icon>
+        {{ step.message || step.currentItem }}
+      </div>
+
+      <!-- Run-now button when archived/deferred -->
+      <div class="csm-run-now" *ngIf="isStepRunNowEligible(step.status)">
+        <button mat-stroked-button class="csm-run-btn"
+                (click)="runStep(step.stepId); $event.stopPropagation()">
+          <mat-icon>play_circle</mat-icon>
+          {{ step.status === 'ARCHIVED' ? 'Run archived step' : 'Run now' }}
+        </button>
+      </div>
+
+      <!-- ── Expanded detail ─────────────────────────────────────────────────── -->
+      <div class="csm-detail" *ngIf="isStepExpanded(step.stepId)">
+
+        <!-- (1) Identity + Log ID -->
+        <div class="csm-section">
+          <div class="csm-section-head"><mat-icon inline>badge</mat-icon><span>Identity</span></div>
+          <div class="csm-kv">
+            <span><strong>Step ID</strong> {{ step.stepId }}</span>
+            <span><strong>Type</strong> {{ step.stepType || '—' }}</span>
+            <span class="csm-logid" *ngIf="taskId">
+              <strong>Log ID</strong>
+              <code matTooltip="Persisted-log task id — query logs/transcripts under this id">{{ taskId }}</code>
+            </span>
+          </div>
+        </div>
+
+        <!-- (2) Timings -->
+        <div class="csm-section" *ngIf="step.startedAt || step.completedAt || step.elapsedMs">
+          <div class="csm-section-head"><mat-icon inline>schedule</mat-icon><span>Timing</span></div>
+          <div class="csm-kv">
+            <span *ngIf="step.startedAt"><strong>Started</strong> {{ formatTimestamp(step.startedAt) }}</span>
+            <span *ngIf="step.completedAt"><strong>Completed</strong> {{ formatTimestamp(step.completedAt) }}</span>
+            <span *ngIf="step.lastUpdatedAt"><strong>Updated</strong> {{ formatTimestamp(step.lastUpdatedAt) }}</span>
+            <span *ngIf="step.elapsedMs"><strong>Elapsed</strong> {{ formatElapsed(step.elapsedMs) }}</span>
+            <span *ngIf="getStepThroughput(step)"><strong>Throughput</strong> {{ getStepThroughput(step) }}</span>
+          </div>
+        </div>
+
+        <!-- (3) Counts & batches -->
+        <div class="csm-section" *ngIf="step.totalItems || step.totalBatches || step.activeTasks">
+          <div class="csm-section-head"><mat-icon inline>tag</mat-icon><span>Counts &amp; batches</span></div>
+          <div class="csm-kv">
+            <span><strong>Items</strong> {{ step.completedItems || 0 }}/{{ step.totalItems || 0 }}</span>
+            <span *ngIf="step.failedItems" class="csm-bad"><strong>Failed</strong> {{ step.failedItems }}</span>
+            <span *ngIf="step.activeTasks"><strong>Active tasks</strong> {{ step.activeTasks }}</span>
+            <span *ngIf="step.totalBatches"><strong>Batches</strong> {{ step.completedBatches || 0 }}/{{ step.totalBatches }}</span>
+            <span *ngIf="step.currentBatchSize"><strong>Batch size</strong> {{ step.currentBatchSize }}</span>
+          </div>
+        </div>
+
+        <!-- (4) Batch sizing & tuning — the LLM graph-extractor adaptive controllers -->
+        <ng-container *ngIf="isBatchingStep(step) && job">
+          <div class="csm-section" *ngIf="job.adaptiveBatchSize || job.currentBatchStep || getStepTuningDecisions(step).length">
+            <div class="csm-section-head"><mat-icon inline>tune</mat-icon><span>Batch sizing &amp; tuning</span>
+              <span class="csm-live" *ngIf="isJobRunning">LIVE</span>
+            </div>
+            <div class="csm-kv">
+              <span *ngIf="job.adaptiveBatchSize"><strong>Adaptive batch</strong> {{ job.adaptiveBatchSize }}</span>
+              <span *ngIf="job.currentBatchSize"><strong>Current batch</strong> {{ job.currentBatchSize }}</span>
+              <span *ngIf="job.batchSizeAdjustments"><strong>Adjustments</strong> {{ job.batchSizeAdjustments }}</span>
+              <span *ngIf="job.lastBatchAdjustDirection"><strong>Last</strong>
+                {{ job.lastBatchAdjustDirection }}<ng-container *ngIf="job.lastBatchAdjustReason"> · {{ job.lastBatchAdjustReason }}</ng-container>
+              </span>
+              <span *ngIf="formatLatencyX100(job.batchEmaLatencyMsX100)"><strong>EMA latency</strong> {{ formatLatencyX100(job.batchEmaLatencyMsX100) }}</span>
+              <span *ngIf="formatThroughputX100(job.peakThroughputX100)"><strong>Peak</strong> {{ formatThroughputX100(job.peakThroughputX100) }}</span>
+            </div>
+            <div class="csm-batchstep" *ngIf="job.currentBatchStep">
+              <mat-icon inline>memory</mat-icon> {{ job.currentBatchStep }}
+            </div>
+
+            <!-- Tuning-decision history -->
+            <ng-container *ngIf="getStepTuningDecisions(step) as tuning">
+              <div class="csm-sub-head" *ngIf="tuning.length">Tuning decisions ({{ tuning.length }})</div>
+              <div class="csm-tuning-list" *ngIf="tuning.length">
+                <div *ngFor="let d of tuning | slice:-30; trackBy: trackByIndex"
+                     class="csm-tuning-row" [ngClass]="tuningDirectionClass(d.direction)">
+                  <span class="csm-tuning-time">{{ formatEventTime(d.timestamp) }}</span>
+                  <mat-icon inline class="csm-tuning-icon">{{ tuningDirectionIcon(d.direction) }}</mat-icon>
+                  <span class="csm-tuning-stage">{{ d.stage }}</span>
+                  <span class="csm-tuning-delta">{{ d.oldValue }} &rarr; {{ d.newValue }}</span>
+                  <span class="csm-tuning-reason">{{ d.reason }}</span>
+                  <span class="csm-tuning-detail" *ngIf="d.detail" [title]="d.detail">{{ d.detail }}</span>
+                </div>
+              </div>
+            </ng-container>
+          </div>
+        </ng-container>
+
+        <!-- (5) Retries -->
+        <ng-container *ngIf="getStepRetries(step) as retries">
+          <div class="csm-section" *ngIf="retries.length">
+            <div class="csm-section-head"><mat-icon inline>replay</mat-icon><span>Retries ({{ retries.length }})</span></div>
+            <div class="csm-retry-list">
+              <div *ngFor="let r of retries | slice:-20; trackBy: trackByIndex" class="csm-retry-row"
+                   [class.csm-retry-ok]="r.succeeded" [class.csm-retry-dead]="r.sentToDeadLetter">
+                <span class="csm-retry-time">{{ formatEventTime(r.timestamp) }}</span>
+                <span class="csm-retry-attempt">attempt {{ r.attempt }}/{{ r.maxAttempts }}</span>
+                <span class="csm-retry-reason" [title]="r.failureReason">{{ r.failureReason }}</span>
+                <span class="csm-retry-meta" *ngIf="r.originalBatchSize || r.reducedBatchSize">
+                  batch {{ r.originalBatchSize }}&rarr;{{ r.reducedBatchSize }}
+                </span>
+                <span class="csm-retry-meta" *ngIf="r.backendId">{{ r.backendId }}</span>
+                <span class="csm-retry-meta" *ngIf="r.backoffMs">backoff {{ r.backoffMs }}ms</span>
+                <span class="csm-chip csm-chip-ok" *ngIf="r.succeeded">succeeded</span>
+                <span class="csm-chip csm-chip-dead" *ngIf="r.sentToDeadLetter">dead-letter</span>
+              </div>
+            </div>
+          </div>
+        </ng-container>
+
+        <!-- (6) Failure points -->
+        <ng-container *ngIf="getStepFailureEvents(step) as failures">
+          <div class="csm-section" *ngIf="step.failedItems || failures.length">
+            <div class="csm-section-head"><mat-icon inline>warning</mat-icon><span>Failure points</span></div>
+            <div class="csm-kv" *ngIf="step.failedItems">
+              <span class="csm-bad"><strong>Failed items</strong> {{ step.failedItems }}</span>
+            </div>
+            <div class="csm-fail-list" *ngIf="failures.length">
+              <div *ngFor="let ev of failures | slice:-15; trackBy: trackByIndex" class="csm-fail-row"
+                   [class.csm-event-error]="ev.level === 'ERROR'" [class.csm-event-warn]="ev.level === 'WARN'">
+                <span class="csm-event-time">{{ formatEventTime(ev.timestamp) }}</span>
+                <span class="csm-event-level">{{ ev.level }}</span>
+                <span class="csm-event-msg">{{ ev.message }}</span>
+                <span class="csm-event-detail" *ngIf="ev.details" [title]="ev.details">{{ ev.details }}</span>
+              </div>
+            </div>
+          </div>
+        </ng-container>
+
+        <!-- (7) LLM transcripts (LLM/GRAPH steps only) -->
+        <ng-container *ngIf="isLlmStep(step)">
+          <div class="csm-section" *ngIf="getStepLlmSummary(step) as llm">
+            <div class="csm-section-head"><mat-icon inline>psychology</mat-icon><span>LLM calls</span>
+              <span class="csm-live" *ngIf="isJobRunning">LIVE</span>
+            </div>
+            <div class="csm-kv">
+              <span><strong>Calls</strong> {{ llm.count }}</span>
+              <span><strong>OK</strong> {{ llm.success }}</span>
+              <span class="csm-bad" *ngIf="llm.failed"><strong>Failed</strong> {{ llm.failed }}</span>
+              <span><strong>Avg latency</strong> {{ llm.avgLatencyMs }}ms</span>
+              <span><strong>Avg prompt</strong> {{ llm.avgPromptChars }} ch</span>
+              <span><strong>Avg response</strong> {{ llm.avgResponseChars }} ch</span>
+            </div>
+          </div>
+          <!-- Full transcript viewer (lazy; not in compact mode) -->
+          <div class="csm-section" *ngIf="!compact && taskId">
+            <div class="csm-section-head csm-clickable" (click)="toggleTranscripts(step.stepId)">
+              <mat-icon inline>{{ isTranscriptsOpen(step.stepId) ? 'expand_more' : 'chevron_right' }}</mat-icon>
+              <mat-icon inline>forum</mat-icon><span>LLM transcripts</span>
+            </div>
+            <div class="csm-transcripts" *ngIf="isTranscriptsOpen(step.stepId)">
+              <app-job-log-viewer
+                [taskId]="taskId"
+                [isJobRunning]="isJobRunning"
+                logSource="ingest"
+                [source]="'LLM_TRANSCRIPT'"
+                [maxTailLogs]="100">
+              </app-job-log-viewer>
+            </div>
+          </div>
+        </ng-container>
+
+        <!-- (8) Activity log -->
+        <ng-container *ngIf="getStepEvents(step) as events">
+          <div class="csm-section">
+            <div class="csm-section-head"><mat-icon inline>receipt_long</mat-icon><span>Activity</span>
+              <span class="csm-live" *ngIf="isJobRunning">LIVE</span>
+            </div>
+            <div class="csm-event-list" *ngIf="events.length">
+              <div *ngFor="let ev of events | slice:-20; trackBy: trackByIndex" class="csm-event-row"
+                   [class.csm-event-error]="ev.level === 'ERROR'" [class.csm-event-warn]="ev.level === 'WARN'">
+                <span class="csm-event-time">{{ formatEventTime(ev.timestamp) }}</span>
+                <span class="csm-event-level">{{ ev.level }}</span>
+                <span class="csm-event-msg">{{ ev.message }}</span>
+                <span class="csm-event-detail" *ngIf="ev.details" [title]="ev.details">{{ ev.details }}</span>
+              </div>
+            </div>
+            <div class="csm-empty-sm" *ngIf="!events.length">
+              <mat-icon inline>hourglass_empty</mat-icon> No activity recorded yet for this step.
+            </div>
+          </div>
+        </ng-container>
+
+        <!-- Documents in this step (full mode only) -->
+        <ng-container *ngIf="!compact && getStepDocuments(step) as docs">
+          <div class="csm-section" *ngIf="docs.length">
+            <div class="csm-section-head"><mat-icon inline>description</mat-icon><span>Documents ({{ docs.length }})</span></div>
+            <div class="csm-doc-list">
+              <div *ngFor="let doc of docs | slice:0:15; trackBy: trackByIndex" class="csm-doc-row">
+                <span class="csm-doc-status" [class]="'doc-status-' + (doc.status || 'unknown').toLowerCase()">{{ doc.status || '?' }}</span>
+                <span class="csm-doc-name" [title]="doc.sourcePath || doc.documentKey">{{ doc.fileName || doc.documentKey }}</span>
+                <span class="csm-doc-meta">
+                  <ng-container *ngIf="doc.chunksCreated">{{ doc.chunksCreated }} chunks</ng-container>
+                  <ng-container *ngIf="doc.entitiesExtracted"> &bull; {{ doc.entitiesExtracted }} ents</ng-container>
+                </span>
+                <span class="csm-doc-error" *ngIf="doc.errorMessage" [title]="doc.errorMessage">
+                  <mat-icon inline>error</mat-icon> {{ doc.errorMessage | slice:0:50 }}
+                </span>
+              </div>
+              <div class="csm-doc-more" *ngIf="docs.length > 15">+{{ docs.length - 15 }} more</div>
+            </div>
+          </div>
+        </ng-container>
+
+      </div>
+    </div>
+  </div>
+</div>

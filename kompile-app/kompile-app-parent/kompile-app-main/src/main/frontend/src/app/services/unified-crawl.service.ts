@@ -326,6 +326,23 @@ export interface LlmCallRecord {
   responseChars: number;
 }
 
+export interface TuningDecision {
+  timestamp: string;
+  /** Which controller made the decision: GRAPH_EXTRACTION | GRAPH_EXTRACTION_CHARS | GRAPH_PARALLELISM */
+  stage: string;
+  oldValue: number;
+  newValue: number;
+  /** UP | DOWN | HOLD */
+  direction: string;
+  /** Canonical reason token: stable_throughput | batch_failure | memory_critical | memory_pressure |
+   *  zero_yield | emergency | heap_critical | heap_recovered | at_max */
+  reason: string;
+  /** Free-text diagnostic, e.g. "heap 84% >= critical 82%" or "yield 0 ent / 28000 chars" */
+  detail?: string;
+  /** Heap usage percent (0..100) at decision time */
+  memoryPercent?: number;
+}
+
 export interface JobSummary {
   jobId: string;
   /** Internal UUID used as the basis for the persisted-log taskId (crawl-<internalJobId>).
@@ -437,6 +454,8 @@ export interface JobSummary {
   llmCallEmaLatencyMsX100?: number;
   llmCallPeakLatencyMs?: number;
   recentLlmCalls?: LlmCallRecord[];
+  // Adaptive tuning decisions
+  recentTuningDecisions?: TuningDecision[];
   fromHistory?: boolean;
 }
 
@@ -561,6 +580,8 @@ export interface JobDetail {
   llmCallEmaLatencyMsX100?: number;
   llmCallPeakLatencyMs?: number;
   recentLlmCalls?: LlmCallRecord[];
+  // Adaptive tuning decisions
+  recentTuningDecisions?: TuningDecision[];
   fromHistory?: boolean;
   /** Task ID of the job this run was resumed from (e.g. "crawl-<uuid>"). Present only when the job was resumed. */
   resumedFromTaskId?: string;

@@ -359,6 +359,12 @@ public class UnifiedCrawlJob {
     @Builder.Default
     private List<RetryEvent> recentRetryEvents = new CopyOnWriteArrayList<>();
 
+    // ---- Adaptive tuning decisions ----
+
+    /** Recent adaptive tuning decisions (batch-size / parallelism) for UI visibility (bounded to last 30) */
+    @Builder.Default
+    private List<TuningDecision> recentTuningDecisions = new CopyOnWriteArrayList<>();
+
     // ---- Per-LLM-call observability ----
 
     /** Total individual LLM calls dispatched */
@@ -609,6 +615,34 @@ public class UnifiedCrawlJob {
         private long backoffMs;
         private boolean succeeded;
         private boolean sentToDeadLetter;
+    }
+
+    /**
+     * A tuning decision recording an adaptive batch-size / parallelism adjustment made by the
+     * dynamic sizers or the parallelism advisor during graph extraction. The bounded history is
+     * surfaced to the UI so users can see every adaptive decision the system actually made.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TuningDecision {
+        private Instant timestamp;
+        /** Which controller made the decision: GRAPH_EXTRACTION, GRAPH_EXTRACTION_CHARS, GRAPH_PARALLELISM */
+        private String stage;
+        /** Value before the change */
+        private int oldValue;
+        /** Value after the change */
+        private int newValue;
+        /** UP, DOWN, or HOLD */
+        private String direction;
+        /** Canonical reason token: stable_throughput, batch_failure, memory_critical,
+         *  memory_pressure, zero_yield, emergency, heap_critical, heap_recovered, at_max */
+        private String reason;
+        /** Free-text diagnostic, e.g. "heap 84% >= critical 82%" or "yield 0 ent / 28000 chars" */
+        private String detail;
+        /** Heap usage percent (0..100) at decision time */
+        private int memoryPercent;
     }
 
     /**
@@ -874,6 +908,19 @@ public class UnifiedCrawlJob {
     }
 
     /**
+     * Record an adaptive tuning decision (batch grow/shrink, char-budget change, parallelism
+     * change). Maintains a bounded list of the last 30 decisions for UI visibility. Callers
+     * should only record genuine changes (skip HOLD / no-op) to keep the history meaningful.
+     */
+    public void recordTuningDecision(TuningDecision decision) {
+        if (decision == null) return;
+        recentTuningDecisions.add(decision);
+        while (recentTuningDecisions.size() > 30) {
+            recentTuningDecisions.remove(0);
+        }
+    }
+
+    /**
      * Record an individual LLM call. Updates aggregate counters and maintains
      * a bounded rolling list of the last 50 calls for UI visibility.
      */
@@ -1007,6 +1054,8 @@ public class UnifiedCrawlJob {
                 .deadLetterCount(deadLetterCount.get())
                 .backendsCoolingDown(backendsCoolingDown.get())
                 .recentRetryEvents(recentRetryEvents.isEmpty() ? null : new ArrayList<>(recentRetryEvents))
+                // Adaptive tuning decisions
+                .recentTuningDecisions(recentTuningDecisions.isEmpty() ? null : new ArrayList<>(recentTuningDecisions))
                 // LLM call observability
                 .llmCallsTotal(llmCallsTotal.get())
                 .llmCallsSucceeded(llmCallsSucceeded.get())
@@ -1126,6 +1175,8 @@ public class UnifiedCrawlJob {
         private int deadLetterCount;
         private int backendsCoolingDown;
         private List<RetryEvent> recentRetryEvents;
+        // Adaptive tuning decisions
+        private List<TuningDecision> recentTuningDecisions;
         // LLM call observability
         private long llmCallsTotal;
         private long llmCallsSucceeded;

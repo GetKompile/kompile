@@ -16,8 +16,13 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.ingest.domain.JobLogEntry;
+import ai.kompile.app.ingest.service.JobLogService;
+import ai.kompile.app.services.crawl.DistributedCrawlAggregator;
 import ai.kompile.app.services.crawl.DistributedCrawlCoordinator;
 import ai.kompile.app.services.crawl.DistributedCrawlSession;
+import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
+import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -50,6 +55,9 @@ import java.util.stream.Collectors;
 public class DistributedCrawlController {
 
     private final DistributedCrawlCoordinator coordinator;
+    private final DistributedCrawlAggregator aggregator;
+    private final ResourceSchedulerConfigService configService;
+    private final JobLogService jobLogService;
 
     /**
      * Start a distributed crawl. The request must include a distribution config.
@@ -108,10 +116,14 @@ public class DistributedCrawlController {
      * Get details of a specific distributed session.
      */
     @GetMapping("/sessions/{sessionId}")
-    public ResponseEntity<Map<String, Object>> getSession(@PathVariable String sessionId) {
+    public ResponseEntity<Object> getSession(@PathVariable String sessionId,
+                                             @RequestParam(defaultValue = "false") boolean aggregate) {
+        // aggregate=true → the merged per-worker ProgressSnapshot the unified step monitor renders;
+        // otherwise the lightweight session summary (per-worker terminal status).
         return coordinator.getSession(sessionId)
-                .map(s -> ResponseEntity.ok(s.toSnapshot()))
-                .orElse(ResponseEntity.notFound().build());
+                .<ResponseEntity<Object>>map(s -> ResponseEntity.ok(
+                        aggregate ? aggregator.aggregate(s) : s.toSnapshot()))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /**
@@ -163,6 +175,61 @@ public class DistributedCrawlController {
     }
 
     /**
+     * Periodic worker progress report (Phase C). Workers POST their live {@link UnifiedCrawlJob.ProgressSnapshot}
+     * here every few seconds; the coordinator merges them so the distributed crawl renders as one live job in
+     * the unified step monitor.
+     */
+    @PostMapping("/progress")
+    public ResponseEntity<Map<String, Object>> workerProgress(
+            @RequestBody WorkerProgressRequest progress,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
+        coordinator.handleWorkerProgress(progress.sessionId(), progress.workerId(), progress.snapshot());
+        return ResponseEntity.ok(Map.of("acknowledged", true));
+    }
+
+    /**
+     * Worker LLM-transcript forwarding (Phase: distributed transcripts). Workers POST batches of their local
+     * {@code LLM_TRANSCRIPT} entries; the coordinator stores them under {@code crawl-distributed-<sessionId>}
+     * (each message worker-prefixed) so the unified monitor's transcript viewer works for distributed crawls.
+     */
+    @PostMapping("/transcripts")
+    public ResponseEntity<Map<String, Object>> workerTranscripts(
+            @RequestBody WorkerTranscriptsRequest req,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
+        int stored = 0;
+        if (jobLogService != null && jobLogService.isEnabled()
+                && req.sessionId() != null && coordinator.getSession(req.sessionId()).isPresent()
+                && req.entries() != null) {
+            String taskId = "crawl-distributed-" + req.sessionId();
+            int idx = DistributedCrawlAggregator.workerIndex(req.workerId());
+            for (TranscriptEntry e : req.entries()) {
+                jobLogService.logEntry(taskId, parseLevel(e.level()), JobLogEntry.LogSource.LLM_TRANSCRIPT,
+                        "[W" + idx + "] " + (e.message() != null ? e.message() : ""),
+                        "distributed-crawl", req.workerId());
+                stored++;
+            }
+        }
+        return ResponseEntity.ok(Map.of("acknowledged", true, "stored", stored));
+    }
+
+    private static JobLogEntry.LogLevel parseLevel(String level) {
+        if (level == null) {
+            return JobLogEntry.LogLevel.INFO;
+        }
+        try {
+            return JobLogEntry.LogLevel.valueOf(level.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return JobLogEntry.LogLevel.INFO;
+        }
+    }
+
+    /**
      * Remove completed/failed/cancelled sessions.
      */
     @PostMapping("/cleanup")
@@ -171,11 +238,39 @@ public class DistributedCrawlController {
         return ResponseEntity.ok(Map.of("removed", removed));
     }
 
+    /** Optional Bearer-token gate (matches the cluster callbacks); blank token = open (local/dev). */
+    private boolean authorized(String authHeader) {
+        String token = configService != null && configService.getConfiguration() != null
+                ? configService.getConfiguration().getExternalAuthToken() : null;
+        if (token == null || token.isBlank()) {
+            return true;
+        }
+        return ("Bearer " + token).equals(authHeader);
+    }
+
     public record WorkerCallbackRequest(
             String sessionId,
             String workerId,
             boolean success,
             String message,
             Map<String, Object> resultData
+    ) {}
+
+    public record WorkerProgressRequest(
+            String sessionId,
+            String workerId,
+            UnifiedCrawlJob.ProgressSnapshot snapshot
+    ) {}
+
+    public record WorkerTranscriptsRequest(
+            String sessionId,
+            String workerId,
+            List<TranscriptEntry> entries
+    ) {}
+
+    public record TranscriptEntry(
+            String timestamp,
+            String level,
+            String message
     ) {}
 }

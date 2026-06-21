@@ -207,6 +207,8 @@ class CrawlRuntimeConfigManager {
             graphExtOrch.graphExtractionBatchSize = config.graphExtractionBatchSize;
             graphExtOrch.graphExtractionTargetCharsPerBatch = config.graphExtractionTargetCharsPerBatch;
             graphExtOrch.graphExtractionParallelism = config.graphExtractionParallelism;
+            graphExtOrch.graphExtractionRemoteParallelism = config.graphExtractionRemoteParallelism;
+            graphExtOrch.graphExtractionMaxItemsPerBatch = config.graphExtractionMaxItemsPerBatch;
             graphExtOrch.costSortChunks = config.costSortChunks;
             graphExtOrch.graphConstructorSkipEmbedding = config.graphConstructorSkipEmbedding;
             graphExtOrch.graphConstructorPersistMatrixGraph = config.graphConstructorPersistMatrixGraph;
@@ -262,25 +264,32 @@ class CrawlRuntimeConfigManager {
     }
 
     /**
-     * Applies per-request runtime overrides to the service fields.
+     * Applies per-request runtime overrides (job parameters) to the service and orchestrator fields.
+     * Orchestrator-relevant knobs are propagated to {@code graphExtOrch} too, so a per-job override
+     * actually reaches the extraction loop (not just the service).
      *
-     * @param overrides override values from the incoming request (may be null)
-     * @param service   service whose volatile fields are updated
+     * @param overrides    override values from the incoming request (may be null)
+     * @param service      service whose volatile fields are updated
+     * @param graphExtOrch graph extraction orchestrator (may be null) — receives extraction overrides
      */
     void applyRequestOverrides(UnifiedCrawlRequest.RuntimeConfig overrides,
-                               UnifiedCrawlGraphServiceImpl service) {
+                               UnifiedCrawlGraphServiceImpl service,
+                               GraphExtractionOrchestrator graphExtOrch) {
         if (overrides == null) return;
         if (overrides.getGraphExtractionParallelism() != null) {
-            service.graphExtractionParallelism =
-                    Math.max(1, Math.min(32, overrides.getGraphExtractionParallelism()));
+            int v = Math.max(1, Math.min(32, overrides.getGraphExtractionParallelism()));
+            service.graphExtractionParallelism = v;
+            if (graphExtOrch != null) graphExtOrch.graphExtractionParallelism = v;
         }
         if (overrides.getGraphExtractionBatchSize() != null) {
-            service.graphExtractionBatchSize =
-                    Math.max(1, Math.min(128, overrides.getGraphExtractionBatchSize()));
+            int v = Math.max(1, Math.min(128, overrides.getGraphExtractionBatchSize()));
+            service.graphExtractionBatchSize = v;
+            if (graphExtOrch != null) graphExtOrch.graphExtractionBatchSize = v;
         }
         if (overrides.getGraphExtractionTargetCharsPerBatch() != null) {
-            service.graphExtractionTargetCharsPerBatch =
-                    Math.max(1000, Math.min(500000, overrides.getGraphExtractionTargetCharsPerBatch()));
+            int v = Math.max(1000, Math.min(500000, overrides.getGraphExtractionTargetCharsPerBatch()));
+            service.graphExtractionTargetCharsPerBatch = v;
+            if (graphExtOrch != null) graphExtOrch.graphExtractionTargetCharsPerBatch = v;
         }
         if (overrides.getSourceLoadParallelism() != null) {
             service.sourceLoadParallelism =
@@ -296,14 +305,24 @@ class CrawlRuntimeConfigManager {
         }
         if (overrides.getCostSortChunks() != null) {
             service.costSortChunks = overrides.getCostSortChunks();
+            if (graphExtOrch != null) graphExtOrch.costSortChunks = overrides.getCostSortChunks();
         }
         if (overrides.getLlmCallTimeoutSeconds() != null) {
             service.llmCallTimeoutSeconds =
                     Math.max(10, Math.min(1800, overrides.getLlmCallTimeoutSeconds()));
         }
         if (overrides.getGraphExtractionBatchTimeoutSeconds() != null) {
-            service.graphExtractionBatchTimeoutSeconds =
-                    Math.max(60, Math.min(7200, overrides.getGraphExtractionBatchTimeoutSeconds()));
+            int v = Math.max(60, Math.min(7200, overrides.getGraphExtractionBatchTimeoutSeconds()));
+            service.graphExtractionBatchTimeoutSeconds = v;
+            if (graphExtOrch != null) graphExtOrch.graphExtractionBatchTimeoutSeconds = v;
+        }
+        if (overrides.getGraphExtractionRemoteParallelism() != null && graphExtOrch != null) {
+            graphExtOrch.graphExtractionRemoteParallelism =
+                    Math.max(1, Math.min(32, overrides.getGraphExtractionRemoteParallelism()));
+        }
+        if (overrides.getGraphExtractionMaxItemsPerBatch() != null && graphExtOrch != null) {
+            graphExtOrch.graphExtractionMaxItemsPerBatch =
+                    Math.max(1, Math.min(4096, overrides.getGraphExtractionMaxItemsPerBatch()));
         }
     }
 
@@ -328,6 +347,12 @@ class CrawlRuntimeConfigManager {
         int sourceLoadParallelism = 2;
         int chunkingParallelism = 2;
         int graphExtractionParallelism = 4;
+        // Remote (CLI/API) extraction: few fat concurrent calls beat many (each remote call has a large
+        // fixed cost). Local models use graphExtractionParallelism. Configurable per project/global
+        // (.kompile/data/config) and per job (UnifiedCrawlRequest.RuntimeConfig).
+        int graphExtractionRemoteParallelism = 2;
+        // Safety cap on chunks per batch — the model-derived char budget is the primary control.
+        int graphExtractionMaxItemsPerBatch = 64;
         int graphExtractionTargetCharsPerBatch = 48_000;
         int chunkingTargetCharsPerTask = 200_000;
         int vectorBatchSize = 0;
@@ -369,6 +394,8 @@ class CrawlRuntimeConfigManager {
             m.put("crawlSourceLoadParallelism", sourceLoadParallelism);
             m.put("crawlChunkingParallelism", chunkingParallelism);
             m.put("crawlGraphExtractionParallelism", graphExtractionParallelism);
+            m.put("crawlGraphExtractionRemoteParallelism", graphExtractionRemoteParallelism);
+            m.put("crawlGraphExtractionMaxItemsPerBatch", graphExtractionMaxItemsPerBatch);
             m.put("crawlGraphExtractionTargetCharsPerBatch", graphExtractionTargetCharsPerBatch);
             m.put("crawlChunkingTargetCharsPerTask", chunkingTargetCharsPerTask);
             m.put("crawlVectorBatchSize", vectorBatchSize);
@@ -414,6 +441,8 @@ class CrawlRuntimeConfigManager {
             config.sourceLoadParallelism = intField(root, "crawlSourceLoadParallelism", config.sourceLoadParallelism, 1, 32);
             config.chunkingParallelism = intField(root, "crawlChunkingParallelism", config.chunkingParallelism, 1, 32);
             config.graphExtractionParallelism = intField(root, "crawlGraphExtractionParallelism", config.graphExtractionParallelism, 1, 32);
+            config.graphExtractionRemoteParallelism = intField(root, "crawlGraphExtractionRemoteParallelism", config.graphExtractionRemoteParallelism, 1, 32);
+            config.graphExtractionMaxItemsPerBatch = intField(root, "crawlGraphExtractionMaxItemsPerBatch", config.graphExtractionMaxItemsPerBatch, 1, 4096);
             config.graphExtractionTargetCharsPerBatch = intField(root, "crawlGraphExtractionTargetCharsPerBatch", config.graphExtractionTargetCharsPerBatch, 1000, 500000);
             config.chunkingTargetCharsPerTask = intField(root, "crawlChunkingTargetCharsPerTask", config.chunkingTargetCharsPerTask, 1000, 2000000);
             config.vectorBatchSize = intField(root, "crawlVectorBatchSize", config.vectorBatchSize, 0, 4096);

@@ -22,6 +22,7 @@ import ai.kompile.core.crawl.graph.DynamicBatchSizer;
 import ai.kompile.core.crawl.graph.FallbackBackendSelector;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
+import ai.kompile.core.crawl.graph.ModelCapabilityResolver;
 import ai.kompile.core.crawl.graph.ProcessingCapacityTracker;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.ResourceGovernorAdapter;
@@ -38,6 +39,8 @@ import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
+import ai.kompile.core.llm.ModelCapability;
+import ai.kompile.core.llm.ModelContextWindows;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
@@ -78,6 +81,11 @@ class GraphExtractionOrchestrator {
 
     private static final int DEFAULT_GRAPH_EXTRACTION_BATCH_SIZE = 10;
 
+    /** Default char budget per batch. When the operator leaves this untouched, the per-call budget is
+     *  derived from the extraction model's real limits ({@link ModelCapability}); an explicit override
+     *  (a non-default value) wins and is used as the starting budget for both local and remote models. */
+    private static final int DEFAULT_GRAPH_EXTRACTION_TARGET_CHARS = 48_000;
+
     // Pre-allocated extractor lists — avoids per-call List.of() allocation in recordDocumentProgress
     private static final List<String> EXTRACTORS_GRAPH_CONSTRUCTOR = List.of("GraphConstructor");
     private static final List<String> EXTRACTORS_INLINE_LLM = List.of("InlineLLM");
@@ -94,8 +102,14 @@ class GraphExtractionOrchestrator {
     // -------------------------------------------------------------------------
 
     volatile int graphExtractionBatchSize = DEFAULT_GRAPH_EXTRACTION_BATCH_SIZE;
-    volatile int graphExtractionTargetCharsPerBatch = 48_000;
+    volatile int graphExtractionTargetCharsPerBatch = DEFAULT_GRAPH_EXTRACTION_TARGET_CHARS;
     volatile int graphExtractionParallelism = 4;
+    /** Remote (CLI/API) concurrent in-flight calls; local models use {@link #graphExtractionParallelism}.
+     *  Synced from crawlGraphExtractionRemoteParallelism (project/global config) + per-job overrides. */
+    volatile int graphExtractionRemoteParallelism = 2;
+    /** Safety cap on chunks per batch (the model-derived char budget is the primary control). Synced
+     *  from crawlGraphExtractionMaxItemsPerBatch (project/global config) + per-job overrides. */
+    volatile int graphExtractionMaxItemsPerBatch = 64;
     volatile boolean costSortChunks = true;
     volatile boolean graphConstructorSkipEmbedding = true;
     volatile boolean graphConstructorPersistMatrixGraph = false;
@@ -146,6 +160,12 @@ class GraphExtractionOrchestrator {
     /** Live resource signal (CPU/RAM/heap/native/GPU-VRAM). Null on CPU-only/test contexts. */
     @Autowired(required = false)
     ResourceGovernorAdapter resourceGovernor;
+
+    /** Resolves the extraction model's real context window + max output tokens for batch budgeting.
+     *  Wired in app-main (over the model registry + model manager); null in test/subprocess slices,
+     *  where {@link #resolveExtractionModelCapability} falls back to {@link ModelContextWindows}. */
+    @Autowired(required = false)
+    ModelCapabilityResolver modelCapabilityResolver;
 
     /** Live backend capacity/quota tracker — used to pick a fallback when a batch is rate-limited. */
     @Autowired(required = false)
@@ -400,39 +420,104 @@ class GraphExtractionOrchestrator {
 
         if (allRetrievedDocs.isEmpty()) return failed;
 
-        int batchSize = resolveGraphExtractionBatchSize(config);
         int totalDocs = allRetrievedDocs.size();
-        List<CostBatch<RetrievedDoc>> batches = planCostBatches(
-                allRetrievedDocs,
-                doc -> estimateTextCost(doc.getText(), doc.getMetadata()),
-                batchSize,
-                Math.max(1, graphExtractionTargetCharsPerBatch),
-                costSortChunks);
-        allRetrievedDocs.clear();
-        int totalBatches = batches.size();
-        int parallelism = resolveGraphExtractionParallelism(job, totalBatches);
+
+        // ── Provider-aware, output-token-safe adaptive batching ──────────────────────────────────
+        // Each remote CLI/API LLM call carries a large *fixed* per-call cost (a 1.3k-char prompt was
+        // measured at 156s), so we amortize by packing many chunks per call. BUT the extraction
+        // OUTPUT (entities+rels JSON) grows with input, and a batch that exceeds the model's max
+        // output tokens silently truncates (truncated JSON → parse failure → empty graph, no error).
+        // So rather than a fixed huge batch we ramp the per-call char budget with an AIMD sizer that
+        // grows while calls yield entities and shrinks on failure / zero-yield (truncation) / memory
+        // pressure — discovering the output-limited sweet spot per dataset. Local SameDiff/ONNX
+        // models get a smaller, faster profile (small context, cheap calls, higher parallelism).
+        // Resolve the extraction model's REAL limits once (context window + max output tokens) and
+        // budget batches from them — see ModelCapability. The binding constraint for extraction is the
+        // model's max OUTPUT tokens (the entities JSON), so init/min/maxInputChars() are derived from
+        // those true numbers (at 4 chars/token), not guessed. The yield-gated AIMD sizer then ramps
+        // within [min, max] and shrinks on zero-yield (truncation) / failure / memory pressure.
+        ModelCapability modelCap = resolveExtractionModelCapability(job, config);
+        boolean remoteBackend = !modelCap.local();
+        boolean targetOverridden = graphExtractionTargetCharsPerBatch != DEFAULT_GRAPH_EXTRACTION_TARGET_CHARS;
+        int initChars = targetOverridden
+                ? Math.max(1, graphExtractionTargetCharsPerBatch) : modelCap.initInputChars();
+        int maxChars = targetOverridden
+                ? Math.max(Math.max(1, graphExtractionTargetCharsPerBatch), modelCap.maxInputChars())
+                : modelCap.maxInputChars();
+        int minChars = Math.max(1, Math.min(modelCap.minInputChars(), initChars));
+        // Item count is only a safety cap — the char budget is the real control. Configurable via
+        // crawlGraphExtractionMaxItemsPerBatch (project/global .kompile config) and per job.
+        int maxItems = Math.max(resolveGraphExtractionBatchSize(config), Math.max(1, graphExtractionMaxItemsPerBatch));
+        // Ramp step = one starting budget per healthy wave (init → max in a few waves). Memory
+        // shrink thresholds reuse the crawl's configured memory ceiling instead of new constants.
+        double criticalFrac = Math.min(0.99, Math.max(0.5, memoryCriticalThresholdPercent / 100.0));
+        DynamicBatchSizer charSizer = DynamicBatchSizer.builder()
+                .stageId("GRAPH_EXTRACTION_CHARS")
+                .minBatchSize(minChars).maxBatchSize(maxChars).initialBatchSize(initChars)
+                .additiveIncrease(Math.max(1, initChars)).multiplicativeDecrease(0.6)
+                .memoryPressureThreshold(Math.max(0.5, criticalFrac - 0.08))
+                .memoryCriticalThreshold(criticalFrac)
+                .successThresholdForIncrease(1)
+                .build();
+
+        // Sort chunks heaviest-first so the greedy wave packer keeps each batch near the char budget.
+        List<RetrievedDoc> sorted = allRetrievedDocs;
+        if (costSortChunks) {
+            sorted.sort((a, b) -> Long.compare(
+                    estimateTextCost(b.getText(), b.getMetadata()),
+                    estimateTextCost(a.getText(), a.getMetadata())));
+        }
+        long totalCharsEst = 0L;
+        for (RetrievedDoc d : sorted) {
+            totalCharsEst += Math.max(1L, estimateTextCost(d.getText(), d.getMetadata()));
+        }
+        // Display-only estimate; the actual wave count is fewer as the budget ramps up.
+        final int totalBatches = (int) Math.max(1, (totalCharsEst + initChars - 1) / initChars);
+        AtomicInteger cursor = new AtomicInteger(0);
+        AtomicInteger globalBatchIndex = new AtomicInteger(0);
+        // Remote: cap at the configured remote parallelism (few fat calls — each remote call is costly).
+        // Local: the configured graphExtractionParallelism (small fast calls pipeline well). Both come
+        // from project/global .kompile config + per-job overrides.
+        int resolvedParallelism = resolveGraphExtractionParallelism(job, totalBatches);
+        int parallelism = remoteBackend
+                ? Math.min(resolvedParallelism, Math.max(1, graphExtractionRemoteParallelism))
+                : resolvedParallelism;
+        final int waveWidth = Math.max(1, parallelism);
         OuterParallelismAdvisor outerAdvisor = new OuterParallelismAdvisor(parallelism);
-        DynamicBatchSizer graphBatchSizer = DynamicBatchSizer.forGraphExtraction(batchSize);
+        DynamicBatchSizer graphBatchSizer = DynamicBatchSizer.forGraphExtraction(maxItems);
         resetGraphExtractionProgress(job, totalDocs);
         pipelineStepTracker.updatePipelineStep(job, "GRAPH_EXTRACTION", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
                 0, totalDocs, 0, 0, totalBatches, 0, null,
                 "Planned graph extraction batches");
-        job.getCurrentFile().set("(graph extraction: " + totalDocs
-                + " chunks in " + totalBatches + " cost-balanced batch(es))");
+        job.getCurrentFile().set("(graph extraction: " + totalDocs + " chunks, "
+                + (remoteBackend ? "remote" : "local") + " adaptive batching from ~" + initChars + " chars/call)");
         documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "INFO",
                 "Planned graph extraction batches",
-                "chunks=" + totalDocs + ", batches=" + totalBatches
-                        + ", maxBatchSize=" + batchSize + ", targetChars=" + graphExtractionTargetCharsPerBatch
-                        + ", parallelism=" + parallelism);
-        log.info("[Job {}] Starting graph extraction for {} chunks in {} cost-balanced batch(es), parallelism={}, maxItems={}, targetChars={}",
-                job.getJobId(), totalDocs, totalBatches, parallelism, batchSize,
-                graphExtractionTargetCharsPerBatch);
+                "chunks=" + totalDocs + ", backend=" + (remoteBackend ? "remote" : "local")
+                        + ", startChars=" + initChars + ", maxChars=" + maxChars
+                        + ", maxItems=" + maxItems + ", parallelism=" + parallelism);
+        log.info("[Job {}] Starting graph extraction for {} chunks, backend={}, adaptive char budget {}..{} (start {}), maxItems={}, parallelism={}",
+                job.getJobId(), totalDocs, remoteBackend ? "remote" : "local",
+                minChars, maxChars, initChars, maxItems, parallelism);
         memoryMonitor.trimNativeMemory(job, "GRAPH_EXTRACTION", "after planning graph batches");
 
         try {
             try {
-                List<Future<GraphBatchResult>> futures = new ArrayList<>(batches.size());
                 AtomicInteger completedBatches = new AtomicInteger(0);
+                // Adaptive wave loop: each wave pulls the next `waveWidth` cost-balanced batches sized
+                // at the AIMD char budget, runs them through the (unchanged) submit/retry body below,
+                // then feeds the wave's yield back to the sizer so the next wave grows or shrinks.
+                while (cursor.get() < totalDocs && !isCancelled(job)
+                        && !Thread.currentThread().isInterrupted()) {
+                    int charTarget = charSizer.currentBatchSize();
+                    List<CostBatch<RetrievedDoc>> batches =
+                            planGraphWave(sorted, cursor, charTarget, maxItems, waveWidth, globalBatchIndex);
+                    if (batches.isEmpty()) break;
+                    long waveStartMs = System.currentTimeMillis();
+                    long waveEntitiesBefore = job.getEntitiesExtracted().get();
+                    long waveChars = 0L;
+                    for (CostBatch<RetrievedDoc> wb : batches) waveChars += wb.cost();
+                List<Future<GraphBatchResult>> futures = new ArrayList<>(batches.size());
                 for (CostBatch<RetrievedDoc> batch : batches) {
                     if (isCancelled(job)) {
                         return failed;
@@ -546,7 +631,11 @@ class GraphExtractionOrchestrator {
                             memoryMonitor.updateMemorySnapshot(job);
                             double heapPct = job.getMemoryUsagePercent().get() / 100.0;
                             long batchElapsed = System.currentTimeMillis() - batchStartTime;
-                            outerAdvisor.afterBatchComplete(batchElapsed, heapPct);
+                            UnifiedCrawlJob.TuningDecision parallelismDecision =
+                                    outerAdvisor.afterBatchComplete(batchElapsed, heapPct);
+                            if (parallelismDecision != null) {
+                                job.recordTuningDecision(parallelismDecision);
+                            }
                             // Record success for AIMD graph batch sizer (governor-aware 0..1 pressure)
                             graphBatchSizer.recordBatchResult(batch.items().size(), batchElapsed, true, stagePressure(job));
                             graphBatchSizer.publishStats(job);
@@ -757,6 +846,45 @@ class GraphExtractionOrchestrator {
                         return failed;
                     }
                 }
+                    // ── wave complete: feed the adaptive char-budget sizer ──
+                    long waveElapsedMs = System.currentTimeMillis() - waveStartMs;
+                    long waveEntities = job.getEntitiesExtracted().get() - waveEntitiesBefore;
+                    memoryMonitor.updateMemorySnapshot(job);
+                    // Yield gate: a full-size batch that produced ZERO entities almost certainly hit
+                    // the model's max-output-token ceiling (truncated JSON → parse failure → empty
+                    // graph), not genuinely empty input — record as a failure so the sizer shrinks
+                    // instead of growing into a zero-yield regime.
+                    boolean healthyYield = waveEntities > 0
+                            || waveChars <= (long) charSizer.getMinBatchSize() * 2;
+                    charSizer.recordBatchResult(charTarget, waveElapsedMs, healthyYield, stagePressure(job));
+                    // Record the char-budget wave decision (including the zero-yield output-ceiling
+                    // guard) into the job's tuning history. The char sizer deliberately does NOT
+                    // publishStats() (that would clobber the item-count adaptiveBatchSize field), so
+                    // we emit the decision inline here.
+                    int charNew = charSizer.currentBatchSize();
+                    if (charTarget != charNew || !healthyYield) {
+                        DynamicBatchSizer.AdjustDirection charDir = charSizer.getLastDirection();
+                        String charReason = !healthyYield ? "zero_yield" : charSizer.getLastReason();
+                        String charDetail = !healthyYield
+                                ? "yield " + waveEntities + " ent / " + waveChars + " chars (output-ceiling guard)"
+                                : "char budget " + charTarget + " -> " + charNew;
+                        job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
+                                .timestamp(Instant.now())
+                                .stage("GRAPH_EXTRACTION_CHARS")
+                                .oldValue(charTarget)
+                                .newValue(charNew)
+                                .direction(charDir != null ? charDir.name() : "HOLD")
+                                .reason(charReason != null ? charReason : (charDir != null ? charDir.name() : "HOLD"))
+                                .detail(charDetail)
+                                .memoryPercent(job.getMemoryUsagePercent().get())
+                                .build());
+                    }
+                    // Note: char-budget stats are surfaced via the batch-step label + log below; the
+                    // per-batch item-count graphBatchSizer keeps ownership of the adaptiveBatchSize UI
+                    // field, so we deliberately do NOT publishStats() here (it would clobber it).
+                    job.getCurrentBatchStep().set("GRAPH_WAVE next≈" + charSizer.currentBatchSize()
+                            + " chars (yield " + waveEntities + " ent / " + waveChars + " chars)");
+                }
             } finally {
                 // Don't shutdown — shared pool is reused across jobs
                 job.getCurrentBatchSize().set(0);
@@ -793,20 +921,36 @@ class GraphExtractionOrchestrator {
         // Chunks that fail this pass are returned for re-accumulation (per-chunk retry then deferral).
         List<Document> failed = new CopyOnWriteArrayList<>();
 
+        // Provider-aware, output-token-safe budget — same basis as the GraphConstructor path. This is
+        // the GraphConstructor-absent fallback, so each LLM call is sized from the model's real limits
+        // at the output-safe starting budget (no intra-run AIMD ramp). Honors an explicit
+        // crawlGraphExtractionTargetCharsPerBatch override; item cap + remote parallelism are the same
+        // configurable knobs as the constructor path.
+        ModelCapability modelCap = resolveExtractionModelCapability(job, config);
+        boolean remoteBackend = !modelCap.local();
+        boolean targetOverridden = graphExtractionTargetCharsPerBatch != DEFAULT_GRAPH_EXTRACTION_TARGET_CHARS;
+        int charBudget = targetOverridden
+                ? Math.max(1, graphExtractionTargetCharsPerBatch) : modelCap.initInputChars();
+        int maxItems = Math.max(resolveGraphExtractionBatchSize(config), Math.max(1, graphExtractionMaxItemsPerBatch));
+
         List<CostBatch<Document>> batches = planCostBatches(
                 documents,
                 this::estimateDocumentCost,
-                resolveGraphExtractionBatchSize(config),
-                Math.max(1, graphExtractionTargetCharsPerBatch),
+                maxItems,
+                charBudget,
                 costSortChunks);
-        int parallelism = resolveGraphExtractionParallelism(job, batches.size());
+        int resolvedParallelism = resolveGraphExtractionParallelism(job, batches.size());
+        int parallelism = remoteBackend
+                ? Math.min(resolvedParallelism, Math.max(1, graphExtractionRemoteParallelism))
+                : resolvedParallelism;
         pipelineStepTracker.updatePipelineStep(job, "GRAPH_EXTRACTION", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
                 0, documents.size(), 0, 0, batches.size(), 0, null,
                 "Planned inline LLM extraction batches");
         documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "INFO",
                 "Planned inline LLM extraction batches",
                 "chunks=" + documents.size() + ", batches=" + batches.size()
-                        + ", parallelism=" + parallelism + ", targetChars=" + graphExtractionTargetCharsPerBatch);
+                        + ", backend=" + (remoteBackend ? "remote" : "local")
+                        + ", parallelism=" + parallelism + ", charBudget=" + charBudget + ", maxItems=" + maxItems);
 
         // Shared cross-chunk caches to eliminate N+1 DB queries:
         // - parentDocCache: same sourcePath repeated across chunks from same document
@@ -816,7 +960,7 @@ class GraphExtractionOrchestrator {
         Long factSheetId = jobFactSheetId(job);
 
         if (parallelism <= 1 || batches.size() <= 1) {
-            final int serialChunksPerPrompt = Math.max(1, graphExtractionChunksPerPrompt);
+            final int serialChunksPerPrompt = Math.max(1, maxItems);
             if (serialChunksPerPrompt <= 1) {
                 // Legacy serial path: one call per chunk.
                 for (int docIndex = 0; docIndex < documents.size(); docIndex++) {
@@ -840,8 +984,8 @@ class GraphExtractionOrchestrator {
                         Document d = documents.get(gi);
                         String t = d.getText();
                         int tLen = t != null ? t.length() : 0;
-                        if (!group.isEmpty() && graphExtractionTargetCharsPerBatch > 0
-                                && combinedChars + tLen > graphExtractionTargetCharsPerBatch) {
+                        if (!group.isEmpty() && charBudget > 0
+                                && combinedChars + tLen > charBudget) {
                             break;
                         }
                         group.add(d);
@@ -865,7 +1009,7 @@ class GraphExtractionOrchestrator {
 
         // Use shared graph extraction pool — avoids per-job thread creation/teardown overhead
         // Snapshot chunksPerPrompt so the lambda captures a stable value.
-        final int chunksPerPrompt = Math.max(1, graphExtractionChunksPerPrompt);
+        final int chunksPerPrompt = Math.max(1, maxItems);
         try {
             List<Future<?>> futures = new ArrayList<>(batches.size());
             AtomicInteger offset = new AtomicInteger(0);
@@ -902,8 +1046,8 @@ class GraphExtractionOrchestrator {
                                 Document d = batchItems.get(gi);
                                 String t = d.getText();
                                 int tLen = t != null ? t.length() : 0;
-                                if (!group.isEmpty() && graphExtractionTargetCharsPerBatch > 0
-                                        && combinedChars + tLen > graphExtractionTargetCharsPerBatch) {
+                                if (!group.isEmpty() && charBudget > 0
+                                        && combinedChars + tLen > charBudget) {
                                     break; // this chunk would overflow the budget — flush group now
                                 }
                                 group.add(d);
@@ -1802,6 +1946,108 @@ class GraphExtractionOrchestrator {
     }
 
     // -------------------------------------------------------------------------
+    // Provider-aware adaptive batching
+    // -------------------------------------------------------------------------
+
+    /**
+     * Resolve the extraction model's real {@link ModelCapability} (context window + max output tokens)
+     * once per batching pass, used to budget per-call char sizes. Uses the optional
+     * {@link ModelCapabilityResolver} (wired in app-main over the model registry + model manager) when
+     * present; otherwise falls back to the static {@link ModelContextWindows} on the configured model
+     * name, defaulting to a safe remote profile. The route's
+     * {@link ProcessingRouteConfig.ProcessingBackendType} (when configured) authoritatively decides
+     * local-vs-remote.
+     */
+    ModelCapability resolveExtractionModelCapability(UnifiedCrawlJob job, GraphExtractionConfig config) {
+        ProcessingRouteConfig.ProcessingBackendType backendType = primaryLlmBackendType(job);
+        String provider = config != null ? config.getLlmProvider() : null;
+        String modelName = config != null ? config.getModelName() : null;
+        String agentName = primaryLlmAgentName(job);
+        if (modelCapabilityResolver != null) {
+            try {
+                Optional<ModelCapability> resolved =
+                        modelCapabilityResolver.resolve(backendType, provider, modelName, agentName);
+                if (resolved != null && resolved.isPresent()) {
+                    return resolved.get();
+                }
+            } catch (Exception e) {
+                log.debug("[Job {}] ModelCapabilityResolver failed: {}", job.getJobId(), e.getMessage());
+            }
+        }
+        // Fallback (resolver absent — e.g. test/subprocess slice): static registry on the configured
+        // model name. LOCAL_MODEL route → local; otherwise treat as remote (the expensive case).
+        boolean local = backendType == ProcessingRouteConfig.ProcessingBackendType.LOCAL_MODEL;
+        int contextTokens = ModelContextWindows.getContextWindow(modelName);
+        int maxOutputTokens = ModelContextWindows.getMaxOutputTokens(modelName);
+        return new ModelCapability(modelName, contextTokens, maxOutputTokens, local);
+    }
+
+    /** Lowest-priority (preferred) enabled llm-capable backend type from the job's route, or null. */
+    private ProcessingRouteConfig.ProcessingBackendType primaryLlmBackendType(UnifiedCrawlJob job) {
+        ProcessingRouteConfig.ProcessingBackend backend = primaryLlmBackend(job);
+        return backend != null ? backend.getType() : null;
+    }
+
+    /** CLI agent name of the preferred llm backend (used to resolve its live model), or null. */
+    private String primaryLlmAgentName(UnifiedCrawlJob job) {
+        ProcessingRouteConfig.ProcessingBackend backend = primaryLlmBackend(job);
+        return backend != null ? backend.getAgentName() : null;
+    }
+
+    /** Lowest-priority (preferred) enabled llm-capable backend from the job's route, or null. */
+    private ProcessingRouteConfig.ProcessingBackend primaryLlmBackend(UnifiedCrawlJob job) {
+        if (job == null || job.getRequest() == null) {
+            return null;
+        }
+        ProcessingRouteConfig route = job.getRequest().getProcessingRoute();
+        if (route == null || route.getBackends() == null || route.getBackends().isEmpty()) {
+            return null;
+        }
+        return route.getBackends().stream()
+                .filter(b -> b != null && b.isEnabled())
+                .filter(b -> b.getCapabilities() == null || b.getCapabilities().isEmpty()
+                        || b.getCapabilities().contains("llm"))
+                .min(Comparator.comparingInt(ProcessingRouteConfig.ProcessingBackend::getPriority))
+                .orElse(null);
+    }
+
+    /**
+     * Pull the next wave of cost-balanced batches from {@code sorted} starting at {@code cursor}. Each
+     * batch holds up to {@code maxItems} chunks and stays within the {@code charTarget} char budget — a
+     * single chunk larger than the budget still gets its own batch (never dropped). Forms up to
+     * {@code waveWidth} batches, advances {@code cursor} past consumed chunks, and stamps each batch
+     * with a global index from {@code globalIndex}. Returns fewer than {@code waveWidth} on the tail.
+     */
+    List<CostBatch<RetrievedDoc>> planGraphWave(List<RetrievedDoc> sorted, AtomicInteger cursor,
+                                                int charTarget, int maxItems, int waveWidth,
+                                                AtomicInteger globalIndex) {
+        int n = sorted.size();
+        long target = Math.max(1L, charTarget);
+        int maxI = Math.max(1, maxItems);
+        int width = Math.max(1, waveWidth);
+        List<CostBatch<RetrievedDoc>> wave = new ArrayList<>(width);
+        while (wave.size() < width && cursor.get() < n) {
+            List<RetrievedDoc> items = new ArrayList<>();
+            long cost = 0L;
+            while (cursor.get() < n && items.size() < maxI) {
+                RetrievedDoc doc = sorted.get(cursor.get());
+                long c = Math.max(1L, estimateTextCost(doc.getText(), doc.getMetadata()));
+                if (!items.isEmpty() && cost + c > target) {
+                    break; // adding this chunk would overflow the budget — leave it for the next batch
+                }
+                items.add(doc);
+                cost += c;
+                cursor.incrementAndGet();
+            }
+            if (items.isEmpty()) {
+                break;
+            }
+            wave.add(new CostBatch<>(globalIndex.incrementAndGet(), items, cost));
+        }
+        return wave;
+    }
+
+    // -------------------------------------------------------------------------
     // Prompt and JSON extraction helpers
     // -------------------------------------------------------------------------
 
@@ -2251,7 +2497,8 @@ class GraphExtractionOrchestrator {
     // Inner types — batch planning data structures
     // -------------------------------------------------------------------------
 
-    private record CostBatch<T>(int index, List<T> items, long cost) {
+    // Package-private (not private) so the wave-planner unit test can assert batch contents.
+    record CostBatch<T>(int index, List<T> items, long cost) {
     }
 
     private record CostItem<T>(T item, long cost) {
@@ -2308,8 +2555,14 @@ class GraphExtractionOrchestrator {
             concurrencyGate.release();
         }
 
-        synchronized void afterBatchComplete(long batchMs, double heapPercent) {
+        /**
+         * Adjust parallelism based on heap pressure after a batch completes. Returns a
+         * {@link UnifiedCrawlJob.TuningDecision} describing the change (so the caller can record it
+         * in the job's tuning history), or {@code null} when parallelism was left unchanged.
+         */
+        synchronized UnifiedCrawlJob.TuningDecision afterBatchComplete(long batchMs, double heapPercent) {
             int oldParallelism = currentParallelism;
+            int memPct = (int) Math.round(heapPercent * 100);
 
             if (heapPercent > CRITICAL_THRESHOLD) {
                 currentParallelism = 1;
@@ -2318,7 +2571,17 @@ class GraphExtractionOrchestrator {
                     // Drain excess permits so only 1 batch can run concurrently
                     drainPermits(oldParallelism, 1);
                     log.info("Outer graph parallelism reduced {} -> 1 (reason: heap {}% > critical {}%)",
-                            oldParallelism, Math.round(heapPercent * 100), Math.round(CRITICAL_THRESHOLD * 100));
+                            oldParallelism, memPct, Math.round(CRITICAL_THRESHOLD * 100));
+                    return UnifiedCrawlJob.TuningDecision.builder()
+                            .timestamp(Instant.now())
+                            .stage("GRAPH_PARALLELISM")
+                            .oldValue(oldParallelism)
+                            .newValue(1)
+                            .direction("DOWN")
+                            .reason("heap_critical")
+                            .detail("heap " + memPct + "% > critical " + Math.round(CRITICAL_THRESHOLD * 100) + "%")
+                            .memoryPercent(memPct)
+                            .build();
                 }
             } else if (heapPercent > HIGH_THRESHOLD) {
                 consecutiveLowMemoryBatches = 0;
@@ -2336,11 +2599,22 @@ class GraphExtractionOrchestrator {
                     lastRampTime = now;
                     consecutiveLowMemoryBatches = 0;
                     log.info("Outer graph parallelism increased {} -> {} (reason: {} consecutive low-memory batches, heap {}%)",
-                            oldParallelism, currentParallelism, RAMP_AFTER_LOW_COUNT, Math.round(heapPercent * 100));
+                            oldParallelism, currentParallelism, RAMP_AFTER_LOW_COUNT, memPct);
+                    return UnifiedCrawlJob.TuningDecision.builder()
+                            .timestamp(Instant.now())
+                            .stage("GRAPH_PARALLELISM")
+                            .oldValue(oldParallelism)
+                            .newValue(currentParallelism)
+                            .direction("UP")
+                            .reason("heap_recovered")
+                            .detail(RAMP_AFTER_LOW_COUNT + " low-memory batches, heap " + memPct + "%")
+                            .memoryPercent(memPct)
+                            .build();
                 }
             } else {
                 consecutiveLowMemoryBatches = 0;
             }
+            return null;
         }
 
         private void drainPermits(int from, int to) {

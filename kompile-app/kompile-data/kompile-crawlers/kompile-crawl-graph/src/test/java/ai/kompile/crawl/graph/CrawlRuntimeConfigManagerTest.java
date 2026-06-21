@@ -85,4 +85,23 @@ class CrawlRuntimeConfigManagerTest {
         // A representative default (graphExtractionParallelism defaults to 4).
         assertEquals(4, cfg.get("crawlGraphExtractionParallelism"));
     }
+
+    @Test
+    void remoteParallelismAndMaxItemsAreConfigurable(@TempDir Path dir) throws Exception {
+        Path cfg = dir.resolve("graph-extraction-config.json");
+        Files.writeString(cfg, "{}");
+        CrawlRuntimeConfigManager mgr = new CrawlRuntimeConfigManager(cfg);
+
+        // Defaults are exposed via the runtime-config map (project/global .kompile level).
+        Map<String, Object> defaults = mgr.currentCrawlRuntimeConfig();
+        assertEquals(2, defaults.get("crawlGraphExtractionRemoteParallelism"));
+        assertEquals(64, defaults.get("crawlGraphExtractionMaxItemsPerBatch"));
+
+        // And they round-trip through an update (validated/clamped, persisted to the shared file).
+        Map<String, Object> effective = mgr.updateCrawlRuntimeConfig(Map.of(
+                "crawlGraphExtractionRemoteParallelism", 8,
+                "crawlGraphExtractionMaxItemsPerBatch", 256));
+        assertEquals(8, effective.get("crawlGraphExtractionRemoteParallelism"));
+        assertEquals(256, effective.get("crawlGraphExtractionMaxItemsPerBatch"));
+    }
 }

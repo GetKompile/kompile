@@ -754,9 +754,14 @@
                   <span *ngIf="selectedJob.createdAt" class="elapsed"> &bull; Created {{ formatTimestamp(selectedJob.createdAt) }}</span>
                   <span *ngIf="selectedJob.startedAt" class="elapsed"> &bull; Started {{ formatTimestamp(selectedJob.startedAt) }}</span>
                   <span *ngIf="selectedJob.completedAt" class="elapsed"> &bull; Finished {{ formatTimestamp(selectedJob.completedAt) }}</span>
+                  <span *ngIf="extractionAgentLabel" class="elapsed extraction-agent"
+                        matTooltip="LLM / CLI-agent model used for entity &amp; graph extraction (from graph-extraction-config)">
+                    &bull; <mat-icon inline>smart_toy</mat-icon> Extraction: {{ extractionAgentLabel }}
+                  </span>
                 </mat-card-subtitle>
               </mat-card-header>
               <mat-card-content>
+                <app-resource-strip></app-resource-strip>
                 <!-- Job Configuration (from original request) -->
                 <div *ngIf="selectedJob.requestConfig" class="job-config-panel">
                   <h3><mat-icon inline>settings</mat-icon> Job Configuration</h3>
@@ -923,145 +928,15 @@
 
                 <div class="pipeline-steps-panel" *ngIf="selectedJob.pipelineSteps && selectedJob.pipelineSteps.length > 0">
                   <h3>Pipeline Steps</h3>
-                  <div class="pipeline-step-accordion">
-                    <div *ngFor="let step of selectedJob.pipelineSteps"
-                         class="pipeline-step-accordion-item"
-                         [ngClass]="getStepStatusClass(step.status)">
-
-                      <!-- Clickable header row -->
-                      <div class="pipeline-step-accordion-header"
-                           (click)="toggleStepExpanded(step.stepId)"
-                           role="button"
-                           [attr.aria-expanded]="isStepExpanded(step.stepId)">
-                        <!-- Chevron affordance -->
-                        <mat-icon class="step-accordion-chevron"
-                                  [class.step-accordion-chevron-open]="isStepExpanded(step.stepId)">
-                          chevron_right
-                        </mat-icon>
-                        <mat-icon class="step-accordion-type-icon">{{ getStepTypeIcon(step.stepType) }}</mat-icon>
-                        <div class="pipeline-step-title">
-                          <strong>{{ step.displayName }}</strong>
-                          <span>{{ step.stepType }} &bull;
-                            <span *ngIf="step.status === 'ARCHIVED'" class="step-status-archived-label">ARCHIVED</span>
-                            <ng-container *ngIf="step.status !== 'ARCHIVED'">{{ step.status }}</ng-container>
-                          </span>
-                        </div>
-                        <!-- Compact stats always visible -->
-                        <div class="step-accordion-summary">
-                          <span>{{ step.completedItems || 0 }}/{{ step.totalItems || 0 }}</span>
-                          <span *ngIf="getStepThroughput(step)" class="step-throughput">{{ getStepThroughput(step) }}</span>
-                          <span *ngIf="step.elapsedMs" class="step-elapsed">{{ formatElapsed(step.elapsedMs) }}</span>
-                        </div>
-                        <span class="pipeline-step-percent">{{ step.progressPercent || 0 }}%</span>
-                      </div>
-
-                      <!-- Progress bar always shown -->
-                      <mat-progress-bar mode="determinate" [value]="step.progressPercent || 0"></mat-progress-bar>
-
-                      <!-- Current item always shown below bar -->
-                      <div *ngIf="step.message || step.currentItem" class="pipeline-step-message">
-                        <mat-icon inline class="spinning-icon-sm"
-                                  *ngIf="step.status === 'RUNNING'">sync</mat-icon>
-                        {{ step.message || step.currentItem }}
-                      </div>
-
-                      <!-- Run-now button always visible when eligible -->
-                      <div *ngIf="isStepRunNowEligible(step.status)" class="pipeline-step-run-now">
-                        <button mat-stroked-button class="run-now-btn"
-                                [disabled]="isStepActionInProgress(selectedJob.jobId, step.stepId)"
-                                (click)="runStep(selectedJob.jobId, step.stepId); $event.stopPropagation()">
-                          <mat-icon>play_circle</mat-icon>
-                          {{ step.status === 'ARCHIVED' ? 'Run archived step' : 'Run now' }}
-                        </button>
-                      </div>
-
-                      <!-- ── Expanded detail panel ─────────────────────────── -->
-                      <div class="pipeline-step-detail-panel"
-                           *ngIf="isStepExpanded(step.stepId)">
-
-                        <!-- Batch counts -->
-                        <div class="step-detail-stats">
-                          <span *ngIf="step.totalBatches">
-                            <strong>Batches:</strong> {{ step.completedBatches || 0 }}/{{ step.totalBatches }}
-                          </span>
-                          <span *ngIf="step.currentBatchSize">
-                            <strong>Batch size:</strong> {{ step.currentBatchSize }}
-                          </span>
-                          <span *ngIf="step.activeTasks">
-                            <strong>Active tasks:</strong> {{ step.activeTasks }}
-                          </span>
-                          <span *ngIf="step.failedItems">
-                            <strong>Failed:</strong> {{ step.failedItems }}
-                          </span>
-                          <span *ngIf="step.startedAt">
-                            <strong>Started:</strong> {{ formatTimestamp(step.startedAt) }}
-                          </span>
-                        </div>
-
-                        <!-- Live activity log filtered to this step's phase(s) -->
-                        <ng-container *ngIf="getStepEvents(step) as stepEvents">
-                          <div class="step-detail-section-header" *ngIf="stepEvents.length > 0">
-                            <mat-icon inline>receipt_long</mat-icon>
-                            <span>&#9658; Activity</span>
-                            <span class="live-badge" *ngIf="selectedJob.status === 'RUNNING'">LIVE</span>
-                          </div>
-                          <div class="step-detail-events" *ngIf="stepEvents.length > 0">
-                            <div *ngFor="let ev of stepEvents | slice:-20"
-                                 class="step-detail-event-row"
-                                 [class.step-event-warn]="ev.level === 'WARN'"
-                                 [class.step-event-error]="ev.level === 'ERROR'">
-                              <span class="step-event-time" *ngIf="ev.timestamp">{{ formatEventTime(ev.timestamp) }}</span>
-                              <span class="step-event-level" [class]="'step-level-' + ev.level.toLowerCase()">{{ ev.level }}</span>
-                              <span class="step-event-msg">{{ ev.message }}</span>
-                              <span *ngIf="ev.details" class="step-event-details">{{ ev.details }}</span>
-                            </div>
-                          </div>
-                          <!-- Waiting/empty state -->
-                          <div class="step-detail-empty"
-                               *ngIf="stepEvents.length === 0">
-                            <mat-icon inline>hourglass_empty</mat-icon>
-                            No activity recorded yet for this step.
-                          </div>
-                        </ng-container>
-
-                        <!-- Documents currently in this step's phase -->
-                        <ng-container *ngIf="getStepDocuments(step) as stepDocs">
-                          <div class="step-detail-section-header" *ngIf="stepDocs.length > 0">
-                            <mat-icon inline>description</mat-icon>
-                            <span>&#9658; Documents in this step ({{ stepDocs.length }})</span>
-                          </div>
-                          <div class="step-detail-docs" *ngIf="stepDocs.length > 0">
-                            <div *ngFor="let doc of stepDocs | slice:0:15"
-                                 class="step-detail-doc-row"
-                                 [ngClass]="getDocumentStatusClass(doc.status)">
-                              <span class="step-doc-status"
-                                    [class]="'doc-status-' + (doc.status || 'unknown').toLowerCase()">
-                                {{ doc.status || '?' }}
-                              </span>
-                              <span class="step-doc-name" [title]="doc.sourcePath || doc.documentKey">
-                                {{ doc.fileName || doc.documentKey }}
-                              </span>
-                              <span class="step-doc-meta">
-                                <ng-container *ngIf="doc.chunksCreated">{{ doc.chunksCreated }} chunks</ng-container>
-                                <ng-container *ngIf="doc.entitiesExtracted"> &bull; {{ doc.entitiesExtracted }} ents</ng-container>
-                              </span>
-                              <span *ngIf="doc.errorMessage" class="step-doc-error"
-                                    [title]="doc.errorMessage">
-                                <mat-icon inline>error</mat-icon> {{ doc.errorMessage | slice:0:50 }}
-                              </span>
-                            </div>
-                            <div class="step-detail-doc-more"
-                                 *ngIf="stepDocs.length > 15">
-                              +{{ stepDocs.length - 15 }} more — see Documents table below
-                            </div>
-                          </div>
-                        </ng-container>
-
-                      </div>
-                      <!-- ── End expanded detail ─────────────────────────────── -->
-
-                    </div>
-                  </div>
+                  <!-- Unified, fully-detailed expandable step monitor (shared with fact-sheet + Crawlers) -->
+                  <app-crawl-step-monitor
+                    [steps]="selectedJob.pipelineSteps || []"
+                    [job]="selectedJob"
+                    [jobId]="selectedJob.jobId"
+                    [taskId]="getCrawlHistoryTaskId(selectedJob.jobId)"
+                    [isJobRunning]="isCrawlJobRunning(selectedJob.status)"
+                    (runStepRequested)="runStep($event.jobId, $event.stepId)">
+                  </app-crawl-step-monitor>
                 </div>
 
                 <div class="document-stream-panel" *ngIf="selectedJob.documentProgress && selectedJob.documentProgress.length > 0">

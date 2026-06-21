@@ -43,7 +43,6 @@ import { MatBadgeModule } from '@angular/material/badge';
 import {
   UnifiedCrawlService,
   UnifiedCrawlSource,
-  GraphExtractionConfig,
   VectorIndexConfig,
   UnifiedCrawlRequest,
   ProcessingRouteConfig,
@@ -61,10 +60,12 @@ import {
   CrawlStageEvent
 } from '../../services/unified-crawl.service';
 import { JobLogViewerComponent } from '../job-history/job-log-viewer/job-log-viewer.component';
+import { ResourceStripComponent } from '../resource-strip/resource-strip.component';
+import { CrawlStepMonitorComponent } from '../crawl-step-monitor/crawl-step-monitor.component';
 import { JobLogService, JobLogEntry } from '../../services/job-log.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { FactSheet } from '../../models/api-models';
-import { GraphExtractionService, ModelProvider } from '../../services/graph-extraction.service';
+import { GraphExtractionService, ModelProvider, GraphExtractionConfig } from '../../services/graph-extraction.service';
 import { WebSocketService } from '../../services/websocket.service';
 
 type EditableUnifiedCrawlSource = UnifiedCrawlSource & { propertiesJson?: string };
@@ -80,7 +81,9 @@ type EditableUnifiedCrawlSource = UnifiedCrawlSource & { propertiesJson?: string
     MatSlideToggleModule, MatChipsModule, MatProgressBarModule,
     MatExpansionModule, MatTooltipModule, MatDividerModule,
     MatSnackBarModule, MatTabsModule, MatBadgeModule,
-    JobLogViewerComponent
+    JobLogViewerComponent,
+    ResourceStripComponent,
+    CrawlStepMonitorComponent
   ],
   templateUrl: './unified-crawl.component.html',
   styleUrls: ['./unified-crawl.component.css']
@@ -143,6 +146,8 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   // Dynamic model providers
   graphModelProviders: ModelProvider[] = [];
   graphAvailableModels: { id: string; name: string }[] = [];
+  /** LLM / CLI-agent model that performs entity & graph extraction, e.g. "opencode-cli / default". */
+  extractionAgentLabel: string | null = null;
 
   // Scheduler notifications
   schedulerNotifications: { eventType: string; message: string; jobType: string; queueDepth: number; runningCount: number; timestamp: string }[] = [];
@@ -200,6 +205,7 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.subscriptions.add(this.factSheetService.loadActiveSheet().subscribe({ error: (err) => { console.error('Failed to load active sheet:', err.message); } }));
     this.loadSourceTypes();
     this.loadGraphModelProviders();
+    this.loadExtractionAgent();
     this.loadStepCatalog();
     this.refreshJobs();
     this.refreshResumableJobs();
@@ -238,6 +244,21 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
           this.cdr.markForCheck();
         },
         error: (err) => { console.error('Failed to load graph model providers:', err.message); }
+      })
+    );
+  }
+
+  /** Load which LLM / CLI-agent model performs entity & graph extraction, so it is visible during a crawl. */
+  loadExtractionAgent() {
+    this.subscriptions.add(
+      this.graphExtractionService.getConfig().subscribe({
+        next: (cfg: GraphExtractionConfig) => {
+          const provider = (cfg?.extractionModelProvider || '').trim() || 'default';
+          const model = (cfg?.extractionModelName || '').trim() || 'default';
+          this.extractionAgentLabel = `${provider} / ${model}`;
+          this.cdr.markForCheck();
+        },
+        error: () => { /* non-fatal: leave the label hidden */ }
       })
     );
   }

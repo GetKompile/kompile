@@ -82,6 +82,11 @@ public class DynamicBatchSizer {
     private final AtomicInteger consecutiveFailures;
     private final int successThresholdForIncrease;
 
+    // Tuning-decision emission: pre-change size captured at each mutation, and the adjustment
+    // count of the last decision published to a job (so publishStats emits each change only once).
+    private final AtomicInteger pendingOldValue;
+    private final AtomicInteger lastPublishedAdjustment;
+
     private DynamicBatchSizer(Builder builder) {
         this.stageId = builder.stageId;
         this.minBatchSize = builder.minBatchSize;
@@ -100,6 +105,8 @@ public class DynamicBatchSizer {
         this.lastReason = new AtomicReference<>(null);
         this.consecutiveSuccesses = new AtomicInteger(0);
         this.consecutiveFailures = new AtomicInteger(0);
+        this.pendingOldValue = new AtomicInteger(builder.initialBatchSize);
+        this.lastPublishedAdjustment = new AtomicInteger(0);
     }
 
     /**
@@ -159,6 +166,7 @@ public class DynamicBatchSizer {
             int newSize = Math.max(minBatchSize,
                     (int)(currentSize.get() * multiplicativeDecrease));
             if (newSize != currentSize.get()) {
+                pendingOldValue.set(currentSize.get());
                 currentSize.set(newSize);
                 adjustmentCount.incrementAndGet();
                 lastDirection.set(AdjustDirection.DOWN);
@@ -196,6 +204,7 @@ public class DynamicBatchSizer {
             int newSize = Math.max(minBatchSize,
                     (int)(currentSize.get() * multiplicativeDecrease));
             if (newSize != currentSize.get()) {
+                pendingOldValue.set(currentSize.get());
                 currentSize.set(newSize);
                 adjustmentCount.incrementAndGet();
                 lastDirection.set(AdjustDirection.DOWN);
@@ -205,6 +214,7 @@ public class DynamicBatchSizer {
             // Pressure: mild shrink
             int newSize = Math.max(minBatchSize, currentSize.get() - additiveIncrease);
             if (newSize != currentSize.get()) {
+                pendingOldValue.set(currentSize.get());
                 currentSize.set(newSize);
                 adjustmentCount.incrementAndGet();
                 lastDirection.set(AdjustDirection.DOWN);
@@ -214,6 +224,7 @@ public class DynamicBatchSizer {
             // Stable: additive increase
             int newSize = Math.min(maxBatchSize, currentSize.get() + additiveIncrease);
             if (newSize != currentSize.get()) {
+                pendingOldValue.set(currentSize.get());
                 currentSize.set(newSize);
                 adjustmentCount.incrementAndGet();
                 lastDirection.set(AdjustDirection.UP);
@@ -234,6 +245,7 @@ public class DynamicBatchSizer {
     public void emergencyShrink(String reason) {
         int newSize = Math.max(minBatchSize,
                 (int)(currentSize.get() * multiplicativeDecrease * multiplicativeDecrease));
+        pendingOldValue.set(currentSize.get());
         currentSize.set(newSize);
         adjustmentCount.incrementAndGet();
         lastDirection.set(AdjustDirection.DOWN);
@@ -253,6 +265,53 @@ public class DynamicBatchSizer {
         job.getLastBatchAdjustReason().set(lastReason.get());
         job.getBatchEmaLatencyMsX100().set(emaLatencyMsX100.get());
         job.getPeakThroughputX100().set(peakThroughputX100.get());
+        recordTuningDecisionIfChanged(job);
+    }
+
+    /**
+     * Emit a {@link UnifiedCrawlJob.TuningDecision} to the job's bounded history when the batch
+     * size actually changed since the last publish. De-duplicated by {@code adjustmentCount} so a
+     * single adjustment is recorded once even if {@code publishStats} is called multiple times, and
+     * skipped entirely for HOLD / no-op cycles to keep the history meaningful.
+     */
+    private void recordTuningDecisionIfChanged(UnifiedCrawlJob job) {
+        int adj = adjustmentCount.get();
+        if (adj <= lastPublishedAdjustment.get()) return;
+        AdjustDirection dir = lastDirection.get();
+        if (dir == null || dir == AdjustDirection.HOLD) return;
+        int oldVal = pendingOldValue.get();
+        int newVal = currentSize.get();
+        if (oldVal == newVal) return;
+        lastPublishedAdjustment.set(adj);
+        String reason = lastReason.get();
+        int memPct = job.getMemoryUsagePercent() != null ? job.getMemoryUsagePercent().get() : 0;
+        job.recordTuningDecision(UnifiedCrawlJob.TuningDecision.builder()
+                .timestamp(java.time.Instant.now())
+                .stage(stageId)
+                .oldValue(oldVal)
+                .newValue(newVal)
+                .direction(dir.name())
+                .reason(reason != null ? reason : dir.name())
+                .detail(buildTuningDetail(reason, memPct))
+                .memoryPercent(memPct)
+                .build());
+    }
+
+    /** Human-readable diagnostic for a tuning decision, keyed on the canonical reason token. */
+    private String buildTuningDetail(String reason, int memPct) {
+        if (reason == null) return null;
+        switch (reason) {
+            case "memory_critical":
+                return "heap " + memPct + "% >= critical " + Math.round(memoryCriticalThreshold * 100) + "%";
+            case "memory_pressure":
+                return "heap " + memPct + "% >= pressure " + Math.round(memoryPressureThreshold * 100) + "%";
+            case "batch_failure":
+                return "batch failed; multiplicative shrink x" + multiplicativeDecrease;
+            case "stable_throughput":
+                return successThresholdForIncrease + " consecutive successes";
+            default:
+                return reason;  // emergency / external signals pass their reason straight through
+        }
     }
 
     // ---- Accessors ----

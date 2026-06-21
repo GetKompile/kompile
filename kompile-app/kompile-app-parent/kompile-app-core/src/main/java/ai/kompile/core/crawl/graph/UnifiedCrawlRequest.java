@@ -139,7 +139,7 @@ public class UnifiedCrawlRequest {
     @AllArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DistributionConfig {
-        /** Number of workers to distribute across */
+        /** Number of workers to distribute across; {@code 0} = auto (size to the live cluster). */
         @Builder.Default
         private int workerCount = 1;
 
@@ -202,5 +202,13 @@ public class UnifiedCrawlRequest {
 
         /** Timeout in seconds for an entire graph extraction batch */
         private Integer graphExtractionBatchTimeoutSeconds;
+
+        /** Concurrent in-flight REMOTE (CLI/API) extraction calls (1-32). Few fat calls beat many; each
+         *  remote call has a large fixed cost. Local models use {@link #graphExtractionParallelism}. */
+        private Integer graphExtractionRemoteParallelism;
+
+        /** Safety cap on chunks packed into one extraction batch (the model-derived char budget is the
+         *  primary control; this prevents item count binding before the char budget). */
+        private Integer graphExtractionMaxItemsPerBatch;
     }
 }

@@ -54,6 +54,10 @@
   <mat-card class="jobs-card">
     <mat-card-header>
       <mat-card-title>Crawl Jobs</mat-card-title>
+      <mat-chip *ngIf="extractionAgentLabel" class="extraction-agent-chip"
+                matTooltip="LLM / CLI-agent model used for entity &amp; graph extraction (from graph-extraction-config)">
+        <mat-icon>smart_toy</mat-icon>&nbsp;Extraction: {{ extractionAgentLabel }}
+      </mat-chip>
       <span class="spacer"></span>
       <button mat-button (click)="loadJobs()"><mat-icon>refresh</mat-icon> Refresh</button>
       <button mat-button (click)="cleanupJobs()" [disabled]="jobs.length === 0">
@@ -61,6 +65,7 @@
       </button>
     </mat-card-header>
     <mat-card-content>
+      <app-resource-strip></app-resource-strip>
       <div *ngIf="jobs.length === 0" class="no-jobs">No crawl jobs found.</div>
 
       <div *ngFor="let job of jobs" class="job-row">
@@ -204,75 +209,15 @@
 
         <div class="crawl-steps-panel" *ngIf="expandedStepsJobId === job.jobId">
           <div class="crawl-steps-summary" *ngIf="stepStatusSummary(job)">{{ stepStatusSummary(job) }}</div>
-          <!-- Per-step accordion -->
-          <div class="cm-step-accordion-item"
-               *ngFor="let step of getJobSteps(job)"
-               [ngClass]="getStepStatusClass(step.status)">
-
-            <!-- Clickable header row -->
-            <div class="cm-step-accordion-header"
-                 (click)="toggleCmStepExpanded(job, step.stepId)"
-                 role="button"
-                 [attr.aria-expanded]="isCmStepExpanded(job.jobId, step.stepId)">
-              <mat-icon class="cm-step-chevron"
-                        [class.cm-step-chevron-open]="isCmStepExpanded(job.jobId, step.stepId)">
-                chevron_right
-              </mat-icon>
-              <mat-icon class="cs-type-icon">{{ getStepIcon(step.stepType) }}</mat-icon>
-              <span class="cs-name">{{ step.displayName || step.stepId }}</span>
-              <span class="cs-status">{{ step.status || 'PENDING' }}</span>
-              <span class="cs-counts" *ngIf="step.totalItems">{{ step.completedItems || 0 }}/{{ step.totalItems }}</span>
-              <span class="cs-counts cs-failed-count" *ngIf="step.failedItems">{{ step.failedItems }} failed</span>
-              <button mat-stroked-button class="cs-run-now"
-                      *ngIf="step.status === 'ARCHIVED' || step.status === 'DEFERRED'"
-                      (click)="runStep(job.jobId, step.stepId); $event.stopPropagation()">
-                <mat-icon>play_circle</mat-icon> Run now
-              </button>
-            </div>
-
-            <!-- Expanded detail panel -->
-            <div class="cm-step-detail-panel" *ngIf="isCmStepExpanded(job.jobId, step.stepId)">
-              <!-- Step counts -->
-              <div class="cm-step-detail-stats">
-                <span *ngIf="step.totalItems">
-                  <strong>Items:</strong> {{ step.completedItems || 0 }}/{{ step.totalItems }}
-                </span>
-                <span *ngIf="step.failedItems">
-                  <strong>Failed:</strong> {{ step.failedItems }}
-                </span>
-                <span *ngIf="step.progressPercent">
-                  <strong>Progress:</strong> {{ step.progressPercent }}%
-                </span>
-              </div>
-              <!-- Loading indicator while persisted logs are being fetched -->
-              <div class="cm-step-detail-loading" *ngIf="isCmStepLogLoading(job)">
-                <mat-icon inline>sync</mat-icon> Loading activity log...
-              </div>
-              <!-- Activity log filtered to this step's phase (persisted + live fallback) -->
-              <ng-container *ngIf="!isCmStepLogLoading(job)">
-                <ng-container *ngIf="getCmStepEvents(job, step) as stepEvents">
-                  <div class="cm-step-section-header" *ngIf="stepEvents.length > 0">
-                    <mat-icon inline>receipt_long</mat-icon>
-                    <span>&#9658; Activity</span>
-                  </div>
-                  <div class="cm-step-events" *ngIf="stepEvents.length > 0">
-                    <div *ngFor="let ev of stepEvents | slice:-20"
-                         class="cm-step-event-row"
-                         [class.cm-event-warn]="ev.level === 'WARN'"
-                         [class.cm-event-error]="ev.level === 'ERROR'">
-                      <span class="cm-event-time" *ngIf="ev.timestamp">{{ ev.timestamp | slice:11:19 }}</span>
-                      <span class="cm-event-level" [class]="'cm-level-' + (ev.level || 'info').toLowerCase()">{{ ev.level }}</span>
-                      <span class="cm-event-msg">{{ ev.message }}</span>
-                    </div>
-                  </div>
-                  <div class="cm-step-detail-empty" *ngIf="stepEvents.length === 0">
-                    <mat-icon inline>hourglass_empty</mat-icon>
-                    No activity recorded for this step.
-                  </div>
-                </ng-container>
-              </ng-container>
-            </div>
-          </div>
+          <!-- Unified, fully-detailed expandable step monitor (shared with the fact-sheet view) -->
+          <app-crawl-step-monitor
+            [steps]="getMonitorSteps(job)"
+            [job]="getRichJob(job)"
+            [jobId]="job.jobId"
+            [taskId]="getCrawlerHistoryTaskId(job)"
+            [isJobRunning]="isJobActive(job.status)"
+            (runStepRequested)="runStep($event.jobId, $event.stepId)">
+          </app-crawl-step-monitor>
         </div>
       </div>
     </mat-card-content>
