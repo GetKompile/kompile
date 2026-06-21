@@ -9,6 +9,8 @@
  */
 package ai.kompile.app.web.controllers.explain;
 
+import ai.kompile.event.attribution.service.EventAttributionService;
+import ai.kompile.graph.reasoning.domain.AttributionResult;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
@@ -24,10 +26,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link ExplainController} and its {@link ExplainOrchestrator}.
@@ -44,6 +50,9 @@ class ExplainControllerTest {
     @Mock
     private KnowledgeGraphService kgService;
 
+    @Mock
+    private EventAttributionService attributionService;
+
     private KbGroundingService groundingService;
     private ExplainOrchestrator orchestrator;
     private ExplainController controller;
@@ -52,7 +61,14 @@ class ExplainControllerTest {
     void setUp() {
         groundingService = new KbGroundingService();
         KnowledgeGraphReasoningAdapter adapter = new KnowledgeGraphReasoningAdapter(kgService);
-        orchestrator = new ExplainOrchestrator(groundingService, adapter);
+        // Default: empty attribution result (no chains) — overridden per causal tests where needed.
+        // lenient() prevents UnnecessaryStubbingException in non-causal tests.
+        lenient().when(attributionService.explain(any())).thenReturn(
+                AttributionResult.builder()
+                        .targetNodeId("default")
+                        .computedAt(Instant.now())
+                        .build());
+        orchestrator = new ExplainOrchestrator(groundingService, adapter, attributionService);
         controller = new ExplainController(orchestrator, groundingService);
     }
 
@@ -156,8 +172,16 @@ class ExplainControllerTest {
     class CausalRoute {
 
         @Test
-        @DisplayName("causal: prefix routes to CAUSAL, returns stub trail")
-        void causalPrefix_returnsCausalTrail() {
+        @DisplayName("causal: prefix routes to CAUSAL, returns populated trail (not a stub)")
+        void causalPrefix_returnsCausalTrail_populated() {
+            // Attribution service returns a non-empty result — trail must NOT be the old stub
+            when(attributionService.explain(any())).thenReturn(
+                    AttributionResult.builder()
+                            .targetNodeId("PaymentFailure")
+                            .targetTitle("Payment Failure")
+                            .computedAt(Instant.now())
+                            .build());
+
             ExplainRequest req = new ExplainRequest(
                     "causal:PaymentFailure", 1L, 0, null, null);
 
@@ -166,10 +190,30 @@ class ExplainControllerTest {
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertNotNull(resp.getBody());
             assertEquals("CAUSAL", resp.getBody().inferenceMode());
+            // Target id must be the bare "PaymentFailure" (causal: prefix stripped)
+            assertNotNull(resp.getBody().trail());
+            assertEquals("PaymentFailure", resp.getBody().trail().targetId());
+            // Natural language summary must mention the target — must NOT contain the old banner text
             assertNotNull(resp.getBody().naturalLanguageSummary());
-            assertTrue(resp.getBody().naturalLanguageSummary().contains("PaymentFailure"));
-            // Causal stub returns 0.0 confidence
-            assertEquals(0.0, resp.getBody().confidence());
+            assertTrue(resp.getBody().naturalLanguageSummary().contains("PaymentFailure"),
+                    "Summary should contain the target name");
+            assertFalse(resp.getBody().naturalLanguageSummary().contains("dedicated attribution endpoints"),
+                    "Stub banner text must be gone");
+        }
+
+        @Test
+        @DisplayName("causal: target with no chains returns 0.0 confidence and descriptive summary")
+        void causalPrefix_noChains_zeroConfidence() {
+            // Default mock already returns empty AttributionResult (set up in @BeforeEach)
+            ExplainRequest req = new ExplainRequest(
+                    "causal:UnknownEvent", 1L, 0, null, null);
+
+            ResponseEntity<ExplainResponse> resp = controller.explain(req);
+
+            assertEquals(HttpStatus.OK, resp.getStatusCode());
+            assertEquals("CAUSAL", resp.getBody().inferenceMode());
+            assertEquals(0.0, resp.getBody().confidence(), 1e-9);
+            assertTrue(resp.getBody().naturalLanguageSummary().contains("UnknownEvent"));
         }
 
         @Test

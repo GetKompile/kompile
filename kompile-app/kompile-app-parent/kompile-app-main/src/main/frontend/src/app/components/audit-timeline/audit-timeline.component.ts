@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
-import { Component, Input } from '@angular/core';
+import { Component, Input, OnChanges, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -29,6 +30,30 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDividerModule } from '@angular/material/divider';
 
 import { KbGroundingService, AssertResponse } from '../../services/kb-grounding.service';
+import { BaseService } from '../../services/base.service';
+
+// Shape returned by GET /api/kb-grounding/{factSheetId}/audit
+export interface FactAuditEvent {
+  eventId: string;
+  eventType: string;
+  atomKey: string;
+  occurredAt: string;       // ISO-8601
+  actor?: string;
+  sessionId?: string;
+  valueBefore?: number;
+  valueAfter?: number;
+  confidenceBefore?: number;
+  confidenceAfter?: number;
+  strengthLayerBefore?: string;
+  strengthLayerAfter?: string;
+  runId?: string;
+  derivationTrailRef?: string;
+  pinnedAfter?: boolean;
+  ruleId?: string;
+  weightBefore?: number;
+  weightAfter?: number;
+  correctionReason?: string;
+}
 
 interface CorrectionEntry {
   atomKey: string;
@@ -49,6 +74,10 @@ const EVENT_TYPE_LEGEND = [
   { type: 'CORRECTED',        color: '#00bcd4', description: 'Corrected via human feedback' },
   { type: 'WEIGHT_TUNED',     color: '#795548', description: 'Weight tuned by online learning' }
 ] as const;
+
+const EVENT_TYPE_COLOR: Record<string, string> = Object.fromEntries(
+  EVENT_TYPE_LEGEND.map(e => [e.type, e.color])
+);
 
 @Component({
   selector: 'app-audit-timeline',
@@ -73,7 +102,9 @@ const EVENT_TYPE_LEGEND = [
         <mat-card-title>
           <mat-icon>history</mat-icon> Audit Trail
         </mat-card-title>
-        <mat-card-subtitle>Phase 3 — backend pending. Correction submission is live.</mat-card-subtitle>
+        <mat-card-subtitle>
+          KB grounding history for fact sheet {{ factSheetId ?? '(none selected)' }}
+        </mat-card-subtitle>
       </mat-card-header>
 
       <mat-card-content>
@@ -85,6 +116,74 @@ const EVENT_TYPE_LEGEND = [
                  [matTooltip]="ev.description">
               <span class="legend-dot" [style.background]="ev.color"></span>
               <span class="legend-label">{{ ev.type }}</span>
+            </div>
+          </div>
+        </div>
+
+        <mat-divider></mat-divider>
+
+        <!-- Timeline from backend -->
+        <div class="timeline-section">
+          <div class="timeline-header">
+            <h4 class="list-title">
+              Audit Timeline
+              <span *ngIf="auditEvents.length > 0">({{ auditEvents.length }})</span>
+            </h4>
+            <button mat-icon-button (click)="loadAuditTrail()"
+                    [disabled]="loadingAudit || !factSheetId"
+                    matTooltip="Refresh timeline">
+              <mat-icon>refresh</mat-icon>
+            </button>
+          </div>
+
+          <div *ngIf="loadingAudit" class="loading-state">
+            <mat-spinner diameter="24"></mat-spinner>
+            <span>Loading audit trail…</span>
+          </div>
+
+          <div *ngIf="!loadingAudit && auditError" class="error-state">
+            <mat-icon color="warn">error_outline</mat-icon>
+            <span>{{ auditError }}</span>
+          </div>
+
+          <div *ngIf="!loadingAudit && !auditError && auditEvents.length === 0" class="empty-state">
+            <mat-icon>info_outline</mat-icon>
+            <span>No audit events yet for this fact sheet.</span>
+          </div>
+
+          <div *ngIf="!loadingAudit && auditEvents.length > 0" class="audit-timeline">
+            <div *ngFor="let ev of auditEvents" class="audit-event-row">
+              <div class="event-dot-col">
+                <span class="legend-dot"
+                      [style.background]="colorOf(ev.eventType)"
+                      [matTooltip]="ev.eventType"></span>
+                <div class="event-connector"></div>
+              </div>
+              <div class="event-body">
+                <div class="event-header">
+                  <span class="event-type-badge" [style.color]="colorOf(ev.eventType)">
+                    {{ ev.eventType }}
+                  </span>
+                  <code class="atom-key">{{ ev.atomKey }}</code>
+                  <span class="entry-time">{{ ev.occurredAt | date:'short' }}</span>
+                  <button *ngIf="ev.pinnedAfter"
+                          mat-icon-button
+                          class="revert-btn"
+                          [matTooltip]="'Revert PIN for ' + ev.atomKey"
+                          (click)="revertPin(ev.atomKey)">
+                    <mat-icon class="small-icon">undo</mat-icon>
+                  </button>
+                </div>
+                <div class="event-detail">
+                  <span *ngIf="isFinite(ev.valueBefore!) && isFinite(ev.valueAfter!)">
+                    value: <strong>{{ ev.valueBefore | number:'1.2-3' }}</strong>
+                    &rarr; <strong>{{ ev.valueAfter | number:'1.2-3' }}</strong>
+                  </span>
+                  <span *ngIf="ev.correctionReason"> | reason: {{ ev.correctionReason }}</span>
+                  <span *ngIf="ev.actor"> | actor: {{ ev.actor }}</span>
+                  <span *ngIf="ev.strengthLayerAfter"> | strength: {{ ev.strengthLayerAfter }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -124,7 +223,7 @@ const EVENT_TYPE_LEGEND = [
 
         <mat-divider></mat-divider>
 
-        <!-- Correction history -->
+        <!-- Correction history (session-local) -->
         <div class="corrections-list" *ngIf="corrections.length > 0">
           <h4 class="list-title">Submitted Corrections ({{ corrections.length }})</h4>
           <div *ngFor="let c of corrections" class="correction-entry">
@@ -151,22 +250,81 @@ const EVENT_TYPE_LEGEND = [
   `,
   styleUrls: ['./audit-timeline.component.css']
 })
-export class AuditTimelineComponent {
+export class AuditTimelineComponent extends BaseService implements OnChanges {
   @Input() factSheetId: number | null = null;
 
   readonly eventLegend = EVENT_TYPE_LEGEND;
 
+  // ── Timeline state ───────────────────────────────────────────────────────────
+  auditEvents: FactAuditEvent[] = [];
+  loadingAudit = false;
+  auditError: string | null = null;
+
+  // ── Correction form state ────────────────────────────────────────────────────
   atomKey = '';
   correctionValue = 1.0;
   correctionSource = '';
   submitting = false;
-
   corrections: CorrectionEntry[] = [];
 
   constructor(
+    private http: HttpClient,
     private kbGrounding: KbGroundingService,
     private snackBar: MatSnackBar
-  ) {}
+  ) {
+    super();
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['factSheetId'] && this.factSheetId != null) {
+      this.loadAuditTrail();
+    }
+  }
+
+  // ── Backend: load audit trail ────────────────────────────────────────────────
+
+  loadAuditTrail(): void {
+    if (this.factSheetId == null) return;
+    this.loadingAudit = true;
+    this.auditError = null;
+
+    const url = `${this.backendUrl}/kb-grounding/${this.factSheetId}/audit`;
+    const params = new HttpParams().set('limit', '200');
+
+    this.http.get<FactAuditEvent[]>(url, { params }).subscribe({
+      next: (events) => {
+        this.loadingAudit = false;
+        // Sort newest-first for the timeline display
+        this.auditEvents = [...events].sort((a, b) =>
+          new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()
+        );
+      },
+      error: (err: any) => {
+        this.loadingAudit = false;
+        this.auditError = err?.error?.message || err?.message || 'Failed to load audit trail';
+      }
+    });
+  }
+
+  // ── Backend: revert a PIN ────────────────────────────────────────────────────
+
+  revertPin(atomKey: string): void {
+    if (this.factSheetId == null) return;
+    const url = `${this.backendUrl}/kb-grounding/${this.factSheetId}/corrections/${encodeURIComponent(atomKey)}`;
+
+    this.http.delete<{ status: string; atomKey: string }>(url).subscribe({
+      next: () => {
+        this.snackBar.open(`PIN reverted for "${atomKey}"`, 'Dismiss', { duration: 3000 });
+        this.loadAuditTrail();
+      },
+      error: (err: any) => {
+        const msg = err?.error?.message || err?.message || 'Revert failed';
+        this.snackBar.open(msg, 'Dismiss', { duration: 5000 });
+      }
+    });
+  }
+
+  // ── Submission form ──────────────────────────────────────────────────────────
 
   submitCorrection(): void {
     if (!this.atomKey.trim()) return;
@@ -198,6 +356,8 @@ export class AuditTimelineComponent {
         this.atomKey = '';
         this.correctionSource = '';
         this.correctionValue = 1.0;
+        // Refresh the backend timeline
+        this.loadAuditTrail();
       },
       error: (err: any) => {
         this.submitting = false;
@@ -205,5 +365,15 @@ export class AuditTimelineComponent {
         this.snackBar.open(msg, 'Dismiss', { duration: 5000 });
       }
     });
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+
+  colorOf(eventType: string): string {
+    return EVENT_TYPE_COLOR[eventType] ?? '#9e9e9e';
+  }
+
+  isFinite(n: number | undefined): boolean {
+    return n !== undefined && Number.isFinite(n);
   }
 }

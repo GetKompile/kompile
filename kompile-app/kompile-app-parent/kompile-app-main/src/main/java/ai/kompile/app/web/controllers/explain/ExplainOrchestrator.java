@@ -9,6 +9,10 @@
  */
 package ai.kompile.app.web.controllers.explain;
 
+import ai.kompile.event.attribution.service.EventAttributionService;
+import ai.kompile.graph.reasoning.domain.AttributionChain;
+import ai.kompile.graph.reasoning.domain.AttributionQuery;
+import ai.kompile.graph.reasoning.domain.AttributionResult;
 import ai.kompile.graph.reasoning.explain.ConfidenceBreakdown;
 import ai.kompile.graph.reasoning.explain.ReasoningTrail;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
@@ -24,6 +28,7 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Routes an explain request to the correct reasoning engine and returns a unified
@@ -48,12 +53,15 @@ public class ExplainOrchestrator {
 
     private final KbGroundingService groundingService;
     private final KnowledgeGraphReasoningAdapter reasoningAdapter;
+    private final EventAttributionService attributionService;
 
     @Autowired
     public ExplainOrchestrator(KbGroundingService groundingService,
-                               KnowledgeGraphReasoningAdapter reasoningAdapter) {
+                               KnowledgeGraphReasoningAdapter reasoningAdapter,
+                               EventAttributionService attributionService) {
         this.groundingService = groundingService;
         this.reasoningAdapter = reasoningAdapter;
+        this.attributionService = attributionService;
     }
 
     /**
@@ -176,23 +184,86 @@ public class ExplainOrchestrator {
                 .build();
     }
 
-    // ── CAUSAL trail (stub) ──────────────────────────────────────────────────────
+    // ── CAUSAL trail ─────────────────────────────────────────────────────────────
 
     private ReasoningTrail causalTrail(String causalTarget, long factSheetId) {
-        // Strip the causal: prefix
+        // Strip the "causal:" prefix to get the bare target node id / event name
         String target = causalTarget.startsWith("causal:")
                 ? causalTarget.substring("causal:".length())
                 : causalTarget;
 
-        String summary = "Causal attribution for '" + target +
-                "' is available via the dedicated attribution endpoints. " +
-                "Phase 3 will route through the causal engine here.";
+        AttributionQuery query = AttributionQuery.builder()
+                .targetNodeId(target)
+                .naturalLanguageQuery("Why did '" + target + "' happen?")
+                .factSheetId(factSheetId > 0 ? factSheetId : null)
+                .maxDepth(5)
+                .maxChains(5)
+                .minConfidence(0.05)
+                .useLlm(false)            // deterministic; no LLM dependency in the explain path
+                .includeCounterfactuals(false)
+                .build();
+
+        AttributionResult result = attributionService.explain(query);
+
+        // ── Map attribution chains → evidence strings ────────────────────────────
+        List<String> evidence = result.getChains().stream()
+                .flatMap(chain -> chain.getHops().stream())
+                .flatMap(hop -> hop.getEvidence().stream())
+                .map(ev -> ev.getSummary())
+                .filter(s -> s != null && !s.isBlank())
+                .distinct()
+                .collect(Collectors.toList());
+
+        // ── Activated rules = root-cause titles from each chain ──────────────────
+        List<String> activatedRules = result.getChains().stream()
+                .map(chain -> "rootCause(" + chain.getRootCauseNodeId() + ")"
+                        + (chain.getRootCauseTitle() != null
+                                ? " [" + chain.getRootCauseTitle() + "]"
+                                : ""))
+                .distinct()
+                .collect(Collectors.toList());
+
+        // ── Confidence = highest overall-confidence chain, or 0.0 if no chains ──
+        double confidence = result.getChains().stream()
+                .mapToDouble(AttributionChain::getOverallConfidence)
+                .max()
+                .orElse(0.0);
+
+        // ── Natural-language summary ─────────────────────────────────────────────
+        String summary;
+        if (result.getSynthesizedExplanation() != null && !result.getSynthesizedExplanation().isBlank()) {
+            summary = result.getSynthesizedExplanation();
+        } else if (!result.getChains().isEmpty()) {
+            AttributionChain topChain = result.getChains().get(0);
+            summary = String.format(
+                    "Causal attribution for '%s': top chain from '%s' (confidence %.2f, %d hop%s). "
+                    + "%d causal chain%s found across %d node%s visited.",
+                    target,
+                    topChain.getRootCauseTitle() != null ? topChain.getRootCauseTitle() : topChain.getRootCauseNodeId(),
+                    topChain.getOverallConfidence(),
+                    topChain.getHops().size(), topChain.getHops().size() == 1 ? "" : "s",
+                    result.getChains().size(), result.getChains().size() == 1 ? "" : "s",
+                    result.getNodesVisited(), result.getNodesVisited() == 1 ? "" : "s");
+        } else {
+            summary = String.format(
+                    "No causal chains found for '%s'. "
+                    + "%d node%s visited, %d edge%s examined.",
+                    target,
+                    result.getNodesVisited(), result.getNodesVisited() == 1 ? "" : "s",
+                    result.getEdgesExamined(), result.getEdgesExamined() == 1 ? "" : "s");
+        }
+
+        log.debug("causalTrail: target='{}' chains={} confidence={}", target,
+                result.getChains().size(), confidence);
 
         return ReasoningTrail.builder(target)
                 .question("What caused '" + target + "'?")
-                .confidence(0.0)
+                .confidence(confidence)
+                .breakdown(ConfidenceBreakdown.empty())
+                .evidence(evidence)
+                .activatedRules(activatedRules)
                 .inferenceMode(MODE_CAUSAL)
-                .computedAt(Instant.now())
+                .computedAt(result.getComputedAt() != null ? result.getComputedAt() : Instant.now())
                 .naturalLanguageSummary(summary)
                 .build();
     }
