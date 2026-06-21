@@ -98,6 +98,18 @@
       <mat-icon class="tab-icon">water</mat-icon>
       <span class="tab-label">Hydration</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'factsByTier'" (click)="selectSubTab('factsByTier')">
+      <mat-icon class="tab-icon">grade</mat-icon>
+      <span class="tab-label">Facts by Tier</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'weights'" (click)="selectSubTab('weights')">
+      <mat-icon class="tab-icon">scale</mat-icon>
+      <span class="tab-label">Weights</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'processLineage'" (click)="selectSubTab('processLineage')">
+      <mat-icon class="tab-icon">device_hub</mat-icon>
+      <span class="tab-label">Process Lineage</span>
+    </button>
   </div>
 
   <div class="sub-tab-content">
@@ -178,6 +190,15 @@
     </div>
     <div *ngIf="activeSubTab === 'hydration'">
       <app-hydration-progress-panel></app-hydration-progress-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'factsByTier'">
+      <app-facts-by-tier-panel [factSheetId]="activeFactSheetId"></app-facts-by-tier-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'weights'">
+      <app-kb-weights-panel [factSheetId]="activeFactSheetId"></app-kb-weights-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'processLineage'">
+      <app-process-lineage-panel [factSheetId]="activeFactSheetId"></app-process-lineage-panel>
     </div>
   </div>
 </div>

@@ -1,0 +1,130 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+.facts-tier-card {
+  margin: 16px;
+}
+
+/* ---- Tier filter chips ---- */
+.tier-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.tier-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--border-color, #ccc);
+  background: var(--chip-bg, transparent);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s, border-color 0.15s;
+  color: var(--text-color, inherit);
+}
+
+.tier-chip:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.tier-chip.active {
+  background: var(--chip-color, #9E9E9E);
+  border-color: var(--chip-color, #9E9E9E);
+  color: #fff;
+}
+
+.tier-chip.active .chip-dot {
+  background: #fff !important;
+}
+
+.chip-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* ---- Spinner ---- */
+.spinner-row {
+  display: flex;
+  justify-content: center;
+  padding: 32px 0;
+}
+
+/* ---- Messages ---- */
+.error-msg,
+.empty-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  color: var(--text-secondary, #666);
+}
+
+.error-msg {
+  color: #F44336;
+}
+
+/* ---- Table ---- */
+.facts-table {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.atom-key-cell {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.band-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+
+/* ---- Cap notice ---- */
+.cap-notice {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  font-style: italic;
+}
+
+/* Dark theme overrides */
+body.dark-theme .tier-chip {
+  --border-color: #555;
+  --chip-bg: transparent;
+  --text-color: #e0e0e0;
+}
+
+body.dark-theme .tier-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.dark-theme .empty-msg {
+  color: #aaa;
+}
+
+body.dark-theme .cap-notice {
+  color: #aaa;
+}

@@ -45,12 +45,16 @@ import { GroundingConsolePanelComponent } from '../grounding-console-panel/groun
 import { ProcessMiningPanelComponent } from '../process-mining-panel/process-mining-panel.component';
 import { AuditTimelineComponent } from '../audit-timeline/audit-timeline.component';
 import { HydrationProgressPanelComponent } from '../hydration-progress-panel/hydration-progress-panel.component';
+import { FactsByTierPanelComponent } from '../facts-by-tier-panel/facts-by-tier-panel.component';
+import { KbWeightsPanelComponent } from '../kb-weights-panel/kb-weights-panel.component';
+import { ProcessLineagePanelComponent } from '../process-lineage-panel/process-lineage-panel.component';
 
 type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
   | 'eventObservation' | 'causalAttribution'
   | 'overview' | 'health' | 'ontology' | 'pipelines' | 'provenance' | 'diff'
   | 'maintenance' | 'rules' | 'extract' | 'patch' | 'eval' | 'io'
-  | 'grounding' | 'processes' | 'audit' | 'hydration';
+  | 'grounding' | 'processes' | 'audit' | 'hydration'
+  | 'factsByTier' | 'weights' | 'processLineage';
 
 /**
  * Unified "Graphs" workspace — a first-class home for knowledge graphs as assets. Combines the
@@ -88,7 +92,10 @@ type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
     GroundingConsolePanelComponent,
     ProcessMiningPanelComponent,
     AuditTimelineComponent,
-    HydrationProgressPanelComponent
+    HydrationProgressPanelComponent,
+    FactsByTierPanelComponent,
+    KbWeightsPanelComponent,
+    ProcessLineagePanelComponent
   ],
   templateUrl: './graphs-hub.component.html',
   styleUrls: ['./graphs-hub.component.css']

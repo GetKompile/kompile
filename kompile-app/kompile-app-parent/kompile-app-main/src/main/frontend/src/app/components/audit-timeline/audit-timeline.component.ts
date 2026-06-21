@@ -66,18 +66,38 @@ interface CorrectionEntry {
 }
 
 const EVENT_TYPE_LEGEND = [
-  { type: 'ASSERTED',         color: '#4caf50', description: 'User manually asserted a value' },
-  { type: 'DERIVED',          color: '#2196f3', description: 'Inferred from rules/evidence' },
-  { type: 'REWEIGHTED',       color: '#ff9800', description: 'Confidence re-weighted by PSL/Bayesian pass' },
-  { type: 'STRENGTH_CHANGED', color: '#9c27b0', description: 'Strength band crossed a threshold' },
-  { type: 'TOMBSTONED',       color: '#f44336', description: 'Fact suppressed / removed from KB' },
-  { type: 'CORRECTED',        color: '#00bcd4', description: 'Corrected via human feedback' },
-  { type: 'WEIGHT_TUNED',     color: '#795548', description: 'Weight tuned by online learning' }
+  { type: 'ASSERTED',               color: '#4caf50', description: 'User manually asserted a value' },
+  { type: 'DERIVED',                color: '#2196f3', description: 'Inferred from rules/evidence' },
+  { type: 'REWEIGHTED',             color: '#ff9800', description: 'Confidence re-weighted by PSL/Bayesian pass' },
+  { type: 'STRENGTH_CHANGED',       color: '#9c27b0', description: 'Strength band crossed a threshold' },
+  { type: 'TOMBSTONED',             color: '#f44336', description: 'Fact suppressed / removed from KB' },
+  { type: 'CORRECTED',              color: '#00bcd4', description: 'Corrected via human feedback' },
+  { type: 'WEIGHT_TUNED',           color: '#795548', description: 'Weight tuned by online learning' },
+  { type: 'PROMOTED',               color: '#009688', description: 'Fact promoted to a higher strength tier' },
+  { type: 'FUSED',                  color: '#3f51b5', description: 'Contradictory signals fused into consensus' },
+  { type: 'CONTRADICTION_RESOLVED', color: '#e91e63', description: 'Contradiction resolved between competing facts' },
+  { type: 'RULE_CREATED',           color: '#ff5722', description: 'New PSL/MEBN rule created from evidence' },
+  { type: 'PROCESS_CREATED',        color: '#795548', description: 'Process suggestion derived from graph' },
 ] as const;
 
 const EVENT_TYPE_COLOR: Record<string, string> = Object.fromEntries(
   EVENT_TYPE_LEGEND.map(e => [e.type, e.color])
 );
+
+const EVENT_TYPE_ICON: Record<string, string> = {
+  ASSERTED:               'check_circle',
+  DERIVED:                'auto_fix_high',
+  REWEIGHTED:             'scale',
+  STRENGTH_CHANGED:       'show_chart',
+  TOMBSTONED:             'delete_forever',
+  CORRECTED:              'edit',
+  WEIGHT_TUNED:           'tune',
+  PROMOTED:               'trending_up',
+  FUSED:                  'merge_type',
+  CONTRADICTION_RESOLVED: 'balance',
+  RULE_CREATED:           'gavel',
+  PROCESS_CREATED:        'account_tree',
+};
 
 @Component({
   selector: 'app-audit-timeline',
@@ -115,6 +135,7 @@ const EVENT_TYPE_COLOR: Record<string, string> = Object.fromEntries(
             <div *ngFor="let ev of eventLegend" class="legend-item"
                  [matTooltip]="ev.description">
               <span class="legend-dot" [style.background]="ev.color"></span>
+              <mat-icon *ngIf="iconOf(ev.type)" class="legend-icon" style="font-size:14px;color:inherit;vertical-align:middle">{{ iconOf(ev.type) }}</mat-icon>
               <span class="legend-label">{{ ev.type }}</span>
             </div>
           </div>
@@ -162,6 +183,7 @@ const EVENT_TYPE_COLOR: Record<string, string> = Object.fromEntries(
               <div class="event-body">
                 <div class="event-header">
                   <span class="event-type-badge" [style.color]="colorOf(ev.eventType)">
+                    <mat-icon *ngIf="iconOf(ev.eventType)" class="badge-icon" style="font-size:14px;vertical-align:middle">{{ iconOf(ev.eventType) }}</mat-icon>
                     {{ ev.eventType }}
                   </span>
                   <code class="atom-key">{{ ev.atomKey }}</code>
@@ -371,6 +393,10 @@ export class AuditTimelineComponent extends BaseService implements OnChanges {
 
   colorOf(eventType: string): string {
     return EVENT_TYPE_COLOR[eventType] ?? '#9e9e9e';
+  }
+
+  iconOf(eventType: string): string | null {
+    return EVENT_TYPE_ICON[eventType] ?? null;
   }
 
   isFinite(n: number | undefined): boolean {

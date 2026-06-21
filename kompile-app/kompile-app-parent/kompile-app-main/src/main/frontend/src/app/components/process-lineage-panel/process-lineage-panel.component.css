@@ -1,0 +1,176 @@
+.lineage-card { margin: 16px; }
+
+.controls-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.fact-sheet-label { font-size: 14px; }
+
+.noise-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.spinner-row, .error-row, .empty-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  color: var(--text-secondary, #666);
+}
+
+.process-header { margin-top: 8px; }
+
+.process-name {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+  color: var(--text-primary, #333);
+}
+
+.process-desc {
+  font-size: 14px;
+  color: var(--text-secondary, #666);
+  margin: 0 0 12px 0;
+}
+
+.lineage-block {
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--surface-secondary, #f5f5f5);
+  border-radius: 8px;
+  border-left: 4px solid var(--accent-color, #3f51b5);
+}
+
+.lineage-block h4 { margin: 0 0 8px 0; font-size: 14px; }
+
+.phases-section { margin-top: 12px; }
+.phases-section h4 { font-size: 14px; margin-bottom: 8px; }
+
+.phase-panel { margin-bottom: 4px; }
+
+.step-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--divider-color, #eee);
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.step-icon { font-size: 18px; color: var(--accent-color, #3f51b5); }
+.step-name { font-size: 14px; font-weight: 500; }
+.step-desc { font-size: 13px; color: var(--text-secondary, #666); margin: 4px 0 4px 26px; }
+
+.step-type-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--chip-bg, #e8eaf6);
+  border-radius: 10px;
+  color: var(--accent-color, #3f51b5);
+}
+
+.role-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #e8f5e9;
+  border-radius: 10px;
+  color: #388e3c;
+}
+
+.step-lineage-panel { margin-top: 8px; }
+
+/* Lineage detail */
+.lineage-detail { display: flex; flex-direction: column; gap: 8px; }
+
+.lineage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.lineage-label {
+  font-weight: 600;
+  color: var(--text-secondary, #666);
+  min-width: 130px;
+}
+
+.method-badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: #e3f2fd;
+  color: #1565c0;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.confidence-value { font-weight: 600; color: var(--text-primary, #333); }
+
+.atom-key { font-size: 12px; background: var(--code-bg, #f4f4f4); padding: 2px 6px; border-radius: 4px; }
+
+.lineage-block-inner { display: flex; flex-direction: column; gap: 4px; }
+
+.chips-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+
+.node-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--chip-bg, #e8eaf6);
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: monospace;
+  transition: background 0.2s;
+}
+.node-chip:hover { background: var(--accent-color, #3f51b5); color: white; }
+
+.overflow-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--surface-secondary, #eee);
+  border-radius: 10px;
+  color: var(--text-secondary, #999);
+}
+
+.rules-block {
+  font-size: 12px;
+  background: var(--code-bg, #1e1e1e);
+  color: #d4d4d4;
+  padding: 8px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.causal-pairs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+
+.causal-pair {
+  font-size: 12px;
+  padding: 3px 10px;
+  background: #fce4ec;
+  color: #880e4f;
+  border-radius: 10px;
+  font-family: monospace;
+}
+
+/* Dark mode */
+body.dark-theme .lineage-card { background: var(--surface-bg, #1e1e1e); }
+body.dark-theme .lineage-block { background: #2a2a2a; border-left-color: #7986cb; }
+body.dark-theme .step-type-badge { background: #303060; color: #90caf9; }
+body.dark-theme .role-badge { background: #1b5e20; color: #a5d6a7; }
+body.dark-theme .method-badge { background: #0d3060; color: #90caf9; }
+body.dark-theme .node-chip { background: #303060; color: #c5cae9; }
+body.dark-theme .causal-pair { background: #4a1530; color: #f48fb1; }
+body.dark-theme .atom-key { background: #2a2a2a; }
+body.dark-theme .step-row { border-bottom-color: #444; }
