@@ -497,6 +497,9 @@ public class McpSocketSession implements Runnable {
         // Tool call catalog
         register(map, new ToolCallCatalogTool(), om, wd);
 
+        // Full knowledge graph CRUD + graph capabilities
+        register(map, new ai.kompile.cli.main.chat.tools.KnowledgeGraphTool(null, om), om, wd);
+
         // KB Grounding tools (LLM→MCP→KB path, require kompile-app backend)
         register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool(null, om), om, wd);
         register(map, new ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool(null, om), om, wd);

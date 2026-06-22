@@ -1198,6 +1198,9 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.RagSearchTool(baseUrl, om), om, wd);
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.GraphRagSearchTool(baseUrl, om), om, wd);
 
+        // ── Full knowledge graph CRUD + graph capabilities ─────────────────
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.KnowledgeGraphTool(baseUrl, om), om, wd);
+
         // ── KB Grounding tools (LLM→MCP→KB path, require kompile-app backend) ──
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool(baseUrl, om), om, wd);
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool(baseUrl, om), om, wd);

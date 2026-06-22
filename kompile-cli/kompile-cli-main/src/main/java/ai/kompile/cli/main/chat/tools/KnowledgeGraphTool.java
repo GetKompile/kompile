@@ -80,7 +80,7 @@ public class KnowledgeGraphTool implements CliTool {
                 "'traverse' (BFS traversal grouped by depth), " +
                 "'shortest_path' (find shortest path between two nodes), " +
                 "'algorithm' (run pagerank/degree/betweenness/wcc/jaccard), " +
-                "'communities' (detect communities via Louvain), " +
+                "'communities' (detect communities via Louvain or label_propagation, pass method param), " +
                 // Hierarchy
                 "'hierarchy' (tree view of graph hierarchy), " +
                 "'ancestors' (ancestor breadcrumb chain for a node), " +
@@ -113,7 +113,25 @@ public class KnowledgeGraphTool implements CliTool {
                 "'toggle_extraction' (toggle extraction on/off), " +
                 "'list_providers' (list LLM providers), " +
                 "'list_presets' (list schema presets), " +
-                "'apply_preset' (apply a schema preset).";
+                "'apply_preset' (apply a schema preset), " +
+                // NEW: OWL reasoning
+                "'owl_reasoning' (OWL 2 RL reasoning snapshot: class/property/axiom counts, entailments, consistency), " +
+                // NEW: Ontology conformance + binding
+                "'ontology_conformance' (validate graph against bound ontology, get conformanceScore), " +
+                "'bind_ontology' (bind a governing ontology to a fact sheet graph), " +
+                "'unbind_ontology' (remove the explicit ontology binding from a fact sheet graph), " +
+                // NEW: Confidence / opinions
+                "'opinions' (full Subjective Logic opinions per inferred fact: belief/disbelief/uncertainty/expectation), " +
+                "'facts_by_tier' (facts filtered by confidence tier: ESTABLISHED/HIGH/PROBABLE/SPECULATIVE/SUPPRESSED), " +
+                // NEW: Graph health
+                "'graph_health' (density, degree, orphans, components, conformanceScore for a fact sheet), " +
+                // NEW: PSL/FOL + reactive rules
+                "'list_rules' (PSL/ontology/file-PSL rules active for a fact sheet), " +
+                "'reactive_rules' (CRUD-observable reactive GraphRuleConfig: condition→LOG/WEBHOOK), " +
+                // NEW: Provenance
+                "'node_provenance' (structural lineage + metadata provenance for a graph node), " +
+                // NEW: Channel pipelines
+                "'list_pipelines' (channel update pipeline configurations).";
     }
 
     @Override
@@ -260,6 +278,26 @@ public class KnowledgeGraphTool implements CliTool {
         addBoolProp(props, "enabled",
                 "Enable/disable extraction (for set_config)");
 
+        // ── NEW: Ontology binding ──
+        addStringProp(props, "ontology_schema_id",
+                "Ontology schema ID to bind (for bind_ontology)");
+        addIntProp(props, "ontology_version",
+                "Ontology version to bind, omit for latest (for bind_ontology)");
+
+        // ── NEW: Community detection ──
+        addStringProp(props, "method",
+                "Community detection algorithm: louvain (default) or label_propagation (for communities)");
+        addNumberProp(props, "resolution",
+                "Louvain resolution gamma, default 1.0 (for communities)");
+
+        // ── NEW: Opinions / tier filter ──
+        addStringProp(props, "tier",
+                "Confidence tier filter: ESTABLISHED, HIGH, PROBABLE, SPECULATIVE, SUPPRESSED " +
+                "(for opinions, facts_by_tier)");
+        addStringProp(props, "basis_type",
+                "Basis type filter: STRUCTURAL, LLM_EXTRACTION, PSL_INFERENCE, MEBN_INFERENCE, " +
+                "CORROBORATION, ASSERTED (for opinions)");
+
         schema.putArray("required").add("action");
         return schema;
     }
@@ -355,6 +393,31 @@ public class KnowledgeGraphTool implements CliTool {
                 case "list_presets" -> listPresets();
                 case "apply_preset" -> applyPreset(params);
 
+                // ── NEW: OWL reasoning ──
+                case "owl_reasoning" -> owlReasoning(params);
+
+                // ── NEW: Ontology conformance + binding ──
+                case "ontology_conformance" -> ontologyConformance(params);
+                case "bind_ontology" -> bindOntology(params);
+                case "unbind_ontology" -> unbindOntology(params);
+
+                // ── NEW: Confidence / opinions ──
+                case "opinions" -> opinions(params);
+                case "facts_by_tier" -> factsByTier(params);
+
+                // ── NEW: Graph health ──
+                case "graph_health" -> graphHealth(params);
+
+                // ── NEW: PSL / reactive rules ──
+                case "list_rules" -> listRules(params);
+                case "reactive_rules" -> reactiveRules();
+
+                // ── NEW: Provenance ──
+                case "node_provenance" -> nodeProvenance(params);
+
+                // ── NEW: Channel pipelines ──
+                case "list_pipelines" -> listPipelines();
+
                 default -> ToolResult.error("Unknown action: " + action +
                         ". Use one of: overview, stats, search_entity, search_nodes, find_by_topic, " +
                         "related_docs, source_context, entities_in_doc, find_connected, " +
@@ -366,7 +429,10 @@ public class KnowledgeGraphTool implements CliTool {
                         "extract, build_graph, report, cypher, " +
                         "list_builders, start_job, list_jobs, job_status, cancel_job, job_logs, " +
                         "list_proposals, accept_proposal, reject_proposal, manual_proposal, " +
-                        "get_config, set_config, toggle_extraction, list_providers, list_presets, apply_preset");
+                        "get_config, set_config, toggle_extraction, list_providers, list_presets, apply_preset, " +
+                        "owl_reasoning, ontology_conformance, bind_ontology, unbind_ontology, " +
+                        "opinions, facts_by_tier, graph_health, list_rules, reactive_rules, " +
+                        "node_provenance, list_pipelines");
             };
         } catch (java.net.ConnectException e) {
             return ToolResult.error("Cannot connect to kompile-app at " + baseUrl + ". Is it running?");
@@ -845,30 +911,73 @@ public class KnowledgeGraphTool implements CliTool {
 
     private ToolResult communities(JsonNode params) throws Exception {
         long factSheetId = params.path("fact_sheet_id").asLong(0);
+        String method = params.path("method").asText("louvain");
+        double resolution = params.path("resolution").asDouble(1.0);
 
-        ObjectNode body = objectMapper.createObjectNode();
-        if (factSheetId > 0) body.put("factSheetId", factSheetId);
+        if (factSheetId <= 0) {
+            // Fall back to the old POST-based community endpoint when no fact sheet is given
+            ObjectNode body = objectMapper.createObjectNode();
+            JsonNode response = post("/api/graph/algorithms/communities/louvain", body);
+            StringBuilder sb = new StringBuilder("Communities (Louvain):\n\n");
+            if (response.isObject()) {
+                java.util.Map<Integer, Integer> counts = new java.util.LinkedHashMap<>();
+                response.fields().forEachRemaining(e -> {
+                    int comm = e.getValue().asInt();
+                    counts.merge(comm, 1, Integer::sum);
+                });
+                counts.entrySet().stream()
+                        .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
+                        .forEach(e -> sb.append("- Community ").append(e.getKey())
+                                .append(": ").append(e.getValue()).append(" nodes\n"));
+                sb.append("\nTotal: ").append(counts.size()).append(" communities\n");
+            } else {
+                sb.append(response.toPrettyString()).append("\n");
+            }
+            return ToolResult.success("communities", sb.toString(), Map.of());
+        }
 
-        JsonNode response = post("/api/graph/algorithms/communities/louvain", body);
-        StringBuilder sb = new StringBuilder("Communities (Louvain):\n\n");
+        // Use the richer factSheet-scoped community endpoint
+        StringBuilder url = new StringBuilder("/api/graph/").append(factSheetId)
+                .append("/communities?method=").append(enc(method))
+                .append("&resolution=").append(resolution);
 
-        if (response.isObject()) {
-            // Count nodes per community
+        JsonNode response = get(url.toString());
+        StringBuilder sb = new StringBuilder("Communities (").append(method).append("):\n\n");
+
+        // CommunityResult shape: {communities: [{id, nodeIds, size}], algorithmUsed, totalNodes, modularity}
+        JsonNode communities = response.path("communities");
+        if (communities.isArray() && !communities.isEmpty()) {
+            for (JsonNode c : communities) {
+                sb.append("- Community ").append(c.path("id").asInt())
+                        .append(": ").append(c.path("size").asInt(c.path("nodeIds").size()))
+                        .append(" nodes\n");
+            }
+            sb.append("\nTotal: ").append(communities.size()).append(" communities");
+            double modularity = response.path("modularity").asDouble(-1);
+            if (modularity >= 0) sb.append(", modularity=").append(String.format("%.3f", modularity));
+            sb.append("\n");
+        } else if (response.isObject()) {
+            // Fallback: nodeId -> communityId map
             java.util.Map<Integer, Integer> counts = new java.util.LinkedHashMap<>();
             response.fields().forEachRemaining(e -> {
                 int comm = e.getValue().asInt();
                 counts.merge(comm, 1, Integer::sum);
             });
-            counts.entrySet().stream()
-                    .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
-                    .forEach(e -> sb.append("- Community ").append(e.getKey())
-                            .append(": ").append(e.getValue()).append(" nodes\n"));
-            sb.append("\nTotal: ").append(counts.size()).append(" communities\n");
+            if (!counts.isEmpty()) {
+                counts.entrySet().stream()
+                        .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
+                        .forEach(e -> sb.append("- Community ").append(e.getKey())
+                                .append(": ").append(e.getValue()).append(" nodes\n"));
+                sb.append("\nTotal: ").append(counts.size()).append(" communities\n");
+            } else {
+                sb.append(response.toPrettyString()).append("\n");
+            }
         } else {
             sb.append(response.toPrettyString()).append("\n");
         }
 
-        return ToolResult.success("communities", sb.toString(), Map.of());
+        return ToolResult.success("communities", sb.toString(),
+                Map.of("factSheetId", factSheetId, "method", method));
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1528,6 +1637,354 @@ public class KnowledgeGraphTool implements CliTool {
         }
         return ToolResult.success("apply_preset: " + presetId, sb.toString(),
                 Map.of("presetId", presetId));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  NEW: OWL Reasoning
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult owlReasoning(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) {
+            return ToolResult.error("fact_sheet_id is required for owl_reasoning");
+        }
+        JsonNode response = get("/api/graph-ontology/owl?factSheetId=" + factSheetId);
+
+        StringBuilder sb = new StringBuilder("OWL 2 RL Reasoning for fact sheet ").append(factSheetId).append(":\n\n");
+        sb.append("- Ontology bound: ").append(response.path("ontologyBound").asBoolean()).append("\n");
+        appendIfPresent(sb, "Ontology name", response.path("ontologyName"));
+        sb.append("- Reasoner active: ").append(response.path("reasonerActive").asBoolean()).append("\n");
+        sb.append("- Consistent: ").append(response.path("consistent").asBoolean(true)).append("\n");
+        sb.append("- Classes: ").append(response.path("classCount").asInt(0)).append("\n");
+        sb.append("- Object properties: ").append(response.path("objectPropertyCount").asInt(0)).append("\n");
+        sb.append("- Data properties: ").append(response.path("dataPropertyCount").asInt(0)).append("\n");
+        sb.append("- Axioms: ").append(response.path("axiomCount").asInt(0)).append("\n");
+        sb.append("- Entailments materialized: ").append(response.path("entailmentsMaterialized").asInt(0)).append("\n");
+
+        JsonNode inconsistencies = response.path("inconsistencies");
+        if (inconsistencies.isArray() && !inconsistencies.isEmpty()) {
+            sb.append("\n### Inconsistencies\n");
+            for (JsonNode inc : inconsistencies) {
+                sb.append("- ").append(inc.path("description").asText(inc.asText())).append("\n");
+            }
+        }
+
+        JsonNode sampleEntailments = response.path("sampleEntailments");
+        if (sampleEntailments.isArray() && !sampleEntailments.isEmpty()) {
+            sb.append("\n### Sample Entailments\n");
+            for (JsonNode e : sampleEntailments) sb.append("- ").append(e.asText()).append("\n");
+        }
+
+        return ToolResult.success("owl_reasoning: " + factSheetId, sb.toString(),
+                Map.of("factSheetId", factSheetId,
+                        "ontologyBound", response.path("ontologyBound").asBoolean(),
+                        "consistent", response.path("consistent").asBoolean(true),
+                        "entailments", response.path("entailmentsMaterialized").asInt(0)));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  NEW: Ontology conformance + binding
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult ontologyConformance(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) {
+            return ToolResult.error("fact_sheet_id is required for ontology_conformance");
+        }
+        JsonNode response = get("/api/process/ontology/conformance?factSheetId=" + factSheetId);
+
+        StringBuilder sb = new StringBuilder("Ontology Conformance for fact sheet ").append(factSheetId).append(":\n\n");
+        sb.append("- Ontology bound: ").append(response.path("ontologyBound").asBoolean()).append("\n");
+        appendIfPresent(sb, "Ontology name", response.path("ontologyName"));
+        double score = response.path("conformanceScore").asDouble(-1);
+        if (score >= 0) {
+            sb.append("- Conformance score: ").append(String.format("%.1f%%", score * 100)).append("\n");
+        }
+        sb.append("- Nodes validated: ").append(response.path("nodesValidated").asInt(0)).append("\n");
+        sb.append("- Nodes conforming: ").append(response.path("nodesConforming").asInt(0)).append("\n");
+        sb.append("- Nodes violating: ").append(response.path("nodesViolating").asInt(0)).append("\n");
+
+        JsonNode violations = response.path("violations");
+        if (violations.isArray() && !violations.isEmpty()) {
+            int shown = 0;
+            sb.append("\n### Violations (sample)\n");
+            for (JsonNode v : violations) {
+                if (shown++ >= 10) { sb.append("  ... and more\n"); break; }
+                sb.append("- ").append(v.path("nodeId").asText("")).append(": ")
+                        .append(v.path("reason").asText(v.asText())).append("\n");
+            }
+        }
+
+        return ToolResult.success("ontology_conformance: " + factSheetId, sb.toString(),
+                Map.of("factSheetId", factSheetId,
+                        "conformanceScore", score >= 0 ? score : 0.0));
+    }
+
+    private ToolResult bindOntology(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for bind_ontology");
+        String ontologySchemaId = requireString(params, "ontology_schema_id", "bind_ontology");
+
+        StringBuilder url = new StringBuilder("/api/process/ontology/binding?factSheetId=")
+                .append(factSheetId).append("&ontologySchemaId=").append(enc(ontologySchemaId));
+        int ontologyVersion = params.path("ontology_version").asInt(0);
+        if (ontologyVersion > 0) url.append("&ontologyVersion=").append(ontologyVersion);
+
+        // PUT with no body
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + url))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .PUT(HttpRequest.BodyPublishers.noBody())
+                .timeout(Duration.ofSeconds(30))
+                .build();
+        HttpResponse<String> httpResponse = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (httpResponse.statusCode() != 200 && httpResponse.statusCode() != 204) {
+            throw new ToolExecutionException("HTTP " + httpResponse.statusCode() + ": " + extractError(httpResponse.body()));
+        }
+        JsonNode response = (httpResponse.body() == null || httpResponse.body().isBlank())
+                ? objectMapper.createObjectNode()
+                : objectMapper.readTree(httpResponse.body());
+
+        return ToolResult.success("bind_ontology",
+                "Bound ontology " + ontologySchemaId + " to fact sheet " + factSheetId
+                        + " (graphId=" + response.path("graphId").asText("") + ")",
+                Map.of("factSheetId", factSheetId, "ontologySchemaId", ontologySchemaId));
+    }
+
+    private ToolResult unbindOntology(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for unbind_ontology");
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/api/process/ontology/binding?factSheetId=" + factSheetId))
+                .header("Accept", "application/json")
+                .DELETE()
+                .timeout(Duration.ofSeconds(30))
+                .build();
+        HttpResponse<String> httpResponse = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (httpResponse.statusCode() != 200 && httpResponse.statusCode() != 204) {
+            throw new ToolExecutionException("HTTP " + httpResponse.statusCode() + ": " + extractError(httpResponse.body()));
+        }
+        return ToolResult.success("unbind_ontology",
+                "Removed ontology binding from fact sheet " + factSheetId,
+                Map.of("factSheetId", factSheetId));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  NEW: Confidence / opinions
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult opinions(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for opinions");
+
+        StringBuilder url = new StringBuilder("/api/kb-grounding/").append(factSheetId).append("/opinions");
+        String sep = "?";
+        String q = params.path("query").asText("");
+        if (!q.isEmpty()) { url.append(sep).append("q=").append(enc(q)); sep = "&"; }
+        String tier = params.path("tier").asText("");
+        if (!tier.isEmpty()) { url.append(sep).append("tier=").append(enc(tier)); sep = "&"; }
+        int limit = params.path("limit").asInt(50);
+        url.append(sep).append("limit=").append(limit);
+        String basisType = params.path("basis_type").asText("");
+        if (!basisType.isEmpty()) { url.append("&basisType=").append(enc(basisType)); }
+
+        JsonNode response = get(url.toString());
+        StringBuilder sb = new StringBuilder("Opinions for fact sheet ").append(factSheetId);
+        if (!tier.isEmpty()) sb.append(" (tier: ").append(tier).append(")");
+        if (!q.isEmpty()) sb.append(" (q: ").append(q).append(")");
+        sb.append(":\n\n");
+
+        if (response.isArray()) {
+            for (JsonNode row : response) {
+                sb.append("- **").append(row.path("atomKey").asText("")).append("** [")
+                        .append(row.path("band").asText("")).append("] ");
+                double conf = row.path("confidence").asDouble(0);
+                sb.append(String.format("conf=%.2f", conf));
+                double belief = row.path("belief").asDouble(-1);
+                double uncertainty = row.path("uncertainty").asDouble(-1);
+                if (belief >= 0) sb.append(String.format(" belief=%.2f unc=%.2f", belief, uncertainty));
+                String promotionStatus = row.path("promotionStatus").asText("");
+                if (!promotionStatus.isEmpty()) sb.append(" status=").append(promotionStatus);
+                sb.append("\n");
+            }
+            return ToolResult.success("opinions", sb.toString(), Map.of("count", response.size()));
+        }
+        return ToolResult.success("opinions", sb.append(response.toPrettyString()).toString(), Map.of());
+    }
+
+    private ToolResult factsByTier(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for facts_by_tier");
+
+        StringBuilder url = new StringBuilder("/api/kb-grounding/").append(factSheetId).append("/facts");
+        String sep = "?";
+        String tier = params.path("tier").asText("");
+        if (!tier.isEmpty()) { url.append(sep).append("tier=").append(enc(tier)); sep = "&"; }
+        // limit not directly supported by the endpoint (caps at 500), but we can filter display
+        int limit = params.path("limit").asInt(50);
+
+        JsonNode response = get(url.toString());
+        StringBuilder sb = new StringBuilder("Facts for fact sheet ").append(factSheetId);
+        if (!tier.isEmpty()) sb.append(" (tier: ").append(tier).append(")");
+        sb.append(":\n\n");
+
+        if (response.isArray()) {
+            int shown = 0;
+            for (JsonNode row : response) {
+                if (shown++ >= limit) break;
+                sb.append("- **").append(row.path("atomKey").asText("")).append("** [")
+                        .append(row.path("band").asText("")).append("] ");
+                double conf = row.path("confidence").asDouble(0);
+                sb.append(String.format("conf=%.2f corr=%d",
+                        conf, row.path("corroborationCount").asInt(0)));
+                String promotionStatus = row.path("promotionStatus").asText("");
+                if (!promotionStatus.isEmpty()) sb.append(" status=").append(promotionStatus);
+                sb.append("\n");
+            }
+            if (response.size() > limit) {
+                sb.append("... and ").append(response.size() - limit).append(" more (use limit= to see more)\n");
+            }
+            return ToolResult.success("facts_by_tier", sb.toString(), Map.of("count", response.size()));
+        }
+        return ToolResult.success("facts_by_tier", sb.append(response.toPrettyString()).toString(), Map.of());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  NEW: Graph health
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult graphHealth(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for graph_health");
+
+        JsonNode response = get("/api/graph-health/" + factSheetId);
+        StringBuilder sb = new StringBuilder("Graph Health for fact sheet ").append(factSheetId).append(":\n\n");
+
+        appendIfPresent(sb, "Computed at", response.path("computedAt"));
+        sb.append("- Node count: ").append(response.path("nodeCount").asInt(0)).append("\n");
+        sb.append("- Edge count: ").append(response.path("edgeCount").asInt(0)).append("\n");
+        double density = response.path("density").asDouble(-1);
+        if (density >= 0) sb.append("- Density: ").append(String.format("%.4f", density)).append("\n");
+        double avgDegree = response.path("averageDegree").asDouble(-1);
+        if (avgDegree >= 0) sb.append("- Avg degree: ").append(String.format("%.2f", avgDegree)).append("\n");
+        sb.append("- Orphan count: ").append(response.path("orphanCount").asInt(0)).append("\n");
+        sb.append("- Connected components: ").append(response.path("connectedComponents").asInt(0)).append("\n");
+        double conformanceScore = response.path("conformanceScore").asDouble(-1);
+        if (conformanceScore >= 0) {
+            sb.append("- Conformance score: ").append(String.format("%.1f%%", conformanceScore * 100)).append("\n");
+        }
+
+        return ToolResult.success("graph_health: " + factSheetId, sb.toString(),
+                Map.of("factSheetId", factSheetId,
+                        "nodeCount", response.path("nodeCount").asInt(0),
+                        "edgeCount", response.path("edgeCount").asInt(0)));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  NEW: PSL / reactive rules
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult listRules(JsonNode params) throws Exception {
+        long factSheetId = params.path("fact_sheet_id").asLong(0);
+        if (factSheetId <= 0) return ToolResult.error("fact_sheet_id is required for list_rules");
+
+        JsonNode response = get("/api/graph/" + factSheetId + "/rules");
+        StringBuilder sb = new StringBuilder("Rules for fact sheet ").append(factSheetId).append(":\n\n");
+
+        if (response.isArray()) {
+            String lastKind = "";
+            for (JsonNode rule : response) {
+                String kind = rule.path("kind").asText("");
+                if (!kind.equals(lastKind)) {
+                    sb.append("\n### ").append(kind).append("\n");
+                    lastKind = kind;
+                }
+                sb.append("- `").append(rule.path("ruleText").asText("")).append("`");
+                boolean hard = rule.path("hard").asBoolean(false);
+                double weight = rule.path("weight").asDouble(0);
+                if (hard) sb.append(" [HARD]");
+                else if (weight > 0 && weight != Double.POSITIVE_INFINITY) {
+                    sb.append(String.format(" [w=%.2f]", weight));
+                }
+                sb.append("\n");
+            }
+            return ToolResult.success("list_rules", sb.toString(), Map.of("count", response.size()));
+        }
+        return ToolResult.success("list_rules", sb.append(response.toPrettyString()).toString(), Map.of());
+    }
+
+    private ToolResult reactiveRules() throws Exception {
+        JsonNode response = get("/api/graph/rules");
+        StringBuilder sb = new StringBuilder("Reactive Graph Rules:\n\n");
+
+        if (response.isArray()) {
+            for (JsonNode rule : response) {
+                sb.append("- **").append(rule.path("name").asText(rule.path("ruleId").asText(""))).append("**");
+                String actionType = rule.path("actionType").asText("");
+                if (!actionType.isEmpty()) sb.append(" [").append(actionType).append("]");
+                boolean enabled = rule.path("enabled").asBoolean(true);
+                sb.append(enabled ? " ENABLED" : " DISABLED").append("\n");
+                String target = rule.path("actionTarget").asText("");
+                if (!target.isEmpty()) sb.append("  → target: ").append(target).append("\n");
+                int minNodes = rule.path("minNodesCreated").asInt(0);
+                int minEdges = rule.path("minEdgesCreated").asInt(0);
+                if (minNodes > 0 || minEdges > 0) {
+                    sb.append("  trigger: nodes≥").append(minNodes).append(" edges≥").append(minEdges).append("\n");
+                }
+            }
+            return ToolResult.success("reactive_rules", sb.toString(), Map.of("count", response.size()));
+        }
+        return ToolResult.success("reactive_rules", sb.append(response.toPrettyString()).toString(), Map.of());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  NEW: Provenance
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult nodeProvenance(JsonNode params) throws Exception {
+        String nodeId = requireString(params, "node_id", "node_provenance");
+        JsonNode response = get("/api/knowledge-graph/nodes/" + enc(nodeId) + "/provenance");
+
+        StringBuilder sb = new StringBuilder("Provenance for node ").append(nodeId).append(":\n\n");
+        if (response.isObject()) {
+            response.fields().forEachRemaining(e -> {
+                String val = e.getValue().isTextual() ? e.getValue().asText()
+                        : (e.getValue().isNull() ? "" : e.getValue().toString());
+                if (!val.isEmpty()) {
+                    sb.append("- ").append(e.getKey()).append(": ").append(val).append("\n");
+                }
+            });
+        } else {
+            sb.append(response.toPrettyString()).append("\n");
+        }
+
+        return ToolResult.success("node_provenance: " + nodeId, sb.toString(), Map.of("nodeId", nodeId));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  NEW: Channel pipelines
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private ToolResult listPipelines() throws Exception {
+        JsonNode response = get("/api/graph/pipelines");
+        StringBuilder sb = new StringBuilder("Graph Update Pipelines:\n\n");
+
+        if (response.isArray()) {
+            for (JsonNode pipeline : response) {
+                sb.append("- **").append(pipeline.path("name").asText(pipeline.path("pipelineId").asText("")))
+                        .append("**");
+                boolean enabled = pipeline.path("enabled").asBoolean(true);
+                sb.append(enabled ? " ENABLED" : " DISABLED").append("\n");
+                String sourceType = pipeline.path("sourceType").asText("");
+                if (!sourceType.isEmpty()) sb.append("  source: ").append(sourceType).append("\n");
+                String description = pipeline.path("description").asText("");
+                if (!description.isEmpty()) sb.append("  ").append(description).append("\n");
+            }
+            return ToolResult.success("list_pipelines", sb.toString(), Map.of("count", response.size()));
+        }
+        return ToolResult.success("list_pipelines", sb.append(response.toPrettyString()).toString(), Map.of());
     }
 
     // ══════════════════════════════════════════════════════════════════════════

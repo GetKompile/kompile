@@ -173,7 +173,11 @@ class KnowledgeGraphToolTest {
             "extract", "build_graph", "report", "cypher",
             "list_builders", "start_job", "list_jobs", "job_status", "cancel_job", "job_logs",
             "list_proposals", "accept_proposal", "reject_proposal", "manual_proposal",
-            "get_config", "set_config", "toggle_extraction", "list_providers", "list_presets", "apply_preset"
+            "get_config", "set_config", "toggle_extraction", "list_providers", "list_presets", "apply_preset",
+            // NEW actions
+            "owl_reasoning", "ontology_conformance", "bind_ontology", "unbind_ontology",
+            "opinions", "facts_by_tier", "graph_health", "list_rules", "reactive_rules",
+            "node_provenance", "list_pipelines"
     })
     void testNoUrlReturnsError(String action) throws Exception {
         ObjectNode params = om.createObjectNode();
@@ -208,6 +212,8 @@ class KnowledgeGraphToolTest {
         params.put("preset_id", "test-preset");
         params.put("enabled", true);
         params.put("schema_mode", "STRICT");
+        // NEW action params
+        params.put("ontology_schema_id", "test-ontology");
 
         ToolResult result = noUrlTool.execute(params, context);
         assertTrue(result.isError(), "action '" + action + "' should return error when no URL configured");
@@ -602,6 +608,17 @@ class KnowledgeGraphToolTest {
         assertTrue(props.has("enabled"), "missing 'enabled' property");
     }
 
+    @Test
+    void testSchemaHasNewGraphCapabilityProperties() {
+        JsonNode props = tool.parameterSchema().path("properties");
+        assertTrue(props.has("ontology_schema_id"), "missing 'ontology_schema_id' property");
+        assertTrue(props.has("ontology_version"), "missing 'ontology_version' property");
+        assertTrue(props.has("method"), "missing 'method' property");
+        assertTrue(props.has("resolution"), "missing 'resolution' property");
+        assertTrue(props.has("tier"), "missing 'tier' property");
+        assertTrue(props.has("basis_type"), "missing 'basis_type' property");
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // BUILDER / PROPOSALS — REQUIRED FIELD VALIDATION
     // ═══════════════════════════════════════════════════════════════════════════
@@ -792,5 +809,158 @@ class KnowledgeGraphToolTest {
         assertTrue(result.isError());
         assertFalse(result.getOutput().contains("graph_name") && result.getOutput().contains("title"),
                 "should not complain about missing name when title is provided");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NEW ACTIONS — REQUIRED FIELD VALIDATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    void testOwlReasoningRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "owl_reasoning");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
+    @Test
+    void testOntologyConformanceRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "ontology_conformance");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
+    @Test
+    void testBindOntologyRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "bind_ontology");
+        params.put("ontology_schema_id", "my-ontology");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
+    @Test
+    void testBindOntologyRequiresOntologySchemaId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "bind_ontology");
+        params.put("fact_sheet_id", 1);
+        // ontology_schema_id intentionally missing
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("ontology_schema_id"));
+    }
+
+    @Test
+    void testUnbindOntologyRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "unbind_ontology");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
+    @Test
+    void testOpinionsRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "opinions");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
+    @Test
+    void testFactsByTierRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "facts_by_tier");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
+    @Test
+    void testGraphHealthRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "graph_health");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
+    @Test
+    void testListRulesRequiresFactSheetId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "list_rules");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("fact_sheet_id"));
+    }
+
+    @Test
+    void testNodeProvenanceRequiresNodeId() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "node_provenance");
+        ToolResult result = tool.execute(params, context);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("node_id"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NEW ACTIONS — CONNECTION REFUSED GRACEFUL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    void testOwlReasoningConnectionRefusedGraceful() throws Exception {
+        KnowledgeGraphTool unreachable = new KnowledgeGraphTool("http://localhost:19999", om);
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "owl_reasoning");
+        params.put("fact_sheet_id", 1);
+        ToolResult result = unreachable.execute(params, context);
+        assertTrue(result.isError());
+    }
+
+    @Test
+    void testGraphHealthConnectionRefusedGraceful() throws Exception {
+        KnowledgeGraphTool unreachable = new KnowledgeGraphTool("http://localhost:19999", om);
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "graph_health");
+        params.put("fact_sheet_id", 1);
+        ToolResult result = unreachable.execute(params, context);
+        assertTrue(result.isError());
+    }
+
+    @Test
+    void testReactiveRulesConnectionRefusedGraceful() throws Exception {
+        KnowledgeGraphTool unreachable = new KnowledgeGraphTool("http://localhost:19999", om);
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "reactive_rules");
+        ToolResult result = unreachable.execute(params, context);
+        assertTrue(result.isError());
+    }
+
+    @Test
+    void testListPipelinesConnectionRefusedGraceful() throws Exception {
+        KnowledgeGraphTool unreachable = new KnowledgeGraphTool("http://localhost:19999", om);
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "list_pipelines");
+        ToolResult result = unreachable.execute(params, context);
+        assertTrue(result.isError());
+    }
+
+    @Test
+    void testDescriptionMentionsNewActions() {
+        String desc = tool.description();
+        assertTrue(desc.contains("owl_reasoning"), "description should mention 'owl_reasoning'");
+        assertTrue(desc.contains("ontology_conformance"), "description should mention 'ontology_conformance'");
+        assertTrue(desc.contains("opinions"), "description should mention 'opinions'");
+        assertTrue(desc.contains("facts_by_tier"), "description should mention 'facts_by_tier'");
+        assertTrue(desc.contains("graph_health"), "description should mention 'graph_health'");
+        assertTrue(desc.contains("list_rules"), "description should mention 'list_rules'");
+        assertTrue(desc.contains("reactive_rules"), "description should mention 'reactive_rules'");
+        assertTrue(desc.contains("node_provenance"), "description should mention 'node_provenance'");
+        assertTrue(desc.contains("list_pipelines"), "description should mention 'list_pipelines'");
     }
 }
