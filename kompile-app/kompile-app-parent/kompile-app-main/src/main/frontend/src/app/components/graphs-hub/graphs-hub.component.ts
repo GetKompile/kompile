@@ -18,6 +18,7 @@ import { Component, OnInit, OnDestroy, OnChanges, SimpleChanges, Input } from '@
 import { CommonModule } from '@angular/common';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
+import { MatTabsModule } from '@angular/material/tabs';
 import { Subject, takeUntil } from 'rxjs';
 
 import { FactSheetService } from '../../services/fact-sheet.service';
@@ -47,10 +48,12 @@ import { KbWeightsPanelComponent } from '../kb-weights-panel/kb-weights-panel.co
 import { OpinionBrowserComponent } from '../opinion-browser/opinion-browser.component';
 import { CommunityPanelComponent } from '../community-panel/community-panel.component';
 import { FolRulesBrowserComponent } from '../fol-rules-browser/fol-rules-browser.component';
+import { GraphOntologyPanelComponent } from '../graph-ontology-panel/graph-ontology-panel.component';
+import { ProcessOntologyComponent } from '../process-engine/process-ontology.component';
 
 type GraphsTab = 'visualizer' | 'hierarchy' | 'builder'
   | 'eventObservation' | 'causalAttribution'
-  | 'overview' | 'health' | 'pipelines' | 'provenance' | 'diff'
+  | 'overview' | 'health' | 'ontology' | 'pipelines' | 'provenance' | 'diff'
   | 'maintenance' | 'rules' | 'extract' | 'patch' | 'eval' | 'io'
   | 'grounding' | 'audit' | 'liveReasoning' | 'folRules'
   | 'factsByTier' | 'weights' | 'opinions' | 'communities';
@@ -70,6 +73,7 @@ type GraphsTab = 'visualizer' | 'hierarchy' | 'builder'
     CommonModule,
     MatIconModule,
     MatSnackBarModule,
+    MatTabsModule,
     GraphOverviewComponent,
     GraphMaintenanceHubComponent,
     GraphHealthPanelComponent,
@@ -93,7 +97,9 @@ type GraphsTab = 'visualizer' | 'hierarchy' | 'builder'
     KbWeightsPanelComponent,
     OpinionBrowserComponent,
     CommunityPanelComponent,
-    FolRulesBrowserComponent
+    FolRulesBrowserComponent,
+    GraphOntologyPanelComponent,
+    ProcessOntologyComponent
   ],
   templateUrl: './graphs-hub.component.html',
   styleUrls: ['./graphs-hub.component.css']

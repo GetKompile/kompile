@@ -26,7 +26,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatDividerModule } from '@angular/material/divider';
-import { GraphOntologyService, GraphConformanceReport } from '../../services/graph-ontology.service';
+import { GraphOntologyService, GraphConformanceReport, OwlReasoningStatus } from '../../services/graph-ontology.service';
 import { ProcessEngineService, OntologySchema, DeriveOntologyRequest } from '../../services/process-engine.service';
 
 /**
@@ -62,6 +62,10 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
   loading = false;
   binding = false;
 
+  // OWL reasoning status
+  owlStatus: OwlReasoningStatus | null = null;
+  owlLoading = false;
+
   // D4: "Derive from graph" state
   deriving = false;
   derivedDraft: OntologySchema | null = null;
@@ -78,10 +82,21 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['factSheetId']) {
       this.report = null;
+      this.owlStatus = null;
       if (this.factSheetId != null) {
         this.loadConformance();
+        this.loadOwlStatus();
       }
     }
+  }
+
+  loadOwlStatus(): void {
+    if (this.factSheetId == null) return;
+    this.owlLoading = true;
+    this.ontologyService.owl(this.factSheetId).subscribe({
+      next: (s) => { this.owlStatus = s; this.owlLoading = false; },
+      error: () => { this.owlStatus = null; this.owlLoading = false; /* 404 / not available = show not-bound state */ }
+    });
   }
 
   loadConformance(): void {

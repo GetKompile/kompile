@@ -24,7 +24,6 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { ProcessEngineService, WorkflowRun } from '../../services/process-engine.service';
 import { ProcessAttributionService } from '../../services/process-attribution.service';
-import { ProcessOntologyComponent } from './process-ontology.component';
 import { ProcessDefinitionsComponent } from './process-definitions.component';
 import { ProcessRunsComponent } from './process-runs.component';
 import { ProcessApprovalsComponent } from './process-approvals.component';
@@ -36,7 +35,6 @@ import { ProcessDiagramComponent } from './process-diagram.component';
 import { ProcessDiscoverySuggestionsComponent } from './process-discovery-suggestions.component';
 import { ProcessMiningComponent } from './process-mining.component';
 import { CausalAttributionExtrasComponent } from './causal-attribution-extras.component';
-import { GraphOntologyPanelComponent } from '../graph-ontology-panel/graph-ontology-panel.component';
 import { ProcessLineagePanelComponent } from '../process-lineage-panel/process-lineage-panel.component';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
@@ -51,7 +49,6 @@ import { FactSheet } from '../../models/api-models';
     MatTabsModule, MatIconModule, MatButtonModule,
     MatChipsModule, MatSnackBarModule,
     MatFormFieldModule, MatSelectModule,
-    ProcessOntologyComponent,
     ProcessDefinitionsComponent,
     ProcessRunsComponent,
     ProcessApprovalsComponent,
@@ -63,7 +60,6 @@ import { FactSheet } from '../../models/api-models';
     ProcessDiscoverySuggestionsComponent,
     ProcessMiningComponent,
     CausalAttributionExtrasComponent,
-    GraphOntologyPanelComponent,
     ProcessLineagePanelComponent
   ],
   template: `
@@ -99,37 +95,6 @@ import { FactSheet } from '../../models/api-models';
 
       <!-- Tab Group -->
       <mat-tab-group class="pe-tabs" animationDuration="150ms">
-
-        <!-- Ontologies Tab -->
-        <mat-tab>
-          <ng-template mat-tab-label>
-            <mat-icon class="tab-icon">schema</mat-icon>
-            Ontologies
-          </ng-template>
-          <div class="tab-content">
-            <app-process-ontology></app-process-ontology>
-          </div>
-        </mat-tab>
-
-        <!-- Graph Binding & Conformance Tab (merged from the Graphs hub) -->
-        <mat-tab>
-          <ng-template mat-tab-label>
-            <mat-icon class="tab-icon">verified</mat-icon>
-            Graph Ontology
-          </ng-template>
-          <div class="tab-content">
-            <div class="fact-sheet-bar">
-              <mat-form-field appearance="outline">
-                <mat-label>Fact sheet</mat-label>
-                <mat-select [(ngModel)]="graphFactSheetId">
-                  <mat-option *ngFor="let fs of graphFactSheets" [value]="fs.id">{{ fs.name }} (#{{ fs.id }})</mat-option>
-                </mat-select>
-              </mat-form-field>
-              <span class="fact-sheet-hint">Bind an ontology to this graph and check how well its nodes/edges conform.</span>
-            </div>
-            <app-graph-ontology-panel [factSheetId]="graphFactSheetId"></app-graph-ontology-panel>
-          </div>
-        </mat-tab>
 
         <!-- Discovery Tab -->
         <mat-tab>
@@ -354,8 +319,7 @@ export class ProcessEngineDashboardComponent implements OnInit {
   excelGraphJsonInput = '';
   excelGraphJson = '';
 
-  // Shared fact-sheet selection for the graph-scoped tabs (Graph Ontology, Lineage) merged in
-  // from the Graphs hub — those panels are per-fact-sheet and need a sheet to operate on.
+  // Shared fact-sheet selection for the Lineage tab — per-fact-sheet and needs a sheet to operate on.
   graphFactSheetId: number | null = null;
   graphFactSheets: FactSheet[] = [];
 

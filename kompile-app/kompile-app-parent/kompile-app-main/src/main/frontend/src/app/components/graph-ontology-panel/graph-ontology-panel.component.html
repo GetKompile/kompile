@@ -92,6 +92,81 @@
       </mat-card-content>
     </mat-card>
 
+    <!-- OWL Reasoning card -->
+    <mat-card class="owl-card">
+      <mat-card-header>
+        <mat-card-title class="owl-card-title">
+          <mat-icon class="owl-title-icon">psychology</mat-icon>
+          OWL Reasoning
+          <mat-spinner *ngIf="owlLoading" diameter="18" class="owl-spinner"></mat-spinner>
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <!-- Not active / no ontology bound -->
+        <ng-container *ngIf="!owlStatus || !owlStatus.reasonerActive || !owlStatus.ontologyBound">
+          <div class="owl-inactive">
+            <mat-icon class="owl-inactive-icon">radar</mat-icon>
+            <span class="owl-inactive-label">OWL-RL not run / no ontology bound</span>
+          </div>
+        </ng-container>
+
+        <!-- Active -->
+        <ng-container *ngIf="owlStatus && owlStatus.reasonerActive && owlStatus.ontologyBound">
+          <!-- Active badge + ontology name -->
+          <div class="owl-active-badge">
+            <mat-icon class="owl-active-icon">verified</mat-icon>
+            <span class="owl-active-label">OWL-RL active</span>
+            <span class="owl-ontology-name muted" *ngIf="owlStatus.ontologyName">— {{ owlStatus.ontologyName }}</span>
+          </div>
+
+          <!-- Stat row -->
+          <div class="owl-stat-row">
+            <div class="owl-stat">
+              <span class="owl-stat-value">{{ owlStatus.classCount }}</span>
+              <span class="owl-stat-label">Classes</span>
+            </div>
+            <div class="owl-stat">
+              <span class="owl-stat-value">{{ owlStatus.objectPropertyCount }}</span>
+              <span class="owl-stat-label">Object props</span>
+            </div>
+            <div class="owl-stat">
+              <span class="owl-stat-value">{{ owlStatus.dataPropertyCount }}</span>
+              <span class="owl-stat-label">Data props</span>
+            </div>
+            <div class="owl-stat">
+              <span class="owl-stat-value">{{ owlStatus.axiomCount }}</span>
+              <span class="owl-stat-label">Axioms</span>
+            </div>
+            <div class="owl-stat">
+              <span class="owl-stat-value">{{ owlStatus.entailmentsMaterialized }}</span>
+              <span class="owl-stat-label">Entailments</span>
+            </div>
+          </div>
+
+          <!-- Consistency -->
+          <div class="owl-consistency" [class.owl-consistent]="owlStatus.consistent" [class.owl-inconsistent]="!owlStatus.consistent">
+            <mat-icon>{{ owlStatus.consistent ? 'check_circle' : 'cancel' }}</mat-icon>
+            <ng-container *ngIf="owlStatus.consistent">Consistent</ng-container>
+            <ng-container *ngIf="!owlStatus.consistent">
+              <ng-container *ngIf="(owlStatus.inconsistencies?.length || 0) === 1">1 inconsistency</ng-container>
+              <ng-container *ngIf="(owlStatus.inconsistencies?.length || 0) !== 1">{{ owlStatus.inconsistencies?.length || 0 }} inconsistencies</ng-container>
+            </ng-container>
+          </div>
+          <ul class="owl-inconsistencies" *ngIf="!owlStatus.consistent && owlStatus.inconsistencies?.length">
+            <li *ngFor="let inc of owlStatus.inconsistencies">{{ inc.description }}</li>
+          </ul>
+
+          <!-- Sample entailments -->
+          <div *ngIf="owlStatus.sampleEntailments?.length" class="owl-entailments">
+            <span class="owl-entailments-label muted">Inferred (sample):</span>
+            <ul class="owl-entailments-list">
+              <li *ngFor="let e of owlStatus.sampleEntailments">{{ e }}</li>
+            </ul>
+          </div>
+        </ng-container>
+      </mat-card-content>
+    </mat-card>
+
     <!-- Conformance report -->
     <mat-card *ngIf="report as r" class="report-card">
       <mat-card-header>

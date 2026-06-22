@@ -37,6 +37,22 @@ export interface EdgeViolation {
   reason: string;
 }
 
+/** OWL reasoning status for a fact sheet. Mirrors GET /api/graph-ontology/owl response. */
+export interface OwlReasoningStatus {
+  factSheetId: number;
+  ontologyBound: boolean;
+  ontologyName: string | null;
+  classCount: number;
+  objectPropertyCount: number;
+  dataPropertyCount: number;
+  axiomCount: number;
+  entailmentsMaterialized: number;
+  consistent: boolean;
+  inconsistencies?: { description: string }[];
+  sampleEntailments?: string[];
+  reasonerActive: boolean;
+}
+
 /** Mirrors ai.kompile.app.web.dto.ontology.GraphConformanceReport. */
 export interface GraphConformanceReport {
   factSheetId: number;
@@ -86,5 +102,11 @@ export class GraphOntologyService extends BaseService {
   /** Clear the fact sheet's explicit ontology binding. */
   unbind(factSheetId: number): Observable<void> {
     return this.http.delete<void>(`${this.backendUrl}${this.apiPath}/binding`, { params: { factSheetId } });
+  }
+
+  /** Load OWL reasoning status for the fact sheet (GET /api/graph-ontology/owl). */
+  owl(factSheetId: number): Observable<OwlReasoningStatus> {
+    return this.http.get<OwlReasoningStatus>(
+      `${this.backendUrl}/graph-ontology/owl`, { params: { factSheetId } });
   }
 }

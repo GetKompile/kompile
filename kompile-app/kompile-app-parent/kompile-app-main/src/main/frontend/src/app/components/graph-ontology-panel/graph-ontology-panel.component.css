@@ -253,3 +253,181 @@ body.dark-theme .derived-type-chip {
 body.dark-theme .empty-graph-notice {
   color: rgba(255, 255, 255, 0.55);
 }
+
+/* ---- OWL Reasoning card ---- */
+.owl-card {
+  margin-bottom: 16px;
+}
+
+.owl-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+}
+
+.owl-title-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  color: var(--accent-color, #7c4dff);
+}
+
+.owl-spinner {
+  margin-left: 4px;
+}
+
+/* Inactive / not-bound state */
+.owl-inactive {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 6px;
+  font-size: 13px;
+  color: var(--text-secondary, rgba(0, 0, 0, 0.5));
+}
+
+.owl-inactive-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  opacity: 0.55;
+}
+
+.owl-inactive-label {
+  font-style: italic;
+}
+
+/* Active badge */
+.owl-active-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.owl-active-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #2e7d32;
+}
+
+.owl-active-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2e7d32;
+}
+
+.owl-ontology-name {
+  font-size: 12px;
+}
+
+/* Stat row */
+.owl-stat-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.owl-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  min-width: 80px;
+  background: var(--bg-body);
+}
+
+.owl-stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.owl-stat-label {
+  font-size: 11px;
+  color: var(--text-secondary, rgba(0, 0, 0, 0.55));
+  text-align: center;
+  margin-top: 2px;
+}
+
+/* Consistency */
+.owl-consistency {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.owl-consistent {
+  color: #2e7d32;
+}
+
+.owl-inconsistent {
+  color: #c62828;
+}
+
+.owl-inconsistencies {
+  margin: 0 0 10px 0;
+  padding-left: 20px;
+  font-size: 12px;
+  color: #c62828;
+}
+
+/* Sample entailments */
+.owl-entailments {
+  margin-top: 8px;
+}
+
+.owl-entailments-label {
+  font-size: 12px;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.owl-entailments-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-secondary, rgba(0, 0, 0, 0.7));
+}
+
+/* Dark-theme OWL variants */
+body.dark-theme .owl-inactive {
+  color: var(--text-secondary, rgba(255, 255, 255, 0.5));
+}
+
+body.dark-theme .owl-stat {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-theme .owl-stat-label {
+  color: var(--text-secondary, rgba(255, 255, 255, 0.55));
+}
+
+body.dark-theme .owl-entailments-list {
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+}
+
+body.dark-theme .owl-active-icon,
+body.dark-theme .owl-active-label {
+  color: #81c784;
+}
+
+body.dark-theme .owl-consistent {
+  color: #81c784;
+}
+
+body.dark-theme .owl-inconsistent {
+  color: #ef9a9a;
+}
+
+body.dark-theme .owl-inconsistencies {
+  color: #ef9a9a;
+}

@@ -55,6 +55,10 @@
       <mat-icon class="tab-icon">monitor_heart</mat-icon>
       <span class="tab-label">Health</span>
     </button>
+    <button class="sub-tab" [class.active]="activeSubTab === 'ontology'" (click)="selectSubTab('ontology')">
+      <mat-icon class="tab-icon">schema</mat-icon>
+      <span class="tab-label">Ontology</span>
+    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'pipelines'" (click)="selectSubTab('pipelines')">
       <mat-icon class="tab-icon">cable</mat-icon>
       <span class="tab-label">Channel Pipelines</span>
@@ -154,6 +158,16 @@
     </div>
     <div *ngIf="activeSubTab === 'health'">
       <app-graph-health-panel [factSheetId]="activeFactSheetId"></app-graph-health-panel>
+    </div>
+    <div *ngIf="activeSubTab === 'ontology'">
+      <mat-tab-group class="ontology-subtabs" animationDuration="150ms">
+        <mat-tab label="Binding &amp; Conformance">
+          <app-graph-ontology-panel [factSheetId]="activeFactSheetId"></app-graph-ontology-panel>
+        </mat-tab>
+        <mat-tab label="Schemas">
+          <app-process-ontology></app-process-ontology>
+        </mat-tab>
+      </mat-tab-group>
     </div>
     <div *ngIf="activeSubTab === 'pipelines'">
       <app-graph-pipelines-panel [factSheetId]="activeFactSheetId"></app-graph-pipelines-panel>

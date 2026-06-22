@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.reasoning;
 
 import ai.kompile.core.graphrag.conformance.OntologyAxiom;
+import ai.kompile.core.graphrag.conformance.OwlDerivedRuleProvider;
 import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.EntailmentEngine;
@@ -156,6 +157,17 @@ public class IncrementalReasoningOrchestrator {
     @Nullable
     @Autowired(required = false)
     OntologyProjectionProvider ontologyProvider;
+
+    /**
+     * Optional: OWL 2 RL-derived PSL rule provider. When non-null, {@link #injectOntologyRules}
+     * also injects rules derived from OWL entailments (subClassOf transitivity, transitive property
+     * closure) in addition to the plain DOMAIN/RANGE axiom rules compiled by
+     * {@link OntologyToPslRuleCompiler}. {@code null} in plain-Java test contexts and in Spring
+     * contexts that do not include {@code kompile-app-main} (e.g. kompile-knowledge-graph tests).
+     */
+    @Nullable
+    @Autowired(required = false)
+    OwlDerivedRuleProvider owlDerivedRuleProvider;
 
     /**
      * Optional: graph→FactStore projector. When non-null, {@link #doReground} projects
@@ -1172,6 +1184,45 @@ public class IncrementalReasoningOrchestrator {
         if (added > 0) {
             log.debug("OntologyToPsl: injected {} ontology axiom rule(s) into PSL program for factSheet={}",
                     added, factSheetId);
+        }
+
+        // ── Step 3b-owl: also inject OWL 2 RL-derived rules (subClassOf transitivity,
+        //    transitive property closure) on top of the plain DOMAIN/RANGE axioms above.
+        injectOwlDerivedRules(program, factSheetId, weight);
+    }
+
+    /**
+     * Inject additional PSL rules derived from OWL 2 RL entailments via
+     * {@link OwlDerivedRuleProvider}. This is a strict no-op when the provider is not wired
+     * (plain-Java tests, Spring contexts without kompile-app-main).
+     */
+    private void injectOwlDerivedRules(PslProgram program, long factSheetId, double weight) {
+        if (owlDerivedRuleProvider == null) return;
+
+        List<String> owlRules;
+        try {
+            owlRules = owlDerivedRuleProvider.owlDerivedPslRules(factSheetId, weight);
+        } catch (Exception e) {
+            log.warn("OwlDerivedRuleProvider: exception deriving OWL rules for factSheet={} — {}",
+                    factSheetId, e.getMessage());
+            return;
+        }
+
+        if (owlRules == null || owlRules.isEmpty()) return;
+
+        int owlAdded = 0;
+        for (String ruleStr : owlRules) {
+            try {
+                program.addRule(ruleStr);
+                owlAdded++;
+            } catch (Exception e) {
+                log.warn("OwlDerivedRuleProvider: could not parse OWL-derived rule '{}' for factSheet={} — {}",
+                        ruleStr, factSheetId, e.getMessage());
+            }
+        }
+        if (owlAdded > 0) {
+            log.debug("OwlDerivedRuleProvider: injected {} OWL-RL-derived rule(s) for factSheet={}",
+                    owlAdded, factSheetId);
         }
     }
 
