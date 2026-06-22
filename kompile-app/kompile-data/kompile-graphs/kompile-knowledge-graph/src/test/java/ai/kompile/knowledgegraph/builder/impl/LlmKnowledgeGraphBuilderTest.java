@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.builder.impl;
 
 import ai.kompile.core.graphbuilder.*;
+import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.builder.repository.ExtractionJobRepository;
@@ -24,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -63,6 +65,9 @@ class LlmKnowledgeGraphBuilderTest {
 
     @Mock
     private LLMChat.CallResponseSpec callResponseSpec;
+
+    @Mock
+    private OntologyProjectionProvider ontologyProvider;
 
     private LlmKnowledgeGraphBuilder builder;
 
@@ -356,6 +361,147 @@ class LlmKnowledgeGraphBuilderTest {
         assertFalse(logs.get().isEmpty());
     }
 
+    // ─── Ontology-guided extraction ──────────────────────────────────────────
+
+    /**
+     * When a fact sheet has a bound ontology with non-empty entity types, the LLM prompt
+     * must include those types AND an "ONLY these types" instruction.
+     */
+    @Test
+    void boundOntology_promptIncludesOntologyTypesAndConstraintInstruction() {
+        // Wire ontology provider into builder via field injection simulation
+        builder.setLlmChat(llmChat);
+        injectOntologyProvider(builder, ontologyProvider);
+
+        Long fsId = 42L;
+        when(ontologyProvider.hasBoundOntology(fsId)).thenReturn(true);
+        when(ontologyProvider.allowedEntityTypes(fsId)).thenReturn(List.of("PRODUCT", "MANUFACTURER"));
+        when(ontologyProvider.allowedRelationshipTypes(fsId)).thenReturn(List.of("MADE_BY"));
+        configureLlmMock(VALID_JSON_RESPONSE);
+        when(jobRepository.findByJobId(any())).thenReturn(Optional.empty());
+
+        List<RetrievedDoc> chunks = List.of(
+                new RetrievedDoc("c1", "Widget A is made by Acme.", Map.of()));
+        builder.buildFromChunks(chunks, new GraphBuildContext("job-ont", fsId, "jpa"), null);
+
+        // Capture the prompt sent to the LLM
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(promptSpec, atLeastOnce()).user(promptCaptor.capture());
+        String prompt = promptCaptor.getValue();
+
+        // Ontology entity types must appear in the prompt
+        assertTrue(prompt.contains("PRODUCT"), "Prompt must list ontology entity type PRODUCT");
+        assertTrue(prompt.contains("MANUFACTURER"), "Prompt must list ontology entity type MANUFACTURER");
+
+        // Constraint instruction must be present
+        assertTrue(prompt.contains("ONLY"), "Prompt must include 'ONLY' constraint instruction when ontology is bound");
+    }
+
+    /**
+     * When a fact sheet has a bound ontology, the relationship types must also appear in the prompt.
+     */
+    @Test
+    void boundOntology_promptIncludesRelationshipTypesWhenPresent() {
+        builder.setLlmChat(llmChat);
+        injectOntologyProvider(builder, ontologyProvider);
+
+        Long fsId = 43L;
+        when(ontologyProvider.hasBoundOntology(fsId)).thenReturn(true);
+        when(ontologyProvider.allowedEntityTypes(fsId)).thenReturn(List.of("PRODUCT", "MANUFACTURER"));
+        when(ontologyProvider.allowedRelationshipTypes(fsId)).thenReturn(List.of("PRODUCED_BY", "SOLD_BY"));
+        configureLlmMock(VALID_JSON_RESPONSE);
+        when(jobRepository.findByJobId(any())).thenReturn(Optional.empty());
+
+        List<RetrievedDoc> chunks = List.of(new RetrievedDoc("c1", "Widget A.", Map.of()));
+        builder.buildFromChunks(chunks, new GraphBuildContext("job-ont-rel", fsId, "jpa"), null);
+
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(promptSpec, atLeastOnce()).user(promptCaptor.capture());
+        String prompt = promptCaptor.getValue();
+
+        assertTrue(prompt.contains("PRODUCED_BY"), "Prompt must list ontology relationship type PRODUCED_BY");
+        assertTrue(prompt.contains("SOLD_BY"), "Prompt must list ontology relationship type SOLD_BY");
+    }
+
+    /**
+     * When the OntologyProjectionProvider is null (absent from context, e.g. tests without Spring),
+     * behaviour is identical to today's free-form extraction.
+     */
+    @Test
+    void nullProvider_promptUsesFreeFormEntityTypes() {
+        // No ontologyProvider injected — builder has null provider
+        builder.setLlmChat(llmChat);
+        // Do NOT inject ontologyProvider
+
+        configureLlmMock(VALID_JSON_RESPONSE);
+        when(jobRepository.findByJobId(any())).thenReturn(Optional.empty());
+
+        List<RetrievedDoc> chunks = List.of(new RetrievedDoc("c1", "Alice works at Acme.", Map.of()));
+        builder.buildFromChunks(chunks, new GraphBuildContext("job-free", 99L, "jpa"), null);
+
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(promptSpec, atLeastOnce()).user(promptCaptor.capture());
+        String prompt = promptCaptor.getValue();
+
+        // Constraint instruction must NOT be present in free-form mode
+        assertFalse(prompt.contains("Use ONLY the entity types"), "Free-form prompt must not contain 'ONLY' constraint");
+        // Default free-form types must still appear
+        assertTrue(prompt.contains("PERSON") || prompt.contains("ORGANIZATION"),
+                "Free-form prompt must contain default entity types");
+    }
+
+    /**
+     * When the provider is available but hasBoundOntology returns false,
+     * free-form behaviour is preserved (no constraint in the prompt).
+     */
+    @Test
+    void unboundOntology_promptUsesFreeFormEntityTypes() {
+        builder.setLlmChat(llmChat);
+        injectOntologyProvider(builder, ontologyProvider);
+
+        Long fsId = 55L;
+        when(ontologyProvider.hasBoundOntology(fsId)).thenReturn(false);
+        configureLlmMock(VALID_JSON_RESPONSE);
+        when(jobRepository.findByJobId(any())).thenReturn(Optional.empty());
+
+        List<RetrievedDoc> chunks = List.of(new RetrievedDoc("c1", "Alice works at Acme.", Map.of()));
+        builder.buildFromChunks(chunks, new GraphBuildContext("job-unbound", fsId, "jpa"), null);
+
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(promptSpec, atLeastOnce()).user(promptCaptor.capture());
+        String prompt = promptCaptor.getValue();
+
+        assertFalse(prompt.contains("Use ONLY the entity types"),
+                "Unbound ontology must not add constraint to prompt");
+    }
+
+    /**
+     * When the provider returns an empty allowed-entity-types list (ontology bound but empty),
+     * free-form behaviour is preserved — permissive, never deny-all.
+     */
+    @Test
+    void emptyOntologyTypes_promptRemainsPermissive() {
+        builder.setLlmChat(llmChat);
+        injectOntologyProvider(builder, ontologyProvider);
+
+        Long fsId = 66L;
+        when(ontologyProvider.hasBoundOntology(fsId)).thenReturn(true);
+        when(ontologyProvider.allowedEntityTypes(fsId)).thenReturn(Collections.emptyList());
+        when(ontologyProvider.allowedRelationshipTypes(fsId)).thenReturn(Collections.emptyList());
+        configureLlmMock(VALID_JSON_RESPONSE);
+        when(jobRepository.findByJobId(any())).thenReturn(Optional.empty());
+
+        List<RetrievedDoc> chunks = List.of(new RetrievedDoc("c1", "Alice works at Acme.", Map.of()));
+        builder.buildFromChunks(chunks, new GraphBuildContext("job-empty-ont", fsId, "jpa"), null);
+
+        ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(promptSpec, atLeastOnce()).user(promptCaptor.capture());
+        String prompt = promptCaptor.getValue();
+
+        assertFalse(prompt.contains("Use ONLY the entity types"),
+                "Empty ontology types must not add constraint (permissive)");
+    }
+
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
     private void configureLlmMock(String responseText) {
@@ -364,5 +510,20 @@ class LlmKnowledgeGraphBuilderTest {
         when(promptSpec.options(any())).thenReturn(promptSpec);
         when(promptSpec.call()).thenReturn(callResponseSpec);
         when(callResponseSpec.content()).thenReturn(responseText);
+    }
+
+    /**
+     * Injects the OntologyProjectionProvider into the builder via reflection
+     * (simulating Spring's @Autowired(required=false) field injection in unit tests).
+     */
+    private static void injectOntologyProvider(LlmKnowledgeGraphBuilder builder,
+                                                OntologyProjectionProvider provider) {
+        try {
+            var field = LlmKnowledgeGraphBuilder.class.getDeclaredField("ontologyProvider");
+            field.setAccessible(true);
+            field.set(builder, provider);
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            throw new RuntimeException("Could not inject OntologyProjectionProvider for test", e);
+        }
     }
 }

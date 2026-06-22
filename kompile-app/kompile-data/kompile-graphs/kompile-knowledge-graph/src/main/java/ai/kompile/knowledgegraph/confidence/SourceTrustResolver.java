@@ -68,42 +68,42 @@ public class SourceTrustResolver {
     public double trustFor(String sourceType) {
         KbConfig c = cfg();
         if (sourceType == null || sourceType.isBlank()) {
-            return c.trustDefault;
+            return c.getTrustDefault();
         }
         switch (sourceType.trim().toLowerCase()) {
             case "email-from":
             case "email_from":
-                return c.trustEmailFrom;
+                return c.getTrustEmailFrom();
             case "email-to-cc":
             case "email_to_cc":
             case "email-to":
             case "email_to":
             case "email-cc":
             case "email_cc":
-                return c.trustEmailToCc;
+                return c.getTrustEmailToCc();
             case "structured-upload":
             case "structured_upload":
             case "structured":
-                return c.trustStructuredUpload;
+                return c.getTrustStructuredUpload();
             case "pdf-office":
             case "pdf_office":
             case "pdf":
             case "office":
-                return c.trustPdfOffice;
+                return c.getTrustPdfOffice();
             case "email-body":
             case "email_body":
-                return c.trustEmailBody;
+                return c.getTrustEmailBody();
             case "llm_extraction":
             case "llm-extraction":
             case "llm":
-                return c.trustLlmExtraction;
+                return c.getTrustLlmExtraction();
             case "web-scrape":
             case "web_scrape":
             case "web":
             case "crawl":
-                return c.trustWebScrape;
+                return c.getTrustWebScrape();
             default:
-                return c.trustDefault;
+                return c.getTrustDefault();
         }
     }
 }

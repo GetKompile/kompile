@@ -16,6 +16,8 @@
 package ai.kompile.knowledgegraph.confidence;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -31,67 +33,75 @@ import java.util.Map;
  * the web UI, exactly like {@code CrawlRuntimeConfig}. {@link #from(JsonNode)} parses + clamps;
  * {@link #toMap()} serializes for the REST/UI surface.</p>
  */
+@Getter
+@Setter
 public class KbConfig {
 
     // ── PSL weight learner (StructuredPerceptronLearner) ──────────────────────────
     /** Gradient-ascent learning rate. */
-    public double pslLearningRate = 0.1;
+    private double pslLearningRate = 0.1;
     /** Convergence threshold on max per-epoch weight change. */
-    public double pslTolerance = 1e-4;
+    private double pslTolerance = 1e-4;
     /** Mini-batch size of ground rules per epoch; 0 = full-batch. */
-    public int pslBatchSize = 0;
+    private int pslBatchSize = 0;
     /** RNG seed for reproducible mini-batch subsampling. */
-    public long pslSeed = 1234L;
+    private long pslSeed = 1234L;
     /** Max epochs per learn() call. */
-    public int pslMaxEpochs = 50;
+    private int pslMaxEpochs = 50;
     /** MAP (Gaussian-prior / L2) regularization strength lambda; 0 = pure MLE. */
-    public double pslWeightPriorStrength = 0.1;
+    private double pslWeightPriorStrength = 0.1;
     /** Prior mean each rule weight is shrunk toward under MAP regularization. */
-    public double pslWeightPriorMean = 0.1;
+    private double pslWeightPriorMean = 0.1;
     /** Default PSL soft-propagation rule weight for a new fact sheet (cold start). */
-    public double pslDefaultRuleWeight = 0.8;
+    private double pslDefaultRuleWeight = 0.8;
 
     /** When true, PSL/MEBN weight learning runs after each cascade. */
-    public boolean learningEnabled = true;
+    private boolean learningEnabled = true;
 
     // ── Evidence / Beta priors, per basis (Pillar 1 + 2) ──────────────────────────
     /** Beta prior strength W for CORROBORATIVE/INFERRED facts (the slow-climb default). */
-    public double evidencePriorStrength = 2.0;
+    private double evidencePriorStrength = 2.0;
     /** Beta prior strength W for STRUCTURAL facts (near-certain from one observation). */
-    public double structuralPriorStrength = 0.1;
+    private double structuralPriorStrength = 0.1;
     /** Beta prior strength W for ASSERTED facts (0 = certainty by construction). */
-    public double assertedPriorStrength = 0.0;
+    private double assertedPriorStrength = 0.0;
 
     // ── Source trust (Pillar 5 tier-1) ────────────────────────────────────────────
-    public double trustEmailFrom = 0.95;
-    public double trustEmailToCc = 0.90;
-    public double trustStructuredUpload = 0.85;
-    public double trustPdfOffice = 0.70;
-    public double trustEmailBody = 0.65;
-    public double trustLlmExtraction = 0.60;
-    public double trustWebScrape = 0.45;
-    public double trustDefault = 0.50;
+    private double trustEmailFrom = 0.95;
+    private double trustEmailToCc = 0.90;
+    private double trustStructuredUpload = 0.85;
+    private double trustPdfOffice = 0.70;
+    private double trustEmailBody = 0.65;
+    private double trustLlmExtraction = 0.60;
+    private double trustWebScrape = 0.45;
+    private double trustDefault = 0.50;
 
     // ── Structural assertion strengths (Pillar 2 / 4) ─────────────────────────────
     /** Positive-evidence strength for the person_belongs_to_org assertion from an email domain. */
-    public double belongsToOrgStrength = 0.25;
+    private double belongsToOrgStrength = 0.25;
 
     // ── MEBN ──────────────────────────────────────────────────────────────────────
     /** Run MEBN finite-difference weight learning once every N cascades. */
-    public int mebnLearningInterval = 10;
+    private int mebnLearningInterval = 10;
 
     // ── Prior-based Opinion prune (Pillar 6 — P6 in PruneCompactOrchestrator) ──────
     /** P6: prune edges whose subjective-logic belief is below this. */
-    public double prunePolicyMinBelief = 0.10;
+    private double prunePolicyMinBelief = 0.10;
     /** P6: prune edges whose uncertainty exceeds this (no evidence base yet). */
-    public double prunePolicyMaxUncertainty = 0.80;
+    private double prunePolicyMaxUncertainty = 0.80;
     /** P6: prune edges whose projected expectation is below this. */
-    public double prunePolicyMinExpectation = 0.15;
+    private double prunePolicyMinExpectation = 0.15;
     /** P6: always prune SUPPRESSED-band edges. */
-    public boolean prunePolicyPruneSuppressedBand = true;
+    private boolean prunePolicyPruneSuppressedBand = true;
+
+    // ── Ontology tie-in (crawl→graph enrichment governed by a bound OntologySchema) ──
+    /** P1: when true, a bound ontology constrains LLM/Tika extraction to its entity/relationship types. */
+    private boolean ontologyGuidedExtractionEnabled = true;
+    /** P3: soft PSL rule weight for DOMAIN/RANGE rules compiled from a bound ontology. */
+    private double ontologyRuleWeight = 0.8;
 
     // ── Personal / free email providers (belongs_to_org exclusion list) ───────────
-    public List<String> personalEmailDomains = new ArrayList<>(List.of(
+    private List<String> personalEmailDomains = new ArrayList<>(List.of(
             "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
             "msn.com", "yahoo.com", "ymail.com", "rocketmail.com", "icloud.com",
             "me.com", "mac.com", "proton.me", "protonmail.com", "pm.me", "aol.com",
@@ -131,6 +141,8 @@ public class KbConfig {
         m.put("kbPrunePolicyMaxUncertainty", prunePolicyMaxUncertainty);
         m.put("kbPrunePolicyMinExpectation", prunePolicyMinExpectation);
         m.put("kbPrunePolicyPruneSuppressedBand", prunePolicyPruneSuppressedBand);
+        m.put("kbOntologyGuidedExtractionEnabled", ontologyGuidedExtractionEnabled);
+        m.put("kbOntologyRuleWeight", ontologyRuleWeight);
         m.put("kbPersonalEmailDomains", personalEmailDomains);
         return m;
     }
@@ -171,6 +183,8 @@ public class KbConfig {
         c.prunePolicyMaxUncertainty = dbl(root, "kbPrunePolicyMaxUncertainty", c.prunePolicyMaxUncertainty, 0.0, 1.0);
         c.prunePolicyMinExpectation = dbl(root, "kbPrunePolicyMinExpectation", c.prunePolicyMinExpectation, 0.0, 1.0);
         c.prunePolicyPruneSuppressedBand = bool(root, "kbPrunePolicyPruneSuppressedBand", c.prunePolicyPruneSuppressedBand);
+        c.ontologyGuidedExtractionEnabled = bool(root, "kbOntologyGuidedExtractionEnabled", c.ontologyGuidedExtractionEnabled);
+        c.ontologyRuleWeight = dbl(root, "kbOntologyRuleWeight", c.ontologyRuleWeight, 0.0, 100.0);
         List<String> domains = strList(root, "kbPersonalEmailDomains");
         if (domains != null) {
             c.personalEmailDomains = domains;

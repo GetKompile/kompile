@@ -15,6 +15,8 @@
  */
 package ai.kompile.knowledgegraph.reasoning;
 
+import ai.kompile.core.graphrag.conformance.OntologyAxiom;
+import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.graph.reasoning.fol.EntailmentEngine;
 import ai.kompile.graph.reasoning.fol.EntailmentRecord;
@@ -140,6 +142,18 @@ public class IncrementalReasoningOrchestrator {
     FactPromotionTracker promotionTracker;
 
     /**
+     * Optional: ontology projection provider (Phase 3).  When non-null and the fact sheet has
+     * a bound ontology, {@link #doReground} compiles the ontology's DOMAIN/RANGE axioms into
+     * PSL rules and injects them into the program before the MAP solve.  {@code null} in
+     * plain-Java test contexts and in Spring contexts that do not wire app-main's implementation
+     * — the behavior then falls back to today's rule set (no ontology constraints, exactly as
+     * before). Injected via field injection so the existing multi-arg constructors are untouched.
+     */
+    @Nullable
+    @Autowired(required = false)
+    OntologyProjectionProvider ontologyProvider;
+
+    /**
      * Optional: graph→FactStore projector. When non-null, {@link #doReground} projects
      * the live graph into the FactStore before the MAP solve. {@code null} in plain-Java
      * test contexts (existing 17 tests) so they remain unaffected.
@@ -214,9 +228,9 @@ public class IncrementalReasoningOrchestrator {
     private PslWeightLearningService pslWeightLearner() {
         KbConfig c = kbCfg();
         return new PslWeightLearningService(
-                new StructuredPerceptronLearner(c.pslLearningRate, c.pslTolerance, c.pslBatchSize,
-                        c.pslSeed, c.pslWeightPriorStrength, c.pslWeightPriorMean),
-                c.pslMaxEpochs);
+                new StructuredPerceptronLearner(c.getPslLearningRate(), c.getPslTolerance(), c.getPslBatchSize(),
+                        c.getPslSeed(), c.getPslWeightPriorStrength(), c.getPslWeightPriorMean()),
+                c.getPslMaxEpochs());
     }
 
     /**
@@ -242,9 +256,9 @@ public class IncrementalReasoningOrchestrator {
     private PslWeightLearningService pslWeightLearner(double[] perRuleMeans) {
         KbConfig c = kbCfg();
         return new PslWeightLearningService(
-                new StructuredPerceptronLearner(c.pslLearningRate, c.pslTolerance, c.pslBatchSize,
-                        c.pslSeed, c.pslWeightPriorStrength, c.pslWeightPriorMean, perRuleMeans),
-                c.pslMaxEpochs);
+                new StructuredPerceptronLearner(c.getPslLearningRate(), c.getPslTolerance(), c.getPslBatchSize(),
+                        c.getPslSeed(), c.getPslWeightPriorStrength(), c.getPslWeightPriorMean(), perRuleMeans),
+                c.getPslMaxEpochs());
     }
 
     /**
@@ -448,13 +462,20 @@ public class IncrementalReasoningOrchestrator {
         }
 
         // ── STEP 2+3: Build PSL program from the observed FactStore ──────────────────
-        PslProgram program = buildProgramFromFactStore(factStore, kbCfg().pslDefaultRuleWeight);
+        PslProgram program = buildProgramFromFactStore(factStore, kbCfg().getPslDefaultRuleWeight());
 
         // ── STEP 3b (NEW): Load project-level PSL rules if dataDir is configured ─────
         // If <dataDir>/rules/*.psl files exist, their rules override the default soft-
         // propagation rules added by buildProgramFromFactStore. This is the pluggable
         // rule seam described in design spec §7 (P0 build plan item 4).
         loadProjectPslRules(program);
+
+        // ── STEP 3b-ont (Phase 3): Inject ontology axiom → PSL rules ─────────────────
+        // When a bound ontology is present, compile its DOMAIN/RANGE axioms into soft PSL
+        // rules and add them to the program before the MAP solve. When the provider is null,
+        // the fact sheet has no bound ontology, or axioms are empty, this step is a strict
+        // no-op — today's behaviour is fully preserved.
+        injectOntologyRules(program, factSheetId);
 
         // ── STEP 3c (L0 FIX): Reload persisted learned weights into the program ──────
         // Before the MAP solve, load the last-persisted PSL weights and apply them onto the
@@ -468,7 +489,7 @@ public class IncrementalReasoningOrchestrator {
         } else if (fileBackedWeightStore != null) {
             cascadeWeightStore = fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
         }
-        if (kbCfg().learningEnabled && cascadeWeightStore != null && !program.rules().isEmpty()) {
+        if (kbCfg().isLearningEnabled() && cascadeWeightStore != null && !program.rules().isEmpty()) {
             try {
                 String programKey = factSheetId + "-cascade";
                 Optional<Map<String, Double>> persistedWeights = cascadeWeightStore.latest(programKey);
@@ -572,7 +593,7 @@ public class IncrementalReasoningOrchestrator {
         // sheets of ≤5000 atoms).
         // Uses cascadeWeightStore resolved above (DualStore preferred; falls back to file-backed).
         final PslProgram programForSnapshot;
-        if (kbCfg().learningEnabled && cascadeWeightStore != null && !program.rules().isEmpty()
+        if (kbCfg().isLearningEnabled() && cascadeWeightStore != null && !program.rules().isEmpty()
                 && !result.values().isEmpty()) {
             PslProgram trainedProgram = program;
             try {
@@ -700,8 +721,8 @@ public class IncrementalReasoningOrchestrator {
         long cascadeCount = cascadeCounters
                 .computeIfAbsent(factSheetId, id -> new AtomicLong(0L))
                 .incrementAndGet();
-        if (kbCfg().learningEnabled && mebnWeightAdapter != null
-                && cascadeCount % kbCfg().mebnLearningInterval == 0) {
+        if (kbCfg().isLearningEnabled() && mebnWeightAdapter != null
+                && cascadeCount % kbCfg().getMebnLearningInterval() == 0) {
             MTheory theory = mebnTheories.get(factSheetId);
             ReasoningGraph mebnGraph = mebnGraphs.get(factSheetId);
             if (theory != null && mebnGraph != null && !result.values().isEmpty()) {
@@ -766,6 +787,55 @@ public class IncrementalReasoningOrchestrator {
                 correctionService.appendWeightTunedEvent(
                         factSheetId, before.rules().get(i).toString(), wb, wa, runId);
             }
+        }
+    }
+
+    /**
+     * Phase 3 — inject ontology DOMAIN/RANGE axioms as soft PSL rules into {@code program}.
+     *
+     * <p>Guard conditions (any one → strict no-op):
+     * <ul>
+     *   <li>{@link #ontologyProvider} is {@code null} (no implementation wired — plain-Java tests,
+     *       Spring contexts without app-main).</li>
+     *   <li>{@link OntologyProjectionProvider#hasBoundOntology(Long)} returns {@code false}
+     *       (fact sheet has no bound ontology).</li>
+     *   <li>{@link OntologyProjectionProvider#ontologyAxioms(Long)} returns an empty list.</li>
+     * </ul>
+     *
+     * <p>Rule weight: sourced from the kompile-managed {@code kbCfg().getOntologyRuleWeight()}
+     * (dedicated ontology rule weight in {@link ai.kompile.knowledgegraph.confidence.KbConfig},
+     * default 0.8, range [0.0, 100.0]).</p>
+     *
+     * @param program     the program to inject rules into (mutated in place)
+     * @param factSheetId the fact sheet whose bound ontology to query
+     */
+    private void injectOntologyRules(PslProgram program, long factSheetId) {
+        if (ontologyProvider == null) return;
+        if (!ontologyProvider.hasBoundOntology(factSheetId)) return;
+
+        List<OntologyAxiom> axioms = ontologyProvider.ontologyAxioms(factSheetId);
+        if (axioms == null || axioms.isEmpty()) return;
+
+        // Rule weight from the kompile-managed KbConfig (dedicated ontology rule weight; default 0.8).
+        double weight = kbCfg().getOntologyRuleWeight();
+
+        OntologyToPslRuleCompiler compiler = new OntologyToPslRuleCompiler(weight);
+        List<String> ruleStrings = compiler.compile(axioms);
+
+        int added = 0;
+        for (String ruleStr : ruleStrings) {
+            try {
+                program.addRule(ruleStr);
+                added++;
+            } catch (Exception e) {
+                log.warn("OntologyToPsl: could not parse compiled rule '{}' for factSheet={} — {}",
+                        ruleStr, factSheetId, e.getMessage());
+                // Non-fatal: continue with the remaining axiom rules
+            }
+        }
+        if (added > 0) {
+            log.debug("OntologyToPsl: injected {} ontology axiom rule(s) into PSL program for factSheet={}",
+                    added, factSheetId);
         }
     }
 
@@ -986,7 +1056,7 @@ public class IncrementalReasoningOrchestrator {
                 means[i] = bandPriorMean(band, c);
             } else {
                 // No matching facts (project-level rule): fall back to scalar mean
-                means[i] = c.pslWeightPriorMean;
+                means[i] = c.getPslWeightPriorMean();
             }
         }
 
@@ -1016,7 +1086,7 @@ public class IncrementalReasoningOrchestrator {
         //   ...
         // Until then, we derive sensible defaults from the existing scalar mean so the
         // code compiles and produces correct ordering: ESTABLISHED > HIGH > PROBABLE > SPECULATIVE.
-        double scalar = c.pslWeightPriorMean;
+        double scalar = c.getPslWeightPriorMean();
         switch (band) {
             case ESTABLISHED: return Math.max(scalar, 0.9);   // ~top of non-hard range
             case HIGH:        return Math.max(scalar, 0.7);   // clearly above default

@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.builder.impl;
 
 import ai.kompile.core.graphbuilder.*;
+import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.retrievers.RetrievedDoc;
@@ -63,6 +64,14 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
     private final ObjectMapper objectMapper;
     private final ExtractionJobRepository jobRepository;
     private final ExtractionLogRepository logRepository;
+
+    /**
+     * Optional OntologyProjectionProvider — when available, constrains extraction to the entity/
+     * relationship types of the ontology bound to the fact sheet being processed.
+     * When null or when the fact sheet has no bound ontology, extraction is free-form (unchanged).
+     */
+    @Autowired(required = false)
+    private OntologyProjectionProvider ontologyProvider;
 
     /**
      * Optional SourceTrustResolver — when available (Spring context), resolves the
@@ -184,6 +193,20 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
             return Collections.emptyList();
         }
 
+        // ── Ontology-guided extraction (Phase 1) ──────────────────────────────
+        // Resolve allowed entity/relationship types ONCE per build, at the entry point
+        // where factSheetId is available via context. When provider is absent, the fact
+        // sheet has no bound ontology, or the allowed-types list is empty, we fall through
+        // to the existing free-form behaviour (BuilderConfig.entityTypes / default list).
+        // NEVER restrict when unbound — permissive must be the default.
+        Long factSheetId = context != null ? context.factSheetId() : null;
+        List<String> ontologyEntityTypes = resolveOntologyEntityTypes(factSheetId);
+        List<String> ontologyRelTypes = resolveOntologyRelationshipTypes(factSheetId);
+        if (!ontologyEntityTypes.isEmpty()) {
+            log.debug("Ontology-guided extraction active for factSheetId={}: entityTypes={}, relTypes={}",
+                    factSheetId, ontologyEntityTypes, ontologyRelTypes);
+        }
+
         List<ProposedTriple> allProposals = new ArrayList<>();
         List<ExtractionLogEntry> logs = new ArrayList<>();
         int processedCount = 0;
@@ -192,8 +215,8 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
             try {
                 long startTime = System.currentTimeMillis();
 
-                // Create the extraction prompt
-                String prompt = createExtractionPrompt(chunk.getText());
+                // Create the extraction prompt, constrained to ontology types when bound
+                String prompt = createExtractionPrompt(chunk.getText(), ontologyEntityTypes, ontologyRelTypes);
 
                 // Build chat options
                 ChatOptions.Builder optionsBuilder = ChatOptions.builder();
@@ -249,7 +272,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                 log.error("Failed to extract from chunk: {}", chunk.getId(), e);
 
                 // Create failure log
-                String prompt = createExtractionPrompt(chunk.getText());
+                String prompt = createExtractionPrompt(chunk.getText(), ontologyEntityTypes, ontologyRelTypes);
                 ExtractionLogEntry failLog = ExtractionLogEntry.failure(
                         chunk.getId(),
                         getDocumentId(chunk),
@@ -325,23 +348,81 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
 
     // ==================== Private Methods ====================
 
-    private String createExtractionPrompt(String text) {
-        // Use custom prompt if configured
+    /**
+     * Resolves the ontology-allowed entity types for the given fact sheet.
+     * Returns an empty list when: provider is null, fact sheet is unbound, or types list is empty.
+     * An empty return value means "use free-form" — never "deny-all".
+     */
+    private List<String> resolveOntologyEntityTypes(Long factSheetId) {
+        if (!kbCfg().isOntologyGuidedExtractionEnabled()) return Collections.emptyList();
+        if (ontologyProvider == null || factSheetId == null) return Collections.emptyList();
+        if (!ontologyProvider.hasBoundOntology(factSheetId)) return Collections.emptyList();
+        List<String> types = ontologyProvider.allowedEntityTypes(factSheetId);
+        return (types != null && !types.isEmpty()) ? types : Collections.emptyList();
+    }
+
+    /**
+     * Resolves the ontology-allowed relationship types for the given fact sheet.
+     * Returns an empty list when: provider is null, fact sheet is unbound, or types list is empty.
+     */
+    private List<String> resolveOntologyRelationshipTypes(Long factSheetId) {
+        if (!kbCfg().isOntologyGuidedExtractionEnabled()) return Collections.emptyList();
+        if (ontologyProvider == null || factSheetId == null) return Collections.emptyList();
+        if (!ontologyProvider.hasBoundOntology(factSheetId)) return Collections.emptyList();
+        List<String> types = ontologyProvider.allowedRelationshipTypes(factSheetId);
+        return (types != null && !types.isEmpty()) ? types : Collections.emptyList();
+    }
+
+    /**
+     * Creates an extraction prompt. When ontologyEntityTypes is non-empty, the prompt is
+     * constrained to those types with an explicit "use ONLY these types" instruction;
+     * otherwise it falls back to the free-form BuilderConfig types (today's behaviour).
+     *
+     * @param text               chunk text to analyse
+     * @param ontologyEntityTypes allowed entity types from bound ontology; empty = free-form
+     * @param ontologyRelTypes    allowed relationship types from bound ontology; empty = free-form
+     */
+    private String createExtractionPrompt(String text,
+                                          List<String> ontologyEntityTypes,
+                                          List<String> ontologyRelTypes) {
+        // Use custom prompt if configured (caller's responsibility to handle ontology if needed)
         if (config.customPrompt() != null && !config.customPrompt().isEmpty()) {
             return config.customPrompt()
                     .replace("{{TEXT}}", text)
                     .replace("{text}", text);
         }
 
-        // Build entity types list
-        String entityTypes = config.entityTypes() != null
-                ? String.join(", ", config.entityTypes())
-                : "PERSON, ORGANIZATION, LOCATION, CONCEPT";
+        boolean constrained = ontologyEntityTypes != null && !ontologyEntityTypes.isEmpty();
+
+        // Build entity types list: ontology-constrained when bound, free-form otherwise
+        String entityTypes;
+        String relTypes;
+        String typeConstraintInstruction;
+        if (constrained) {
+            entityTypes = String.join(", ", ontologyEntityTypes);
+            relTypes = (ontologyRelTypes != null && !ontologyRelTypes.isEmpty())
+                    ? String.join(", ", ontologyRelTypes)
+                    : null;
+            typeConstraintInstruction = "IMPORTANT: Use ONLY the entity types listed above. "
+                    + "Do NOT introduce any entity types not in this list. "
+                    + "If an entity does not fit any listed type, omit it.";
+        } else {
+            entityTypes = config.entityTypes() != null
+                    ? String.join(", ", config.entityTypes())
+                    : "PERSON, ORGANIZATION, LOCATION, CONCEPT";
+            relTypes = null;
+            typeConstraintInstruction = "";
+        }
+
+        String relSection = (relTypes != null)
+                ? "\nRelationship types to use: " + relTypes + "\n" + typeConstraintInstruction
+                : (constrained ? "\n" + typeConstraintInstruction : "");
 
         return """
                 Extract entities and their relationships from the following text.
 
                 Entity types to look for: %s
+                %s
 
                 %s
 
@@ -349,7 +430,8 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                 \"\"\"
                 %s
                 \"\"\"
-                """.formatted(entityTypes, GraphExtractionValidator.getExtractionPromptInstructions(), text);
+                """.formatted(entityTypes, relSection,
+                GraphExtractionValidator.getExtractionPromptInstructions(), text);
     }
 
     private ExtractedGraphDTO.ExtractedGraph parseResponse(String response) throws JsonProcessingException {
@@ -413,7 +495,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
             // If SourceTrustResolver is not wired (plain-Java tests), fall back to 0.60 default.
             double sourceTrust = sourceTrustResolver != null
                     ? sourceTrustResolver.trustFor("LLM_EXTRACTION")
-                    : kbCfg().trustLlmExtraction;
+                    : kbCfg().getTrustLlmExtraction();
 
             // Evidence-based confidence initialisation (Pillar 1, Slice 1):
             // A single LLM extraction with W=2, trust=0.6 → expectation ≈ 0.23 (LOW band).
@@ -423,12 +505,12 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
             if (rel.getConfidence() != null) {
                 confidence = rel.getConfidence();
             } else {
-                double W = kbCfg().evidencePriorStrength;
+                double W = kbCfg().getEvidencePriorStrength();
                 confidence = Opinion.fromBetaEvidence(sourceTrust, 0.0, 0.5, W).expectation();
             }
 
             // Build evidence metadata for Pillar 1/3 (persisted in edge metadataJson)
-            double W = kbCfg().evidencePriorStrength;
+            double W = kbCfg().getEvidencePriorStrength();
             Opinion opinion = Opinion.fromBetaEvidence(sourceTrust, 0.0, 0.5, W);
             Map<String, Object> evidenceMeta = new LinkedHashMap<>();
             evidenceMeta.put(GraphProvenanceKeys.OPINION, opinion.toJson());
@@ -554,8 +636,8 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                 // Simplified conversion for log display — use the same evidence-based
                 // confidence as the live extraction path (no hardcoded 0.8 fallback).
                 double displaySourceTrust = sourceTrustResolver != null
-                        ? sourceTrustResolver.trustFor("LLM_EXTRACTION") : kbCfg().trustLlmExtraction;
-                double displayW = kbCfg().evidencePriorStrength;
+                        ? sourceTrustResolver.trustFor("LLM_EXTRACTION") : kbCfg().getTrustLlmExtraction();
+                double displayW = kbCfg().getEvidencePriorStrength();
                 double displayDefaultConf = Opinion.fromBetaEvidence(
                         displaySourceTrust, 0.0, 0.5, displayW).expectation();
                 for (ExtractedGraphDTO.ExtractedRelationship rel : extracted.getRelationships()) {

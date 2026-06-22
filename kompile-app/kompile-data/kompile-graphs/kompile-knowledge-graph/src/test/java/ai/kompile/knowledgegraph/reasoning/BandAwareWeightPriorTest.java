@@ -178,7 +178,7 @@ class BandAwareWeightPriorTest {
         assertEquals(program.rules().size(), means.length,
                 "Array length must match rule count even for empty FactStore");
 
-        double expected = KbConfig.defaults().pslWeightPriorMean;
+        double expected = KbConfig.defaults().getPslWeightPriorMean();
         for (int i = 0; i < means.length; i++) {
             assertEquals(expected, means[i], 1e-12,
                     "Empty FactStore must return scalar pslWeightPriorMean for rule " + i

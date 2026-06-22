@@ -66,9 +66,9 @@ public class StructuralFactAssertionService {
     private double priorStrengthFor(BasisType basis) {
         KbConfig c = cfg();
         return switch (basis) {
-            case STRUCTURAL -> c.structuralPriorStrength;
-            case ASSERTED -> c.assertedPriorStrength;
-            default -> c.evidencePriorStrength;
+            case STRUCTURAL -> c.getStructuralPriorStrength();
+            case ASSERTED -> c.getAssertedPriorStrength();
+            default -> c.getEvidencePriorStrength();
         };
     }
 

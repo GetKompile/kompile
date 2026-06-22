@@ -266,7 +266,7 @@ public class FactPromotionTracker {
 
         // Compute band from Beta-distribution Opinion (respects uncertainty gate)
         Opinion opinion = Opinion.fromBetaEvidence(state.evidencePos, state.evidenceNeg, 0.5,
-                kbCfg().evidencePriorStrength);
+                kbCfg().getEvidencePriorStrength());
         StrengthBand newBand = StrengthBand.from(opinion);
 
         // Promotion: new band is strictly higher tier (lower ordinal = higher tier in the enum)

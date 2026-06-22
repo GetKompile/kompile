@@ -203,7 +203,7 @@ public class KbCorrectionService {
 
             // 4. Feed training signal to weight learner (mini-batch, 3 steps)
             boolean trainingApplied = false;
-            if (kbCfg().learningEnabled) {
+            if (kbCfg().isLearningEnabled()) {
                 try {
                     PslProgram program = programSnapshots.get(factSheetId);
                     if (program != null && !program.rules().isEmpty()) {

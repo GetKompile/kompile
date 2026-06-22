@@ -272,9 +272,9 @@ public class PruneCompactOrchestrator {
             return PrunePolicy.defaults();
         }
         return new PrunePolicy(
-                c.prunePolicyMinBelief,
-                c.prunePolicyMaxUncertainty,
-                c.prunePolicyMinExpectation,
-                c.prunePolicyPruneSuppressedBand);
+                c.getPrunePolicyMinBelief(),
+                c.getPrunePolicyMaxUncertainty(),
+                c.getPrunePolicyMinExpectation(),
+                c.isPrunePolicyPruneSuppressedBand());
     }
 }
