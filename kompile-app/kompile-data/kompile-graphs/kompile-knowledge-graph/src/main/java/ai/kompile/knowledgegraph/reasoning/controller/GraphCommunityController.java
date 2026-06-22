@@ -15,6 +15,8 @@
  */
 package ai.kompile.knowledgegraph.reasoning.controller;
 
+import ai.kompile.knowledgegraph.reasoning.CommunitySummaryService;
+import ai.kompile.knowledgegraph.reasoning.CommunitySummaryService.CommunitySummaryResult;
 import ai.kompile.knowledgegraph.reasoning.GraphCommunityService;
 import ai.kompile.knowledgegraph.reasoning.GraphCommunityService.CommunityResult;
 import lombok.extern.slf4j.Slf4j;
@@ -43,9 +45,12 @@ import java.util.Map;
 public class GraphCommunityController {
 
     private final GraphCommunityService communityService;
+    private final CommunitySummaryService summaryService;
 
-    public GraphCommunityController(GraphCommunityService communityService) {
+    public GraphCommunityController(GraphCommunityService communityService,
+                                    CommunitySummaryService summaryService) {
         this.communityService = communityService;
+        this.summaryService = summaryService;
     }
 
     /**
@@ -77,6 +82,40 @@ public class GraphCommunityController {
             log.error("Community detection failed for factSheetId={}: {}", factSheetId, ex.getMessage(), ex);
             return ResponseEntity.status(503)
                     .body(Map.of("error", "Community detection unavailable: " + ex.getMessage()));
+        }
+    }
+
+    /**
+     * D9 — On-demand LLM summary for a single community.
+     *
+     * <p>Runs community detection over the fact sheet, resolves the member nodes'
+     * titles and types, and asks the LLM pool to write a short natural-language
+     * paragraph describing what the community represents.  The call is lazy
+     * (only performed when this endpoint is hit) and resilient (returns a graceful
+     * message if the LLM pool is unavailable).</p>
+     *
+     * <p>Example: {@code GET /api/graph/42/communities/3/summary}</p>
+     *
+     * @param factSheetId the fact sheet the communities were detected over
+     * @param communityId the 0-based community id to summarise
+     * @return {@link CommunitySummaryResult} as JSON with fields
+     *         {@code communityId}, {@code summary}, {@code memberCount}
+     */
+    @GetMapping("/{communityId}/summary")
+    public ResponseEntity<?> getCommunitySummary(
+            @PathVariable Long factSheetId,
+            @PathVariable int communityId) {
+
+        log.info("GET /api/graph/{}/communities/{}/summary", factSheetId, communityId);
+
+        try {
+            CommunitySummaryResult result = summaryService.summarise(factSheetId, communityId);
+            return ResponseEntity.ok(result);
+        } catch (Exception ex) {
+            log.error("Community summary failed for factSheetId={} communityId={}: {}",
+                    factSheetId, communityId, ex.getMessage(), ex);
+            return ResponseEntity.status(503)
+                    .body(Map.of("error", "Community summary unavailable: " + ex.getMessage()));
         }
     }
 }

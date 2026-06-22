@@ -40,6 +40,12 @@ interface CommunityResult {
   communities: Record<string, string[]>;
 }
 
+interface CommunitySummaryResult {
+  communityId: number;
+  summary: string;
+  memberCount: number;
+}
+
 @Component({
   selector: 'app-community-panel',
   standalone: true,
@@ -139,6 +145,14 @@ interface CommunityResult {
               <span class="chip-count">
                 {{(result.communities[cid] || []).length}}
               </span>
+              <button mat-icon-button
+                      class="summarize-btn"
+                      [disabled]="summarizingId === cid"
+                      (click)="$event.stopPropagation(); summarizeCommunity(cid)"
+                      matTooltip="Generate LLM summary for this community">
+                <mat-spinner *ngIf="summarizingId === cid" diameter="12"></mat-spinner>
+                <mat-icon *ngIf="summarizingId !== cid" class="summarize-icon">auto_awesome</mat-icon>
+              </button>
             </span>
           </div>
         </div>
@@ -149,6 +163,20 @@ interface CommunityResult {
             Community {{selectedCommunityId}} members
             ({{(result.communities[selectedCommunityId] || []).length}} nodes)
           </div>
+
+          <!-- D9 LLM Summary -->
+          <div *ngIf="summaryError[selectedCommunityId]" class="summary-error">
+            <mat-icon>error_outline</mat-icon>
+            <span>{{summaryError[selectedCommunityId]}}</span>
+          </div>
+          <div *ngIf="summaries[selectedCommunityId]" class="summary-box">
+            <div class="summary-header">
+              <mat-icon class="summary-icon">auto_awesome</mat-icon>
+              <span class="summary-label">AI Community Summary</span>
+            </div>
+            <p class="summary-text">{{summaries[selectedCommunityId]}}</p>
+          </div>
+
           <div class="members-list">
             <div *ngFor="let nodeId of result.communities[selectedCommunityId] || []"
                  class="member-row">
@@ -396,6 +424,84 @@ interface CommunityResult {
       color: var(--text-tertiary);
       text-align: center;
     }
+
+    .summarize-btn {
+      width: 20px;
+      height: 20px;
+      line-height: 20px;
+      padding: 0;
+      margin-left: 2px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+
+    .summarize-icon {
+      font-size: 14px;
+      width: 14px;
+      height: 14px;
+      color: var(--text-secondary);
+    }
+
+    .summary-box {
+      padding: 10px 12px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+
+    .summary-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    .summary-icon {
+      font-size: 14px;
+      width: 14px;
+      height: 14px;
+      color: var(--primary-color, #4285F4);
+    }
+
+    .summary-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-secondary);
+    }
+
+    .summary-text {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-primary);
+      white-space: pre-wrap;
+    }
+
+    .summary-error {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 10px;
+      background: rgba(239, 68, 68, 0.06);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      border-radius: 6px;
+      color: #ef4444;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .summary-error mat-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
   `]
 })
 export class CommunityPanelComponent extends BaseService implements OnChanges {
@@ -410,6 +516,13 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
   selectedCommunityId: number | null = null;
 
   communityIds: number[] = [];
+
+  /** communityId → summary text (populated lazily on Summarize click) */
+  summaries: Record<number, string> = {};
+  /** communityId → error message if summarization failed */
+  summaryError: Record<number, string> = {};
+  /** id of the community currently being summarized, or null */
+  summarizingId: number | null = null;
 
   readonly communityColors: string[] = [
     '#4285F4', '#EA4335', '#FBBC05', '#34A853', '#FF6D00',
@@ -429,6 +542,9 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
       this.error = null;
       this.selectedCommunityId = null;
       this.communityIds = [];
+      this.summaries = {};
+      this.summaryError = {};
+      this.summarizingId = null;
     }
   }
 
@@ -439,6 +555,9 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
     this.result = null;
     this.selectedCommunityId = null;
     this.communityIds = [];
+    this.summaries = {};
+    this.summaryError = {};
+    this.summarizingId = null;
 
     const url = `${this.backendUrl}/graph/${this.factSheetId}/communities` +
       `?method=${this.selectedMethod}&resolution=${this.resolution}&maxNodes=500`;
@@ -461,5 +580,33 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
 
   selectCommunity(cid: number): void {
     this.selectedCommunityId = this.selectedCommunityId === cid ? null : cid;
+  }
+
+  /**
+   * D9 — Request an LLM-generated summary for the given community.
+   * Calls GET /api/graph/{factSheetId}/communities/{communityId}/summary.
+   * Result is stored in `summaries[cid]` and shown inline.
+   */
+  summarizeCommunity(cid: number): void {
+    if (!this.factSheetId || this.summarizingId === cid) return;
+
+    // Ensure the community is selected so the summary box is visible.
+    this.selectedCommunityId = cid;
+    this.summarizingId = cid;
+    delete this.summaryError[cid];
+
+    const url = `${this.backendUrl}/graph/${this.factSheetId}/communities/${cid}/summary`;
+
+    this.http.get<CommunitySummaryResult>(url).subscribe({
+      next: (res) => {
+        this.summaries[cid] = res.summary;
+        this.summarizingId = null;
+      },
+      error: (err) => {
+        this.summaryError[cid] =
+          err?.error?.error || err?.message || 'Summary unavailable';
+        this.summarizingId = null;
+      }
+    });
   }
 }
