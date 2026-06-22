@@ -21,6 +21,7 @@ import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
 import ai.kompile.graph.reasoning.fol.InMemoryInferredFactStore;
 import ai.kompile.graph.reasoning.fol.grounding.ConjunctiveQueryEngine;
+import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.fol.grounding.ConcurrentFactStore;
 import ai.kompile.graph.reasoning.fol.grounding.DefaultKbVerifier;
 import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
@@ -191,6 +192,37 @@ public class KbGroundingService {
             return verifier.verify(atomKey);
         } finally {
             lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Sparse-graph open-world assessor (optional). Turns an absent ({@code UNKNOWN}) fact into a
+     * vacuous, base-rate-aware Opinion when the fact sheet's graph is structurally sparse. Null in
+     * plain-Java unit tests — {@link #verifyOpinion} then falls back to a plain vacuous Opinion.
+     */
+    @Autowired(required = false)
+    private ai.kompile.knowledgegraph.reasoning.SparseGraphAssessor sparseGraphAssessor;
+
+    /**
+     * Opinion-valued verification. {@code SUPPORTED}/{@code REFUTED} map to belief/disbelief; an
+     * absent ({@code UNKNOWN}) fact resolves — in a structurally SPARSE graph — to a vacuous,
+     * base-rate-aware open-world Opinion rather than a bare UNKNOWN (closed-world disbelief when the
+     * graph is dense). This is the read-path consumer of the sparse-evidence model.
+     *
+     * @param baseRate domain prior that the absent proposition is true, in [0, 1]
+     */
+    public Opinion verifyOpinion(long factSheetId, String atomKey, double baseRate) {
+        VerifyResult r = verify(factSheetId, atomKey);
+        switch (r.status()) {
+            case SUPPORTED:
+                return Opinion.fromObservedValue(r.confidence());
+            case REFUTED:
+                return Opinion.fromObservedValue(Math.max(0.0, 1.0 - r.confidence()));
+            case UNKNOWN:
+            default:
+                return sparseGraphAssessor != null
+                        ? sparseGraphAssessor.absentFactOpinion(factSheetId, baseRate)
+                        : Opinion.vacuous(baseRate);
         }
     }
 
