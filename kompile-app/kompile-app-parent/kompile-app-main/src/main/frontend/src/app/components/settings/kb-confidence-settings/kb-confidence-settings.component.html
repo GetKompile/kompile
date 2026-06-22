@@ -278,6 +278,45 @@
       </div>
     </mat-expansion-panel>
 
+    <!-- ── Section: Opinion Prune Policy ─────────────────────────── -->
+    <mat-expansion-panel class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>content_cut</mat-icon>
+          Opinion Prune Policy
+        </mat-panel-title>
+        <mat-panel-description>Subjective-logic thresholds for the P6 prune pass (runs every crawl)</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="fields-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Min Belief</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPrunePolicyMinBelief"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.01">
+          <mat-hint>Prune edges whose belief is below this (e.g. 0.10)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Max Uncertainty</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPrunePolicyMaxUncertainty"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.01">
+          <mat-hint>Prune edges with no evidence base yet (e.g. 0.80)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Min Expectation</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPrunePolicyMinExpectation"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.01">
+          <mat-hint>Prune edges with very low projected probability (e.g. 0.15)</mat-hint>
+        </mat-form-field>
+      </div>
+
+      <mat-slide-toggle [(ngModel)]="config.kbPrunePolicyPruneSuppressedBand"
+                        [ngModelOptions]="{standalone: true}" class="toggle-row">
+        Always prune SUPPRESSED-band edges
+      </mat-slide-toggle>
+    </mat-expansion-panel>
+
     <!-- ── Section: Personal Email Domains ───────────────────────── -->
     <mat-expansion-panel class="section-panel">
       <mat-expansion-panel-header>

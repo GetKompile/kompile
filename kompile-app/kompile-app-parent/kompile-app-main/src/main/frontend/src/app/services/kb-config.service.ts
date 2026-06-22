@@ -51,6 +51,12 @@ export interface KbConfig {
   // MEBN
   kbMebnLearningInterval: number;
 
+  // Opinion prune policy (P6 in PruneCompactOrchestrator)
+  kbPrunePolicyMinBelief: number;
+  kbPrunePolicyMaxUncertainty: number;
+  kbPrunePolicyMinExpectation: number;
+  kbPrunePolicyPruneSuppressedBand: boolean;
+
   // Personal email domains
   kbPersonalEmailDomains: string[];
 }
@@ -99,6 +105,10 @@ export class KbConfigService {
       kbTrustDefault: 0.5,
       kbBelongsToOrgStrength: 0.8,
       kbMebnLearningInterval: 100,
+      kbPrunePolicyMinBelief: 0.10,
+      kbPrunePolicyMaxUncertainty: 0.80,
+      kbPrunePolicyMinExpectation: 0.15,
+      kbPrunePolicyPruneSuppressedBand: true,
       kbPersonalEmailDomains: ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com']
     };
   }
