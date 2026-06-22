@@ -6,6 +6,20 @@
   background: var(--bg-body, #f8f9fa);
 }
 
+/* ── Panel intro ─────────────────────────────────────────────────────────── */
+.panel-intro {
+  padding: 10px 16px 6px;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+  background: var(--bg-surface, #fff);
+}
+
+.panel-intro p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary, #555);
+  line-height: 1.5;
+}
+
 /* ── Toolbar ────────────────────────────────────────────────────────────── */
 .overview-toolbar {
   display: flex;

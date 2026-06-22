@@ -7,6 +7,21 @@
   padding: 12px;
 }
 
+.panel-intro {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg-surface, #fff);
+  border: 1px solid var(--border-color, #e0e0e0);
+}
+
+.panel-intro p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary, #555);
+  line-height: 1.5;
+}
+
 .controls-card,
 .result-card {
   margin-bottom: 16px;

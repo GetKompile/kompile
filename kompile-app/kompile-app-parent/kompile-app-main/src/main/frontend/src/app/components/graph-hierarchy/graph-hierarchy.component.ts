@@ -45,6 +45,10 @@ import { HierarchyTreeNode, GraphNode, NodeLevel, NODE_COLORS } from '../../mode
   ],
   template: `
     <div class="graph-hierarchy">
+      <div class="hierarchy-intro">
+        <p>Browse the graph's type hierarchy — drill from top-level source or entity types down to individual members.
+           Selecting a node shows its metadata and confidence; expand a node to see its children in the containment tree.</p>
+      </div>
       <div class="hierarchy-toolbar">
         <mat-form-field appearance="outline" class="search-field">
           <mat-label>Search nodes</mat-label>
@@ -219,6 +223,19 @@ import { HierarchyTreeNode, GraphNode, NodeLevel, NODE_COLORS } from '../../mode
       flex-direction: column;
       height: 100%;
       position: relative;
+    }
+
+    .hierarchy-intro {
+      padding: 10px 16px 8px;
+      border-bottom: 1px solid var(--border-color, #e0e0e0);
+      background: var(--bg-surface, #fff);
+    }
+
+    .hierarchy-intro p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--text-secondary, #555);
+      line-height: 1.5;
     }
 
     .hierarchy-toolbar {

@@ -104,6 +104,11 @@ import {
   ],
   template: `
     <div class="graph-visualizer">
+      <!-- Canvas hint -->
+      <div class="gv-hint">
+        Interactive canvas — click nodes to inspect, drag to rearrange, use the toolbar to filter or search, and enable overlays to see confidence bands, provenance, or communities.
+      </div>
+
       <!-- Fact Sheet Selector Bar -->
       <div class="fact-sheet-bar" *ngIf="factSheetId">
         <div class="fact-sheet-info">
@@ -1024,6 +1029,16 @@ import {
       color: var(--text-primary, #1a1f36);
     }
 
+    .gv-hint {
+      padding: 6px 16px;
+      font-size: 12px;
+      color: var(--text-secondary, #697386);
+      background: var(--bg-surface, #fff);
+      border-bottom: 1px solid var(--border-color, #e3e8ee);
+      flex-shrink: 0;
+      line-height: 1.4;
+    }
+
     .fact-sheet-bar {
       display: flex;
       justify-content: space-between;
@@ -1203,7 +1218,7 @@ import {
     .type-badge.custom { background: #64748b; }
 
     .metadata {
-      background: #f1f5f9;
+      background: var(--bg-body, #f1f5f9);
       padding: 12px;
       border-radius: 8px;
       font-size: 11px;
@@ -1324,7 +1339,7 @@ import {
       display: flex;
       justify-content: space-between;
       padding: 10px 12px;
-      background: #f8fafc;
+      background: var(--bg-surface, #f8fafc);
       border-radius: 8px;
       margin-bottom: 6px;
       border: 1px solid var(--border-color, #e3e8ee);
@@ -1439,7 +1454,7 @@ import {
 
     /* Relation Form */
     .relation-form {
-      background: #f8fafc;
+      background: var(--bg-body, #f8fafc);
       border-radius: 12px;
       padding: 20px;
       border: 1px solid var(--border-color, #e3e8ee);
@@ -1470,7 +1485,7 @@ import {
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
-      background: #ffffff;
+      background: var(--bg-surface, #ffffff);
       border: 1px solid var(--border-color, #e3e8ee);
       border-radius: 8px;
       cursor: pointer;
@@ -1479,12 +1494,12 @@ import {
 
     .node-selector:hover {
       border-color: #667eea;
-      background: #f0f4ff;
+      background: var(--bg-body, #f0f4ff);
     }
 
     .node-selector.selected {
       border-color: #667eea;
-      background: #eef2ff;
+      background: var(--bg-body, #eef2ff);
     }
 
     .node-selector .node-dot {
@@ -1513,7 +1528,7 @@ import {
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
-      background: #ffffff;
+      background: var(--bg-surface, #ffffff);
       border: 2px dashed var(--border-color, #e3e8ee);
       border-radius: 8px;
       color: var(--text-tertiary, #8792a2);
@@ -1536,7 +1551,7 @@ import {
       align-items: center;
       gap: 12px;
       padding: 12px;
-      background: #ffffff;
+      background: var(--bg-surface, #ffffff);
       border: 1px solid var(--border-color, #e3e8ee);
       border-radius: 8px;
       margin-bottom: 8px;
@@ -1569,13 +1584,13 @@ import {
       letter-spacing: 0.3px;
     }
 
-    .relation-type-badge.hierarchical { background: #f3f4f6; color: #6b7280; }
-    .relation-type-badge.embedding_similarity { background: #dcfce7; color: #166534; }
-    .relation-type-badge.shared_entity { background: #f3e8ff; color: #7e22ce; }
-    .relation-type-badge.user_defined { background: #dbeafe; color: #1d4ed8; }
-    .relation-type-badge.citation { background: #ffedd5; color: #c2410c; }
-    .relation-type-badge.temporal { background: #fef3c7; color: #92400e; }
-    .relation-type-badge.cross_source { background: #cffafe; color: #0891b2; }
+    .relation-type-badge.hierarchical { background: var(--bg-body, #f3f4f6); color: var(--text-secondary, #6b7280); }
+    .relation-type-badge.embedding_similarity { background: rgba(34,197,94,0.15); color: #16a34a; }
+    .relation-type-badge.shared_entity { background: rgba(168,85,247,0.15); color: #a855f7; }
+    .relation-type-badge.user_defined { background: rgba(59,130,246,0.15); color: #3b82f6; }
+    .relation-type-badge.citation { background: rgba(249,115,22,0.15); color: #f97316; }
+    .relation-type-badge.temporal { background: rgba(234,179,8,0.15); color: #ca8a04; }
+    .relation-type-badge.cross_source { background: rgba(6,182,212,0.15); color: #0891b2; }
 
     .relation-weight {
       font-size: 12px;
@@ -1654,7 +1669,7 @@ import {
     .attr-explanation, .pred-explanation {
       font-size: 12px;
       color: var(--text-primary, #1a1f36);
-      background: #f8fafc;
+      background: var(--bg-body, #f8fafc);
       padding: 10px;
       border-radius: 6px;
       margin-bottom: 12px;
@@ -1697,7 +1712,7 @@ import {
       font-size: 12px;
       font-weight: 500;
       padding: 4px 8px;
-      background: #f1f5f9;
+      background: var(--bg-body, #f1f5f9);
       border-radius: 4px;
     }
 
@@ -1762,9 +1777,9 @@ import {
     .evidence-chip {
       font-size: 10px;
       padding: 2px 6px;
-      background: #eef2ff;
+      background: rgba(99,102,241,0.12);
       border-radius: 4px;
-      color: #4338ca;
+      color: #818cf8;
       cursor: default;
     }
 
@@ -1810,7 +1825,7 @@ import {
       font-style: italic;
       padding: 4px 8px;
       margin-bottom: 8px;
-      background: rgba(102, 126, 234, 0.04);
+      background: rgba(102, 126, 234, 0.08);
       border-radius: 4px;
       border-left: 2px solid #667eea;
     }
@@ -2010,7 +2025,7 @@ import {
     .pred-bar {
       position: relative;
       height: 4px;
-      background: #f1f5f9;
+      background: var(--bg-body, #f1f5f9);
       border-radius: 2px;
       margin-bottom: 4px;
       overflow: visible;
@@ -2027,7 +2042,7 @@ import {
       top: -2px;
       width: 2px;
       height: 8px;
-      background: #1a1f36;
+      background: var(--text-primary, #1a1f36);
       border-radius: 1px;
     }
 

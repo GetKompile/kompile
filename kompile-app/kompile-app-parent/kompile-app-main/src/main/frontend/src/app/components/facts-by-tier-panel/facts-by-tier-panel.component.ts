@@ -91,6 +91,13 @@ export const SPECULATIVE_SATURATION_THRESHOLD = 0.8;
 
       <mat-card-content>
 
+        <!-- Panel intro -->
+        <p class="tier-intro">
+          Every fact lives in a confidence band — <strong style="color:#FF9800">Speculative</strong> → <strong style="color:#FFC107">Probable</strong>
+          → <strong style="color:#8BC34A">High</strong> → <strong style="color:#4CAF50">Established</strong>.
+          Facts climb tiers as additional crawls or sources independently corroborate them, and fall back (or are suppressed) when contradicted.
+        </p>
+
         <!-- D2: SPECULATIVE-saturation cold-start banner -->
         <div *ngIf="!loading && isSpeculativeSaturated" class="cold-start-banner">
           <mat-icon class="cold-start-icon">info</mat-icon>

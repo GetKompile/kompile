@@ -12,6 +12,18 @@
   margin: 16px;
 }
 
+/* ---- Panel intro ---- */
+.tier-intro {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg-body, #f8f9fa);
+  border: 1px solid var(--border-color, #e0e0e0);
+  font-size: 13px;
+  color: var(--text-secondary, #555);
+  line-height: 1.5;
+}
+
 /* ---- Tier filter chips ---- */
 .tier-chips {
   display: flex;

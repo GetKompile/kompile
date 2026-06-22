@@ -4,6 +4,15 @@
   -->
 
 <div class="health-panel">
+
+  <!-- Intro -->
+  <div class="panel-intro">
+    <p>Health metrics show how well-connected and trustworthy your graph is at a glance.
+       <strong>Density</strong> is the fraction of possible edges that exist; <strong>orphan nodes</strong> have no connections;
+       <strong>components</strong> are isolated sub-graphs; <strong>conformance</strong> measures how closely the graph matches its bound ontology.
+       Take a snapshot to track these metrics over time.</p>
+  </div>
+
   <!-- No fact sheet selected -->
   <div *ngIf="factSheetId == null" class="empty-state">
     <mat-icon>monitor_heart</mat-icon>

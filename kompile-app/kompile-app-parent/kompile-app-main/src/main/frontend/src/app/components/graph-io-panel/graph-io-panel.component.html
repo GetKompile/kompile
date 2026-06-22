@@ -4,6 +4,13 @@
   -->
 
 <div class="io-panel">
+
+  <!-- Intro -->
+  <div class="panel-intro">
+    <p>Export the graph as portable JSON (for round-tripping) or as linked-data RDF — <strong>N-Triples</strong> (one fact per line, machine-friendly)
+       or <strong>Turtle</strong> (compact, human-readable). Import JSON or CSV to merge external data back in.</p>
+  </div>
+
   <p class="scope-note">
     <mat-icon>folder</mat-icon>
     {{ factSheetId != null ? ('Scoped to fact sheet #' + factSheetId) : 'No fact sheet selected — exports the global (unscoped) graph.' }}

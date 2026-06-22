@@ -147,6 +147,15 @@ function simplexPoint(
       </mat-card-header>
 
       <mat-card-content>
+
+        <!-- Panel intro -->
+        <p class="opinion-intro">
+          Each fact is scored using <strong>Subjective Logic</strong>: a triplet of &#123;<em>belief</em>, <em>disbelief</em>, <em>uncertainty</em>&#125;
+          over a prior base rate. The <strong>expectation</strong> = belief + baseRate × uncertainty —
+          roughly "how likely is this fact to be true, accounting for what we don't yet know?"
+          High uncertainty means the KB hasn't seen enough evidence yet, not necessarily that the fact is wrong.
+        </p>
+
         <!-- D2: SPECULATIVE-saturation cold-start banner -->
         <div *ngIf="!loading && isSpeculativeSaturated" class="cold-start-banner">
           <mat-icon class="cold-start-icon">info</mat-icon>
@@ -468,6 +477,17 @@ function simplexPoint(
       color: var(--text-primary);
       border: 1px solid var(--border-color);
       box-shadow: var(--shadow-sm);
+    }
+
+    .opinion-intro {
+      margin: 8px 16px 4px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: var(--bg-body, #f8f9fa);
+      border: 1px solid var(--border-color, #e0e0e0);
+      font-size: 13px;
+      color: var(--text-secondary, #555);
+      line-height: 1.5;
     }
 
     /* D2: cold-start / SPECULATIVE-saturation banner */
