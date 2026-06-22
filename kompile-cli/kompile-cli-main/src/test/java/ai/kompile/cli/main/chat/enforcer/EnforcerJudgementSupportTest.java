@@ -59,6 +59,29 @@ class EnforcerJudgementSupportTest {
     }
 
     @Test
+    void shouldActivateHonorsSessionOptOut() {
+        EnforcerConfig projectActive = new EnforcerConfig();
+        projectActive.setKeywordMode(true); // a project config that would otherwise enforce
+
+        // No explicit session choice (wizard skipped) → honor the project config on disk.
+        assertTrue(EnforcerConfig.shouldActivate(null, false, projectActive));
+        assertTrue(EnforcerConfig.shouldActivate(Boolean.TRUE, false, projectActive));
+
+        // The bug fix: an explicit session "N" must win over a project config on disk.
+        assertFalse(EnforcerConfig.shouldActivate(Boolean.FALSE, false, projectActive),
+                "a stale .kompile/enforcer-config.json must not override the session opt-out");
+
+        // Explicit CLI rule flags (--rules/--rule-file) always activate, even after opt-out.
+        assertTrue(EnforcerConfig.shouldActivate(Boolean.FALSE, true, projectActive));
+        assertTrue(EnforcerConfig.shouldActivate(null, true, null));
+
+        // Nothing on disk and no flags → nothing to enforce, regardless of the answer.
+        assertFalse(EnforcerConfig.shouldActivate(null, false, null));
+        assertFalse(EnforcerConfig.shouldActivate(Boolean.TRUE, false, new EnforcerConfig()),
+                "an empty project config has nothing to enforce");
+    }
+
+    @Test
     void judgementLogRoundTrip(@TempDir Path tmp) {
         Path file = tmp.resolve("judgements.jsonl");
         JudgementLog log = new JudgementLog("sess-1", file);

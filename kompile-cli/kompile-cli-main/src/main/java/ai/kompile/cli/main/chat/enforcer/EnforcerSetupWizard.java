@@ -75,6 +75,16 @@ public class EnforcerSetupWizard {
      * Run the wizard with a provided reader (for testing or embedding in another terminal session).
      */
     public static EnforcerConfig runWithReader(LineReader reader, Path workingDir) {
+        return runWithReader(reader, workingDir, null);
+    }
+
+    /**
+     * Run the wizard with a provided reader and an optionally pre-selected agent.
+     * When {@code knownAgent} is non-null (e.g. the chat session already chose one) the
+     * agent prompt is skipped. The default flow is intentionally short — evaluation mode
+     * plus what to block — with all other settings behind a single "advanced options" gate.
+     */
+    public static EnforcerConfig runWithReader(LineReader reader, Path workingDir, String knownAgent) {
         EnforcerConfig config = new EnforcerConfig();
 
         System.out.println();
@@ -87,38 +97,69 @@ public class EnforcerSetupWizard {
         System.out.println();
 
         // ── Step 1: Agent selection ────────────────────────────────────
-        String agent = selectAgent(reader);
-        if (agent == null) return null;
+        String agent;
+        if (knownAgent != null && !knownAgent.isBlank()) {
+            agent = knownAgent.trim();
+            System.out.println("  " + DIM + "Agent:   " + agent + " (from chat session)" + RESET);
+            System.out.println();
+        } else {
+            agent = selectAgent(reader);
+            if (agent == null) return null;
+        }
         config.setAgent(agent);
 
         // ── Step 2: Evaluation mode ────────────────────────────────────
         boolean keyword = selectEvaluationMode(reader);
         config.setKeywordMode(keyword);
 
+        // Optional, rarely-needed settings are gated behind a single prompt so the common
+        // path stays short: pick a mode, say what to block, done.
+        String advancedItems = "rule file, diff patterns, archiving, semantic matching"
+                + (keyword ? "" : ", judge");
+        boolean advanced = promptYesNo(reader,
+                "Configure advanced options (" + advancedItems + ")?", false);
+        System.out.println();
+
         // ── Step 3: Rules ──────────────────────────────────────────────
-        if (!configureRules(reader, config, workingDir)) return null;
+        if (advanced && !configureRules(reader, config, workingDir)) return null;
 
         // ── Step 4: Banned tools & commands ────────────────────────────
         configureBans(reader, config);
 
         // ── Step 5: Diff patterns ──────────────────────────────────────
-        configureDiffPatterns(reader, config, workingDir);
+        if (advanced) {
+            configureDiffPatterns(reader, config, workingDir);
+        }
 
         // ── Step 6: Diff archiving ─────────────────────────────────────
-        configureArchiving(reader, config);
+        if (advanced) {
+            configureArchiving(reader, config);
+        }
 
         // ── Step 7: Judge settings (if LLM mode) ───────────────────────
-        if (!keyword) {
+        if (advanced && !keyword) {
             configureJudge(reader, config);
         }
 
         // ── Step 8: Semantic matching ──────────────────────────────────
-        configureSemanticMatching(reader, config);
+        if (advanced) {
+            configureSemanticMatching(reader, config);
+        }
 
         // ── Step 9: Max corrections ────────────────────────────────────
-        configureCorrections(reader, config);
+        if (advanced) {
+            configureCorrections(reader, config);
+        }
 
         // ── Save ───────────────────────────────────────────────────────
+        if (!hasUsableRules(config, workingDir)) {
+            System.out.println(YELLOW
+                    + "  ⚠ No rules defined yet — enforcement will be a no-op until you add some." + RESET);
+            System.out.println("  " + DIM
+                    + "Re-run and enter banned tools/commands/keywords, or edit the saved config." + RESET);
+            System.out.println();
+        }
+
         try {
             config.save(workingDir);
             System.out.println();
@@ -451,21 +492,33 @@ public class EnforcerSetupWizard {
         config.setSemanticMode(modeKeys[selected]);
 
         if (selected == 2 || selected == 3) {
-            // Embedding mode — need endpoint URL
-            String url = promptText(reader, "  Embedding endpoint URL [http://localhost:8080/api/embed]: ");
+            // Embedding endpoint. An empty URL means "no embeddings" — do NOT silently
+            // default to a localhost URL that may not exist (that just writes a misleading
+            // config and stalls every session on a dead health check). Downgrade and warn.
+            String url = promptText(reader, "  Embedding endpoint URL (Enter for none): ");
             if (url == null || url.isBlank()) {
-                url = "http://localhost:8080/api/embed";
-            }
-            config.setEmbeddingUrl(url.trim());
+                config.setEmbeddingUrl("");
+                if (selected == 3) {
+                    config.setSemanticMode("wordnet"); // keep the WordNet half of "both"
+                    System.out.println(YELLOW
+                            + "  ⚠ No embedding URL — using WordNet only (embeddings disabled)." + RESET);
+                } else {
+                    config.setSemanticMode("none");
+                    System.out.println(YELLOW
+                            + "  ⚠ No embedding URL — semantic matching disabled." + RESET);
+                }
+            } else {
+                config.setEmbeddingUrl(url.trim());
 
-            String threshold = promptText(reader, "  Similarity threshold (0.0-1.0) [0.78]: ");
-            if (threshold != null && !threshold.isBlank()) {
-                try {
-                    double val = Double.parseDouble(threshold.trim());
-                    if (val > 0 && val <= 1.0) {
-                        config.setSemanticThreshold(val);
-                    }
-                } catch (NumberFormatException ignored) {}
+                String threshold = promptText(reader, "  Similarity threshold (0.0-1.0) [0.78]: ");
+                if (threshold != null && !threshold.isBlank()) {
+                    try {
+                        double val = Double.parseDouble(threshold.trim());
+                        if (val > 0 && val <= 1.0) {
+                            config.setSemanticThreshold(val);
+                        }
+                    } catch (NumberFormatException ignored) {}
+                }
             }
         }
 
@@ -526,6 +579,34 @@ public class EnforcerSetupWizard {
 
     private static boolean agentExists(String name) {
         return SubprocessAgentRunner.resolveAgentBinary(name) != null;
+    }
+
+    private static boolean promptYesNo(LineReader reader, String question, boolean defaultYes) {
+        String answer = promptText(reader, "  " + question + (defaultYes ? " [Y/n]: " : " [y/N]: "));
+        if (answer == null || answer.isBlank()) return defaultYes;
+        return answer.trim().toLowerCase().startsWith("y");
+    }
+
+    /**
+     * Whether the config would yield at least one real (non-comment) rule line. A rule
+     * file that contains only comments/blank lines does NOT count — that is the exact
+     * case that used to slip through and fail at runtime with "No keyword rules parsed".
+     */
+    private static boolean hasUsableRules(EnforcerConfig config, Path workingDir) {
+        try {
+            String text = config.buildRulesText(workingDir);
+            if (text == null) return false;
+            for (String line : text.split("\n")) {
+                String t = line.trim();
+                if (t.isEmpty() || t.startsWith("#") || t.startsWith("//")) {
+                    continue;
+                }
+                return true;
+            }
+            return false;
+        } catch (IOException e) {
+            return config.isEnforcementEnabled();
+        }
     }
 
     private static void printSummary(EnforcerConfig config, Path workingDir) {

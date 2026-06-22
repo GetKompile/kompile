@@ -318,4 +318,31 @@ public class EnforcerConfig {
                 || (diffPatternRules != null && !diffPatternRules.isEmpty());
     }
 
+    /**
+     * Decide whether a passthrough session should run enforced, honoring an explicit
+     * per-session opt-out so a stale project config can never override the user's answer.
+     *
+     * <ul>
+     *   <li>Explicit CLI rule flags ({@code --rules}/{@code --rule-file}) always activate.</li>
+     *   <li>A session that explicitly opted out ({@code sessionChoice == Boolean.FALSE}) is
+     *       never re-enabled by a {@code .kompile/enforcer-config.json} left on disk.</li>
+     *   <li>Otherwise ({@code null} = the wizard was skipped this run, or {@code TRUE}),
+     *       fall back to project-config auto-detection via {@link #isEnforcementEnabled()}.</li>
+     * </ul>
+     *
+     * @param sessionChoice        the wizard's Y/N answer for this run, or {@code null} if not asked
+     * @param hasExplicitRuleFlags whether {@code --rules}/{@code --rule-file} were passed on the CLI
+     * @param projectConfig        the loaded {@code .kompile/enforcer-config.json}, or {@code null}
+     */
+    public static boolean shouldActivate(Boolean sessionChoice, boolean hasExplicitRuleFlags,
+                                         EnforcerConfig projectConfig) {
+        if (hasExplicitRuleFlags) {
+            return true;
+        }
+        if (Boolean.FALSE.equals(sessionChoice)) {
+            return false;
+        }
+        return projectConfig != null && projectConfig.isEnforcementEnabled();
+    }
+
 }

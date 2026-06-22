@@ -80,6 +80,15 @@ public class ChatConfig {
     @JsonProperty
     private boolean passthroughManaged = true; // true = kompile REPL wraps agent subprocess
 
+    /**
+     * The setup wizard's per-session answer to "Enable rule enforcement?".
+     * Transient (NOT persisted): it reflects only THIS run's explicit choice so the
+     * router can honor an opt-out even when a project {@code .kompile/enforcer-config.json}
+     * is present. {@code null} = not asked this run -> fall back to project auto-detection.
+     */
+    @JsonIgnore
+    private Boolean enforcementEnabled;
+
     public ChatConfig() {}
 
     public ChatConfig(String provider, String apiKey, String model, String baseUrl) {
@@ -123,6 +132,9 @@ public class ChatConfig {
 
     public boolean isPassthroughManaged() { return passthroughManaged; }
     public void setPassthroughManaged(boolean passthroughManaged) { this.passthroughManaged = passthroughManaged; }
+
+    public Boolean getEnforcementEnabled() { return enforcementEnabled; }
+    public void setEnforcementEnabled(Boolean enforcementEnabled) { this.enforcementEnabled = enforcementEnabled; }
 
     /**
      * Resolve the actual API base URL for the configured provider.

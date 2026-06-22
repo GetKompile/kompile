@@ -205,19 +205,23 @@ public class ChatCommand implements Callable<Integer> {
             }
             System.out.println("Starting passthrough mode with agent: " + agent);
 
-            // Auto-escalate to managed mode when enforcer config exists (real-time blocking)
-            boolean managed = config.isPassthroughManaged();
-            if (!managed) {
-                Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-                ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
-                        ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
-                if (enforcerConfig != null && enforcerConfig.isEnforcementEnabled()) {
-                    managed = true;
-                }
-            }
+            // Decide ONCE whether this session runs enforced. A session that explicitly
+            // opted out (wizard "N") must never be forced back on by a stale
+            // .kompile/enforcer-config.json on disk; explicit --rules/--rule-file always
+            // activate; otherwise fall back to the project config auto-detection.
+            Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+            boolean hasExplicitRuleFlags = (enforcerRules != null && !enforcerRules.isBlank())
+                    || (enforcerRuleFile != null && !enforcerRuleFile.isBlank());
+            ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
+                    ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
+            boolean enforce = ai.kompile.cli.main.chat.enforcer.EnforcerConfig.shouldActivate(
+                    config.getEnforcementEnabled(), hasExplicitRuleFlags, enforcerConfig);
+
+            // Enforcement requires the managed REPL; otherwise honor the chosen style.
+            boolean managed = config.isPassthroughManaged() || enforce;
 
             if (managed) {
-                return runManagedPassthroughMode(agent, isResume);
+                return runManagedPassthroughMode(agent, isResume, enforce);
             } else {
                 return runDirectPassthroughMode(agent, isResume);
             }
@@ -376,24 +380,21 @@ public class ChatCommand implements Callable<Integer> {
      * Provides hooks, MCP tool injection, system prompt, skills, memory, and metrics tracking.
      * When --rules or --rule-file is set, enables real-time judge monitoring and interruption.
      */
-    private int runManagedPassthroughMode(String agent, boolean isResume) {
-        boolean hasEnforcerRules = (enforcerRules != null && !enforcerRules.isBlank())
-                || (enforcerRuleFile != null && !enforcerRuleFile.isBlank());
-
-        // Also check for per-project enforcer config
-        if (!hasEnforcerRules) {
-            Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-            ai.kompile.cli.main.chat.enforcer.EnforcerConfig enforcerConfig =
-                    ai.kompile.cli.main.chat.enforcer.EnforcerConfig.load(wd);
-            if (enforcerConfig != null && enforcerConfig.isEnforcementEnabled()) {
-                hasEnforcerRules = true;
-            }
+    private int runManagedPassthroughMode(String agent, boolean isResume, boolean enforce) {
+        // The enforce / opt-out decision is made once, up front, in routeFromConfig — a
+        // session that opted out is never re-escalated here from a stale project config.
+        if (enforce) {
+            return runEnforcedPassthroughMode(agent, isResume);
         }
+        return runPlainManagedPassthrough(agent, isResume);
+    }
 
-        if (hasEnforcerRules) {
-            return runEnforcedPassthroughMode(agent);
-        }
-
+    /**
+     * Plain managed passthrough (no enforcement): the kompile REPL wraps the agent
+     * subprocess with MCP tool injection, system prompt, skills, and metrics tracking.
+     * Also the graceful-degrade target when an enforcer config cannot be activated.
+     */
+    private int runPlainManagedPassthrough(String agent, boolean isResume) {
         // If resuming, delegate to ResumeCommand
         if (isResume && resumeSessionId != null && !resumeSessionId.isBlank()) {
             return new CommandLine(new ResumeCommand())
@@ -419,6 +420,21 @@ public class ChatCommand implements Callable<Integer> {
             e.printStackTrace();
             return 1;
         }
+    }
+
+    /**
+     * Print a clear, actionable warning that rule enforcement could not be activated and
+     * the session is starting WITHOUT it. The chat session must always start — a stale or
+     * empty {@code .kompile/enforcer-config.json} must never trap the user out of chat.
+     */
+    private void warnEnforcementDegraded(Path wd, String reason) {
+        Path cfg = ai.kompile.cli.main.chat.enforcer.EnforcerConfig.resolveConfigPath(wd);
+        System.err.println();
+        System.err.println("\033[33m  ⚠ Rule enforcement disabled for this session: " + reason + ".\033[0m");
+        System.err.println("\033[2m    Config: " + cfg + "\033[0m");
+        System.err.println("\033[2m    Run 'kompile enforcer init' to fix it, or delete the file to silence this.\033[0m");
+        System.err.println("\033[2m    Continuing without enforcement...\033[0m");
+        System.err.println();
     }
 
     /**
@@ -458,7 +474,7 @@ public class ChatCommand implements Callable<Integer> {
      * Enforced passthrough mode: resolves enforcer config, then delegates to
      * EmulatedPassthroughCommand with enforcer fields set. ONE REPL, not two.
      */
-    private int runEnforcedPassthroughMode(String agent) {
+    private int runEnforcedPassthroughMode(String agent, boolean isResume) {
         ObjectMapper objectMapper = JsonUtils.standardMapper();
         Path wd = Path.of(".").toAbsolutePath().normalize();
 
@@ -487,8 +503,9 @@ public class ChatCommand implements Callable<Integer> {
         }
 
         if (rules == null || rules.isBlank()) {
-            System.err.println("Enforcer rules are required (--rules or --rule-file, or project .kompile/enforcer.json).");
-            return 1;
+            warnEnforcementDegraded(wd,
+                    "no rules are defined (the enforcer config is present but empty)");
+            return runPlainManagedPassthrough(agent, isResume);
         }
 
         EnforcerPolicy policy = new EnforcerPolicy(rules, effectiveMaxReprompts, false);
@@ -499,8 +516,9 @@ public class ChatCommand implements Callable<Integer> {
         if (useKeywordMode) {
             KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, projectEnforcerConfig);
             if (!kwEval.isAvailable()) {
-                System.err.println("No keyword rules parsed. Use BAN:/STOP: prefixes.");
-                return 1;
+                warnEnforcementDegraded(wd,
+                        "no keyword rules could be parsed (use BAN:/STOP:/BAN_TOOL:/BAN_CMD: prefixes)");
+                return runPlainManagedPassthrough(agent, isResume);
             }
             evaluator = kwEval;
         } else {
@@ -512,10 +530,10 @@ public class ChatCommand implements Callable<Integer> {
             }
             EnforcerJudge judge = new EnforcerJudge(harnessConfig, objectMapper);
             if (!judge.isAvailable()) {
-                System.err.println("No enforcer judge backend available.");
-                System.err.println("Configure ~/.kompile/harness-config.json or pass --judge-provider/--judge-model.");
-                System.err.println("Tip: use keyword-mode in your enforcer config for simple rules without an LLM.");
-                return 1;
+                warnEnforcementDegraded(wd, "no LLM judge backend is available "
+                        + "(configure ~/.kompile/harness-config.json, pass --judge-provider/--judge-model, "
+                        + "or switch the enforcer config to keyword mode)");
+                return runPlainManagedPassthrough(agent, isResume);
             }
             evaluator = judge;
         }

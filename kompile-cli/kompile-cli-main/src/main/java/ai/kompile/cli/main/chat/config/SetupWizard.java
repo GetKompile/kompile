@@ -96,6 +96,7 @@ public class SetupWizard {
             // Step 2: If passthrough mode, select style then agent
             String passthroughAgent = null;
             boolean passthroughManaged = true;
+            Boolean enforcementChoice = null; // null = not asked; the router honors a FALSE
             if ("passthrough".equals(chatMode)) {
                 // Ask managed vs direct first
                 List<String> styles = List.of(
@@ -111,29 +112,34 @@ public class SetupWizard {
                 if (passthroughAgent == null) return null;
 
                 // Step 2b: Optional rule enforcement (judge/enforcer).
-                // Configuring it here writes .kompile/enforcer-config.json, which the
-                // chat router auto-detects to start an enforced (managed) session — for
-                // BOTH keyword and LLM-judge modes.
+                // The Y/N answer is recorded on the ChatConfig (enforcementEnabled) so the
+                // router honors it for THIS session — a stale .kompile/enforcer-config.json
+                // can no longer force enforcement back on after the user answers "N".
                 System.out.println();
                 if (promptYesNo(reader,
                         "Enable rule enforcement (judge/enforcer) for this session?", false)) {
-                    passthroughManaged = true; // enforcement requires the managed REPL
                     Path enforcerWd = Path.of(System.getProperty("user.dir"))
                             .toAbsolutePath().normalize();
                     try {
                         EnforcerConfig enforcerConfig =
-                                EnforcerSetupWizard.runWithReader(reader, enforcerWd);
+                                EnforcerSetupWizard.runWithReader(reader, enforcerWd, passthroughAgent);
                         if (enforcerConfig != null) {
+                            enforcementChoice = Boolean.TRUE;
+                            passthroughManaged = true; // enforcement requires the managed REPL
                             System.out.println(GREEN + "  ✓ Enforcement configured ("
                                     + (enforcerConfig.isKeywordMode() ? "keyword rules" : "LLM judge")
                                     + ") → .kompile/enforcer-config.json" + RESET);
                         } else {
+                            enforcementChoice = Boolean.FALSE; // cancelled → no enforcement this run
                             System.out.println(YELLOW
                                     + "  Enforcement setup cancelled — continuing without it." + RESET);
                         }
                     } catch (Exception e) {
+                        enforcementChoice = Boolean.FALSE;
                         System.err.println("  Enforcer setup failed: " + e.getMessage());
                     }
+                } else {
+                    enforcementChoice = Boolean.FALSE; // explicit opt-out for THIS session
                 }
             }
 
@@ -167,6 +173,7 @@ public class SetupWizard {
                 config.setPassthroughAgent(passthroughAgent);
             }
             config.setPassthroughManaged(passthroughManaged);
+            config.setEnforcementEnabled(enforcementChoice);
 
             try {
                 config.save();
