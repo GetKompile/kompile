@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, Input } from '@angular/core';
+import { Component, Input, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -29,6 +29,7 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { GraphProvenanceService, NodeProvenance, ProvenancePurgeResult } from '../../services/graph-provenance.service';
 import { GraphService } from '../../services/graph.service';
 import { GraphNode } from '../../models/graph-models';
+import { UnifiedCrawlService, JobSummary } from '../../services/unified-crawl.service';
 
 /**
  * Provenance browsing + purge (graph-as-asset Phase 3/8): search for a node, trace it to its source
@@ -54,7 +55,7 @@ import { GraphNode } from '../../models/graph-models';
   templateUrl: './graph-provenance-panel.component.html',
   styleUrls: ['./graph-provenance-panel.component.css']
 })
-export class GraphProvenancePanelComponent {
+export class GraphProvenancePanelComponent implements OnInit {
   @Input() factSheetId: number | null = null;
 
   query = '';
@@ -69,9 +70,34 @@ export class GraphProvenancePanelComponent {
   purgeResult: ProvenancePurgeResult | null = null;
   purging = false;
 
+  /** Crawl runs for the purge picker — jobId is the crawlRunId stored in node provenance metadata. */
+  crawlRuns: JobSummary[] = [];
+  loadingRuns = false;
+
   constructor(private provService: GraphProvenanceService,
               private graphService: GraphService,
+              private unifiedCrawl: UnifiedCrawlService,
               private snackBar: MatSnackBar) {}
+
+  ngOnInit(): void {
+    this.loadCrawlRuns();
+  }
+
+  loadCrawlRuns(): void {
+    this.loadingRuns = true;
+    this.unifiedCrawl.listJobs().subscribe({
+      next: (jobs) => { this.crawlRuns = jobs || []; this.loadingRuns = false; },
+      error: () => { this.crawlRuns = []; this.loadingRuns = false; }
+    });
+  }
+
+  /** Switching the match dimension clears the value (a jobId is not a valid source-document id). */
+  onPurgeByChange(): void {
+    this.purgeValue = '';
+    if (this.purgeBy === 'crawlRunId' && this.crawlRuns.length === 0) {
+      this.loadCrawlRuns();
+    }
+  }
 
   search(): void {
     if (!this.query || !this.query.trim()) {

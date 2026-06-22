@@ -28,6 +28,7 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDividerModule } from '@angular/material/divider';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
 
 import { KbGroundingService, AssertResponse } from '../../services/kb-grounding.service';
 import { BaseService } from '../../services/base.service';
@@ -63,6 +64,13 @@ interface CorrectionEntry {
   accepted?: boolean;
   previousValue?: number;
   newValue?: number;
+}
+
+/** Row from GET /api/kb-grounding/{factSheetId}/opinions?q= — powers the atom search type-ahead. */
+interface FactOpinionRow {
+  atomKey: string;
+  confidence?: number;
+  band?: string;
 }
 
 const EVENT_TYPE_LEGEND = [
@@ -114,7 +122,8 @@ const EVENT_TYPE_ICON: Record<string, string> = {
     MatChipsModule,
     MatSnackBarModule,
     MatTooltipModule,
-    MatDividerModule
+    MatDividerModule,
+    MatAutocompleteModule
   ],
   template: `
     <mat-card class="audit-card">
@@ -215,11 +224,29 @@ const EVENT_TYPE_ICON: Record<string, string> = {
         <!-- Correction form -->
         <div class="correction-form">
           <h4 class="form-title">Submit Correction</h4>
+          <p class="form-help">
+            An <strong>atom</strong> is a single fact in the graph, written <code>predicate(args)</code> —
+            e.g. <code>isEmployedBy(Alice, Acme)</code> or <code>State(acme)</code>. Search your facts
+            below and pick one to correct, or type a new atom to assert it.
+          </p>
           <div class="form-row">
             <mat-form-field appearance="outline" class="form-field-wide">
-              <mat-label>Atom Key</mat-label>
-              <input matInput [(ngModel)]="atomKey" placeholder="e.g. node:42 or edge:revenue_growth" />
+              <mat-label>Atom</mat-label>
+              <input matInput [(ngModel)]="atomKey" (ngModelChange)="onAtomSearch()"
+                     [matAutocomplete]="atomAuto"
+                     placeholder="search facts — e.g. isEmployedBy, revenue, an entity name" />
+              <mat-icon matSuffix>search</mat-icon>
             </mat-form-field>
+            <mat-autocomplete #atomAuto="matAutocomplete">
+              <mat-option *ngFor="let r of atomResults" [value]="r.atomKey">
+                {{ r.atomKey }}
+                <small *ngIf="r.band"> — {{ r.band }}<ng-container *ngIf="r.confidence != null"> · {{ (r.confidence * 100) | number:'1.0-0' }}%</ng-container></small>
+              </mat-option>
+              <mat-option *ngIf="atomSearching" disabled>Searching…</mat-option>
+              <mat-option *ngIf="!atomSearching && atomKey.trim().length >= 2 && atomResults.length === 0" disabled>
+                No matching facts — type a new atom to assert it
+              </mat-option>
+            </mat-autocomplete>
           </div>
           <div class="form-row">
             <mat-form-field appearance="outline" class="form-field-sm">
@@ -289,12 +316,37 @@ export class AuditTimelineComponent extends BaseService implements OnChanges {
   submitting = false;
   corrections: CorrectionEntry[] = [];
 
+  // ── Atom search (type-ahead so users don't need to know atom keys) ─────────────
+  atomResults: FactOpinionRow[] = [];
+  atomSearching = false;
+  private atomSearchTimer: any;
+
   constructor(
     private http: HttpClient,
     private kbGrounding: KbGroundingService,
     private snackBar: MatSnackBar
   ) {
     super();
+  }
+
+  /** Debounced search over existing facts so the user can pick an atom instead of knowing its key. */
+  onAtomSearch(): void {
+    const q = (this.atomKey || '').trim();
+    clearTimeout(this.atomSearchTimer);
+    if (this.factSheetId == null || q.length < 2) {
+      this.atomResults = [];
+      this.atomSearching = false;
+      return;
+    }
+    this.atomSearching = true;
+    this.atomSearchTimer = setTimeout(() => {
+      const params = new HttpParams().set('q', q).set('limit', '50');
+      this.http.get<FactOpinionRow[]>(`${this.backendUrl}/kb-grounding/${this.factSheetId}/opinions`, { params })
+        .subscribe({
+          next: (rows) => { this.atomResults = rows || []; this.atomSearching = false; },
+          error: () => { this.atomResults = []; this.atomSearching = false; }
+        });
+    }, 300);
   }
 
   ngOnChanges(changes: SimpleChanges): void {

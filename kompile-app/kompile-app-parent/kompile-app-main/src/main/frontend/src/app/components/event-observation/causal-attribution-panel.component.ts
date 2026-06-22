@@ -14,6 +14,9 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatStepper, MatStepperModule } from '@angular/material/stepper';
 import { BayesianPanelComponent } from '../graph-visualizer/bayesian-panel.component';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
+import { GraphService } from '../../services/graph.service';
+import { GraphNode } from '../../models/graph-models';
 
 /**
  * Causal Attribution panel (lives under Graphs → Causal Attribution). Gives the Bayesian / MEBN /
@@ -27,7 +30,7 @@ import { BayesianPanelComponent } from '../graph-visualizer/bayesian-panel.compo
   imports: [
     CommonModule, FormsModule, MatCardModule, MatFormFieldModule, MatInputModule,
     MatButtonModule, MatIconModule, MatExpansionModule, MatSlideToggleModule, MatStepperModule,
-    BayesianPanelComponent
+    MatAutocompleteModule, BayesianPanelComponent
   ],
   template: `
     <div class="ca-panel">
@@ -81,17 +84,37 @@ import { BayesianPanelComponent } from '../graph-visualizer/bayesian-panel.compo
               <mat-icon>my_location</mat-icon>
               <div>
                 <strong>Which node do you want to explain?</strong>
-                <p>Paste a knowledge-graph node id. You can copy one from <em>Graphs → Entity Browser</em> or the
-                   <em>Visualizer</em> (a node's id), or from a chat citation. Node ids may contain slashes — paste the whole thing.</p>
+                <p>Search the knowledge graph by name or title — you don't need to know the node id.
+                   Pick a result and Kompile attributes its probability.</p>
               </div>
             </div>
 
             <mat-form-field appearance="outline" class="node-field">
-              <mat-label>Graph node id</mat-label>
-              <input matInput [(ngModel)]="nodeIdInput" (keyup.enter)="runAndAdvance()"
-                     placeholder="e.g. entity:acme-q3-revenue-miss">
-              <mat-hint>The event/entity whose probability you want attributed.</mat-hint>
+              <mat-label>Search for a node</mat-label>
+              <input matInput
+                     [(ngModel)]="nodeSel"
+                     (ngModelChange)="onNodeSearch($event)"
+                     [matAutocomplete]="nodeAuto"
+                     placeholder="e.g. revenue miss, Acme Corp, an event name…">
+              <mat-icon matSuffix>search</mat-icon>
+              <mat-hint *ngIf="!selectedNode">Type at least 2 characters to search by name or type.</mat-hint>
+              <mat-hint *ngIf="selectedNode">Selected node id: {{ selectedNode.nodeId }}</mat-hint>
             </mat-form-field>
+            <mat-autocomplete #nodeAuto="matAutocomplete" [displayWith]="displayNode"
+                              (optionSelected)="onNodeSelected($event.option.value)">
+              <mat-option *ngFor="let n of nodeResults" [value]="n">
+                <span class="opt-title">{{ n.title || n.nodeId }}</span>
+                <span class="opt-meta">{{ n.nodeType }}<ng-container *ngIf="n.externalId"> · {{ n.externalId }}</ng-container></span>
+              </mat-option>
+              <mat-option *ngIf="searching" disabled>Searching…</mat-option>
+              <mat-option *ngIf="!searching && searchLen >= 2 && nodeResults.length === 0" disabled>No matching nodes</mat-option>
+            </mat-autocomplete>
+
+            <div class="selected-node" *ngIf="selectedNode">
+              <mat-icon>check_circle</mat-icon>
+              <span><strong>{{ selectedNode.title || selectedNode.nodeId }}</strong> — <span class="muted">{{ selectedNode.nodeType }}</span></span>
+              <button mat-icon-button (click)="clearNode()" aria-label="Clear selected node"><mat-icon>close</mat-icon></button>
+            </div>
 
             <div class="step-actions">
               <span class="spacer"></span>
@@ -227,6 +250,11 @@ import { BayesianPanelComponent } from '../graph-visualizer/bayesian-panel.compo
     .setting { padding: 8px 0; }
     .setting-hint { margin: 4px 0 0; font-size: 12px; color: #999; line-height: 1.4; }
     .node-field { width: 460px; max-width: 100%; }
+    .opt-title { font-weight: 500; margin-right: 8px; }
+    .opt-meta { color: var(--text-secondary, #78808a); font-size: 12px; }
+    .selected-node { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; font-size: 13px; }
+    .selected-node mat-icon { color: #2e7d57; }
+    .selected-node .muted { color: var(--text-secondary, #78808a); }
     .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px 16px; padding: 8px 0; }
 
     .run-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -257,15 +285,60 @@ export class CausalAttributionPanelComponent implements OnChanges {
   maxDepth = 3;
   maxNodes = 100;
 
+  // Node search (replaces raw node-id entry): search the KG, pick a result, set nodeIdInput.
+  nodeSel: GraphNode | string = '';
+  nodeResults: GraphNode[] = [];
+  selectedNode: GraphNode | null = null;
+  searching = false;
+  searchLen = 0;
+  private searchTimer: any;
+
   @ViewChild('wizard') wizard?: MatStepper;
+
+  constructor(private graphService: GraphService) {}
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['seedNodeId'] && this.seedNodeId) {
       this.nodeIdInput = this.seedNodeId;
+      this.nodeSel = this.seedNodeId;
       this.run();
       // Jump to the results step once the view (and the stepper) exist.
       setTimeout(() => { if (this.wizard) { this.wizard.selectedIndex = 2; } }, 0);
     }
+  }
+
+  /** Debounced KG search; ignores the object that ngModel emits on option selection. */
+  onNodeSearch(val: GraphNode | string): void {
+    if (val && typeof val === 'object') { return; }
+    const q = (val || '').toString().trim();
+    this.searchLen = q.length;
+    this.selectedNode = null;
+    this.nodeIdInput = '';
+    clearTimeout(this.searchTimer);
+    if (q.length < 2) { this.nodeResults = []; this.searching = false; return; }
+    this.searching = true;
+    this.searchTimer = setTimeout(() => {
+      this.graphService.searchNodes(q).subscribe({
+        next: (nodes) => { this.nodeResults = nodes; this.searching = false; },
+        error: () => { this.nodeResults = []; this.searching = false; }
+      });
+    }, 300);
+  }
+
+  onNodeSelected(node: GraphNode): void {
+    this.selectedNode = node;
+    this.nodeIdInput = node.nodeId;
+  }
+
+  displayNode = (n: GraphNode | string): string =>
+    (n && typeof n === 'object') ? (n.title || n.nodeId) : (n || '');
+
+  clearNode(): void {
+    this.selectedNode = null;
+    this.nodeIdInput = '';
+    this.nodeSel = '';
+    this.nodeResults = [];
+    this.searchLen = 0;
   }
 
   run(): void {

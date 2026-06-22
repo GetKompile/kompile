@@ -56,18 +56,26 @@
   <mat-card class="purge-card">
     <mat-card-header><mat-card-title>Purge by source</mat-card-title></mat-card-header>
     <mat-card-content>
-      <p class="muted">Remove all facts that came from a specific crawl run or source document. Always preview with a dry run first.</p>
+      <p class="muted">Remove all facts that came from a specific crawl run or source document — pick the run from the list, no IDs to memorize. Always preview with a dry run first.</p>
       <div class="purge-row">
         <mat-form-field appearance="outline">
           <mat-label>Match</mat-label>
-          <mat-select [(ngModel)]="purgeBy">
-            <mat-option value="crawlRunId">Crawl run ID</mat-option>
+          <mat-select [(ngModel)]="purgeBy" (ngModelChange)="onPurgeByChange()">
+            <mat-option value="crawlRunId">Crawl run</mat-option>
             <mat-option value="sourceDocumentId">Source document ID</mat-option>
           </mat-select>
         </mat-form-field>
-        <mat-form-field appearance="outline" class="grow">
-          <mat-label>Value</mat-label>
-          <input matInput [(ngModel)]="purgeValue">
+        <mat-form-field appearance="outline" class="grow" *ngIf="purgeBy === 'crawlRunId'">
+          <mat-label>Crawl run</mat-label>
+          <mat-select [(ngModel)]="purgeValue">
+            <mat-option *ngFor="let r of crawlRuns" [value]="r.jobId">{{ r.name || r.jobId }} ({{ r.status }})</mat-option>
+          </mat-select>
+          <mat-hint *ngIf="loadingRuns">Loading crawl runs…</mat-hint>
+          <mat-hint *ngIf="!loadingRuns && crawlRuns.length === 0">No crawl runs found.</mat-hint>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="grow" *ngIf="purgeBy === 'sourceDocumentId'">
+          <mat-label>Source document ID</mat-label>
+          <input matInput [(ngModel)]="purgeValue" placeholder="document id or path">
         </mat-form-field>
         <button mat-stroked-button (click)="runPurge(true)" [disabled]="purging || !purgeValue.trim()">
           <mat-icon>preview</mat-icon> Dry run
