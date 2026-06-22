@@ -151,6 +151,7 @@ import { TrainingLaunchComponent } from './components/developer-hub/training-lau
 import { AgentModelConfigComponent } from './components/agent-model-config/agent-model-config.component';
 import { GraphsHubComponent } from './components/graphs-hub/graphs-hub.component';
 import { EnforcerHubComponent } from './components/enforcer-hub/enforcer-hub.component';
+import { KbConfidenceSettingsComponent } from './components/settings/kb-confidence-settings/kb-confidence-settings.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -363,7 +364,8 @@ import { MatNativeDateModule } from '@angular/material/core';
     ToolCallCatalogComponent,
     AgentModelConfigComponent,
     GraphsHubComponent,
-    EnforcerHubComponent
+    EnforcerHubComponent,
+    KbConfidenceSettingsComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

@@ -1,0 +1,346 @@
+<!--
+     Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<div class="kb-confidence-settings">
+
+  <!-- Header -->
+  <div class="settings-header">
+    <div class="header-info">
+      <h3>
+        <mat-icon>psychology</mat-icon>
+        KB Confidence / Learning
+      </h3>
+      <p>Configure PSL learning, evidence priors, source trust weights, and MEBN parameters for the knowledge-base confidence model.</p>
+    </div>
+    <button mat-icon-button matTooltip="Refresh" (click)="loadConfiguration()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading configuration...</span>
+  </div>
+
+  <!-- Error -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="loadConfiguration()">Retry</button>
+  </div>
+
+  <!-- Success -->
+  <div *ngIf="successMessage" class="success-message">
+    <mat-icon>check_circle</mat-icon>
+    <span>{{ successMessage }}</span>
+  </div>
+
+  <ng-container *ngIf="!loading">
+
+    <!-- ── Section: Learner ─────────────────────────────────────── -->
+    <mat-expansion-panel [expanded]="true" class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>school</mat-icon>
+          Learner
+        </mat-panel-title>
+        <mat-panel-description>PSL weight-learning hyperparameters</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <!-- Learning enabled master toggle -->
+      <div class="config-row toggle-row">
+        <div class="config-info">
+          <span class="config-label">Enable KB Learning</span>
+          <span class="config-description">Master switch for PSL weight learning. When off, rule weights are frozen at their current values.</span>
+        </div>
+        <mat-slide-toggle
+          [(ngModel)]="config.kbLearningEnabled"
+          [ngModelOptions]="{standalone: true}"
+          color="primary">
+        </mat-slide-toggle>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <div class="fields-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Learning Rate</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPslLearningRate"
+                 [ngModelOptions]="{standalone: true}" min="0" step="0.001">
+          <mat-hint>Gradient-descent step size (e.g. 0.01)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Convergence Tolerance</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPslTolerance"
+                 [ngModelOptions]="{standalone: true}" min="0" step="0.00001">
+          <mat-hint>Stop when delta &lt; tolerance (e.g. 1e-4)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Batch Size</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPslBatchSize"
+                 [ngModelOptions]="{standalone: true}" min="1" step="1">
+          <mat-hint>Ground atoms per mini-batch</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Random Seed</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPslSeed"
+                 [ngModelOptions]="{standalone: true}" step="1">
+          <mat-hint>Reproducibility seed</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Max Epochs</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPslMaxEpochs"
+                 [ngModelOptions]="{standalone: true}" min="1" step="1">
+          <mat-hint>Maximum learning iterations</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Weight Prior Strength (λ)</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPslWeightPriorStrength"
+                 [ngModelOptions]="{standalone: true}" min="0" step="0.1">
+          <mat-hint>L2 regularisation strength on rule weights</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Weight Prior Mean</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPslWeightPriorMean"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Target prior mean for rule weights (0..1)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Default Rule Weight</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbPslDefaultRuleWeight"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Initial weight assigned to new rules (0..1)</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- ── Section: Evidence Priors ───────────────────────────────── -->
+    <mat-expansion-panel [expanded]="true" class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>balance</mat-icon>
+          Evidence Priors
+        </mat-panel-title>
+        <mat-panel-description>Prior confidence assigned to each evidence class</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="fields-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Evidence Prior Strength</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbEvidencePriorStrength"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Base confidence for observed evidence (0..1)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Structural Prior Strength</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbStructuralPriorStrength"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Confidence for structurally-derived facts (0..1)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Asserted Prior Strength</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbAssertedPriorStrength"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Confidence for user-asserted facts (0..1)</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- ── Section: Source Trust ───────────────────────────────────── -->
+    <mat-expansion-panel [expanded]="true" class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>verified</mat-icon>
+          Source Trust
+        </mat-panel-title>
+        <mat-panel-description>Initial trust weights for each ingest source type (0 = untrusted, 1 = fully trusted)</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="fields-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Email From</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbTrustEmailFrom"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Trust for sender-field attribution</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Email To / CC</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbTrustEmailToCc"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Trust for recipient-field attribution</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Structured Upload</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbTrustStructuredUpload"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>CSV / JSON / YAML uploads</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>PDF / Office Documents</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbTrustPdfOffice"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Tika-parsed binary documents</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Email Body</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbTrustEmailBody"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Free-text email body content</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>LLM Extraction</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbTrustLlmExtraction"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Facts produced by LLM graph extraction</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Web Scrape</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbTrustWebScrape"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Content crawled from the web</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Default (unknown source)</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbTrustDefault"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Fallback trust for unrecognised source types</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- ── Section: Structural ────────────────────────────────────── -->
+    <mat-expansion-panel class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>corporate_fare</mat-icon>
+          Structural
+        </mat-panel-title>
+        <mat-panel-description>Organisation-membership graph weights</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="fields-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Belongs-to-Org Strength</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbBelongsToOrgStrength"
+                 [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+          <mat-hint>Confidence bonus for entities linked to a known org (0..1)</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- ── Section: MEBN ──────────────────────────────────────────── -->
+    <mat-expansion-panel class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>hub</mat-icon>
+          MEBN
+        </mat-panel-title>
+        <mat-panel-description>Multi-entity Bayesian Network learning schedule</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="fields-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>MEBN Learning Interval</mat-label>
+          <input matInput type="number" [(ngModel)]="config.kbMebnLearningInterval"
+                 [ngModelOptions]="{standalone: true}" min="1" step="1">
+          <mat-hint>Run MEBN parameter update every N graph mutations</mat-hint>
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- ── Section: Personal Email Domains ───────────────────────── -->
+    <mat-expansion-panel class="section-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>alternate_email</mat-icon>
+          Personal Email Domains
+        </mat-panel-title>
+        <mat-panel-description>Domains treated as personal (lower org-membership trust)</mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <p class="section-hint">Emails from these domains are treated as personal addresses and receive lower organisational trust scores.</p>
+
+      <!-- Existing domain chips -->
+      <div class="domain-chips" *ngIf="config.kbPersonalEmailDomains.length > 0">
+        <mat-chip-set>
+          <mat-chip
+            *ngFor="let domain of config.kbPersonalEmailDomains"
+            [removable]="true"
+            (removed)="removeDomain(domain)">
+            {{ domain }}
+            <mat-icon matChipRemove>cancel</mat-icon>
+          </mat-chip>
+        </mat-chip-set>
+      </div>
+      <p *ngIf="config.kbPersonalEmailDomains.length === 0" class="empty-hint">No personal domains configured.</p>
+
+      <!-- Add domain input -->
+      <div class="add-domain-row">
+        <mat-form-field appearance="outline" class="domain-input">
+          <mat-label>Add domain</mat-label>
+          <input matInput
+                 [(ngModel)]="newDomain"
+                 [ngModelOptions]="{standalone: true}"
+                 placeholder="e.g. gmail.com"
+                 (keydown)="onDomainKeydown($event)">
+          <mat-hint>Press Enter or comma to add</mat-hint>
+        </mat-form-field>
+        <button mat-stroked-button color="primary" (click)="addDomain()" [disabled]="!newDomain.trim()">
+          <mat-icon>add</mat-icon>
+          Add
+        </button>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- ── Action Bar ─────────────────────────────────────────────── -->
+    <div class="actions">
+      <button mat-raised-button color="primary" (click)="saveConfiguration()" [disabled]="saving || loading">
+        <mat-icon>save</mat-icon>
+        <span *ngIf="!saving">Save</span>
+        <span *ngIf="saving">Saving…</span>
+        <mat-spinner *ngIf="saving" diameter="16" class="inline-spinner"></mat-spinner>
+      </button>
+
+      <button mat-stroked-button
+              matTooltip="Load server defaults into the form (still needs Save to persist)"
+              (click)="resetToDefaults()"
+              [disabled]="resettingToDefaults || loading">
+        <mat-icon>restore</mat-icon>
+        <span *ngIf="!resettingToDefaults">Reset to Defaults</span>
+        <span *ngIf="resettingToDefaults">Loading…</span>
+        <mat-spinner *ngIf="resettingToDefaults" diameter="16" class="inline-spinner"></mat-spinner>
+      </button>
+    </div>
+
+  </ng-container>
+</div>
