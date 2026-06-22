@@ -20,12 +20,15 @@ import ai.kompile.core.graphrag.maintenance.model.ConfidencePrunePolicy;
 import ai.kompile.core.graphrag.maintenance.model.GraphHealthSnapshot;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
 import ai.kompile.graph.reasoning.pruning.PrunePolicy;
+import ai.kompile.knowledgegraph.confidence.KbConfig;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.reasoning.InferredFactGraphPruner;
 import ai.kompile.knowledgegraph.reasoning.InferredFactGraphPruner.PruneResult;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService;
 import ai.kompile.knowledgegraph.resolution.IdentityGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -75,6 +78,15 @@ public class PruneCompactOrchestrator {
      * submits tasks from multiple event-listener threads).
      */
     private volatile boolean aggressivePruneMode = false;
+
+    /**
+     * Kompile-managed KB config supplying the P6 opinion-prune thresholds. Field-injected and
+     * optional: when absent (e.g. unit tests constructing via the public constructor) the P6
+     * pass falls back to {@link PrunePolicy#defaults()}. No {@code @Value}, no hardcoded literals
+     * on the production path — the thresholds live in {@code kb-confidence-config.json}.
+     */
+    @Autowired(required = false)
+    private KbConfigManager kbConfigManager;
 
     public PruneCompactOrchestrator(
             InferredFactGraphPruner inferredPruner,
@@ -240,11 +252,29 @@ public class PruneCompactOrchestrator {
     }
 
     /**
-     * Convenience overload that uses {@link PrunePolicy#defaults()} for the opinion-prune pass.
-     * Existing callers that do not yet supply a {@link PrunePolicy} continue to work.
+     * Convenience overload that resolves the opinion-prune {@link PrunePolicy} from the
+     * kompile-managed {@link KbConfig}. Existing callers that do not supply a {@link PrunePolicy}
+     * (e.g. the crawl hydration pipeline) now get the config-driven thresholds for free.
      */
     public PruneCompactResult run(Long factSheetId, Set<String> retractedAtomKeys,
                                    String runId, boolean dryRun, HealthSetpoints setpoints) {
-        return run(factSheetId, retractedAtomKeys, runId, dryRun, setpoints, PrunePolicy.defaults());
+        return run(factSheetId, retractedAtomKeys, runId, dryRun, setpoints, resolveOpinionPolicy());
+    }
+
+    /**
+     * Resolve the P6 opinion-prune {@link PrunePolicy} from the kompile-managed {@link KbConfig},
+     * falling back to {@link PrunePolicy#defaults()} when the config manager is unavailable
+     * (no {@code @Value}, no hardcoded thresholds on the production path).
+     */
+    private PrunePolicy resolveOpinionPolicy() {
+        KbConfig c = (kbConfigManager != null) ? kbConfigManager.current() : null;
+        if (c == null) {
+            return PrunePolicy.defaults();
+        }
+        return new PrunePolicy(
+                c.prunePolicyMinBelief,
+                c.prunePolicyMaxUncertainty,
+                c.prunePolicyMinExpectation,
+                c.prunePolicyPruneSuppressedBand);
     }
 }

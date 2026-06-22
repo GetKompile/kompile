@@ -80,6 +80,16 @@ public class KbConfig {
     /** Run MEBN finite-difference weight learning once every N cascades. */
     public int mebnLearningInterval = 10;
 
+    // ── Prior-based Opinion prune (Pillar 6 — P6 in PruneCompactOrchestrator) ──────
+    /** P6: prune edges whose subjective-logic belief is below this. */
+    public double prunePolicyMinBelief = 0.10;
+    /** P6: prune edges whose uncertainty exceeds this (no evidence base yet). */
+    public double prunePolicyMaxUncertainty = 0.80;
+    /** P6: prune edges whose projected expectation is below this. */
+    public double prunePolicyMinExpectation = 0.15;
+    /** P6: always prune SUPPRESSED-band edges. */
+    public boolean prunePolicyPruneSuppressedBand = true;
+
     // ── Personal / free email providers (belongs_to_org exclusion list) ───────────
     public List<String> personalEmailDomains = new ArrayList<>(List.of(
             "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
@@ -117,6 +127,10 @@ public class KbConfig {
         m.put("kbTrustDefault", trustDefault);
         m.put("kbBelongsToOrgStrength", belongsToOrgStrength);
         m.put("kbMebnLearningInterval", mebnLearningInterval);
+        m.put("kbPrunePolicyMinBelief", prunePolicyMinBelief);
+        m.put("kbPrunePolicyMaxUncertainty", prunePolicyMaxUncertainty);
+        m.put("kbPrunePolicyMinExpectation", prunePolicyMinExpectation);
+        m.put("kbPrunePolicyPruneSuppressedBand", prunePolicyPruneSuppressedBand);
         m.put("kbPersonalEmailDomains", personalEmailDomains);
         return m;
     }
@@ -153,6 +167,10 @@ public class KbConfig {
         c.trustDefault = dbl(root, "kbTrustDefault", c.trustDefault, 0.0, 1.0);
         c.belongsToOrgStrength = dbl(root, "kbBelongsToOrgStrength", c.belongsToOrgStrength, 0.0, 1000.0);
         c.mebnLearningInterval = intf(root, "kbMebnLearningInterval", c.mebnLearningInterval, 1, 100_000);
+        c.prunePolicyMinBelief = dbl(root, "kbPrunePolicyMinBelief", c.prunePolicyMinBelief, 0.0, 1.0);
+        c.prunePolicyMaxUncertainty = dbl(root, "kbPrunePolicyMaxUncertainty", c.prunePolicyMaxUncertainty, 0.0, 1.0);
+        c.prunePolicyMinExpectation = dbl(root, "kbPrunePolicyMinExpectation", c.prunePolicyMinExpectation, 0.0, 1.0);
+        c.prunePolicyPruneSuppressedBand = bool(root, "kbPrunePolicyPruneSuppressedBand", c.prunePolicyPruneSuppressedBand);
         List<String> domains = strList(root, "kbPersonalEmailDomains");
         if (domains != null) {
             c.personalEmailDomains = domains;
