@@ -36,6 +36,12 @@ import { ProcessDiagramComponent } from './process-diagram.component';
 import { ProcessDiscoverySuggestionsComponent } from './process-discovery-suggestions.component';
 import { ProcessMiningComponent } from './process-mining.component';
 import { CausalAttributionExtrasComponent } from './causal-attribution-extras.component';
+import { GraphOntologyPanelComponent } from '../graph-ontology-panel/graph-ontology-panel.component';
+import { ProcessLineagePanelComponent } from '../process-lineage-panel/process-lineage-panel.component';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatSelectModule } from '@angular/material/select';
+import { FactSheetService } from '../../services/fact-sheet.service';
+import { FactSheet } from '../../models/api-models';
 
 @Component({
   standalone: true,
@@ -44,6 +50,7 @@ import { CausalAttributionExtrasComponent } from './causal-attribution-extras.co
     CommonModule, FormsModule,
     MatTabsModule, MatIconModule, MatButtonModule,
     MatChipsModule, MatSnackBarModule,
+    MatFormFieldModule, MatSelectModule,
     ProcessOntologyComponent,
     ProcessDefinitionsComponent,
     ProcessRunsComponent,
@@ -55,7 +62,9 @@ import { CausalAttributionExtrasComponent } from './causal-attribution-extras.co
     ProcessDiagramComponent,
     ProcessDiscoverySuggestionsComponent,
     ProcessMiningComponent,
-    CausalAttributionExtrasComponent
+    CausalAttributionExtrasComponent,
+    GraphOntologyPanelComponent,
+    ProcessLineagePanelComponent
   ],
   template: `
     <div class="dashboard-container">
@@ -102,6 +111,26 @@ import { CausalAttributionExtrasComponent } from './causal-attribution-extras.co
           </div>
         </mat-tab>
 
+        <!-- Graph Binding & Conformance Tab (merged from the Graphs hub) -->
+        <mat-tab>
+          <ng-template mat-tab-label>
+            <mat-icon class="tab-icon">verified</mat-icon>
+            Graph Ontology
+          </ng-template>
+          <div class="tab-content">
+            <div class="fact-sheet-bar">
+              <mat-form-field appearance="outline">
+                <mat-label>Fact sheet</mat-label>
+                <mat-select [(ngModel)]="graphFactSheetId">
+                  <mat-option *ngFor="let fs of graphFactSheets" [value]="fs.id">{{ fs.name }} (#{{ fs.id }})</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <span class="fact-sheet-hint">Bind an ontology to this graph and check how well its nodes/edges conform.</span>
+            </div>
+            <app-graph-ontology-panel [factSheetId]="graphFactSheetId"></app-graph-ontology-panel>
+          </div>
+        </mat-tab>
+
         <!-- Discovery Tab -->
         <mat-tab>
           <ng-template mat-tab-label>
@@ -122,6 +151,26 @@ import { CausalAttributionExtrasComponent } from './causal-attribution-extras.co
           </ng-template>
           <div class="tab-content">
             <app-process-mining></app-process-mining>
+          </div>
+        </mat-tab>
+
+        <!-- Lineage Tab (process-derivation provenance, merged from the Graphs hub) -->
+        <mat-tab>
+          <ng-template mat-tab-label>
+            <mat-icon class="tab-icon">account_tree</mat-icon>
+            Lineage
+          </ng-template>
+          <div class="tab-content">
+            <div class="fact-sheet-bar">
+              <mat-form-field appearance="outline">
+                <mat-label>Fact sheet</mat-label>
+                <mat-select [(ngModel)]="graphFactSheetId">
+                  <mat-option *ngFor="let fs of graphFactSheets" [value]="fs.id">{{ fs.name }} (#{{ fs.id }})</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <span class="fact-sheet-hint">Trace how each mined process phase/step was derived — basis nodes, rules, and causal pairs.</span>
+            </div>
+            <app-process-lineage-panel [factSheetId]="graphFactSheetId"></app-process-lineage-panel>
           </div>
         </mat-tab>
 
@@ -276,6 +325,23 @@ import { CausalAttributionExtrasComponent } from './causal-attribution-extras.co
       resize: vertical;
       margin-bottom: 8px;
     }
+
+    .fact-sheet-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .fact-sheet-bar mat-form-field {
+      width: 280px;
+    }
+
+    .fact-sheet-hint {
+      font-size: 12.5px;
+      color: var(--text-secondary, #8a97a6);
+    }
   `]
 })
 export class ProcessEngineDashboardComponent implements OnInit {
@@ -288,14 +354,29 @@ export class ProcessEngineDashboardComponent implements OnInit {
   excelGraphJsonInput = '';
   excelGraphJson = '';
 
+  // Shared fact-sheet selection for the graph-scoped tabs (Graph Ontology, Lineage) merged in
+  // from the Graphs hub — those panels are per-fact-sheet and need a sheet to operate on.
+  graphFactSheetId: number | null = null;
+  graphFactSheets: FactSheet[] = [];
+
   constructor(
     private processEngineService: ProcessEngineService,
     private processAttributionService: ProcessAttributionService,
+    private factSheetService: FactSheetService,
     private snackBar: MatSnackBar
   ) {}
 
   ngOnInit(): void {
     this.loadCounts();
+    this.factSheetService.loadSheets().subscribe({
+      next: (sheets) => {
+        this.graphFactSheets = sheets;
+        if (sheets.length && this.graphFactSheetId == null) {
+          this.graphFactSheetId = sheets[0].id;
+        }
+      },
+      error: () => { /* non-fatal: the panels show a "select a fact sheet" empty state */ }
+    });
   }
 
   private loadCounts(): void {

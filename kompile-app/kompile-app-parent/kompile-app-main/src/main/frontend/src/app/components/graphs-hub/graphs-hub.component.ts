@@ -27,7 +27,6 @@ import { GraphOverviewComponent } from '../graph-overview/graph-overview.compone
 import { GraphMaintenanceHubComponent } from '../graph-maintenance-hub/graph-maintenance-hub.component';
 import { GraphHealthPanelComponent } from '../graph-health-panel/graph-health-panel.component';
 import { GraphRulesPanelComponent } from '../graph-rules-panel/graph-rules-panel.component';
-import { GraphOntologyPanelComponent } from '../graph-ontology-panel/graph-ontology-panel.component';
 import { GraphIoPanelComponent } from '../graph-io-panel/graph-io-panel.component';
 import { GraphPipelinesPanelComponent } from '../graph-pipelines-panel/graph-pipelines-panel.component';
 import { GraphProvenancePanelComponent } from '../graph-provenance-panel/graph-provenance-panel.component';
@@ -36,13 +35,11 @@ import { GraphEvalDebuggerComponent } from '../graph-eval-debugger/graph-eval-de
 import { GraphDataPatchComponent } from '../graph-data-patch/graph-data-patch.component';
 import { MultiAgentGraphExtractionComponent } from '../multi-agent-graph-extraction/multi-agent-graph-extraction.component';
 import { GraphVisualizerComponent } from '../graph-visualizer/graph-visualizer.component';
-import { EntityBrowserComponent } from '../entity-browser/entity-browser.component';
 import { KnowledgeGraphBuilderComponent } from '../knowledge-graph-builder/knowledge-graph-builder.component';
 import { GraphHierarchyComponent } from '../graph-hierarchy/graph-hierarchy.component';
 import { EventObservationDashboardComponent } from '../event-observation/event-observation-dashboard.component';
 import { CausalAttributionPanelComponent } from '../event-observation/causal-attribution-panel.component';
 import { GroundingConsolePanelComponent } from '../grounding-console-panel/grounding-console-panel.component';
-import { ProcessMiningPanelComponent } from '../process-mining-panel/process-mining-panel.component';
 import { AuditTimelineComponent } from '../audit-timeline/audit-timeline.component';
 import { HydrationProgressPanelComponent } from '../hydration-progress-panel/hydration-progress-panel.component';
 import { FactsByTierPanelComponent } from '../facts-by-tier-panel/facts-by-tier-panel.component';
@@ -50,14 +47,13 @@ import { KbWeightsPanelComponent } from '../kb-weights-panel/kb-weights-panel.co
 import { OpinionBrowserComponent } from '../opinion-browser/opinion-browser.component';
 import { CommunityPanelComponent } from '../community-panel/community-panel.component';
 import { FolRulesBrowserComponent } from '../fol-rules-browser/fol-rules-browser.component';
-import { ProcessLineagePanelComponent } from '../process-lineage-panel/process-lineage-panel.component';
 
-type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
+type GraphsTab = 'visualizer' | 'hierarchy' | 'builder'
   | 'eventObservation' | 'causalAttribution'
-  | 'overview' | 'health' | 'ontology' | 'pipelines' | 'provenance' | 'diff'
+  | 'overview' | 'health' | 'pipelines' | 'provenance' | 'diff'
   | 'maintenance' | 'rules' | 'extract' | 'patch' | 'eval' | 'io'
-  | 'grounding' | 'processes' | 'audit' | 'hydration' | 'folRules'
-  | 'factsByTier' | 'weights' | 'opinions' | 'communities' | 'processLineage';
+  | 'grounding' | 'audit' | 'hydration' | 'folRules'
+  | 'factsByTier' | 'weights' | 'opinions' | 'communities';
 
 /**
  * Unified "Graphs" workspace — a first-class home for knowledge graphs as assets. Combines the
@@ -78,7 +74,6 @@ type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
     GraphMaintenanceHubComponent,
     GraphHealthPanelComponent,
     GraphRulesPanelComponent,
-    GraphOntologyPanelComponent,
     GraphIoPanelComponent,
     GraphPipelinesPanelComponent,
     GraphProvenancePanelComponent,
@@ -87,21 +82,18 @@ type GraphsTab = 'visualizer' | 'entityBrowser' | 'hierarchy' | 'builder'
     GraphDataPatchComponent,
     MultiAgentGraphExtractionComponent,
     GraphVisualizerComponent,
-    EntityBrowserComponent,
     KnowledgeGraphBuilderComponent,
     GraphHierarchyComponent,
     EventObservationDashboardComponent,
     CausalAttributionPanelComponent,
     GroundingConsolePanelComponent,
-    ProcessMiningPanelComponent,
     AuditTimelineComponent,
     HydrationProgressPanelComponent,
     FactsByTierPanelComponent,
     KbWeightsPanelComponent,
     OpinionBrowserComponent,
     CommunityPanelComponent,
-    FolRulesBrowserComponent,
-    ProcessLineagePanelComponent
+    FolRulesBrowserComponent
   ],
   templateUrl: './graphs-hub.component.html',
   styleUrls: ['./graphs-hub.component.css']

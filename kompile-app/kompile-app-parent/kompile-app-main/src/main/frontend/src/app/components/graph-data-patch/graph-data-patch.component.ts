@@ -102,6 +102,13 @@ interface PatchRuleDraft {
         </div>
       </div>
 
+      <p class="patch-intro">
+        Bulk-edit graph nodes by rule. Match nodes by type, title, or existing metadata, then set or
+        remove metadata keys across every match at once — useful for cleaning up a bad extraction or
+        backfilling a field. <strong>Dry Run</strong> first to see how many nodes would change;
+        nothing is written until you <strong>Apply</strong>.
+      </p>
+
       <div class="scope-warning" *ngIf="!useGlobal && !factSheetId">
         <mat-icon>lock</mat-icon>
         <span>Choose an active fact sheet or enable Global.</span>
@@ -143,7 +150,7 @@ interface PatchRuleDraft {
             </mat-form-field>
           </div>
 
-          <div class="form-grid two-column">
+          <div class="form-grid">
             <mat-form-field appearance="outline">
               <mat-label>Title equals</mat-label>
               <textarea matInput rows="4" [(ngModel)]="ruleDraft.titleEquals"></textarea>
@@ -170,7 +177,7 @@ interface PatchRuleDraft {
             </button>
           </div>
 
-          <div class="form-grid two-column">
+          <div class="form-grid">
             <mat-form-field appearance="outline">
               <mat-label>Set metadata JSON</mat-label>
               <textarea matInput rows="7" class="code-input" [(ngModel)]="ruleDraft.setMetadata"></textarea>
@@ -413,10 +420,19 @@ interface PatchRuleDraft {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
+      margin-bottom: 16px;
     }
 
     .full-width {
       width: 100%;
+      margin-top: 4px;
+    }
+
+    .patch-intro {
+      margin: 0 0 4px;
+      color: #637384;
+      font-size: 13px;
+      line-height: 1.5;
     }
 
     .code-input,

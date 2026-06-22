@@ -31,10 +31,6 @@
       <mat-icon class="tab-icon">scatter_plot</mat-icon>
       <span class="tab-label">Visualizer</span>
     </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'entityBrowser'" (click)="selectSubTab('entityBrowser')">
-      <mat-icon class="tab-icon">list_alt</mat-icon>
-      <span class="tab-label">Entity Browser</span>
-    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'hierarchy'" (click)="selectSubTab('hierarchy')">
       <mat-icon class="tab-icon">lan</mat-icon>
       <span class="tab-label">Hierarchy</span>
@@ -58,10 +54,6 @@
     <button class="sub-tab" [class.active]="activeSubTab === 'health'" (click)="selectSubTab('health')">
       <mat-icon class="tab-icon">monitor_heart</mat-icon>
       <span class="tab-label">Health</span>
-    </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'ontology'" (click)="selectSubTab('ontology')">
-      <mat-icon class="tab-icon">schema</mat-icon>
-      <span class="tab-label">Ontology</span>
     </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'pipelines'" (click)="selectSubTab('pipelines')">
       <mat-icon class="tab-icon">cable</mat-icon>
@@ -103,10 +95,6 @@
       <mat-icon class="tab-icon">hub</mat-icon>
       <span class="tab-label">Grounding</span>
     </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'processes'" (click)="selectSubTab('processes')">
-      <mat-icon class="tab-icon">timeline</mat-icon>
-      <span class="tab-label">Processes</span>
-    </button>
     <button class="sub-tab" [class.active]="activeSubTab === 'audit'" (click)="selectSubTab('audit')">
       <mat-icon class="tab-icon">history</mat-icon>
       <span class="tab-label">Audit</span>
@@ -135,10 +123,6 @@
       <mat-icon class="tab-icon">rule</mat-icon>
       <span class="tab-label">FOL Rules</span>
     </button>
-    <button class="sub-tab" [class.active]="activeSubTab === 'processLineage'" (click)="selectSubTab('processLineage')">
-      <mat-icon class="tab-icon">device_hub</mat-icon>
-      <span class="tab-label">Process Lineage</span>
-    </button>
   </div>
 
   <div class="sub-tab-content">
@@ -148,13 +132,6 @@
         [factSheetName]="activeFactSheet?.name || ''"
         [focusNodeId]="focusNodeId">
       </app-graph-visualizer>
-    </div>
-    <div *ngIf="activeSubTab === 'entityBrowser'" class="graph-explore-panel">
-      <app-entity-browser
-        [factSheetId]="activeFactSheetId"
-        (entitySelected)="onEntitySelected($event)"
-        (navigateToGraph)="onNavigateToGraph($event)">
-      </app-entity-browser>
     </div>
     <div *ngIf="activeSubTab === 'hierarchy'" class="graph-explore-panel">
       <app-graph-hierarchy
@@ -177,9 +154,6 @@
     </div>
     <div *ngIf="activeSubTab === 'health'">
       <app-graph-health-panel [factSheetId]="activeFactSheetId"></app-graph-health-panel>
-    </div>
-    <div *ngIf="activeSubTab === 'ontology'">
-      <app-graph-ontology-panel [factSheetId]="activeFactSheetId"></app-graph-ontology-panel>
     </div>
     <div *ngIf="activeSubTab === 'pipelines'">
       <app-graph-pipelines-panel [factSheetId]="activeFactSheetId"></app-graph-pipelines-panel>
@@ -211,9 +185,6 @@
     <div *ngIf="activeSubTab === 'grounding'">
       <app-grounding-console-panel></app-grounding-console-panel>
     </div>
-    <div *ngIf="activeSubTab === 'processes'">
-      <app-process-mining-panel [factSheetIdInput]="activeFactSheetId"></app-process-mining-panel>
-    </div>
     <div *ngIf="activeSubTab === 'audit'">
       <app-audit-timeline [factSheetId]="activeFactSheetId"></app-audit-timeline>
     </div>
@@ -234,9 +205,6 @@
     </div>
     <div *ngIf="activeSubTab === 'folRules'">
       <app-fol-rules-browser [factSheetId]="activeFactSheetId"></app-fol-rules-browser>
-    </div>
-    <div *ngIf="activeSubTab === 'processLineage'">
-      <app-process-lineage-panel [factSheetId]="activeFactSheetId"></app-process-lineage-panel>
     </div>
   </div>
 </div>

@@ -82,6 +82,12 @@ const COMMUNITY_DEGENERATE_MODULARITY = 0.05;
         <span class="header-title">Community Detection</span>
       </div>
 
+      <p class="panel-intro">
+        Groups densely-connected nodes into <strong>communities</strong> — clusters that reveal
+        structure in the graph (related entities, topics, or sub-systems). Pick an algorithm, then
+        detect.
+      </p>
+
       <!-- Controls -->
       <div class="controls-row">
         <mat-form-field appearance="outline" class="method-field">
@@ -98,6 +104,21 @@ const COMMUNITY_DEGENERATE_MODULARITY = 0.05;
           <mat-label>Resolution</mat-label>
           <input matInput type="number" [(ngModel)]="resolution" min="0.1" max="3.0" step="0.1">
         </mat-form-field>
+      </div>
+
+      <div class="algo-hint" *ngIf="selectedMethod === 'louvain'">
+        <mat-icon>info</mat-icon>
+        <span><strong>Louvain</strong> greedily merges nodes to maximize modularity (how much more
+          connected each community is than chance), then repeats on the merged graph. Fast and
+          high-quality, with well-separated clusters. Use the <strong>Resolution</strong> knob to tune
+          granularity — higher gives more, smaller communities.</span>
+      </div>
+      <div class="algo-hint" *ngIf="selectedMethod === 'label_propagation'">
+        <mat-icon>info</mat-icon>
+        <span><strong>Label Propagation</strong> gives each node a label, then repeatedly has every
+          node adopt whichever label is most common among its neighbours until they stabilize.
+          Near-linear and parameter-free (no resolution), so it's great for a quick first look on
+          large graphs — but it's non-deterministic and can merge weakly-separated groups.</span>
       </div>
 
       <button mat-raised-button color="primary"
@@ -241,6 +262,35 @@ const COMMUNITY_DEGENERATE_MODULARITY = 0.05;
       font-size: 14px;
       font-weight: 600;
       color: var(--text-primary);
+    }
+
+    .panel-intro {
+      margin: 0 0 4px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
+    .algo-hint {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 8px 10px;
+      margin-bottom: 4px;
+      border-radius: 6px;
+      background: var(--surface-2, rgba(127, 127, 127, 0.08));
+      border: 1px solid var(--border-color, rgba(127, 127, 127, 0.18));
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
+    .algo-hint mat-icon {
+      flex: 0 0 auto;
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+      color: var(--accent-color, #5b8def);
     }
 
     .controls-row {
