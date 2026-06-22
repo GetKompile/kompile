@@ -37,6 +37,12 @@ interface WeightRow {
   weight: number;
 }
 
+interface MebnWeightRow {
+  mFragName: string;
+  conditionDescription: string;
+  learnedStrength: number;
+}
+
 interface AuditEvent {
   eventId: string;
   eventType: string;
@@ -132,6 +138,61 @@ interface AuditEvent {
           <tr mat-row *matRowDef="let row; columns: weightColumns;"></tr>
         </table>
 
+        <mat-divider *ngIf="factSheetId != null" class="section-div"></mat-divider>
+
+        <!-- D6 MEBN Theory Inspector -->
+        <div class="mebn-section" *ngIf="factSheetId != null">
+          <div class="mebn-header">
+            <h4>MEBN Theory Inspector</h4>
+            <button mat-icon-button (click)="loadMebnWeights()" [disabled]="loadingMebn" matTooltip="Refresh MEBN weights">
+              <mat-icon>refresh</mat-icon>
+            </button>
+          </div>
+          <p class="mebn-description">MFrag noisy-OR edge strengths learned by gradient descent (source: mebn-weights.json)</p>
+
+          <div *ngIf="loadingMebn" class="spinner-row">
+            <mat-spinner diameter="20"></mat-spinner>
+            <span>Loading MEBN weights…</span>
+          </div>
+
+          <div *ngIf="!loadingMebn && mebnError" class="error-row">
+            <mat-icon color="warn">error_outline</mat-icon>
+            <span>{{ mebnError }}</span>
+          </div>
+
+          <div *ngIf="!loadingMebn && !mebnError && mebnRows.length === 0" class="empty-row">
+            <mat-icon>info_outline</mat-icon>
+            <span>No MEBN weights found. Run online MEBN weight learning to populate.</span>
+          </div>
+
+          <table mat-table [dataSource]="mebnRows" *ngIf="!loadingMebn && !mebnError && mebnRows.length > 0" class="weights-table mebn-table">
+            <ng-container matColumnDef="mFragName">
+              <th mat-header-cell *matHeaderCellDef>MFrag</th>
+              <td mat-cell *matCellDef="let row" class="rule-cell" [matTooltip]="row.mFragName">
+                <code>{{ row.mFragName }}</code>
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="conditionDescription">
+              <th mat-header-cell *matHeaderCellDef>Condition (parent→child)</th>
+              <td mat-cell *matCellDef="let row" class="rule-cell" [matTooltip]="row.conditionDescription">
+                <code>{{ row.conditionDescription }}</code>
+              </td>
+            </ng-container>
+            <ng-container matColumnDef="learnedStrength">
+              <th mat-header-cell *matHeaderCellDef>Learned Strength</th>
+              <td mat-cell *matCellDef="let row">
+                <span class="weight-bar-container" [matTooltip]="row.learnedStrength | number:'1.4-4'">
+                  <span class="weight-bar" [style.width.%]="weightBarPct(row.learnedStrength)"
+                        [style.background]="weightColor(row.learnedStrength)"></span>
+                  <span class="weight-label">{{ row.learnedStrength | number:'1.3-3' }}</span>
+                </span>
+              </td>
+            </ng-container>
+            <tr mat-header-row *matHeaderRowDef="mebnColumns"></tr>
+            <tr mat-row *matRowDef="let row; columns: mebnColumns;"></tr>
+          </table>
+        </div>
+
         <mat-divider *ngIf="weightRows.length > 0 || tuningHistory.length > 0" class="section-div"></mat-divider>
 
         <!-- WEIGHT_TUNED audit history -->
@@ -184,6 +245,11 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
   tuningHistory: AuditEvent[] = [];
   loadingHistory = false;
 
+  mebnRows: MebnWeightRow[] = [];
+  mebnColumns = ['mFragName', 'conditionDescription', 'learnedStrength'];
+  loadingMebn = false;
+  mebnError: string | null = null;
+
   constructor(private http: HttpClient) {
     super();
   }
@@ -196,6 +262,7 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
     this.loadWeights();
     if (this.factSheetId != null) {
       this.loadTuningHistory();
+      this.loadMebnWeights();
     }
   }
 
@@ -204,6 +271,7 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
       if (this.factSheetId != null) {
         this.selectedProgram = String(this.factSheetId);
         this.loadTuningHistory();
+        this.loadMebnWeights();
       }
       this.loadWeights();
     }
@@ -238,6 +306,29 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
           this.weightsError = null; // show "no weights yet" empty state
         } else {
           this.weightsError = err?.error?.message || err?.message || 'Failed to load weights';
+        }
+      },
+    });
+  }
+
+  loadMebnWeights(): void {
+    if (this.factSheetId == null) return;
+    this.loadingMebn = true;
+    this.mebnError = null;
+
+    this.http.get<MebnWeightRow[]>(`${this.backendUrl}/kb/weights/mebn/${this.factSheetId}`).subscribe({
+      next: (rows) => {
+        this.loadingMebn = false;
+        this.mebnRows = rows || [];
+      },
+      error: (err) => {
+        this.loadingMebn = false;
+        const status = err?.status;
+        if (status === 404 || status === 503) {
+          this.mebnRows = [];
+          this.mebnError = null;
+        } else {
+          this.mebnError = err?.error?.message || err?.message || 'Failed to load MEBN weights';
         }
       },
     });

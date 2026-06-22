@@ -74,3 +74,23 @@
 
 body.dark-theme .history-row { border-bottom-color: #444; }
 body.dark-theme .weights-card { background: var(--surface-bg, #1e1e1e); }
+
+.mebn-section { margin-top: 8px; }
+
+.mebn-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mebn-header h4 { margin: 0; font-size: 14px; }
+
+.mebn-description {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  margin: 4px 0 8px;
+}
+
+.mebn-table { width: 100%; }
+
+body.dark-theme .mebn-description { color: #aaa; }

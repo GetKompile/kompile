@@ -113,8 +113,12 @@ public final class MebnWeightSerializer {
     /**
      * Parse the JSON produced by {@link #strengthsToJson} into a {@code compositeKey → strength} map.
      * Robust to surrounding whitespace; skips malformed entries.
+     *
+     * <p>This is public so that infrastructure adapters in other packages (e.g.
+     * {@code ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter}) can read
+     * serialized edge strengths without needing to hold an {@link MTheory} instance.</p>
      */
-    static Map<String, Double> parseStrengths(String json) {
+    public static Map<String, Double> parseStrengths(String json) {
         Map<String, Double> out = new LinkedHashMap<>();
         if (json == null) {
             return out;

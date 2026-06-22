@@ -17,14 +17,18 @@
 package ai.kompile.app.web.controllers.grounding;
 
 import ai.kompile.graph.reasoning.learning.WeightStore;
+import ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.lang.Nullable;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -46,9 +50,14 @@ public class KbWeightsController {
     @Nullable
     private final WeightStore weightStore;
 
+    @Nullable
+    private final MebnWeightPersistenceAdapter mebnWeightPersistenceAdapter;
+
     @Autowired
-    public KbWeightsController(@Nullable WeightStore weightStore) {
+    public KbWeightsController(@Nullable WeightStore weightStore,
+                               @Nullable MebnWeightPersistenceAdapter mebnWeightPersistenceAdapter) {
         this.weightStore = weightStore;
+        this.mebnWeightPersistenceAdapter = mebnWeightPersistenceAdapter;
     }
 
     /**
@@ -97,6 +106,50 @@ public class KbWeightsController {
     }
 
     /**
+     * Retrieve the MEBN MFrag/theory edge-strength weights for the given fact sheet.
+     *
+     * <p>Data source: {@code <dataDir>/data/graph/reasoning/<factSheetId>/mebn-weights.json}
+     * written by {@link ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter}.
+     * Each entry in that file has the composite key {@code "<mfragName>|<parent>-><child>"}
+     * mapping to a learned noisy-OR edge strength in [0,1].</p>
+     *
+     * <p>The returned {@link MebnWeightRow} list splits each composite key into
+     * {@code mFragName} and {@code conditionDescription} ({@code "<parent>-><child>"})
+     * and includes the {@code learnedStrength}.</p>
+     *
+     * @param factSheetId the fact-sheet scoping the MEBN theory
+     * @return 200 with sorted list of {@link MebnWeightRow}; 503 if the adapter is unavailable;
+     *         404 with empty list if no weights have been persisted for this fact sheet yet
+     */
+    @GetMapping("/mebn/{factSheetId}")
+    public ResponseEntity<List<MebnWeightRow>> getMebnWeights(@PathVariable long factSheetId) {
+        if (mebnWeightPersistenceAdapter == null) {
+            return ResponseEntity.status(503).build();
+        }
+        try {
+            Map<String, Double> raw = mebnWeightPersistenceAdapter.readRawStrengths(factSheetId);
+            if (raw.isEmpty()) {
+                return ResponseEntity.ok(List.of());
+            }
+            List<MebnWeightRow> rows = new ArrayList<>(raw.size());
+            for (Map.Entry<String, Double> entry : raw.entrySet()) {
+                String compositeKey = entry.getKey();
+                int pipe = compositeKey.lastIndexOf('|');
+                String mFragName = pipe >= 0 ? compositeKey.substring(0, pipe) : compositeKey;
+                String conditionDescription = pipe >= 0 ? compositeKey.substring(pipe + 1) : "";
+                rows.add(new MebnWeightRow(mFragName, conditionDescription, entry.getValue()));
+            }
+            rows.sort((a, b) -> {
+                int cmp = a.mFragName().compareTo(b.mFragName());
+                return cmp != 0 ? cmp : a.conditionDescription().compareTo(b.conditionDescription());
+            });
+            return ResponseEntity.ok(rows);
+        } catch (IOException e) {
+            return ResponseEntity.status(500).build();
+        }
+    }
+
+    /**
      * Response DTO for the weights endpoint.
      *
      * @param programId         the program identifier
@@ -111,5 +164,18 @@ public class KbWeightsController {
             Map<String, Double> weights,
             List<String> availablePrograms,
             String message
+    ) {}
+
+    /**
+     * One MEBN edge-strength row returned by {@link #getMebnWeights(long)}.
+     *
+     * @param mFragName            the name of the MFrag that owns this edge
+     * @param conditionDescription the edge description in {@code "<parent>-><child>"} format
+     * @param learnedStrength      the learned noisy-OR edge strength in [0, 1]
+     */
+    public record MebnWeightRow(
+            String mFragName,
+            String conditionDescription,
+            double learnedStrength
     ) {}
 }

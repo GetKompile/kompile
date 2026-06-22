@@ -25,6 +25,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * Persists and restores MEBN edge strengths for a given fact sheet.
@@ -89,6 +91,27 @@ public class MebnWeightPersistenceAdapter {
      */
     public Path mebnArtifactPath(long factSheetId) {
         return reasoningDir(factSheetId).resolve("mebn-weights.json");
+    }
+
+    /**
+     * Read the persisted edge strengths for {@code factSheetId} and return them as a raw
+     * {@code compositeKey → strength} map without applying them to any theory.
+     *
+     * <p>The composite key has the form {@code "<mfragName>|<parent>-><child>"}; callers can split
+     * on {@code '|'} to extract the MFrag name and the edge description.</p>
+     *
+     * @param factSheetId the fact sheet identifier
+     * @return the parsed strength map, or an empty map when no weights file exists
+     * @throws IOException if the file exists but cannot be read
+     */
+    public Map<String, Double> readRawStrengths(long factSheetId) throws IOException {
+        Path source = reasoningDir(factSheetId).resolve("mebn-weights.json");
+        if (!Files.exists(source)) {
+            log.debug("MebnWeightPersistenceAdapter.readRawStrengths: no file for factSheet {}", factSheetId);
+            return Collections.emptyMap();
+        }
+        String json = Files.readString(source, StandardCharsets.UTF_8);
+        return MebnWeightSerializer.parseStrengths(json);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
