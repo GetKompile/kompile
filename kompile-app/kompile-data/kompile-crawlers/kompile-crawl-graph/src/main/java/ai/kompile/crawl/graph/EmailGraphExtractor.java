@@ -23,6 +23,8 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.confidence.BasisType;
+import ai.kompile.knowledgegraph.confidence.KbConfig;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import ai.kompile.knowledgegraph.confidence.SourceTrustResolver;
 import ai.kompile.knowledgegraph.confidence.StructuralFactAssertionService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -67,6 +69,13 @@ class EmailGraphExtractor {
 
     @Autowired(required = false)
     PersonalEmailDomains personalEmailDomains;
+
+    @Autowired(required = false)
+    KbConfigManager kbConfigManager;
+
+    private KbConfig kbCfg() {
+        return kbConfigManager != null ? kbConfigManager.current() : KbConfig.defaults();
+    }
 
     /**
      * Creates email graph entities and relationships from the metadata of the supplied documents.
@@ -316,7 +325,7 @@ class EmailGraphExtractor {
                         String addrSourceType = "SENT_BY".equals(relationType) ? "email-from" : "email-to-cc";
                         double addrTrust = sourceTrustResolver != null
                                 ? sourceTrustResolver.trustFor(addrSourceType)
-                                : ("SENT_BY".equals(relationType) ? 0.95 : 0.90);
+                                : ("SENT_BY".equals(relationType) ? kbCfg().trustEmailFrom : kbCfg().trustEmailToCc);
                         double addrWeight = 1.0;
                         Map<String, Object> addrProps = graphPersistenceHelper.metadataProperties(
                                 "email", finalEmailAddr,
@@ -377,10 +386,10 @@ class EmailGraphExtractor {
                                         "personName", finalPersonName,
                                         "inferredFrom", "email-domain");
                                 if (structuralFactAssertionService != null) {
-                                    Opinion orgOpinion = structuralFactAssertionService.structural(0.25, 0.5);
+                                    Opinion orgOpinion = structuralFactAssertionService.structural(kbCfg().belongsToOrgStrength, 0.5);
                                     orgWeight = orgOpinion.expectation();
                                     orgProps.putAll(structuralFactAssertionService.metadataFor(
-                                            BasisType.STRUCTURAL, orgOpinion, 0.25, 0.0, addrTrust,
+                                            BasisType.STRUCTURAL, orgOpinion, kbCfg().belongsToOrgStrength, 0.0, addrTrust,
                                             System.currentTimeMillis()));
                                 }
                                 String orgMetaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,

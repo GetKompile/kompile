@@ -9,9 +9,12 @@
  */
 package ai.kompile.crawl.graph;
 
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.util.Set;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,12 +56,14 @@ class PersonalEmailDomainsTest {
     }
 
     @Test
-    void explicitExtraDomainsAreHonoured() {
-        PersonalEmailDomains withExtra =
-                new PersonalEmailDomains(Set.of("internal-personal.example", "Shared.example"));
-        assertThat(withExtra.isPersonal("internal-personal.example")).isTrue();
-        assertThat(withExtra.isPersonal("shared.example")).isTrue();   // normalised to lowercase
-        assertThat(withExtra.isPersonal("acme.com")).isFalse();        // still corporate
-        assertThat(withExtra.isPersonal("gmail.com")).isTrue();        // built-ins retained
+    void configDrivenDomainsReplaceDefaultList(@TempDir Path tempDir) throws Exception {
+        Path cfgPath = tempDir.resolve("kb-confidence-config.json");
+        Files.writeString(cfgPath,
+                "{\"kbPersonalEmailDomains\":[\"acme-internal.example\",\"shared.example\"]}");
+        PersonalEmailDomains p = new PersonalEmailDomains(new KbConfigManager(cfgPath));
+        assertThat(p.isPersonal("acme-internal.example")).isTrue();
+        assertThat(p.isPersonal("shared.example")).isTrue();
+        // Config REPLACES the default list — gmail.com is no longer personal
+        assertThat(p.isPersonal("gmail.com")).isFalse();
     }
 }
