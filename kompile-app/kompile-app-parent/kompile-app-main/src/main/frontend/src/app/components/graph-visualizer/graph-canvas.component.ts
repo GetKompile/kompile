@@ -165,6 +165,21 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
             <span class="legend-label">Derived (diamond)</span>
           </div>
         </ng-container>
+        <ng-container *ngIf="conformanceOverlayEnabled">
+          <div class="legend-title">Conformance</div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#4CAF50"></span>
+            <span class="legend-label">Conformant</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#F44336"></span>
+            <span class="legend-label">Violation</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#9E9E9E"></span>
+            <span class="legend-label">Untagged</span>
+          </div>
+        </ng-container>
       </div>
     </div>
   `,
@@ -339,6 +354,11 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
     .provenance-diamond {
       pointer-events: none;
     }
+
+    /* Conformance rings */
+    .conformance-ring {
+      pointer-events: none;
+    }
   `]
 })
 export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
@@ -360,6 +380,10 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   @Input() provenanceOverlayEnabled: boolean = false;
   @Input() communityOverlayEnabled: boolean = false;
   @Input() communityMap: Map<string, number> = new Map();  // nodeId -> communityId (integer)
+
+  // Conformance overlay (P2)
+  @Input() conformanceOverlayEnabled: boolean = false;
+  @Input() conformanceMap: Map<string, boolean | null> = new Map();  // nodeId -> true=conformant, false=violation, null=untagged
 
   @Output() nodeSelected = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
@@ -439,6 +463,9 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     }
     if ((changes['communityOverlayEnabled'] || changes['communityMap']) && this.nodesGroup) {
       this.updateCommunityOverlay();
+    }
+    if ((changes['conformanceOverlayEnabled'] || changes['conformanceMap']) && this.nodesGroup) {
+      this.updateConformanceOverlay();
     }
   }
 
@@ -553,6 +580,9 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     }
     if (this.provenanceOverlayEnabled) {
       this.updateProvenanceOverlay();
+    }
+    if (this.conformanceOverlayEnabled) {
+      this.updateConformanceOverlay();
     }
 
     // Restart simulation
@@ -669,6 +699,13 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
         .attr('x', d => (d.x || 0) - (NODE_SIZES[d.type] || 10) * 0.85)
         .attr('y', d => (d.y || 0) - (NODE_SIZES[d.type] || 10) * 0.85)
         .attr('transform', d => `rotate(45, ${d.x || 0}, ${d.y || 0})`);
+    }
+
+    // Update conformance ring positions
+    if (this.conformanceOverlayEnabled) {
+      this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('.conformance-ring')
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y);
     }
 
     // Update MFrag region positions (throttled to every 5th tick for performance)
@@ -1064,6 +1101,80 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
         .attr('stroke', color)
         .attr('stroke-width', 1.5)
         .attr('stroke-opacity', 0.6)
+        .attr('pointer-events', 'none');
+    }
+  }
+
+  // ── Conformance Overlay (P2) ──────────────────────────────────────────────
+  // Mirrors the community overlay pattern exactly:
+  //   conformant  = green ring  (#4CAF50)
+  //   violation   = red ring    (#F44336)
+  //   untagged    = grey ring   (#9E9E9E)
+
+  private readonly CONFORMANCE_COLORS: Record<string, string> = {
+    CONFORMANT: '#4CAF50',
+    VIOLATION:  '#F44336',
+    UNTAGGED:   '#9E9E9E',
+  };
+
+  private readonly CONFORMANCE_TINT_COLORS: Record<string, string> = {
+    CONFORMANT: 'rgba(76,175,80,0.12)',
+    VIOLATION:  'rgba(244,67,54,0.12)',
+    UNTAGGED:   'rgba(158,158,158,0.10)',
+  };
+
+  private conformanceTier(nodeId: string): 'CONFORMANT' | 'VIOLATION' | 'UNTAGGED' | null {
+    if (!this.conformanceMap.has(nodeId)) return null;
+    const val = this.conformanceMap.get(nodeId);
+    if (val === true)  return 'CONFORMANT';
+    if (val === false) return 'VIOLATION';
+    return 'UNTAGGED';
+  }
+
+  private updateConformanceOverlay(): void {
+    if (!this.nodesGroup) return;
+
+    this.nodesGroup.selectAll('.conformance-ring').remove();
+
+    if (!this.conformanceOverlayEnabled || this.conformanceMap.size === 0) {
+      // Reset stroke back to defaults only when no other overlay is coloring it
+      if (!this.communityOverlayEnabled && !this.strengthOverlayEnabled) {
+        this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
+          .attr('stroke', d => this.selectedNode?.id === d.id ? '#667eea' : '#ffffff')
+          .attr('stroke-width', d => this.selectedNode?.id === d.id ? 4 : 2.5);
+      }
+      return;
+    }
+
+    // Color node strokes by conformance tier
+    this.nodesGroup.selectAll<SVGCircleElement, SimulationNode>('circle.graph-node')
+      .attr('stroke', (d: SimulationNode) => {
+        if (this.selectedNode?.id === d.id) return '#667eea';
+        const tier = this.conformanceTier(d.id);
+        return tier ? (this.CONFORMANCE_COLORS[tier] || '#ffffff') : '#ffffff';
+      })
+      .attr('stroke-width', (d: SimulationNode) => {
+        if (this.selectedNode?.id === d.id) return 4;
+        return this.conformanceMap.has(d.id) ? 4 : 2.5;
+      });
+
+    // Add a semi-transparent ring behind each node with a conformance entry
+    const nodesWithConformance = this.nodes.filter(n => this.conformanceMap.has(n.id));
+    for (const node of nodesWithConformance) {
+      const tier = this.conformanceTier(node.id)!;
+      const color = this.CONFORMANCE_COLORS[tier];
+      const tint  = this.CONFORMANCE_TINT_COLORS[tier];
+      const baseR = NODE_SIZES[node.type] || 10;
+      this.nodesGroup.insert('circle', 'circle')
+        .datum(node)
+        .classed('conformance-ring', true)
+        .attr('cx', node.x || 0)
+        .attr('cy', node.y || 0)
+        .attr('r', baseR + 7)
+        .attr('fill', tint)
+        .attr('stroke', color)
+        .attr('stroke-width', 1.5)
+        .attr('stroke-opacity', 0.7)
         .attr('pointer-events', 'none');
     }
   }

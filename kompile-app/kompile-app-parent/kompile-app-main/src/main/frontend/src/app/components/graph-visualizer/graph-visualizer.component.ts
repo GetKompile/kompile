@@ -211,6 +211,13 @@ import {
                   matTooltip="Toggle Community Detection Overlay">
             <mat-icon>{{communityLoading ? 'hourglass_empty' : 'bubble_chart'}}</mat-icon>
           </button>
+          <button mat-icon-button
+                  [color]="conformanceOverlayEnabled ? 'accent' : ''"
+                  (click)="toggleConformanceOverlay()"
+                  [disabled]="conformanceLoading"
+                  matTooltip="Toggle Ontology Conformance Overlay (green=conformant, red=violation, grey=untagged)">
+            <mat-icon>{{conformanceLoading ? 'hourglass_empty' : 'rule'}}</mat-icon>
+          </button>
           <button mat-icon-button (click)="toggleSidePanel()" matTooltip="Toggle Side Panel">
             <mat-icon>{{showSidePanel ? 'chevron_right' : 'chevron_left'}}</mat-icon>
           </button>
@@ -237,6 +244,8 @@ import {
             [provenanceOverlayEnabled]="provenanceOverlayEnabled"
             [communityOverlayEnabled]="communityOverlayEnabled"
             [communityMap]="communityMap"
+            [conformanceOverlayEnabled]="conformanceOverlayEnabled"
+            [conformanceMap]="conformanceMap"
             (nodeSelected)="onNodeSelected($event)"
             (nodeDoubleClicked)="onNodeDoubleClicked($event)"
             (edgeCreated)="onEdgeCreated($event)"
@@ -305,6 +314,67 @@ import {
                       Delete
                     </button>
                   </div>
+
+                  <!-- D2: Focal / Subgraph View -->
+                  <mat-expansion-panel class="focal-section">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>
+                        <mat-icon class="section-icon">center_focus_strong</mat-icon>
+                        Focal View
+                      </mat-panel-title>
+                    </mat-expansion-panel-header>
+                    <div class="focal-content">
+                      <p class="hint">Build a bounded subgraph centred on this node</p>
+
+                      <!-- Radius slider -->
+                      <div class="focal-control">
+                        <label>Radius (hops)</label>
+                        <mat-slider min="1" max="5" step="1" discrete showTickMarks style="flex:1">
+                          <input matSliderThumb [(ngModel)]="focalRadius">
+                        </mat-slider>
+                        <span>{{focalRadius}}</span>
+                      </div>
+
+                      <!-- Confidence floor slider -->
+                      <div class="focal-control">
+                        <label>Min. confidence</label>
+                        <mat-slider min="0" max="1" step="0.05" discrete style="flex:1">
+                          <input matSliderThumb [(ngModel)]="focalConfidenceFloor">
+                        </mat-slider>
+                        <span>{{focalConfidenceFloor | number:'1.2-2'}}</span>
+                      </div>
+
+                      <!-- Edge type chips -->
+                      <label style="font-size:12px;color:var(--text-secondary,#697386);margin-bottom:4px;display:block">Relation types (empty = all)</label>
+                      <div class="focal-chips">
+                        <mat-checkbox *ngFor="let type of allEdgeTypes"
+                          [checked]="focalEdgeTypes.includes(type)"
+                          (change)="toggleFocalEdgeType(type)">
+                          {{formatEdgeType(type)}}
+                        </mat-checkbox>
+                      </div>
+
+                      <!-- Actions -->
+                      <div class="focal-actions">
+                        <button mat-raised-button color="primary"
+                                (click)="buildFocalView()"
+                                [disabled]="focalViewLoading">
+                          <mat-icon>{{focalViewLoading ? 'hourglass_empty' : 'center_focus_strong'}}</mat-icon>
+                          {{focalViewActive ? 'Refresh Focus' : 'Focus View'}}
+                        </button>
+                        <button mat-stroked-button *ngIf="focalViewActive"
+                                (click)="exitFocalView()">
+                          <mat-icon>zoom_out_map</mat-icon>
+                          Exit Focus
+                        </button>
+                      </div>
+
+                      <div *ngIf="focalViewActive" class="focal-status">
+                        <mat-icon class="focal-active-icon">center_focus_strong</mat-icon>
+                        Focal view active — {{graphData?.nodes?.length || 0}} nodes, {{graphData?.links?.length || 0}} edges
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
 
                   <!-- Attribution Section -->
                   <mat-expansion-panel class="attribution-section">
@@ -1840,6 +1910,73 @@ import {
       margin-top: 8px;
     }
 
+    /* D2 Focal View */
+    .focal-section {
+      margin-top: 16px;
+    }
+
+    .focal-content {
+      padding: 8px 0;
+    }
+
+    .focal-control {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .focal-control label {
+      width: 110px;
+      font-size: 12px;
+      color: var(--text-secondary, #697386);
+      flex-shrink: 0;
+    }
+
+    .focal-control span:last-child {
+      width: 40px;
+      text-align: right;
+      font-weight: 500;
+      font-size: 12px;
+      color: var(--text-primary, #1a1f36);
+    }
+
+    .focal-chips {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 16px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .focal-chips mat-checkbox {
+      font-size: 12px;
+    }
+
+    .focal-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .focal-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+      font-size: 11px;
+      color: #667eea;
+      font-weight: 500;
+    }
+
+    .focal-active-icon {
+      font-size: 14px;
+      width: 14px;
+      height: 14px;
+      color: #667eea;
+    }
+
     .pred-entry {
       padding: 8px;
       background: var(--bg-surface, #fff);
@@ -1985,6 +2122,19 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   communityCount: number | null = null;
   communityMethod: 'louvain' | 'label_propagation' = 'louvain';
   communityResolution = 1.0;
+
+  // Conformance overlay state (P2)
+  conformanceOverlayEnabled = false;
+  conformanceMap: Map<string, boolean | null> = new Map();  // nodeId -> true=conformant, false=violation, null=untagged
+  conformanceLoading = false;
+
+  // Focal/subgraph view state (D2)
+  focalViewActive = false;
+  focalViewLoading = false;
+  focalRadius = 2;
+  focalConfidenceFloor = 0.0;
+  focalEdgeTypes: string[] = [];    // empty = all
+  private preFocalData: D3VisualizationData | null = null;  // cached full graph before focal switch
 
   // Phase-2 filter state
   allStrengthBands: StrengthBand[] = ['ESTABLISHED', 'HIGH', 'PROBABLE', 'SPECULATIVE', 'SUPPRESSED'];
@@ -3078,6 +3228,128 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
         this.snackBar.open('Community detection failed: ' + this.communityError, 'Dismiss', { duration: 3000 });
       }
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // P2: CONFORMANCE OVERLAY
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  toggleConformanceOverlay(): void {
+    if (this.conformanceOverlayEnabled) {
+      this.conformanceOverlayEnabled = false;
+      this.conformanceMap = new Map();
+      return;
+    }
+    if (!this.factSheetId) {
+      this.snackBar.open('Select a fact sheet first', 'Dismiss', { duration: 2000 });
+      return;
+    }
+    this.loadConformanceOverlay();
+  }
+
+  private loadConformanceOverlay(): void {
+    if (!this.factSheetId) return;
+    this.conformanceLoading = true;
+    const url = `/api/graph/${this.factSheetId}/conformance`;
+    this.http.get<any[]>(url).subscribe({
+      next: (entries) => {
+        const map = new Map<string, boolean | null>();
+        for (const entry of entries) {
+          // conformant is true | false | null (untagged)
+          map.set(entry.nodeId, entry.conformant as boolean | null);
+        }
+        this.conformanceMap = map;
+        this.conformanceOverlayEnabled = true;
+        this.conformanceLoading = false;
+
+        const conformantCount  = [...map.values()].filter(v => v === true).length;
+        const violationCount   = [...map.values()].filter(v => v === false).length;
+        const untaggedCount    = [...map.values()].filter(v => v === null).length;
+        this.snackBar.open(
+          `Conformance: ${conformantCount} ok, ${violationCount} violations, ${untaggedCount} untagged`,
+          'Dismiss', { duration: 4000 });
+      },
+      error: (err) => {
+        this.conformanceLoading = false;
+        const msg = err?.error?.error || err?.message || 'Conformance overlay failed';
+        this.snackBar.open('Conformance overlay failed: ' + msg, 'Dismiss', { duration: 3000 });
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // D2: FOCAL / SUBGRAPH VIEW
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  toggleFocalEdgeType(type: string): void {
+    const idx = this.focalEdgeTypes.indexOf(type);
+    if (idx >= 0) {
+      this.focalEdgeTypes.splice(idx, 1);
+    } else {
+      this.focalEdgeTypes.push(type);
+    }
+  }
+
+  buildFocalView(): void {
+    if (!this.selectedNode) {
+      this.snackBar.open('Select a node first to build a focal view', 'Dismiss', { duration: 2000 });
+      return;
+    }
+    if (!this.factSheetId) {
+      this.snackBar.open('Select a fact sheet first', 'Dismiss', { duration: 2000 });
+      return;
+    }
+
+    // Cache the full graph so we can restore it when exiting
+    if (!this.focalViewActive) {
+      this.preFocalData = this.graphData;
+    }
+
+    this.focalViewLoading = true;
+    const url = `/api/graph/${this.factSheetId}/subgraph`;
+    const body = {
+      seedNodeIds: [this.selectedNode.id],
+      radius: this.focalRadius,
+      edgeTypes: this.focalEdgeTypes.length > 0 ? this.focalEdgeTypes : [],
+      confidenceFloor: this.focalConfidenceFloor
+    };
+
+    this.http.post<any>(url, body).subscribe({
+      next: (result) => {
+        // Backend returns { nodes, links, edges, statistics }
+        // The frontend D3VisualizationData shape uses 'links' as the edge array
+        const focalData: D3VisualizationData = {
+          nodes: result.nodes || [],
+          links: result.links || result.edges || []
+        };
+        this.graphData = focalData;
+        this.focalViewActive = true;
+        this.focalViewLoading = false;
+
+        const stats = result.statistics || {};
+        this.snackBar.open(
+          `Focal view: ${stats.nodeCount || focalData.nodes.length} nodes, ` +
+          `${stats.edgeCount || focalData.links.length} edges (radius=${stats.radius || this.focalRadius})`,
+          'Dismiss', { duration: 3000 });
+      },
+      error: (err) => {
+        this.focalViewLoading = false;
+        const msg = err?.error?.error || err?.message || 'Subgraph build failed';
+        this.snackBar.open('Focal view failed: ' + msg, 'Dismiss', { duration: 3000 });
+      }
+    });
+  }
+
+  exitFocalView(): void {
+    this.focalViewActive = false;
+    // Restore the full graph from cache; if not available, reload from backend
+    if (this.preFocalData) {
+      this.graphData = this.preFocalData;
+      this.preFocalData = null;
+    } else {
+      this.loadGraph();
+    }
+    this.snackBar.open('Focal view exited', '', { duration: 1500 });
   }
 
   toggleStrengthBandFilter(band: StrengthBand): void {
