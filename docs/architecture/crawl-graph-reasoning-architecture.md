@@ -19,8 +19,9 @@
 - **Hybrid, not single-paradigm.** Soft logic (PSL/HL-MRF), discrete Bayesian inference, multi-entity
   Bayesian networks (MEBN), OWL-RL entailment, FOL/Datalog materialization, and learned embeddings
   are composed — each is evidence to the others, not a competing silo.
-- **Learning is continuous.** Rule weights, MEBN parameters, and entity embeddings are all *learned*
-  from the graph's own observed facts (self-training), and fact confidence *climbs* with corroboration.
+- **Learning is continuous and joint.** Rule weights, MEBN parameters, and entity embeddings are
+  **co-trained in one step against a single hybrid-reasoner-ranked consensus signal** (not three
+  disconnected learners), and fact confidence *climbs* with corroboration.
 
 ---
 
@@ -102,18 +103,36 @@ pseudocount (regularization) — MLE is the `W→0` limit.
 ONTOLOGY_CONFORMANCE → HEALTH / LEARNING_METRICS**. DERIVATION is the reasoning core
 (`IncrementalReasoningOrchestrator.doReground`):
 
+This is the **actual** per-cascade sequence (`doReground`, line refs are real):
+
 ```
-project graph → FactStore        (GraphProjector / KnowledgeGraphReasoningAdapter)
-  + build PSL program from facts  (buildProgramFromFactStore: soft propagation rules)
-  + load project *.psl rules
-  + inject ontology DOMAIN/RANGE rules   (OntologyToPslRuleCompiler, if an ontology is bound)
-  + reload learned rule weights          (cascadeWeightStore)
-  ──► HL-MRF MAP solve   (HlMrfMapInference → ScalarHlMrfInference | TensorHlMrfInference[ND4J/GPU])
-  ──► entail inferred facts              (EntailmentEngine → InferredFactStore)
-  ──► promote bands / accumulate Beta evidence   (FactPromotionTracker)
-  ──► self-train rule weights on observed facts  (StructuredPerceptronLearner)
-  ──► MEBN parameter learning every N cascades   (MebnWeightLearner)
+STEP 0   project live graph → FactStore           (GraphToFactStoreProjector.project)
+STEP 2/3 build PSL program from the FactStore      (buildProgramFromFactStore: one soft propagation
+                                                     rule per observed predicate, at pslDefaultRuleWeight)
+STEP 3b  load project-level *.psl rules
+STEP 3b-ont inject ontology DOMAIN/RANGE → PSL      (OntologyToPslRuleCompiler, if an ontology is bound)
+STEP 3c  reload persisted learned rule weights      (cascadeWeightStore — warm-start)
+STEP 4   HL-MRF MAP solve                           (HlMrfMapInference → Scalar | Tensor[ND4J/GPU])
+STEP 5   entail inferred facts → dual store         (EntailmentEngine → InferredFactStore)
+STEP 5c  promote bands + ACCUMULATE Beta evidence   (FactPromotionTracker, 6-arg sourceTrust path)
+─────────  JOINT TRAINING (HybridConsensusTrainer) — the part that was previously fragmented ──────
+  build a ReasoningGraph from the FactStore
+  (throttle) co-train embeddings INTO it            (EmbeddingLearner.learnInto → semantic signal)
+  rank entities with the HybridReasoner             (structural ⊕ semantic → ranked response)
+  derive ONE consensus signal                       (observed targets pulled toward the ranking)
+STEP 5b  co-train PSL weights on the consensus       (PslWeightLearningService.updateOnBatch)
+STEP 9   co-train MEBN params on the SAME consensus  (MebnWeightLearner.learn, throttled)
+STEP 6/7 rebuild JustificationIndex; TMS contradiction scan + retraction
 ```
+
+**What changed (and why it matters).** Until recently STEP 5b and STEP 9 trained *independently* —
+each re-derived its own observed targets — and embeddings were a wholly separate offline job, while
+the `HybridReasoner` was used only for explanation. Now, on the throttle, all three learned models
+co-train against **one** `HybridReasoner`-ranked consensus signal: embeddings feed the hybrid's
+semantic score, the hybrid ranks entities, and that single ranked signal supervises PSL *and* MEBN.
+Off-throttle cascades keep the cheap PSL warm-start (the hybrid rank is a full structural inference,
+so it is gated to the throttle). The blend weight is `KbConfig.hybridConsensusWeight`. The reusable
+primitive is `learning.HybridConsensusTrainer` (it can also run the full retrain→re-rank loop).
 
 The library offers several reasoning paradigms, composed rather than chosen:
 
@@ -164,11 +183,15 @@ set `semanticWeight=0` for pure structure, or blend for neuro-symbolic ranking.
 
 ## 5. Learning algorithms
 
+All weight/parameter learners are **composed by `HybridConsensusTrainer`** into one joint step (§4):
+on the throttle they co-train against a single `HybridReasoner`-ranked consensus signal rather than
+each on its own re-derived targets. PSL still runs a cheap warm-start every cascade.
+
 | Learner | Learns | Method | Where |
 |---|---|---|---|
-| `StructuredPerceptronLearner` | PSL rule weights | structured perceptron, **MAP** (L2/Gaussian prior), **band-aware per-rule prior means** (`kbRuleWeight{Established,High,Probable,Speculative}Mean`) | every cascade, self-trained on observed facts |
-| `PseudolikelihoodLearner` | PSL rule weights | pseudolikelihood gradient | alt. weight learner |
-| `MebnWeightLearner` | MEBN noisy-OR strengths | finite-difference gradient | every N=10 cascades |
+| `StructuredPerceptronLearner` (via `PslWeightLearningService`) | PSL rule weights | structured perceptron, **MAP** (L2/Gaussian prior), **band-aware per-rule prior means** (`kbRuleWeight{Established,High,Probable,Speculative}Mean`) | warm-start every cascade; co-trains on the hybrid consensus on the throttle |
+| `PseudolikelihoodLearner` | PSL rule weights | pseudolikelihood gradient | alternate weight learner |
+| `MebnWeightLearner` | MEBN noisy-OR strengths | finite-difference gradient | co-trained on the hybrid consensus, throttled (N=10) |
 | `FactPromotionTracker` | fact confidence | Beta-Bernoulli evidence accumulation → band climb | every cascade |
 | `Node2VecLearner` | entity embeddings | biased 2nd-order random walks + skip-gram negative sampling (SGNS) | KGE job |
 | `RotatELearner` | entity+relation embeddings | RotatE (complex rotation `e^{iθ}` per relation) | KGE job |
@@ -176,6 +199,38 @@ set `semanticWeight=0` for pure structure, or blend for neuro-symbolic ranking.
 
 All weight/parameter learning is **MAP-regularized** (priors, not just MLE) so it behaves at cold start
 and isn't dominated by a single noisy cascade.
+
+### 5.1 How a thing becomes a fact / a rule — with a probability
+
+**A FACT** carries a probability at every stage; it is never a bare boolean:
+
+1. **Extraction.** An edge is persisted with a Beta `Opinion` by `ExtractionConfidenceStamper`:
+   `Opinion.fromBetaEvidence(pos, neg, baseRate, W)` where `pos` = the source trust
+   (`SourceTrustResolver`, e.g. 0.60 for LLM extraction), `W` = the per-`BasisType` prior strength
+   (`KbConfig`). A first LLM extraction lands at `expectation ≈ 0.23` → **SPECULATIVE**; an email
+   structural fact at `≈ 0.91` → **ESTABLISHED**. The Opinion + `_basisType` ride in node/edge metadata.
+2. **Projection.** `STEP 0` projects the edge's confidence into the `FactStore` as a soft fact
+   `Fact.soft(value)` (or `Fact.observed` / hard when ≥ 0.99).
+3. **Inference.** The HL-MRF MAP solve (`STEP 4`) propagates soft-truth over the rules; `EntailmentEngine`
+   materializes the result into the `InferredFactStore` as an `InferredFact` with a `[0,1]` confidence.
+4. **Promotion.** `FactPromotionTracker` (`STEP 5c`) folds each cascade's evidence into the running Beta
+   posterior (`evidencePos/evidenceNeg`) and re-projects it onto a `StrengthBand`. **This is the climb**:
+   ~8 corroborations move a fact SPECULATIVE → HIGH; the band is the human-facing rank.
+5. **Pruning.** `OpinionPruner` drops only INFERRED/AMBIGUOUS facts whose `Opinion` falls below the
+   `PrunePolicy` thresholds. Survivors are what the UI/agents see.
+
+**A RULE** also carries a weight (its strength), learned the same way:
+
+1. **Birth.** `buildProgramFromFactStore` emits one soft propagation rule per observed predicate
+   (`w: pred(?X) -> derived_pred(?X)`) at `pslDefaultRuleWeight`; ontology DOMAIN/RANGE axioms add
+   typed rules (`OntologyToPslRuleCompiler`); `*.psl` files add hand-authored rules.
+2. **Weighting.** The joint trainer (`STEP 5b`/§4) moves each rule weight toward explaining the
+   hybrid-ranked consensus, **MAP-regularized toward a band-aware prior mean** so an ESTABLISHED-band
+   rule isn't shrunk like a SPECULATIVE one. Weights persist (`cascadeWeightStore`) and warm-start the
+   next cascade — so a rule's strength *accumulates* across cascades, exactly like a fact's confidence.
+
+The symmetry is the design: facts and rules are both soft, both start from a calibrated prior, and both
+climb with evidence — facts via Beta accumulation, rules via MAP weight learning on the hybrid consensus.
 
 ---
 
@@ -260,7 +315,8 @@ documents ─▶ crawl (load/convert/route/prep/chunk/extract) ─▶ entities+e
  graph store (asset) ──project──▶ ReasoningGraph ──▶ ENRICHMENT (doReground):
                                                        PSL/HL-MRF MAP ⊕ ontology rules ⊕ embeddings-as-evidence
                                                        → entail facts (dual store) → climb bands (Beta)
-                                                       → self-train rule weights → MEBN learn → prune
+                                                       → JOINT train: hybrid-rank → consensus →
+                                                         co-train PSL + MEBN + embeddings → prune
    │                                                                     │
    ▼                                                                     ▼
  graph-RAG retrieval (vector ⊕ PPR ⊕ hybrid)              HybridReasoner ranking (structural ⊕ semantic)
