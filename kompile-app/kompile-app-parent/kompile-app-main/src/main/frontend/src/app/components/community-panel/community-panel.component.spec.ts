@@ -197,4 +197,106 @@ describe('CommunityPanelComponent', () => {
     component.selectCommunity(0);
     expect(component.selectedCommunityId).toBeNull();
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Density caveat — minimum-density guard (Task 3)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  it('densityCaveat should be set when nodeCount is below COMMUNITY_MIN_NODES (20)', () => {
+    component.factSheetId = FACT_SHEET_ID;
+
+    // Sparse response: only 3 nodes
+    const sparseResponse = {
+      communityCount: 2,
+      modularity: 0.30,
+      nodeCount: 3,
+      nodeToCommunit: { node1: 0, node2: 0, node3: 1 },
+      communities: { '0': ['node1', 'node2'], '1': ['node3'] }
+    };
+
+    component.detect();
+    const req = httpMock.expectOne((r) =>
+      r.url.includes(`/graph/${FACT_SHEET_ID}/communities`) && !r.url.includes('/summary')
+    );
+    req.flush(sparseResponse);
+
+    expect(component.densityCaveat).not.toBeNull();
+    expect(component.densityCaveat).toContain('denser graph');
+  });
+
+  it('densityCaveat should be set when every node is its own community (degenerate)', () => {
+    component.factSheetId = FACT_SHEET_ID;
+
+    // Every node its own community = degenerate
+    const degenerateResponse = {
+      communityCount: 25,
+      modularity: 0.01,
+      nodeCount: 25,
+      nodeToCommunit: {},
+      communities: {}
+    };
+
+    component.detect();
+    const req = httpMock.expectOne((r) =>
+      r.url.includes(`/graph/${FACT_SHEET_ID}/communities`) && !r.url.includes('/summary')
+    );
+    req.flush(degenerateResponse);
+
+    expect(component.densityCaveat).not.toBeNull();
+    expect(component.densityCaveat).toContain('degenerate');
+  });
+
+  it('densityCaveat should be set when modularity is below threshold (degenerate structure)', () => {
+    component.factSheetId = FACT_SHEET_ID;
+
+    // Enough nodes but near-zero modularity = no real structure
+    const lowModularityResponse = {
+      communityCount: 3,
+      modularity: 0.02,
+      nodeCount: 50,
+      nodeToCommunit: {},
+      communities: { '0': [], '1': [], '2': [] }
+    };
+
+    component.detect();
+    const req = httpMock.expectOne((r) =>
+      r.url.includes(`/graph/${FACT_SHEET_ID}/communities`) && !r.url.includes('/summary')
+    );
+    req.flush(lowModularityResponse);
+
+    expect(component.densityCaveat).not.toBeNull();
+    expect(component.densityCaveat).toContain('degenerate');
+  });
+
+  it('densityCaveat should be null for a healthy dense-graph result', () => {
+    component.factSheetId = FACT_SHEET_ID;
+
+    // 50 nodes, 5 communities, reasonable modularity
+    const healthyResponse = {
+      communityCount: 5,
+      modularity: 0.45,
+      nodeCount: 50,
+      nodeToCommunit: {},
+      communities: { '0': [], '1': [], '2': [], '3': [], '4': [] }
+    };
+
+    component.detect();
+    const req = httpMock.expectOne((r) =>
+      r.url.includes(`/graph/${FACT_SHEET_ID}/communities`) && !r.url.includes('/summary')
+    );
+    req.flush(healthyResponse);
+
+    expect(component.densityCaveat).toBeNull();
+  });
+
+  it('densityCaveat should be cleared when factSheetId changes', () => {
+    component.densityCaveat = 'Some prior warning';
+
+    component.factSheetId = FACT_SHEET_ID;
+    component.ngOnChanges({
+      factSheetId: new SimpleChange(null, FACT_SHEET_ID, false)
+    });
+
+    expect(component.densityCaveat).toBeNull();
+  });
 });

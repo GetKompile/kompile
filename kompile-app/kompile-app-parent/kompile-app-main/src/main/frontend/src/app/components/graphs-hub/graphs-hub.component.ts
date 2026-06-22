@@ -117,6 +117,13 @@ export class GraphsHubComponent implements OnInit, OnDestroy, OnChanges {
   /** Node id handed to the Causal Attribution panel when "Use in Causal Attribution" is clicked. */
   attributionSeedNodeId: string | null = null;
 
+  /**
+   * D1 cold-start banner: true when a fact sheet is active but has no facts (nothing crawled yet).
+   * Dismissed locally; reappears if the user switches to another empty sheet.
+   */
+  showColdStartBanner = false;
+  coldStartBannerDismissed = false;
+
   private destroy$ = new Subject<void>();
 
   constructor(
@@ -130,7 +137,16 @@ export class GraphsHubComponent implements OnInit, OnDestroy, OnChanges {
       .subscribe(sheet => {
         this.activeFactSheet = sheet;
         this.activeFactSheetId = sheet ? sheet.id : null;
+        // Re-evaluate cold-start banner each time the active sheet changes.
+        // Reset dismissal so users see the banner again for a different empty sheet.
+        this.coldStartBannerDismissed = false;
+        this.showColdStartBanner = sheet != null && (sheet.factCount ?? 0) === 0;
       });
+  }
+
+  dismissColdStartBanner(): void {
+    this.showColdStartBanner = false;
+    this.coldStartBannerDismissed = true;
   }
 
   ngOnChanges(changes: SimpleChanges): void {

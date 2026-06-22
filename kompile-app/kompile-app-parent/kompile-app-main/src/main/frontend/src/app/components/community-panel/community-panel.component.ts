@@ -46,6 +46,18 @@ interface CommunitySummaryResult {
   memberCount: number;
 }
 
+/**
+ * Minimum node count below which community detection is likely to produce
+ * degenerate or meaningless clusters. Shown as a pre-run caveat (not a hard block).
+ */
+const COMMUNITY_MIN_NODES = 20;
+
+/**
+ * Modularity below this threshold, combined with every node being its own
+ * community, signals a degenerate result.
+ */
+const COMMUNITY_DEGENERATE_MODULARITY = 0.05;
+
 @Component({
   selector: 'app-community-panel',
   standalone: true,
@@ -107,6 +119,12 @@ interface CommunitySummaryResult {
       <div *ngIf="error" class="error-banner">
         <mat-icon>error_outline</mat-icon>
         <span>{{error}}</span>
+      </div>
+
+      <!-- Density caveat: sparse / degenerate warning (non-blocking) -->
+      <div *ngIf="densityCaveat" class="density-caveat">
+        <mat-icon class="caveat-icon">warning</mat-icon>
+        <span>{{densityCaveat}}</span>
       </div>
 
       <!-- Results -->
@@ -502,6 +520,30 @@ interface CommunitySummaryResult {
       height: 16px;
       flex-shrink: 0;
     }
+
+    /* Density / degenerate caveat (non-blocking warning) */
+    .density-caveat {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 10px 12px;
+      background: rgba(255, 193, 7, 0.08);
+      border: 1px solid rgba(255, 193, 7, 0.35);
+      border-left: 3px solid #FFC107;
+      border-radius: 6px;
+      color: var(--text-primary, #1a1f36);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .caveat-icon {
+      font-size: 17px;
+      width: 17px;
+      height: 17px;
+      color: #F9A825;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
   `]
 })
 export class CommunityPanelComponent extends BaseService implements OnChanges {
@@ -516,6 +558,13 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
   selectedCommunityId: number | null = null;
 
   communityIds: number[] = [];
+
+  /**
+   * Density caveat shown before running detection when a prior result reveals
+   * a sparse graph, or shown after a degenerate result.
+   * Never blocks the action — it's a warning only.
+   */
+  densityCaveat: string | null = null;
 
   /** communityId → summary text (populated lazily on Summarize click) */
   summaries: Record<number, string> = {};
@@ -545,6 +594,7 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
       this.summaries = {};
       this.summaryError = {};
       this.summarizingId = null;
+      this.densityCaveat = null;
     }
   }
 
@@ -558,6 +608,7 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
     this.summaries = {};
     this.summaryError = {};
     this.summarizingId = null;
+    this.densityCaveat = null;
 
     const url = `${this.backendUrl}/graph/${this.factSheetId}/communities` +
       `?method=${this.selectedMethod}&resolution=${this.resolution}&maxNodes=500`;
@@ -569,6 +620,7 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
           { length: res.communityCount },
           (_, i) => i
         );
+        this.densityCaveat = this.evaluateDensityCaveat(res);
         this.loading = false;
       },
       error: (err) => {
@@ -576,6 +628,32 @@ export class CommunityPanelComponent extends BaseService implements OnChanges {
         this.loading = false;
       }
     });
+  }
+
+  /**
+   * Returns a human-readable caveat string if the result looks degenerate or
+   * the graph is too sparse for meaningful communities, or null if results
+   * look reasonable.
+   *
+   * Degenerate conditions checked:
+   *  • nodeCount < COMMUNITY_MIN_NODES (sparse graph overall)
+   *  • communityCount === nodeCount (every node its own singleton community)
+   *  • modularity < COMMUNITY_DEGENERATE_MODULARITY (no real structure found)
+   */
+  private evaluateDensityCaveat(res: CommunityResult): string | null {
+    if (res.nodeCount < COMMUNITY_MIN_NODES) {
+      return `Community detection needs a denser graph — only ${res.nodeCount} nodes found` +
+        ` (${COMMUNITY_MIN_NODES}+ recommended). Add more sources for meaningful communities.`;
+    }
+    const isDegenerate =
+      (res.communityCount >= res.nodeCount) ||
+      (res.modularity < COMMUNITY_DEGENERATE_MODULARITY);
+    if (isDegenerate) {
+      return `Result is degenerate (modularity Q=${res.modularity.toFixed(3)}, ` +
+        `${res.communityCount} communities for ${res.nodeCount} nodes) — ` +
+        `the graph may be too sparse or disconnected. Add more sources for meaningful communities.`;
+    }
+    return null;
   }
 
   selectCommunity(cid: number): void {

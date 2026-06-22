@@ -9,6 +9,23 @@
     <p class="subtitle">Manage knowledge graphs as assets — the named-graph registry, health metrics over time, and maintenance.</p>
   </div>
 
+  <!-- D1 Cold-start banner: shown when a fact sheet is active but has no facts yet -->
+  <div *ngIf="showColdStartBanner" class="cold-start-banner" role="alert">
+    <mat-icon class="banner-icon">info</mat-icon>
+    <div class="banner-body">
+      <span class="banner-title">This graph is empty — here's how to populate it:</span>
+      <ol class="banner-steps">
+        <li><strong>Build graph (crawl)</strong> — add sources and run a crawl to extract nodes &amp; edges</li>
+        <li><strong>Bind / derive an ontology</strong> — go to the Ontology tab to give the graph a schema</li>
+        <li><strong>Run grounding cascade</strong> — use the Grounding tab to propagate facts through the KB</li>
+        <li><strong>Learn weights</strong> — use the Weights tab to train confidence scores from evidence</li>
+      </ol>
+    </div>
+    <button class="banner-dismiss" (click)="dismissColdStartBanner()" aria-label="Dismiss">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
   <div class="sub-tabs">
     <button class="sub-tab" [class.active]="activeSubTab === 'visualizer'" (click)="selectSubTab('visualizer')">
       <mat-icon class="tab-icon">scatter_plot</mat-icon>

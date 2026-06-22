@@ -30,6 +30,7 @@ import {
   NgZone
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { MatIconModule } from '@angular/material/icon';
 import * as d3 from 'd3';
 import {
   D3Node,
@@ -62,10 +63,15 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
 @Component({
   selector: 'app-graph-canvas',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, MatIconModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="graph-canvas-container" #container>
+      <!-- Empty-state overlay: shown after data loads but graph has 0 nodes -->
+      <div *ngIf="showEmptyState" class="canvas-empty-state">
+        <mat-icon class="empty-icon">device_hub</mat-icon>
+        <p class="empty-message">No nodes yet — run a crawl or build the graph to populate it.</p>
+      </div>
       <svg #svgElement class="graph-svg">
         <defs>
           <!-- Arrow markers for directed edges -->
@@ -201,6 +207,35 @@ interface SimulationLink extends Omit<D3Link, 'source' | 'target'> {
     .graph-svg {
       width: 100%;
       height: 100%;
+    }
+
+    /* Empty-state overlay shown when graph loaded but has 0 nodes */
+    .canvas-empty-state {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .empty-icon {
+      font-size: 48px;
+      width: 48px;
+      height: 48px;
+      color: var(--text-tertiary, #c0c7d0);
+    }
+
+    .empty-message {
+      margin: 0;
+      font-size: 14px;
+      color: var(--text-tertiary, #9aa5b4);
+      text-align: center;
+      max-width: 320px;
+      line-height: 1.5;
     }
 
     .zoom-controls {
@@ -396,6 +431,9 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   nodeTypes: NodeLevel[] = ['SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT'];
   edgeTypes: EdgeType[] = ['HIERARCHICAL', 'EMBEDDING_SIMILARITY', 'SHARED_ENTITY', 'USER_DEFINED', 'CITATION', 'TEMPORAL', 'CROSS_SOURCE'];
 
+  /** True after data has been received but the node list resolved to 0 entries. */
+  showEmptyState = false;
+
   private svg!: d3.Selection<SVGSVGElement, unknown, null, undefined>;
   private zoomContainer!: d3.Selection<SVGGElement, unknown, null, undefined>;
   private linksGroup!: d3.Selection<SVGGElement, unknown, null, undefined>;
@@ -561,6 +599,18 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     }));
 
     this.links = this.data.links.map(l => ({ ...l }));
+
+    // Show empty-state overlay when there are no nodes to render.
+    this.showEmptyState = this.nodes.length === 0;
+    this.cdr.markForCheck();
+
+    if (this.nodes.length === 0) {
+      // Clear any stale SVG elements from a previous load and skip simulation.
+      this.linksGroup.selectAll('*').remove();
+      this.nodesGroup.selectAll('*').remove();
+      this.labelsGroup.selectAll('*').remove();
+      return;
+    }
 
     // Update simulation data
     this.simulation.nodes(this.nodes);

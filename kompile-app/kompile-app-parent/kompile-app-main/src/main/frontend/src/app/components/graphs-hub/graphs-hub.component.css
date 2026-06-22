@@ -68,3 +68,74 @@
   min-height: 480px;
   overflow: auto;
 }
+
+/* D1 Cold-start lifecycle banner */
+.cold-start-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: var(--bg-info, #e8f4fd);
+  border: 1px solid var(--border-info, #90caf9);
+  border-left: 4px solid var(--primary-color, #3f51b5);
+  border-radius: 8px;
+  color: var(--text-primary, #1a1f36);
+  font-size: 13px;
+}
+
+.banner-icon {
+  color: var(--primary-color, #3f51b5);
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.banner-body {
+  flex: 1;
+}
+
+.banner-title {
+  font-weight: 600;
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-primary, #1a1f36);
+}
+
+.banner-steps {
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.7;
+  color: var(--text-secondary, #697386);
+}
+
+.banner-steps li {
+  margin-bottom: 2px;
+}
+
+.banner-dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary, #9aa5b4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.banner-dismiss:hover {
+  color: var(--text-secondary, #697386);
+  background: var(--bg-surface-elevated, rgba(0,0,0,0.05));
+}
+
+.banner-dismiss mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
