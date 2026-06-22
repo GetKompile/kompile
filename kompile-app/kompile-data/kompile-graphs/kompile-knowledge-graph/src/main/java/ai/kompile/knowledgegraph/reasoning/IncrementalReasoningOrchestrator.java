@@ -23,6 +23,8 @@ import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
 import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
+import ai.kompile.graph.reasoning.learning.StructuredPerceptronLearner;
+import jakarta.annotation.PostConstruct;
 import ai.kompile.graph.reasoning.learning.WeightStore;
 import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
@@ -184,6 +186,19 @@ public class IncrementalReasoningOrchestrator {
     double defaultRuleWeight;
 
     /**
+     * MAP (Gaussian-prior / L2) regularization for PSL weight learning. {@code weightPriorStrength}
+     * is lambda (0 = pure MLE, the un-regularized path); learned weights are shrunk toward
+     * {@code weightPriorMean}. A positive prior is the principled "start near zero, let the data
+     * justify larger weights". The active value is set in application.properties; the @Value
+     * default (0.0) keeps plain unit-test contexts at pure MLE so existing behaviour is unchanged.
+     */
+    @Value("${kompile.kb.psl.weightPriorStrength:0.0}")
+    double pslWeightPriorStrength;
+
+    @Value("${kompile.kb.psl.weightPriorMean:0.1}")
+    double pslWeightPriorMean;
+
+    /**
      * Spring-injected file-backed weight store for PSL weight persistence.
      * Null in plain-Java test contexts — PSL training step is skipped.
      */
@@ -201,9 +216,28 @@ public class IncrementalReasoningOrchestrator {
 
     /**
      * PSL weight learner — reused across cascades (stateless, cheap to construct).
-     * Uses 1 mini-batch step per cascade (cheap; won't destabilize inference).
+     * Uses 1 mini-batch step per cascade (cheap; won't destabilize inference). Initialised to a
+     * plain (un-regularized) learner for non-Spring contexts; {@link #initPslWeightLearner()}
+     * replaces it with a MAP-regularized learner once the @Value prior config is injected.
      */
-    private final PslWeightLearningService pslWeightLearner = new PslWeightLearningService();
+    private PslWeightLearningService pslWeightLearner = new PslWeightLearningService();
+
+    /**
+     * Rebuild the PSL weight learner with the injected MAP (Gaussian-prior) config. Field
+     * initializers run before @Value injection, so the prior is applied here. When
+     * {@code weightPriorStrength <= 0} the learner stays pure MLE (no behaviour change), so
+     * plain-Java tests and an unconfigured deployment behave exactly as before.
+     */
+    @PostConstruct
+    void initPslWeightLearner() {
+        if (pslWeightPriorStrength > 0.0) {
+            // Mirror the default learner config (rate 0.1, tol 1e-4, full-batch, seed 1234) and
+            // add the MAP prior so cascade weight-learning is regularized (MAP, not raw MLE).
+            this.pslWeightLearner = new PslWeightLearningService(
+                    new StructuredPerceptronLearner(0.1, 1e-4, 0, 1234L,
+                            pslWeightPriorStrength, pslWeightPriorMean), 50);
+        }
+    }
 
     /**
      * Per-factSheet cascade counters — used to throttle MEBN learning (which runs
