@@ -21,6 +21,7 @@ import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.psl.PslProgram;
 import ai.kompile.knowledgegraph.confidence.KbConfig;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -203,5 +204,93 @@ class BandAwareWeightPriorTest {
                 "Scalar 0.1 must project to SPECULATIVE");
         assertEquals(StrengthBand.HIGH,          highBand,
                 "Scalar 0.75 must project to HIGH");
+    }
+
+    // ── Test 5 (B1): Band prior means come from KbConfig, not hardcoded literals ──
+
+    @Test
+    @DisplayName("B1: computePerRulePriorMeans reads from KbConfig fields (not hardcoded literals)")
+    void computePerRulePriorMeans_readsFromKbConfig() {
+        // Build a FactStore with one ESTABLISHED fact and one SPECULATIVE fact
+        long fsId5 = 80L;
+        groundingService.assertFact(fsId5, Fact.observed("knows(a, b)", "s1"));   // value=1.0 → ESTABLISHED
+        groundingService.assertFact(fsId5, Fact.soft("maybeX(c)", 0.1, "s2"));     // value=0.1 → SPECULATIVE
+
+        ai.kompile.knowledgegraph.grounding.FactSheetKbState state = groundingService.getState(fsId5);
+        FactStore factStore = state.factStore();
+        PslProgram program = IncrementalReasoningOrchestrator.buildProgramFromFactStore(factStore, 0.8);
+
+        // Default config: ESTABLISHED=0.9, SPECULATIVE=0.15
+        KbConfig defaultCfg = KbConfig.defaults();
+        assertEquals(0.9,  defaultCfg.getRuleWeightEstablishedMean(), 1e-9,
+                "Default ruleWeightEstablishedMean must be 0.9");
+        assertEquals(0.7,  defaultCfg.getRuleWeightHighMean(), 1e-9,
+                "Default ruleWeightHighMean must be 0.7");
+        assertEquals(0.4,  defaultCfg.getRuleWeightProbableMean(), 1e-9,
+                "Default ruleWeightProbableMean must be 0.4");
+        assertEquals(0.15, defaultCfg.getRuleWeightSpeculativeMean(), 1e-9,
+                "Default ruleWeightSpeculativeMean must be 0.15");
+
+        // Compute per-rule means using the default config
+        double[] means = orchestrator.computePerRulePriorMeans(program, factStore);
+
+        // Verify that the ESTABLISHED atom ("knows") gets exactly the configured 0.9
+        // and the SPECULATIVE atom ("maybeX") gets exactly the configured 0.15
+        double knowsMean = Double.NaN;
+        double maybeXMean = Double.NaN;
+        for (int i = 0; i < program.rules().size(); i++) {
+            String ruleStr = program.rules().get(i).toString();
+            if (ruleStr.contains("knows(")) {
+                knowsMean = means[i];
+            } else if (ruleStr.contains("maybeX(")) {
+                maybeXMean = means[i];
+            }
+        }
+
+        assertFalse(Double.isNaN(knowsMean),
+                "Must find a rule for 'knows' predicate; rules: "
+                        + program.rules().stream().map(Object::toString).toList());
+        assertFalse(Double.isNaN(maybeXMean),
+                "Must find a rule for 'maybeX' predicate; rules: "
+                        + program.rules().stream().map(Object::toString).toList());
+
+        assertEquals(defaultCfg.getRuleWeightEstablishedMean(), knowsMean, 1e-9,
+                "ESTABLISHED atom rule prior mean must equal KbConfig.ruleWeightEstablishedMean ("
+                        + defaultCfg.getRuleWeightEstablishedMean() + ")");
+        assertEquals(defaultCfg.getRuleWeightSpeculativeMean(), maybeXMean, 1e-9,
+                "SPECULATIVE atom rule prior mean must equal KbConfig.ruleWeightSpeculativeMean ("
+                        + defaultCfg.getRuleWeightSpeculativeMean() + ")");
+    }
+
+    @Test
+    @DisplayName("B1: toMap() and from() round-trip the four band prior mean fields")
+    void kbConfig_bandPriorMeans_roundTripViaMapAndFrom() throws Exception {
+        // Verify toMap() emits the four keys and from() parses them back
+        KbConfig cfg = KbConfig.defaults();
+        java.util.Map<String, Object> map = cfg.toMap();
+
+        assertTrue(map.containsKey("kbRuleWeightEstablishedMean"),
+                "toMap() must contain kbRuleWeightEstablishedMean");
+        assertTrue(map.containsKey("kbRuleWeightHighMean"),
+                "toMap() must contain kbRuleWeightHighMean");
+        assertTrue(map.containsKey("kbRuleWeightProbableMean"),
+                "toMap() must contain kbRuleWeightProbableMean");
+        assertTrue(map.containsKey("kbRuleWeightSpeculativeMean"),
+                "toMap() must contain kbRuleWeightSpeculativeMean");
+
+        assertEquals(0.9,  (double) map.get("kbRuleWeightEstablishedMean"), 1e-9);
+        assertEquals(0.7,  (double) map.get("kbRuleWeightHighMean"), 1e-9);
+        assertEquals(0.4,  (double) map.get("kbRuleWeightProbableMean"), 1e-9);
+        assertEquals(0.15, (double) map.get("kbRuleWeightSpeculativeMean"), 1e-9);
+
+        // Round-trip: serialize to JSON via ObjectMapper and parse via from()
+        ObjectMapper om = new ObjectMapper();
+        com.fasterxml.jackson.databind.JsonNode root = om.valueToTree(map);
+        KbConfig parsed = KbConfig.from(root);
+
+        assertEquals(0.9,  parsed.getRuleWeightEstablishedMean(), 1e-9);
+        assertEquals(0.7,  parsed.getRuleWeightHighMean(), 1e-9);
+        assertEquals(0.4,  parsed.getRuleWeightProbableMean(), 1e-9);
+        assertEquals(0.15, parsed.getRuleWeightSpeculativeMean(), 1e-9);
     }
 }

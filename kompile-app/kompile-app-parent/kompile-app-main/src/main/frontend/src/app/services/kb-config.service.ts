@@ -61,6 +61,12 @@ export interface KbConfig {
   kbOntologyGuidedExtractionEnabled: boolean;
   kbOntologyRuleWeight: number;
 
+  // Band-aware MAP regularization prior means (per StrengthBand)
+  kbRuleWeightEstablishedMean: number;
+  kbRuleWeightHighMean: number;
+  kbRuleWeightProbableMean: number;
+  kbRuleWeightSpeculativeMean: number;
+
   // Personal email domains
   kbPersonalEmailDomains: string[];
 }
@@ -115,6 +121,10 @@ export class KbConfigService {
       kbPrunePolicyPruneSuppressedBand: true,
       kbOntologyGuidedExtractionEnabled: true,
       kbOntologyRuleWeight: 0.8,
+      kbRuleWeightEstablishedMean: 0.9,
+      kbRuleWeightHighMean: 0.7,
+      kbRuleWeightProbableMean: 0.4,
+      kbRuleWeightSpeculativeMean: 0.15,
       kbPersonalEmailDomains: ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com']
     };
   }

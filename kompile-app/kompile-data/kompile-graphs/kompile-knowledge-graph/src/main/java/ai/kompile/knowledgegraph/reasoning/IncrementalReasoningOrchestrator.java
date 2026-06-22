@@ -29,6 +29,7 @@ import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
 import ai.kompile.graph.reasoning.learning.StructuredPerceptronLearner;
 import ai.kompile.knowledgegraph.confidence.KbConfig;
 import ai.kompile.knowledgegraph.confidence.KbConfigManager;
+import ai.kompile.knowledgegraph.confidence.SourceTrustResolver;
 import jakarta.annotation.PostConstruct;
 import ai.kompile.graph.reasoning.learning.WeightStore;
 import ai.kompile.graph.reasoning.mebn.MTheory;
@@ -198,6 +199,18 @@ public class IncrementalReasoningOrchestrator {
     private KbConfig kbCfg() {
         return kbConfigManager != null ? kbConfigManager.current() : KbConfig.defaults();
     }
+
+    /**
+     * Optional: source-trust resolver for the Beta-evidence path.
+     * When non-null (Spring production context), {@link #doReground} passes
+     * {@code sourceTrustResolver.trustFor("PSL_INFERENCE")} as the {@code sourceTrust}
+     * argument to the 6-arg {@link FactPromotionTracker#checkPromotion} overload so that
+     * repeated PSL-inference corroborations accumulate evidence and climb bands correctly.
+     * When null (plain-Java tests), falls back to {@link KbConfig#getTrustDefault()}.
+     */
+    @Nullable
+    @Autowired(required = false)
+    SourceTrustResolver sourceTrustResolver;
 
     /**
      * Spring-injected file-backed weight store for PSL weight persistence.
@@ -580,9 +593,17 @@ public class IncrementalReasoningOrchestrator {
                         factSheetId, atomKey, vBefore, newValue, cBefore, newValue, runId);
             }
 
-            // STEP 5c: Fact promotion tracking
+            // STEP 5c: Fact promotion tracking (6-arg Beta-evidence path)
+            // The 6-arg overload accumulates sourceTrust into evidencePos so that repeated
+            // PSL-inference corroborations climb bands over time (A2 fix — slow-climb).
+            // Source trust for PSL-inferred facts: resolved from SourceTrustResolver
+            // ("PSL_INFERENCE" falls to the default branch → getTrustDefault() = 0.50).
+            // Falls back to KbConfig.getTrustDefault() when no resolver is wired (tests).
             if (promotionTracker != null) {
-                promotionTracker.checkPromotion(factSheetId, atomKey, vBefore, newValue, runId);
+                double sourceTrust = sourceTrustResolver != null
+                        ? sourceTrustResolver.trustFor("PSL_INFERENCE")
+                        : kbCfg().getTrustDefault();
+                promotionTracker.checkPromotion(factSheetId, atomKey, vBefore, newValue, runId, sourceTrust);
             }
         }
 
@@ -902,8 +923,8 @@ public class IncrementalReasoningOrchestrator {
     }
 
     /**
-     * Overload used by the instance path so the configurable {@link #defaultRuleWeight} can
-     * be passed in without breaking the static test API.
+     * Overload used by the instance path so the configurable rule weight (from
+     * {@link KbConfig#getPslDefaultRuleWeight()}) can be passed in without breaking the static test API.
      */
     public static PslProgram buildProgramFromFactStore(FactStore factStore, double ruleWeight) {
         PslProgram program = new PslProgram();
@@ -1066,34 +1087,23 @@ public class IncrementalReasoningOrchestrator {
     /**
      * Map a {@link StrengthBand} to the configured prior mean for that band.
      *
-     * <p>Reads per-band prior means from {@link KbConfig} via {@link #kbCfg()}. The lead must
-     * add the following fields to {@link KbConfig} (with these defaults and ranges):
+     * <p>Reads per-band prior means from {@link KbConfig} via {@link #kbCfg()}.
+     * All four means are now config-driven (no hard-coded literals):
      * <ul>
-     *   <li>{@code ruleWeightEstablishedMean} — default 0.9, range [0, 100]</li>
-     *   <li>{@code ruleWeightHighMean}        — default 0.7, range [0, 100]</li>
-     *   <li>{@code ruleWeightProbableMean}    — default 0.4, range [0, 100]</li>
-     *   <li>{@code ruleWeightSpeculativeMean} — default 0.1, range [0, 100]</li>
+     *   <li>ESTABLISHED → {@code kbRuleWeightEstablishedMean} (default 0.9)</li>
+     *   <li>HIGH        → {@code kbRuleWeightHighMean}        (default 0.7)</li>
+     *   <li>PROBABLE    → {@code kbRuleWeightProbableMean}    (default 0.4)</li>
+     *   <li>SPECULATIVE/SUPPRESSED → {@code kbRuleWeightSpeculativeMean} (default 0.15)</li>
      * </ul>
-     * Until those fields are wired, this method uses computed defaults scaled around the
-     * existing scalar {@code pslWeightPriorMean} so behavior degrades gracefully to the
-     * old path when the fields are absent.
      */
     private double bandPriorMean(StrengthBand band, KbConfig c) {
-        // NOTE: when the lead adds ruleWeightEstablishedMean / ruleWeightHighMean /
-        // ruleWeightProbableMean / ruleWeightSpeculativeMean to KbConfig, replace the
-        // computed defaults below with direct field references:
-        //   case ESTABLISHED: return c.ruleWeightEstablishedMean;
-        //   ...
-        // Until then, we derive sensible defaults from the existing scalar mean so the
-        // code compiles and produces correct ordering: ESTABLISHED > HIGH > PROBABLE > SPECULATIVE.
-        double scalar = c.getPslWeightPriorMean();
         switch (band) {
-            case ESTABLISHED: return Math.max(scalar, 0.9);   // ~top of non-hard range
-            case HIGH:        return Math.max(scalar, 0.7);   // clearly above default
-            case PROBABLE:    return Math.max(scalar, 0.4);   // moderate
+            case ESTABLISHED: return c.getRuleWeightEstablishedMean();
+            case HIGH:        return c.getRuleWeightHighMean();
+            case PROBABLE:    return c.getRuleWeightProbableMean();
             case SPECULATIVE:
             case SUPPRESSED:
-            default:          return scalar;                   // stays at the scalar mean
+            default:          return c.getRuleWeightSpeculativeMean();
         }
     }
 

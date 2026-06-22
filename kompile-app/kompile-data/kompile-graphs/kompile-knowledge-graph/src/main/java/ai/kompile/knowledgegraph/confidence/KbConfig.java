@@ -94,6 +94,27 @@ public class KbConfig {
     /** P6: always prune SUPPRESSED-band edges. */
     private boolean prunePolicyPruneSuppressedBand = true;
 
+    // ── Band-aware MAP regularization prior means (Pillar 1 — computePerRulePriorMeans) ──
+    /**
+     * MAP prior mean for rules whose supporting atoms are in the ESTABLISHED band (value ≥ 0.85).
+     * ESTABLISHED rules deserve a high prior mean so they are not shrunk toward the smaller
+     * means used for speculative rules during MAP regularization.
+     */
+    private double ruleWeightEstablishedMean = 0.9;
+    /**
+     * MAP prior mean for rules whose supporting atoms are in the HIGH band (0.65 ≤ value < 0.85).
+     */
+    private double ruleWeightHighMean = 0.7;
+    /**
+     * MAP prior mean for rules whose supporting atoms are in the PROBABLE band (0.35 ≤ value < 0.65).
+     */
+    private double ruleWeightProbableMean = 0.4;
+    /**
+     * MAP prior mean for rules whose supporting atoms are in the SPECULATIVE or SUPPRESSED band
+     * (value < 0.35). Kept low so weak-evidence rules are pulled toward near-zero weight.
+     */
+    private double ruleWeightSpeculativeMean = 0.15;
+
     // ── Ontology tie-in (crawl→graph enrichment governed by a bound OntologySchema) ──
     /** P1: when true, a bound ontology constrains LLM/Tika extraction to its entity/relationship types. */
     private boolean ontologyGuidedExtractionEnabled = true;
@@ -143,6 +164,10 @@ public class KbConfig {
         m.put("kbPrunePolicyPruneSuppressedBand", prunePolicyPruneSuppressedBand);
         m.put("kbOntologyGuidedExtractionEnabled", ontologyGuidedExtractionEnabled);
         m.put("kbOntologyRuleWeight", ontologyRuleWeight);
+        m.put("kbRuleWeightEstablishedMean", ruleWeightEstablishedMean);
+        m.put("kbRuleWeightHighMean", ruleWeightHighMean);
+        m.put("kbRuleWeightProbableMean", ruleWeightProbableMean);
+        m.put("kbRuleWeightSpeculativeMean", ruleWeightSpeculativeMean);
         m.put("kbPersonalEmailDomains", personalEmailDomains);
         return m;
     }
@@ -185,6 +210,10 @@ public class KbConfig {
         c.prunePolicyPruneSuppressedBand = bool(root, "kbPrunePolicyPruneSuppressedBand", c.prunePolicyPruneSuppressedBand);
         c.ontologyGuidedExtractionEnabled = bool(root, "kbOntologyGuidedExtractionEnabled", c.ontologyGuidedExtractionEnabled);
         c.ontologyRuleWeight = dbl(root, "kbOntologyRuleWeight", c.ontologyRuleWeight, 0.0, 100.0);
+        c.ruleWeightEstablishedMean = dbl(root, "kbRuleWeightEstablishedMean", c.ruleWeightEstablishedMean, 0.0, 100.0);
+        c.ruleWeightHighMean = dbl(root, "kbRuleWeightHighMean", c.ruleWeightHighMean, 0.0, 100.0);
+        c.ruleWeightProbableMean = dbl(root, "kbRuleWeightProbableMean", c.ruleWeightProbableMean, 0.0, 100.0);
+        c.ruleWeightSpeculativeMean = dbl(root, "kbRuleWeightSpeculativeMean", c.ruleWeightSpeculativeMean, 0.0, 100.0);
         List<String> domains = strList(root, "kbPersonalEmailDomains");
         if (domains != null) {
             c.personalEmailDomains = domains;
