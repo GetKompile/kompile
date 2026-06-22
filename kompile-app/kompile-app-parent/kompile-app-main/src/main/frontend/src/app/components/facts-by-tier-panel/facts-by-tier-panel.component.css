@@ -110,6 +110,165 @@
   font-style: italic;
 }
 
+/* ---- D8: Band-count stacked bar ---- */
+.band-bar-wrapper {
+  margin: 4px 0 14px;
+}
+
+.band-bar-track {
+  display: flex;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--bar-bg, #e0e0e0);
+}
+
+.band-bar-segment {
+  height: 100%;
+  transition: width 0.3s ease;
+  cursor: default;
+}
+
+.band-bar-segment:first-child {
+  border-radius: 7px 0 0 7px;
+}
+
+.band-bar-segment:last-child {
+  border-radius: 0 7px 7px 0;
+}
+
+.band-bar-segment:only-child {
+  border-radius: 7px;
+}
+
+.band-bar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.band-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary, #666);
+}
+
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-count {
+  font-weight: 600;
+  color: var(--text-color, inherit);
+}
+
+/* ---- D7: Temporal filter ---- */
+.temporal-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color, #e0e0e0);
+  border-radius: 8px;
+  background: var(--filter-bg, #fafafa);
+  font-size: 13px;
+}
+
+.temporal-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+  color: var(--text-secondary, #555);
+  white-space: nowrap;
+}
+
+.temporal-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary, #888);
+}
+
+.temporal-inputs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.date-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+}
+
+.date-input {
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-size: 12px;
+  background: var(--input-bg, #fff);
+  color: var(--text-color, inherit);
+  height: 28px;
+}
+
+.date-input:focus {
+  outline: 2px solid #1976d2;
+  outline-offset: 1px;
+}
+
+.exclude-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  user-select: none;
+}
+
+.clear-dates-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 50%;
+  color: var(--text-secondary, #888);
+  transition: background 0.15s;
+}
+
+.clear-dates-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.clear-dates-btn mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+/* ---- Date cells in table ---- */
+.date-cell {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--text-secondary, #666);
+}
+
 /* Dark theme overrides */
 body.dark-theme .tier-chip {
   --border-color: #555;
@@ -126,5 +285,41 @@ body.dark-theme .empty-msg {
 }
 
 body.dark-theme .cap-notice {
+  color: #aaa;
+}
+
+body.dark-theme .band-bar-track {
+  --bar-bg: #3a3a3a;
+}
+
+body.dark-theme .temporal-filter {
+  --border-color: #444;
+  --filter-bg: #2a2a2a;
+}
+
+body.dark-theme .date-input {
+  --border-color: #555;
+  --input-bg: #1e1e1e;
+  --text-color: #e0e0e0;
+  color-scheme: dark;
+}
+
+body.dark-theme .legend-count {
+  --text-color: #e0e0e0;
+}
+
+body.dark-theme .band-legend-item {
+  color: #aaa;
+}
+
+body.dark-theme .clear-dates-btn {
+  color: #aaa;
+}
+
+body.dark-theme .clear-dates-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-theme .date-cell {
   color: #aaa;
 }

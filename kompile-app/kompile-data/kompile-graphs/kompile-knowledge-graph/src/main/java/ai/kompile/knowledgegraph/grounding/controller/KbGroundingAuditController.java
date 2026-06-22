@@ -15,6 +15,8 @@ import ai.kompile.knowledgegraph.audit.FactAuditEvent;
 import ai.kompile.knowledgegraph.audit.PinRecord;
 import ai.kompile.knowledgegraph.grounding.KbCorrectionService;
 import ai.kompile.knowledgegraph.grounding.KbCorrectionService.CorrectionResult;
+import ai.kompile.knowledgegraph.persistence.dual.InferredFactRow;
+import ai.kompile.knowledgegraph.persistence.dual.InferredFactRowRepository;
 import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -29,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -48,17 +51,22 @@ public class KbGroundingAuditController {
     @Nullable
     private final FactPromotionTracker promotionTracker;
 
+    @Nullable
+    private final InferredFactRowRepository factRepo;
+
     @Autowired
     public KbGroundingAuditController(
             KbCorrectionService correctionService,
-            @Nullable @Autowired(required = false) FactPromotionTracker promotionTracker) {
+            @Nullable @Autowired(required = false) FactPromotionTracker promotionTracker,
+            @Nullable @Autowired(required = false) InferredFactRowRepository factRepo) {
         this.correctionService = correctionService;
         this.promotionTracker = promotionTracker;
+        this.factRepo = factRepo;
     }
 
-    /** Backward-compatible constructor (no promotion tracker) for tests and minimal contexts. */
+    /** Backward-compatible constructor (no promotion tracker, no repo) for tests and minimal contexts. */
     public KbGroundingAuditController(KbCorrectionService correctionService) {
-        this(correctionService, null);
+        this(correctionService, null, null);
     }
 
     /**
@@ -124,20 +132,33 @@ public class KbGroundingAuditController {
     }
 
     /**
-     * GET /api/kb-grounding/{factSheetId}/facts?tier=ESTABLISHED
+     * GET /api/kb-grounding/{factSheetId}/facts?tier=ESTABLISHED&validFrom=&validTo=
      *
      * <p>Returns up to 500 {@link FactTierRow} entries for the given fact sheet, optionally
-     * filtered to a single {@link StrengthBand} tier. Results are drawn from
+     * filtered to a single {@link StrengthBand} tier and/or a validity-time window.
+     * Results are drawn from
      * {@link FactPromotionTracker#factsByTierDurable(long, StrengthBand)} and enriched with
-     * promotion status, corroboration count, and the latest strength band name.</p>
+     * promotion status, corroboration count, the latest strength band name, and
+     * temporal validity bounds sourced from the DB row ({@code inferredAt} → {@code validFrom})
+     * and any {@code _validTo} key embedded in the provenance JSON.</p>
      *
-     * @param factSheetId path variable
-     * @param tier        optional {@link StrengthBand} name; if absent all tiers are returned
+     * <p>Temporal filtering: a row is included when its validity window overlaps the requested
+     * range. Rows whose {@code validFrom}/{@code validTo} are both null are always included unless
+     * the caller explicitly sets {@code excludeUndated=true}.</p>
+     *
+     * @param factSheetId   path variable
+     * @param tier          optional {@link StrengthBand} name; if absent all tiers are returned
+     * @param validFrom     optional filter — epoch millis; row's inferredAt must be &gt;= this
+     * @param validTo       optional filter — epoch millis; row's validTo (or unbounded) must overlap
+     * @param excludeUndated when {@code true}, rows without any temporal metadata are excluded
      */
     @GetMapping("/facts")
     public ResponseEntity<?> getFactsByTier(
             @PathVariable long factSheetId,
-            @RequestParam(required = false) @Nullable String tier) {
+            @RequestParam(required = false) @Nullable String tier,
+            @RequestParam(required = false) @Nullable Long validFrom,
+            @RequestParam(required = false) @Nullable Long validTo,
+            @RequestParam(defaultValue = "false") boolean excludeUndated) {
 
         if (promotionTracker == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -157,30 +178,167 @@ public class KbGroundingAuditController {
             bands = StrengthBand.values();
         }
 
+        // Build a lookup map of atomKey → InferredFactRow for temporal metadata (when repo is available)
+        Map<String, InferredFactRow> rowByAtom = buildRowLookup(factSheetId);
+
         List<FactTierRow> rows = new ArrayList<>();
         for (StrengthBand band : bands) {
             if (rows.size() >= 500) break;
             for (InferredFact fact : promotionTracker.factsByTierDurable(factSheetId, band)) {
                 if (rows.size() >= 500) break;
                 String atomKey = fact.atomKey();
+
+                // Extract temporal bounds from the persisted row
+                InferredFactRow dbRow = rowByAtom.get(atomKey);
+                Long rowValidFrom = extractValidFrom(fact, dbRow);
+                Long rowValidTo   = extractValidTo(dbRow);
+
+                // Apply temporal filter
+                if (!matchesTemporalFilter(rowValidFrom, rowValidTo, validFrom, validTo, excludeUndated)) {
+                    continue;
+                }
+
                 rows.add(new FactTierRow(
                         atomKey,
                         fact.confidence(),
                         promotionTracker.getLastBand(factSheetId, atomKey).name(),
                         promotionTracker.getPromotionStatus(factSheetId, atomKey),
-                        promotionTracker.getCorroborationCount(factSheetId, atomKey)));
+                        promotionTracker.getCorroborationCount(factSheetId, atomKey),
+                        rowValidFrom,
+                        rowValidTo));
             }
         }
         return ResponseEntity.ok(rows);
     }
 
-    /** A single row returned by {@code GET /facts}. */
+    // ── Temporal helpers ─────────────────────────────────────────────────────────
+
+    /**
+     * Build a map of atomKey → latest {@link InferredFactRow} for the given fact sheet.
+     * Returns an empty map when no JPA repository is available.
+     */
+    private Map<String, InferredFactRow> buildRowLookup(long factSheetId) {
+        if (factRepo == null) {
+            return Map.of();
+        }
+        try {
+            Map<String, InferredFactRow> lookup = new java.util.HashMap<>();
+            for (InferredFactRow r : factRepo.findLatestByFactSheetId(factSheetId)) {
+                lookup.put(r.getAtomKey(), r);
+            }
+            return lookup;
+        } catch (Exception e) {
+            return Map.of();
+        }
+    }
+
+    /**
+     * Extract {@code validFrom} as epoch millis.
+     * Primary source: {@link InferredFactRow#getInferredAt()} (the wall-clock time the fact was
+     * inferred — the earliest moment we know the fact was valid).
+     * Falls back to {@link InferredFact#inferredAt()} when the DB row is absent.
+     */
+    private static Long extractValidFrom(InferredFact fact, @Nullable InferredFactRow dbRow) {
+        if (dbRow != null && dbRow.getInferredAt() != null) {
+            return dbRow.getInferredAt().toEpochMilli();
+        }
+        // Fallback: use the InferredFact record's own inferredAt (always non-null)
+        Instant ts = fact.inferredAt();
+        return ts != null ? ts.toEpochMilli() : null;
+    }
+
+    /**
+     * Extract {@code validTo} as epoch millis from the {@code _validTo} key embedded in
+     * {@link InferredFactRow#getProvenanceJson()}. Returns {@code null} when the key is absent
+     * (fact is still valid / unbounded).
+     */
+    private static Long extractValidTo(@Nullable InferredFactRow dbRow) {
+        if (dbRow == null || dbRow.getProvenanceJson() == null) {
+            return null;
+        }
+        // Fast substring search — avoid pulling in Jackson just for one numeric field.
+        // Format written by InferredFact.toJson() won't contain _validTo (it's a graph-node key),
+        // but KbCorrectionService / ContradictionDetector may embed it in a wrapper JSON written
+        // to the provenance column. Parse defensively.
+        String json = dbRow.getProvenanceJson();
+        int idx = json.indexOf("\"_validTo\"");
+        if (idx < 0) {
+            idx = json.indexOf("\"validTo\"");
+        }
+        if (idx < 0) {
+            return null;
+        }
+        try {
+            int colon = json.indexOf(':', idx);
+            if (colon < 0) return null;
+            int start = colon + 1;
+            while (start < json.length() && (json.charAt(start) == ' ' || json.charAt(start) == '"')) start++;
+            int end = start;
+            while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) end++;
+            String numStr = json.substring(start, end).trim();
+            if (numStr.isEmpty()) return null;
+            return Long.parseLong(numStr);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Returns {@code true} when the row's validity window overlaps the requested filter range.
+     *
+     * <ul>
+     *   <li>If neither {@code filterFrom} nor {@code filterTo} is set, all rows pass.</li>
+     *   <li>Rows with null temporal metadata pass unless {@code excludeUndated=true}.</li>
+     *   <li>Overlap check: row's [validFrom, validTo] ∩ [filterFrom, filterTo] ≠ ∅
+     *       (treating null validTo as +∞ and null validFrom as −∞).</li>
+     * </ul>
+     */
+    private static boolean matchesTemporalFilter(
+            @Nullable Long rowValidFrom,
+            @Nullable Long rowValidTo,
+            @Nullable Long filterFrom,
+            @Nullable Long filterTo,
+            boolean excludeUndated) {
+
+        // No filter active — accept everything
+        if (filterFrom == null && filterTo == null) {
+            return true;
+        }
+
+        // Row has no temporal data
+        if (rowValidFrom == null && rowValidTo == null) {
+            return !excludeUndated;
+        }
+
+        // Overlap check: row ends before filter starts, or row starts after filter ends
+        if (filterTo != null && rowValidFrom != null && rowValidFrom > filterTo) {
+            return false;
+        }
+        if (filterFrom != null && rowValidTo != null && rowValidTo < filterFrom) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * A single row returned by {@code GET /facts}.
+     *
+     * @param atomKey            canonical atom key
+     * @param confidence         soft-truth confidence score in [0,1]
+     * @param band               persisted {@link StrengthBand} name
+     * @param promotionStatus    "NONE" or "PROMOTED"
+     * @param corroborationCount number of independent corroborations
+     * @param validFrom          epoch millis when this fact became valid (= inferredAt). Null = unknown.
+     * @param validTo            epoch millis when this fact ceased to be valid. Null = still valid / unbounded.
+     */
     public record FactTierRow(
             String atomKey,
             double confidence,
             String band,
             String promotionStatus,
-            int corroborationCount) {}
+            int corroborationCount,
+            Long validFrom,
+            Long validTo) {}
 
     /** Request payload for POST /corrections. */
     public record CorrectionRequest(

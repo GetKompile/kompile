@@ -23,6 +23,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
 
@@ -194,6 +195,172 @@ class KbGroundingAuditControllerTest {
 
             assertEquals(HttpStatus.OK, resp.getStatusCode());
             assertFalse(resp.getBody().isEmpty(), "Should have at least one active pin");
+        }
+    }
+
+    // ── GET /facts — temporal filter (D7) + FactTierRow shape ────────────────────
+
+    @Nested
+    @DisplayName("GET /facts — temporal filter and FactTierRow fields")
+    class GetFacts {
+
+        @Test
+        @DisplayName("FactTierRow has validFrom and validTo fields")
+        void factTierRow_hasTemporalFields() throws Exception {
+            // Verify the record components exist with the expected names
+            Class<KbGroundingAuditController.FactTierRow> cls =
+                    KbGroundingAuditController.FactTierRow.class;
+            // Record components: atomKey, confidence, band, promotionStatus, corroborationCount, validFrom, validTo
+            assertNotNull(cls.getDeclaredMethod("validFrom"), "validFrom accessor must exist");
+            assertNotNull(cls.getDeclaredMethod("validTo"),   "validTo accessor must exist");
+        }
+
+        @Test
+        @DisplayName("FactTierRow can be constructed with null temporal fields")
+        void factTierRow_nullableTemporalFields() {
+            KbGroundingAuditController.FactTierRow row =
+                    new KbGroundingAuditController.FactTierRow(
+                            "revenue(Q1)", 0.8, "HIGH", "NONE", 2, null, null);
+            assertNull(row.validFrom(),  "validFrom should accept null");
+            assertNull(row.validTo(),    "validTo should accept null");
+            assertEquals("revenue(Q1)", row.atomKey());
+            assertEquals(0.8, row.confidence(), 0.001);
+        }
+
+        @Test
+        @DisplayName("FactTierRow captures validFrom and validTo when supplied")
+        void factTierRow_temporalFieldsRoundTrip() {
+            long from = 1_700_000_000_000L;
+            long to   = 1_700_100_000_000L;
+            KbGroundingAuditController.FactTierRow row =
+                    new KbGroundingAuditController.FactTierRow(
+                            "active(Node7)", 0.95, "ESTABLISHED", "PROMOTED", 5, from, to);
+            assertEquals(from, row.validFrom());
+            assertEquals(to,   row.validTo());
+        }
+
+        @Test
+        @DisplayName("matchesTemporalFilter: no filter accepts all rows")
+        void temporalFilter_noFilter_acceptsAll() throws Exception {
+            Method m = KbGroundingAuditController.class.getDeclaredMethod(
+                    "matchesTemporalFilter", Long.class, Long.class, Long.class, Long.class, boolean.class);
+            m.setAccessible(true);
+
+            // (rowFrom, rowTo, filterFrom, filterTo, excludeUndated)
+            assertTrue((Boolean) m.invoke(null, null,  null, null, null, false), "nulls + no filter");
+            assertTrue((Boolean) m.invoke(null, 1000L, 2000L, null, null, false), "dated row + no filter");
+        }
+
+        @Test
+        @DisplayName("matchesTemporalFilter: null temporal row passes unless excludeUndated=true")
+        void temporalFilter_undatedRow_behavior() throws Exception {
+            Method m = KbGroundingAuditController.class.getDeclaredMethod(
+                    "matchesTemporalFilter", Long.class, Long.class, Long.class, Long.class, boolean.class);
+            m.setAccessible(true);
+
+            long from = 1_000L;
+            long to   = 2_000L;
+            // Undated row with filter active
+            assertTrue((Boolean) m.invoke(null, null, null, from, to, false),
+                    "Undated row should pass when excludeUndated=false");
+            assertFalse((Boolean) m.invoke(null, null, null, from, to, true),
+                    "Undated row should be excluded when excludeUndated=true");
+        }
+
+        @Test
+        @DisplayName("matchesTemporalFilter: row starts after filter end → excluded")
+        void temporalFilter_rowAfterFilterEnd_excluded() throws Exception {
+            Method m = KbGroundingAuditController.class.getDeclaredMethod(
+                    "matchesTemporalFilter", Long.class, Long.class, Long.class, Long.class, boolean.class);
+            m.setAccessible(true);
+
+            // row: [5000, 6000], filter: [null, 3000] — row starts after filter ends
+            assertFalse((Boolean) m.invoke(null, 5000L, 6000L, null, 3000L, false));
+        }
+
+        @Test
+        @DisplayName("matchesTemporalFilter: row ends before filter start → excluded")
+        void temporalFilter_rowBeforeFilterStart_excluded() throws Exception {
+            Method m = KbGroundingAuditController.class.getDeclaredMethod(
+                    "matchesTemporalFilter", Long.class, Long.class, Long.class, Long.class, boolean.class);
+            m.setAccessible(true);
+
+            // row: [1000, 2000], filter: [3000, null] — row ends before filter starts
+            assertFalse((Boolean) m.invoke(null, 1000L, 2000L, 3000L, null, false));
+        }
+
+        @Test
+        @DisplayName("matchesTemporalFilter: overlapping windows pass")
+        void temporalFilter_overlappingWindows_pass() throws Exception {
+            Method m = KbGroundingAuditController.class.getDeclaredMethod(
+                    "matchesTemporalFilter", Long.class, Long.class, Long.class, Long.class, boolean.class);
+            m.setAccessible(true);
+
+            // row: [1000, 4000], filter: [2000, 5000] — overlap [2000, 4000]
+            assertTrue((Boolean) m.invoke(null, 1000L, 4000L, 2000L, 5000L, false));
+        }
+
+        @Test
+        @DisplayName("matchesTemporalFilter: unbounded validTo (null) overlaps any filter")
+        void temporalFilter_unboundedValidTo_alwaysOverlaps() throws Exception {
+            Method m = KbGroundingAuditController.class.getDeclaredMethod(
+                    "matchesTemporalFilter", Long.class, Long.class, Long.class, Long.class, boolean.class);
+            m.setAccessible(true);
+
+            // row validTo=null (still valid), filter ends at 9999 — should pass
+            assertTrue((Boolean) m.invoke(null, 1000L, null, 5000L, 9999L, false),
+                    "row with null validTo (unbounded) should overlap any filter that starts after validFrom");
+        }
+
+        @Test
+        @DisplayName("extractValidTo: returns null when provenanceJson has no _validTo key")
+        void extractValidTo_missingKey_returnsNull() throws Exception {
+            Method m = KbGroundingAuditController.class.getDeclaredMethod(
+                    "extractValidTo", ai.kompile.knowledgegraph.persistence.dual.InferredFactRow.class);
+            m.setAccessible(true);
+
+            // null row
+            assertNull(m.invoke(null, (Object) null));
+
+            // Row with no _validTo in JSON
+            ai.kompile.knowledgegraph.persistence.dual.InferredFactRow row =
+                    new ai.kompile.knowledgegraph.persistence.dual.InferredFactRow();
+            row.setProvenanceJson("{\"atomKey\":\"foo\",\"value\":0.9}");
+            assertNull(m.invoke(null, row));
+        }
+
+        @Test
+        @DisplayName("extractValidTo: parses _validTo epoch millis from provenanceJson")
+        void extractValidTo_parsesEpochMillis() throws Exception {
+            Method m = KbGroundingAuditController.class.getDeclaredMethod(
+                    "extractValidTo", ai.kompile.knowledgegraph.persistence.dual.InferredFactRow.class);
+            m.setAccessible(true);
+
+            ai.kompile.knowledgegraph.persistence.dual.InferredFactRow row =
+                    new ai.kompile.knowledgegraph.persistence.dual.InferredFactRow();
+            row.setProvenanceJson("{\"atomKey\":\"foo\",\"_validTo\": 1700100000000}");
+            assertEquals(1700100000000L, m.invoke(null, row));
+        }
+
+        @Test
+        @DisplayName("GET /facts returns SERVICE_UNAVAILABLE when promotionTracker is null")
+        void getFactsByTier_noTracker_returns503() {
+            // Controller with no tracker (tests and minimal contexts)
+            ResponseEntity<?> resp = controller.getFactsByTier(1L, null, null, null, false);
+            assertEquals(HttpStatus.SERVICE_UNAVAILABLE, resp.getStatusCode());
+        }
+
+        @Test
+        @DisplayName("GET /facts returns 400 for unknown tier value")
+        void getFactsByTier_unknownTier_returns400() {
+            // controller built with no tracker; 400 comes from band parsing before tracker check
+            // Use a fresh controller that does have a tracker but receives bad tier
+            // Since tracker-less controller returns 503, test the validation path via a dedicated
+            // instance wired with a tracker
+            var tracker = new ai.kompile.knowledgegraph.reasoning.FactPromotionTracker();
+            var ctrl    = new KbGroundingAuditController(correctionService, tracker, null);
+            ResponseEntity<?> resp = ctrl.getFactsByTier(1L, "BANANA", null, null, false);
+            assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
         }
     }
 }

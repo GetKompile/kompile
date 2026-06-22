@@ -34,11 +34,22 @@ export interface FactTierRow {
   band: string;
   promotionStatus: string;
   corroborationCount: number;
+  /** Epoch millis when this fact became valid (sourced from inferredAt). Null = unknown. */
+  validFrom: number | null;
+  /** Epoch millis when this fact ceased to be valid. Null = still valid / unbounded. */
+  validTo: number | null;
 }
 
 interface TierChip {
   label: string;
   value: string | null;
+  color: string;
+}
+
+interface BandSegment {
+  band: string;
+  count: number;
+  pct: number;
   color: string;
 }
 
@@ -50,6 +61,9 @@ const TIER_CHIPS: TierChip[] = [
   { label: 'Speculative', value: 'SPECULATIVE',  color: '#FF9800' },
   { label: 'Suppressed',  value: 'SUPPRESSED',   color: '#F44336' },
 ];
+
+/** Canonical band order for stacked bar (highest confidence first). */
+const BAND_ORDER = ['ESTABLISHED', 'HIGH', 'PROBABLE', 'SPECULATIVE', 'SUPPRESSED'];
 
 @Component({
   selector: 'app-facts-by-tier-panel',
@@ -73,6 +87,27 @@ const TIER_CHIPS: TierChip[] = [
       </mat-card-header>
 
       <mat-card-content>
+
+        <!-- D8: Band-count stacked bar -->
+        <div class="band-bar-wrapper" *ngIf="bandSegments.length > 0" aria-label="Band count overview">
+          <div class="band-bar-track">
+            <div
+              *ngFor="let seg of bandSegments"
+              class="band-bar-segment"
+              [style.width.%]="seg.pct"
+              [style.background]="seg.color"
+              [matTooltip]="seg.band + ': ' + seg.count + ' (' + (seg.pct | number:'1.1-1') + '%)'">
+            </div>
+          </div>
+          <div class="band-bar-legend">
+            <span *ngFor="let seg of bandSegments" class="band-legend-item">
+              <span class="legend-dot" [style.background]="seg.color"></span>
+              <span class="legend-label">{{ seg.band | titlecase }}</span>
+              <span class="legend-count">{{ seg.count }}</span>
+            </span>
+          </div>
+        </div>
+
         <!-- Tier filter chips -->
         <div class="tier-chips">
           <button
@@ -85,6 +120,46 @@ const TIER_CHIPS: TierChip[] = [
             <span class="chip-dot" [style.background]="chip.color"></span>
             {{ chip.label }}
           </button>
+        </div>
+
+        <!-- D7: Temporal filter -->
+        <div class="temporal-filter">
+          <span class="temporal-label">
+            <mat-icon class="temporal-icon">schedule</mat-icon>
+            Time range:
+          </span>
+          <div class="temporal-inputs">
+            <label class="date-label">From
+              <input
+                type="date"
+                class="date-input"
+                [(ngModel)]="validFromDate"
+                (change)="onTemporalChange()"
+                aria-label="Valid from date" />
+            </label>
+            <label class="date-label">To
+              <input
+                type="date"
+                class="date-input"
+                [(ngModel)]="validToDate"
+                (change)="onTemporalChange()"
+                aria-label="Valid to date" />
+            </label>
+            <label class="exclude-label">
+              <input
+                type="checkbox"
+                [(ngModel)]="excludeUndated"
+                (change)="onTemporalChange()" />
+              Exclude undated
+            </label>
+            <button
+              *ngIf="validFromDate || validToDate"
+              class="clear-dates-btn"
+              (click)="clearTemporalFilter()"
+              matTooltip="Clear date filter">
+              <mat-icon>clear</mat-icon>
+            </button>
+          </div>
         </div>
 
         <!-- Loading -->
@@ -139,12 +214,26 @@ const TIER_CHIPS: TierChip[] = [
             <td mat-cell *matCellDef="let row">{{ row.corroborationCount }}</td>
           </ng-container>
 
+          <ng-container matColumnDef="validFrom">
+            <th mat-header-cell *matHeaderCellDef>Valid From</th>
+            <td mat-cell *matCellDef="let row" class="date-cell">
+              {{ row.validFrom != null ? (row.validFrom | date:'yyyy-MM-dd') : '—' }}
+            </td>
+          </ng-container>
+
+          <ng-container matColumnDef="validTo">
+            <th mat-header-cell *matHeaderCellDef>Valid To</th>
+            <td mat-cell *matCellDef="let row" class="date-cell">
+              {{ row.validTo != null ? (row.validTo | date:'yyyy-MM-dd') : '∞' }}
+            </td>
+          </ng-container>
+
           <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
           <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
         </table>
 
         <div *ngIf="!loading && !error && rows.length >= 500" class="cap-notice">
-          Results capped at 500. Refine by tier to see more.
+          Results capped at 500. Refine by tier or date range to see more.
         </div>
       </mat-card-content>
     </mat-card>
@@ -160,7 +249,18 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
   loading = false;
   error: string | null = null;
 
-  displayedColumns = ['atomKey', 'band', 'confidence', 'promotionStatus', 'corroborationCount'];
+  /** D8: Stacked bar segments, derived from the band-summary response. */
+  bandSegments: BandSegment[] = [];
+
+  /** D7: Temporal filter state — ISO date strings (yyyy-MM-dd) for native date inputs. */
+  validFromDate: string = '';
+  validToDate: string = '';
+  excludeUndated: boolean = false;
+
+  displayedColumns = [
+    'atomKey', 'band', 'confidence', 'promotionStatus', 'corroborationCount',
+    'validFrom', 'validTo',
+  ];
 
   private readonly BAND_COLORS: Record<string, string> = {
     ESTABLISHED: '#4CAF50',
@@ -176,6 +276,7 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
 
   ngOnInit(): void {
     if (this.factSheetId != null) {
+      this.loadBandSummary();
       this.loadFacts();
     }
   }
@@ -183,8 +284,10 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['factSheetId'] && !changes['factSheetId'].firstChange) {
       this.rows = [];
+      this.bandSegments = [];
       this.error = null;
       if (this.factSheetId != null) {
+        this.loadBandSummary();
         this.loadFacts();
       }
     }
@@ -197,6 +300,70 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
     }
   }
 
+  onTemporalChange(): void {
+    if (this.factSheetId != null) {
+      this.loadFacts();
+    }
+  }
+
+  clearTemporalFilter(): void {
+    this.validFromDate = '';
+    this.validToDate = '';
+    this.excludeUndated = false;
+    if (this.factSheetId != null) {
+      this.loadFacts();
+    }
+  }
+
+  // ── D8: Band-count stacked bar ──────────────────────────────────────────────
+
+  /**
+   * Load the band summary from the existing /band-summary endpoint
+   * (GET /api/kb-grounding/{factSheetId}/band-summary → Map<String,Long>)
+   * and build the stacked-bar segments.
+   */
+  loadBandSummary(): void {
+    if (this.factSheetId == null) return;
+    const url = `${this.backendUrl}/kb-grounding/${this.factSheetId}/band-summary`;
+    this.http.get<Record<string, number>>(url).subscribe({
+      next: (summary) => {
+        this.bandSegments = this.buildBandSegments(summary);
+      },
+      error: () => {
+        // Non-fatal: stacked bar just stays hidden
+        this.bandSegments = [];
+      },
+    });
+  }
+
+  /**
+   * Build sorted, percentage-annotated segments from a band → count map.
+   * Bands with 0 count are omitted. Order follows BAND_ORDER.
+   */
+  buildBandSegments(summary: Record<string, number>): BandSegment[] {
+    const total = Object.values(summary).reduce((sum, n) => sum + (n || 0), 0);
+    if (total === 0) return [];
+    return BAND_ORDER
+      .filter(band => (summary[band] ?? 0) > 0)
+      .map(band => ({
+        band,
+        count: summary[band] ?? 0,
+        pct: ((summary[band] ?? 0) / total) * 100,
+        color: this.BAND_COLORS[band] ?? '#9E9E9E',
+      }));
+  }
+
+  // ── D7: Temporal helpers ────────────────────────────────────────────────────
+
+  /** Convert 'yyyy-MM-dd' string to epoch millis at midnight UTC, or null if empty. */
+  private dateStringToEpoch(dateStr: string): number | null {
+    if (!dateStr) return null;
+    const d = new Date(dateStr + 'T00:00:00Z');
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }
+
+  // ── Data loading ────────────────────────────────────────────────────────────
+
   loadFacts(): void {
     if (this.factSheetId == null) {
       return;
@@ -204,8 +371,25 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
     this.loading = true;
     this.error = null;
 
-    const tierParam = this.selectedTier ? `tier=${encodeURIComponent(this.selectedTier)}` : '';
-    const url = `${this.backendUrl}/kb-grounding/${this.factSheetId}/facts${tierParam ? '?' + tierParam : ''}`;
+    const params: string[] = [];
+    if (this.selectedTier) {
+      params.push(`tier=${encodeURIComponent(this.selectedTier)}`);
+    }
+    const fromMs = this.dateStringToEpoch(this.validFromDate);
+    const toMs   = this.dateStringToEpoch(this.validToDate);
+    if (fromMs != null) {
+      params.push(`validFrom=${fromMs}`);
+    }
+    if (toMs != null) {
+      // End-of-day: add 86399999ms so "To: 2025-01-01" includes the whole day
+      params.push(`validTo=${toMs + 86399999}`);
+    }
+    if (this.excludeUndated) {
+      params.push('excludeUndated=true');
+    }
+
+    const qs  = params.length > 0 ? '?' + params.join('&') : '';
+    const url = `${this.backendUrl}/kb-grounding/${this.factSheetId}/facts${qs}`;
 
     this.http.get<FactTierRow[]>(url).subscribe({
       next: (data) => {
