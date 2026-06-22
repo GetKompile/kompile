@@ -22,7 +22,11 @@ import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.confidence.BasisType;
+import ai.kompile.knowledgegraph.confidence.SourceTrustResolver;
+import ai.kompile.knowledgegraph.confidence.StructuralFactAssertionService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.graph.reasoning.confidence.Opinion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -54,6 +58,15 @@ class EmailGraphExtractor {
 
     @Autowired
     CrawlDocumentTracker documentTracker;
+
+    @Autowired(required = false)
+    StructuralFactAssertionService structuralFactAssertionService;
+
+    @Autowired(required = false)
+    SourceTrustResolver sourceTrustResolver;
+
+    @Autowired(required = false)
+    PersonalEmailDomains personalEmailDomains;
 
     /**
      * Creates email graph entities and relationships from the metadata of the supplied documents.
@@ -295,20 +308,89 @@ class EmailGraphExtractor {
                         };
                         String finalEmailAddr = emailAddr;
                         String description = graphPersistenceHelper.semanticRelationDescription(rawDesc, label);
+
+                        // STRUCTURAL assertion: an email protocol header (From/To/Cc/Bcc) is a
+                        // structural fact, not a flat-1.0 certainty. Calibrate the edge with a
+                        // STRUCTURAL Opinion (From = highest trust). Falls back to 1.0 only when the
+                        // confidence services are absent (plain-Java contexts).
+                        String addrSourceType = "SENT_BY".equals(relationType) ? "email-from" : "email-to-cc";
+                        double addrTrust = sourceTrustResolver != null
+                                ? sourceTrustResolver.trustFor(addrSourceType)
+                                : ("SENT_BY".equals(relationType) ? 0.95 : 0.90);
+                        double addrWeight = 1.0;
+                        Map<String, Object> addrProps = graphPersistenceHelper.metadataProperties(
+                                "email", finalEmailAddr,
+                                "personName", finalPersonName,
+                                "subject", finalEmailSubject);
+                        if (structuralFactAssertionService != null) {
+                            Opinion addrOpinion = structuralFactAssertionService.structural(addrTrust, 0.5);
+                            addrWeight = addrOpinion.expectation();
+                            addrProps.putAll(structuralFactAssertionService.metadataFor(
+                                    BasisType.STRUCTURAL, addrOpinion, addrTrust, 0.0, addrTrust,
+                                    System.currentTimeMillis()));
+                        }
                         String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
                                 "email_graph",
                                 "SENT_BY".equals(relationType) ? personId : emailId,
                                 "SENT_BY".equals(relationType) ? emailId : personId,
-                                label, description, 1.0,
-                                graphPersistenceHelper.metadataProperties(
-                                        "email", finalEmailAddr,
-                                        "personName", finalPersonName,
-                                        "subject", finalEmailSubject));
+                                label, description, addrWeight, addrProps);
                         knowledgeGraphService.createEdgeWithMetadata(srcId, tgtId,
-                                EdgeType.USER_DEFINED, 1.0, label,
+                                EdgeType.USER_DEFINED, addrWeight, label,
                                 description, metaJson,
                                 EdgeProvenance.EXTRACTED, factSheetId);
                         relationsCreated++;
+
+                        // person_belongs_to_org: the From sender's email DOMAIN structurally
+                        // implies org affiliation (alice@acme.com -> Acme), excluding free/personal
+                        // providers. Weaker than has_email (a corporate address need not imply
+                        // membership), so a lower structural strength (~0.71 vs ~0.90).
+                        if ("SENT_BY".equals(relationType)) {
+                            int atIdx = finalEmailAddr.lastIndexOf('@');
+                            String domain = (atIdx >= 0 && atIdx < finalEmailAddr.length() - 1)
+                                    ? finalEmailAddr.substring(atIdx + 1).trim().toLowerCase() : null;
+                            boolean assertable = domain != null && !domain.isEmpty()
+                                    && (personalEmailDomains == null || !personalEmailDomains.isPersonal(domain));
+                            if (assertable) {
+                                String orgId = "org:" + domain;
+                                Optional<GraphNode> existingOrg = entityNodeCache.computeIfAbsent(orgId,
+                                        oid -> knowledgeGraphService.getNodeByExternalId(oid, NodeLevel.ENTITY, factSheetId));
+                                GraphNode orgNode;
+                                if (existingOrg.isPresent()) {
+                                    orgNode = existingOrg.get();
+                                } else {
+                                    Map<String, Object> orgMeta = new LinkedHashMap<>();
+                                    orgMeta.put("entity_type", "ORGANIZATION");
+                                    orgMeta.put("domain", domain);
+                                    orgMeta.put(GraphConstants.META_SOURCE, jobId);
+                                    orgNode = knowledgeGraphService.createNode(NodeLevel.ENTITY, orgId,
+                                            domain, "Organization (email domain " + domain + ")", orgMeta, factSheetId);
+                                    entityNodeCache.put(orgId, Optional.of(orgNode));
+                                    entitiesCreated++;
+                                }
+                                String belongsLabel = graphPersistenceHelper.semanticRelationLabel("BELONGS_TO");
+                                String belongsRaw = finalPersonName + " belongs to organization " + domain
+                                        + " (inferred from email domain)";
+                                String belongsDesc = graphPersistenceHelper.semanticRelationDescription(belongsRaw, belongsLabel);
+                                double orgWeight = 0.70;
+                                Map<String, Object> orgProps = graphPersistenceHelper.metadataProperties(
+                                        "domain", domain,
+                                        "personName", finalPersonName,
+                                        "inferredFrom", "email-domain");
+                                if (structuralFactAssertionService != null) {
+                                    Opinion orgOpinion = structuralFactAssertionService.structural(0.25, 0.5);
+                                    orgWeight = orgOpinion.expectation();
+                                    orgProps.putAll(structuralFactAssertionService.metadataFor(
+                                            BasisType.STRUCTURAL, orgOpinion, 0.25, 0.0, addrTrust,
+                                            System.currentTimeMillis()));
+                                }
+                                String orgMetaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
+                                        "email_graph", personId, orgId, belongsLabel, belongsDesc, orgWeight, orgProps);
+                                knowledgeGraphService.createEdgeWithMetadata(personNode.getNodeId(), orgNode.getNodeId(),
+                                        EdgeType.USER_DEFINED, orgWeight, belongsLabel, belongsDesc, orgMetaJson,
+                                        EdgeProvenance.EXTRACTED, factSheetId);
+                                relationsCreated++;
+                            }
+                        }
                     }
                 }
 
