@@ -51,6 +51,9 @@ public class KbConfig {
     /** Default PSL soft-propagation rule weight for a new fact sheet (cold start). */
     public double pslDefaultRuleWeight = 0.8;
 
+    /** When true, PSL/MEBN weight learning runs after each cascade. */
+    public boolean learningEnabled = true;
+
     // ── Evidence / Beta priors, per basis (Pillar 1 + 2) ──────────────────────────
     /** Beta prior strength W for CORROBORATIVE/INFERRED facts (the slow-climb default). */
     public double evidencePriorStrength = 2.0;
@@ -100,6 +103,7 @@ public class KbConfig {
         m.put("kbPslWeightPriorStrength", pslWeightPriorStrength);
         m.put("kbPslWeightPriorMean", pslWeightPriorMean);
         m.put("kbPslDefaultRuleWeight", pslDefaultRuleWeight);
+        m.put("kbLearningEnabled", learningEnabled);
         m.put("kbEvidencePriorStrength", evidencePriorStrength);
         m.put("kbStructuralPriorStrength", structuralPriorStrength);
         m.put("kbAssertedPriorStrength", assertedPriorStrength);
@@ -135,6 +139,7 @@ public class KbConfig {
         c.pslWeightPriorStrength = dbl(root, "kbPslWeightPriorStrength", c.pslWeightPriorStrength, 0.0, 1000.0);
         c.pslWeightPriorMean = dbl(root, "kbPslWeightPriorMean", c.pslWeightPriorMean, 0.0, 100.0);
         c.pslDefaultRuleWeight = dbl(root, "kbPslDefaultRuleWeight", c.pslDefaultRuleWeight, 0.0, 100.0);
+        c.learningEnabled = bool(root, "kbLearningEnabled", c.learningEnabled);
         c.evidencePriorStrength = dbl(root, "kbEvidencePriorStrength", c.evidencePriorStrength, 1e-6, 1000.0);
         c.structuralPriorStrength = dbl(root, "kbStructuralPriorStrength", c.structuralPriorStrength, 1e-6, 1000.0);
         c.assertedPriorStrength = dbl(root, "kbAssertedPriorStrength", c.assertedPriorStrength, 0.0, 1000.0);
@@ -179,6 +184,11 @@ public class KbConfig {
             return fallback;
         }
         return Math.max(min, Math.min(max, n.asLong()));
+    }
+
+    private static boolean bool(JsonNode root, String name, boolean fallback) {
+        JsonNode n = root.get(name);
+        return (n != null && n.isBoolean()) ? n.asBoolean() : fallback;
     }
 
     private static List<String> strList(JsonNode root, String name) {

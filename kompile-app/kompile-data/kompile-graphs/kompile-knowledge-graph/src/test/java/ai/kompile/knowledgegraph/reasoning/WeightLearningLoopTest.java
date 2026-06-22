@@ -83,8 +83,7 @@ class WeightLearningLoopTest {
 
         correctionService = new KbCorrectionService(
                 groundingService, pinGuard, null, fileBackedWeightStore);
-        // Simulate learning enabled (default true in Spring, set field directly in plain-Java context)
-        setField(correctionService, "learningEnabled", true);
+        // Learning is enabled by default (KbConfig.learningEnabled=true via KbConfig.defaults()).
 
         orchestrator = new IncrementalReasoningOrchestrator(
                 groundingService,
@@ -94,8 +93,7 @@ class WeightLearningLoopTest {
                 correctionService,
                 fileBackedWeightStore,
                 mebnAdapter);
-        // Enable learning in plain-Java context (field-set since @Value not processed)
-        setField(orchestrator, "learningEnabled", true);
+        // Learning is enabled by default (KbConfig.learningEnabled=true via KbConfig.defaults()).
     }
 
     // ── Test 1: weights persist and reload (loop closes) ─────────────────────────

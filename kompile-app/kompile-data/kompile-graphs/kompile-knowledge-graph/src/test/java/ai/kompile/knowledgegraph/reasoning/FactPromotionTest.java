@@ -77,7 +77,6 @@ class FactPromotionTest {
 
         correctionService = new KbCorrectionService(
                 groundingService, pinGuard, null, fileBackedWeightStore);
-        setField(correctionService, "learningEnabled", true);
         setField(correctionService, "dataDir", tempDir.toString());
 
         promotionTracker = new FactPromotionTracker(publishedEvents::add);
@@ -92,7 +91,6 @@ class FactPromotionTest {
                 correctionService,
                 fileBackedWeightStore,
                 null);          // no MEBN adapter
-        setField(orchestrator, "learningEnabled", true);
         setField(orchestrator, "dataDir", tempDir.toString());
 
         // Wire the promotion tracker via field injection (mirrors Spring @Autowired field)

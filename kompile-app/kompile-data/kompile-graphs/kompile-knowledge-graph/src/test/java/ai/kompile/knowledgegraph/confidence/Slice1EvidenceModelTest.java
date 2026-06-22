@@ -226,10 +226,8 @@ class Slice1EvidenceModelTest {
         Field stateMapField = FactPromotionTracker.class.getDeclaredField("stateMap");
         stateMapField.setAccessible(true);
 
-        // Inject priorStrength=2.0 via reflection so the no-arg ctor gets the right value
-        Field priorField = FactPromotionTracker.class.getDeclaredField("priorStrength");
-        priorField.setAccessible(true);
-        priorField.set(tracker, 2.0);
+        // W=2.0 is the KbConfig default; FactPromotionTracker reads KbConfig.defaults() when no
+        // KbConfigManager is wired (plain-Java test), so no reflection is needed.
 
         long factSheetId = 1L;
         String atomKey = "isEmployedBy(Alice, Acme)";
@@ -272,9 +270,6 @@ class Slice1EvidenceModelTest {
     @DisplayName("FactPromotionTracker: band climbs toward ESTABLISHED as evidencePos accumulates")
     void factPromotionTrackerBandClimbs() throws Exception {
         FactPromotionTracker tracker = new FactPromotionTracker();
-        Field priorField = FactPromotionTracker.class.getDeclaredField("priorStrength");
-        priorField.setAccessible(true);
-        priorField.set(tracker, 2.0);
 
         long factSheetId = 2L;
         String atomKey = "hasRole(Alice, Director)";

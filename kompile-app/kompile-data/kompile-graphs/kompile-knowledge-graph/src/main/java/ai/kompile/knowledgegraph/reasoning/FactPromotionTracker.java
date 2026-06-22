@@ -26,6 +26,8 @@ import ai.kompile.knowledgegraph.persistence.dual.InferredFactRowRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import ai.kompile.knowledgegraph.confidence.KbConfig;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
@@ -122,12 +124,15 @@ public class FactPromotionTracker {
     private String dataDir;
 
     /**
-     * Prior strength (W) used in Beta-distribution Opinion initialisation.
-     * With W=2 a single observation at trust 0.6 gives expectation ≈ 0.23 (LOW band).
-     * Configurable via {@code kompile.kb.evidence.priorStrength}.
+     * Kompile-managed KB config — supplies the Beta prior strength W ({@code evidencePriorStrength}).
+     * Null in plain-Java contexts → falls back to {@link KbConfig#defaults()}.
      */
-    @Value("${kompile.kb.evidence.priorStrength:2.0}")
-    private double priorStrength;
+    @Autowired(required = false)
+    private KbConfigManager kbConfigManager;
+
+    private KbConfig kbCfg() {
+        return kbConfigManager != null ? kbConfigManager.current() : KbConfig.defaults();
+    }
 
     /**
      * Primary Spring constructor.
@@ -261,7 +266,7 @@ public class FactPromotionTracker {
 
         // Compute band from Beta-distribution Opinion (respects uncertainty gate)
         Opinion opinion = Opinion.fromBetaEvidence(state.evidencePos, state.evidenceNeg, 0.5,
-                priorStrength > 0 ? priorStrength : 2.0);
+                kbCfg().evidencePriorStrength);
         StrengthBand newBand = StrengthBand.from(opinion);
 
         // Promotion: new band is strictly higher tier (lower ordinal = higher tier in the enum)

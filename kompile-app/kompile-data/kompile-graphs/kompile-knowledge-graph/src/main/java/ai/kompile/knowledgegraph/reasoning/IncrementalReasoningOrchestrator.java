@@ -24,6 +24,8 @@ import ai.kompile.graph.reasoning.fol.InferredFactStore;
 import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
 import ai.kompile.graph.reasoning.learning.StructuredPerceptronLearner;
+import ai.kompile.knowledgegraph.confidence.KbConfig;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import jakarta.annotation.PostConstruct;
 import ai.kompile.graph.reasoning.learning.WeightStore;
 import ai.kompile.graph.reasoning.mebn.MTheory;
@@ -170,33 +172,16 @@ public class IncrementalReasoningOrchestrator {
     String dataDir;
 
     /**
-     * When true (default), PSL weight learning is run after each MAP solve.
-     * Set {@code kompile.kb.learning.enabled=false} to disable.
+     * Kompile-managed KB config — the single source for all confidence/evidence/learning tunables
+     * (learning-enabled flag, PSL default rule weight, the full learner config, the MAP prior, the
+     * MEBN cadence). No Spring {@code @Value}; null in plain-Java contexts → {@link KbConfig#defaults()}.
      */
-    @Value("${kompile.kb.learning.enabled:true}")
-    boolean learningEnabled;
+    @Autowired(required = false)
+    private KbConfigManager kbConfigManager;
 
-    /**
-     * Default PSL soft-propagation rule weight used in {@link #buildProgramFromFactStore}.
-     * Configurable via {@code kompile.kb.psl.defaultRuleWeight=0.8} (default 0.8).
-     * Subsequent cascades use persisted learned weights from the weight store; this value
-     * only applies to the first cascade on a new fact sheet (cold start).
-     */
-    @Value("${kompile.kb.psl.defaultRuleWeight:0.8}")
-    double defaultRuleWeight;
-
-    /**
-     * MAP (Gaussian-prior / L2) regularization for PSL weight learning. {@code weightPriorStrength}
-     * is lambda (0 = pure MLE, the un-regularized path); learned weights are shrunk toward
-     * {@code weightPriorMean}. A positive prior is the principled "start near zero, let the data
-     * justify larger weights". The active value is set in application.properties; the @Value
-     * default (0.0) keeps plain unit-test contexts at pure MLE so existing behaviour is unchanged.
-     */
-    @Value("${kompile.kb.psl.weightPriorStrength:0.0}")
-    double pslWeightPriorStrength;
-
-    @Value("${kompile.kb.psl.weightPriorMean:0.1}")
-    double pslWeightPriorMean;
+    private KbConfig kbCfg() {
+        return kbConfigManager != null ? kbConfigManager.current() : KbConfig.defaults();
+    }
 
     /**
      * Spring-injected file-backed weight store for PSL weight persistence.
@@ -215,28 +200,17 @@ public class IncrementalReasoningOrchestrator {
     private final DualStoreGroundingFactory dualStoreFactory;
 
     /**
-     * PSL weight learner — reused across cascades (stateless, cheap to construct).
-     * Uses 1 mini-batch step per cascade (cheap; won't destabilize inference). Initialised to a
-     * plain (un-regularized) learner for non-Spring contexts; {@link #initPslWeightLearner()}
-     * replaces it with a MAP-regularized learner once the @Value prior config is injected.
+     * Build the PSL weight learner from the managed {@link KbConfig}. ALL learner parameters
+     * (learning rate, tolerance, batch size, seed, max epochs) and the MAP prior
+     * (weightPriorStrength lambda + weightPriorMean) come from config — no hard-coded learner
+     * literals — so a runtime config change is picked up on the next cascade. Stateless + cheap.
      */
-    private PslWeightLearningService pslWeightLearner = new PslWeightLearningService();
-
-    /**
-     * Rebuild the PSL weight learner with the injected MAP (Gaussian-prior) config. Field
-     * initializers run before @Value injection, so the prior is applied here. When
-     * {@code weightPriorStrength <= 0} the learner stays pure MLE (no behaviour change), so
-     * plain-Java tests and an unconfigured deployment behave exactly as before.
-     */
-    @PostConstruct
-    void initPslWeightLearner() {
-        if (pslWeightPriorStrength > 0.0) {
-            // Mirror the default learner config (rate 0.1, tol 1e-4, full-batch, seed 1234) and
-            // add the MAP prior so cascade weight-learning is regularized (MAP, not raw MLE).
-            this.pslWeightLearner = new PslWeightLearningService(
-                    new StructuredPerceptronLearner(0.1, 1e-4, 0, 1234L,
-                            pslWeightPriorStrength, pslWeightPriorMean), 50);
-        }
+    private PslWeightLearningService pslWeightLearner() {
+        KbConfig c = kbCfg();
+        return new PslWeightLearningService(
+                new StructuredPerceptronLearner(c.pslLearningRate, c.pslTolerance, c.pslBatchSize,
+                        c.pslSeed, c.pslWeightPriorStrength, c.pslWeightPriorMean),
+                c.pslMaxEpochs);
     }
 
     /**
@@ -440,7 +414,7 @@ public class IncrementalReasoningOrchestrator {
         }
 
         // ── STEP 2+3: Build PSL program from the observed FactStore ──────────────────
-        PslProgram program = buildProgramFromFactStore(factStore, defaultRuleWeight);
+        PslProgram program = buildProgramFromFactStore(factStore, kbCfg().pslDefaultRuleWeight);
 
         // ── STEP 3b (NEW): Load project-level PSL rules if dataDir is configured ─────
         // If <dataDir>/rules/*.psl files exist, their rules override the default soft-
@@ -460,7 +434,7 @@ public class IncrementalReasoningOrchestrator {
         } else if (fileBackedWeightStore != null) {
             cascadeWeightStore = fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
         }
-        if (learningEnabled && cascadeWeightStore != null && !program.rules().isEmpty()) {
+        if (kbCfg().learningEnabled && cascadeWeightStore != null && !program.rules().isEmpty()) {
             try {
                 String programKey = factSheetId + "-cascade";
                 Optional<Map<String, Double>> persistedWeights = cascadeWeightStore.latest(programKey);
@@ -564,7 +538,7 @@ public class IncrementalReasoningOrchestrator {
         // sheets of ≤5000 atoms).
         // Uses cascadeWeightStore resolved above (DualStore preferred; falls back to file-backed).
         final PslProgram programForSnapshot;
-        if (learningEnabled && cascadeWeightStore != null && !program.rules().isEmpty()
+        if (kbCfg().learningEnabled && cascadeWeightStore != null && !program.rules().isEmpty()
                 && !result.values().isEmpty()) {
             PslProgram trainedProgram = program;
             try {
@@ -578,7 +552,7 @@ public class IncrementalReasoningOrchestrator {
                     softTargets = new HashMap<>(result.values());
                 }
                 // 1 update step: cheap warm-start accumulation, no convergence risk
-                trainedProgram = pslWeightLearner.updateOnBatch(program, softTargets, 1);
+                trainedProgram = pslWeightLearner().updateOnBatch(program, softTargets, 1);
 
                 // Persist the updated weights via whichever store was resolved above
                 String programKey = factSheetId + ":cascade";
@@ -689,8 +663,8 @@ public class IncrementalReasoningOrchestrator {
         long cascadeCount = cascadeCounters
                 .computeIfAbsent(factSheetId, id -> new AtomicLong(0L))
                 .incrementAndGet();
-        if (learningEnabled && mebnWeightAdapter != null
-                && cascadeCount % MEBN_LEARNING_INTERVAL == 0) {
+        if (kbCfg().learningEnabled && mebnWeightAdapter != null
+                && cascadeCount % kbCfg().mebnLearningInterval == 0) {
             MTheory theory = mebnTheories.get(factSheetId);
             ReasoningGraph mebnGraph = mebnGraphs.get(factSheetId);
             if (theory != null && mebnGraph != null && !result.values().isEmpty()) {

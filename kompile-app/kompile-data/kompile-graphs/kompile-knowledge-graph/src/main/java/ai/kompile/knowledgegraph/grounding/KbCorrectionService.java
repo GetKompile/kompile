@@ -24,6 +24,8 @@ import ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import ai.kompile.knowledgegraph.confidence.KbConfig;
+import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
@@ -66,11 +68,15 @@ public class KbCorrectionService {
     private String dataDir;
 
     /**
-     * When true (default), PSL weight training is run on each human correction.
-     * Set {@code kompile.kb.learning.enabled=false} to disable.
+     * Kompile-managed KB config — supplies the learning-enabled flag. Null in plain-Java
+     * contexts → falls back to {@link KbConfig#defaults()}.
      */
-    @Value("${kompile.kb.learning.enabled:true}")
-    private boolean learningEnabled;
+    @Autowired(required = false)
+    private KbConfigManager kbConfigManager;
+
+    private KbConfig kbCfg() {
+        return kbConfigManager != null ? kbConfigManager.current() : KbConfig.defaults();
+    }
 
     private final PinGuard pinGuard;
     private final PslWeightLearningService weightLearner;
@@ -197,7 +203,7 @@ public class KbCorrectionService {
 
             // 4. Feed training signal to weight learner (mini-batch, 3 steps)
             boolean trainingApplied = false;
-            if (learningEnabled) {
+            if (kbCfg().learningEnabled) {
                 try {
                     PslProgram program = programSnapshots.get(factSheetId);
                     if (program != null && !program.rules().isEmpty()) {
