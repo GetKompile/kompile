@@ -1651,6 +1651,21 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
             // ── Phase 9: Post-crawl enrichment (MAP derivation + prune/compact + health) ──────
             if (stepPlan.isRun("ENRICHMENT")) {
+                if (graphHydrationOrchestrator == null) {
+                    // C2: Make the silent-skip footgun visible. When the hydration orchestrator bean
+                    // is absent, PSL/MEBN MAP derivation, Opinion-based pruning, and confidence
+                    // accumulation all silently don't run. This leaves every edge at its cold-start
+                    // prior (SPECULATIVE) with no chance to climb toward ESTABLISHED.
+                    log.warn("[Job {}] ENRICHMENT: graphHydrationOrchestrator bean is absent — " +
+                            "confidence/PSL/prune model will NOT run for this crawl. " +
+                            "Cold-start Opinions remain at their initial priors. " +
+                            "Ensure kompile-knowledge-graph is on the classpath and " +
+                            "GraphHydrationOrchestrator is Spring-managed.", job.getJobId());
+                    recordEvent(job, "ENRICHMENT", "WARN",
+                            "Enrichment bean absent — confidence/PSL/prune skipped",
+                            "graphHydrationOrchestrator is null: no MAP derivation, Opinion pruning, " +
+                            "or confidence accumulation will run for this crawl");
+                }
                 if (graphHydrationOrchestrator != null && knowledgeGraphService != null) {
                     Long factSheetId = jobFactSheetId(job);
                     if (factSheetId != null) {
@@ -1705,10 +1720,23 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 }
             } else if (stepPlan.isArchive("ENRICHMENT")) {
                 archiveCrawlStep(job, "ENRICHMENT", new ArrayList<>(), null, "Enrichment archived");
+                log.warn("[Job {}] ENRICHMENT: step archived/excluded from step plan — " +
+                        "confidence/PSL/prune model will NOT run for this crawl. " +
+                        "Cold-start Opinions remain at their initial priors. " +
+                        "Add ENRICHMENT to enabledSteps to activate.", job.getJobId());
             } else if (stepPlan.isSkip("ENRICHMENT")) {
                 skipPipelineStep(job, "ENRICHMENT", "Enrichment skipped by step plan");
+                // C2: Explicit skip — the footgun is intentional but still needs to be visible.
+                log.warn("[Job {}] ENRICHMENT: step explicitly skipped by step plan — " +
+                        "confidence/PSL/prune model will NOT run for this crawl. " +
+                        "Cold-start Opinions remain at their initial priors.", job.getJobId());
             } else {
                 skipPipelineStep(job, "ENRICHMENT", "Enrichment disabled or step plan excludes it");
+                // C2: step plan did not enable ENRICHMENT — warn so the omission is not silent.
+                log.warn("[Job {}] ENRICHMENT: step not enabled in step plan — " +
+                        "confidence/PSL/prune model will NOT run for this crawl. " +
+                        "Cold-start Opinions remain at their initial priors. " +
+                        "Add ENRICHMENT to enabledSteps to activate.", job.getJobId());
             }
 
             int finalChunkCount = chunkedDocuments.size();

@@ -42,6 +42,7 @@ import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.llm.ModelCapability;
 import ai.kompile.core.llm.ModelContextWindows;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.knowledgegraph.confidence.ExtractionConfidenceStamper;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -144,6 +145,11 @@ class GraphExtractionOrchestrator {
 
     @Autowired
     GraphPersistenceHelper graphPersistenceHelper;
+
+    /** Optional — stamps Opinion + provenance metadata onto every LLM-extracted edge.
+     *  When absent (subprocess/test slices), the scalar fallback path below is used. */
+    @Autowired(required = false)
+    ExtractionConfidenceStamper confidenceStamper;
 
     @Autowired
     CrawlDocumentTracker documentTracker;
@@ -1298,13 +1304,25 @@ class GraphExtractionOrchestrator {
                                         if (srcNodeId == null || tgtNodeId == null) continue;
                                         String label = graphPersistenceHelper.semanticRelationLabel(rel.type());
                                         String description = graphPersistenceHelper.semanticRelationDescription(rel.description(), label);
+                                        // A1: stamp Opinion + provenance onto inline-LLM extracted edge.
+                                        // Never default a missing LLM confidence to 1.0 (pins PSL gradient).
+                                        // Route through the stamper (LLM_EXTRACTION basis, W=2.0) so that
+                                        // a missing confidence is seeded from sourceTrust, not hardcoded.
+                                        Map<String, Object> relPropertiesMeta = new LinkedHashMap<>();
+                                        if (rel.properties() != null) relPropertiesMeta.putAll(rel.properties());
+                                        double relWeight;
+                                        if (confidenceStamper != null) {
+                                            relWeight = confidenceStamper.stampEdgeConfidence(
+                                                    relPropertiesMeta, "LLM_EXTRACTION", rel.confidence());
+                                        } else {
+                                            // Stamper absent: use raw confidence or 0.5 (never 1.0)
+                                            relWeight = rel.confidence() != null ? rel.confidence() : 0.5;
+                                        }
                                         String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
                                                 "inline_llm", rel.source(), rel.target(), label, description,
-                                                rel.confidence(), rel.properties());
+                                                relWeight, relPropertiesMeta);
                                         knowledgeGraphService.createEdgeWithMetadata(srcNodeId, tgtNodeId,
-                                                EdgeType.USER_DEFINED,
-                                                rel.confidence() != null ? rel.confidence() : 1.0,
-                                                label, description, metaJson,
+                                                EdgeType.USER_DEFINED, relWeight, label, description, metaJson,
                                                 EdgeProvenance.EXTRACTED, factSheetId);
                                         job.incrementRelationshipType(label);
                                     } catch (Exception e) {
@@ -1641,13 +1659,23 @@ class GraphExtractionOrchestrator {
                                 if (srcNodeId == null || tgtNodeId == null) continue;
                                 String label = graphPersistenceHelper.semanticRelationLabel(rel.type());
                                 String description = graphPersistenceHelper.semanticRelationDescription(rel.description(), label);
+                                // A1: stamp Opinion onto multi-chunk LLM extracted edge (same as single-chunk).
+                                // Never default a missing LLM confidence to 1.0 (pins PSL gradient).
+                                Map<String, Object> multiRelMeta = new LinkedHashMap<>();
+                                if (rel.properties() != null) multiRelMeta.putAll(rel.properties());
+                                double multiRelWeight;
+                                if (confidenceStamper != null) {
+                                    multiRelWeight = confidenceStamper.stampEdgeConfidence(
+                                            multiRelMeta, "LLM_EXTRACTION", rel.confidence());
+                                } else {
+                                    multiRelWeight = rel.confidence() != null ? rel.confidence() : 0.5;
+                                }
                                 String metaJson = graphPersistenceHelper.semanticRelationMetadataJson(jobId, sourcePath,
                                         "inline_llm_multi", rel.source(), rel.target(), label, description,
-                                        rel.confidence(), rel.properties());
+                                        multiRelWeight, multiRelMeta);
                                 knowledgeGraphService.createEdgeWithMetadata(srcNodeId, tgtNodeId,
-                                        EdgeType.USER_DEFINED,
-                                        rel.confidence() != null ? rel.confidence() : 1.0,
-                                        label, description, metaJson, EdgeProvenance.EXTRACTED, factSheetId);
+                                        EdgeType.USER_DEFINED, multiRelWeight, label, description,
+                                        metaJson, EdgeProvenance.EXTRACTED, factSheetId);
                                 job.incrementRelationshipType(label);
                             } catch (Exception ex) {
                                 log.debug("[Job {}] Failed to persist multi-chunk relation '{}': {}", jobId, rel.type(), ex.getMessage());

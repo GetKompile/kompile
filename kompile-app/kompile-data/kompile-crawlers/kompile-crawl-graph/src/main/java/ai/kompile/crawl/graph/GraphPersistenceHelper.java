@@ -23,6 +23,7 @@ import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.knowledgegraph.confidence.ExtractionConfidenceStamper;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.EntityMention;
@@ -67,6 +68,11 @@ class GraphPersistenceHelper {
 
     @Autowired(required = false)
     EntityMentionRepository entityMentionRepository;
+
+    /** Optional — stamps Opinion + provenance metadata onto every edge. When absent (subprocess/test
+     *  slices without Spring), the legacy scalar-only path is retained so nothing breaks. */
+    @Autowired(required = false)
+    ExtractionConfidenceStamper confidenceStamper;
 
     @Autowired
     CrawlDocumentTracker documentTracker;
@@ -184,15 +190,24 @@ class GraphPersistenceHelper {
                         String description = semanticRelationDescription(
                                 "Document contains " + entityType + " " + entityTitle,
                                 containsLabel);
+                        Map<String, Object> containsMeta = metadataProperties(
+                                "entityType", entity.getType(),
+                                "entityName", entityTitle,
+                                "sourceDocumentId", sourceDocumentId);
+                        // A document-contains-entity edge is a structural deduction (Pillar 2):
+                        // "the document structurally contains the entity" is certain from one
+                        // observation. Route through the stamper (STRUCTURAL basis, W≈0.1) so the
+                        // Opinion rides in metadata rather than pinning at the hard 1.0 default.
+                        // Stamper-absent fallback: use entity confidence or 0.5 (never 1.0 —
+                        // a structural CONTAINS is not a maximally certain hard observation).
+                        double containsWeight = (confidenceStamper != null)
+                                ? confidenceStamper.stampEdgeConfidence(containsMeta, "STRUCTURAL", confidence)
+                                : (confidence != null ? confidence : 0.5);
                         String metaJson = semanticRelationMetadataJson(jobId, sourcePath,
                                 "graph_constructor", sourcePath, externalId, containsLabel, description,
-                                confidence,
-                                metadataProperties(
-                                        "entityType", entity.getType(),
-                                        "entityName", entityTitle,
-                                        "sourceDocumentId", sourceDocumentId));
+                                containsWeight, containsMeta);
                         knowledgeGraphService.createEdgeWithMetadata(parentDoc.get().getNodeId(), node.getNodeId(),
-                                EdgeType.CONTAINS, 1.0, containsLabel, description, metaJson,
+                                EdgeType.CONTAINS, containsWeight, containsLabel, description, metaJson,
                                 EdgeProvenance.EXTRACTED, factSheetId);
                     }
                 } catch (Exception e) {
@@ -248,20 +263,26 @@ class GraphPersistenceHelper {
                         relMeta.put("weight", weight);
                     }
 
-                    // Annotate structural edges with basis type before building metaJson.
-                    // The 1.0 fallback (was: weight != null ? weight : 1.0) is replaced with 0.5
-                    // because a Tika/graph-constructor structural edge is NOT maximally certain:
-                    // pinning it at 1.0 marks it Fact.observed (hard=true, confidence>=0.99)
-                    // which collapses PSL MAP gradient signal (all atoms become pinned observations).
-                    relMeta.put(GraphProvenanceKeys.BASIS_TYPE, "STRUCTURAL");
-                    relMeta.put(GraphProvenanceKeys.VALID_FROM, System.currentTimeMillis());
+                    // Stamp a full Opinion onto every GraphConstructor (structural) relation (A3):
+                    // Route through the ExtractionConfidenceStamper (STRUCTURAL basis, W≈0.1) so
+                    // every edge carries _opinion/_basisType/_sourceTrust/_evidencePos/_validFrom.
+                    // The raw confidence (or weight) from the constructor is passed as rawConfidence;
+                    // when absent, the stamper seeds from sourceTrust so the edge never pins at 1.0.
+                    Double rawRelConf = confidence != null ? confidence : weight;
+                    double edgeWeight;
+                    if (confidenceStamper != null) {
+                        edgeWeight = confidenceStamper.stampEdgeConfidence(relMeta, "STRUCTURAL", rawRelConf);
+                    } else {
+                        // Stamper absent: legacy fallback (never 1.0 — use 0.5 as safe default)
+                        relMeta.put(GraphProvenanceKeys.BASIS_TYPE, "STRUCTURAL");
+                        relMeta.put(GraphProvenanceKeys.VALID_FROM, System.currentTimeMillis());
+                        edgeWeight = rawRelConf != null ? rawRelConf : 0.5;
+                    }
                     String metaJson = semanticRelationMetadataJson(jobId, sourcePath,
                             "graph_constructor", rel.getSource(), rel.getTarget(), label, description,
-                            confidence, relMeta);
+                            edgeWeight, relMeta);
                     knowledgeGraphService.createEdgeWithMetadata(srcNodeId, tgtNodeId,
-                            EdgeType.USER_DEFINED,
-                            confidence != null ? confidence : weight != null ? weight : 0.5,
-                            label, description, metaJson,
+                            EdgeType.USER_DEFINED, edgeWeight, label, description, metaJson,
                             EdgeProvenance.EXTRACTED, factSheetId);
                     relationshipsPersisted++;
                     job.incrementRelationshipType(label);
@@ -486,6 +507,20 @@ class GraphPersistenceHelper {
             return;
         }
         try {
+            // When confidence is absent (Tika/structural extraction), avoid the hard 1.0 default
+            // that pins PSL gradient. Use the stamper's fallback (sourceTrust-seeded expectation)
+            // when available; otherwise fall back to 0.5 (uncertain, not maximally certain).
+            final double effectiveConfidence;
+            if (confidence != null) {
+                effectiveConfidence = confidence;
+            } else if (confidenceStamper != null) {
+                // Use a dummy map — we only want the effective confidence scalar, not the keys.
+                // Basis is STRUCTURAL because an entity-mention is derived from extraction structure.
+                effectiveConfidence = confidenceStamper.stampEdgeConfidence(
+                        new LinkedHashMap<>(), "STRUCTURAL", null);
+            } else {
+                effectiveConfidence = 0.5; // safe default: uncertain, not maximally certain
+            }
             EntityMention mention = entityMentionRepository
                     .findByNodeAndEntityNameAndFactSheet(documentNode, normalizedName, factSheetId)
                     .orElseGet(() -> EntityMention.builder()
@@ -493,7 +528,7 @@ class GraphPersistenceHelper {
                             .entityName(normalizedName)
                             .entityType(entityType.toUpperCase(Locale.ROOT))
                             .mentionCount(0)
-                            .confidence(confidence != null ? confidence : 1.0)
+                            .confidence(effectiveConfidence)
                             .factSheetId(factSheetId)
                             .build());
             mention.setMentionCount((mention.getMentionCount() != null ? mention.getMentionCount() : 0) + 1);
