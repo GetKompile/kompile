@@ -11,6 +11,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
+import { NO_ERRORS_SCHEMA } from '@angular/core';
 
 import { KbWeightsPanelComponent } from './kb-weights-panel.component';
 
@@ -26,7 +27,10 @@ describe('KbWeightsPanelComponent', () => {
         HttpClientTestingModule,
         NoopAnimationsModule,
       ],
-    }).compileComponents();
+      schemas: [NO_ERRORS_SCHEMA],
+    })
+      .overrideComponent(KbWeightsPanelComponent, { set: { schemas: [NO_ERRORS_SCHEMA] } })
+      .compileComponents();
 
     fixture = TestBed.createComponent(KbWeightsPanelComponent);
     component = fixture.componentInstance;
@@ -34,6 +38,8 @@ describe('KbWeightsPanelComponent', () => {
   });
 
   afterEach(() => {
+    // Drain any stray requests (e.g. /api/kb-config) before verifying
+    httpMock.match(() => true).forEach(r => r.flush({}));
     httpMock.verify();
   });
 
@@ -173,6 +179,124 @@ describe('KbWeightsPanelComponent', () => {
       component.factSheetId = null;
       // Should not throw
       expect(() => component.loadMebnWeights()).not.toThrow();
+    });
+  });
+
+  // ── D3: Confidence Model card ─────────────────────────────────────────────
+
+  describe('D3 — Confidence Model card (/api/kb-config)', () => {
+
+    it('loadKbConfig populates kbConfig from /api/kb-config', () => {
+      component.factSheetId = null;
+      component.loadKbConfig();
+
+      const req = httpMock.expectOne(r => r.url.includes('/api/kb-config'));
+      expect(req.request.method).toBe('GET');
+      req.flush({
+        kbEvidencePriorStrength: 0.8,
+        kbStructuralPriorStrength: 0.6,
+        kbAssertedPriorStrength: 0.9,
+        kbTrustLlmExtraction: 0.6,
+        kbTrustWebScrape: 0.3,
+        kbPslDefaultRuleWeight: 0.7,
+        kbOntologyRuleWeight: 0.8,
+      });
+
+      expect(component.kbConfig).toBeTruthy();
+      expect(component.kbConfig!.kbEvidencePriorStrength).toBeCloseTo(0.8);
+      expect(component.kbConfigError).toBeNull();
+      expect(component.loadingKbConfig).toBeFalse();
+    });
+
+    it('loadKbConfig silently clears kbConfig on 404 (config not yet persisted)', () => {
+      component.loadKbConfig();
+
+      const req = httpMock.expectOne(r => r.url.includes('/api/kb-config'));
+      req.flush('Not found', { status: 404, statusText: 'Not Found' });
+
+      expect(component.kbConfig).toBeNull();
+      expect(component.kbConfigError).toBeNull();
+    });
+
+    it('loadKbConfig silently clears kbConfig on 503 (service starting)', () => {
+      component.loadKbConfig();
+
+      const req = httpMock.expectOne(r => r.url.includes('/api/kb-config'));
+      req.flush('Unavailable', { status: 503, statusText: 'Service Unavailable' });
+
+      expect(component.kbConfig).toBeNull();
+      expect(component.kbConfigError).toBeNull();
+    });
+
+    it('loadKbConfig sets kbConfigError on unexpected HTTP error', () => {
+      component.loadKbConfig();
+
+      const req = httpMock.expectOne(r => r.url.includes('/api/kb-config'));
+      req.flush({ message: 'Unauthorized' }, { status: 401, statusText: 'Unauthorized' });
+
+      expect(component.kbConfigError).toBeTruthy();
+      expect(component.kbConfig).toBeNull();
+    });
+
+    it('confidenceModelExpanded starts false', () => {
+      expect(component.confidenceModelExpanded).toBeFalse();
+    });
+  });
+
+  // ── 404 vs 503 weight distinction ─────────────────────────────────────────
+
+  describe('404 vs 503 weight endpoint distinction', () => {
+
+    it('404 from /kb/weights sets weightsNoData=true, weightsError=null', () => {
+      component.factSheetId = null;
+      component.loadWeights();
+
+      const req = httpMock.expectOne(r => r.url.includes('/kb/weights') && !r.url.includes('/mebn/'));
+      req.flush('Not found', { status: 404, statusText: 'Not Found' });
+
+      expect(component.weightsNoData).toBeTrue();
+      expect(component.weightsUnavailable).toBeFalse();
+      expect(component.weightsError).toBeNull();
+      expect(component.weightRows.length).toBe(0);
+    });
+
+    it('503 from /kb/weights sets weightsUnavailable=true, weightsError=null', () => {
+      component.factSheetId = null;
+      component.loadWeights();
+
+      const req = httpMock.expectOne(r => r.url.includes('/kb/weights') && !r.url.includes('/mebn/'));
+      req.flush('Service unavailable', { status: 503, statusText: 'Service Unavailable' });
+
+      expect(component.weightsUnavailable).toBeTrue();
+      expect(component.weightsNoData).toBeFalse();
+      expect(component.weightsError).toBeNull();
+      expect(component.weightRows.length).toBe(0);
+    });
+
+    it('other error from /kb/weights sets weightsError', () => {
+      component.factSheetId = null;
+      component.loadWeights();
+
+      const req = httpMock.expectOne(r => r.url.includes('/kb/weights') && !r.url.includes('/mebn/'));
+      req.flush({ message: 'Internal error' }, { status: 500, statusText: 'Internal Server Error' });
+
+      expect(component.weightsError).toBeTruthy();
+      expect(component.weightsNoData).toBeFalse();
+      expect(component.weightsUnavailable).toBeFalse();
+    });
+
+    it('loadWeights resets noData and unavailable flags before each call', () => {
+      component.weightsNoData = true;
+      component.weightsUnavailable = true;
+      component.factSheetId = null;
+      component.loadWeights();
+
+      const req = httpMock.expectOne(r => r.url.includes('/kb/weights') && !r.url.includes('/mebn/'));
+      req.flush({ programId: 'default', version: 1, weights: { 'r1': 0.9 }, availablePrograms: [] });
+
+      // After a successful load both flags should be cleared
+      expect(component.weightsNoData).toBeFalse();
+      expect(component.weightsUnavailable).toBeFalse();
     });
   });
 });

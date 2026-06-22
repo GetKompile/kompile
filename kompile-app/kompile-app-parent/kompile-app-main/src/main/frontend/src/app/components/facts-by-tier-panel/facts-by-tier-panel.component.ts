@@ -65,6 +65,9 @@ const TIER_CHIPS: TierChip[] = [
 /** Canonical band order for stacked bar (highest confidence first). */
 const BAND_ORDER = ['ESTABLISHED', 'HIGH', 'PROBABLE', 'SPECULATIVE', 'SUPPRESSED'];
 
+/** D2: If this fraction or more of total counted facts are SPECULATIVE, show the cold-start banner. */
+export const SPECULATIVE_SATURATION_THRESHOLD = 0.8;
+
 @Component({
   selector: 'app-facts-by-tier-panel',
   standalone: true,
@@ -87,6 +90,15 @@ const BAND_ORDER = ['ESTABLISHED', 'HIGH', 'PROBABLE', 'SPECULATIVE', 'SUPPRESSE
       </mat-card-header>
 
       <mat-card-content>
+
+        <!-- D2: SPECULATIVE-saturation cold-start banner -->
+        <div *ngIf="!loading && isSpeculativeSaturated" class="cold-start-banner">
+          <mat-icon class="cold-start-icon">info</mat-icon>
+          <span>
+            All facts are <strong>SPECULATIVE</strong> — expected after one crawl.
+            Confidence climbs as additional crawls corroborate facts toward ESTABLISHED.
+          </span>
+        </div>
 
         <!-- D8: Band-count stacked bar -->
         <div class="band-bar-wrapper" *ngIf="bandSegments.length > 0" aria-label="Band count overview">
@@ -252,6 +264,9 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
   /** D8: Stacked bar segments, derived from the band-summary response. */
   bandSegments: BandSegment[] = [];
 
+  /** D2: Raw band → count map, kept alongside bandSegments to power the saturation check. */
+  bandSummaryRaw: Record<string, number> = {};
+
   /** D7: Temporal filter state — ISO date strings (yyyy-MM-dd) for native date inputs. */
   validFromDate: string = '';
   validToDate: string = '';
@@ -285,6 +300,7 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
     if (changes['factSheetId'] && !changes['factSheetId'].firstChange) {
       this.rows = [];
       this.bandSegments = [];
+      this.bandSummaryRaw = {};
       this.error = null;
       if (this.factSheetId != null) {
         this.loadBandSummary();
@@ -327,10 +343,12 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
     const url = `${this.backendUrl}/kb-grounding/${this.factSheetId}/band-summary`;
     this.http.get<Record<string, number>>(url).subscribe({
       next: (summary) => {
+        this.bandSummaryRaw = summary || {};
         this.bandSegments = this.buildBandSegments(summary);
       },
       error: () => {
         // Non-fatal: stacked bar just stays hidden
+        this.bandSummaryRaw = {};
         this.bandSegments = [];
       },
     });
@@ -406,5 +424,20 @@ export class FactsByTierPanelComponent extends BaseService implements OnInit, On
 
   bandColor(band: string): string {
     return this.BAND_COLORS[band] ?? '#9E9E9E';
+  }
+
+  /**
+   * D2: True when ≥ SPECULATIVE_SATURATION_THRESHOLD of total facts are in the SPECULATIVE band.
+   * Uses bandSummaryRaw (loaded independently) for accuracy; falls back to scanning rows.
+   */
+  get isSpeculativeSaturated(): boolean {
+    const total = Object.values(this.bandSummaryRaw).reduce((s, n) => s + (n || 0), 0);
+    if (total > 0) {
+      const specCount = this.bandSummaryRaw['SPECULATIVE'] || 0;
+      return specCount / total >= SPECULATIVE_SATURATION_THRESHOLD;
+    }
+    if (this.rows.length === 0) return false;
+    const specRows = this.rows.filter(r => r.band === 'SPECULATIVE').length;
+    return specRows / this.rows.length >= SPECULATIVE_SATURATION_THRESHOLD;
   }
 }

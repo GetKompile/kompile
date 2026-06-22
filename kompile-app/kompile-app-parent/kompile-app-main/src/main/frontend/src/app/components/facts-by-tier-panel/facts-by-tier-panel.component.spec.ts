@@ -13,7 +13,7 @@ import { NO_ERRORS_SCHEMA } from '@angular/core';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 
-import { FactsByTierPanelComponent, FactTierRow } from './facts-by-tier-panel.component';
+import { FactsByTierPanelComponent, FactTierRow, SPECULATIVE_SATURATION_THRESHOLD } from './facts-by-tier-panel.component';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -325,5 +325,77 @@ describe('FactsByTierPanelComponent', () => {
     it('returns grey for unknown band', () => {
       expect(component.bandColor('UNKNOWN')).toBe('#9E9E9E');
     });
+  });
+
+  // ── D2: SPECULATIVE-saturation banner ────────────────────────────────────
+
+  describe('D2 — isSpeculativeSaturated (cold-start banner)', () => {
+
+    it('SPECULATIVE_SATURATION_THRESHOLD is 0.8', () => {
+      expect(SPECULATIVE_SATURATION_THRESHOLD).toBeCloseTo(0.8);
+    });
+
+    it('returns false when rows and bandSummaryRaw are both empty', () => {
+      component.rows = [];
+      component.bandSummaryRaw = {};
+      expect(component.isSpeculativeSaturated).toBeFalse();
+    });
+
+    it('returns true when bandSummaryRaw is 100% SPECULATIVE', () => {
+      component.bandSummaryRaw = { SPECULATIVE: 7 };
+      expect(component.isSpeculativeSaturated).toBeTrue();
+    });
+
+    it('returns true when bandSummaryRaw is exactly 80% SPECULATIVE', () => {
+      component.bandSummaryRaw = { SPECULATIVE: 4, HIGH: 1 };
+      expect(component.isSpeculativeSaturated).toBeTrue();
+    });
+
+    it('returns false when bandSummaryRaw is 79% SPECULATIVE', () => {
+      component.bandSummaryRaw = { SPECULATIVE: 79, ESTABLISHED: 21 };
+      expect(component.isSpeculativeSaturated).toBeFalse();
+    });
+
+    it('falls back to row scan when bandSummaryRaw is empty', () => {
+      component.bandSummaryRaw = {};
+      component.rows = [
+        row({ band: 'SPECULATIVE' }),
+        row({ band: 'SPECULATIVE' }),
+        row({ band: 'SPECULATIVE' }),
+        row({ band: 'SPECULATIVE' }),
+        row({ band: 'HIGH' }),
+      ];
+      // 4/5 = 0.8 → at threshold → true
+      expect(component.isSpeculativeSaturated).toBeTrue();
+    });
+
+    it('row scan returns false when below threshold', () => {
+      component.bandSummaryRaw = {};
+      component.rows = [
+        row({ band: 'SPECULATIVE' }),
+        row({ band: 'ESTABLISHED' }),
+        row({ band: 'ESTABLISHED' }),
+      ];
+      // 1/3 ≈ 0.33 → false
+      expect(component.isSpeculativeSaturated).toBeFalse();
+    });
+
+    it('bandSummaryRaw is populated by loadBandSummary response', fakeAsync(() => {
+      component.factSheetId = 11;
+      component.ngOnInit();
+      tick();
+
+      const factsReq = httpMock.expectOne(req => req.url.includes('/facts'));
+      factsReq.flush([]);
+
+      const summaryReq = httpMock.expectOne(req => req.url.includes('/band-summary'));
+      summaryReq.flush({ SPECULATIVE: 9, ESTABLISHED: 1 });
+
+      tick();
+      fixture.detectChanges();
+
+      expect(component.bandSummaryRaw['SPECULATIVE']).toBe(9);
+      expect(component.isSpeculativeSaturated).toBeTrue();
+    }));
   });
 });

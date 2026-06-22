@@ -19,7 +19,7 @@ import { NO_ERRORS_SCHEMA } from '@angular/core';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 
-import { OpinionBrowserComponent, BasisTypeValue } from './opinion-browser.component';
+import { OpinionBrowserComponent, BasisTypeValue, SPECULATIVE_SATURATION_THRESHOLD } from './opinion-browser.component';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -554,6 +554,74 @@ describe('OpinionBrowserComponent', () => {
       expect(filtered.length).toBe(1);
       expect(filtered[0].atomKey).toContain('alice');
       expect(filtered[0].basisType).toBe('STRUCTURAL');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // D2: SPECULATIVE-saturation banner
+  // ─────────────────────────────────────────────────────────────────────────
+
+  describe('D2: SPECULATIVE saturation banner', () => {
+
+    it('SPECULATIVE_SATURATION_THRESHOLD is 0.8', () => {
+      expect(SPECULATIVE_SATURATION_THRESHOLD).toBeCloseTo(0.8);
+    });
+
+    it('isSpeculativeSaturated is false when no rows and no bandSummary', () => {
+      component.rows = [];
+      component.bandSummary = {};
+      expect(component.isSpeculativeSaturated).toBeFalse();
+    });
+
+    it('isSpeculativeSaturated is true when bandSummary is 100% SPECULATIVE', () => {
+      component.bandSummary = { SPECULATIVE: 10 };
+      expect(component.isSpeculativeSaturated).toBeTrue();
+    });
+
+    it('isSpeculativeSaturated is true when bandSummary is exactly 80% SPECULATIVE', () => {
+      component.bandSummary = { SPECULATIVE: 8, PROBABLE: 2 };
+      expect(component.isSpeculativeSaturated).toBeTrue();
+    });
+
+    it('isSpeculativeSaturated is false when bandSummary is 79% SPECULATIVE', () => {
+      component.bandSummary = { SPECULATIVE: 79, ESTABLISHED: 21 };
+      expect(component.isSpeculativeSaturated).toBeFalse();
+    });
+
+    it('isSpeculativeSaturated falls back to row scan when bandSummary is empty', () => {
+      component.bandSummary = {};
+      component.rows = [
+        makeRow({ band: 'SPECULATIVE' }),
+        makeRow({ band: 'SPECULATIVE' }),
+        makeRow({ band: 'SPECULATIVE' }),
+        makeRow({ band: 'SPECULATIVE' }),
+        makeRow({ band: 'ESTABLISHED' }),
+      ];
+      // 4/5 = 0.8 — exactly at threshold → true
+      expect(component.isSpeculativeSaturated).toBeTrue();
+    });
+
+    it('isSpeculativeSaturated is false via row scan when below threshold', () => {
+      component.bandSummary = {};
+      component.rows = [
+        makeRow({ band: 'SPECULATIVE' }),
+        makeRow({ band: 'SPECULATIVE' }),
+        makeRow({ band: 'ESTABLISHED' }),
+        makeRow({ band: 'ESTABLISHED' }),
+        makeRow({ band: 'ESTABLISHED' }),
+      ];
+      // 2/5 = 0.4 → false
+      expect(component.isSpeculativeSaturated).toBeFalse();
+    });
+
+    it('bandSummary takes priority over row-level scan', () => {
+      // bandSummary says 20% SPECULATIVE but rows (if scanned) would say 100%
+      component.bandSummary = { SPECULATIVE: 1, ESTABLISHED: 4 };
+      component.rows = [
+        makeRow({ band: 'SPECULATIVE' }),
+        makeRow({ band: 'SPECULATIVE' }),
+      ];
+      expect(component.isSpeculativeSaturated).toBeFalse();
     });
   });
 });

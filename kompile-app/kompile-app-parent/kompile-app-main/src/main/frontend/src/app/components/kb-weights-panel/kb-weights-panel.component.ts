@@ -23,6 +23,7 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDividerModule } from '@angular/material/divider';
 import { BaseService } from '../../services/base.service';
+import { KbConfigService, KbConfig } from '../../services/kb-config.service';
 
 interface WeightsResponse {
   programId: string;
@@ -84,6 +85,101 @@ interface AuditEvent {
 
       <mat-card-content>
 
+        <!-- D3: Confidence Model card (read-only, collapsible) -->
+        <div class="conf-model-card">
+          <button class="conf-model-toggle" (click)="confidenceModelExpanded = !confidenceModelExpanded"
+                  [attr.aria-expanded]="confidenceModelExpanded">
+            <mat-icon class="conf-toggle-icon">{{ confidenceModelExpanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+            <span class="conf-model-title">Confidence Model</span>
+            <span class="conf-model-subtitle">How facts move from SPECULATIVE → ESTABLISHED</span>
+            <mat-spinner *ngIf="loadingKbConfig" diameter="14" class="conf-spinner"></mat-spinner>
+          </button>
+
+          <div class="conf-model-body" *ngIf="confidenceModelExpanded">
+            <p class="conf-lifecycle">
+              After a first crawl every fact starts <strong>SPECULATIVE</strong> (high uncertainty, low
+              evidence). As subsequent crawls corroborate the same fact its corroboration count rises and
+              the evidence prior pulls the confidence estimate upward through <strong>PROBABLE</strong>
+              and <strong>HIGH</strong> until it reaches <strong>ESTABLISHED</strong>. Weight learning
+              then tunes per-rule PSL/MEBN strengths to match observed evidence.
+            </p>
+
+            <div *ngIf="kbConfig" class="conf-table-wrapper">
+              <table class="conf-table">
+                <thead>
+                  <tr><th>Parameter</th><th>Value</th><th>What it controls</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Evidence prior strength</td>
+                    <td class="conf-val">{{ kbConfig.kbEvidencePriorStrength | number:'1.2-2' }}</td>
+                    <td>How strongly a corroborated fact's belief rises per confirmation</td>
+                  </tr>
+                  <tr>
+                    <td>Structural prior strength</td>
+                    <td class="conf-val">{{ kbConfig.kbStructuralPriorStrength | number:'1.2-2' }}</td>
+                    <td>Base credibility of graph-structural (non-LLM) evidence</td>
+                  </tr>
+                  <tr>
+                    <td>Asserted prior strength</td>
+                    <td class="conf-val">{{ kbConfig.kbAssertedPriorStrength | number:'1.2-2' }}</td>
+                    <td>Trust for facts explicitly asserted by a human</td>
+                  </tr>
+                  <tr class="conf-sep"><td colspan="3"></td></tr>
+                  <tr>
+                    <td>Trust — structured upload</td>
+                    <td class="conf-val">{{ kbConfig.kbTrustStructuredUpload | number:'1.2-2' }}</td>
+                    <td>Source reliability of CSV / JSON uploads</td>
+                  </tr>
+                  <tr>
+                    <td>Trust — PDF / Office</td>
+                    <td class="conf-val">{{ kbConfig.kbTrustPdfOffice | number:'1.2-2' }}</td>
+                    <td>Source reliability of parsed document files</td>
+                  </tr>
+                  <tr>
+                    <td>Trust — LLM extraction</td>
+                    <td class="conf-val">{{ kbConfig.kbTrustLlmExtraction | number:'1.2-2' }}</td>
+                    <td>Reliability of facts inferred by an LLM</td>
+                  </tr>
+                  <tr>
+                    <td>Trust — web scrape</td>
+                    <td class="conf-val">{{ kbConfig.kbTrustWebScrape | number:'1.2-2' }}</td>
+                    <td>Reliability of web-scraped content</td>
+                  </tr>
+                  <tr>
+                    <td>Trust — email body</td>
+                    <td class="conf-val">{{ kbConfig.kbTrustEmailBody | number:'1.2-2' }}</td>
+                    <td>Reliability of email-body facts</td>
+                  </tr>
+                  <tr class="conf-sep"><td colspan="3"></td></tr>
+                  <tr>
+                    <td>PSL default rule weight</td>
+                    <td class="conf-val">{{ kbConfig.kbPslDefaultRuleWeight | number:'1.2-2' }}</td>
+                    <td>Starting weight for PSL inference rules before learning</td>
+                  </tr>
+                  <tr>
+                    <td>Ontology rule weight</td>
+                    <td class="conf-val">{{ kbConfig.kbOntologyRuleWeight | number:'1.2-2' }}</td>
+                    <td>Extra weight given to facts matching the bound ontology</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div *ngIf="kbConfigError" class="conf-error">
+              <mat-icon>error_outline</mat-icon>
+              <span>{{ kbConfigError }}</span>
+            </div>
+
+            <div *ngIf="!loadingKbConfig && !kbConfig && !kbConfigError" class="conf-empty">
+              <mat-icon>info_outline</mat-icon>
+              <span>Confidence model config not yet available.</span>
+            </div>
+          </div>
+        </div>
+
+        <mat-divider class="section-div"></mat-divider>
+
         <!-- Program selector -->
         <div class="controls-row">
           <mat-form-field appearance="outline" class="program-select">
@@ -111,9 +207,21 @@ interface AuditEvent {
         </div>
 
         <!-- Empty / Not available -->
-        <div *ngIf="!loadingWeights && !weightsError && weightRows.length === 0" class="empty-row">
+        <div *ngIf="!loadingWeights && !weightsError && weightRows.length === 0 && !weightsNoData && !weightsUnavailable" class="empty-row">
           <mat-icon>info_outline</mat-icon>
           <span>No weights stored yet for program "{{ selectedProgram }}". Weights appear after the first online learning pass.</span>
+        </div>
+
+        <!-- 404: learning hasn't run yet -->
+        <div *ngIf="!loadingWeights && weightsNoData" class="empty-row">
+          <mat-icon>pending_actions</mat-icon>
+          <span>No weights stored yet for "{{ selectedProgram }}" — learning hasn't run. Run a crawl with online learning enabled to populate weights.</span>
+        </div>
+
+        <!-- 503: backend temporarily unavailable -->
+        <div *ngIf="!loadingWeights && weightsUnavailable" class="empty-row warn-row">
+          <mat-icon color="warn">cloud_off</mat-icon>
+          <span>Weight service temporarily unavailable (503). The backend may still be starting — try refreshing in a moment.</span>
         </div>
 
         <!-- Weights table -->
@@ -241,6 +349,9 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
 
   loadingWeights = false;
   weightsError: string | null = null;
+  /** D3 (404/503 distinction): set when /kb/weights returns 404 (no weights yet vs. truly unavailable) */
+  weightsNoData = false;
+  weightsUnavailable = false;
 
   tuningHistory: AuditEvent[] = [];
   loadingHistory = false;
@@ -250,7 +361,13 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
   loadingMebn = false;
   mebnError: string | null = null;
 
-  constructor(private http: HttpClient) {
+  // D3: Confidence Model card state
+  confidenceModelExpanded = false;
+  kbConfig: KbConfig | null = null;
+  loadingKbConfig = false;
+  kbConfigError: string | null = null;
+
+  constructor(private http: HttpClient, private kbConfigService: KbConfigService) {
     super();
   }
 
@@ -260,6 +377,7 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
       this.selectedProgram = String(this.factSheetId);
     }
     this.loadWeights();
+    this.loadKbConfig();
     if (this.factSheetId != null) {
       this.loadTuningHistory();
       this.loadMebnWeights();
@@ -280,6 +398,8 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
   loadWeights(): void {
     this.loadingWeights = true;
     this.weightsError = null;
+    this.weightsNoData = false;
+    this.weightsUnavailable = false;
 
     const params = new HttpParams().set('programId', this.selectedProgram);
     this.http.get<WeightsResponse>(`${this.backendUrl}/kb/weights`, { params }).subscribe({
@@ -301,9 +421,14 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
       error: (err) => {
         this.loadingWeights = false;
         const status = err?.status;
-        if (status === 404 || status === 503) {
+        if (status === 404) {
+          // 404 = no weights stored yet for this program; learning hasn't run
           this.weightRows = [];
-          this.weightsError = null; // show "no weights yet" empty state
+          this.weightsNoData = true;
+        } else if (status === 503) {
+          // 503 = backend service temporarily unavailable (adapter absent / starting)
+          this.weightRows = [];
+          this.weightsUnavailable = true;
         } else {
           this.weightsError = err?.error?.message || err?.message || 'Failed to load weights';
         }
@@ -366,5 +491,27 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
 
   isFinite(n: number | undefined): boolean {
     return n !== undefined && Number.isFinite(n);
+  }
+
+  /** D3: Load the KbConfig to power the Confidence Model card. */
+  loadKbConfig(): void {
+    this.loadingKbConfig = true;
+    this.kbConfigError = null;
+    this.kbConfigService.getConfig().subscribe({
+      next: (cfg) => {
+        this.loadingKbConfig = false;
+        this.kbConfig = cfg;
+      },
+      error: (err) => {
+        this.loadingKbConfig = false;
+        const status = err?.status;
+        if (status === 404 || status === 503) {
+          // Config not yet persisted — silently suppress; defaults are shown elsewhere
+          this.kbConfig = null;
+        } else {
+          this.kbConfigError = err?.error?.message || err?.message || 'Failed to load config';
+        }
+      },
+    });
   }
 }

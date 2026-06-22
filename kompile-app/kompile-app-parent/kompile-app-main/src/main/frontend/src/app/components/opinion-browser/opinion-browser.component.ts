@@ -86,6 +86,9 @@ interface TierChip {
 
 const BAND_ORDER = ['ESTABLISHED', 'HIGH', 'PROBABLE', 'SPECULATIVE', 'SUPPRESSED'];
 
+/** D2: If this fraction or more of loaded facts are SPECULATIVE, show the cold-start banner. */
+export const SPECULATIVE_SATURATION_THRESHOLD = 0.8;
+
 // ── Simplex geometry helpers (D3) ─────────────────────────────────────────────
 
 /**
@@ -144,6 +147,15 @@ function simplexPoint(
       </mat-card-header>
 
       <mat-card-content>
+        <!-- D2: SPECULATIVE-saturation cold-start banner -->
+        <div *ngIf="!loading && isSpeculativeSaturated" class="cold-start-banner">
+          <mat-icon class="cold-start-icon">info</mat-icon>
+          <span>
+            All facts are <strong>SPECULATIVE</strong> — expected after one crawl.
+            Confidence climbs as additional crawls corroborate facts toward ESTABLISHED.
+          </span>
+        </div>
+
         <!-- Band summary bar -->
         <div class="band-summary" *ngIf="!loading && bandSummaryKeys.length > 0">
           <span *ngFor="let band of bandSummaryKeys" class="band-count"
@@ -456,6 +468,30 @@ function simplexPoint(
       color: var(--text-primary);
       border: 1px solid var(--border-color);
       box-shadow: var(--shadow-sm);
+    }
+
+    /* D2: cold-start / SPECULATIVE-saturation banner */
+    .cold-start-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 8px 16px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      background: rgba(255, 152, 0, 0.10);
+      border: 1px solid rgba(255, 152, 0, 0.35);
+      font-size: 13px;
+      color: var(--text-primary);
+      line-height: 1.45;
+    }
+
+    .cold-start-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+      color: #FF9800;
+      flex-shrink: 0;
+      margin-top: 1px;
     }
 
     .band-summary {
@@ -999,6 +1035,23 @@ export class OpinionBrowserComponent extends BaseService implements OnInit, OnCh
       const bIdx = bi === -1 ? 999 : bi;
       return aIdx - bIdx;
     });
+  }
+
+  /**
+   * D2: True when ≥ SPECULATIVE_SATURATION_THRESHOLD of loaded rows are in the SPECULATIVE band.
+   * Uses bandSummary counts (which include ALL rows, not just the filtered set) for accuracy.
+   * Falls back to scanning rows when bandSummary is empty (first load).
+   */
+  get isSpeculativeSaturated(): boolean {
+    const total = Object.values(this.bandSummary).reduce((s, n) => s + (n || 0), 0);
+    if (total > 0) {
+      const specCount = this.bandSummary['SPECULATIVE'] || 0;
+      return specCount / total >= SPECULATIVE_SATURATION_THRESHOLD;
+    }
+    // Fallback: scan the loaded row set
+    if (this.rows.length === 0) return false;
+    const specRows = this.rows.filter(r => r.band === 'SPECULATIVE').length;
+    return specRows / this.rows.length >= SPECULATIVE_SATURATION_THRESHOLD;
   }
 
   // D3: simplex geometry helpers used in the template

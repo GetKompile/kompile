@@ -25,8 +25,9 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
+import { MatDividerModule } from '@angular/material/divider';
 import { GraphOntologyService, GraphConformanceReport } from '../../services/graph-ontology.service';
-import { ProcessEngineService, OntologySchema } from '../../services/process-engine.service';
+import { ProcessEngineService, OntologySchema, DeriveOntologyRequest } from '../../services/process-engine.service';
 
 /**
  * Bind a governing ontology to a fact sheet's graph and show the conformance report (graph-as-asset
@@ -45,7 +46,8 @@ import { ProcessEngineService, OntologySchema } from '../../services/process-eng
     MatSelectModule,
     MatProgressSpinnerModule,
     MatTooltipModule,
-    MatSnackBarModule
+    MatSnackBarModule,
+    MatDividerModule
   ],
   templateUrl: './graph-ontology-panel.component.html',
   styleUrls: ['./graph-ontology-panel.component.css']
@@ -59,6 +61,11 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
 
   loading = false;
   binding = false;
+
+  // D4: "Derive from graph" state
+  deriving = false;
+  derivedDraft: OntologySchema | null = null;
+  deriveError: string | null = null;
 
   constructor(private ontologyService: GraphOntologyService,
               private processEngine: ProcessEngineService,
@@ -75,13 +82,6 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
         this.loadConformance();
       }
     }
-  }
-
-  private loadOntologies(): void {
-    this.processEngine.listOntologies().subscribe({
-      next: (o) => (this.ontologies = o || []),
-      error: () => { /* listing is best-effort; binding can still be inspected */ }
-    });
   }
 
   loadConformance(): void {
@@ -119,6 +119,52 @@ export class GraphOntologyPanelComponent implements OnInit, OnChanges {
 
   pct(v: number | null | undefined): string {
     return v == null ? '—' : (v * 100).toFixed(1) + '%';
+  }
+
+  /**
+   * D4: Derive an ontology from the current cold graph.
+   * POSTs to POST /api/process/ontology/derive (body = DeriveOntologyRequest).
+   * Returns an unsaved draft that can then be bound via the existing bind UI.
+   */
+  deriveFromGraph(): void {
+    if (this.factSheetId == null || this.deriving) return;
+    this.deriving = true;
+    this.derivedDraft = null;
+    this.deriveError = null;
+
+    const request: DeriveOntologyRequest = {
+      factSheetId: this.factSheetId,
+      includeRelationships: true,
+      includeValidationRules: false,
+    };
+
+    this.processEngine.deriveOntology(request).subscribe({
+      next: (draft) => {
+        this.deriving = false;
+        this.derivedDraft = draft;
+        // Refresh the ontology list so the draft (if saved externally) appears in the picker
+        this.loadOntologies();
+        this.ok('Ontology draft derived — review below and bind it to activate conformance checking.');
+      },
+      error: (e) => {
+        this.deriving = false;
+        this.deriveError = e?.error?.message || e?.message || 'Derivation failed';
+        this.error('Derive failed', e);
+      },
+    });
+  }
+
+  /** D4: dismiss the derived draft panel. */
+  dismissDraft(): void {
+    this.derivedDraft = null;
+    this.deriveError = null;
+  }
+
+  private loadOntologies(): void {
+    this.processEngine.listOntologies().subscribe({
+      next: (o) => (this.ontologies = o || []),
+      error: () => { /* listing is best-effort; binding can still be inspected */ }
+    });
   }
 
   private ok(msg: string): void {

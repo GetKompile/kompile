@@ -269,6 +269,30 @@
   color: var(--text-secondary, #666);
 }
 
+/* ---- D2: cold-start / SPECULATIVE-saturation banner ---- */
+.cold-start-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: rgba(255, 152, 0, 0.10);
+  border: 1px solid rgba(255, 152, 0, 0.35);
+  font-size: 13px;
+  color: var(--text-secondary, #555);
+  line-height: 1.45;
+}
+
+.cold-start-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #FF9800;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
 /* Dark theme overrides */
 body.dark-theme .tier-chip {
   --border-color: #555;

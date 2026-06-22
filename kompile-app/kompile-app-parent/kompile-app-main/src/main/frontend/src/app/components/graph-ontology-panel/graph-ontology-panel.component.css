@@ -122,3 +122,134 @@
   color: #2e7d32;
   margin-top: 12px;
 }
+
+/* ---- D4: Derive from graph section ---- */
+.bind-divider {
+  margin: 10px 0;
+}
+
+.derive-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 4px 0 6px;
+}
+
+.derive-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 1 1 280px;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.6);
+  line-height: 1.45;
+}
+
+.derive-hint-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #7c4dff;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.derived-draft-panel {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border: 1px solid #c5cae9;
+  border-radius: 6px;
+  background: #f3f4ff;
+}
+
+.derived-draft-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.draft-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #3f51b5;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.draft-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.draft-subtitle {
+  font-size: 12px;
+  flex: 1 1 200px;
+}
+
+.draft-dismiss {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.derived-type-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+
+.derived-type-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #e8eaf6;
+  border-radius: 10px;
+  font-size: 11px;
+  color: #1a237e;
+}
+
+.derive-bind-hint {
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.derive-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #c62828;
+  margin-top: 6px;
+}
+
+/* D4: empty graph notice */
+.empty-graph-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.55);
+  padding: 8px 0;
+}
+
+/* Dark-theme variants */
+body.dark-theme .derive-hint {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+body.dark-theme .derived-draft-panel {
+  background: #1a1a2e;
+  border-color: #3949ab;
+}
+
+body.dark-theme .derived-type-chip {
+  background: #1a237e;
+  color: #c5cae9;
+}
+
+body.dark-theme .empty-graph-notice {
+  color: rgba(255, 255, 255, 0.55);
+}

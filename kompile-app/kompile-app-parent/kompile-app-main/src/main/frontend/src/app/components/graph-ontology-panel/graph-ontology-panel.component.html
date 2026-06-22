@@ -30,13 +30,64 @@
                   [disabled]="binding || !report?.ontologyBound">
             <mat-icon>link_off</mat-icon> Unbind
           </button>
-          <button mat-icon-button (click)="loadConformance()" [disabled]="loading" matTooltip="Re-check">
+          <button mat-icon-button (click)="loadConformance()" [disabled]="loading" matTooltip="Re-check conformance">
             <mat-icon>refresh</mat-icon>
           </button>
           <mat-spinner *ngIf="loading || binding" diameter="22"></mat-spinner>
         </div>
-        <p class="muted" *ngIf="ontologies.length === 0">
-          No saved ontologies found — derive or create one under Tools → Business Processes first.
+
+        <!-- D4: Derive from graph CTA -->
+        <mat-divider class="bind-divider"></mat-divider>
+        <div class="derive-row">
+          <div class="derive-hint">
+            <mat-icon class="derive-hint-icon">auto_awesome</mat-icon>
+            <span>
+              No ontology yet? <strong>Derive one from the current graph</strong> to bootstrap entity and
+              relationship types automatically, then bind it above to enable conformance checking.
+            </span>
+          </div>
+          <button mat-stroked-button color="accent" (click)="deriveFromGraph()"
+                  [disabled]="deriving || factSheetId == null"
+                  matTooltip="POST /api/process/ontology/derive — generates a draft ontology from this graph's entity and relationship patterns">
+            <mat-icon>{{ deriving ? 'hourglass_empty' : 'schema' }}</mat-icon>
+            {{ deriving ? 'Deriving…' : 'Derive from graph' }}
+          </button>
+        </div>
+
+        <!-- D4: Derived draft preview -->
+        <div *ngIf="derivedDraft" class="derived-draft-panel">
+          <div class="derived-draft-header">
+            <mat-icon class="draft-icon">draft</mat-icon>
+            <span class="draft-title">Derived draft: <strong>{{ derivedDraft.name || 'Unnamed' }}</strong></span>
+            <span class="draft-subtitle muted">
+              {{ derivedDraft.entityTypes?.length || 0 }} entity types,
+              {{ derivedDraft.relationshipTypes?.length || 0 }} relationship types
+              — unsaved. Bind an existing ontology above or go to Tools → Business Processes to save this draft.
+            </span>
+            <button mat-icon-button (click)="dismissDraft()" matTooltip="Dismiss draft" class="draft-dismiss">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+          <div class="derived-type-list" *ngIf="derivedDraft.entityTypes?.length">
+            <span *ngFor="let et of derivedDraft.entityTypes" class="derived-type-chip">
+              {{ et.name }}<span class="muted" *ngIf="et.classification"> ({{ et.classification }})</span>
+            </span>
+          </div>
+          <p class="muted derive-bind-hint">
+            To activate conformance checking: save this draft under Tools → Business Processes,
+            then select it in the Ontology picker above and click Bind.
+          </p>
+        </div>
+
+        <!-- D4: Derive error -->
+        <div *ngIf="deriveError" class="derive-error">
+          <mat-icon>error_outline</mat-icon>
+          <span>{{ deriveError }}</span>
+        </div>
+
+        <p class="muted" *ngIf="ontologies.length === 0 && !derivedDraft">
+          No saved ontologies — use "Derive from graph" to bootstrap one, or create one under
+          Tools → Business Processes first.
         </p>
       </mat-card-content>
     </mat-card>
@@ -53,57 +104,65 @@
         <p *ngIf="!r.ontologyBound" class="muted">{{ r.message }}</p>
 
         <div *ngIf="r.ontologyBound">
-          <div class="metric-grid">
-            <div class="metric" [class.good]="(r.conformanceScore || 0) >= 0.9" [class.warn]="(r.conformanceScore || 0) < 0.9">
-              <span class="label">Conformance</span><span class="value">{{ pct(r.conformanceScore) }}</span>
-            </div>
-            <div class="metric"><span class="label">Entities checked</span><span class="value">{{ r.entitiesChecked }}</span></div>
-            <div class="metric" [class.warn]="r.nonConformantCount > 0">
-              <span class="label">Non-conformant</span><span class="value">{{ r.nonConformantCount }}</span>
-            </div>
-            <div class="metric" [class.warn]="r.unknownTypeCount > 0">
-              <span class="label">Unknown type</span><span class="value">{{ r.unknownTypeCount }}</span>
-            </div>
-            <div class="metric"><span class="label">Edges checked</span><span class="value">{{ r.edgesChecked }}</span></div>
-            <div class="metric" [class.warn]="r.nonConformantEdgeCount > 0">
-              <span class="label">Non-conformant edges</span><span class="value">{{ r.nonConformantEdgeCount }}</span>
-            </div>
+          <!-- D4: empty-graph guard — 0 entities is not "all good", it means nothing to check -->
+          <div *ngIf="r.entitiesChecked === 0 && r.edgesChecked === 0" class="empty-graph-notice">
+            <mat-icon>info_outline</mat-icon>
+            <span>Graph is empty — nothing to check yet. Crawl some documents to populate the graph, then re-check conformance.</span>
           </div>
 
-          <!-- Node violations -->
-          <div *ngIf="r.violations?.length" class="violations">
-            <h4>Node violations ({{ r.violations.length }})</h4>
-            <table class="v-table">
-              <thead><tr><th>Entity</th><th>Type</th><th>Issues</th></tr></thead>
-              <tbody>
-                <tr *ngFor="let v of r.violations">
-                  <td>{{ v.title || v.nodeId }}</td>
-                  <td>{{ v.entityType }}<span class="badge" *ngIf="v.unknownType">unknown</span></td>
-                  <td>{{ v.messages?.join('; ') }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <ng-container *ngIf="r.entitiesChecked > 0 || r.edgesChecked > 0">
+            <div class="metric-grid">
+              <div class="metric" [class.good]="(r.conformanceScore || 0) >= 0.9" [class.warn]="(r.conformanceScore || 0) < 0.9">
+                <span class="label">Conformance</span><span class="value">{{ pct(r.conformanceScore) }}</span>
+              </div>
+              <div class="metric"><span class="label">Entities checked</span><span class="value">{{ r.entitiesChecked }}</span></div>
+              <div class="metric" [class.warn]="r.nonConformantCount > 0">
+                <span class="label">Non-conformant</span><span class="value">{{ r.nonConformantCount }}</span>
+              </div>
+              <div class="metric" [class.warn]="r.unknownTypeCount > 0">
+                <span class="label">Unknown type</span><span class="value">{{ r.unknownTypeCount }}</span>
+              </div>
+              <div class="metric"><span class="label">Edges checked</span><span class="value">{{ r.edgesChecked }}</span></div>
+              <div class="metric" [class.warn]="r.nonConformantEdgeCount > 0">
+                <span class="label">Non-conformant edges</span><span class="value">{{ r.nonConformantEdgeCount }}</span>
+              </div>
+            </div>
 
-          <!-- Edge violations -->
-          <div *ngIf="r.edgeViolations?.length" class="violations">
-            <h4>Relationship violations ({{ r.edgeViolations.length }})</h4>
-            <table class="v-table">
-              <thead><tr><th>Relationship</th><th>Source → Target</th><th>Reason</th></tr></thead>
-              <tbody>
-                <tr *ngFor="let v of r.edgeViolations">
-                  <td>{{ v.relationshipType }}</td>
-                  <td>{{ v.sourceType }} → {{ v.targetType }}</td>
-                  <td>{{ v.reason }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+            <!-- Node violations -->
+            <div *ngIf="r.violations?.length" class="violations">
+              <h4>Node violations ({{ r.violations.length }})</h4>
+              <table class="v-table">
+                <thead><tr><th>Entity</th><th>Type</th><th>Issues</th></tr></thead>
+                <tbody>
+                  <tr *ngFor="let v of r.violations">
+                    <td>{{ v.title || v.nodeId }}</td>
+                    <td>{{ v.entityType }}<span class="badge" *ngIf="v.unknownType">unknown</span></td>
+                    <td>{{ v.messages?.join('; ') }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
 
-          <p *ngIf="r.nonConformantCount === 0 && r.nonConformantEdgeCount === 0 && r.unknownTypeCount === 0"
-             class="all-good">
-            <mat-icon>check_circle</mat-icon> All checked entities and relationships conform.
-          </p>
+            <!-- Edge violations -->
+            <div *ngIf="r.edgeViolations?.length" class="violations">
+              <h4>Relationship violations ({{ r.edgeViolations.length }})</h4>
+              <table class="v-table">
+                <thead><tr><th>Relationship</th><th>Source → Target</th><th>Reason</th></tr></thead>
+                <tbody>
+                  <tr *ngFor="let v of r.edgeViolations">
+                    <td>{{ v.relationshipType }}</td>
+                    <td>{{ v.sourceType }} → {{ v.targetType }}</td>
+                    <td>{{ v.reason }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p *ngIf="r.nonConformantCount === 0 && r.nonConformantEdgeCount === 0 && r.unknownTypeCount === 0"
+               class="all-good">
+              <mat-icon>check_circle</mat-icon> All checked entities and relationships conform.
+            </p>
+          </ng-container>
         </div>
       </mat-card-content>
     </mat-card>
