@@ -19,9 +19,10 @@
 - **Hybrid, not single-paradigm.** Soft logic (PSL/HL-MRF), discrete Bayesian inference, multi-entity
   Bayesian networks (MEBN), OWL-RL entailment, FOL/Datalog materialization, and learned embeddings
   are composed — each is evidence to the others, not a competing silo.
-- **Learning is continuous and joint.** Rule weights, MEBN parameters, and entity embeddings are
-  **co-trained in one step against a single hybrid-reasoner-ranked consensus signal** (not three
-  disconnected learners), and fact confidence *climbs* with corroboration.
+- **Learning is continuous and joint.** Rule weights and MEBN parameters are **co-trained every
+  cascade against a single consensus signal** — incremental online, not three disconnected learners on
+  re-derived targets; entity embeddings refresh in a dedicated offline job; and fact confidence
+  *climbs* with corroboration.
 
 ---
 
@@ -116,23 +117,29 @@ STEP 4   HL-MRF MAP solve                           (HlMrfMapInference → Scala
 STEP 5   entail inferred facts → dual store         (EntailmentEngine → InferredFactStore)
 STEP 5c  promote bands + ACCUMULATE Beta evidence   (FactPromotionTracker, 6-arg sourceTrust path)
 ─────────  JOINT TRAINING (HybridConsensusTrainer) — the part that was previously fragmented ──────
-  build a ReasoningGraph from the FactStore
-  (throttle) co-train embeddings INTO it            (EmbeddingLearner.learnInto → semantic signal)
-  rank entities with the HybridReasoner             (structural ⊕ semantic → ranked response)
-  derive ONE consensus signal                       (observed targets pulled toward the ranking)
-STEP 5b  co-train PSL weights on the consensus       (PslWeightLearningService.updateOnBatch)
-STEP 9   co-train MEBN params on the SAME consensus  (MebnWeightLearner.learn, throttled)
+  derive ONE consensus signal, EVERY cascade        (aggregate THIS cascade's MAP posteriors per
+                                                      entity → structural importance; pull observed
+                                                      extracted facts toward it — reuses inference,
+                                                      NO 2nd ranking pass → cheap enough per-cascade)
+STEP 5b  co-train PSL weights on the consensus       (PslWeightLearningService.updateOnBatch, 1 step)
+STEP 9   co-train MEBN params on the SAME consensus  (MebnWeightLearner.learn(...,1), online/cascade)
 STEP 6/7 rebuild JustificationIndex; TMS contradiction scan + retraction
 ```
 
 **What changed (and why it matters).** Until recently STEP 5b and STEP 9 trained *independently* —
 each re-derived its own observed targets — and embeddings were a wholly separate offline job, while
-the `HybridReasoner` was used only for explanation. Now, on the throttle, all three learned models
-co-train against **one** `HybridReasoner`-ranked consensus signal: embeddings feed the hybrid's
-semantic score, the hybrid ranks entities, and that single ranked signal supervises PSL *and* MEBN.
-Off-throttle cascades keep the cheap PSL warm-start (the hybrid rank is a full structural inference,
-so it is gated to the throttle). The blend weight is `KbConfig.hybridConsensusWeight`. The reusable
-primitive is `learning.HybridConsensusTrainer` (it can also run the full retrain→re-rank loop).
+the `HybridReasoner` was used only for explanation. Now PSL *and* MEBN co-train against **one**
+consensus signal, **every cascade**: this cascade's MAP posteriors are aggregated per entity into a
+structural-importance score, and the observed extracted facts are pulled toward it
+(`HybridConsensusTrainer.consensusTargets`, blend weight `KbConfig.hybridConsensusWeight`). Because the
+consensus reuses the inference we ALREADY ran — no second ranking pass — it is cheap enough for every
+cascade. So under partial observability (there is no complete target to converge to) both models learn
+**incrementally online**: one warm-started step that accumulates across cascades — the parameter
+analogue of the Beta-evidence fact accumulation — never a from-scratch re-fit. The semantic/embedding
+component is refreshed by the separate offline KGE job, not per cascade, and the full
+structural⊕semantic `HybridReasoner` ranking still supervises retrieval and explanation at query time.
+The reusable primitive is `learning.HybridConsensusTrainer`, whose `train(...)` can additionally run the
+full embedding-co-train → re-rank → retrain loop for offline joint training.
 
 The library offers several reasoning paradigms, composed rather than chosen:
 
@@ -152,7 +159,9 @@ the discrete counterpart to the soft-truth PSL path.
 ### 4.3 MEBN — Multi-Entity Bayesian Networks
 Templated Bayesian fragments (MFrags) instantiated over graph entities, with **noisy-OR** combination
 of parent influences. `MebnInferenceService` does inference; `MebnWeightLearner` learns per-MFrag edge
-strengths by finite-difference gradient (run every N=10 cascades), persisted as
+strengths by mean-normalized minibatch SGD on a finite-difference gradient (one warm-started online
+step every cascade, `learn(...,1)`; `getMebnLearningInterval()` now only throttles model-artifact
+re-staging, not learning), persisted as
 `<dataDir>/graph/reasoning/<factSheet>/mebn-weights.json` (composite keys `mfrag|parent->child`,
 `MebnWeightSerializer` / `MebnWeightPersistenceAdapter`). MEBN handles relational/first-order uncertainty
 the propositional Bayesian net can't template.
@@ -184,14 +193,23 @@ set `semanticWeight=0` for pure structure, or blend for neuro-symbolic ranking.
 ## 5. Learning algorithms
 
 All weight/parameter learners are **composed by `HybridConsensusTrainer`** into one joint step (§4):
-on the throttle they co-train against a single `HybridReasoner`-ranked consensus signal rather than
-each on its own re-derived targets. PSL still runs a cheap warm-start every cascade.
+every cascade they co-train against a single consensus signal (this cascade's MAP posteriors
+aggregated per entity, §4) rather than each on its own re-derived targets — incremental online, one
+warm-started step per cascade.
+
+The structural learners share **one** SGD substrate, not three copies of it:
+`ProjectedGradientOptimizer` (the projected step + convergence test) and a **mean-normalized** gradient
+(sum ÷ batch size, so the learning rate is batch-size-invariant) are reused by
+`StructuredPerceptronLearner`, `PseudolikelihoodLearner` (via the shared `PslRuleGradient`) and
+`MebnWeightLearner` alike. Plain Java, deliberately — for a handful of rule weights / edge strengths the
+ND4J op-dispatch overhead would dwarf the arithmetic. "Online" is simply `maxEpochs=1` of the *same*
+routine; "offline/full-batch" is a larger epoch budget. There is no separate online-vs-batch code path.
 
 | Learner | Learns | Method | Where |
 |---|---|---|---|
-| `StructuredPerceptronLearner` (via `PslWeightLearningService`) | PSL rule weights | structured perceptron, **MAP** (L2/Gaussian prior), **band-aware per-rule prior means** (`kbRuleWeight{Established,High,Probable,Speculative}Mean`) | warm-start every cascade; co-trains on the hybrid consensus on the throttle |
-| `PseudolikelihoodLearner` | PSL rule weights | pseudolikelihood gradient | alternate weight learner |
-| `MebnWeightLearner` | MEBN noisy-OR strengths | finite-difference gradient | co-trained on the hybrid consensus, throttled (N=10) |
+| `StructuredPerceptronLearner` (via `PslWeightLearningService`) | PSL rule weights | structured perceptron, **MAP** (L2/Gaussian prior), **band-aware per-rule prior means** (`kbRuleWeight{Established,High,Probable,Speculative}Mean`), mean-normalized minibatch SGD (shared `ProjectedGradientOptimizer`) | co-trains on the consensus **every cascade** (1 warm-start step) |
+| `PseudolikelihoodLearner` | PSL rule weights | pseudolikelihood gradient (shared `PslRuleGradient` + `ProjectedGradientOptimizer`) | alternate weight learner |
+| `MebnWeightLearner` | MEBN noisy-OR strengths | finite-difference gradient, **mean-normalized minibatch SGD** (shared `ProjectedGradientOptimizer`) | co-trained on the consensus **online every cascade** (`learn(...,1)`) |
 | `FactPromotionTracker` | fact confidence | Beta-Bernoulli evidence accumulation → band climb | every cascade |
 | `Node2VecLearner` | entity embeddings | biased 2nd-order random walks + skip-gram negative sampling (SGNS) | KGE job |
 | `RotatELearner` | entity+relation embeddings | RotatE (complex rotation `e^{iθ}` per relation) | KGE job |
@@ -225,7 +243,7 @@ and isn't dominated by a single noisy cascade.
    (`w: pred(?X) -> derived_pred(?X)`) at `pslDefaultRuleWeight`; ontology DOMAIN/RANGE axioms add
    typed rules (`OntologyToPslRuleCompiler`); `*.psl` files add hand-authored rules.
 2. **Weighting.** The joint trainer (`STEP 5b`/§4) moves each rule weight toward explaining the
-   hybrid-ranked consensus, **MAP-regularized toward a band-aware prior mean** so an ESTABLISHED-band
+   MAP-derived consensus, **MAP-regularized toward a band-aware prior mean** so an ESTABLISHED-band
    rule isn't shrunk like a SPECULATIVE one. Weights persist (`cascadeWeightStore`) and warm-start the
    next cascade — so a rule's strength *accumulates* across cascades, exactly like a fact's confidence.
 
@@ -315,8 +333,8 @@ documents ─▶ crawl (load/convert/route/prep/chunk/extract) ─▶ entities+e
  graph store (asset) ──project──▶ ReasoningGraph ──▶ ENRICHMENT (doReground):
                                                        PSL/HL-MRF MAP ⊕ ontology rules ⊕ embeddings-as-evidence
                                                        → entail facts (dual store) → climb bands (Beta)
-                                                       → JOINT train: hybrid-rank → consensus →
-                                                         co-train PSL + MEBN + embeddings → prune
+                                                       → JOINT train (every cascade): MAP→consensus →
+                                                         co-train PSL + MEBN online → prune
    │                                                                     │
    ▼                                                                     ▼
  graph-RAG retrieval (vector ⊕ PPR ⊕ hybrid)              HybridReasoner ranking (structural ⊕ semantic)
