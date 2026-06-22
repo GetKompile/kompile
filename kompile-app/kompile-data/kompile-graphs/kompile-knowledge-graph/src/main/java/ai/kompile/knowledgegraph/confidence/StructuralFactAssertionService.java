@@ -17,6 +17,7 @@ package ai.kompile.knowledgegraph.confidence;
 
 import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -45,6 +46,32 @@ import java.util.Map;
 @Service
 public class StructuralFactAssertionService {
 
+    @Autowired(required = false)
+    private KbConfigManager kbConfigManager;
+
+    /** Spring constructor. */
+    public StructuralFactAssertionService() {
+    }
+
+    /** Explicit constructor for tests / wiring. */
+    public StructuralFactAssertionService(KbConfigManager kbConfigManager) {
+        this.kbConfigManager = kbConfigManager;
+    }
+
+    private KbConfig cfg() {
+        return kbConfigManager != null ? kbConfigManager.current() : KbConfig.defaults();
+    }
+
+    /** The Beta prior strength W for the basis, from the managed {@link KbConfig}. */
+    private double priorStrengthFor(BasisType basis) {
+        KbConfig c = cfg();
+        return switch (basis) {
+            case STRUCTURAL -> c.structuralPriorStrength;
+            case ASSERTED -> c.assertedPriorStrength;
+            default -> c.evidencePriorStrength;
+        };
+    }
+
     /**
      * Build a basis-aware Opinion from evidence counts.
      *
@@ -59,7 +86,7 @@ public class StructuralFactAssertionService {
             // Certain by construction: belief=1, u=0. baseRate=1 (a human asserted it true).
             return new Opinion(1.0, 0.0, 0.0, 1.0);
         }
-        return Opinion.fromBetaEvidence(pos, neg, baseRate, basis.priorStrength());
+        return Opinion.fromBetaEvidence(pos, neg, baseRate, priorStrengthFor(basis));
     }
 
     /**
@@ -95,7 +122,7 @@ public class StructuralFactAssertionService {
         m.put(GraphProvenanceKeys.BASIS_TYPE, basis.name());
         m.put(GraphProvenanceKeys.EVIDENCE_POS, pos);
         m.put(GraphProvenanceKeys.EVIDENCE_NEG, neg);
-        m.put(GraphProvenanceKeys.PRIOR_STRENGTH, basis.priorStrength());
+        m.put(GraphProvenanceKeys.PRIOR_STRENGTH, priorStrengthFor(basis));
         m.put(GraphProvenanceKeys.SOURCE_TRUST, sourceTrust);
         m.put(GraphProvenanceKeys.VALID_FROM, nowEpochMillis);
         return m;

@@ -15,125 +15,95 @@
  */
 package ai.kompile.knowledgegraph.confidence;
 
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
  * Tier-1 source-trust resolver: maps a source/basis type string to a trust scalar in [0,1].
  *
- * <p>This is the first layer of the four-layer trust composition described in Pillar 5
- * of the confidence-evidence-model design. Only tier-1 (per-type config defaults) is
- * implemented in slice 1. Layers 2–4 (induction-emitted priors, LLM domain assessment,
- * and feedback deltas) are deferred to slice 3.</p>
+ * <p>This is the first layer of the four-layer trust composition described in Pillar 5 of the
+ * confidence-evidence model. All trust values come from the kompile-managed {@link KbConfig}
+ * (file {@code kb-confidence-config.json}, editable via the web UI) — there are no Spring
+ * {@code @Value} bindings and no hard-coded literals here. In non-Spring contexts (plain-Java
+ * tests) the resolver falls back to {@link KbConfig#defaults()}.</p>
  *
  * <h3>Basis-type string conventions</h3>
  * <ul>
- *   <li>{@code LLM_EXTRACTION} — LLM extracted a relation from unstructured text</li>
- *   <li>{@code STRUCTURAL} — Tika/rule-based structural extraction</li>
  *   <li>{@code email-from} — email From: header (highly authoritative)</li>
+ *   <li>{@code email-to-cc} — email To:/Cc: header</li>
  *   <li>{@code structured-upload} — CSV/JSON/XML structured document</li>
+ *   <li>{@code llm-extraction} — LLM extracted a relation from unstructured text</li>
  *   <li>{@code web-scrape} — web scrape or crawl from arbitrary HTML</li>
  *   <li>{@code default} — unknown or uncategorised source</li>
  * </ul>
- *
- * <h3>Configuration</h3>
- * <p>Defaults are overridable via {@code kompile.kb.source-trust.*} properties.
- * Matching is case-insensitive on the source-type string.</p>
  */
 @Component
 public class SourceTrustResolver {
 
-    // Default trust scalars — all overridable via properties.
+    @Autowired(required = false)
+    private KbConfigManager kbConfigManager;
 
-    @Value("${kompile.kb.source-trust.email-from:0.95}")
-    private double trustEmailFrom;
+    /** Spring constructor (config manager injected by field). */
+    public SourceTrustResolver() {
+    }
 
-    @Value("${kompile.kb.source-trust.email-to-cc:0.90}")
-    private double trustEmailToCC;
+    /** Explicit constructor for tests / wiring. */
+    public SourceTrustResolver(KbConfigManager kbConfigManager) {
+        this.kbConfigManager = kbConfigManager;
+    }
 
-    @Value("${kompile.kb.source-trust.structured-upload:0.85}")
-    private double trustStructuredUpload;
-
-    @Value("${kompile.kb.source-trust.pdf-office:0.70}")
-    private double trustPdfOffice;
-
-    @Value("${kompile.kb.source-trust.email-body:0.65}")
-    private double trustEmailBody;
-
-    @Value("${kompile.kb.source-trust.llm-extraction:0.60}")
-    private double trustLlmExtraction;
-
-    @Value("${kompile.kb.source-trust.web-scrape:0.45}")
-    private double trustWebScrape;
-
-    @Value("${kompile.kb.source-trust.default:0.50}")
-    private double trustDefault;
+    private KbConfig cfg() {
+        return kbConfigManager != null ? kbConfigManager.current() : KbConfig.defaults();
+    }
 
     /**
-     * Resolve the trust scalar for the given source/basis type.
+     * Resolve the trust scalar for the given source/basis type from the managed config.
      *
-     * <p>Matching is case-insensitive. When no recognised type matches, the default
-     * ({@code kompile.kb.source-trust.default}) is returned.</p>
+     * <p>Matching is case-insensitive. When no recognised type matches, the configured default
+     * ({@code kbTrustDefault}) is returned.</p>
      *
-     * @param sourceType the basis/source type string (e.g. "LLM_EXTRACTION", "email-from")
+     * @param sourceType the basis/source type string (e.g. "email-from", "llm-extraction")
      * @return trust in [0,1]
      */
     public double trustFor(String sourceType) {
+        KbConfig c = cfg();
         if (sourceType == null || sourceType.isBlank()) {
-            return trustDefault;
+            return c.trustDefault;
         }
-        String key = sourceType.trim().toLowerCase();
-        switch (key) {
+        switch (sourceType.trim().toLowerCase()) {
             case "email-from":
             case "email_from":
-                return trustEmailFrom;
+                return c.trustEmailFrom;
             case "email-to-cc":
             case "email_to_cc":
             case "email-to":
             case "email_to":
             case "email-cc":
             case "email_cc":
-                return trustEmailToCC;
+                return c.trustEmailToCc;
             case "structured-upload":
             case "structured_upload":
             case "structured":
-                return trustStructuredUpload;
+                return c.trustStructuredUpload;
             case "pdf-office":
             case "pdf_office":
             case "pdf":
             case "office":
-                return trustPdfOffice;
+                return c.trustPdfOffice;
             case "email-body":
             case "email_body":
-                return trustEmailBody;
+                return c.trustEmailBody;
             case "llm_extraction":
             case "llm-extraction":
             case "llm":
-                return trustLlmExtraction;
+                return c.trustLlmExtraction;
             case "web-scrape":
             case "web_scrape":
             case "web":
             case "crawl":
-                return trustWebScrape;
+                return c.trustWebScrape;
             default:
-                return trustDefault;
+                return c.trustDefault;
         }
-    }
-
-    /**
-     * No-arg constructor for plain-Java test contexts (no Spring; uses hardcoded defaults).
-     * The Spring constructor is used in production (properties injected via @Value).
-     */
-    public SourceTrustResolver() {
-        // Spring will inject the @Value fields; this no-arg ctor also works for tests
-        // that new SourceTrustResolver() directly (fields stay at their initialised defaults).
-        this.trustEmailFrom       = 0.95;
-        this.trustEmailToCC       = 0.90;
-        this.trustStructuredUpload = 0.85;
-        this.trustPdfOffice       = 0.70;
-        this.trustEmailBody       = 0.65;
-        this.trustLlmExtraction   = 0.60;
-        this.trustWebScrape       = 0.45;
-        this.trustDefault         = 0.50;
     }
 }
