@@ -175,6 +175,18 @@ export class FolRulesBrowserComponent implements OnChanges {
     }
   }
 
+  /** Tooltip text explaining the origin of a rule kind. */
+  kindTooltip(kind: string): string {
+    switch (kind) {
+      case 'ONTOLOGY':
+        return 'Ontology rule — derived from the bound ontology\'s DOMAIN/RANGE axioms (e.g. a typing rule asserting the subject of works_at is a Person). Generated at the ontology rule weight.';
+      case 'FILE_PSL':
+        return 'File rule — hand-authored in a project .psl file. Use these to encode domain knowledge the auto-generator cannot infer.';
+      default:
+        return 'PSL rule — auto-generated each cascade from the FactStore. One soft propagation rule per observed predicate, starting at the default weight and then weight-learned online.';
+    }
+  }
+
   private applyFilter(): void {
     if (this.kindFilter === 'ALL') {
       this.filteredRules = [...this.allRules];

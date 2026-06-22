@@ -237,3 +237,62 @@ body.dark-theme .conf-table td {
 body.dark-theme .conf-val {
   color: #90caf9;
 }
+
+/* ---- How weights are learned — collapsible explainer ---- */
+.how-learned-card {
+  margin-top: 8px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border-color, #e0e0e0);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.how-learned-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-body, #fafafa);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+  color: var(--text-primary, #212121);
+  transition: background 0.15s;
+}
+
+.how-learned-toggle:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+.how-learned-body {
+  padding: 12px 16px 14px;
+  background: var(--bg-surface, #fff);
+  border-top: 1px solid var(--border-color, #e0e0e0);
+}
+
+.how-learned-text {
+  font-size: 13px;
+  color: var(--text-secondary, #555);
+  line-height: 1.6;
+  margin: 0;
+}
+
+body.dark-theme .how-learned-card {
+  border-color: #444;
+}
+
+body.dark-theme .how-learned-toggle {
+  background: #2a2a2a;
+  color: #e0e0e0;
+}
+
+body.dark-theme .how-learned-toggle:hover {
+  background: #333;
+}
+
+body.dark-theme .how-learned-body {
+  background: #1e1e1e;
+  border-top-color: #444;
+}

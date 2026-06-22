@@ -4,25 +4,107 @@
   color: var(--text-primary, #1a1f36);
 }
 
+/* ── Header ── */
 .console-header {
   margin-bottom: 16px;
 }
 
-.console-header h3 {
+.header-title-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 4px;
+  margin-bottom: 12px;
+}
+
+.header-title-row h3 {
+  margin: 0;
   font-size: 16px;
   font-weight: 700;
 }
 
-.console-header .subtitle {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-secondary, #6b7280);
+.header-icon {
+  color: var(--accent-color, #3f51b5);
 }
 
+/* ── Explainer card ── */
+.explainer-card {
+  background: var(--surface-alt, #f8f9fa);
+  border: 1px solid var(--border-color, #e3e8ee);
+  border-left: 4px solid var(--accent-color, #3f51b5);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.explainer-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text-primary, #1a1f36);
+  margin-bottom: 8px;
+}
+
+.explainer-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--accent-color, #3f51b5);
+}
+
+.explainer-body {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary, #444c63);
+}
+
+.explainer-body strong {
+  color: var(--text-primary, #1a1f36);
+}
+
+/* ── Op badges row inside explainer ── */
+.op-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.op-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+}
+
+.op-badge mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+.badge-verify  { background: rgba(41, 128, 185, 0.12); color: #2980b9; }
+.badge-query   { background: rgba(142, 68, 173, 0.12); color: #8e44ad; }
+.badge-explain { background: rgba(230, 126, 34, 0.12); color: #e67e22; }
+.badge-assert  { background: rgba(39, 174, 96, 0.12);  color: #27ae60; }
+
+/* ── Shared controls (fact sheet) ── */
+.shared-controls {
+  margin-bottom: 8px;
+}
+
+.factsheet-field {
+  width: 320px;
+  max-width: 100%;
+}
+
+/* ── Layout ── */
 .console-layout {
   display: flex;
   gap: 16px;
@@ -31,8 +113,283 @@
 .console-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
+/* ── Panel headers ── */
+.op-panel {
+  border-radius: 6px !important;
+  overflow: hidden;
+}
+
+.verify-panel  { border-left: 3px solid #2980b9; }
+.query-panel   { border-left: 3px solid #8e44ad; }
+.explain-panel { border-left: 3px solid #e67e22; }
+.assert-panel  { border-left: 3px solid #27ae60; }
+
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.op-name {
+  font-weight: 600;
+}
+
+.op-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.icon-verify  { color: #2980b9; }
+.icon-query   { color: #8e44ad; }
+.icon-explain { color: #e67e22; }
+.icon-assert  { color: #27ae60; }
+
+.panel-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary, #6b7280);
+}
+
+/* ── Section body ── */
+.section-body {
+  padding: 12px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+/* ── Syntax hint box ── */
+.syntax-hint {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  background: var(--surface-alt, #f8f9fa);
+  border: 1px solid var(--border-color, #e3e8ee);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-secondary, #444c63);
+  line-height: 1.6;
+}
+
+.hint-icon {
+  font-size: 15px;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--accent-color, #3f51b5);
+  margin-top: 2px;
+}
+
+.syntax-hint code {
+  font-family: 'Fira Mono', 'Consolas', monospace;
+  background: var(--code-bg, rgba(0,0,0,0.06));
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 11.5px;
+}
+
+/* ── Verify result ── */
+.result-block {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.result-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.verdict-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.verdict-label {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.3px;
+}
+
+.conf {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.verdict-supported { background: rgba(39, 174, 96, 0.1);   border-color: rgba(39, 174, 96, 0.3);   }
+.verdict-refuted   { background: rgba(231, 76, 60, 0.1);   border-color: rgba(231, 76, 60, 0.3);   }
+.verdict-unknown   { background: rgba(127, 140, 141, 0.1); border-color: rgba(127, 140, 141, 0.3); }
+
+.evidence-list {
+  font-size: 12px;
+}
+
+.provenance-note {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.tiny-icon {
+  font-size: 13px;
+  width: 13px;
+  height: 13px;
+}
+
+/* ── Query: conjunct rows ── */
+.conjuncts-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.conjunct-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.conjunct-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.conjunct-fields {
+  display: flex;
+  gap: 8px;
+}
+
+.conjunct-pred {
+  flex: 1 1 38%;
+}
+
+.conjunct-args {
+  flex: 1 1 55%;
+}
+
+.remove-conjunct-btn {
+  width: 28px;
+  height: 28px;
+  line-height: 28px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.conjunct-actions {
+  margin-top: -4px;
+}
+
+.no-bindings-note {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+  font-style: italic;
+}
+
+.bindings-table {
+  width: 100%;
+}
+
+.binding-entry {
+  display: inline-block;
+  margin-right: 12px;
+}
+
+.binding-conf {
+  margin-left: 3px;
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+}
+
+/* ── Explain: depth selector ── */
+.depth-row {
+  display: flex;
+  gap: 8px;
+}
+
+.depth-field {
+  width: 220px;
+}
+
+/* ── Assert quick-mode row ── */
+.quick-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.quick-mode-label {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+  font-weight: 600;
+}
+
+.mode-active {
+  border-color: var(--accent-color, #3f51b5) !important;
+  color: var(--accent-color, #3f51b5) !important;
+}
+
+/* ── Assert result ── */
+.assert-accepted {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #27ae60;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.assert-rejected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #e74c3c;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.assert-msg {
+  font-weight: 400;
+  color: var(--text-secondary, #6b7280);
+}
+
+.value-change {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.value-change code {
+  font-family: 'Fira Mono', 'Consolas', monospace;
+  background: var(--code-bg, rgba(0,0,0,0.06));
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 11.5px;
+}
+
+/* ── History sidebar ── */
 .history-sidebar {
   width: 220px;
   flex-shrink: 0;
@@ -74,9 +431,9 @@
   font-size: 10px;
 }
 
-.type-verify { color: #2980b9; }
-.type-query { color: #8e44ad; }
-.type-assert { color: #27ae60; }
+.type-verify  { color: #2980b9; }
+.type-query   { color: #8e44ad; }
+.type-assert  { color: #27ae60; }
 .type-explain { color: #e67e22; }
 
 .history-time {
@@ -95,47 +452,19 @@
   color: var(--text-secondary, #6b7280);
 }
 
-.section-body {
-  padding: 12px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+/* ── Dark theme overrides ── */
+body.dark-theme .explainer-card {
+  background: var(--surface-alt, rgba(255,255,255,0.04));
+  border-color: var(--border-color, rgba(255,255,255,0.12));
+  border-left-color: var(--accent-color, #7986cb);
 }
 
-.full-width {
-  width: 100%;
+body.dark-theme .syntax-hint {
+  background: var(--surface-alt, rgba(255,255,255,0.04));
+  border-color: var(--border-color, rgba(255,255,255,0.12));
 }
 
-.verify-result, .query-result, .assert-result {
-  margin-top: 8px;
+body.dark-theme .syntax-hint code,
+body.dark-theme .value-change code {
+  background: rgba(255,255,255,0.1);
 }
-
-.verdict-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  margin-bottom: 8px;
-}
-
-.verdict-label {
-  font-weight: 700;
-  font-size: 13px;
-}
-
-.conf {
-  font-size: 12px;
-  color: var(--text-secondary, #6b7280);
-}
-
-.verdict-supported { background: rgba(39, 174, 96, 0.1); }
-.verdict-refuted { background: rgba(231, 76, 60, 0.1); }
-.verdict-unknown { background: rgba(127, 140, 141, 0.1); }
-
-.bindings-table {
-  width: 100%;
-}
-
-.success { color: #27ae60; font-weight: 600; }
-.warn { color: #e74c3c; font-weight: 600; }

@@ -4,84 +4,259 @@
   -->
 
 <div class="pipelines-panel">
+
+  <!-- Panel description -->
   <p class="intro">
-    Channel → graph pipelines update the graph from inbound channel messages (slack, email, …)
-    without a full crawl. Each runs its steps on a matching message into the target fact sheet.
+    <mat-icon class="intro-icon" inline>hub</mat-icon>
+    <strong>Channel Pipelines</strong> connect live channels (Slack, email, webhooks, …) directly to
+    your knowledge graph. When a matching message arrives it is processed immediately — no full crawl
+    needed. Each pipeline listens on one or more channels, optionally filters by sender or content,
+    then runs a set of steps (e.g. entity extraction) into a target fact sheet.
   </p>
+
+  <mat-divider></mat-divider>
 
   <div class="toolbar">
     <button mat-stroked-button (click)="refresh()" [disabled]="loading">
       <mat-icon>refresh</mat-icon> Refresh
     </button>
-    <button mat-raised-button color="primary" (click)="openCreate()">
+    <button mat-raised-button color="primary" (click)="openCreate()" [disabled]="showCreate">
       <mat-icon>add</mat-icon> New pipeline
     </button>
     <mat-spinner *ngIf="loading" diameter="22"></mat-spinner>
   </div>
 
-  <!-- Create form -->
+  <!-- ─── Guided wizard ─────────────────────────────────────────────────── -->
   <mat-card *ngIf="showCreate" class="create-card">
-    <mat-card-header><mat-card-title>New pipeline</mat-card-title></mat-card-header>
+    <mat-card-header>
+      <mat-card-title>
+        <mat-icon>account_tree</mat-icon>
+        New Channel Pipeline
+      </mat-card-title>
+      <mat-card-subtitle>Three quick steps — no configuration files needed.</mat-card-subtitle>
+    </mat-card-header>
+
     <mat-card-content>
-      <div class="form-row">
-        <mat-form-field appearance="outline" class="grow">
-          <mat-label>Name</mat-label>
-          <input matInput [(ngModel)]="draft.pipelineName" placeholder="e.g. Slack support → graph">
-        </mat-form-field>
-        <mat-form-field appearance="outline">
-          <mat-label>Channels (comma-separated)</mat-label>
-          <input matInput [(ngModel)]="draft.triggerChannels" placeholder="slack,email">
-        </mat-form-field>
-        <mat-form-field appearance="outline">
-          <mat-label>Target fact sheet</mat-label>
-          <input matInput type="number" [(ngModel)]="draft.targetFactSheetId"
-                 [placeholder]="factSheetId != null ? ('active: ' + factSheetId) : 'optional'">
-        </mat-form-field>
-        <mat-form-field appearance="outline" class="narrow">
-          <mat-label>Priority</mat-label>
-          <input matInput type="number" [(ngModel)]="draft.priority">
-        </mat-form-field>
-      </div>
+      <mat-stepper #stepper orientation="horizontal" linear="false" class="wizard-stepper">
 
-      <mat-form-field appearance="outline" class="full">
-        <mat-label>Processing steps (JSON)</mat-label>
-        <textarea matInput rows="4" [(ngModel)]="draftSteps"></textarea>
-      </mat-form-field>
+        <!-- ── Step 1: Name & enable ──────────────────────────────────── -->
+        <mat-step label="Name & Status" [completed]="step1Valid">
+          <div class="step-body">
+            <div class="step-explain">
+              <mat-icon class="step-icon">label</mat-icon>
+              <div>
+                <strong>Give this pipeline a name.</strong>
+                <span class="step-hint">
+                  A descriptive name makes it easy to identify the pipeline in the list, e.g.
+                  <em>"Slack #support → KB"</em> or <em>"Email digest → product graph"</em>.
+                </span>
+              </div>
+            </div>
 
-      <mat-form-field appearance="outline" class="full">
-        <mat-label>Message filter (JSON, optional)</mat-label>
-        <textarea matInput rows="2" [(ngModel)]="draftFilter" placeholder='{ "userName": "alice" }'></textarea>
-      </mat-form-field>
+            <mat-form-field appearance="outline" class="full">
+              <mat-label>Pipeline name</mat-label>
+              <input matInput [(ngModel)]="wizard.pipelineName"
+                     placeholder="e.g. Slack support → knowledge graph"
+                     required>
+              <mat-hint>Required — shown in the pipelines table.</mat-hint>
+            </mat-form-field>
 
-      <div class="form-bottom">
-        <mat-slide-toggle [(ngModel)]="draft.requireApproval">Require approval</mat-slide-toggle>
-        <span class="spacer"></span>
-        <button mat-button (click)="showCreate = false">Cancel</button>
-        <button mat-raised-button color="primary" (click)="create()"
-                [disabled]="saving || !draft.pipelineName?.trim()">Create</button>
-      </div>
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="wizard.enabled" color="primary">
+                Enable pipeline immediately
+              </mat-slide-toggle>
+              <span class="toggle-hint">You can toggle this any time from the table.</span>
+            </div>
+
+            <div class="step-actions">
+              <button mat-raised-button color="primary" matStepperNext [disabled]="!step1Valid">
+                Next <mat-icon>chevron_right</mat-icon>
+              </button>
+            </div>
+          </div>
+        </mat-step>
+
+        <!-- ── Step 2: Trigger channels & filter ─────────────────────── -->
+        <mat-step label="Trigger &amp; Filter" [completed]="step2Valid">
+          <div class="step-body">
+            <div class="step-explain">
+              <mat-icon class="step-icon">notifications_active</mat-icon>
+              <div>
+                <strong>Which channels should fire this pipeline?</strong>
+                <span class="step-hint">
+                  Enter channel names separated by commas, e.g. <code>slack,email</code>.
+                  Leave blank to match all channels. The filter fields below let you narrow
+                  which messages actually trigger the pipeline — both are optional.
+                </span>
+              </div>
+            </div>
+
+            <mat-form-field appearance="outline" class="full">
+              <mat-label>Channels (comma-separated)</mat-label>
+              <input matInput [(ngModel)]="wizard.triggerChannels"
+                     placeholder="slack,email  — or leave blank for all channels">
+              <mat-hint>Matched as a substring, so "slack" matches any channel name containing "slack".</mat-hint>
+            </mat-form-field>
+
+            <div class="filter-section">
+              <p class="filter-label">
+                <mat-icon inline>filter_alt</mat-icon>
+                Message filter <span class="optional-badge">optional</span>
+              </p>
+              <p class="filter-desc">
+                Only messages that pass <em>both</em> non-blank filters will trigger the pipeline.
+                Leave both blank to accept every message.
+              </p>
+              <div class="filter-row">
+                <mat-form-field appearance="outline" class="grow">
+                  <mat-label>Sender contains</mat-label>
+                  <input matInput [(ngModel)]="wizard.senderContains"
+                         placeholder="e.g. alice@example.com">
+                  <mat-hint>Matches sender address or username as a substring.</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline" class="grow">
+                  <mat-label>Message body contains</mat-label>
+                  <input matInput [(ngModel)]="wizard.contentContains"
+                         placeholder="e.g. incident">
+                  <mat-hint>Matches the message text as a substring.</mat-hint>
+                </mat-form-field>
+              </div>
+            </div>
+
+            <div class="step-actions">
+              <button mat-button matStepperPrevious>
+                <mat-icon>chevron_left</mat-icon> Back
+              </button>
+              <button mat-raised-button color="primary" matStepperNext>
+                Next <mat-icon>chevron_right</mat-icon>
+              </button>
+            </div>
+          </div>
+        </mat-step>
+
+        <!-- ── Step 3: Target, actions & create ──────────────────────── -->
+        <mat-step label="Target &amp; Actions">
+          <div class="step-body">
+            <div class="step-explain">
+              <mat-icon class="step-icon">schema</mat-icon>
+              <div>
+                <strong>Where should the results go, and what should the pipeline do?</strong>
+                <span class="step-hint">
+                  Choose the target fact sheet that will receive the graph updates,
+                  select the processing step(s), and set any advanced options.
+                </span>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <mat-form-field appearance="outline" class="grow">
+                <mat-label>Target fact sheet ID</mat-label>
+                <input matInput type="number" [(ngModel)]="wizard.targetFactSheetId"
+                       [placeholder]="factSheetId != null ? ('active graph: ' + factSheetId) : 'enter fact sheet ID'">
+                <mat-hint>
+                  The fact sheet that graph updates are written into.
+                  <span *ngIf="factSheetId != null">
+                    Defaults to the currently active graph (ID&nbsp;{{ factSheetId }}).
+                  </span>
+                </mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="narrow">
+                <mat-label>Priority</mat-label>
+                <input matInput type="number" [(ngModel)]="wizard.priority" placeholder="0">
+                <mat-hint>Higher = processed first.</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <!-- Processing steps — checkbox per step type (only EXTRACT_GRAPH today) -->
+            <div class="steps-section">
+              <p class="steps-label">
+                <mat-icon inline>bolt</mat-icon>
+                Processing steps
+              </p>
+              <p class="steps-desc">
+                Select the operations that will run on each matched message.
+                More step types will be available in a future release.
+              </p>
+
+              <div class="step-check-row">
+                <mat-checkbox [(ngModel)]="wizard.extractGraph" color="primary">
+                  <span class="step-check-title">Extract entities &amp; relationships from the message</span>
+                </mat-checkbox>
+                <span class="step-check-hint">
+                  Runs the graph extraction pipeline on the message body — entities, relationships,
+                  and facts are added to the target fact sheet automatically.
+                </span>
+              </div>
+
+              <p *ngIf="!wizard.extractGraph" class="no-steps-warn">
+                <mat-icon inline>warning</mat-icon>
+                No processing steps selected. The pipeline will trigger but do nothing.
+              </p>
+            </div>
+
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="wizard.requireApproval" color="accent">
+                Require human approval before applying graph updates
+              </mat-slide-toggle>
+              <span class="toggle-hint">
+                When on, updates are queued for review rather than applied immediately.
+              </span>
+            </div>
+
+            <mat-divider class="action-divider"></mat-divider>
+
+            <div class="step-actions final-actions">
+              <button mat-button matStepperPrevious>
+                <mat-icon>chevron_left</mat-icon> Back
+              </button>
+              <button mat-button (click)="cancelCreate()">Cancel</button>
+              <button mat-raised-button color="primary"
+                      (click)="create()"
+                      [disabled]="saving || !step1Valid">
+                <mat-icon>add_circle</mat-icon>
+                {{ saving ? 'Creating…' : 'Create pipeline' }}
+              </button>
+            </div>
+          </div>
+        </mat-step>
+
+      </mat-stepper>
     </mat-card-content>
   </mat-card>
 
-  <!-- Pipelines list -->
+  <!-- ─── Pipelines list ────────────────────────────────────────────────── -->
   <div *ngIf="pipelines.length === 0 && !loading" class="empty-state">
     <mat-icon>account_tree</mat-icon>
-    <p>No channel pipelines yet. Create one to feed graph updates from a channel.</p>
+    <p>No channel pipelines yet. Create one to stream graph updates from a channel.</p>
   </div>
 
   <table class="pl-table" *ngIf="pipelines.length > 0">
     <thead>
-      <tr><th>On</th><th>Name</th><th>Channels</th><th>Steps</th><th>Target</th><th>Approval</th><th></th></tr>
+      <tr>
+        <th>On</th>
+        <th>Name</th>
+        <th>Channels</th>
+        <th>Steps</th>
+        <th>Target</th>
+        <th>Approval</th>
+        <th></th>
+      </tr>
     </thead>
     <tbody>
       <tr *ngFor="let p of pipelines">
-        <td><mat-slide-toggle [checked]="!!p.enabled" (change)="toggle(p)"></mat-slide-toggle></td>
+        <td>
+          <mat-slide-toggle [checked]="!!p.enabled" (change)="toggle(p)"></mat-slide-toggle>
+        </td>
         <td>{{ p.pipelineName }}</td>
         <td>{{ p.triggerChannels || 'any' }}</td>
         <td class="steps">{{ stepsSummary(p) }}</td>
         <td>{{ p.targetFactSheetId != null ? ('fs #' + p.targetFactSheetId) : '—' }}</td>
         <td>{{ p.requireApproval ? 'yes' : 'no' }}</td>
-        <td><button mat-icon-button color="warn" (click)="remove(p)" matTooltip="Delete"><mat-icon>delete</mat-icon></button></td>
+        <td>
+          <button mat-icon-button color="warn" (click)="remove(p)" matTooltip="Delete pipeline">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </td>
       </tr>
     </tbody>
   </table>

@@ -78,7 +78,7 @@ interface AuditEvent {
           <mat-icon>scale</mat-icon> Learned Weights
         </mat-card-title>
         <mat-card-subtitle>
-          PSL / MEBN rule weights learned by online weight tuning
+          PSL / MEBN rule weights updated incrementally after every grounding cascade — weights persist and warm-start the next run
           <span *ngIf="currentVersion > 0">(v{{ currentVersion }})</span>
         </mat-card-subtitle>
       </mat-card-header>
@@ -100,8 +100,11 @@ interface AuditEvent {
               After a first crawl every fact starts <strong>SPECULATIVE</strong> (high uncertainty, low
               evidence). As subsequent crawls corroborate the same fact its corroboration count rises and
               the evidence prior pulls the confidence estimate upward through <strong>PROBABLE</strong>
-              and <strong>HIGH</strong> until it reaches <strong>ESTABLISHED</strong>. Weight learning
-              then tunes per-rule PSL/MEBN strengths to match observed evidence.
+              and <strong>HIGH</strong> until it reaches <strong>ESTABLISHED</strong>. After each
+              grounding cascade the PSL rule weights and MEBN edge strengths are updated by one
+              warm-started gradient step whose signal is the cascade's MAP posteriors aggregated per
+              entity (consensus targets) — not raw observed evidence — so the weights reflect the
+              structural importance of each rule inside the soft-logic solve.
             </p>
 
             <div *ngIf="kbConfig" class="conf-table-wrapper">
@@ -175,6 +178,34 @@ interface AuditEvent {
               <mat-icon>info_outline</mat-icon>
               <span>Confidence model config not yet available.</span>
             </div>
+          </div>
+        </div>
+
+        <!-- How weights are learned — collapsible explainer -->
+        <div class="how-learned-card">
+          <button class="how-learned-toggle" (click)="howLearnedExpanded = !howLearnedExpanded"
+                  [attr.aria-expanded]="howLearnedExpanded">
+            <mat-icon class="conf-toggle-icon">{{ howLearnedExpanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+            <span class="conf-model-title">How weights are learned</span>
+            <span class="conf-model-subtitle">Online incremental training — every grounding cascade</span>
+          </button>
+
+          <div class="how-learned-body" *ngIf="howLearnedExpanded">
+            <p class="how-learned-text">
+              After every grounding cascade the system runs <strong>one warm-started gradient step</strong>
+              for both PSL rule weights and MEBN noisy-OR edge strengths — it never discards and refits
+              from scratch. Instead, weights accumulate across cascades the same way Beta-evidence
+              accumulates for individual facts: each cascade nudges the parameters a little closer to the
+              consensus signal. The shared optimiser is a <strong>mean-normalised projected-gradient SGD</strong>
+              (gradient = sum ÷ batch size, so the learning rate is batch-size-invariant; a projection step
+              keeps weights in a valid range). The training signal is the cascade's MAP posteriors
+              aggregated per entity, not raw extracted facts — this pulls rule weights toward the rules
+              that actually matter in the soft-logic solve. PSL weights additionally use
+              <strong>band-aware MAP regularisation</strong>: an ESTABLISHED-band rule is regularised
+              toward a higher prior mean than a SPECULATIVE-band rule, so well-corroborated rules are not
+              shrunk toward the same floor as uncertain ones. A weight here represents how strongly that
+              rule is trusted when the soft-logic system solves for inferred beliefs.
+            </p>
           </div>
         </div>
 
@@ -256,7 +287,7 @@ interface AuditEvent {
               <mat-icon>refresh</mat-icon>
             </button>
           </div>
-          <p class="mebn-description">MFrag noisy-OR edge strengths learned by gradient descent (source: mebn-weights.json)</p>
+          <p class="mebn-description">MFrag noisy-OR edge strengths updated online each grounding cascade via finite-difference gradient descent, sharing the same mean-normalised SGD substrate as PSL (persisted to mebn-weights.json)</p>
 
           <div *ngIf="loadingMebn" class="spinner-row">
             <mat-spinner diameter="20"></mat-spinner>
@@ -363,6 +394,7 @@ export class KbWeightsPanelComponent extends BaseService implements OnInit, OnCh
 
   // D3: Confidence Model card state
   confidenceModelExpanded = false;
+  howLearnedExpanded = false;
   kbConfig: KbConfig | null = null;
   loadingKbConfig = false;
   kbConfigError: string | null = null;

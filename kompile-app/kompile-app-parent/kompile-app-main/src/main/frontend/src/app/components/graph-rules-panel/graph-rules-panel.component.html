@@ -4,119 +4,274 @@
   -->
 
 <div class="rules-panel">
+
+  <!-- ── Intro banner ── -->
+  <div class="intro-banner">
+    <div class="intro-icon-wrap"><mat-icon class="intro-icon">bolt</mat-icon></div>
+    <div class="intro-body">
+      <p class="intro-headline">Reactive graph rules</p>
+      <p class="intro-text">
+        A reactive rule watches the live knowledge graph and fires an <strong>action</strong> (write a log entry
+        or call a webhook) whenever a matching change occurs — for example, "notify my pipeline whenever a crawl
+        creates more than 50 new nodes."
+      </p>
+      <p class="intro-text">
+        Rules are evaluated automatically by the change-tracking hook after each changeset or individual mutation.
+        They are <strong>not</strong> the same as probabilistic inference rules — those auto-generated soft-logic
+        (PSL/FOL) rules live in the <em>FOL Rules</em> tab and are managed separately.
+      </p>
+    </div>
+  </div>
+
+  <!-- ── Toolbar ── -->
   <div class="toolbar">
     <button mat-stroked-button (click)="refresh()" [disabled]="loading">
       <mat-icon>refresh</mat-icon> Refresh
     </button>
-    <button mat-raised-button color="primary" (click)="openCreate()">
+    <button mat-raised-button color="primary" (click)="openWizard()" *ngIf="!showWizard">
       <mat-icon>add</mat-icon> New rule
     </button>
     <mat-spinner *ngIf="loading" diameter="22"></mat-spinner>
   </div>
 
-  <!-- Create form -->
-  <mat-card *ngIf="showCreate" class="create-card">
-    <mat-card-header><mat-card-title>New rule</mat-card-title></mat-card-header>
+  <!-- ── Wizard ── -->
+  <mat-card *ngIf="showWizard" class="wizard-card">
+    <mat-card-header>
+      <mat-card-title>
+        <mat-icon class="wizard-title-icon">auto_awesome</mat-icon>
+        Create a new graph rule
+      </mat-card-title>
+      <mat-card-subtitle>Follow the steps below — no JSON required.</mat-card-subtitle>
+    </mat-card-header>
+
     <mat-card-content>
-      <div class="form-row">
-        <mat-form-field appearance="outline" class="grow">
-          <mat-label>Name</mat-label>
-          <input matInput [(ngModel)]="draft.name" placeholder="e.g. alert on big crawl">
-        </mat-form-field>
-        <mat-form-field appearance="outline">
-          <mat-label>Trigger</mat-label>
-          <mat-select [(ngModel)]="draft.triggerType">
-            <mat-option value="CHANGESET">Changeset</mat-option>
-            <mat-option value="MUTATION">Per mutation</mat-option>
-          </mat-select>
-        </mat-form-field>
-      </div>
+      <mat-stepper #wizardStepper linear orientation="horizontal" class="rule-stepper">
 
-      <!-- CHANGESET conditions -->
-      <div class="form-row" *ngIf="draft.triggerType === 'CHANGESET'">
-        <mat-form-field appearance="outline">
-          <mat-label>Min nodes created</mat-label>
-          <input matInput type="number" [(ngModel)]="draft.minNodesCreated">
-        </mat-form-field>
-        <mat-form-field appearance="outline">
-          <mat-label>Min edges created</mat-label>
-          <input matInput type="number" [(ngModel)]="draft.minEdgesCreated">
-        </mat-form-field>
-      </div>
+        <!-- ── STEP 1 : Trigger type ── -->
+        <mat-step [stepControl]="step1Form" label="Trigger">
+          <form [formGroup]="step1Form">
+            <p class="step-hint">
+              Choose <em>when</em> the rule should fire. This determines the kind of event the rule listens for.
+            </p>
 
-      <!-- MUTATION conditions -->
-      <div class="form-row" *ngIf="draft.triggerType === 'MUTATION'">
-        <mat-form-field appearance="outline">
-          <mat-label>Mutation type</mat-label>
-          <mat-select [(ngModel)]="draft.onMutationType">
-            <mat-option [value]="null">any</mat-option>
-            <mat-option value="NODE_CREATED">NODE_CREATED</mat-option>
-            <mat-option value="NODE_UPDATED">NODE_UPDATED</mat-option>
-            <mat-option value="NODE_DELETED">NODE_DELETED</mat-option>
-            <mat-option value="EDGE_CREATED">EDGE_CREATED</mat-option>
-            <mat-option value="EDGE_UPDATED">EDGE_UPDATED</mat-option>
-            <mat-option value="EDGE_DELETED">EDGE_DELETED</mat-option>
-          </mat-select>
-        </mat-form-field>
-        <mat-form-field appearance="outline">
-          <mat-label>Entity kind</mat-label>
-          <mat-select [(ngModel)]="draft.onEntityKind">
-            <mat-option [value]="null">any</mat-option>
-            <mat-option value="NODE">NODE</mat-option>
-            <mat-option value="EDGE">EDGE</mat-option>
-          </mat-select>
-        </mat-form-field>
-        <mat-form-field appearance="outline">
-          <mat-label>Entity type</mat-label>
-          <input matInput [(ngModel)]="draft.onEntityType" placeholder="e.g. PERSON (optional)">
-        </mat-form-field>
-      </div>
+            <div class="trigger-cards">
+              <div
+                class="trigger-card"
+                [class.trigger-card--selected]="triggerType === 'CHANGESET'"
+                (click)="step1Form.get('triggerType')!.setValue('CHANGESET')"
+                role="radio"
+                [attr.aria-checked]="triggerType === 'CHANGESET'">
+                <mat-icon class="trigger-icon">layers</mat-icon>
+                <div class="trigger-card-body">
+                  <span class="trigger-card-title">Changeset</span>
+                  <span class="trigger-card-desc">
+                    Fires once after a batch of changes (e.g. after a crawl finishes).
+                    Useful for threshold-based alerts: "fire when a crawl creates at least N nodes."
+                  </span>
+                </div>
+                <mat-icon class="trigger-check" *ngIf="triggerType === 'CHANGESET'">check_circle</mat-icon>
+              </div>
 
-      <!-- Action -->
-      <div class="form-row">
-        <mat-form-field appearance="outline">
-          <mat-label>Action</mat-label>
-          <mat-select [(ngModel)]="draft.actionType">
-            <mat-option value="LOG">Log</mat-option>
-            <mat-option value="WEBHOOK">Webhook</mat-option>
-          </mat-select>
-        </mat-form-field>
-        <mat-form-field appearance="outline" class="grow" *ngIf="draft.actionType === 'WEBHOOK'">
-          <mat-label>Webhook URL</mat-label>
-          <input matInput [(ngModel)]="draft.actionTarget" placeholder="https://…">
-        </mat-form-field>
-      </div>
+              <div
+                class="trigger-card"
+                [class.trigger-card--selected]="triggerType === 'MUTATION'"
+                (click)="step1Form.get('triggerType')!.setValue('MUTATION')"
+                role="radio"
+                [attr.aria-checked]="triggerType === 'MUTATION'">
+                <mat-icon class="trigger-icon">edit_note</mat-icon>
+                <div class="trigger-card-body">
+                  <span class="trigger-card-title">Per-mutation</span>
+                  <span class="trigger-card-desc">
+                    Fires on every individual node or edge change.
+                    Useful for real-time reactions: "call a webhook every time a PERSON node is created."
+                  </span>
+                </div>
+                <mat-icon class="trigger-check" *ngIf="triggerType === 'MUTATION'">check_circle</mat-icon>
+              </div>
+            </div>
 
-      <div class="form-actions">
-        <button mat-button (click)="showCreate = false">Cancel</button>
-        <button mat-raised-button color="primary" (click)="create()" [disabled]="!draft.name?.trim()">Create</button>
-      </div>
+            <!-- hidden radio so FormGroup stays valid -->
+            <mat-radio-group formControlName="triggerType" class="sr-only" aria-hidden="true">
+              <mat-radio-button value="CHANGESET">Changeset</mat-radio-button>
+              <mat-radio-button value="MUTATION">Per-mutation</mat-radio-button>
+            </mat-radio-group>
+
+            <div class="step-actions">
+              <button mat-raised-button color="primary" matStepperNext [disabled]="step1Form.invalid">
+                Next <mat-icon>chevron_right</mat-icon>
+              </button>
+            </div>
+          </form>
+        </mat-step>
+
+        <!-- ── STEP 2 : Condition ── -->
+        <mat-step [stepControl]="step2Form" label="Condition">
+          <form [formGroup]="step2Form">
+
+            <!-- CHANGESET conditions -->
+            <ng-container *ngIf="triggerType === 'CHANGESET'">
+              <p class="step-hint">
+                Set <strong>minimum thresholds</strong> for the rule to fire. Leave a field blank to match any count
+                for that dimension.
+              </p>
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Min nodes created</mat-label>
+                  <input matInput type="number" min="0" formControlName="minNodesCreated">
+                  <mat-hint>Fire when the changeset created at least this many nodes</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Min edges created</mat-label>
+                  <input matInput type="number" min="0" formControlName="minEdgesCreated">
+                  <mat-hint>Fire when the changeset created at least this many edges</mat-hint>
+                </mat-form-field>
+              </div>
+              <p class="step-note">If both fields are blank the rule fires after every changeset.</p>
+            </ng-container>
+
+            <!-- MUTATION conditions -->
+            <ng-container *ngIf="triggerType === 'MUTATION'">
+              <p class="step-hint">
+                Narrow down <strong>which mutation</strong> should trigger the rule. All fields are optional
+                — leave blank to match everything.
+              </p>
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Mutation type</mat-label>
+                  <mat-select formControlName="onMutationType">
+                    <mat-option [value]="null">Any mutation</mat-option>
+                    <mat-option *ngFor="let o of mutationTypeOptions" [value]="o.value">{{ o.label }}</mat-option>
+                  </mat-select>
+                  <mat-hint>The specific operation that was performed</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Entity kind</mat-label>
+                  <mat-select formControlName="onEntityKind">
+                    <mat-option *ngFor="let o of entityKindOptions" [value]="o.value">{{ o.label }}</mat-option>
+                  </mat-select>
+                  <mat-hint>Restrict to nodes, edges, or both</mat-hint>
+                </mat-form-field>
+              </div>
+              <div class="form-row">
+                <mat-form-field appearance="outline" class="grow">
+                  <mat-label>Entity type (optional)</mat-label>
+                  <input matInput formControlName="onEntityType" placeholder="e.g. PERSON, PRODUCT, …">
+                  <mat-hint>Semantic label of the entity (blank = match any type)</mat-hint>
+                </mat-form-field>
+              </div>
+              <p class="step-note">Leaving all fields blank causes the rule to fire on every mutation.</p>
+            </ng-container>
+
+            <div class="step-actions">
+              <button mat-stroked-button matStepperPrevious>
+                <mat-icon>chevron_left</mat-icon> Back
+              </button>
+              <button mat-raised-button color="primary" matStepperNext>
+                Next <mat-icon>chevron_right</mat-icon>
+              </button>
+            </div>
+          </form>
+        </mat-step>
+
+        <!-- ── STEP 3 : Action + name ── -->
+        <mat-step [stepControl]="step3Form" label="Action & name">
+          <form [formGroup]="step3Form">
+            <p class="step-hint">
+              Choose what happens when the rule fires, then give the rule a memorable name.
+            </p>
+
+            <div class="form-row">
+              <mat-form-field appearance="outline">
+                <mat-label>Action type</mat-label>
+                <mat-select formControlName="actionType">
+                  <mat-option value="LOG">
+                    Log — write an entry to the application log
+                  </mat-option>
+                  <mat-option value="WEBHOOK">
+                    Webhook — POST a payload to an HTTP endpoint
+                  </mat-option>
+                </mat-select>
+                <mat-hint>What Kompile does when the rule condition is met</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <div class="form-row" *ngIf="actionType === 'WEBHOOK'">
+              <mat-form-field appearance="outline" class="grow">
+                <mat-label>Webhook URL</mat-label>
+                <input matInput formControlName="actionTarget" placeholder="https://example.com/hooks/…">
+                <mat-hint>Kompile will POST a JSON payload to this URL when the rule fires</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <mat-divider class="section-divider"></mat-divider>
+
+            <div class="form-row">
+              <mat-form-field appearance="outline" class="grow">
+                <mat-label>Rule name</mat-label>
+                <input matInput formControlName="name" placeholder="e.g. alert-large-crawl, new-person-hook">
+                <mat-hint>A short, descriptive identifier for this rule</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <div class="step-actions">
+              <button mat-stroked-button matStepperPrevious>
+                <mat-icon>chevron_left</mat-icon> Back
+              </button>
+              <button mat-stroked-button (click)="cancelWizard()">Cancel</button>
+              <button
+                mat-raised-button
+                color="primary"
+                (click)="create()"
+                [disabled]="step3Form.invalid || creating">
+                <mat-spinner *ngIf="creating" diameter="18" class="inline-spinner"></mat-spinner>
+                <mat-icon *ngIf="!creating">check</mat-icon>
+                {{ creating ? 'Creating…' : 'Create rule' }}
+              </button>
+            </div>
+          </form>
+        </mat-step>
+
+      </mat-stepper>
     </mat-card-content>
   </mat-card>
 
-  <!-- Rules list -->
-  <div *ngIf="rules.length === 0 && !loading" class="empty-state">
+  <!-- ── Rules list ── -->
+  <div *ngIf="rules.length === 0 && !loading && !showWizard" class="empty-state">
     <mat-icon>rule</mat-icon>
-    <p>No graph rules yet. Create one to react to graph changes with a log entry or webhook.</p>
+    <p>No graph rules yet.</p>
+    <p class="empty-sub">Click <strong>New rule</strong> above to create one and start reacting to graph changes.</p>
   </div>
 
   <table class="rules-table" *ngIf="rules.length > 0">
     <thead>
-      <tr><th>Enabled</th><th>Name</th><th>Trigger</th><th>Condition</th><th>Action</th><th>Scope</th><th></th></tr>
+      <tr>
+        <th>Enabled</th>
+        <th>Name</th>
+        <th>Trigger</th>
+        <th>Condition</th>
+        <th>Action</th>
+        <th>Scope</th>
+        <th></th>
+      </tr>
     </thead>
     <tbody>
       <tr *ngFor="let r of rules">
         <td><mat-slide-toggle [checked]="!!r.enabled" (change)="toggle(r)"></mat-slide-toggle></td>
         <td>{{ r.name }}</td>
-        <td><span class="chip">{{ r.triggerType || 'CHANGESET' }}</span></td>
+        <td><span class="chip" [class.chip--mutation]="r.triggerType === 'MUTATION'">{{ r.triggerType || 'CHANGESET' }}</span></td>
         <td>{{ condition(r) }}</td>
         <td>
           {{ r.actionType }}
-          <span class="target" *ngIf="r.actionType === 'WEBHOOK' && r.actionTarget" [matTooltip]="r.actionTarget">↗</span>
+          <span class="target" *ngIf="r.actionType === 'WEBHOOK' && r.actionTarget" [matTooltip]="r.actionTarget">&#8599;</span>
         </td>
         <td>{{ r.factSheetId != null ? ('fs #' + r.factSheetId) : 'all' }}</td>
-        <td><button mat-icon-button color="warn" (click)="remove(r)" matTooltip="Delete"><mat-icon>delete</mat-icon></button></td>
+        <td>
+          <button mat-icon-button color="warn" (click)="remove(r)" matTooltip="Delete rule">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </td>
       </tr>
     </tbody>
   </table>
+
 </div>

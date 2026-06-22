@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, Input, OnInit } from '@angular/core';
+import { Component, Input, OnInit, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -26,14 +26,36 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
+import { MatStepperModule, MatStepper } from '@angular/material/stepper';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatDividerModule } from '@angular/material/divider';
 import { GraphPipelinesService, GraphUpdatePipelineConfig } from '../../services/graph-pipelines.service';
 
-const DEFAULT_STEPS = '[\n  { "step": "EXTRACT_GRAPH", "params": {} }\n]';
+/**
+ * Wizard form state — no raw JSON exposed to the user.
+ * processingSteps and filterJson are built from these fields on save.
+ */
+interface WizardForm {
+  // Step 1 — identity
+  pipelineName: string;
+  enabled: boolean;
+
+  // Step 2 — trigger & filter
+  triggerChannels: string;
+  senderContains: string;
+  contentContains: string;
+
+  // Step 3 — target & actions
+  targetFactSheetId: number | null;
+  extractGraph: boolean;          // the only step today; maps to EXTRACT_GRAPH
+  priority: number;
+  requireApproval: boolean;
+}
 
 /**
  * CRUD UI for channel→graph update pipelines (graph-as-asset Phase 2/8): an inbound channel message
- * (slack/email/…) runs the configured steps to update the graph without a full crawl. Steps and the
- * optional message filter are JSON (edited as text here); channels are a comma-separated list.
+ * (slack/email/…) runs the configured steps to update the graph without a full crawl. The create form
+ * is a guided wizard — no raw JSON is ever shown to the user.
  */
 @Component({
   selector: 'app-graph-pipelines-panel',
@@ -49,22 +71,24 @@ const DEFAULT_STEPS = '[\n  { "step": "EXTRACT_GRAPH", "params": {} }\n]';
     MatSlideToggleModule,
     MatProgressSpinnerModule,
     MatTooltipModule,
-    MatSnackBarModule
+    MatSnackBarModule,
+    MatStepperModule,
+    MatCheckboxModule,
+    MatDividerModule
   ],
   templateUrl: './graph-pipelines-panel.component.html',
   styleUrls: ['./graph-pipelines-panel.component.css']
 })
 export class GraphPipelinesPanelComponent implements OnInit {
   @Input() factSheetId: number | null = null;
+  @ViewChild('stepper') stepper!: MatStepper;
 
   pipelines: GraphUpdatePipelineConfig[] = [];
   loading = false;
   saving = false;
   showCreate = false;
 
-  draft: GraphUpdatePipelineConfig = this.blank();
-  draftSteps = DEFAULT_STEPS;
-  draftFilter = '';
+  wizard: WizardForm = this.blankWizard();
 
   constructor(private svc: GraphPipelinesService, private snackBar: MatSnackBar) {}
 
@@ -72,8 +96,18 @@ export class GraphPipelinesPanelComponent implements OnInit {
     this.refresh();
   }
 
-  private blank(): GraphUpdatePipelineConfig {
-    return { pipelineName: '', enabled: true, triggerChannels: '', requireApproval: false, priority: 0 };
+  private blankWizard(): WizardForm {
+    return {
+      pipelineName: '',
+      enabled: true,
+      triggerChannels: '',
+      senderContains: '',
+      contentContains: '',
+      targetFactSheetId: null,
+      extractGraph: true,
+      priority: 0,
+      requireApproval: false
+    };
   }
 
   refresh(): void {
@@ -85,31 +119,60 @@ export class GraphPipelinesPanelComponent implements OnInit {
   }
 
   openCreate(): void {
-    this.draft = this.blank();
-    this.draftSteps = DEFAULT_STEPS;
-    this.draftFilter = '';
+    this.wizard = this.blankWizard();
+    this.wizard.targetFactSheetId = this.factSheetId;
     this.showCreate = true;
   }
 
+  cancelCreate(): void {
+    this.showCreate = false;
+    // Reset stepper on next tick so it's back at step 0 when re-opened
+    setTimeout(() => { if (this.stepper) { this.stepper.reset(); } }, 0);
+  }
+
   create(): void {
-    if (!this.draft.pipelineName || !this.draft.pipelineName.trim()) {
+    if (!this.wizard.pipelineName || !this.wizard.pipelineName.trim()) {
+      this.snackBar.open('Pipeline name is required', 'Dismiss', { duration: 4000 });
       return;
     }
-    if (!this.validJsonOrBlank(this.draftSteps, 'Processing steps') ||
-        !this.validJsonOrBlank(this.draftFilter, 'Filter')) {
-      return;
+
+    // Build processingSteps from the wizard checkboxes.
+    const steps: { step: string; params: Record<string, unknown> }[] = [];
+    if (this.wizard.extractGraph) {
+      steps.push({ step: 'EXTRACT_GRAPH', params: {} });
     }
+    const processingSteps = steps.length > 0 ? JSON.stringify(steps) : undefined;
+
+    // Build filterJson from the plain-text fields.
+    const filterObj: Record<string, string> = {};
+    if (this.wizard.senderContains.trim()) {
+      filterObj['senderContains'] = this.wizard.senderContains.trim();
+    }
+    if (this.wizard.contentContains.trim()) {
+      filterObj['contentContains'] = this.wizard.contentContains.trim();
+    }
+    const filterJson = Object.keys(filterObj).length > 0 ? JSON.stringify(filterObj) : undefined;
+
     const cfg: GraphUpdatePipelineConfig = {
-      ...this.draft,
-      processingSteps: this.draftSteps.trim() || undefined,
-      filterJson: this.draftFilter.trim() || undefined
+      pipelineName:    this.wizard.pipelineName.trim(),
+      enabled:         this.wizard.enabled,
+      triggerChannels: this.wizard.triggerChannels.trim() || undefined,
+      targetFactSheetId: this.wizard.targetFactSheetId ?? this.factSheetId ?? undefined,
+      processingSteps,
+      filterJson,
+      priority:        this.wizard.priority,
+      requireApproval: this.wizard.requireApproval
     };
-    if (this.factSheetId != null && cfg.targetFactSheetId == null) {
-      cfg.targetFactSheetId = this.factSheetId;
-    }
+
     this.saving = true;
     this.svc.create(cfg).subscribe({
-      next: () => { this.saving = false; this.showCreate = false; this.refresh(); this.ok('Pipeline created'); },
+      next: () => {
+        this.saving = false;
+        this.showCreate = false;
+        setTimeout(() => { if (this.stepper) { this.stepper.reset(); } }, 0);
+        this.refresh();
+        this.ok('Pipeline created');
+      },
       error: (e) => { this.saving = false; this.error('Create failed', e); }
     });
   }
@@ -134,7 +197,7 @@ export class GraphPipelinesPanelComponent implements OnInit {
     });
   }
 
-  /** Human-readable step chain from the processingSteps JSON. */
+  /** Human-readable step chain from the processingSteps JSON (used in the table). */
   stepsSummary(p: GraphUpdatePipelineConfig): string {
     if (!p.processingSteps) {
       return '—';
@@ -151,17 +214,14 @@ export class GraphPipelinesPanelComponent implements OnInit {
     return '(custom)';
   }
 
-  private validJsonOrBlank(text: string, label: string): boolean {
-    if (!text || !text.trim()) {
-      return true;
-    }
-    try {
-      JSON.parse(text);
-      return true;
-    } catch {
-      this.snackBar.open(`${label} must be valid JSON`, 'Dismiss', { duration: 5000 });
-      return false;
-    }
+  /** Step 1 is complete when the pipeline has a name. */
+  get step1Valid(): boolean {
+    return !!this.wizard.pipelineName?.trim();
+  }
+
+  /** Step 2 is always valid (all optional). */
+  get step2Valid(): boolean {
+    return true;
   }
 
   private ok(msg: string): void {

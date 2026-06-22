@@ -13,6 +13,53 @@
 
   <ng-container *ngIf="factSheetId != null">
 
+    <!-- ── Intro / concept explainer ─────────────────────────────────────── -->
+    <div class="psl-intro">
+      <div class="psl-intro-header">
+        <mat-icon class="psl-intro-icon">psychology</mat-icon>
+        <strong>PSL Program</strong>
+      </div>
+      <p class="psl-intro-body">
+        This graph reasons with a <strong>Probabilistic Soft Logic (PSL)</strong> program — a set of
+        weighted if-then rules over soft-truth values in [0,&nbsp;1]. Each rule has the form
+        <code>weight: body &rarr; head</code>. The solver finds the assignment of truth values that
+        best satisfies all rules simultaneously (MAP inference).
+      </p>
+      <p class="psl-intro-body">
+        A rule's <strong>weight</strong> expresses how strongly it is trusted: a higher weight pulls
+        the solution harder toward satisfying that rule. Weights are <em>learned online</em> every
+        cascade — the bar beside each rule shows its current learned strength relative to the
+        strongest rule in the program.
+      </p>
+
+      <!-- Per-kind legend -->
+      <div class="kind-legend">
+        <div class="kind-legend-item">
+          <span class="badge badge-psl kind-legend-badge">PSL</span>
+          <span class="kind-legend-desc">
+            <strong>Auto-generated</strong> each cascade from the FactStore. One soft propagation rule
+            per observed predicate (e.g. <code>pred(?x) &rarr; derived_pred(?x)</code>), starting at the
+            default weight and then weight-learned.
+          </span>
+        </div>
+        <div class="kind-legend-item">
+          <span class="badge badge-ontology kind-legend-badge">Ontology</span>
+          <span class="kind-legend-desc">
+            <strong>Derived from the bound ontology</strong> DOMAIN/RANGE axioms. For example a
+            <code>works_at</code> domain&nbsp;Person axiom becomes a typing rule asserting the subject
+            is a Person. Generated at the ontology rule weight.
+          </span>
+        </div>
+        <div class="kind-legend-item">
+          <span class="badge badge-file kind-legend-badge">File</span>
+          <span class="kind-legend-desc">
+            <strong>Hand-authored rules</strong> loaded from the project's <code>.psl</code> files.
+            Use these to encode domain knowledge that the auto-generator cannot infer.
+          </span>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Toolbar ──────────────────────────────────────────────────────── -->
     <div class="toolbar">
       <button mat-stroked-button (click)="refresh()" [disabled]="loading">
@@ -33,13 +80,16 @@
 
     <!-- ── Summary chips ─────────────────────────────────────────────────── -->
     <div *ngIf="allRules.length > 0" class="summary-chips">
-      <span class="chip badge-psl"      *ngIf="countByKind('PSL') > 0">
+      <span class="chip badge-psl" *ngIf="countByKind('PSL') > 0"
+            matTooltip="Auto-generated soft propagation rules, one per observed predicate. Weight-learned each cascade.">
         PSL: {{ countByKind('PSL') }}
       </span>
-      <span class="chip badge-ontology" *ngIf="countByKind('ONTOLOGY') > 0">
+      <span class="chip badge-ontology" *ngIf="countByKind('ONTOLOGY') > 0"
+            matTooltip="Rules derived from the bound ontology's DOMAIN/RANGE axioms (e.g. typing rules).">
         Ontology: {{ countByKind('ONTOLOGY') }}
       </span>
-      <span class="chip badge-file"     *ngIf="countByKind('FILE_PSL') > 0">
+      <span class="chip badge-file" *ngIf="countByKind('FILE_PSL') > 0"
+            matTooltip="Hand-authored rules loaded from project .psl files.">
         File: {{ countByKind('FILE_PSL') }}
       </span>
       <span class="chip chip-total">Total: {{ allRules.length }}</span>
@@ -63,7 +113,7 @@
           <div class="rule-header">
             <!-- Kind badge -->
             <span class="badge" [ngClass]="kindClass(rule.kind)"
-                  matTooltip="{{ rule.kind }}">
+                  [matTooltip]="kindTooltip(rule.kind)">
               {{ kindLabel(rule.kind) }}
             </span>
 
